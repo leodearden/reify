@@ -631,6 +631,105 @@ describe('reify.grammar snippets — type parameters and trait bounds', () => {
 });
 
 /**
+ * `sub` declaration forms beyond the instantiation arm.
+ *
+ * The Lezer grammar admits only `sub Name = Struct(args)`. grammar.js:805-899
+ * defines three arms, and the two missing ones dominate the corpus: `sub
+ * idlers : List<Pulley>` is the single most frequent first-error line in the
+ * whole 329-file corpus (9 files), and 41 failing files use some `sub … :`
+ * form.
+ *
+ * Every shape below is lifted from a committed `.ri` — the `priv` prefix is
+ * the one exception and is called out where it appears.
+ */
+describe('reify.grammar snippets — sub declaration forms', () => {
+  // Corpus-attested 9x, e.g. examples/ (`sub idlers : List<Pulley>`) — the
+  // most frequent single first-error line in the corpus.
+  it('parses the collection form `sub idlers : List<Pulley>`', () => {
+    expect(countErrorNodes('structure def F { sub idlers : List<Pulley> }')).toBe(0);
+  });
+
+  // Corpus-attested: `sub plate : Plate`, `sub c : Carriage`, `sub base : Base`.
+  it('parses the bare specialization form `sub c : C`', () => {
+    expect(countErrorNodes('structure def F { sub c : C }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/auto_binding_sites.ri:59.
+  it('parses a specialization with a body `sub b : Bearing { bore = auto }`', () => {
+    expect(countErrorNodes('structure def F { sub b : Bearing { bore = auto } }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/objective_inheritance.ri:26 (`sub c : C {}`).
+  it('parses a specialization with an empty body `sub c : C {}`', () => {
+    expect(countErrorNodes('structure def F { sub c : C {} }')).toBe(0);
+  });
+
+  // The type-argument arm of grammar.js:882-899. Attested in the corpus as
+  // `sub vents : Keyed<Vent> { … }`; asserted here without the keyed body,
+  // which is a separate member-block form out of this slice's scope.
+  it('parses the type-argument form `sub p : P<Length>`', () => {
+    expect(countErrorNodes('structure def F { sub p : P<Length> }')).toBe(0);
+  });
+
+  // Corpus-attested 2x: `sub bolt : Bolt at auto`, plus `sub link : Link at auto`.
+  it('parses the pose clause `sub bolt : Bolt at auto`', () => {
+    expect(countErrorNodes('structure def F { sub bolt : Bolt at auto }')).toBe(0);
+  });
+
+  // Corpus-attested: `sub shaft : Shaft at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))`.
+  it('parses a pose EXPRESSION clause `at transform3(…)`', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { sub shaft : Shaft at transform3(orient_identity(), vec3(100mm, 0mm, 0mm)) }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested on the collection arm: `sub ps : List<P> at transform3(…)`.
+  it('parses a pose clause on the collection form', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { sub ps : List<P> at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested 4x: `aux sub spare : HexBolt`, `aux sub jig : Jig`, … .
+  it('parses the `aux` prefix', () => {
+    expect(countErrorNodes('structure def F { aux sub spare : HexBolt }')).toBe(0);
+  });
+
+  /**
+   * `priv` is the ONE shape in this block with no corpus occurrence. It is
+   * normative rather than invented — grammar.js:808/833/882 carries
+   * `optional('priv')` on all three arms — and it reaches the parser through
+   * the identical optional-prefix mechanism as the attested `aux`, so it
+   * cannot be doomed-by-construction the way an unattested novel shape could.
+   */
+  it('parses the `priv` prefix (normative, unattested in the corpus)', () => {
+    expect(countErrorNodes('structure def F { priv sub hidden : Widget }')).toBe(0);
+  });
+
+  it('parses `priv aux` together', () => {
+    expect(countErrorNodes('structure def F { priv aux sub h : Widget }')).toBe(0);
+  });
+
+  /**
+   * REGRESSION GUARD. The instantiation arm is the one form the grammar
+   * already accepted, and all three arms share the leading `sub Identifier`
+   * prefix — they diverge only on the `=` vs `:` that follows. A mis-resolved
+   * conflict there would silently break the form that works today.
+   */
+  it('still parses the instantiation form `sub s = Screw(len: 10mm)`', () => {
+    expect(countErrorNodes('structure def F { sub s = Screw(len: 10mm) }')).toBe(0);
+  });
+
+  it('still parses the instantiation form with a where guard', () => {
+    expect(countErrorNodes('structure def F { sub s = Screw(len: 10mm) where len > 1mm }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
