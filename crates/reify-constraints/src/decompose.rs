@@ -456,6 +456,201 @@ mod tests {
         assert_eq!(uf.find(0), uf.find(3));
     }
 
+    // -----------------------------------------------------------------------
+    // LAYER 2 — union-find edges must follow `dependent_cells`
+    // (task #5467 / PRD2 α, step-7 RED)
+    //
+    // `collect_value_refs ∩ param_index` is ONE HOP. For
+    // `let s = a + b; constraint s == 10.0` the constraint's ref set is `{s}`,
+    // which intersects the auto params in NOTHING — so the constraint is
+    // skipped entirely and the decomposition comes back EMPTY, exactly the
+    // shape `solve_inner` reads as "all auto params are unconstrained".
+    // `ResolutionProblem.dependent_cells` is the id→expr map that closes the
+    // gap; it is already topologically ordered (deps precede readers) and its
+    // documented membership is precisely "non-auto cells that transitively
+    // read ≥1 auto_param".
+    // -----------------------------------------------------------------------
+
+    fn alpha_auto(entity: &str, member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new(entity, member),
+            param_type: Type::length(),
+            bounds: None,
+            free: false,
+        }
+    }
+
+    fn alpha_vref(entity: &str, member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new(entity, member), Type::length())
+    }
+
+    fn add(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(BinOp::Add, l, r, Type::length())
+    }
+
+    fn sub(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(BinOp::Sub, l, r, Type::length())
+    }
+
+    fn eq_lit(l: CompiledExpr, v: f64) -> CompiledExpr {
+        CompiledExpr::binop(
+            BinOp::Eq,
+            l,
+            CompiledExpr::literal(Value::Real(v), Type::length()),
+            Type::Bool,
+        )
+    }
+
+    /// The α fixture: `let s = a + b`, `let d = a - b`, and two constraints
+    /// that read ONLY the lets.
+    fn alpha_fixture() -> (
+        Vec<AutoParam>,
+        Vec<(ConstraintNodeId, CompiledExpr)>,
+        Vec<(ValueCellId, CompiledExpr)>,
+    ) {
+        let params = vec![alpha_auto("S", "a"), alpha_auto("S", "b")];
+        let constraints = vec![
+            (ConstraintNodeId::new("S", 0), eq_lit(alpha_vref("S", "s"), 10.0)),
+            (ConstraintNodeId::new("S", 1), eq_lit(alpha_vref("S", "d"), 2.0)),
+        ];
+        let dependent_cells = vec![
+            (
+                ValueCellId::new("S", "s"),
+                add(alpha_vref("S", "a"), alpha_vref("S", "b")),
+            ),
+            (
+                ValueCellId::new("S", "d"),
+                sub(alpha_vref("S", "a"), alpha_vref("S", "b")),
+            ),
+        ];
+        (params, constraints, dependent_cells)
+    }
+
+    /// THE α FIX — two constraints reading only `let`s must land in ONE
+    /// component holding BOTH autos and BOTH constraints. A direct-only ref
+    /// intersection yields no referenced params at all and returns an empty
+    /// decomposition, which `solve_inner` then reads as "unconstrained".
+    #[test]
+    fn constraints_reading_only_lets_form_one_component_with_both_autos() {
+        let (params, constraints, dependent_cells) = alpha_fixture();
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "both constraints transitively read `S.a` and `S.b` through the \
+             `let`s, so they belong to ONE component — a direct-only ref \
+             intersection finds no auto params and returns an EMPTY \
+             decomposition; got {components:?}",
+        );
+        let c = &components[0];
+        for id in [ValueCellId::new("S", "a"), ValueCellId::new("S", "b")] {
+            assert!(
+                c.auto_params.contains(&id),
+                "the single component must hold {id}; got {:?}",
+                c.auto_params,
+            );
+        }
+        assert_eq!(
+            c.constraints.len(),
+            2,
+            "BOTH let-indirected constraints must reach the sub-problem; got \
+             {:?}",
+            c.constraints,
+        );
+    }
+
+    /// The OBJECTIVE-side twin. Leaving objective-ref expansion direct-only
+    /// while constraint refs go transitive would be a G7 half-fix: the same
+    /// union-find would receive transitive edges from one source and one-hop
+    /// edges from the other. Here the objective reads ONLY `S.s`, and must
+    /// still pull `S.a` and `S.b` into one component.
+    #[test]
+    fn objective_refs_expand_transitively_through_dependent_cells() {
+        let (params, _c, dependent_cells) = alpha_fixture();
+        // Two constraints, each pinning ONE auto directly — without the
+        // objective they decompose into TWO independent components.
+        let constraints = vec![
+            (ConstraintNodeId::new("S", 0), eq_lit(alpha_vref("S", "a"), 6.0)),
+            (ConstraintNodeId::new("S", 1), eq_lit(alpha_vref("S", "b"), 4.0)),
+        ];
+        let obj_refs: HashSet<ValueCellId> = [ValueCellId::new("S", "s")].into_iter().collect();
+
+        let split = decompose_into_components(&params, &constraints, None, &dependent_cells);
+        assert_eq!(
+            split.len(),
+            2,
+            "fixture integrity: without the objective these two constraints \
+             are independent, or the assertion below would pass vacuously; \
+             got {split:?}",
+        );
+
+        let merged =
+            decompose_into_components(&params, &constraints, Some(&obj_refs), &dependent_cells);
+        assert_eq!(
+            merged.len(),
+            1,
+            "an objective reading only `S.s` transitively couples `S.a` and \
+             `S.b`, so the two components must MERGE into one — the same \
+             expansion the constraint side gets; got {merged:?}",
+        );
+    }
+
+    /// D1/B2 IDENTITY — the SAME call with an EMPTY `dependent_cells` must
+    /// reproduce today's partition exactly: no ref reaches an auto param, so
+    /// both constraints are skipped and the result is empty.
+    #[test]
+    fn empty_dependent_cells_reproduces_the_direct_only_partition() {
+        let (params, constraints, _dc) = alpha_fixture();
+
+        let components = decompose_into_components(&params, &constraints, None, &[]);
+
+        assert!(
+            components.is_empty(),
+            "with an EMPTY `dependent_cells` the expansion adds zero edges, so \
+             both let-reading constraints reference no auto param and the \
+             decomposition is EMPTY — exactly today's behaviour. Anything else \
+             means the widening leaked into the D1 identity branch; got \
+             {components:?}",
+        );
+    }
+
+    /// D1/B2 IDENTITY, positive half — an existing DIRECT-ref decomposition is
+    /// unaffected by an empty `dependent_cells`. Two independent constraints
+    /// stay two components; the shared-param pair stays one.
+    #[test]
+    fn a_direct_ref_decomposition_is_unaffected_by_empty_dependent_cells() {
+        let params = vec![alpha_auto("S", "a"), alpha_auto("S", "b")];
+        let independent = vec![
+            (ConstraintNodeId::new("S", 0), eq_lit(alpha_vref("S", "a"), 6.0)),
+            (ConstraintNodeId::new("S", 1), eq_lit(alpha_vref("S", "b"), 4.0)),
+        ];
+        assert_eq!(
+            decompose_into_components(&params, &independent, None, &[]).len(),
+            2,
+            "two constraints each reading ONE auto directly stay TWO \
+             independent components",
+        );
+
+        let shared = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_lit(add(alpha_vref("S", "a"), alpha_vref("S", "b")), 10.0),
+        )];
+        let got = decompose_into_components(&params, &shared, None, &[]);
+        assert_eq!(
+            got.len(),
+            1,
+            "one constraint reading BOTH autos directly stays ONE component",
+        );
+        assert_eq!(
+            got[0].auto_params.len(),
+            2,
+            "…holding both autos; got {:?}",
+            got[0].auto_params,
+        );
+    }
+
     // --- dependent_cell_auto_reads (task #5720) ---
 
     fn auto(name: &str) -> AutoParam {
