@@ -594,6 +594,38 @@ pub struct EngineSession {
     /// `set_active_fea_case` so the returned GuiState accurately reflects the
     /// last tessellation result (no re-tessellation → same diagnostics).
     tess_diag_cache: Vec<DiagnosticInfo>,
+    /// Task #5338: last delta-resolved value per geometry-derived panel cell —
+    /// the VALUE-side twin of the mesh-side retention the frontend already does.
+    ///
+    /// `TessellateResult` is an INCREMENTAL DELTA, not a full snapshot
+    /// (`Engine::demand_scoped_unified_pass`, engine_build.rs — "the consumer
+    /// (GUI/Tauri) MUST treat a `TessellateResult` as an INCREMENTAL DELTA … an
+    /// absent mesh means 'retain the previously rendered mesh'"). Under the
+    /// frontend's SELECTIVE demand posture a realization whose input-cone hash is
+    /// unchanged is HASH-EXEMPT: its kernel ops are skipped, so
+    /// `TessellateResult.values` carries `Undef` for its auto-derived
+    /// mass-property cells even though those values are still correct. Retaining
+    /// them here and re-surfacing them on a delta gap is what keeps a `: Rigid`
+    /// body's `mass` / `centroid` / `moment_of_inertia` / `moi_principal` from
+    /// silently reverting to `Undef` on a no-edit re-render.
+    ///
+    /// PRUNE SAFETY (arch §8 — "a pruned realization's cached result is never
+    /// served as Final") is enforced at `sync_demand`, the single point at which
+    /// visibility can change: entries for entities the frontend no longer
+    /// declares visible are DROPPED there, so every surviving entry belongs to a
+    /// demanded realization and is safe to serve as Final. A hidden body's cell
+    /// therefore has no entry at all and keeps whatever `build_values` derived
+    /// for it (`freshness = "pending"` plus its own `last_substantive_value`).
+    ///
+    /// NOTE the discriminator deliberately is NOT the cell's own
+    /// `freshness == "pending"` flag: measured on this branch, a HASH-EXEMPT
+    /// (demanded, visible) `: Rigid` body's mass-prop cells ALSO read `"pending"`,
+    /// because those cells are downstream CONSUMERS of the realization and the
+    /// demand cone is its BACKWARD closure — so they sit outside the cone and
+    /// `mark_demand_pruned_pending` flips them regardless of visibility. Cell
+    /// freshness cannot tell HIDDEN from HASH-EXEMPT; the frontend's declared
+    /// visible set can.
+    geometry_derived_cache: HashMap<ValueCellId, Value>,
 }
 
 /// Trait for sinking auto-resolve loop events to the GUI transport layer.
@@ -1109,6 +1141,9 @@ impl EngineSession {
             active_fea_case: None,
             tess_mesh_cache: None,
             tess_diag_cache: Vec::new(),
+            // Task #5338: empty until the first kernel-bearing tessellate resolves
+            // a geometry-derived cell. See the field's doc for the delta contract.
+            geometry_derived_cache: HashMap::new(),
         }
     }
 
@@ -2186,7 +2221,30 @@ impl EngineSession {
     /// accumulates, so passing the full set each sync is correct. Unparseable
     /// keys are skipped with a warning, never a panic (mirrors
     /// `sync_observed_demand`).
+    ///
+    /// ## Task #5338: prune-safety chokepoint for `geometry_derived_cache`
+    ///
+    /// This is the ONLY place a realization's visibility can change, so it is
+    /// also where the geometry-derived value retention cache is prune-filtered:
+    /// entries whose entity has no realization in the incoming visible set are
+    /// DROPPED. That discharges arch §8 ("a pruned realization's cached result is
+    /// never served as Final") once and for all — every entry that survives
+    /// belongs to a demanded realization, so `surface_geometry_derived_cells` can
+    /// re-surface it as Final on a delta gap without re-deriving the
+    /// HIDDEN-vs-HASH-EXEMPT distinction per cell.
     pub fn sync_demand(&mut self, visible_realizations: &[String]) {
+        // Prune BEFORE the engine borrow: retain only cells whose entity still has
+        // a visible realization. `ValueCellId`'s entity half is the same entity
+        // string `parse_realization_key` extracts from `Entity#realization[N]`
+        // (e.g. `RigidMassSmoke`, `Asm.part`), so the two sides join directly.
+        let visible_entities: HashSet<&str> = visible_realizations
+            .iter()
+            .filter_map(|key| key.split_once("#realization[").map(|(entity, _)| entity))
+            .filter(|entity| !entity.is_empty())
+            .collect();
+        self.geometry_derived_cache
+            .retain(|id, _| visible_entities.contains(id.entity.as_str()));
+
         let engine = self.core.engine_mut();
         let roots: Vec<NodeId> = visible_realizations
             .iter()
@@ -2432,6 +2490,12 @@ impl EngineSession {
         // source was fully evaluated, so any prior reload-error banner is now stale.
         // Mirrors the compile_failure clear immediately above.
         self.last_reload_error = None;
+        // Task #5338: drop the geometry-derived value retention on every recompile.
+        // NARROWED to `FilePathUpdate::Set` in a follow-up step — clearing here
+        // unconditionally re-opens the delta gap on `update_source` (the watcher and
+        // the editor's dirty-buffer command) and `set_parameter`, which recompile the
+        // SAME file and are precisely the rebuilds whose delta omits these cells.
+        self.geometry_derived_cache.clear();
     }
 
     /// Export geometry to a file.
@@ -2804,12 +2868,21 @@ impl EngineSession {
         // set_parameter) surfaces them identically and the load / warm-edit paths
         // cannot diverge (the helper keys on `ValueCellId`, not the reallocated
         // kernel handle).
+        //
+        // Task #5338: the overlay is DELTA-AWARE. `tess_result` is an incremental
+        // delta, so a hash-exempt realization's cells arrive `Undef` even though
+        // their values are unchanged and still correct; `geometry_derived_cache`
+        // retains the last delta-resolved value per cell and re-surfaces it on such
+        // a gap. Disjoint-field borrow: the cache and the engine are distinct
+        // `EngineSession` fields, so split the borrow rather than cloning.
         if let Some(result) = &tess_result {
+            let cache = &mut self.geometry_derived_cache;
             surface_geometry_derived_cells(
                 self.core.engine(),
                 &mut values,
                 &mut constraints,
                 result,
+                cache,
             );
         }
 
@@ -3995,11 +4068,40 @@ pub(crate) fn build_constraints(
 /// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
 /// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
 /// inherently required on every warm edit regardless.
+///
+/// ## Task #5338: the delta contract
+///
+/// `result` is an INCREMENTAL DELTA, **not** a full snapshot — see the DELTA
+/// CONTRACT block on `Engine::demand_scoped_unified_pass` (engine_build.rs), which
+/// is the normative statement and is deliberately not restated here. Under the
+/// frontend's SELECTIVE demand posture a realization whose input-cone hash is
+/// unchanged is HASH-EXEMPT: it is dropped from the scheduled seed, its kernel ops
+/// never run, no `Value::GeometryHandle { kernel_handle: Some(..) }` is hydrated for
+/// it, and `result.values` therefore carries `Undef` for every cell its geometry
+/// queries would have resolved. An absent/`Undef` entry means "retain the previous
+/// value", NOT "the value is gone".
+///
+/// Task 5194's original overlay read `result.values` as a snapshot and silently
+/// left delta-omitted cells undetermined, so a `: Rigid` body's mass-prop cells
+/// reverted to `Undef` on the SECOND and every later selective re-render (the first
+/// one stores the hash; the next finds it exempt) — reproducing on argv-launch,
+/// watcher-reload and warm-edit alike. `cache` closes that: a delta-resolved value
+/// is retained per `ValueCellId` and re-surfaced whenever the current delta omits
+/// the cell. A fresh non-`Undef` delta entry ALWAYS wins over the retained one, so a
+/// genuine recompute is never masked by a stale replay.
+///
+/// Prune safety (arch §8) is discharged upstream, at `EngineSession::sync_demand`,
+/// which drops entries for entities the frontend no longer declares visible — so
+/// every entry reaching this function belongs to a demanded realization and is safe
+/// to serve as Final. See the `geometry_derived_cache` field doc for why the cell's
+/// own `freshness == "pending"` flag is NOT a usable HIDDEN-vs-HASH-EXEMPT
+/// discriminator.
 fn surface_geometry_derived_cells(
     engine: &Engine,
     values: &mut [ValueData],
     constraints: &mut [ConstraintData],
     result: &reify_eval::TessellateResult,
+    cache: &mut HashMap<ValueCellId, Value>,
 ) {
     // Track whether this pass surfaced any cell from Undef → Determined. If it
     // did not, `result.values` resolved nothing the kernel-less panel was
@@ -4008,6 +4110,12 @@ fn surface_geometry_derived_cells(
     // resolves once one of its Undef inputs is surfaced here) — skip it and
     // spare the full active-constraint dispatch on every warm rebuild.
     let mut surfaced_any = false;
+    // Task #5338: cells this pass served from the retention cache because the
+    // delta omitted them. `result.values` still reads `Undef` for these, so the
+    // constraint re-check below must dispatch against a merged view or it would
+    // leave the `moi_principal[0] > 0` PD constraint Indeterminate while the panel
+    // shows the very value that satisfies it.
+    let mut cache_sourced: Vec<ValueCellId> = Vec::new();
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -4015,13 +4123,25 @@ fn surface_geometry_derived_cells(
             continue;
         }
         let id = ValueCellId::new(&cell.entity_path, &cell.name);
-        let Some(val) = result.values.get(&id) else {
-            continue;
+        // Task #5338: the delta is authoritative when it carries a real value —
+        // adopt it and REFRESH the retention entry (a fresh delta always wins, so
+        // a recompute is never masked by a stale replay). When the delta omits the
+        // cell or holds `Undef`, fall back to the retained value: that is the
+        // HASH-EXEMPT "no geometry change occurred, keep the previous value" case.
+        let val: Value = match result.values.get(&id) {
+            Some(fresh) if !matches!(fresh, Value::Undef) => {
+                cache.insert(id.clone(), fresh.clone());
+                fresh.clone()
+            }
+            _ => match cache.get(&id) {
+                Some(retained) => {
+                    cache_sourced.push(id.clone());
+                    retained.clone()
+                }
+                None => continue,
+            },
         };
-        if matches!(val, Value::Undef) {
-            continue;
-        }
-        let (value, unit, si_value, dimension) = format_determined_cell(val);
+        let (value, unit, si_value, dimension) = format_determined_cell(&val);
         cell.value = value;
         cell.unit = unit;
         cell.determinacy = format_determinacy(DeterminacyState::Determined);
@@ -4040,9 +4160,29 @@ fn surface_geometry_derived_cells(
         surfaced_any = true;
     }
 
+    // Task #5338: dispatch the re-check against the delta OVERLAID with whatever
+    // this pass served from the retention cache — the same complete value set the
+    // panel now shows. Without the overlay a hash-exempt rebuild would leave the
+    // PD constraint Indeterminate next to a Determined `moi_principal`, which is
+    // exactly the incoherence the dogfood retest reported. `ValueMap` is an
+    // `im::HashMap` (O(1) structural-sharing clone), and the overlay is built ONLY
+    // when the delta actually left a gap, so the no-gap warm path is unchanged.
+    let recheck_values = if cache_sourced.is_empty() {
+        None
+    } else {
+        let mut merged = result.values.clone();
+        for id in &cache_sourced {
+            if let Some(retained) = cache.get(id) {
+                merged.insert(id.clone(), retained.clone());
+            }
+        }
+        Some(merged)
+    };
+    let recheck_values = recheck_values.as_ref().unwrap_or(&result.values);
+
     if surfaced_any
         && constraints.iter().any(|c| c.status == "Indeterminate")
-        && let Ok((recheck, _diags)) = engine.check_constraints_with_values(&result.values)
+        && let Ok((recheck, _diags)) = engine.check_constraints_with_values(recheck_values)
     {
         for c in constraints.iter_mut() {
             if c.status != "Indeterminate" {
