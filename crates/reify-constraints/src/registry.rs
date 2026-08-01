@@ -330,8 +330,9 @@ impl SolverRegistry {
             //   arbitrarily-chosen component — a differently wrong answer.
             // - Filtering is internal to `solve_inner`'s sub-problems and never
             //   escapes the registry.  reify-eval's post-solve
-            //   `materialize_dependent_cells` (engine_eval.rs:1990, called at
-            //   :5222/:6652) still consumes the engine-level FULL list, so
+            //   `materialize_dependent_cells` still consumes the engine-level
+            //   FULL list from both of its post-solve write-back paths (the
+            //   per-template Let re-eval and the cross-scope cluster path), so
             //   cross-component cells are still written back.
             // - When all autos are in one component every cell's read set is
             //   trivially a subset, so the filter is the IDENTITY and every

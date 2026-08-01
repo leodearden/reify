@@ -953,7 +953,7 @@ fn cross_component_dependent_cell_resolves_to_the_joint_argmin() {
          is a bare read of `total`), so `decompose_into_components` unioned \
          nothing, `a` and `b` landed in separate components, and \
          `objective_component`'s lookup fell through to the hardcoded `0` \
-         (registry.rs:202-211) — attaching the objective to an arbitrary \
+         in `SolverRegistry::solve_inner` — attaching the objective to an arbitrary \
          component of a nondeterministic `HashMap` iteration and leaving the \
          other component's auto pinned near its stale start."
     );
@@ -1098,8 +1098,8 @@ fn capture_subproblems(problem: &ResolutionProblem) -> Vec<ResolutionProblem> {
 }
 
 /// The ids of a sub-problem's autos, as a set — the ONLY safe way to identify a
-/// captured component. `decompose_into_components` iterates a `HashMap`
-/// (decompose.rs:179), so capture ORDER is nondeterministic and an index-based
+/// captured component. `decompose_into_components` iterates its component map,
+/// a `HashMap`, so capture ORDER is nondeterministic and an index-based
 /// assertion would be intermittently red.
 fn auto_id_set(p: &ResolutionProblem) -> std::collections::HashSet<ValueCellId> {
     p.auto_params.iter().map(|ap| ap.id.clone()).collect()
@@ -1300,7 +1300,7 @@ fn single_component_subproblem_still_receives_the_full_dependent_cells_list() {
 /// through a dependent cell.
 ///
 /// Pins the expansion → union → `objective_component` chain that the hardcoded
-/// `0` fallthrough (registry.rs:202-211) used to short-circuit. Pre-expansion,
+/// `0` fallthrough in `SolverRegistry::solve_inner` used to short-circuit. Pre-expansion,
 /// `obj_refs` held no auto ids at all — the objective is a bare read of `total`
 /// — so no component matched, the lookup fell through to component `0` of a
 /// NONDETERMINISTIC `HashMap` iteration, and the objective could land on `{c}`,
@@ -1337,8 +1337,9 @@ fn objective_reaching_an_auto_only_through_a_dependent_cell_attaches_to_that_aut
          {:?} instead. Without the `obj_refs` expansion, \
          `decompose_into_components` unions nothing, `a` and `b` never share a \
          component with each other, and `objective_component` falls through to \
-         the hardcoded `0` — handing the objective to whichever component the \
-         `HashMap` iteration happened to yield first (decompose.rs:179) and \
+         the hardcoded `0` — handing the objective to whichever component \
+         `decompose_into_components`' component-map iteration happened to \
+         yield first, and \
          leaving the unattached autos solved feasibility-only against their \
          stale seeds.",
         auto_id_set(with_objective[0])

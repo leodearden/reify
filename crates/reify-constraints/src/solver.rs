@@ -248,10 +248,10 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///   and that filter is it.
 /// - The per-cell `reify_expr::EvalContext::new(values, functions)` is NOT the
 ///   cost. It is a struct of two borrowed references, a zeroed recursion
-///   counter and five `None` fields (reify-expr/src/lib.rs:96-109) — no
-///   allocation, no hashing. The actual per-iteration costs are the expression
-///   evaluation and one persistent-`ValueMap` insert per cell, both linear in
-///   the (now filtered) list length.
+///   counter and five `None` fields — no allocation, no hashing. The actual
+///   per-iteration costs are the expression evaluation and one
+///   persistent-`ValueMap` insert per cell, both linear in the (now filtered)
+///   list length.
 /// - The context CANNOT be hoisted out of the loop. It borrows `values`
 ///   IMMUTABLY for its whole lifetime, while the loop body needs
 ///   `values.insert(...)` — a mutable borrow of the same map. A hoist is a
