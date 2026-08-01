@@ -2662,3 +2662,119 @@ fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_ar
         .expect("load_initial_file_impl should succeed for the resolved relative argv path");
     assert_rigid_mass_props_determined(&state, "argv (relative spelling)");
 }
+
+/// Task #5338 (step-7) — the headline deliverable: ONE regression matrix over
+/// every GUI entry point that can load or rebuild a `: Rigid` body.
+///
+/// Four rows, each on its own freshly-seeded session and its own tempdir copy of
+/// the fixture, so no row can mask another:
+///
+/// | row              | entry point                                       |
+/// |------------------|---------------------------------------------------|
+/// | `argv`           | `load_initial_file_impl`                          |
+/// | `open_file`      | `open_file_engine_impl`                           |
+/// | `watcher`        | open, then `reload_for_watch_impl`                |
+/// | `warm edit_param`| open, then `set_parameter_impl(depth, 250mm)`     |
+///
+/// The last row covers the path task 5194's own details flagged as unverified.
+///
+/// Every row then runs the IDENTICAL post-condition sweep:
+///
+/// 1. the state the entry point itself returned;
+/// 2. after `sync_demand_impl` with the keys derived from that state, THREE
+///    successive `get_initial_state_impl` calls — the selective-demand
+///    re-renders the GUI actually paints, and where the hash-exempt delta gap
+///    bites (the second and later ones);
+/// 3. `build_gui_state_full_scene` — the projection the debug-MCP `engine_state`
+///    tool reads (commands.rs `engine_state_json`), i.e. the surface the
+///    2026-07-22 dogfood retest observed. It must agree with the panel.
+///
+/// Each row names itself in the assertion context, so a failure identifies its
+/// entry point without a bisect.
+#[test]
+fn rigid_mass_props_determined_across_all_gui_load_paths() {
+    use crate::commands::{
+        get_initial_state_impl, load_initial_file_impl, open_file_engine_impl,
+        reload_for_watch_impl, set_parameter_impl, sync_demand_impl,
+    };
+
+    /// How a row gets its first `GuiState`. Each variant is a real production
+    /// entry point; none of them is a test-only shortcut.
+    enum Entry {
+        Argv,
+        OpenFile,
+        Watcher,
+        WarmEditParam,
+    }
+
+    for (row, entry) in [
+        ("argv", Entry::Argv),
+        ("open_file", Entry::OpenFile),
+        ("watcher", Entry::Watcher),
+        ("warm edit_param", Entry::WarmEditParam),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (path, text) = rigid_mass_props_tempfile(dir.path());
+        let engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+
+        // ── (1) the entry point itself ──
+        let state = match entry {
+            Entry::Argv => {
+                let canonical = std::fs::canonicalize(&path).expect("canonicalize");
+                load_initial_file_impl(&engine, &canonical)
+                    .unwrap_or_else(|e| panic!("[{row}] load_initial_file_impl: {e}"))
+            }
+            Entry::OpenFile => open_file_engine_impl(&engine, &path)
+                .unwrap_or_else(|e| panic!("[{row}] open_file_engine_impl: {e}")),
+            Entry::Watcher => {
+                open_file_engine_impl(&engine, &path)
+                    .unwrap_or_else(|e| panic!("[{row}] open before reload: {e}"));
+                reload_for_watch_impl(&engine, &path, &text)
+                    .unwrap_or_else(|e| panic!("[{row}] reload_for_watch_impl: {e}"))
+            }
+            Entry::WarmEditParam => {
+                open_file_engine_impl(&engine, &path)
+                    .unwrap_or_else(|e| panic!("[{row}] open before edit: {e}"));
+                let edited = set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+                    .unwrap_or_else(|e| panic!("[{row}] set_parameter_impl: {e}"));
+                let depth = edited
+                    .values
+                    .iter()
+                    .find(|v| v.name == "depth")
+                    .unwrap_or_else(|| panic!("[{row}] expected a `depth` cell after the edit"));
+                assert_eq!(
+                    depth.value, "250",
+                    "[{row}] depth must read 250 (mm) after the warm edit, proving the \
+                     edit took effect rather than replaying a stale state; got {:?}",
+                    depth.value
+                );
+                edited
+            }
+        };
+        assert_rigid_mass_props_determined(&state, &format!("{row}: entry state"));
+
+        // ── (2) the selective-demand re-renders the GUI actually paints ──
+        let keys = visible_realization_keys(&state);
+        assert!(
+            !keys.is_empty(),
+            "[{row}] the entry state must render at least one realization mesh, else \
+             sync_demand is a no-op and this row is vacuous"
+        );
+        sync_demand_impl(&engine, &keys)
+            .unwrap_or_else(|e| panic!("[{row}] sync_demand_impl: {e}"));
+
+        for i in 1..=3 {
+            let state = get_initial_state_impl(&engine)
+                .unwrap_or_else(|e| panic!("[{row}] get_initial_state_impl #{i}: {e}"));
+            assert_rigid_mass_props_determined(&state, &format!("{row}: re-render {i}"));
+        }
+
+        // ── (3) the debug-MCP `engine_state` projection must agree with the panel ──
+        let full_scene = crate::engine_lock::with_engine_lock(&engine, |s| {
+            s.build_gui_state_full_scene()
+        })
+        .and_then(std::convert::identity)
+        .unwrap_or_else(|e| panic!("[{row}] build_gui_state_full_scene: {e}"));
+        assert_rigid_mass_props_determined(&full_scene, &format!("{row}: full-scene debug read"));
+    }
+}

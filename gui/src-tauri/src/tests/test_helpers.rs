@@ -48,8 +48,15 @@ pub(crate) fn cwd_lock() -> &'static Mutex<()> {
 /// The id RANGE (not just id 1) covers the post-edit rebuild handle drift: the
 /// mock's `next_id` is monotonic and NOT reset between builds, so the initial
 /// load realizes the box to id 1 but a subsequent `set_parameter` rebuild
-/// re-executes the box and allocates a fresh id (2, 3, …). Seeding 1..=4 keeps
-/// the geometry queries answered across both the load and warm-edit rebuilds.
+/// re-executes the box and allocates a fresh id (2, 3, …). Seeding a range keeps
+/// the geometry queries answered across every rebuild in a test.
+///
+/// Widened from `1..=4` to `1..=16` by task #5338: its entry-point matrix drives
+/// up to four full-scope re-executions per row (open + reload/edit + a
+/// `build_gui_state_full_scene` debug read + the first selective rebuild), which
+/// sat exactly on the old ceiling. Purely additive — seeding more ids only adds
+/// map entries, and an unanswered id would surface as an `Undef` mass-prop cell
+/// (i.e. loudly), never as a silent pass.
 ///
 /// The inertia tensor is diagonal `diag(1, 2, 3)` (positive) so `moi_principal`
 /// eigenvalues are `[1, 2, 3]` and the PD constraint `moi_principal[0] > 0` is
@@ -67,7 +74,7 @@ pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
 
     let checker = SimpleConstraintChecker;
     let mut kernel = MockGeometryKernel::new();
-    for id in 1..=4u64 {
+    for id in 1..=16u64 {
         let h = GeometryHandleId(id);
         kernel = kernel
             .with_volume_result(h, Value::Real(0.003))
