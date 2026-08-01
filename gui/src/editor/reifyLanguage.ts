@@ -21,7 +21,7 @@ export const reifyLRLanguage = LRLanguage.define({
     ],
   }),
   languageData: {
-    closeBrackets: { brackets: ['(', '{', '"'] },
+    closeBrackets: { brackets: ['(', '{', '[', '"'] },
     commentTokens: { line: '//', block: { open: '/*', close: '*/' } },
   },
 });

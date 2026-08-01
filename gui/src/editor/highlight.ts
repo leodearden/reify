@@ -37,6 +37,8 @@ export const KEYWORDS = [
   'module',
   'as',
   'pub',
+  'set',
+  'map',
 ];
 
 export const reifyHighlighting = styleTags({

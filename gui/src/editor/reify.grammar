@@ -191,6 +191,7 @@ expression[@isGroup=Expression] {
   BinaryExpression |
   UnaryExpression |
   ConditionalExpression |
+  IndexAccess |
   primaryExpression
 }
 
@@ -225,9 +226,42 @@ primaryExpression {
   Boolean |
   FunctionCall |
   MemberAccess |
+  ListLiteral |
+  SetLiteral |
+  MapLiteral |
   Identifier |
   ReservedWord |
   ParenthesizedExpression
+}
+
+// ── Collection literals ─────────────────────────────────
+// Transliterated from tree-sitter-reify/grammar.js:1557-1566. `set` and `map`
+// are keyword-introduced, so both had to leave the `ReservedWord` @specialize
+// list below — see the note there.
+ListLiteral {
+  "[" (expression ("," expression)* ","?)? "]"
+}
+
+SetLiteral {
+  kw<"set"> "{" (expression ("," expression)* ","?)? "}"
+}
+
+MapLiteral {
+  kw<"map"> "{" (MapEntry ("," MapEntry)* ","?)? "}"
+}
+
+MapEntry {
+  expression "=>" expression
+}
+
+// ── Index access ────────────────────────────────────────
+// grammar.js:1578-1583 gives this prec.left(9) — below member_access (11) and
+// the ad-hoc selector (10), above the binary bands. The existing `postfix`
+// level is the closest Lezer equivalent and puts it on the same footing as
+// `MemberAccess`/`FunctionCall`, which is what `m.rows[i]` and `f(x)[0]`
+// require.
+IndexAccess {
+  expression !postfix "[" expression "]"
 }
 
 FunctionCall {
@@ -286,25 +320,27 @@ CompareOp<expr> { expr }
 // lezer-generator permits only one replacement name per (base token, literal)
 // pair and otherwise hard-fails with
 //   Conflicting names for specialization "def" of Identifier
-// `pub`/`def` (StructureDefinition) and `module`/`as` (ModuleDeclaration,
-// ImportDeclaration) were promoted out of this list; their keyword styling is
-// re-pinned explicitly in highlight.ts.
+// `pub`/`def` (StructureDefinition), `module`/`as` (ModuleDeclaration,
+// ImportDeclaration) and `set`/`map` (SetLiteral, MapLiteral) were promoted
+// out of this list; their keyword styling is re-pinned explicitly in
+// highlight.ts.
 //
-// Removal has one behavioural consequence worth stating precisely: the four
-// promoted words are NO LONGER reachable from primaryExpression, so they now
-// produce an error node in expression position where they previously produced
-// none (measured: `structure def F { let x = pub }` → 1 error node, and the
-// same for `def`/`module`/`as`, while the still-listed `trait` → 0). No
+// Removal has one behavioural consequence worth stating precisely: a promoted
+// word is NO LONGER reachable from primaryExpression, so it now produces an
+// error node in bare expression position where it previously produced none
+// (measured: `structure def F { let x = pub }` → 1 error node, and the same
+// for every other promoted word, while the still-listed `trait` → 0). No
 // committed fixture is affected, and erroring on a keyword in expression
 // position is the more correct behaviour, so this is recorded rather than
-// worked around.
+// worked around. `set`/`map` are only a partial exception: they are
+// unreachable BARE but still start a SetLiteral/MapLiteral.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
     "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
     "occurrence" | "purpose" | "field" | "port" |
     "type" | "unit" | "forall" | "exists" | "implies" |
     "and" | "or" | "not" | "in" | "out" | "meta" | "self" |
-    "undef" | "some" | "none" | "set" | "map">
+    "undef" | "some" | "none">
 }
 
 @external propSource reifyHighlighting from "./highlight"
@@ -350,7 +386,10 @@ ReservedWord {
   @precedence { "::", ":" }
   @precedence { BlockComment, LineComment, "/" }
 
-  "(" ")" "{" "}" "." "," ":" "="
+  // `=>` must win over `=` for the same reason `->` wins over `-`.
+  @precedence { "=>", "=" }
+
+  "(" ")" "{" "}" "[" "]" "." "," ":" "="
   "||" "&&" "==" "+" "-" "*"
-  "::" "->" "<" ">"
+  "::" "->" "=>" "<" ">"
 }
