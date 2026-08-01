@@ -10,8 +10,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{ContentHash, Diagnostic, SourceSpan, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind};
+use reify_core::{
+    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, Type, ValueCellId,
+};
+use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::functions::{check_field_composition_types, collect_composed_field_dependencies};
@@ -279,10 +281,6 @@ pub(crate) fn phase_purposes(
 /// Produced only by [`inert_objective_finding`], and only when the proof is
 /// total; see that function for the bail rules.
 #[derive(Debug, Clone)]
-// Wired into the compile pipeline by `phase_inert_objective_check` (step-6);
-// until then the struct and predicate are exercised by the unit tests below,
-// which do not count as uses for the non-test lib target.
-#[allow(dead_code)]
 pub(crate) struct InertObjectiveFinding {
     /// The cells the objective expression itself names, each proven to be
     /// permanently non-`auto`. Sorted and deduplicated so the rendered
@@ -472,9 +470,6 @@ fn auto_override_possible(
 ///    ([`auto_override_possible`]).
 ///
 /// `all_templates` is the whole module, `template` included.
-// See `InertObjectiveFinding` for why this carries `allow(dead_code)` until
-// step-6 wires it.
-#[allow(dead_code)]
 pub(crate) fn inert_objective_finding(
     template: &TopologyTemplate,
     all_templates: &[TopologyTemplate],
@@ -536,6 +531,83 @@ pub(crate) fn inert_objective_finding(
         never_auto_cells: named,
         anchor_span,
     })
+}
+
+/// Render the sense shared by an objective set's terms, for the diagnostic
+/// message. Falls back to the neutral word when a set mixes senses.
+fn objective_sense_word(objective: &ObjectiveSet) -> &'static str {
+    let mut senses = objective.terms.iter().map(|t| t.sense);
+    match senses.next() {
+        Some(first) if senses.all(|s| s == first) => match first {
+            ObjectiveSense::Minimize => "minimize",
+            ObjectiveSense::Maximize => "maximize",
+        },
+        _ => "objective",
+    }
+}
+
+/// Post-compilation pass: report every template whose declared objective
+/// provably governs nothing (`E_OBJECTIVE_INERT`, DIC γ, task #5417).
+///
+/// The decision itself lives in [`inert_objective_finding`]; this pass is only
+/// the traversal and the wording. One diagnostic per objective *declaration*,
+/// however many never-auto cells it names — the #5014 aggregation rule.
+///
+/// Purposes are excluded structurally rather than by a filter: their objectives
+/// live on `CompiledPurpose.objective`, which a pass over `ctx.templates` never
+/// touches. A purpose's `subject` is bound at application time, so there is no
+/// template whose autos could even be counted.
+///
+/// **Ordering.** Must run after `phase_sub_override_autos` /
+/// `phase_connect_auto_params`, because those are what mint the parent-scoped
+/// `Parent.sub`/`member` cells that prove a child objective is governing after
+/// all; running earlier would report exactly the templates the override was
+/// written to rescue.
+pub(crate) fn phase_inert_objective_check(ctx: &mut CompilationCtx) {
+    // Collect first, extend after: the predicate borrows `ctx.templates`
+    // immutably for the whole walk (the NLL idiom `phase_sub_override_autos`
+    // and `phase_pending_bound_checks` already use).
+    let mut findings: Vec<Diagnostic> = Vec::new();
+
+    for template in &ctx.templates {
+        let Some(objective) = template.objective.as_ref() else {
+            continue;
+        };
+        let Some(finding) = inert_objective_finding(template, &ctx.templates) else {
+            continue;
+        };
+
+        let sense = objective_sense_word(objective);
+        let cells = finding
+            .never_auto_cells
+            .iter()
+            .map(|id| format!("`{}`", id.member))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (subject, verb) = if finding.never_auto_cells.len() == 1 {
+            ("it reads only", "is")
+        } else {
+            ("it reads only", "are")
+        };
+
+        findings.push(
+            Diagnostic::error(format!(
+                "E_OBJECTIVE_INERT: the `{sense}` declared in `{}` cannot govern \
+                 anything — {subject} {cells}, which {verb} never `auto`, so no solver \
+                 variable can change its value. Declare one of them `auto` (e.g. \
+                 `= auto` in place of the literal default) to make the objective \
+                 effective, or remove the objective.",
+                template.name
+            ))
+            .with_code(DiagnosticCode::ObjectiveInert)
+            .with_label(DiagnosticLabel::new(
+                finding.anchor_span,
+                "this cell is never `auto`, so the objective above cannot move it",
+            )),
+        );
+    }
+
+    ctx.diagnostics.extend(findings);
 }
 
 #[cfg(test)]

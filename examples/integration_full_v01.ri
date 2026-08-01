@@ -284,8 +284,17 @@ structure def Assembly : Physical + Locatable {
     // Sanity: height_ok is determined
     constraint determined(height_ok)
 
-    // Minimize objective
-    minimize mass
+    // Minimize objective.
+    //
+    // Pointed at `load_free`, not `mass`: `mass` is a literal-backed param, so
+    // `minimize mass` governed nothing and is now rejected as E_OBJECTIVE_INERT
+    // (DIC γ, #5417). `load_free` is a real `auto(free)`, bracketed just below,
+    // so the objective actually reaches a solver variable — which is what this
+    // example is here to exercise. `mass` stays 5kg; the eval assertions on it
+    // are untouched.
+    constraint load_free >= 0mm
+    constraint load_free <= 1000mm
+    minimize load_free
 }
 
 // ── @test structures ──────────────────────────────────────────────────────────
