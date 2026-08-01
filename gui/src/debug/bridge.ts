@@ -393,24 +393,36 @@ async function pollUntil(
 
 /**
  * Build a selector predicate for wait_for_selector / the selector arm of wait_for.
- * Resolves el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`).
+ * Resolves el through `resolveByTestId(testId, viewportId)`, so an optional
+ * `viewportId` scopes the wait to one pane (#5891).
  * 'visible': el exists AND isElementVisible AND (text===undefined OR textContent.trim()===text)
  * 'gone':    el===null OR !isElementVisible(el)
+ *
+ * Returns `{error}` INSTEAD of a predicate when `viewportId` is present but not a
+ * string. That check is hoisted out of the closure deliberately: a malformed
+ * param is a property of the REQUEST, not a DOM state that could become true on
+ * a later tick, so re-deciding it every 16 ms would burn the caller's whole
+ * timeout budget only to report the same rejection. Both call sites return it
+ * immediately. Every other resolver error — `notFound`, `notFoundForViewport` —
+ * IS a transient DOM state and is folded into `el === null`, which is exactly
+ * what 'gone' waits for and what 'visible' polls past.
  */
 function buildSelectorPredicate(opts: {
   testId: string;
   state: 'visible' | 'gone';
   text?: string;
-}): () => boolean {
-  const { testId, state, text } = opts;
-  // CSS.escape is not available in all environments (e.g. jsdom); fall back to
-  // a minimal escape that handles the most common testId characters safely.
-  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-    ? CSS.escape(testId)
-    : testId.replace(/["\\]/g, '\\$&');
-  const sel = `[data-testid="${escaped}"]`;
+  viewportId?: unknown;
+}): (() => boolean) | { error: string } {
+  const { testId, state, text, viewportId } = opts;
+  if (viewportId !== undefined && typeof viewportId !== 'string') {
+    return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+  }
   return () => {
-    const el = document.querySelector(sel);
+    // Re-resolve on EVERY tick rather than hoisting the lookup: this predicate
+    // exists to observe an element appearing or disappearing mid-poll, so a
+    // resolution captured once at t=0 would freeze the answer.
+    const r = resolveByTestId(testId, viewportId);
+    const el = 'error' in r ? null : r.el;
     if (state === 'gone') {
       return el === null || !isElementVisible(el);
     }
@@ -1343,7 +1355,11 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         }
         const state = (pred.state ?? 'visible') as 'visible' | 'gone';
         const text = typeof pred.text === 'string' ? pred.text : undefined;
-        return pollUntil(buildSelectorPredicate({ testId, state, text }), timeoutMs);
+        const predicate = buildSelectorPredicate({
+          testId, state, text, viewportId: pred.viewportId,
+        });
+        if (typeof predicate !== 'function') return predicate;
+        return pollUntil(predicate, timeoutMs);
       }
 
       if (kind === 'store') {
@@ -1412,10 +1428,14 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         }
         timeoutMs = params.timeout_ms;
       }
-      return pollUntil(
-        buildSelectorPredicate({ testId, state: stateParam as 'visible' | 'gone', text }),
-        timeoutMs,
-      );
+      const predicate = buildSelectorPredicate({
+        testId,
+        state: stateParam as 'visible' | 'gone',
+        text,
+        viewportId: params.viewportId,
+      });
+      if (typeof predicate !== 'function') return predicate;
+      return pollUntil(predicate, timeoutMs);
     },
 
     list_console_errors: (params) => {
