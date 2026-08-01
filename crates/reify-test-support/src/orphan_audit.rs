@@ -2,6 +2,51 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::process::Command;
 
+/// Git environment variables that redirect *which repository* a command
+/// operates on — the same defining criterion as, and an independent copy of,
+/// `reify_audit::git_env::REPO_REDIRECT_VARS`. A copy rather than a re-export:
+/// the dependency edge runs `reify-audit` -> `reify-test-support` (see
+/// `Cargo.toml`), so this crate cannot depend on `reify-audit` to reuse its
+/// copy directly.
+///
+/// `crates/reify-audit/src/git_env.rs` carries a unit test
+/// (`repo_redirect_vars_matches_reify_test_support_orphan_audit_copy`)
+/// asserting the two lists stay equal, so a divergence between them now fails
+/// `cargo test` rather than resting on a "keep in sync" comment.
+pub const REPO_REDIRECT_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment. See
+/// [`REPO_REDIRECT_VARS`] for why this crate keeps its own copy of this
+/// function rather than calling `reify_audit::git_env::sanitize`.
+pub fn sanitize(cmd: &mut Command) -> &mut Command {
+    for var in REPO_REDIRECT_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+/// Build the (unexecuted) `audit-orphan-producers.sh` command: scope/format
+/// args, `current_dir`, and [`sanitize`]. Split out of [`run_orphan_audit`] so
+/// the sanitization can be asserted on directly via `get_envs()` — see
+/// `build_audit_command_removes_every_repo_redirect_var` below — without
+/// spawning the script.
+fn build_audit_command(script: &Path, scope: &str, repo_root: &Path) -> Command {
+    let mut cmd = Command::new(script);
+    cmd.args(["--scope", scope, "--quiet", "--format", "json"])
+        .current_dir(repo_root);
+    sanitize(&mut cmd);
+    cmd
+}
+
 /// Run `scripts/audit-orphan-producers.sh` against a specific crate scope and
 /// return the parsed JSON envelope.
 ///
@@ -80,9 +125,15 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
         return None;
     }
 
-    let output = Command::new(&script)
-        .args(["--scope", scope, "--quiet", "--format", "json"])
-        .current_dir(repo_root)
+    // Sanitize repo-redirect git env vars before spawning: the script's first
+    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an
+    // ambient GIT_DIR/GIT_WORK_TREE (exported into a hook's entire process
+    // tree) overrides BOTH cwd and an explicit `-C`. Full rationale and
+    // failure mode, and why this crate keeps its own REPO_REDIRECT_VARS/
+    // sanitize copy rather than calling reify_audit::git_env::sanitize (the
+    // dependency edge runs the other way): crates/reify-audit/src/git_env.rs
+    // module doc, "Resolved non-central case".
+    let output = build_audit_command(&script, scope, repo_root)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
 
@@ -170,5 +221,37 @@ mod tests {
             "expected orphans to be an array; got: {:#}",
             json["orphans"]
         );
+    }
+
+    /// Mirrors `git_env.rs`'s `both_entry_points_remove_every_repo_redirect_var`:
+    /// asserts the constructed script-spawn `Command` records a removal
+    /// (`env_remove` -> `(key, None)` in `get_envs()`) for every
+    /// [`REPO_REDIRECT_VARS`] entry. Unlike the two tests above, this one
+    /// never spawns the script and needs neither `git` nor `python3` on
+    /// `PATH` — it only inspects `Command` metadata, so the paths passed in
+    /// are deliberately nonexistent. A regression that dropped [`sanitize`]
+    /// from [`build_audit_command`], or dropped an entry from
+    /// [`REPO_REDIRECT_VARS`], fails this test even though the smoke tests
+    /// above never poison the environment to notice.
+    #[test]
+    fn build_audit_command_removes_every_repo_redirect_var() {
+        let cmd = build_audit_command(
+            Path::new("/nonexistent/audit-orphan-producers.sh"),
+            "crates/reify-audit/src",
+            Path::new("/nonexistent/repo-root"),
+        );
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for var in REPO_REDIRECT_VARS {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "build_audit_command must REMOVE `{var}` (env_remove -> \
+                 `(key, None)`), not merely leave it inherited; removals seen: \
+                 {removed:?}"
+            );
+        }
     }
 }
