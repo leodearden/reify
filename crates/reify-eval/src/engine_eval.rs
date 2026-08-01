@@ -11485,3 +11485,263 @@ mod dependent_cells_admissibility_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod objective_auto_reach_tests {
+    //! Unit tests for `objective_auto_reach` — the runtime half of DIC γ
+    //! (task #5417, PRD
+    //! `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3).
+    //!
+    //! The question: *which solver variables can this objective actually move?*
+    //! `E_OBJECTIVE_UNCONSUMED` fires when the answer is non-empty and no solver
+    //! component consumed the objective, so the reach must be **under**
+    //! -approximated. Over-reaching would invent unconsumed autos and turn a
+    //! healthy scope into an Error; under-reaching only makes the diagnostic
+    //! quieter, which is the safe failure mode (PRD §3 decision 5).
+    //!
+    //! The reach is computed over `ResolutionProblem.dependent_cells` — the
+    //! already-materialised output of [`build_dependent_cells`] — and never
+    //! re-derives connectivity (the task's explicit G7 no-lockstep-duplication
+    //! constraint). That is also what makes γ order-independent w.r.t. PRD 2
+    //! (tasks 5396 / 5467-5474): `dependent_cells` already encodes
+    //! let-indirection, so a let-indirected objective reads as transitively
+    //! consumed whichever order the two PRDs land in.
+    //!
+    //! Kept as its own module rather than folded into
+    //! `dependent_cells_admissibility_tests` to match this file's
+    //! one-module-per-concern convention; it is still an in-file unit test, not
+    //! a new test binary.
+    //!
+    //! Written RED in step-7: `objective_auto_reach` is introduced in step-8.
+    use std::collections::BTreeSet;
+
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{AutoParam, BinOp, CompiledExpr, ObjectiveSense, ObjectiveSet};
+    use reify_test_support::{binop, literal, mm, value_ref};
+
+    use super::objective_auto_reach;
+
+    // ── builders ────────────────────────────────────────────────────────────
+
+    fn id(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    fn auto_param(entity: &str, member: &str) -> AutoParam {
+        AutoParam {
+            id: id(entity, member),
+            param_type: Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            bounds: None,
+            free: true,
+        }
+    }
+
+    fn minimize(expr: CompiledExpr) -> ObjectiveSet {
+        ObjectiveSet::single(ObjectiveSense::Minimize, expr)
+    }
+
+    /// `<entity>.<member> = <expr>`, one entry of the `dependent_cells` list.
+    fn dep(entity: &str, member: &str, expr: CompiledExpr) -> (ValueCellId, CompiledExpr) {
+        (id(entity, member), expr)
+    }
+
+    fn reached(set: &BTreeSet<ValueCellId>) -> Vec<ValueCellId> {
+        set.iter().cloned().collect()
+    }
+
+    // ── (1) the direct case ─────────────────────────────────────────────────
+
+    /// `minimize a` where `a` is an auto param: the objective moves `a` with no
+    /// indirection at all.
+    #[test]
+    fn objective_referencing_an_auto_directly_reaches_it() {
+        let objective = minimize(value_ref("S", "a"));
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "a direct reference is the base case of the closure"
+        );
+    }
+
+    // ── (2)+(3) let-indirection, one hop and many ───────────────────────────
+
+    /// `minimize v` where `let v = a * 2` and `a` is auto. `v` is not itself a
+    /// solver variable, but the objective still moves one — through the entry
+    /// `build_dependent_cells` already materialised for `v`.
+    ///
+    /// This is the case that makes γ safe to land in either order relative to
+    /// PRD 2: if the reach stopped at `v`, a perfectly well-posed let-indirected
+    /// objective would be reported unconsumed.
+    #[test]
+    fn objective_reaching_an_auto_through_one_dependent_cell_sees_it() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [dep(
+            "S",
+            "v",
+            binop(BinOp::Mul, value_ref("S", "a"), literal(mm(2.0))),
+        )];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "one hop of let-indirection must not hide the auto"
+        );
+    }
+
+    /// `minimize w`, `let w = v + 1`, `let v = a`. The closure must not stop at
+    /// depth 1.
+    #[test]
+    fn objective_reaching_an_auto_through_chained_dependent_cells_sees_it() {
+        let objective = minimize(value_ref("S", "w"));
+        let cells = [
+            dep("S", "v", value_ref("S", "a")),
+            dep(
+                "S",
+                "w",
+                binop(BinOp::Add, value_ref("S", "v"), literal(mm(1.0))),
+            ),
+        ];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "the closure must be transitive across chained dependent_cells"
+        );
+    }
+
+    // ── (4) nothing to reach ────────────────────────────────────────────────
+
+    /// `minimize k` where `k` is a concrete cell and the scope's only auto is
+    /// `a`, which the objective never reads. Empty reach ⇒ the runtime rule stays
+    /// silent (the *compile* rule owns this shape: `E_OBJECTIVE_INERT`).
+    #[test]
+    fn objective_over_a_concrete_cell_reaches_nothing() {
+        let objective = minimize(value_ref("S", "k"));
+        let cells = [dep("S", "k", literal(mm(3.0)))];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert!(
+            got.is_empty(),
+            "an objective that reads no auto reaches none; got {got:?}"
+        );
+    }
+
+    // ── (5) the anti-over-reach guard ───────────────────────────────────────
+
+    /// `build_dependent_cells` is seeded from the constraints **and** the
+    /// objective, so its output holds cells the objective never reads. Closing
+    /// over the whole list instead of over what the objective actually reaches
+    /// would invent unconsumed autos — an Error on a healthy scope.
+    ///
+    /// Fixture: the objective reads `v` (→ auto `a`); a *constraint*-seeded entry
+    /// `c` reads auto `b`, which nothing in the objective's cone touches.
+    #[test]
+    fn autos_reachable_only_from_constraint_seeded_entries_are_excluded() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [
+            dep("S", "v", value_ref("S", "a")),
+            // Present in dependent_cells because a CONSTRAINT reads it — the
+            // objective's cone never touches it.
+            dep("S", "c", value_ref("S", "b")),
+        ];
+        let autos = [auto_param("S", "a"), auto_param("S", "b")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(
+            reached(&got),
+            vec![id("S", "a")],
+            "the reach must be the objective's own cone, not the whole \
+             dependent_cells list; got {got:?}"
+        );
+    }
+
+    /// A cell in `dependent_cells` that is not an auto param contributes its
+    /// reads but is not itself reported — only solver variables count.
+    #[test]
+    fn intermediate_non_auto_cells_are_not_reported() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [dep("S", "v", value_ref("S", "a"))];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert!(
+            !got.contains(&id("S", "v")),
+            "`v` is a let, not a solver variable; got {got:?}"
+        );
+    }
+
+    // ── multi-term objectives ───────────────────────────────────────────────
+
+    /// A multi-term `ObjectiveSet` is seeded from every term, so the reach is the
+    /// union — not just the first term's cone.
+    #[test]
+    fn every_objective_term_seeds_the_reach() {
+        let objective = ObjectiveSet {
+            terms: vec![
+                reify_ir::ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("S", "a")),
+                reify_ir::ObjectiveTerm::new(ObjectiveSense::Maximize, value_ref("S", "b")),
+            ],
+            combination: reify_ir::ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        };
+        let autos = [auto_param("S", "a"), auto_param("S", "b")];
+
+        let got = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(reached(&got), vec![id("S", "a"), id("S", "b")]);
+    }
+
+    // ── (6) determinism ─────────────────────────────────────────────────────
+
+    /// The reach is a `BTreeSet`, so iteration is sorted regardless of the order
+    /// the objective happens to name the autos in or the order `dependent_cells`
+    /// stores them. Diagnostic text must not vary run to run (PRD §3 decision 8).
+    #[test]
+    fn reach_iterates_in_sorted_order_and_is_deterministic() {
+        let objective = minimize(binop(
+            BinOp::Add,
+            value_ref("S", "z"),
+            binop(BinOp::Add, value_ref("S", "m"), value_ref("S", "b")),
+        ));
+        let autos = [
+            auto_param("S", "z"),
+            auto_param("S", "m"),
+            auto_param("S", "b"),
+        ];
+
+        let first = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(
+            reached(&first),
+            vec![id("S", "b"), id("S", "m"), id("S", "z")],
+            "sorted, not source-order"
+        );
+
+        let second = objective_auto_reach(&objective, &[], &autos);
+        assert_eq!(first, second, "the function is pure");
+    }
+
+    /// A cyclic pair inside `dependent_cells` must not spin the closure forever.
+    /// `build_dependent_cells` drops genuine cycles, but the helper owns its own
+    /// termination rather than trusting an upstream invariant.
+    #[test]
+    fn a_cycle_in_dependent_cells_terminates() {
+        let objective = minimize(value_ref("S", "v"));
+        let cells = [
+            dep("S", "v", value_ref("S", "w")),
+            dep("S", "w", binop(BinOp::Add, value_ref("S", "v"), value_ref("S", "a"))),
+        ];
+        let autos = [auto_param("S", "a")];
+
+        let got = objective_auto_reach(&objective, &cells, &autos);
+        assert_eq!(reached(&got), vec![id("S", "a")]);
+    }
+}
