@@ -3051,6 +3051,65 @@ mod tests {
     use super::ParamOverrideRejection;
     use crate::Engine;
 
+    // ── `Engine::cache_stats()` public surface (task 4152, step-03) ──
+
+    /// `CacheStats` carries a `realization_entries` field that starts at 0 and
+    /// is publicly readable, and remains constructible via functional-update
+    /// syntax from `Default` (the workspace's only construction idiom — there
+    /// are no `CacheStats { .. }` literals, which is what makes this additive
+    /// field non-breaking).
+    #[test]
+    fn cache_stats_default_carries_zeroed_realization_entries() {
+        let stats = crate::CacheStats::default();
+        assert_eq!(
+            stats.realization_entries, 0,
+            "a default CacheStats must report zero realizations"
+        );
+
+        // Functional update from Default must keep compiling and preserve the
+        // untouched fields — this is exactly the shape `Engine::cache_stats`
+        // uses to graft the live counter onto the cumulative eval counters.
+        let grafted = crate::CacheStats {
+            realization_entries: 7,
+            ..Default::default()
+        };
+        assert_eq!(grafted.realization_entries, 7);
+        assert_eq!(grafted.cache_hits, 0);
+        assert_eq!(grafted.cache_misses, 0);
+        assert_eq!(grafted.early_cutoffs, 0);
+    }
+
+    /// `Engine::cache_stats()` is an UNGATED public method returning
+    /// `CacheStats` by value, and a freshly-constructed engine reports zeros
+    /// across the board.
+    ///
+    /// Ungated (unlike [`Engine::realization_cache`], which is
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]`) because it
+    /// exposes only `usize` counters — never a kernel-internal
+    /// `GeometryHandleId`.
+    #[test]
+    fn fresh_engine_cache_stats_reports_all_zero() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Returned by value: bind it and let the engine borrow end.
+        let stats: crate::CacheStats = engine.cache_stats();
+
+        assert_eq!(
+            stats.realization_entries, 0,
+            "a fresh engine has realized and cached no geometry"
+        );
+        assert_eq!(stats.cache_hits, 0, "a fresh engine has no eval-cache hits");
+        assert_eq!(
+            stats.cache_misses, 0,
+            "a fresh engine has no eval-cache misses"
+        );
+        assert_eq!(
+            stats.early_cutoffs, 0,
+            "a fresh engine has no early cutoffs"
+        );
+    }
+
     // ── VolumeMesh-demand registry unit tests (task 4743 — realization α) ──
 
     /// The VolumeMesh-demand target registry: `register_volume_mesh_demand`
