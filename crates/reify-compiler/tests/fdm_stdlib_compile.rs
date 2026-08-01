@@ -185,12 +185,14 @@ fn fdm_process_structure_has_seven_params_plus_seven_provenance_slots() {
     let provenance_ty = Type::StructureRef("MaterialPropertyProvenance".to_string());
     let expected: &[(&str, Type)] = &[
         (
+            // A DIRECTION, so the quantity slot is DIMENSIONLESS (task 5848) —
+            // not Length. The contrast with `layer_height` below (a genuine
+            // distance, still Length) is the point: this table is where the
+            // direction/position split is visible side by side.
             "build_direction",
             Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
-                }),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
         ),
         (
@@ -248,7 +250,7 @@ fn fdm_process_structure_has_seven_params_plus_seven_provenance_slots() {
 /// magnitude of each default expression, guarding against unit-prefix typos
 /// (e.g. `0.2m` vs `0.2mm`).
 ///
-/// For the `build_direction = vec3(0mm, 0mm, 1mm)` default, the test checks
+/// For the `build_direction = vec3(0, 0, 1)` default, the test checks
 /// the presence and type of the FunctionCall node rather than attempting to
 /// numerically reduce a runtime builtin call at compile time.
 ///
@@ -646,7 +648,7 @@ fn prd_motivating_example_named_arg_ctor_compiles_cleanly() {
     let source = r#"
 structure def TestFDM {
     let proc = FDMProcess(
-        build_direction: vec3(0mm, 0mm, 1mm),
+        build_direction: vec3(0, 0, 1),
         layer_height: 0.2mm,
         walls: 3,
         top_bottom_layers: 4,

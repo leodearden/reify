@@ -76,7 +76,7 @@ enum InfillPattern { Gyroid, Cubic, Grid, Triangular, Honeycomb }
 // The downstream β/γ/δ tasks consume FDMProcess by name, not via a trait.
 //
 // Field semantic summary (see individual param doc-comments for details):
-//   build_direction     — unit print-axis vector; Z-up = vec3(0mm,0mm,1mm)
+//   build_direction     — unit print-axis vector; Z-up = vec3(0, 0, 1)
 //   layer_height        — slicer layer thickness; typical FDM: 0.2mm
 //   walls               — perimeter shell count; typical FDM: 3
 //   top_bottom_layers   — solid top/bottom layer count; typical FDM: 4
