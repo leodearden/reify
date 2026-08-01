@@ -742,17 +742,33 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const testId = params.testId as string;
       if (!testId) return { error: 'testId is required' };
 
-      const el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`);
-      if (!el) return { exists: false };
+      // #5891: dom_query is an existence PROBE, not a driver, so it collapses BOTH
+      // absence errors — `notFound` (no such testid anywhere) and
+      // `notFoundForViewport` (not in the named pane) — back to `{exists:false}`.
+      // Harnesses poll this while waiting for a pane to appear; turning a
+      // not-yet-there pane into an error would make every such poll a failure
+      // instead of a `false`. A non-string `viewportId` is a CALLER bug rather
+      // than an observation, so that one alone stays a loud error. The split is
+      // made by comparing against the exported constant rather than a duplicated
+      // literal, so a wording change moves both sides at once (the task-4906
+      // convention) — and it re-derives nothing about WHEN the resolver rejects,
+      // which would fork the ladder.
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) {
+        if (r.error === RESOLVE_BY_TESTID_ERRORS.viewportIdNotString) return r;
+        return { exists: false };
+      }
 
-      const rect = (el as HTMLElement).getBoundingClientRect();
+      const el = r.el as HTMLElement;
+      const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
       return {
         exists: true,
         visible: style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0,
-        text: (el as HTMLElement).innerText?.slice(0, 500) ?? '',
+        text: el.innerText?.slice(0, 500) ?? '',
         tagName: el.tagName.toLowerCase(),
         bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        ...paneDiagnostics(r, params.viewportId !== undefined),
       };
     },
 
