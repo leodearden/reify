@@ -1616,3 +1616,78 @@ fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_bu
          population path outside the op-loop has been introduced.",
     );
 }
+
+/// Task 4152: `CacheStats::realization_entries` counts a REAL terminal
+/// realization-cache entry exactly once, and a repeat build served from the
+/// cache does not re-count it.
+///
+/// This is the counter's engine-level wiring test. It reuses the harness that
+/// `build_populates_realization_cache_keyed_on_demanded_tolerance` established
+/// — an `STEPOutput(1µm)` bound plus a `manufacturing` purpose activated
+/// against `MyDesign` — because that combination is what makes `demanded_tol`
+/// `Some`, and the terminal cache insert is gated on it. Without a tolerance
+/// contract the engine deliberately caches nothing at all (`engine_build.rs`:
+/// "no tolerance contract → no caching"), so a fixture lacking one is not a
+/// valid vehicle for this assertion.
+///
+/// Three signals, in order:
+///
+/// 1. **Before `build()`**: a fresh engine has realized nothing → 0.
+/// 2. **After `build()`**: `MyDesign`'s single named realization inserts one
+///    terminal entry → 1. Conversion intermediates, when a build has any, go
+///    through the uncounted plain `insert` and must not inflate this.
+/// 3. **After a second `build()` of the same module**: still 1 — the cache-hit
+///    short-circuit serves the realization, and the dominated re-insert that
+///    would follow returns `false`, so nothing new is counted.
+///
+/// `realization_cache().len()` is asserted alongside as an independent second
+/// opinion: it counts entries CURRENTLY resident, the counter counts entries
+/// EVER created. They agree here only because nothing was evicted — which is
+/// exactly why the counter, not `len()`, is the durable signal.
+#[test]
+fn realization_entries_counts_terminal_cache_entry_once_and_not_on_cache_hit() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_realization_entries_counts_terminal_cache_entry".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        0,
+        "a fresh engine must have realized and cached no geometry yet"
+    );
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let _build = engine.build(&module, ExportFormat::Step);
+
+    assert_eq!(
+        engine.realization_cache().len(),
+        1,
+        "sanity: the demanded-tolerance contract must have populated exactly one \
+         cache entry (cache dump: {:?})",
+        engine.realization_cache(),
+    );
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        1,
+        "one terminal realization must create exactly one COUNTED cache entry"
+    );
+
+    // Second build of the SAME module: served from the cache, so no new entry.
+    let _build2 = engine.build(&module, ExportFormat::Step);
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        1,
+        "a repeat build served from the realization cache must NOT increment the \
+         counter — a cache hit realized nothing"
+    );
+}
