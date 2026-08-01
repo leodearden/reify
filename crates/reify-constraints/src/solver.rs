@@ -1723,7 +1723,7 @@ fn solve_core_with_sd_tolerance(
 
     // `trial_values` is used in two places — (1) the feasibility check
     // immediately below, and (2) the fallback objective validation when the
-    // optimizer drifts infeasible (see `eval_objective(&trial_values, …)`).
+    // optimizer drifts infeasible (see `eval_objective_set(&trial_values, …)`).
     // Do not inline into the feasibility check.
     let initially_feasible =
         max_constraint_residual(&effective_constraints, &trial_values, &problem.functions)
@@ -2478,55 +2478,116 @@ fn build_perturbation_anchors(
 
 /// Verify solution uniqueness by re-solving from a perturbed starting point.
 ///
-/// Creates a perturbed initial point by reflecting each parameter to the
-/// opposite end of its effective bounds range. If the solution found from
-/// the perturbed starting point matches the original within tolerance,
-/// the solution is considered unique.
+/// Creates a perturbed initial point from the #5618 constraint-derived seed
+/// box (see the anchor-box comment in the body below), re-solves via
+/// [`solve_core`], and classifies the incumbent/perturbed pair via
+/// [`classify_uniqueness`].
 ///
-/// Returns `true` if the solution is unique, `false` if a different
-/// solution was found (indicating the problem is underdetermined).
+/// Returns `true` if the solution is unique (or a suboptimality finding was
+/// suppressed — see `IncumbentSuboptimal` below), `false` if a genuinely
+/// different solution was found (the problem is underdetermined).
 ///
-/// # Why this still passes `effective_bounds`, not the #5618 derived seed box
+/// # The ruling (task #5711)
 ///
-/// [`build_perturbation_anchors`]' box is caller-supplied as of task #5618, and
-/// [`multistart_points`] does hand it the constraint-derived box. This caller
-/// deliberately does NOT. Deferred to task **#5711**, which owns the decision.
+/// `docs/reify-implementation-architecture.md:1140` §11.6 gives strict
+/// `auto` resolution TWO disjunctive well-determinedness tests: the resolved
+/// value must be either (1) uniquely determined by constraints, or (2)
+/// uniquely optimal under the applicable objective. Before #5711 this
+/// function implemented ONLY test (1) — comparing incumbent vs. perturbed
+/// PARAMETER values — and applied it unconditionally, including to problems
+/// governed by test (2). That single mismatch produced both of #5711's
+/// motivating bugs: a latent false-negative (the old anchor, built from
+/// unconstrained `effective_bounds`, landed far outside the feasible region
+/// for an inequality-bracketed auto, the re-solve failed to converge, and
+/// the `_ =>` arm below silently defaulted to "unique"), and a false-positive
+/// risk once the anchor could reach the feasible region (a drift-fallback or
+/// budget-exhausted incumbent that is merely SUBOPTIMAL — not non-unique —
+/// would then misreport `ConstraintNonUnique`).
 ///
-/// MEASURED (task #5618, HEAD 6f5cadd7cc): swapping this one expression for the
-/// derived seed box flips **six** previously-`Solved` fixtures to
-/// `Infeasible`/`ConstraintNonUnique` (5 in `tests/solver_integration.rs` — every
-/// `warm_start_*` fallback case and `multi_param_warm_start_with_objective` — plus
-/// `tests::defined_objective_at_fallback_returns_solved`). The trigger is not a bug
-/// in the derivation: today's anchor `lo + 0.9·(hi − lo)` on the *unconstrained* box
-/// lands OUTSIDE the feasible region, the re-solve fails, and the `_ =>` arm below
-/// conservatively returns `true`. So this check is near-inert for precisely the
-/// inequality-bracketed models it was written for — a latent false-negative, and the
-/// reason #5711 exists.
+/// # The four-branch rule ([`classify_uniqueness`])
 ///
-/// The six flips are NOT one mechanism, and "the new reports are simply correct" is
-/// NOT established — only ONE fixture was probed:
-/// - `defined_objective_at_fallback_returns_solved` IS flat (objective is the
-///   constant `1e8` across the whole feasible region; box `(0.001, 0.02)`, anchor
-///   `0.0029`, re-solve lands at `0.0029`, incumbent `0.015`). Reporting
-///   non-uniqueness there is arguably honest.
-/// - `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` is NOT:
-///   objective `minimize(x)` under `x > 5mm AND x < 6mm`. Its incumbent (5.5mm) is
-///   the DRIFT-FALLBACK initial point, not the argmin, so a feasible anchor lets the
-///   re-solve find a *better* point — and comparing PARAMETER values reads that as
-///   non-uniqueness when it is really evidence the incumbent is SUBOPTIMAL.
+/// - params AGREE within tolerance → [`UniquenessVerdict::Unique`] → `true`.
+///   Test (1) is satisfied directly; the objective is never consulted.
+/// - params DIFFER, no comparable objective score → [`UniquenessVerdict::NonUnique`]
+///   → `false`. No applicable objective exists (see explicit-only scoring
+///   below), so only test (1) applies, and it failed.
+/// - params DIFFER, objective TIES within tolerance, or the perturbed score
+///   is NOT strictly better (this includes strictly WORSE) →
+///   [`UniquenessVerdict::NonUnique`] → `false`. A tie is a flat region:
+///   genuinely not uniquely optimal under test (2) either. A strictly-worse
+///   perturbed point is logically inconclusive on its own — the re-solve may
+///   simply have stalled at a worse local point — but it is deliberately
+///   kept at today's verdict rather than made to abstain, because that is
+///   what makes the whole rule MONOTONE relative to pre-#5711 behaviour: it
+///   can only turn a `false` (non-unique) verdict into `true`, never the
+///   reverse. Monotonicity is what bounds this change's blast radius — no
+///   currently-passing `ConstraintNonUnique` expectation anywhere in the
+///   workspace can flip to `Solved` as a side effect of the classifier
+///   alone.
+/// - params DIFFER, perturbed score STRICTLY BETTER beyond tolerance →
+///   [`UniquenessVerdict::IncumbentSuboptimal`] → `true` (suppressed), with
+///   a `tracing::warn!` naming both scores. The incumbent was never the
+///   argmin, so this is an OPTIMALITY finding — not a §11.6 non-uniqueness
+///   one.
 ///
-/// Conflating "the solver gave up and returned the seed" with "the problem is
-/// underdetermined" would be a false report, so re-derive the mechanism per fixture
-/// before changing this. Do NOT assume `free: false` is incidental in the
-/// `warm_start_*` fixtures: `solver_integration.rs` sets `free: true` with an
-/// explicit "not testing uniqueness" comment at 8+ sites where uniqueness is
-/// deliberately not the point, and has dedicated uniqueness tests where `free: false`
-/// is load-bearing — so `free: false` there reads as considered, not defaulted.
+/// Objective scoring below consults ONLY `problem.objective.as_ref()` —
+/// deliberately NEVER `.or(build_centrality_objective(..))`, diverging from
+/// [`solve_core_with_sd_tolerance`]'s `effective_objective`. Steward ruling
+/// (esc-5711-1): the synthetic centrality objective (PRD η) exists only to
+/// pick a deterministic representative point out of a feasible continuum; it
+/// is not a user-authored semantic contract and must never DISCHARGE a
+/// §11.6 well-determinedness obligation the user never authored. Worse, a
+/// strictly-better centrality score at a different point is POSITIVE
+/// EVIDENCE of non-uniqueness (the feasible region has interior room to
+/// move) — feeding it into the suppression branch would invert that signal.
+/// Measured self-defeat if this rule is ignored: with the synthetic fallback
+/// wired in, `strict_auto_non_unique_returns_infeasible`
+/// (solver_integration.rs:1659, `x>10mm ∧ y>10mm`, no explicit objective)
+/// flips to `Solved{unique:true}` — its incumbent (0.0505,0.0505) scores
+/// -0.0405 on the synthetic min-slack objective, but the derived-box
+/// perturbed anchor (0.091,0.091) re-solves to itself at -0.081, strictly
+/// better — converting the codebase's canonical deliberately-underdetermined
+/// fixture into exactly the silent false-negative #5711 exists to
+/// eliminate. Do NOT "fix" this by adding `.or(synth)` back.
 ///
-/// #5711 also owns the unconditional-clamp question from the `floor_applied` gate in
-/// [`solve_core_with_sd_tolerance`]: that form fails
-/// `tests::defined_objective_at_fallback_returns_solved` by this SAME mechanism, so
-/// the two are one decision. Do not revisit either alone.
+/// # Per-fixture measurement (task #5711 pre-1, HEAD 8050d728aa, commit
+/// `34cfd26a61`)
+///
+/// Swapping only the anchor box for the derived seed box flips six
+/// previously-`Solved` fixtures; re-derived per-fixture from a real
+/// measurement rather than generalised from one probe — the exact error
+/// esc-5618-3 warned against. All six carry an EXPLICIT `problem.objective`,
+/// so the explicit-only scoring rule above does not change any of these six
+/// verdicts relative to what was measured:
+///
+/// | fixture | branch | why (incumbent vs. perturbed score) |
+/// |---|---|---|
+/// | `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible` | `IncumbentSuboptimal` | `Minimize(x)`: 0.0055 (drift-fallback seed) vs. 0.0051 |
+/// | `warm_start_fallback_returns_exact_initial_values` | `IncumbentSuboptimal` | `Minimize(p0+p1+p2)`: 0.0315 vs. 0.0303 |
+/// | `warm_start_budget_exhaustion_stays_feasible` | `IncumbentSuboptimal` | `Minimize(Σp)` over 12 params: 0.132 vs. 0.1224 |
+/// | `warm_start_scales_iterations_with_dimension` | `IncumbentSuboptimal` | `Minimize(p0)` only (p1..p7 in no objective term) — MEASURED, not assumed: 0.015 vs. 0.011; the plan's prose flagged this as possibly-a-tie, the measurement corrected it |
+/// | `multi_param_warm_start_with_objective` | `IncumbentSuboptimal` | `Minimize(p0+p1+p2)`: 0.09 vs. 0.0285 |
+/// | `defined_objective_at_fallback_returns_solved` (this file's `mod tests`) | `NonUnique` (genuine tie) | `Minimize(if x<=22mm then 1e8 else x)` is the CONSTANT `1e8` across the entire feasible region `[0.001,0.020]` plus the buffer to `0.022`; both points score exactly `1e8`. Flipped to `free: true` with a comment naming this mechanism |
+///
+/// Also confirmed at the same measurement: the flip set is exactly six (all
+/// other test binaries in the crate stayed 100% green), and the dedicated
+/// uniqueness 2×2 matrix (solver_integration.rs:1568-1767) is unaffected by
+/// the box swap alone.
+///
+/// # Open interval / infimum-not-attained ruling
+///
+/// A strict bracket with no attainable optimum — e.g. `5mm < x < 6mm` under
+/// `minimize(x)` — has no argmin, so §11.6's "uniquely optimal under the
+/// applicable objective" is VACUOUS rather than false: the problem is not
+/// underdetermined, it simply has no optimum. `verify_uniqueness` is
+/// DEFINED to ABSTAIN — report "cannot prove non-unique" — rather than
+/// manufacture a `ConstraintNonUnique` report here; doing otherwise would be
+/// exactly the conflation esc-5618-3 identified. The `IncumbentSuboptimal`
+/// branch delivers this for free, with no special case: on an open interval
+/// every incumbent is beaten by a point nearer the (unattainable) bound, so
+/// the suppression branch always fires. Detecting "no optimum exists" and
+/// surfacing it as its OWN diagnostic is a separate capability, explicitly
+/// out of scope for #5711 — follow-up.
 fn verify_uniqueness(
     problem: &ResolutionProblem,
     solved_values: &HashMap<ValueCellId, Value>,
@@ -6059,7 +6120,7 @@ mod tests {
         // The enormous cost differential lures the optimizer past x=0.022 into the
         // infeasible region. The solver detects infeasibility (residual >> 1e-12),
         // falls back to the initial feasible point x=0.015, validates the objective
-        // (eval_objective returns Some(1e8) → passes), and returns Solved with the
+        // (eval_objective_set returns Some(1e8) → passes), and returns Solved with the
         // initial values.
         let cond_threshold = CompiledExpr::literal(
             Value::Scalar {
@@ -6113,7 +6174,8 @@ mod tests {
                 // non-uniqueness, not the drift-fallback mechanism this
                 // fixture exists to cover. free: true keeps the fallback
                 // path under test alive without asserting a uniqueness
-                // verdict this problem cannot support.
+                // verdict this problem cannot support. See verify_uniqueness's
+                // doc comment (§ Per-fixture measurement) for the full ruling.
                 free: true,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
