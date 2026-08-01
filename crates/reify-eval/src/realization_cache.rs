@@ -136,6 +136,20 @@ impl<V> RealizationCache<V> {
         self.terminal_entries
     }
 
+    /// Restores the monotonic [`realization_entries`](Self::realization_entries)
+    /// count onto a freshly-reseated cache.
+    ///
+    /// **Invalidation-only.** This exists solely so a cache *flush* — reseating
+    /// to [`RealizationCache::new`], as `Engine::clear_realization_cache` does —
+    /// can carry the lifetime counter across the reseat without exposing a
+    /// general-purpose mutator. Nothing on a normal insert/lookup path should
+    /// call it, and it must never be used to lower the count: doing so would
+    /// break the monotonicity that
+    /// [`realization_entries`](Self::realization_entries) documents.
+    pub fn restore_realization_entries(&mut self, n: usize) {
+        self.terminal_entries = n;
+    }
+
     /// Inserts a **terminal realization** at `(entity, repr_kind, options_hash, tol)`,
     /// counting it in [`realization_entries`](Self::realization_entries).
     ///

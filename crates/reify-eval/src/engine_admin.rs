@@ -725,10 +725,27 @@ impl Engine {
     /// state. The reset is single-purpose: only `realization_cache` is
     /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
     ///
+    /// **What this method does NOT reset**: the cache's
+    /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
+    /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
+    /// It is a monotonic count of realizations PERFORMED over the engine's
+    /// lifetime, not of entries currently resident, so it is deliberately
+    /// carried across the reseat (task 4152). Since `edit_param` and
+    /// `edit_source` both flush here, resetting it would zero the metric on
+    /// every edit. Pinned by `realization_entries_survives_clear_realization_cache`
+    /// in `tests/tolerance_wiring_e2e.rs`.
+    ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
     /// in `tests/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
+        // Task 4152: carry the monotonic lifetime counter across the reseat.
+        // `realization_entries` measures realizations PERFORMED over the
+        // engine's life, not entries currently resident, so a flush must not
+        // zero it — `edit_param`/`edit_source` flush on every edit, and a
+        // reset here would make the metric unusable across edits.
+        let realized = self.realization_cache.realization_entries();
         self.realization_cache = crate::realization_cache::RealizationCache::new();
+        self.realization_cache.restore_realization_entries(realized);
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
