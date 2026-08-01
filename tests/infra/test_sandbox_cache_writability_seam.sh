@@ -36,9 +36,9 @@
 # This guard pins the reify-owned leaf of the contract only.
 # compute_write_set itself is entirely DF-owned and not reify-observable
 # from this repo; extending it (e.g. adding ~/.cargo/~/.npm carve-outs
-# directly) is upstream dark-factory work, filed as reify task 5724
-# ("dark-factory: add ~/.cargo and ~/.npm to compute_write_set...") --
-# landing that would retire both this guard and the /tmp redirect below.
+# directly) is upstream dark-factory work, filed as dark_factory:3162
+# ("add ~/.cargo and ~/.npm to compute_write_set...") -- landing that
+# would retire both this guard and the /tmp redirect below.
 #
 # SECOND, UNGUARDED COUPLING: SANDBOXED_ROLES below is a hardcoded reify-side
 # copy of DF's roles.py sandboxed=True set (orchestrator/agents/roles.py --
