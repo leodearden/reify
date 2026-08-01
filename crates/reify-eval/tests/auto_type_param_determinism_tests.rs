@@ -931,3 +931,47 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
          found: {rel_paths:#?}"
     );
 }
+
+// ─── step-13 ratchet: EXPECTED_MIN_FILES tracks the live corpus ───────────────
+
+/// Freshness ratchet for [`EXPECTED_MIN_FILES`]: that floor is a
+/// discovery-regression TRIPWIRE, not a corpus-size target, so it is only
+/// useful while it stays reasonably close to the live corpus size.
+///
+/// This does NOT contradict `EXPECTED_MIN_FILES`'s own rationale
+/// ("Deliberately NOT relative to paths.len()", above): the GATE inside
+/// [`v0_1_example_corpus_compile_and_check_time_is_bounded`] remains an
+/// absolute constant compared against `candidates.len()`, so a discovery
+/// regression can never shrink that bar in lockstep with the thing it
+/// measures. This test is a separate, second-order check on the
+/// CONSTANT'S OWN VALUE, and it never gates the perf walk itself.
+///
+/// It is one-directional, exactly like examples_smoke.rs's sibling ratchet
+/// (`discovery_floors_track_the_live_corpus` there): a real discovery
+/// regression shrinks `total`, which only makes
+/// `EXPECTED_MIN_FILES * 2 >= total` EASIER to satisfy, so it can never mask
+/// the regression the absolute gate above exists to catch — it only fires
+/// when the corpus GROWS past 2x the floor, which is exactly the
+/// maintenance signal that the floor needs raising.
+///
+/// Deliberately compares against the RAW [`discover_ri_files`] count, not
+/// `candidates.len()` (the SKIP_SET-filtered list the perf walk uses): the
+/// raw count is the stable quantity this floor is meant to track, and using
+/// it keeps this guard independent of ordinary SKIP_SET churn. It calls
+/// `discover_ri_files()` only — no `check_source_with_stdlib` — so it adds
+/// no measurable time to this binary.
+#[test]
+fn discovery_floor_tracks_the_live_corpus() {
+    let total = discover_ri_files().len();
+
+    assert!(
+        EXPECTED_MIN_FILES * 2 >= total,
+        "EXPECTED_MIN_FILES ({}) has drifted stale: the live examples/ corpus \
+         now has {} .ri files, more than 2x the floor. Raise \
+         EXPECTED_MIN_FILES to at least {}/2 and re-review its tripwire doc \
+         comment.",
+        EXPECTED_MIN_FILES,
+        total,
+        total
+    );
+}
