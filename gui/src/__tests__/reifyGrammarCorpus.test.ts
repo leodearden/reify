@@ -217,6 +217,51 @@ describe('reify.grammar snippets — TypeExpr', () => {
 });
 
 /**
+ * Named arguments inside CALL argument lists (`f(a: 1mm)`), transliterated
+ * from tree-sitter-reify/grammar.js:1542-1546.
+ *
+ * `NamedArgument` already existed for `SubDeclaration`'s instantiation form,
+ * but `ArgumentList` admitted only bare `expression`, so every call passing a
+ * named argument produced error nodes. Measured before the fix:
+ * `structure def F { let x = f(a: 1mm) }` → 2 error nodes. This is the largest
+ * single lever in the corpus — 98 of the 239 then-failing `.ri` files contain
+ * a named call argument.
+ */
+describe('reify.grammar snippets — named call arguments', () => {
+  it('parses a single named argument `FEAMaterialInput(material: material)`', () => {
+    expect(
+      countErrorNodes('structure def F { let mi = FEAMaterialInput(material: material) }'),
+    ).toBe(0);
+  });
+
+  it('parses multiple named arguments `Material(name: "steel", density: 7850)`', () => {
+    expect(
+      countErrorNodes('structure def F { let m = Material(name: "steel", density: 7850) }'),
+    ).toBe(0);
+  });
+
+  // Widening ArgumentList must not cost the positional form: both arms start
+  // with `Identifier`, so a mis-resolved conflict would break plain calls.
+  it('still parses positional arguments `point3(0, 1, 2)`', () => {
+    expect(countErrorNodes('structure def F { let p = point3(0, 1, 2) }')).toBe(0);
+  });
+
+  it('parses the mixed positional-then-named form `f(1, a: 2)`', () => {
+    expect(countErrorNodes('structure def F { let x = f(1, a: 2) }')).toBe(0);
+  });
+
+  it('parses a trailing comma after a named argument', () => {
+    expect(countErrorNodes('structure def F { let x = f(a: 1mm,) }')).toBe(0);
+  });
+
+  // Pin the SHAPE, not merely the absence of errors: an `ArgumentList` that
+  // swallowed `a: 1mm` as some other construct would also report zero errors.
+  it('yields a NamedArgument node for the named form', () => {
+    expect(nodeNames('structure def F { let x = f(a: 1mm) }')).toContain('NamedArgument');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
