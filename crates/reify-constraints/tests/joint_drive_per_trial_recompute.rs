@@ -892,8 +892,8 @@ fn cross_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId, Val
 /// gradient, so a silently suboptimal feasibility-only answer.)
 ///
 /// No assertion here touches component ORDER or WHICH component receives the
-/// objective: `decompose_into_components` iterates a `HashMap` (decompose.rs
-/// :179), so that is nondeterministic. The bad outcome is deterministic
+/// objective: `decompose_into_components` iterates its component map, a
+/// `HashMap`, so that is nondeterministic. The bad outcome is deterministic
 /// regardless of which component wins, because NEITHER owns both autos.
 #[test]
 fn cross_component_dependent_cell_resolves_to_the_joint_argmin() {
@@ -998,11 +998,12 @@ const SIDE_COEFF: f64 = 2.0;
 const STALE_SIDE: f64 = 555.0;
 
 /// A problem that decomposes into TWO components even AFTER the `obj_refs`
-/// expansion, each owning exactly one dependent cell.
+/// expansion.
 ///
 /// * component X — autos `a`, `b`, each with its own single-auto constraint;
-///   dependent cell `total = A_COEFF*a + B_COEFF*b`; the objective is a bare
-///   `Minimize total`, so the expansion unions `a` and `b` into ONE component;
+///   dependent cells `mid = A_COEFF*a` then `total = mid + B_COEFF*b`; the
+///   objective is a bare `Minimize total`, so the expansion unions `a` and `b`
+///   into ONE component;
 /// * component Y — auto `c` with its own constraint `c >= LO`, plus a dependent
 ///   cell `side = SIDE_COEFF*c` feeding the constraint `side >= LO` and nothing
 ///   in the objective. Feeding a constraint is what keeps `side` legitimately
@@ -1010,28 +1011,52 @@ const STALE_SIDE: f64 = 555.0;
 ///   (transitively feeds objective OR constraint exprs AND transitively reads
 ///   ≥1 auto). Decomposition itself skips `side >= LO` — it references no auto
 ///   directly — which is pre-existing behaviour and not what these tests probe.
+/// * neither — `mix = mid + side`, which transitively reads `{a, c}` and so
+///   STRADDLES both components.
 ///
 /// The objective never reaches `c`, so component Y is what proves the filter
 /// actually filters rather than being vacuously the identity.
+///
+/// Two shapes here exist purely to make the guard suite discriminating, and
+/// both were added after review found the assertions unfalsifiable without
+/// them:
+///
+/// * `mid` makes component X retain TWO cells. With one cell apiece the
+///   subsequence/order assertions are vacuously true for ANY output ordering,
+///   so a filter rebuilt from a `HashMap` iteration — the exact regression the
+///   assertion messages describe — would go green. `mid` also exercises the
+///   TRANSITIVE path end-to-end through the registry: `total` reaches `a` only
+///   through `mid`, so a non-transitive `dependent_cell_auto_reads` would
+///   report `total` as reading `{b}` alone.
+/// * `mix` is the only cell whose auto set is neither owned nor disjoint from a
+///   component. Without it every cell is either fully owned or fully disjoint,
+///   and `is_subset` is indistinguishable from `!is_disjoint` — the mutation
+///   that reintroduces the cross-component `Undef` fold this task removes.
 struct TwoComponentFixture {
     problem: ResolutionProblem,
     a: ValueCellId,
     b: ValueCellId,
     c: ValueCellId,
+    mid: ValueCellId,
     total: ValueCellId,
     side: ValueCellId,
+    mix: ValueCellId,
 }
 
 fn two_component_dependent_cell_problem() -> TwoComponentFixture {
     let a = ValueCellId::new("Part", "a");
     let b = ValueCellId::new("Part", "b");
     let c = ValueCellId::new("Part", "c");
+    let mid = ValueCellId::new("Part", "mid");
     let total = ValueCellId::new("Part", "total");
     let side = ValueCellId::new("Part", "side");
+    let mix = ValueCellId::new("Part", "mix");
 
     let mut current_values = ValueMap::new();
+    current_values.insert(mid.clone(), scalar(STALE_TOTAL));
     current_values.insert(total.clone(), scalar(STALE_TOTAL));
     current_values.insert(side.clone(), scalar(STALE_SIDE));
+    current_values.insert(mix.clone(), scalar(STALE_SIDE));
 
     let auto = |id: &ValueCellId| AutoParam {
         id: id.clone(),
@@ -1048,23 +1073,38 @@ fn two_component_dependent_cell_problem() -> TwoComponentFixture {
             (ConstraintNodeId::new("Part", 1), ge_lo(vref(&b))),
             (ConstraintNodeId::new("Part", 2), ge_lo(vref(&c))),
             (ConstraintNodeId::new("Part", 3), ge_lo(vref(&side))),
+            (ConstraintNodeId::new("Part", 4), ge_lo(vref(&mix))),
         ],
         current_values,
         objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, vref(&total))),
         functions: Arc::from(Vec::new()),
+        // Stored order is load-bearing: `mid` BEFORE `total`, which reads it.
         dependent_cells: vec![
+            // mid = A_COEFF*a — reads {a}.
+            (
+                mid.clone(),
+                CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a), dimensionless()),
+            ),
+            // total = mid + B_COEFF*b — reads {a, b}, and `a` ONLY through `mid`.
             (
                 total.clone(),
                 CompiledExpr::binop(
                     BinOp::Add,
-                    CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a), dimensionless()),
+                    vref(&mid),
                     CompiledExpr::binop(BinOp::Mul, lit(B_COEFF), vref(&b), dimensionless()),
                     dimensionless(),
                 ),
             ),
+            // side = SIDE_COEFF*c — reads {c}.
             (
                 side.clone(),
                 CompiledExpr::binop(BinOp::Mul, lit(SIDE_COEFF), vref(&c), dimensionless()),
+            ),
+            // mix = mid + side — reads {a, c}: STRADDLES both components, so it
+            // is a subset of NEITHER while overlapping BOTH.
+            (
+                mix.clone(),
+                CompiledExpr::binop(BinOp::Add, vref(&mid), vref(&side), dimensionless()),
             ),
         ],
     };
@@ -1074,8 +1114,10 @@ fn two_component_dependent_cell_problem() -> TwoComponentFixture {
         a,
         b,
         c,
+        mid,
         total,
         side,
+        mix,
     }
 }
 
@@ -1118,7 +1160,7 @@ fn is_subsequence(filtered: &[ValueCellId], original: &[ValueCellId]) -> bool {
 /// Each component's sub-problem must carry ONLY the dependent cells whose
 /// transitively-read autos it OWNS.
 ///
-/// RED before the filter: both sub-problems receive BOTH cells. Folding `total`
+/// RED before the filter: both sub-problems receive ALL cells. Folding `total`
 /// in the `{c}` component reads unbound `a`/`b` and writes `Undef`; folding
 /// `side` in the `{a, b}` component reads unbound `c` and does the same. It is
 /// also the O(#components × |dependent_cells| × NM_iterations × multistart_K)
@@ -1158,30 +1200,44 @@ fn each_component_subproblem_receives_only_its_own_dependent_cells() {
     for (autos, want_cells, why) in [
         (
             vec![&fx.a, &fx.b],
-            vec![fx.total.clone()],
+            // Stored order — `mid` precedes `total`, which reads it.
+            vec![fx.mid.clone(), fx.total.clone()],
             "`side = SIDE_COEFF*c` reads `c`, which this component does not own — \
-             folding it here reads an unbound `c` and writes `Undef`",
+             folding it here reads an unbound `c` and writes `Undef`. \
+             `mix = mid + side` reads `{a, c}`: it OVERLAPS this component's \
+             autos without being a SUBSET of them, so it must be dropped here \
+             too — a filter testing mere intersection instead of containment \
+             would keep it and fold the unowned `c`",
         ),
         (
             vec![&fx.c],
             vec![fx.side.clone()],
-            "`total = A_COEFF*a + B_COEFF*b` reads `a` and `b`, which this \
-             component does not own — folding it here reads unbound autos and \
-             writes `Undef`",
+            "`mid = A_COEFF*a` and `total = mid + B_COEFF*b` read `a` and `b`, \
+             which this component does not own — folding either here reads \
+             unbound autos and writes `Undef`. `mix` reads `{a, c}` and so \
+             overlaps without being contained, and must be dropped here as well",
         ),
     ] {
         let sub = find(&autos);
         let got = dependent_cell_ids(sub);
+        // Compared as an ORDERED Vec, not a set: the retained cells must come
+        // back in stored order, so a filter that rebuilt the list from a set or
+        // a `HashMap` iteration fails here rather than passing on membership.
         assert_eq!(
-            got.iter().cloned().collect::<std::collections::HashSet<_>>(),
-            want_cells
-                .iter()
-                .cloned()
-                .collect::<std::collections::HashSet<_>>(),
+            got, want_cells,
             "the sub-problem owning autos {:?} must carry exactly the dependent \
-             cells {want_cells:?}; got {got:?}. Pre-fix BOTH sub-problems \
-             receive BOTH cells, because `solve_inner` builds each from \
-             `..problem.clone()` and never filters the field. {why}.",
+             cells {want_cells:?}, IN THAT ORDER; got {got:?}. Pre-fix BOTH \
+             sub-problems receive ALL cells, because `solve_inner` builds each \
+             from `..problem.clone()` and never filters the field. {why}.",
+            autos.iter().map(|i| (*i).clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            !got.contains(&fx.mix),
+            "`mix` transitively reads `{{a, c}}`, which NO component owns in \
+             full, so it must be dropped from EVERY sub-problem — it is the \
+             only cell in this fixture that distinguishes the `is_subset` \
+             predicate from mere overlap (`!is_disjoint` / `intersects`). Got \
+             {got:?} for the component owning {:?}.",
             autos.iter().map(|i| (*i).clone()).collect::<Vec<_>>()
         );
         assert!(
@@ -1202,14 +1258,16 @@ fn each_component_subproblem_receives_only_its_own_dependent_cells() {
 /// The ONE constraint `a + b >= A_PLUS_B_FLOOR` joins both autos on the
 /// constraint graph alone, so the component is single regardless of the
 /// `obj_refs` expansion.
-fn single_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId) {
+fn single_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId, ValueCellId) {
     const A_PLUS_B_FLOOR: f64 = 4.0;
 
     let a = ValueCellId::new("Part", "a");
     let b = ValueCellId::new("Part", "b");
+    let mid = ValueCellId::new("Part", "mid");
     let total = ValueCellId::new("Part", "total");
 
     let mut current_values = ValueMap::new();
+    current_values.insert(mid.clone(), scalar(STALE_TOTAL));
     current_values.insert(total.clone(), scalar(STALE_TOTAL));
 
     let auto = |id: &ValueCellId| AutoParam {
@@ -1233,13 +1291,23 @@ fn single_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId) {
         current_values,
         objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, vref(&total))),
         functions: Arc::from(Vec::new()),
-        dependent_cells: vec![(
-            total.clone(),
-            CompiledExpr::binop(BinOp::Add, vref(&a), vref(&b), dimensionless()),
-        )],
+        // TWO cells in a known stored order, `mid` before the `total` that
+        // reads it. A single-cell list would make the "FULL list in the SAME
+        // order" assertion below unfalsifiable — any ordering of a 1-element
+        // Vec is correct — so the identity claim needs at least two.
+        dependent_cells: vec![
+            (
+                mid.clone(),
+                CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a), dimensionless()),
+            ),
+            (
+                total.clone(),
+                CompiledExpr::binop(BinOp::Add, vref(&mid), vref(&b), dimensionless()),
+            ),
+        ],
     };
 
-    (problem, total)
+    (problem, mid, total)
 }
 
 /// I1 non-regression — the filter must be the IDENTITY on the single-component
@@ -1254,7 +1322,7 @@ fn single_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId) {
 /// containment.
 #[test]
 fn single_component_subproblem_still_receives_the_full_dependent_cells_list() {
-    let (problem, total) = single_component_joint_drive_problem();
+    let (problem, mid, total) = single_component_joint_drive_problem();
     let captured = capture_subproblems(&problem);
 
     assert_eq!(
@@ -1279,20 +1347,22 @@ fn single_component_subproblem_still_receives_the_full_dependent_cells_list() {
         dependent_cell_ids(sub),
         dependent_cell_ids(&problem),
         "the filter is REQUIRED to be the identity whenever every auto lives in \
-         one component: `total` reads `a` and `b`, both owned here, so its \
-         transitive auto-read set is trivially a subset. That identity is the \
-         only thing keeping every pre-existing single-component solve \
-         byte-identical (PRD §6.2 / I1) — dropping a cell here silently \
-         un-folds an objective the pre-#5720 code folded correctly. Expected \
+         one component: `mid` reads `a` and `total` reads `a` (through `mid`) \
+         and `b`, all owned here, so every transitive auto-read set is \
+         trivially a subset. That identity is the only thing keeping every \
+         pre-existing single-component solve byte-identical (PRD §6.2 / I1) — \
+         dropping a cell here silently un-folds an objective the pre-#5720 code \
+         folded correctly. Compared as an ORDERED Vec, so a filter that rebuilt \
+         the list from a set or a `HashMap` iteration fails here too. Expected \
          the FULL list in the SAME order, {:?}; got {:?}.",
         dependent_cell_ids(&problem),
         dependent_cell_ids(sub)
     );
     assert_eq!(
         dependent_cell_ids(sub),
-        vec![total],
-        "fixture integrity: the list must be non-empty, or the identity claim \
-         above is vacuous"
+        vec![mid, total],
+        "fixture integrity: the list must hold at least TWO cells in a known \
+         order, or the identity-and-order claim above is vacuous"
     );
 }
 
