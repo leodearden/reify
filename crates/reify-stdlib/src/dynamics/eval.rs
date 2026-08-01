@@ -126,9 +126,14 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
 /// Mint the default zero-`Frame3` `Value::StructureInstance` used for
 /// `MassProperties.origin` (task 4547, Disposition 1).
 ///
-/// `Frame3` (declared in `std.ports`, `ports.ri`) has four `Vector3<Length>`
-/// members — `origin` / `x_axis` / `y_axis` / `z_axis` — so the default is four
-/// zero length-vectors. This replaces the former `Value::Real(0.0)` `origin`
+/// `Frame3` (declared in `std.ports`, `ports.ri`) has four 3-vector members whose
+/// quantity slots are NOT uniform (task 5848): `origin` is a position, so
+/// `Vector3<Length>`; `x_axis` / `y_axis` / `z_axis` are directions, so
+/// `Vector3<Dimensionless>`. The default is therefore one zero length-vector plus
+/// three zero dimensionless vectors — the axes as `Value::Real`, the house
+/// representation for a dimensionless quantity (Invariant V), which is also what
+/// the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to.
+/// This replaces the former `Value::Real(0.0)` `origin`
 /// sentinel: the `MassProperties` structure_def now declares `origin : Frame3`,
 /// so minting a real `Frame3` keeps the runtime value faithful to the declared
 /// type instead of leaving a type/value divergence. `frame3_from_transform_value`
@@ -137,14 +142,19 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
 /// `dynamics_ops::assemble_mass_properties` so both producers emit an identical
 /// `origin`.
 pub fn default_frame3() -> Value {
-    let zero_vec3 = || Value::Vector(vec![Value::length(0.0); 3]);
+    // The ZERO magnitude is load-bearing, not a placeholder: this minter is shared
+    // with `dynamics_ops::assemble_mass_properties` and both producers must emit an
+    // identical `origin`, so the degenerate basis must NOT be "improved" into an
+    // identity basis here.
+    let zero_position = || Value::Vector(vec![Value::length(0.0); 3]);
+    let zero_direction = || Value::Vector(vec![Value::Real(0.0); 3]);
     mint_instance(
         "Frame3",
         vec![
-            ("origin".to_string(), zero_vec3()),
-            ("x_axis".to_string(), zero_vec3()),
-            ("y_axis".to_string(), zero_vec3()),
-            ("z_axis".to_string(), zero_vec3()),
+            ("origin".to_string(), zero_position()),
+            ("x_axis".to_string(), zero_direction()),
+            ("y_axis".to_string(), zero_direction()),
+            ("z_axis".to_string(), zero_direction()),
         ],
     )
 }
