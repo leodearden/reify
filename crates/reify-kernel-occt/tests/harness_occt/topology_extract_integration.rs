@@ -7,6 +7,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common;
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value, WarmStartable};
 
@@ -265,23 +266,6 @@ fn query_face_normal_top_face_of_box_is_plus_z() {
     );
 }
 
-/// Parse the JSON Value::String produced by `BoundingBox` queries.
-fn parse_bbox(v: &Value) -> (f64, f64, f64, f64, f64, f64) {
-    let s = match v {
-        Value::String(s) => s,
-        other => panic!("expected Value::String, got {:?}", other),
-    };
-    let parsed: serde_json::Value =
-        serde_json::from_str(s).unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
-    let xmin = parsed["xmin"].as_f64().expect("missing xmin");
-    let ymin = parsed["ymin"].as_f64().expect("missing ymin");
-    let zmin = parsed["zmin"].as_f64().expect("missing zmin");
-    let xmax = parsed["xmax"].as_f64().expect("missing xmax");
-    let ymax = parsed["ymax"].as_f64().expect("missing ymax");
-    let zmax = parsed["zmax"].as_f64().expect("missing zmax");
-    (xmin, ymin, zmin, xmax, ymax, zmax)
-}
-
 #[test]
 fn query_edge_tangent_returns_unit_vector_along_axis() {
     // 10×20×30 mm box → 12 axis-aligned edges. For each axis we pick one
@@ -308,13 +292,8 @@ fn query_edge_tangent_returns_unit_vector_along_axis() {
                                   ez: f64|
      -> GeometryHandleId {
         for id in edges {
-            let bb = kernel
-                .query(&GeometryQuery::BoundingBox(*id))
-                .expect("BoundingBox query");
-            let (xmin, ymin, zmin, xmax, ymax, zmax) = parse_bbox(&bb);
-            let dx = xmax - xmin;
-            let dy = ymax - ymin;
-            let dz = zmax - zmin;
+            let (dx, dy, dz) =
+                common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(*id))).spans();
             if (dx - ex).abs() < extent_tol
                 && (dy - ey).abs() < extent_tol
                 && (dz - ez).abs() < extent_tol
