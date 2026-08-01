@@ -15,6 +15,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common;
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
@@ -110,27 +111,11 @@ fn sweep_guided_produces_valid_shape() {
         .expect("SweepGuided should succeed");
 
     // The pipe-shell should have a finite, non-degenerate bounding box.
-    let bbox = kernel
-        .query(&GeometryQuery::BoundingBox(result.id))
-        .expect("BoundingBox query should succeed");
-    match bbox {
-        Value::String(s) => {
-            // All six fields must parse to finite numbers.
-            let trimmed = s.trim_start_matches('{').trim_end_matches('}');
-            for pair in trimmed.split(',') {
-                let mut parts = pair.splitn(2, ':');
-                let _key = parts.next().unwrap();
-                let val: f64 = parts
-                    .next()
-                    .unwrap()
-                    .trim()
-                    .parse()
-                    .expect("bbox component should be numeric");
-                assert!(val.is_finite(), "bbox component must be finite, got {val}");
-            }
-        }
-        other => panic!("expected bbox String, got {:?}", other),
-    }
+    let bbox = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(result.id)));
+    assert!(
+        bbox.all_finite(),
+        "bbox components must all be finite, got {bbox:?}"
+    );
 }
 
 #[test]
