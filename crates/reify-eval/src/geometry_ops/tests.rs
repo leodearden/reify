@@ -2613,11 +2613,13 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // Translate with only dx — missing dy, dz
+        // Translate with only dx — missing dy, dz. `dx` is a dimensioned
+        // Length so the failure under test is the MISSING arg, not the units
+        // gate (task 5623).
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
-            args: vec![("dx".into(), literal_f64(1.0))],
+            args: vec![("dx".into(), literal_length(1.0))],
         };
 
         let result = compile_geometry_op(
@@ -5259,10 +5261,13 @@
         let translate_op = CompiledGeometryOp::Transform {
             kind: reify_compiler::TransformKind::Translate,
             target: reify_compiler::GeomRef::Step(0),
+            // Translation components are LENGTH-semantic (task 5623); the
+            // `PatternKind::Linear` dx/dy/dz below share the names but are a
+            // dimensionless DIRECTION vector and stay bare.
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dx".into(), literal_length(1.0)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -5492,11 +5497,13 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // Translate with only dx — missing dy, dz
+        // Translate with only dx — missing dy, dz. `dx` is a dimensioned
+        // Length so the single diagnostic asserted below is the MISSING-arg
+        // one for 'dy', not a units rejection for 'dx' (task 5623).
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: reify_compiler::GeomRef::Step(0),
-            args: vec![("dx".into(), literal_f64(1.0))],
+            args: vec![("dx".into(), literal_length(1.0))],
         };
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -5560,8 +5567,8 @@
                         reify_core::Type::String,
                     ),
                 ),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
 
@@ -5581,14 +5588,19 @@
             "wrong-type dx should return None, got {:?}",
             result
         );
+        // WORDING MIGRATION (task 5623): `dx` is now read through the LENGTH
+        // chokepoint, so a `Value::String` is classified by
+        // `arg_acceptance::accept_arg` and worded by `ArgRejection::message`
+        // ("… dx argument expects Length, got …") rather than by
+        // `eval_named_arg_f64`'s generic "non-numeric/non-finite" arm.
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("expects Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
+            "expected a Warning mentioning 'expects Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5598,14 +5610,14 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // dx is NaN — non-finite, should trigger a diagnostic
+        // dx is a NaN LENGTH — non-finite, should trigger a diagnostic
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(f64::NAN)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dx".into(), literal_length(f64::NAN)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
 
@@ -5625,14 +5637,18 @@
             "NaN dx should return None, got {:?}",
             result
         );
+        // WORDING MIGRATION (task 5623): the value IS a Length, so the LENGTH
+        // chokepoint's dedicated non-finite arm words this as
+        // "non-finite Length" rather than the generic
+        // "non-numeric/non-finite" of `eval_named_arg_f64`.
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("non-finite Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
+            "expected a Warning mentioning 'non-finite Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5642,14 +5658,14 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // dx is +Infinity — non-finite, should trigger a diagnostic
+        // dx is a +Infinity LENGTH — non-finite, should trigger a diagnostic
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(f64::INFINITY)),
-                ("dy".into(), literal_f64(0.0)),
-                ("dz".into(), literal_f64(0.0)),
+                ("dx".into(), literal_length(f64::INFINITY)),
+                ("dy".into(), literal_length(0.0)),
+                ("dz".into(), literal_length(0.0)),
             ],
         };
 
@@ -5669,14 +5685,18 @@
             "Infinity dx should return None, got {:?}",
             result
         );
+        // WORDING MIGRATION (task 5623): the value IS a Length, so the LENGTH
+        // chokepoint's dedicated non-finite arm words this as
+        // "non-finite Length" rather than the generic
+        // "non-numeric/non-finite" of `eval_named_arg_f64`.
         assert!(
             diagnostics.iter().any(|d| {
                 matches!(d.severity, reify_core::Severity::Warning)
-                    && d.message.contains("non-numeric/non-finite")
+                    && d.message.contains("non-finite Length")
                     && d.message.contains("dx")
                     && d.message.contains("translate")
             }),
-            "expected a Warning mentioning 'non-numeric/non-finite', 'dx', and 'translate', got: {:?}",
+            "expected a Warning mentioning 'non-finite Length', 'dx', and 'translate', got: {:?}",
             diagnostics
         );
     }
@@ -5686,14 +5706,15 @@
         let step_handles = vec![GeometryHandleId(42)];
         let values = ValueMap::new();
 
-        // All finite args — should succeed with no non-numeric/non-finite warning
+        // All finite dimensioned-Length args — should succeed with no
+        // non-finite / units warning
         let op = CompiledGeometryOp::Transform {
             kind: TransformKind::Translate,
             target: GeomRef::Step(0),
             args: vec![
-                ("dx".into(), literal_f64(1.0)),
-                ("dy".into(), literal_f64(2.0)),
-                ("dz".into(), literal_f64(3.0)),
+                ("dx".into(), literal_length(1.0)),
+                ("dy".into(), literal_length(2.0)),
+                ("dz".into(), literal_length(3.0)),
             ],
         };
 
@@ -5713,11 +5734,17 @@
             "finite Translate args should return Some, got None; diagnostics: {:?}",
             diagnostics
         );
+        // Covers BOTH wordings so the no-false-positive check cannot go vacuous
+        // as the chokepoint moves (task 5623 swapped `eval_named_arg_f64`'s
+        // "non-numeric/non-finite" for the LENGTH gate's "non-finite Length" /
+        // "expects Length").
         assert!(
-            !diagnostics
-                .iter()
-                .any(|d| d.message.contains("non-numeric/non-finite")),
-            "no 'non-numeric/non-finite' warning expected for finite args, got: {:?}",
+            !diagnostics.iter().any(|d| {
+                d.message.contains("non-numeric/non-finite")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("expects Length")
+            }),
+            "no non-finite / units warning expected for finite Length args, got: {:?}",
             diagnostics
         );
     }

@@ -582,10 +582,13 @@ const ALL_TRANSFORM: [TransformKind; 7] = [
 /// unit tests; ApplyTransform uses an identity-rotation `lit_transform`.
 fn transform_case(k: TransformKind) -> CompiledGeometryOp {
     let args = match k {
+        // Translation components are LENGTH-semantic (task 5623) — `lit_len`.
+        // The golden below is unchanged: `Value::length(0.01).as_f64()` and
+        // `Value::Real(0.01).as_f64()` are both `0.01`.
         TransformKind::Translate => vec![
-            ("dx".to_string(), lit(0.01)),
-            ("dy".to_string(), lit(0.02)),
-            ("dz".to_string(), lit(0.03)),
+            ("dx".to_string(), lit_len(0.01)),
+            ("dy".to_string(), lit_len(0.02)),
+            ("dz".to_string(), lit_len(0.03)),
         ],
         TransformKind::Rotate => vec![
             ("ax".to_string(), lit(0.0)),

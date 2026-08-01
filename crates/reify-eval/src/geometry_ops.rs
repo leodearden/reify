@@ -377,15 +377,18 @@ pub(crate) fn required_length_value(
     .map(reify_ir::Value::length)
 }
 
-/// Read the `ox`/`oy`/`oz` ORIGIN triple of a scalar-form geometry builtin as
-/// LENGTHs, in that component order.
+/// Read a length-semantic COMPONENT TRIPLE of a scalar-form geometry builtin as
+/// LENGTHs, in the given name order.
 ///
-/// An origin is a *point in space*, so every component is length-semantic and
-/// must be a finite LENGTH `Scalar`: a bare/dimensionless component would be
+/// A point in space (an origin `ox`/`oy`/`oz`, a pivot `px`/`py`/`pz`, a curve
+/// endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`) and a displacement
+/// (`dx`/`dy`/`dz`) are alike length-semantic in every component, so each must
+/// be a finite LENGTH `Scalar`: a bare/dimensionless component would be
 /// silently read as SI **metres** by `Value::as_f64` (the `12` vs `12mm` 1000×
 /// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`, `nx`/`ny`/`nz`) is
 /// a dimensionless unit vector and deliberately stays on the bare-accepting
-/// `eval_named_arg_f64` path — callers keep their own `f64_arg` closure for it.
+/// `eval_named_arg_f64` path — callers that have one keep their own `f64_arg`
+/// closure for it. Callers whose every argument is gated drop that closure.
 ///
 /// BORROW ORDERING (the reason this is a free function and not a closure):
 /// each call takes `&mut diagnostics`, so the whole triple must be read BEFORE
@@ -394,8 +397,31 @@ pub(crate) fn required_length_value(
 /// overlap that borrow. Calling this helper first satisfies that ordering by
 /// construction instead of by convention at each call site.
 ///
-/// Shared by `pattern_circular` (task 5350) and `pattern_mirror` (task 5214),
-/// whose origin reads were otherwise byte-identical.
+/// Callers: `pattern_circular` (task 5350) and `pattern_mirror` (task 5214) via
+/// the [`required_length_origin3`] wrapper; `transform_translate`,
+/// `transform_rotate_around`, `sweep_revolve`, `curve_line_segment` (twice) and
+/// `curve_arc` via task 5623's R1 sweep.
+fn required_length_triple(
+    names: [&str; 3],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; 3], String> {
+    let a =
+        required_length_arg(names[0], kind_label, args, values, functions, meta_map, diagnostics)?;
+    let b =
+        required_length_arg(names[1], kind_label, args, values, functions, meta_map, diagnostics)?;
+    let c =
+        required_length_arg(names[2], kind_label, args, values, functions, meta_map, diagnostics)?;
+    Ok([a, b, c])
+}
+
+/// [`required_length_triple`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
+/// the name shared by `pattern_circular` (task 5350), `pattern_mirror`
+/// (task 5214) and `sweep_revolve` (task 5623).
 fn required_length_origin3(
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -404,10 +430,15 @@ fn required_length_origin3(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
-    let ox = required_length_arg("ox", kind_label, args, values, functions, meta_map, diagnostics)?;
-    let oy = required_length_arg("oy", kind_label, args, values, functions, meta_map, diagnostics)?;
-    let oz = required_length_arg("oz", kind_label, args, values, functions, meta_map, diagnostics)?;
-    Ok([ox, oy, oz])
+    required_length_triple(
+        ["ox", "oy", "oz"],
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
 }
 
 /// Evaluate all args in a variadic curve constructor to f64 values.
@@ -2198,17 +2229,22 @@ fn transform_translate(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-    };
+    // Every component of a translation is length-semantic (a displacement in
+    // space), so ALL THREE are gated and no `f64_arg` closure survives here.
+    let [dx, dy, dz] = required_length_triple(
+        ["dx", "dy", "dz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Translate {
         target: target_id,
-        dx: f64_arg("dx")?,
-        dy: f64_arg("dy")?,
-        dz: f64_arg("dz")?,
+        dx,
+        dy,
+        dz,
     })
 }
 
