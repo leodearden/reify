@@ -1313,6 +1313,290 @@ describe('reify.grammar snippets — auto forms', () => {
 });
 
 /**
+ * The topology member families — `port`, `connect`, `chain`, `forall` — and
+ * the `forall`/`exists` QUANTIFIER expression they share their keyword with.
+ *
+ * All four are `commonMembers()` entries upstream
+ * (tree-sitter-reify/grammar.js:39-42), so they are admitted wherever a member
+ * is: structure bodies, occurrence bodies, guarded blocks, specialization
+ * bodies. Measured before this slice: `port` appears in 15 of the 239 failing
+ * corpus files, `connect` in 8, `forall` in 4, `chain` in 2.
+ *
+ * Two collisions make this slice riskier than its file count suggests, and
+ * each gets its own regression assertion at the bottom:
+ *
+ *  1. `<-` and `<->` share their first character with `<` and `<=`, so the
+ *     longest-token `@precedence` idiom that arrow types and ranges already
+ *     needed applies again. Without it `connect a <- b` lexes as `<` then `-`
+ *     and `constraint a <= b` is unaffected — so the failure is silent in one
+ *     direction and loud in the other.
+ *  2. `direction` and `frame` are the port body's setting keywords upstream,
+ *     but BOTH are attested as ordinary identifiers in committed `.ri`
+ *     (`let direction = normalize(velocity)`, `param frame : Frame3 = …`,
+ *     `frame: mid_f` as a named-argument label). A context-free `kw<>` would
+ *     un-pin those files exactly as `at` did in the sub slice.
+ */
+describe('reify.grammar snippets — port, connect, chain, forall', () => {
+  // ── Port ──────────────────────────────────────────────
+  // The bodyless, directionless form. grammar.js:957-966 makes both the
+  // direction and the body optional.
+  it('parses a bare `port p : Fluid`', () => {
+    expect(countErrorNodes('structure def F { port p : Fluid }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/integration_corner_cases.ri:45.
+  it('parses the bodyless directional `port output : out FullTrait`', () => {
+    expect(countErrorNodes('structure def F { port output : out FullTrait }')).toBe(0);
+  });
+
+  it('parses the `in` direction `port p : in Fluid`', () => {
+    expect(countErrorNodes('structure def F { port p : in Fluid }')).toBe(0);
+  });
+
+  /**
+   * `bidi` is the third arm of `port_direction_keyword` (grammar.js:968) and
+   * has ZERO occurrences in the committed corpus — it is admitted here on the
+   * authoritative grammar alone. That is also why promoting it is safe: no
+   * file can lose an identifier to the reservation.
+   */
+  it('parses the `bidi` direction `port p : bidi Fluid` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { port p : bidi Fluid }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/auto_binding_sites.ri:105-106,
+  // examples/keyed_vents.ri:23.
+  it('parses an empty port body `port a : out EpsilonSignal {}`', () => {
+    expect(countErrorNodes('structure def F { port a : out EpsilonSignal {} }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m5_connect_chain.ri:6.
+  it('parses a port body holding a param declaration', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { port inlet : in FluidPort { param diameter : Length = 25mm } }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/integration_full_v01.ri:212-215 — a param
+  // declaration and a `frame = …` setting in the same body.
+  it('parses a port body holding a `frame = …` setting', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { port demand : in FluidInterface { param diameter : Length = 50mm frame = base_frame } }',
+      ),
+    ).toBe(0);
+  });
+
+  /**
+   * `direction = …` inside a port body (grammar.js:982-986) is unattested —
+   * every committed port states its direction in the header instead. Admitted
+   * on the authoritative grammar, and paired with the `frame = self.f` setting
+   * the plan names.
+   */
+  it('parses a port body holding `direction = in` and `frame = self.f`', () => {
+    expect(
+      countErrorNodes('structure def F { port p : Fluid { direction = in frame = self.f } }'),
+    ).toBe(0);
+  });
+
+  it('yields a PortDeclaration node', () => {
+    expect(nodeNames('structure def F { port p : in Fluid }')).toContain('PortDeclaration');
+  });
+
+  // ── Connect ───────────────────────────────────────────
+  // Corpus-attested: examples/m10_combined.ri and 8 more.
+  it('parses the forward connect `connect a.p -> b.q`', () => {
+    expect(countErrorNodes('structure def F { connect a.p -> b.q }')).toBe(0);
+  });
+
+  /**
+   * The reverse and bidirectional operators (grammar.js:1002) have no corpus
+   * occurrence — every committed `connect` uses `->`. They are the reason the
+   * `@precedence { "<->", "<-", "<=", "<" }` ordering is required, so they are
+   * pinned here even though they are unattested.
+   */
+  it('parses the reverse connect `connect a.p <- b.q` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { connect a.p <- b.q }')).toBe(0);
+  });
+
+  it('parses the bidirectional connect `connect a.p <-> b.q` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { connect a.p <-> b.q }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m10_connect_advanced.ri — `: PipeConnector`.
+  it('parses a typed connect `connect a.p -> b.q : Hose`', () => {
+    expect(countErrorNodes('structure def F { connect a.p -> b.q : Hose }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m10_connect_advanced.ri — port mappings.
+  it('parses a connect body of port mappings', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { connect outlet -> inlet { diameter -> diameter, flow_rate -> flow_rate } }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/auto_binding_sites.ri:108 — a connect param
+  // assignment whose value is a solver-determined `auto`.
+  it('parses a connect body of param assignments', () => {
+    expect(
+      countErrorNodes('structure def F { connect a -> b : EpsilonConnector { gain = auto } }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/m10_connect_advanced.ri — mappings and
+  // assignments mixed in one body.
+  it('parses a connect body mixing param assignments and port mappings', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { connect source -> sink : BoltSet { grade = 10.9, diameter -> diameter, flow_rate -> flow_rate } }',
+      ),
+    ).toBe(0);
+  });
+
+  /**
+   * Corpus-attested: examples/keyed_vents.ri:38. `port_ref` is a full
+   * `_expression` upstream (grammar.js:1006), not a dotted name — this one
+   * indexes a keyed collection before the member access, and is the assertion
+   * that stops the port ref being narrowed to `Identifier ("." Identifier)*`.
+   */
+  it('parses an indexed port ref `connect src -> vents["intake"].inlet`', () => {
+    expect(countErrorNodes('structure def F { connect src -> vents["intake"].inlet }')).toBe(0);
+  });
+
+  it('yields ConnectStatement and PortMapping nodes', () => {
+    const names = nodeNames('structure def F { connect a -> b { x -> y } }');
+    expect(names).toContain('ConnectStatement');
+    expect(names).toContain('PortMapping');
+  });
+
+  // ── Chain ─────────────────────────────────────────────
+  // Corpus-attested: examples/m5_occurrence_process.ri:23.
+  it('parses a two-link chain `chain a.p -> b.q`', () => {
+    expect(countErrorNodes('structure def F { chain a.p -> b.q }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m5_connect_chain.ri — a four-link chain.
+  it('parses a four-link chain', () => {
+    expect(
+      countErrorNodes('structure def F { chain p1.outlet -> p2.inlet -> p2.outlet -> p3.inlet }'),
+    ).toBe(0);
+  });
+
+  it('yields a ChainStatement node', () => {
+    expect(nodeNames('structure def F { chain a.p -> b.q }')).toContain('ChainStatement');
+  });
+
+  // ── Forall statement ──────────────────────────────────
+  // grammar.js:1248-1263 — the body must start with `constraint`, `connect` or
+  // `chain`; that leading keyword is the ONLY thing separating the statement
+  // form from the quantifier EXPRESSION below, so all three bodies are pinned.
+  it('parses `forall x in xs: constraint x > 0mm`', () => {
+    expect(countErrorNodes('structure def F { forall x in xs: constraint x > 0mm }')).toBe(0);
+  });
+
+  it('parses `forall x in xs: connect x.p -> y.q`', () => {
+    expect(countErrorNodes('structure def F { forall x in xs: connect x.p -> y.q }')).toBe(0);
+  });
+
+  it('parses `forall x in xs: chain x.a -> x.b`', () => {
+    expect(countErrorNodes('structure def F { forall x in xs: chain x.a -> x.b }')).toBe(0);
+  });
+
+  /**
+   * Corpus-attested: examples/m6_forall_index.ri — a range collection, an
+   * indexed subscript, and arithmetic inside the subscript, all in the body of
+   * one statement. This is the shape that needs the range slice (step-8) and
+   * the index-access slice (step-4) to already be in place.
+   */
+  it('parses the attested `forall i in 0..3 : constraint idlers[i].od < idlers[i + 1].od`', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { forall i in 0..3 : constraint idlers[i].od < idlers[i + 1].od }',
+      ),
+    ).toBe(0);
+  });
+
+  it('yields a ForallStatement node', () => {
+    expect(nodeNames('structure def F { forall x in xs: constraint x > 0mm }')).toContain(
+      'ForallStatement',
+    );
+  });
+
+  // ── Quantifier expression ─────────────────────────────
+  // grammar.js:1265-1273. Same keyword, EXPRESSION position, and no leading
+  // keyword required after the `:`.
+  // Corpus-attested: examples/m9_purpose_manufacturability.ri and 4 more.
+  it('parses a quantifier inside a constraint `constraint forall m in self.members: determined(m)`', () => {
+    expect(
+      countErrorNodes('structure def F { constraint forall m in self.members: determined(m) }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/quantifier_undef.ri.
+  it('parses a quantifier bound by a let `let all_big = forall v in vs : v.od > 1mm`', () => {
+    expect(countErrorNodes('structure def F { let all_big = forall v in vs : v.od > 1mm }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/quantifier_undef.ri — the `exists` quantifier.
+  it('parses `let any_big = exists x in xs : x >= 3`', () => {
+    expect(countErrorNodes('structure def F { let any_big = exists x in xs : x >= 3 }')).toBe(0);
+  });
+
+  it('parses `constraint exists x in sizes: x > 10`', () => {
+    expect(countErrorNodes('structure def F { constraint exists x in sizes: x > 10 }')).toBe(0);
+  });
+
+  it('yields a QuantifierExpression node', () => {
+    expect(nodeNames('structure def F { let a = forall v in vs : v.od > 1mm }')).toContain(
+      'QuantifierExpression',
+    );
+  });
+
+  /**
+   * REGRESSION GUARD — the `<-`/`<->` versus `<`/`<=` collision. Declaring the
+   * two new arrow tokens without an explicit longest-match `@precedence` leaves
+   * the arrows unformed; declaring it in the wrong ORDER makes `a <= b` lex as
+   * `<` `=` instead. Both readings are pinned, and `leftOperandOf` is used on
+   * the comparison so the assertion cannot pass on a differently-grouped tree
+   * with the same node multiset.
+   */
+  it('still parses `constraint a <= b` and `constraint a < b` as comparisons', () => {
+    expect(countErrorNodes('structure def F { constraint a <= b }')).toBe(0);
+    expect(countErrorNodes('structure def F { constraint a < b }')).toBe(0);
+    expect(leftOperandOf('structure def F { constraint a + b <= c }')).toBe('a + b');
+  });
+
+  /**
+   * REGRESSION GUARD — `direction` and `frame` must stay ORDINARY identifiers
+   * outside a port body. `at` already taught this lesson once: a context-free
+   * `kw<>` promotion un-pinned two committed files that pass the word as a
+   * named-argument label. Both of these words are attested as a `let` name, a
+   * `param` name, and a named-argument label respectively, so the same
+   * `ekw<>`/`@extend` treatment is mandatory and this pins it.
+   */
+  it('still parses `direction` and `frame` as ordinary identifiers', () => {
+    expect(countErrorNodes('structure def F { let direction = normalize(velocity) }')).toBe(0);
+    expect(countErrorNodes('structure def F { param frame : Frame3 = f() }')).toBe(0);
+    expect(countErrorNodes('structure def F { let x = g(frame: mid_f) }')).toBe(0);
+    expect(countErrorNodes('structure def F { let x = self.frame }')).toBe(0);
+  });
+
+  /**
+   * REGRESSION GUARD — `in` and `out` leave the ReservedWord list in this
+   * slice, so they stop being reachable from `primaryExpression`. Nothing in
+   * the corpus uses either as an identifier (verified: no `.in`/`.out` member
+   * access, no `in:`/`out:` argument label), but the member forms that DO use
+   * them must all still parse, and an ordinary block must be unaffected.
+   */
+  it('still parses an ordinary structure body after promoting `in`/`out`', () => {
+    expect(countErrorNodes('structure def F { param w : Length = 80mm let x = w * 2 }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
