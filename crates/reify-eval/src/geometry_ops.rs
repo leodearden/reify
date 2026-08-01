@@ -250,14 +250,20 @@ pub(crate) enum LengthArg {
 /// Look up a named LENGTH-semantic argument, evaluate it with full context,
 /// and require a finite LENGTH-dimensioned `Value::Scalar`.
 ///
-/// This is the units chokepoint for the pattern/mirror length-semantic args
-/// (spacing, mirror-plane origin, circular-pattern axis origin,
-/// arbitrary-pattern offsets). Unlike
+/// This is the units chokepoint for EVERY named length-semantic arg of a
+/// scalar-form geometry builtin: pattern spacing and offsets, the mirror-plane
+/// origin, the `circular_pattern` / `revolve` axis origin, `translate`'s
+/// displacement, `rotate_around`'s pivot, `line_segment`'s endpoints, `arc`'s
+/// centre and radius, and `helix`'s radius/pitch/height. The full position
+/// table — and what stays deliberately un-gated — lives in the
+/// `arg_acceptance` module doc, which is the single place that enumeration is
+/// maintained. Unlike
 /// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
 /// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
 /// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`
 /// (one `Severity::Warning` via `ArgRejection::message`), so a dimensionless
-/// spacing can never scatter instances 1000× too far. Same hazard and
+/// spacing can never scatter instances 1000× too far, and a bare `translate`
+/// component can never displace a part by a kilometre. Same hazard and
 /// discipline as `joints::read_length3` (the canonical "reject bare Real to
 /// avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
 /// `resolve_length_scalar_arg`; the dimension classification + diagnostic
