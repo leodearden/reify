@@ -1142,20 +1142,31 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         if (isFiniteNumber(params.left)) sd.scrollLeft = params.left;
         return { ok: true, scrollTop: sd.scrollTop, scrollLeft: sd.scrollLeft };
       }
-      // DOM mode: scroll an element resolved by data-testid.
+      // DOM mode: scroll an element resolved by data-testid, optionally scoped to
+      // one pane (#5891). The editor arm above returns before ever reading
+      // `viewportId` — it resolves no testid, so scoping is meaningless there and
+      // must not become a spurious rejection for a caller threading the param
+      // through generically.
       const testId = params.testId as string;
       if (!testId) return { error: 'testId or target:"editor" is required' };
-      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(testId)
-        : testId.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`) as HTMLElement | null;
-      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      // Guard order is unchanged from pre-#5891: testId presence, then element
+      // resolution, then the finite-number checks. The viewport ladder lives
+      // INSIDE resolution, so it takes the slot the old not-found check held and
+      // no previously-reported error moves relative to any other.
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
+      const el = r.el as HTMLElement;
       // Reject non-finite offsets (NaN, ±Infinity) — consistent with isFiniteNumber/validXY guards.
       if (params.top !== undefined && !isFiniteNumber(params.top)) return { error: 'top must be a finite number' };
       if (params.left !== undefined && !isFiniteNumber(params.left)) return { error: 'left must be a finite number' };
       if (isFiniteNumber(params.top)) el.scrollTop = params.top;
       if (isFiniteNumber(params.left)) el.scrollLeft = params.left;
-      return { ok: true, scrollTop: el.scrollTop, scrollLeft: el.scrollLeft };
+      return {
+        ok: true,
+        scrollTop: el.scrollTop,
+        scrollLeft: el.scrollLeft,
+        ...paneDiagnostics(r, params.viewportId !== undefined),
+      };
     },
 
     select_entity: (params) => {
