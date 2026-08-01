@@ -371,6 +371,56 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
     }
 }
 
+/// Freshness ratchet for [`MIN_DISCOVERED_RI_FILES`] and
+/// [`MIN_EXERCISED_RI_FILES`]: those two floors are discovery-regression
+/// TRIPWIRES, not corpus-size targets, so they are only useful while they
+/// stay reasonably close to the live corpus size. A floor of 40 against a
+/// 258-file corpus would still pass while ~85% of the corpus went
+/// undiscovered — that silent drift is exactly what went unnoticed for
+/// three months before this test existed.
+///
+/// This ratchet is safe to sit right next to the absolute gates it
+/// complements rather than replaces: under a real discovery regression
+/// `total` SHRINKS, so `floor * 2 >= total` only becomes EASIER to satisfy,
+/// while the absolute gate (`total >= MIN_DISCOVERED_RI_FILES` in
+/// [`all_examples_parse_and_compile_with_stdlib`], and the analogous
+/// `exercised >= MIN_EXERCISED_RI_FILES` in
+/// [`no_example_emits_ctor_field_conformance_diagnostics`]) is what actually
+/// fires. The ratchet is therefore strictly one-directional and cannot mask
+/// the regression the absolute gates exist to catch — it only fires when
+/// the corpus GROWS past 2x a floor, which is exactly the maintenance
+/// signal that the floor itself needs raising.
+///
+/// Integer arithmetic only (`floor * 2 >= total`, no float ratio and no
+/// tolerance), and this walks the directory tree only — it compiles and
+/// checks zero `.ri` files, so it stays as cheap as the other sanity guards
+/// in this file.
+#[test]
+fn discovery_floors_track_the_live_corpus() {
+    let total = discover_ri_files().len();
+
+    assert!(
+        MIN_DISCOVERED_RI_FILES * 2 >= total,
+        "MIN_DISCOVERED_RI_FILES ({}) has drifted stale: the live examples/ \
+         corpus now has {} .ri files, more than 2x the floor. Raise \
+         MIN_DISCOVERED_RI_FILES to at least {}/2 and re-review its tripwire \
+         doc comment.",
+        MIN_DISCOVERED_RI_FILES,
+        total,
+        total
+    );
+    assert!(
+        MIN_EXERCISED_RI_FILES * 2 >= total,
+        "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ \
+         corpus now has {} .ri files, more than 2x the floor. Raise \
+         MIN_EXERCISED_RI_FILES to at least {}/2 and re-review its tripwire \
+         doc comment.",
+        MIN_EXERCISED_RI_FILES,
+        total,
+        total
+    );
+}
+
 /// Parse `path`, compile it with the stdlib prelude, and append an entry to
 /// `failures` if either parse errors or Error-severity compile diagnostics are
 /// found.  Returns without appending when the file is clean.
