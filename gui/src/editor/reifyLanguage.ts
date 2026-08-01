@@ -12,17 +12,30 @@ export const reifyLRLanguage = LRLanguage.define({
   name: 'reify',
   parser: parser.configure({
     props: [
+      // Every brace-delimited body in the grammar needs an entry here, not
+      // just `Block`: a body that is its own node type is invisible to these
+      // props and silently loses folding and indentation while still parsing
+      // cleanly — a failure the corpus test cannot see, because it counts
+      // error nodes.
       foldNodeProp.add({
         Block: foldInside,
-        // `FnBody` is the one brace-delimited body that is NOT a `Block`
-        // (grammar.js:239-246 gives a fn body its own rule, and its block arm
-        // holds `FnLetBinding* result` rather than members). Without an entry
-        // here a multi-line fn body would silently lose folding/indentation.
+        // `FnBody` holds `FnLetBinding* result` rather than members
+        // (grammar.js:239-246), so it could not reuse `Block`.
         FnBody: foldInside,
+        // `SpecializationBody` additionally admits `ParamAssignment`
+        // (grammar.js:900-920); `PortBody` admits a narrower member list plus
+        // the two settings (:970-980); `ConnectBody` is comma-separated
+        // (:1006-1013).
+        SpecializationBody: foldInside,
+        PortBody: foldInside,
+        ConnectBody: foldInside,
       }),
       indentNodeProp.add({
         Block: delimitedIndent({ closing: '}' }),
         FnBody: delimitedIndent({ closing: '}' }),
+        SpecializationBody: delimitedIndent({ closing: '}' }),
+        PortBody: delimitedIndent({ closing: '}' }),
+        ConnectBody: delimitedIndent({ closing: '}' }),
       }),
     ],
   }),

@@ -56,6 +56,22 @@ export const KEYWORDS = [
   'self',
   // The `auto(free)` modifier — a `kw<>` production inside AutoKeyword.
   'free',
+  // Topology member families (PortDeclaration, ConnectStatement,
+  // ChainStatement, ForallStatement) and the quantifier expression.
+  'port',
+  'connect',
+  'chain',
+  'forall',
+  'exists',
+  'in',
+  'out',
+  'bidi',
+  // Contextual (`ekw<>`), for the same reason `at` and `self` are: all three
+  // are attested as ordinary identifiers in committed `.ri` (`let direction =
+  // normalize(velocity)`, `param frame : Frame3 = …`, `frame: mid_f`), so they
+  // are keywords only in a port body's setting slot and plain names elsewhere.
+  'direction',
+  'frame',
 ];
 
 export const reifyHighlighting = styleTags({

@@ -129,7 +129,14 @@ Member {
   MaximizeDeclaration |
   AssociatedType |
   FunctionDefinition |
-  GuardedBlock
+  GuardedBlock |
+  // The topology families. All four are `commonMembers()` entries upstream
+  // (grammar.js:39-42), so they are admitted in every body that admits a
+  // member — structure, occurrence, guarded and specialization alike.
+  PortDeclaration |
+  ConnectStatement |
+  ChainStatement |
+  ForallStatement
 }
 
 // ── Guarded block ─────────────────────────────────────
@@ -247,6 +254,95 @@ MinimizeDeclaration {
 // ── Maximize ──────────────────────────────────────────
 MaximizeDeclaration {
   kw<"maximize"> expression ~where WhereClause?
+}
+
+// ── Port ────────────────────────────────────────────────
+// grammar.js:957-993. The direction and the body are both optional, so the
+// bodyless `port output : out FullTrait`
+// (examples/integration_corner_cases.ri:45) and the directionless
+// `port p : Fluid` are both admitted. The type is a bare `Identifier`
+// upstream, not a TypeExpr, and is kept that way — every committed port names
+// a plain trait.
+PortDeclaration {
+  kw<"priv">? kw<"port"> Identifier ":" PortDirectionKeyword? Identifier PortBody? ~where WhereClause?
+}
+
+// grammar.js:968. `bidi` has ZERO corpus occurrences; `in`/`out` had to leave
+// the ReservedWord list for this production (see the note there).
+PortDirectionKeyword {
+  kw<"in"> | kw<"out"> | kw<"bidi">
+}
+
+// grammar.js:970-980. NOT a `Block`: upstream admits only param/let/constraint
+// plus the two settings, and — unlike the TraitDeclaration body, where reusing
+// `Block` costs nothing — a port body that accepted `sub`/`connect`/`port`
+// would let the editor's fold and indent props disagree with what the
+// compiler will accept in a position users actually write. The narrow list is
+// also short enough to state, so it is stated.
+PortBody {
+  "{" (ParamDeclaration | LetDeclaration | ConstraintDeclaration | PortDirectionSetting | PortFrameSetting)* "}"
+}
+
+// `direction` and `frame` are CONTEXTUAL (`ekw`, i.e. @extend), not `kw`.
+// The corpus forces it, exactly as it forced `at`: `let direction =
+// normalize(velocity)` (examples/modal/…), `param frame : Frame3 = Frame3(…)`
+// and the named-argument label `frame: mid_f` are all committed, and a
+// context-FREE @specialize would reserve the word globally and un-pin every
+// one of those files. Inside a port body no other member can begin with a bare
+// identifier, so the contextual reading is unambiguous exactly where it is
+// needed.
+PortDirectionSetting {
+  ekw<"direction"> "=" PortDirectionKeyword
+}
+
+PortFrameSetting {
+  ekw<"frame"> "=" expression
+}
+
+// ── Connect ─────────────────────────────────────────────
+// grammar.js:995-1028. Both operands are full expressions
+// (`port_ref: $ => $._expression`, :1006), which is what admits the attested
+// `connect src -> vents["intake"].inlet` — narrowing them to a dotted name
+// would reject it.
+ConnectStatement {
+  kw<"connect"> expression ConnectOperator expression (":" Identifier)? ConnectBody?
+}
+
+// grammar.js:1002. `<-` and `<->` are unattested in the corpus but normative;
+// they are the reason the `@precedence { "<->", "<-", "<=", "<" }` ordering
+// below is required — without it neither arrow is ever formed and `<-` lexes
+// as `<` then `-`.
+ConnectOperator {
+  "->" | "<-" | "<->"
+}
+
+ConnectBody {
+  "{" (connectBodyEntry ("," connectBodyEntry)* ","?)? "}"
+}
+
+connectBodyEntry {
+  PortMapping | ParamAssignment
+}
+
+PortMapping {
+  Identifier "->" Identifier
+}
+
+// ── Chain ───────────────────────────────────────────────
+// grammar.js:1030-1034 — `repeat1`, so a chain has at least two links.
+ChainStatement {
+  kw<"chain"> expression ("->" expression)+
+}
+
+// ── Forall statement ────────────────────────────────────
+// grammar.js:1248-1263. The body MUST start with `connect`, `chain` or
+// `constraint`; grammar.js:1238-1247 records that this required leading
+// keyword is the whole discriminator against the quantifier EXPRESSION that
+// shares the `forall` keyword. Lezer needs no marker for it: a `Member` can
+// never be a bare expression, so `QuantifierExpression` is simply not
+// reachable in this position and the two never compete for a state.
+ForallStatement {
+  kw<"forall"> Identifier kw<"in"> expression ":" (ConnectStatement | ChainStatement | ConstraintDeclaration)
 }
 
 // ── Sub ─────────────────────────────────────────────────
@@ -383,11 +479,27 @@ expression[@isGroup=Expression] {
   BinaryExpression |
   UnaryExpression |
   ConditionalExpression |
+  QuantifierExpression |
   RangeExpression |
   IndexAccess |
   AdHocSelector |
   LambdaExpression |
   primaryExpression
+}
+
+// ── Quantifier expression ───────────────────────────────
+// grammar.js:1265-1273, `prec.right(0)` — the predicate swallows everything to
+// its right, so `forall v in vs : a and b` is `forall v in vs : (a and b)`,
+// never `(forall v in vs : a) and b`. That is why `quantifier` is one of the
+// two LOOSEST levels in the @precedence block.
+//
+// Distinct from `ForallStatement` above by POSITION, not by marker: upstream
+// keeps them apart with the leading `connect`/`chain`/`constraint` its
+// statement body requires, and here the same discriminator falls out of the
+// grammar for free because no `Member` can begin with a bare expression.
+QuantifierExpression {
+  !quantifier kw<"forall"> Identifier kw<"in"> expression ":" expression |
+  !quantifier kw<"exists"> Identifier kw<"in"> expression ":" expression
 }
 
 // ── Lambda ──────────────────────────────────────────────
@@ -605,9 +717,17 @@ CompareOp<expr> { expr }
 // `pub`/`def` (StructureDefinition), `module`/`as` (ModuleDeclaration,
 // ImportDeclaration), `set`/`map` (SetLiteral, MapLiteral),
 // `not`/`and`/`or`/`implies` (the keyword logical-operator band in
-// UnaryExpression/BinaryExpression) and `occurrence` (OccurrenceDefinition)
-// were promoted out of this list; their keyword styling is re-pinned
-// explicitly in highlight.ts.
+// UnaryExpression/BinaryExpression), `occurrence` (OccurrenceDefinition) and
+// `port`/`connect`/`chain`/`forall`/`exists`/`in`/`out` (the topology member
+// families and QuantifierExpression) were promoted out of this list; their
+// keyword styling is re-pinned explicitly in highlight.ts.
+//
+// `in`/`out` are the one promotion in that set that reserves a SHORT, common
+// English word globally. It is safe here and was verified rather than assumed:
+// no committed `.ri` uses either as an identifier — no `.in`/`.out` member
+// access, no `in:`/`out:` argument label, no `let`/`param`/`sub` so named.
+// `direction`/`frame`, which fail that same check, are `ekw` instead (see
+// PortDirectionSetting).
 //
 // Removal has one behavioural consequence worth stating precisely: a promoted
 // word is NO LONGER reachable from primaryExpression, so it now produces an
@@ -636,10 +756,9 @@ CompareOp<expr> { expr }
 // the receiver slot `ekw` still yields the `self` token, which KEYWORDS styles.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
-    "enum" | "match" | "connect" | "chain" |
-    "purpose" | "field" | "port" |
-    "unit" | "forall" | "exists" |
-    "in" | "out" | "meta" |
+    "enum" | "match" |
+    "purpose" | "field" |
+    "unit" | "meta" |
     "undef" | "some" | "none">
 }
 
@@ -673,9 +792,13 @@ ReservedWord {
   kwImplies @right,
   range @left,
   conditional @right,
-  // LOOSEST level in the block: grammar.js gives `lambda_expression`
-  // prec.right(0) so the body swallows everything to its right —
-  // `|x| a + b * c` is `|x| (a + b * c)`, never `(|x| a) + b * c`.
+  // The two LOOSEST levels: grammar.js gives `lambda_expression` and
+  // `quantifier_expression` prec.right(0) alike, so each body swallows
+  // everything to its right — `|x| a + b * c` is `|x| (a + b * c)`, never
+  // `(|x| a) + b * c`, and `forall v in vs : a and b` binds the same way.
+  // They never compete with each other (different leading tokens), so their
+  // relative order here is arbitrary.
+  quantifier @right,
   lambda @right
 }
 
@@ -730,7 +853,11 @@ ReservedWord {
 
   Identifier { $[a-zA-Z_] $[a-zA-Z0-9_]* }
 
-  @precedence { "<=", "<" }
+  // ONE ordering, not two: `<->` beats `<-` beats `<=` beats `<`. Splitting it
+  // into a separate `{ "<->", "<-" }` block alongside the original
+  // `{ "<=", "<" }` would leave the two arrow tokens unordered against `<=`,
+  // and `connect a <-> b` would lex as `<` `-` `>`.
+  @precedence { "<->", "<-", "<=", "<" }
   @precedence { ">=", ">" }
   @precedence { "!=", "!" }
   // `->` must win over `-` and `::` over `:`, else the longer token is never
@@ -749,5 +876,5 @@ ReservedWord {
   // else in the language.
   "(" ")" "{" "}" "[" "]" "." "," ":" ";" "="
   "||" "&&" "==" "+" "-" "*" "^" "|" "@"
-  "::" "->" "=>" "<" ">" ".." "..<"
+  "::" "->" "<-" "<->" "=>" "<" ">" ".." "..<"
 }
