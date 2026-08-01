@@ -88,7 +88,8 @@ Sentinel for this PRD: `Value::Undef` (and the `{ ElasticResult() }` stub body, 
 |---|---|---|
 | `@optimized` solve_load_cases + `compute_targets/multi_case.rs` trampoline | NEW — R1 delivers (per 3005 architect dry_run Option A); `compute_targets/mod.rs` registry `grep:reify-eval/src/compute_targets/mod.rs:29` | ⏳ R1 delivers |
 | real per-case ElasticResult | `producer:α-upstream` | ⏳ via α |
-| `realization_entries` cache instrumentation | `producer:4152` — `CacheStats.realization_entries` + ungated `Engine::cache_stats()`; pinned by `tests/tolerance_wiring_e2e.rs`. Counts realization-CACHE entries, so it is only observable where a demanded-tolerance contract exists; the FEA `.ri` path caches nothing (see 4152 notes on B9). | ✅ |
+| `realization_entries` cache instrumentation | `producer:4152` — `CacheStats.realization_entries` + ungated `Engine::cache_stats()`; pinned by `tests/tolerance_wiring_e2e.rs`. Counts realization-CACHE entries, so it moves only where a demanded-tolerance contract exists. | ✅ |
+| B9 end-to-end (one realization shared across 2 cases) | `producer:4152` — assertion preserved verbatim as the `#[ignore]`d `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` in `tests/solve_elastic_static_body_e2e.rs`. Its re-mesh-avoidance half is MEASURED PASSING (delta exactly 1 for a 2-case body solve, one-case control matching, exactly one `(VolumeMesh, Gmsh)` realization). Blocked on **#5951**: the `RepresentationWithin` bound that makes the counter observable also silently empties the solve's `cases` map, so B9's two halves need mutually exclusive fixtures today. | ⏳ blocked on #5951 |
 | `LoadCase`/`MultiCaseResult` types | `producer:3004` | ✅ |
 
 ## R2 — per-Support/per-Load source-span provenance (re-home from 2929)  *(leaf: B10)*
