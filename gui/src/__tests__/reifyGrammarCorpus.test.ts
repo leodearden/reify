@@ -553,6 +553,84 @@ describe('reify.grammar snippets — range expressions', () => {
 });
 
 /**
+ * Type parameters and trait bounds on declaration headers, transliterated from
+ * tree-sitter-reify/grammar.js:478-503 (`trait_bound_list`,
+ * `trait_bound_entry`, `type_parameters`, `type_parameter`) and wired into
+ * `structure_definition` (:504-515) and `occurrence_definition` (:517-528).
+ *
+ * Measured before the fix: `structure def CapScrew : Costed { }` produced
+ * error nodes. Trait bounds appear in 50 of the then-failing files, type
+ * parameters in 16, and `structure def CapScrew : Costed {` /
+ * `structure def Bracket : Costed + Massive {` are both real first-error
+ * lines. Every header below is attested in the committed corpus.
+ */
+describe('reify.grammar snippets — type parameters and trait bounds', () => {
+  it('parses a single trait bound `structure def CapScrew : Costed { }`', () => {
+    expect(countErrorNodes('structure def CapScrew : Costed { }')).toBe(0);
+  });
+
+  it('parses a multi-bound header `: Costed + Massive`', () => {
+    expect(countErrorNodes('structure def Bracket : Costed + Massive { }')).toBe(0);
+  });
+
+  it('parses a three-bound header `: Physical + Elastic + Strong`', () => {
+    expect(countErrorNodes('structure def AluminumBracket : Physical + Elastic + Strong { }')).toBe(
+      0,
+    );
+  });
+
+  it('parses a parameterized bound `: Container<T>`', () => {
+    expect(countErrorNodes('structure def P : Container<T> { }')).toBe(0);
+  });
+
+  it('parses a bare type-parameter header `structure def Box<T> { }`', () => {
+    expect(countErrorNodes('structure def Box<T> { }')).toBe(0);
+  });
+
+  // Corpus-attested (examples/): `structure def Bearing<T: Seal> {`.
+  it('parses a bounded type parameter `<T: Seal>`', () => {
+    expect(countErrorNodes('structure def Bearing<T: Seal> { }')).toBe(0);
+  });
+
+  // Corpus-attested: `structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort>`.
+  it('parses multiple bounded type parameters', () => {
+    expect(
+      countErrorNodes(
+        'structure def ActuatorInterface<P: PowerPort, T: ThermalPort, F: FluidPort> { }',
+      ),
+    ).toBe(0);
+  });
+
+  it('parses a defaulted type parameter `<T = Length>`', () => {
+    expect(countErrorNodes('structure def Box<T = Length> { }')).toBe(0);
+  });
+
+  it('parses type parameters and a bound together `<T> : Costed`', () => {
+    expect(countErrorNodes('structure def Box<T> : Costed { }')).toBe(0);
+  });
+
+  it('parses an occurrence definition with a bound', () => {
+    expect(countErrorNodes('occurrence def Weld : Physical { }')).toBe(0);
+  });
+
+  it('parses a bare occurrence definition', () => {
+    expect(countErrorNodes('occurrence def Weld { param a : Length = 1mm }')).toBe(0);
+  });
+
+  it('yields TypeParameters and TraitBoundList nodes', () => {
+    const names = nodeNames('structure def Box<T : Costed> : Massive { }');
+    expect(names).toContain('TypeParameters');
+    expect(names).toContain('TraitBoundList');
+  });
+
+  // Regression: the header `<`/`>` must not steal the comparison operators,
+  // and a plain header with no bound must still parse.
+  it('still parses a plain header and a body comparison', () => {
+    expect(countErrorNodes('structure def F { constraint a < b }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
