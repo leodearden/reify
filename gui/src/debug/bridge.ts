@@ -58,6 +58,19 @@ export const SET_FEA_CHANNEL_ERRORS = {
     `channel change did not reach the FeaModeStore (store.state.channel is "${actual}" after dispatch, expected "${expected}")`,
 } as const;
 
+// Diagnostics for the generic data-testid resolver (#5891), centralized for the
+// same reason as SET_FEA_CHANNEL_ERRORS above: bridge.ts and debugBridge.test.tsx
+// reference one constant, so wording cannot drift out of sync with the tests.
+// `notFound` reproduces the pre-#5891 message byte for byte — it was duplicated
+// inline in click_element/focus_element/scroll/element_screenshot, and callers
+// (including the visual-regression harness) match on it.
+export const RESOLVE_BY_TESTID_ERRORS = {
+  notFound: (testId: string) => `element with data-testid="${testId}" not found`,
+  notFoundForViewport: (testId: string, id: string) =>
+    `element with data-testid="${testId}" not found for viewport '${id}'`,
+  viewportIdNotString: 'viewportId must be a string',
+} as const;
+
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Returns true iff v is a 3-element array of finite numbers. */
@@ -193,6 +206,92 @@ function pickFeaChannelSelect(
   if (matches.length === 0) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFound };
   if (matches.length > 1) return { error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(matches.length) };
   return { select: matches[0] as HTMLSelectElement };
+}
+
+/**
+ * Escape a value for interpolation into an `[attr="…"]` selector.
+ *
+ * CSS.escape is absent in some environments (notably jsdom), so fall back to a
+ * minimal escape of the two characters that can terminate or corrupt a quoted
+ * attribute value. Without this, a value carrying a quote or backslash makes
+ * querySelector THROW a DOMException, which the dispatcher surfaces as an
+ * opaque CSS-parser message instead of the intended not-found diagnostic.
+ */
+function escapeAttrValue(v: string): string {
+  return typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(v)
+    : v.replace(/["\\]/g, '\\$&');
+}
+
+export interface ResolvedByTestId {
+  el: Element;
+  /** The pane the resolved element actually sits in, or null if it sits in none. */
+  viewportId: string | null;
+  /** How many elements the request matched — >1 only ever on an unscoped request. */
+  matchCount: number;
+}
+
+/**
+ * Resolve a single element by `data-testid`, optionally scoped to one pane (#5891).
+ *
+ * Deliberately mirrors `pickFeaChannelSelect`'s ladder above — same param name,
+ * same non-string rejection FIRST, same scoped-then-document-wide ordering, same
+ * distinct not-found-for-viewport error — so the two read as one convention:
+ *  1. params.viewportId present → reject non-string, then a descendant-OR-SELF
+ *     scoped query. The self arm is load-bearing: FeaModeToolbar stamps
+ *     `data-testid` and `data-viewport-id` on the SAME root element, so a
+ *     descendant-only selector would resolve the nine sibling controls but not
+ *     the root by its own testid. No match is `notFoundForViewport` (distinct
+ *     from a bare `notFound`, which means no such testid exists ANYWHERE).
+ *  2. No id → today's document-wide lookup; zero is `notFound`.
+ *
+ * THE ONE DIVERGENCE from `pickFeaChannelSelect`: an unscoped request matching
+ * more than one element stays FIRST-MATCH rather than erroring the way
+ * `selectAmbiguous` does. That helper owns exactly one testid, so ambiguity
+ * there is always a genuine multi-pane request; this resolver serves the whole
+ * app across hundreds of testids, many of which legitimately repeat, so a hard
+ * error would break every currently-green caller. Correctness is bought instead
+ * by making the guess VISIBLE — see `paneDiagnostics` — not by breaking
+ * back-compat. `matchCount` is what callers gate that reporting on.
+ *
+ * `querySelectorAll` returns a de-duplicated, document-ordered result, so an
+ * element matching both arms of the scoped selector list is counted once and
+ * `matchCount` stays truthful.
+ */
+function resolveByTestId(
+  testId: string,
+  viewportId: unknown,
+): ResolvedByTestId | { error: string } {
+  const idSel = `[data-testid="${escapeAttrValue(testId)}"]`;
+
+  let matches: NodeListOf<Element>;
+  if (viewportId !== undefined) {
+    if (typeof viewportId !== 'string') {
+      return { error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString };
+    }
+    const vpSel = `[data-viewport-id="${escapeAttrValue(viewportId)}"]`;
+    matches = document.querySelectorAll(`${idSel}${vpSel}, ${vpSel} ${idSel}`);
+    if (matches.length === 0) {
+      return { error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport(testId, viewportId) };
+    }
+  } else {
+    matches = document.querySelectorAll(idSel);
+    if (matches.length === 0) {
+      return { error: RESOLVE_BY_TESTID_ERRORS.notFound(testId) };
+    }
+  }
+
+  const el = matches[0];
+  return {
+    el,
+    // Read off the element actually resolved, not off the request: on an
+    // unscoped call there IS no request parameter to report, and the pane the
+    // caller cares about is whichever one the driven element lives in. Same
+    // reasoning set_fea_channel uses when it keys its store lookup off the
+    // select's OWN data-viewport-id.
+    viewportId: el.closest('[data-viewport-id]')?.getAttribute('data-viewport-id') ?? null,
+    matchCount: matches.length,
+  };
 }
 
 // Shared element descriptor used by query_selector and query_selector_all.
@@ -822,10 +921,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const testId = params.testId as string;
       if (!testId) return { error: 'testId is required' };
 
-      const el = document.querySelector(`[data-testid="${CSS.escape(testId)}"]`);
-      if (!el) return { error: `element with data-testid="${testId}" not found` };
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
 
-      (el as HTMLElement).click();
+      (r.el as HTMLElement).click();
       return { ok: true };
     },
 
