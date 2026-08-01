@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { highlightTree, classHighlighter } from '@lezer/highlight';
 import { parser } from '../editor/reifyParser.js';
 import { reifyLRLanguage } from '../editor/reifyLanguage';
+import { KEYWORDS } from '../editor/highlight';
 
 /**
  * Corpus test for the GUI Lezer grammar (`gui/src/editor/reify.grammar`).
@@ -24,7 +25,7 @@ function readFixture(relPath: string): string {
 }
 
 /** Parse `src` and count the error nodes the Lezer parser inserted. */
-export function countErrorNodes(src: string): number {
+function countErrorNodes(src: string): number {
   const tree = parser.parse(src);
   const cursor = tree.cursor();
   let errors = 0;
@@ -44,6 +45,26 @@ function nodeNames(src: string): Set<string> {
   } while (cursor.next());
   return names;
 }
+
+/**
+ * ANTI-VACUITY GUARD. Every other assertion in this file is of the form
+ * `countErrorNodes(...) === 0` or "this path is in the clean set". If the
+ * helper ever silently degraded to always returning 0 — a @lezer/lr change to
+ * `cursor.type.isError`, or `tree.cursor()` gaining a default that skips
+ * anonymous/error nodes — the whole suite would stay green while covering
+ * nothing, and the drift ledger would happily report 329/329 clean. This pins
+ * that the helper can still report a non-zero count.
+ */
+describe('reify.grammar — countErrorNodes helper', () => {
+  it('reports error nodes on input that cannot parse', () => {
+    // Measured: 3 error nodes.
+    expect(countErrorNodes('@@@ !!! ???')).toBeGreaterThan(0);
+  });
+
+  it('reports zero on input that parses', () => {
+    expect(countErrorNodes('structure def Foo { }')).toBe(0);
+  });
+});
 
 /**
  * SLICE A — committed fixtures greened by the structure-header delta
@@ -115,18 +136,41 @@ describe('reify.grammar snippets — module and import', () => {
     expect(countErrorNodes('pub import a.b as c')).toBe(0);
   });
 
-  // tree-sitter grammar.js:258-282 sequences import_path then import_items with
-  // NO separator — `import a.b.{C, D}` is not the language's form.
-  it('parses a destructured import `import a.b {C, D}`', () => {
-    expect(countErrorNodes('import a.b {C, D}')).toBe(0);
-  });
-
   it('parses a module declaration `module company.products.actuators`', () => {
     expect(countErrorNodes('module company.products.actuators')).toBe(0);
   });
 
   it('parses the back-compat legacy form `import "foo.ri"`', () => {
     expect(countErrorNodes('import "foo.ri"')).toBe(0);
+  });
+
+  // NOTE — the destructured import form (`import a.b {C, D}` vs
+  // `import a.b.{C, D}`) is deliberately NOT asserted here. The tree-sitter
+  // RULE at grammar.js:258-282 sequences the path and the items with no
+  // separator, but grammar.js's own doc comment on that rule (:263) and the
+  // lowering at crates/reify-syntax/src/ts_parser.rs:538 both spell it with a
+  // dot. Nothing settles the disagreement: `import_items` has no tree-sitter
+  // corpus test, no committed `.ri` uses the form, and no Rust code matches on
+  // the node name. Asserting either spelling here would cement an unverified
+  // shape as an intentional GUI contract, so the production stays (faithful to
+  // the rule) and the test does not pin it. See the ImportDeclaration comment
+  // in reify.grammar; a follow-up resolves the canonical form.
+
+  /**
+   * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
+   * `Declaration`, so the top-of-file / one-per-file rule falls out of the
+   * grammar with no extra code (mirroring grammar.js:126-132). That is a
+   * normative claim, so it is pinned by assertion rather than left in a
+   * comment — per docs/legibility/design-invariants.md.
+   */
+  it('rejects a module declaration placed after another declaration', () => {
+    // Measured: 2 error nodes.
+    expect(countErrorNodes('structure def A { }\nmodule a.b')).toBeGreaterThan(0);
+  });
+
+  it('rejects a second module declaration in the same file', () => {
+    // Measured: 2 error nodes.
+    expect(countErrorNodes('module a\nmodule b')).toBeGreaterThan(0);
   });
 });
 
@@ -195,6 +239,33 @@ function keywordSpans(src: string): string[] {
  * task is about, so it gets a real assertion instead of being left to review.
  */
 describe('reify.grammar — keyword highlighting for promoted keywords', () => {
+  /**
+   * DATA-DRIVEN GUARD for FUTURE promotions. The per-word assertions below
+   * only cover the words promoted in this change; a later promotion (say `fn`
+   * or `trait` moving out of the ReservedWord list into a `kw<>` production)
+   * would drop out of the `ReservedWord: t.keyword` rule, render unstyled, and
+   * leave the enumerated tests green. So instead of trusting the enumeration,
+   * extract every `kw<"…">` literal straight from the grammar source and
+   * require each to be a member of the KEYWORDS array that highlight.ts joins
+   * into its styleTags selector.
+   */
+  it('styles every `kw<>` production the grammar declares', () => {
+    const grammarSrc = readFixture('gui/src/editor/reify.grammar');
+    const declared = [...grammarSrc.matchAll(/kw<"([A-Za-z_][A-Za-z0-9_]*)">/g)].map((m) => m[1]);
+    // Sanity: the extraction found something, so an empty match set cannot
+    // make the subset check below pass vacuously.
+    expect(declared.length).toBeGreaterThan(10);
+
+    const styled = new Set(KEYWORDS);
+    const unstyled = [...new Set(declared)].filter((word) => !styled.has(word)).sort();
+    expect(
+      unstyled,
+      `These words are \`kw<>\` productions in reify.grammar but are missing from ` +
+        `KEYWORDS in gui/src/editor/highlight.ts, so they render unstyled in the ` +
+        `editor. Add them to KEYWORDS in the same commit as the promotion.`,
+    ).toEqual([]);
+  });
+
   it('styles `module` as a keyword', () => {
     expect(keywordSpans('module a.b')).toContain('module');
   });
@@ -240,19 +311,115 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
 //                              reference prototype exactly
 //   recursive      : 90 / 329  (the 57 above, plus 33 in subdirectories)
 //
-// so the floor below is the recursive figure. The remaining files need
-// expression- and declaration-level work explicitly out of this task's scope
-// (prefix ranges, `^`, index access, lambdas, `@` selectors, string
-// interpolation, and the
+// The remaining files need expression- and declaration-level work explicitly
+// out of this task's scope (prefix ranges, `^`, index access, lambdas, `@`
+// selectors, string interpolation, and the
 // fn/enum/trait/port/connect/chain/forall/match/unit/occurrence/purpose/field
 // declaration families).
 //
-// The floor is a RATCHET, and the comparison is deliberately `>=` and never
-// `===`: a follow-up grammar task that widens coverage — or simply a new
-// committed example that happens to parse — must not break this test. Only a
-// regression does. When a follow-up raises coverage, raise CLEAN_FLOOR to the
-// newly measured value in the same commit.
-const CLEAN_FLOOR = 90;
+// WHY A PINNED SET AND NOT A COUNT. An absolute floor (`clean.length >= 90`)
+// is coupled to corpus INVENTORY, not to grammar capability: deleting or
+// renaming a currently-clean `.ri` — a routine refactor with no grammar
+// involvement — would fail with "the grammar regressed", a false accusation
+// whose obvious fix (lower the floor) also masks any genuine regression
+// landing alongside it. Conversely, adding 50 unparseable examples would keep
+// a count green while coverage rotted. So the ledger pins the SET instead:
+// every path below is expected to parse clean, filtered by what still exists
+// on disk. Removals drop out naturally, a genuine regression names the exact
+// file that stopped parsing, and a coverage gain is a visible one-line
+// addition here — the ratchet a follow-up grammar task turns.
+const EXPECTED_CLEAN = [
+  'examples/affine_tapered_spacer.ri',
+  'examples/best_practices/bolt_circle.ri',
+  'examples/best_practices/hollow_primitives.ri',
+  'examples/best_practices/negation.ri',
+  'examples/best_practices/symmetry_mirror.ri',
+  'examples/bracket.ri',
+  'examples/complex_abs_arg.ri',
+  'examples/complex_div.ri',
+  'examples/complex_literals.ri',
+  'examples/complex_numbers.ri',
+  'examples/complex_transcendental.ri',
+  'examples/conditional_compilation/platform_linux.ri',
+  'examples/conditional_compilation/platform_wasm.ri',
+  'examples/datum_projections.ri',
+  'examples/dimensional_chains.ri',
+  'examples/dimensional_consistency.ri',
+  'examples/dimensionless_unification.ri',
+  'examples/error_messages.ri',
+  'examples/extrude_infinite.ri',
+  'examples/fea_bracket_member_access.ri',
+  'examples/fields/spatial_ops.ri',
+  'examples/flexures/double_parallelogram.ri',
+  'examples/flexures/parallelogram_stage.ri',
+  'examples/geometric_relations/feature_datum_axis.ri',
+  'examples/half_space.ri',
+  'examples/kernel_queries/adjacent_faces.ri',
+  'examples/kernel_queries/angle_smoke.ri',
+  'examples/kernel_queries/box_edges.ri',
+  'examples/kernel_queries/box_faces.ri',
+  'examples/kernel_queries/contains_box.ri',
+  'examples/kernel_queries/directional_selectors.ri',
+  'examples/kernel_queries/distance_box_point.ri',
+  'examples/kernel_queries/geo_equiv_smoke.ri',
+  'examples/kernel_queries/intersects_smoke.ri',
+  'examples/kernel_queries/length_perimeter.ri',
+  'examples/kernel_queries/normal_smoke.ri',
+  'examples/litter_tray.ri',
+  'examples/m10_geometric_types.ri',
+  'examples/m5_geometry.ri',
+  'examples/m6_fallback_recovery.ri',
+  'examples/m6_result_fallback.ri',
+  'examples/m8_tolerancing.ri',
+  'examples/m8_units.ri',
+  'examples/m9_determinacy.ri',
+  'examples/material_appearance_library.ri',
+  'examples/materials_starter_library.ri',
+  'examples/math_linalg.ri',
+  'examples/module_visibility/consumer.ri',
+  'examples/module_visibility/mismatch_variant.ri',
+  'examples/multi_aspect_objective_mixed.ri',
+  'examples/multi_kernel/manifold_boolean.ri',
+  'examples/multi_kernel/voxel_to_mesh.ri',
+  'examples/multi_pane_viewport.ri',
+  'examples/numeric_separators.ri',
+  'examples/parametric_rate_cross_module.ri',
+  'examples/parametric_vec3_cross_module.ri',
+  'examples/pattern_composition.ri',
+  'examples/perforated_plate.ri',
+  'examples/radix_literals.ri',
+  'examples/selectors/relational_selectors_v2.ri',
+  'examples/selectors/selector_vocabulary_v2_leaves.ri',
+  'examples/selectors/single_face_by_normal.ri',
+  'examples/solid-param-direct.ri',
+  'examples/solver_optimality_unproven.ri',
+  'examples/stdlib/constants.ri',
+  'examples/structure-instance.ri',
+  'examples/sweep_degenerate.ri',
+  'examples/tolerancing/gdt_oracle_inside.ri',
+  'examples/tolerancing/gdt_oracle_outside.ri',
+  'examples/tolerancing/gdt_zones.ri',
+  'examples/trajectory/gcode_import_smoke.ri',
+  'examples/undef_self_describing.ri',
+  'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
+  'tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri',
+  'tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri',
+  'tests/prd-gate/fixtures/cost_min_money_objective.ri',
+  'tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri',
+  'tests/prd-gate/fixtures/cross_sub_geometry_ref.ri',
+  'tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri',
+  'tests/prd-gate/fixtures/faces_by_normal_symbolic_eval_silent.ri',
+  'tests/prd-gate/fixtures/geometry_let_selector_consumer.ri',
+  'tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri',
+  'tests/prd-gate/fixtures/ir_clean_eval.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_std_nonexistent_import.ri',
+  'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
+  'tests/prd-gate/fixtures/transform3_unresolved.ri',
+  'tests/prd-gate/fixtures/uncons_box_no_error.ri',
+  'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
+];
 
 const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'];
 
@@ -266,22 +433,43 @@ function collectRiFiles(relDir: string): string[] {
   return out;
 }
 
+// Wall-clock for the ledger below. The walk itself is fast — 329 files parse
+// in ~0.75 s when this file runs alone — but under the full suite (159 test
+// files across parallel workers) it is CPU-starved and overran vitest's 15 s
+// default, so the timeout is raised explicitly rather than left to chance.
+const LEDGER_TIMEOUT_MS = 120_000;
+
 describe('reify.grammar — corpus drift ledger', () => {
-  const allFiles = CORPUS_ROOTS.flatMap(collectRiFiles).sort();
-  const clean = allFiles.filter((p) => countErrorNodes(readFixture(p)) === 0);
-  const cleanSet = new Set(clean);
+  it('still parses every committed .ri that is expected to parse clean', () => {
+    // The walk and all ~329 parses live INSIDE the `it`, not in the describe
+    // body: a throw at collection time (a fixture removed mid-walk, an
+    // unreadable file, a pathological input) would otherwise take down every
+    // unrelated slice and snippet test in this file with an error that does
+    // not even name the offending path.
+    const allFiles = CORPUS_ROOTS.flatMap(collectRiFiles).sort();
+    const cleanSet = new Set(
+      allFiles.filter((p) => {
+        // A file that cannot be read or parsed counts as not-clean rather than
+        // aborting the suite.
+        try {
+          return countErrorNodes(readFixture(p)) === 0;
+        } catch {
+          return false;
+        }
+      }),
+    );
 
-  it(`parses at least ${CLEAN_FLOOR} of the committed .ri corpus with zero error nodes`, () => {
-    const detail =
-      `Measured ${clean.length} clean of ${allFiles.length} committed .ri files ` +
-      `(floor ${CLEAN_FLOOR}).\n` +
-      `If this dropped, the grammar regressed. Currently-clean paths:\n` +
-      clean.map((p) => `  ${p}`).join('\n');
-    expect(clean.length, detail).toBeGreaterThanOrEqual(CLEAN_FLOOR);
-  });
+    // Paths that have since been deleted or renamed drop out silently — this
+    // ledger tracks grammar capability, not corpus inventory.
+    const stillPresent = EXPECTED_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
+    const regressed = stillPresent.filter((p) => !cleanSet.has(p));
 
-  it('keeps every explicitly-manifested fixture in the clean set', () => {
-    const missing = [...SLICE_A, ...SLICE_B].filter((p) => !cleanSet.has(p));
-    expect(missing).toEqual([]);
-  });
+    expect(
+      regressed,
+      `These committed .ri files parsed with zero error nodes but no longer do — ` +
+        `the grammar regressed:\n${regressed.map((p) => `  ${p}`).join('\n')}\n` +
+        `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
+        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk)`,
+    ).toEqual([]);
+  }, LEDGER_TIMEOUT_MS);
 });
