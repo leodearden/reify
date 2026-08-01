@@ -14,12 +14,14 @@
 //!
 //! ## Known scope gaps for migration leaves (γ/δ/ε/ι)
 //!
-//! The freshness gap below is now **CLOSED** (task #5238); the remaining
-//! `Skip`-outcome gap is deliberately left as a documented limitation rather
-//! than closed by changing `journal.rs`'s `EventKind` shape here. A migration
-//! leaf that hits the remaining gap must address it explicitly (extend the
-//! enum, or document why the site is left unmigrated) — not silently paper
-//! over it by routing through the existing variants as-is.
+//! The freshness gap below is now **CLOSED** (task #5238); three gaps remain
+//! OPEN — the `Skip`-outcome placeholder, the determinacy dimension, and the
+//! failure-path commit shape. Each is deliberately left as a documented
+//! limitation rather than closed by widening this module's enums or by
+//! changing `journal.rs`'s `EventKind` shape. A migration leaf that hits one
+//! of them must address it explicitly (extend the enum, or document why the
+//! site is left unmigrated) — not silently paper over it by routing through
+//! the existing variants as-is.
 //!
 //! - **Freshness dimension — CLOSED (task #5238).** [`CacheLeg::Record`]
 //!   still writes `Freshness::Final`, but [`CacheLeg::RecordPropagating`] now
@@ -32,7 +34,7 @@
 //!   `evaluate_let_bindings`) and the `eval_cached` preserve-freshness
 //!   re-serves are migrated onto these variants.
 //! - **`CacheLeg::Skip`'s journal `Completed.outcome` is an unspecified
-//!   placeholder**, not a meaningful `EvalOutcome` — see the doc comment at
+//!   placeholder — OPEN**, not a meaningful `EvalOutcome` — see the doc comment at
 //!   the `Completed` event construction inside [`commit_cell_result`], and
 //!   the `commit_skip_writes_values_snapshot_journal_but_no_cache_entry`
 //!   test that pins it. The authoritative signal that nothing was cached is
@@ -41,6 +43,32 @@
 //!   type-safe (e.g. `EventKind::Completed { outcome: Option<EvalOutcome> }`)
 //!   would change `journal.rs`'s `EventKind` shape — out of scope for this
 //!   module.
+//! - **Determinacy dimension — OPEN (discovered by task #5238).**
+//!   [`DeterminacyRule::resolve`] yields only `DeterminacyState::Determined`
+//!   or `Undetermined` — never `Auto` or `Provisional`. So a commit site that
+//!   must PRESERVE a stored `Auto` cannot be expressed through this
+//!   primitive at all, whichever [`CacheLeg`] it picks. That is what leaves
+//!   the `eval_cached` **Auto-cell pre-seed re-serve** (`engine_eval.rs`
+//!   ~@6461) unmigrated while its Param (~@6675) and Let (~@6884) siblings
+//!   are migrated: the Auto pre-seed writes `(Value::Undef, Auto)`, and
+//!   re-serving it through a `DeterminacyRule` would silently rewrite that
+//!   `Auto` to `Determined`/`Undetermined`. A future leaf closing this gap
+//!   needs a determinacy-PRESERVING `DeterminacyRule` variant (carry the
+//!   stored state through verbatim rather than resolving from the value);
+//!   deliberately out of #5238's freshness scope, since adding it would
+//!   smuggle an untested determinacy change into a freshness task.
+//! - **Failure-path commit shape — OPEN (by design; discovered by task
+//!   #5238).** [`commit_cell_result`] always writes the values and snapshot
+//!   legs and always emits a `Started`/`Completed` pair. The four propagating
+//!   failure-path writes in `engine_eval.rs` (~@8321/@8389/@9311/@9390) have
+//!   the opposite shape: they journal `EventKind::Failed` (no pair), write
+//!   NEITHER the values nor the snapshot leg, and follow the cache write with
+//!   `mark_failed`. No freshness fidelity is lost by leaving them direct —
+//!   `mark_failed` immediately overwrites the just-propagated freshness with
+//!   `Freshness::Failed { error }` — so these are documented-as-unmigrated
+//!   rather than blocked. A future leaf would need a failure-shaped commit
+//!   entry point (or a `CommitLegs` whose values/snapshot legs are optional),
+//!   which is a shape change to the primitive, not a new enum variant.
 
 use std::time::Instant;
 
