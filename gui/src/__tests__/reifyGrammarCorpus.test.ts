@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { highlightTree, classHighlighter } from '@lezer/highlight';
 import { parser } from '../editor/reifyParser.js';
@@ -219,5 +219,69 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
 
   it('still styles a word that remains in the ReservedWord list', () => {
     expect(keywordSpans('structure def F { let x = trait }')).toContain('trait');
+  });
+});
+
+// ── Corpus drift ledger ──────────────────────────────────────────────────
+//
+// The GUI Lezer grammar is a hand-maintained subset of the authoritative
+// tree-sitter-reify/grammar.js. Nothing in CI previously noticed when the
+// language moved ahead of it, so the editor degraded silently. This ledger
+// makes that drift visible.
+//
+// MEASUREMENT (task 5907). The reference prototype for this task was measured
+// over a NON-RECURSIVE walk of the two corpus roots — 146 + 71 = 217 files —
+// and moved them from 7 clean to 57 clean (39 examples + 18 prd-gate
+// fixtures). This ledger walks both roots RECURSIVELY, which picks up
+// subdirectories such as examples/auto/ and examples/best_practices/ for a
+// total of 329 files. The delta landed here measures:
+//
+//   top-level only : 57 / 217  (39 examples + 18 fixtures) — reproduces the
+//                              reference prototype exactly
+//   recursive      : 90 / 329  (the 57 above, plus 33 in subdirectories)
+//
+// so the floor below is the recursive figure. The remaining files need
+// expression- and declaration-level work explicitly out of this task's scope
+// (prefix ranges, `^`, index access, lambdas, `@` selectors, string
+// interpolation, and the
+// fn/enum/trait/port/connect/chain/forall/match/unit/occurrence/purpose/field
+// declaration families).
+//
+// The floor is a RATCHET, and the comparison is deliberately `>=` and never
+// `===`: a follow-up grammar task that widens coverage — or simply a new
+// committed example that happens to parse — must not break this test. Only a
+// regression does. When a follow-up raises coverage, raise CLEAN_FLOOR to the
+// newly measured value in the same commit.
+const CLEAN_FLOOR = 90;
+
+const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures'];
+
+function collectRiFiles(relDir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
+    const rel = `${relDir}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...collectRiFiles(rel));
+    else if (entry.name.endsWith('.ri')) out.push(rel);
+  }
+  return out;
+}
+
+describe('reify.grammar — corpus drift ledger', () => {
+  const allFiles = CORPUS_ROOTS.flatMap(collectRiFiles).sort();
+  const clean = allFiles.filter((p) => countErrorNodes(readFixture(p)) === 0);
+  const cleanSet = new Set(clean);
+
+  it(`parses at least ${CLEAN_FLOOR} of the committed .ri corpus with zero error nodes`, () => {
+    const detail =
+      `Measured ${clean.length} clean of ${allFiles.length} committed .ri files ` +
+      `(floor ${CLEAN_FLOOR}).\n` +
+      `If this dropped, the grammar regressed. Currently-clean paths:\n` +
+      clean.map((p) => `  ${p}`).join('\n');
+    expect(clean.length, detail).toBeGreaterThanOrEqual(CLEAN_FLOOR);
+  });
+
+  it('keeps every explicitly-manifested fixture in the clean set', () => {
+    const missing = [...SLICE_A, ...SLICE_B].filter((p) => !cleanSet.has(p));
+    expect(missing).toEqual([]);
   });
 });
