@@ -191,8 +191,28 @@ expression[@isGroup=Expression] {
   BinaryExpression |
   UnaryExpression |
   ConditionalExpression |
+  RangeExpression |
   IndexAccess |
   primaryExpression
+}
+
+// ── Ranges ──────────────────────────────────────────────
+// grammar.js:1374-1389. Precedence 0 — LOWER than every other binary
+// operator — so `2mm + 1mm .. 10mm - 1mm` is `(2mm+1mm) .. (10mm-1mm)`.
+//
+// The single-sided prefix arms share their leading token with binary
+// comparison (`a < b` vs `<b`). Lezer separates them by POSITION rather than
+// by precedence: the prefix arm has no left operand, so it is only reachable
+// where an expression may start, and `constraint thickness < 50mm` still
+// reduces through `CompareOp`. No ambiguity marker is needed and none is
+// added — the corpus test pins both readings.
+RangeExpression {
+  expression !range ".." expression |
+  expression !range "..<" expression |
+  !range CompareOp<">"> expression |
+  !range CompareOp<">="> expression |
+  !range CompareOp<"<"> expression |
+  !range CompareOp<"<="> expression
 }
 
 BinaryExpression {
@@ -375,6 +395,7 @@ ReservedWord {
   kwAnd @left,
   kwOr @left,
   kwImplies @right,
+  range @left,
   conditional @right
 }
 
@@ -409,8 +430,11 @@ ReservedWord {
 
   // `=>` must win over `=` for the same reason `->` wins over `-`.
   @precedence { "=>", "=" }
+  // Without this, `..` lexes as two member-access `.` and every range becomes
+  // an error node — the same trap `->`/`::` fell into above.
+  @precedence { "..<", "..", "." }
 
   "(" ")" "{" "}" "[" "]" "." "," ":" "="
   "||" "&&" "==" "+" "-" "*"
-  "::" "->" "=>" "<" ">"
+  "::" "->" "=>" "<" ">" ".." "..<"
 }

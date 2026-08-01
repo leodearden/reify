@@ -46,27 +46,36 @@ function nodeNames(src: string): Set<string> {
   return names;
 }
 
+/** Node types that group two operands under an infix operator. */
+const OPERATOR_NODES = new Set(['BinaryExpression', 'RangeExpression']);
+
 /**
- * Source text of the LEFT OPERAND of the OUTERMOST `BinaryExpression` in
+ * Source text of the LEFT OPERAND of the OUTERMOST infix-operator node in
  * `src` — the discriminator for operator-precedence assertions.
  *
  * `a and b or c` grouped as `(a and b) or c` yields `'a and b'`; grouped the
  * other way it would yield `'a'`. A zero-error-node check cannot tell those
  * apart (identical node multisets), and a node-name check cannot either, so
  * precedence claims are pinned through here. Cursor order is outermost-first,
- * so the first `BinaryExpression` reached is the root of the operator tree.
+ * so the first node reached from `OPERATOR_NODES` is the root of the operator
+ * tree.
+ *
+ * The set must list EVERY infix node type, not just `BinaryExpression`:
+ * matching one type alone silently descends past a differently-named root and
+ * reports an inner operand, which reads as a precedence failure when the
+ * grouping is in fact correct. `RangeExpression` is a separate node type
+ * precisely because grammar.js models ranges as their own rule.
  */
 function leftOperandOf(src: string): string {
   const cursor = parser.parse(src).cursor();
   do {
-    if (cursor.type.name === 'BinaryExpression') {
-      const outer = cursor.node;
-      const left = outer.firstChild;
-      if (!left) throw new Error('outermost BinaryExpression has no children');
+    if (OPERATOR_NODES.has(cursor.type.name)) {
+      const left = cursor.node.firstChild;
+      if (!left) throw new Error(`outermost ${cursor.type.name} has no children`);
       return src.slice(left.from, left.to);
     }
   } while (cursor.next());
-  throw new Error(`no BinaryExpression in parse of: ${src}`);
+  throw new Error(`no infix-operator node in parse of: ${src}`);
 }
 
 /**
@@ -698,6 +707,10 @@ const EXPECTED_CLEAN = [
   'examples/dimensional_chains.ri',
   'examples/dimensional_consistency.ri',
   'examples/dimensionless_unification.ri',
+  'examples/dynamics/closed_2prismatic_idyn.ri',
+  'examples/dynamics/closed_4bar_idyn.ri',
+  'examples/dynamics/pendulum_idyn.ri',
+  'examples/dynamics/toolhead_motor_sizing.ri',
   'examples/error_messages.ri',
   'examples/extrude_infinite.ri',
   'examples/fdm_bracket.ri',
@@ -728,10 +741,14 @@ const EXPECTED_CLEAN = [
   'examples/kernel_queries/curvature_smoke.ri',
   'examples/kernel_queries/directional_selectors.ri',
   'examples/kernel_queries/distance_box_point.ri',
+  'examples/kernel_queries/filtered_edges.ri',
   'examples/kernel_queries/geo_equiv_smoke.ri',
   'examples/kernel_queries/intersects_smoke.ri',
   'examples/kernel_queries/length_perimeter.ri',
   'examples/kernel_queries/normal_smoke.ri',
+  'examples/kinematic/four_bar_singular.ri',
+  'examples/kinematic/revolute_pivot_offset.ri',
+  'examples/kinematic/spatial_linkage_oriented.ri',
   'examples/linalg.ri',
   'examples/litter_tray.ri',
   'examples/load_case.ri',
@@ -756,6 +773,7 @@ const EXPECTED_CLEAN = [
   'examples/multi_kernel/voxel_to_mesh.ri',
   'examples/multi_kernel/voxel_to_mesh_iso.ri',
   'examples/multi_pane_viewport.ri',
+  'examples/numeric_and_range_literals.ri',
   'examples/numeric_separators.ri',
   'examples/parametric_rate_cross_module.ri',
   'examples/parametric_vec3_cross_module.ri',
@@ -767,6 +785,7 @@ const EXPECTED_CLEAN = [
   'examples/selectors/single_face_by_normal.ri',
   'examples/selectors/vertices_index_coercion.ri',
   'examples/shells/thin_walled_bracket.ri',
+  'examples/single_sided_range.ri',
   'examples/solid-param-direct.ri',
   'examples/solver_optimality_unproven.ri',
   'examples/stdlib/constants.ri',
@@ -812,6 +831,7 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri',
   'tests/prd-gate/fixtures/ir_clean_eval.ri',
   'tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri',
+  'tests/prd-gate/fixtures/revolute_silent_accept.ri',
   'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
