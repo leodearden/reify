@@ -13351,7 +13351,15 @@ fn compute_realization_upstream_values_hash(
 /// Split out so the R3d (`#4900`) in-walk mint for the `edit_param` reeval
 /// walk can call it using graph-resident `RealizationNodeData.operations`
 /// (which is the same type but is not wrapped in a `RealizationDecl`).
-fn compute_realization_upstream_values_hash_from_ops(
+///
+/// `pub(crate)` for the same reason: `engine_edit.rs`'s
+/// `compute_changed_realizations` (selective-realization-eviction task β)
+/// recomputes the input-cone hash over graph-resident ops and compares it
+/// against α's stored `RealizationNodeData.input_cone_hash`. PRD D1 forbids a
+/// second fold — a divergent one would silently mis-classify against the very
+/// hash that GHR-β identity, the value-cell early cutoff, and the tag-28
+/// in-memory geometry cache key all agree on.
+pub(crate) fn compute_realization_upstream_values_hash_from_ops(
     operations: &[reify_compiler::CompiledGeometryOp],
     ctx: &reify_expr::EvalContext<'_>,
 ) -> [u8; 32] {
