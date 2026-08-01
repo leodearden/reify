@@ -730,6 +730,146 @@ describe('reify.grammar snippets — sub declaration forms', () => {
 });
 
 /**
+ * Composite unit expressions (`7850kg/m^3`) and the value-level `^`.
+ *
+ * These are TWO independent features that share one character, and grammar.js
+ * separates them by CONTIGUITY, not by symbol:
+ *
+ *   "unit_expr pow fires only when ^ is adjacent (no whitespace), while
+ *    value-level ^ fires in the normal whitespace-permitted context"
+ *                                             — grammar.js:1505-1507
+ *
+ * Both readings are attested in committed code: `7850kg/m^3` (22 files) is the
+ * unit form, and `(5mm ^ 2) / (1mm ^ 2)` (examples/unit_expressions.ri:23) is
+ * the spaced value-level form. 32 failing files use a unit `^` or `/`, and
+ * `let steel_density = 7850kg/m^3` currently mis-parses as
+ * `QuantityLiteral ArithOp Identifier ⚠ ⚠ Number`.
+ */
+describe('reify.grammar snippets — unit expressions and exponent', () => {
+  // Corpus-attested 22x — the single most common composite unit in the corpus.
+  it('parses `7850kg/m^3`', () => {
+    expect(countErrorNodes('structure def F { let d = 7850kg/m^3 }')).toBe(0);
+  });
+
+  // Corpus-attested 2x.
+  it('parses `9.81m/s^2` (fractional mantissa)', () => {
+    expect(countErrorNodes('structure def F { let a = 9.81m/s^2 }')).toBe(0);
+  });
+
+  // Corpus-attested: `5N*m`, `5kN*m`.
+  it('parses the multiplicative form `5N*m`', () => {
+    expect(countErrorNodes('structure def F { let t = 5N*m }')).toBe(0);
+  });
+
+  // Corpus-attested 2x: `5N*m/rad`, and `1kg*m/s^2`.
+  it('parses a mixed `*` and `/` unit `5N*m/rad`', () => {
+    expect(countErrorNodes('structure def F { let k = 5N*m/rad }')).toBe(0);
+  });
+
+  // Corpus-attested: `0.5W/(m*K)`, `880.0J/(kg*K)`, `30.0W/(m*K)`.
+  it('parses a parenthesised unit denominator `0.5W/(m*K)`', () => {
+    expect(countErrorNodes('structure def F { let c = 0.5W/(m*K) }')).toBe(0);
+  });
+
+  // Corpus-attested 2x: `0.001kg/m/s` — chained division, no parens.
+  it('parses a chained division unit `0.001kg/m/s`', () => {
+    expect(countErrorNodes('structure def F { let mu = 0.001kg/m/s }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/surface_finish_cost.ri:85 (`50USD/m^2`).
+  it('parses a currency rate unit `50USD/m^2`', () => {
+    expect(countErrorNodes('structure def F { let r = 50USD/m^2 }')).toBe(0);
+  });
+
+  /**
+   * Normative but UNATTESTED: no committed file uses a negative unit exponent.
+   * grammar.js:1531-1533 defines the exponent as
+   * `signed_integer: token.immediate(/-?\d+/)`, so the minus sign is part of
+   * the upstream token rather than something invented here.
+   */
+  it('parses a negative unit exponent `1m^-1` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { let x = 1m^-1 }')).toBe(0);
+  });
+
+  // ── Value-level `^`: the SPACED reading ──────────────────
+
+  it('parses the value-level exponent `2 ^ 3`', () => {
+    expect(countErrorNodes('structure def F { let x = 2 ^ 3 }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/unit_expressions.ri:23 —
+  // `param stress_sq : Real = (5mm ^ 2) / (1mm ^ 2)`. This is the exact shape
+  // that proves the spaced reading is a real language form and not a
+  // convenience invented for this test.
+  it('parses the attested `(5mm ^ 2) / (1mm ^ 2)`', () => {
+    expect(countErrorNodes('structure def F { param s : Real = (5mm ^ 2) / (1mm ^ 2) }')).toBe(0);
+  });
+
+  /**
+   * `^` is right-associative at tree-sitter prec 8, so `2 ^ 3 ^ 2` is
+   * `2 ^ (3 ^ 2)`. Both groupings contain identical nodes, so this is pinned
+   * through the left operand: right-assoc yields `2`, left-assoc `2 ^ 3`.
+   */
+  it('binds `^` right-associatively', () => {
+    const src = 'structure def F { let x = 2 ^ 3 ^ 2 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('2');
+  });
+
+  /**
+   * prec 8 (`^`) > 7 (unary) > 6 (multiplicative), so `-2 ^ 2` is `-(2 ^ 2)`
+   * and NOT `(-2) ^ 2`. Under the wrong grouping the outermost infix node
+   * would carry the left operand `-2`.
+   */
+  it('binds `^` tighter than unary minus', () => {
+    const src = 'structure def F { let x = -2 ^ 2 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('2');
+  });
+
+  it('binds `^` tighter than multiplication', () => {
+    const src = 'structure def F { let x = 2 * 3 ^ 2 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('2');
+  });
+
+  /**
+   * THE GREEDY-MATCH REGRESSION GUARD, and the reason step-14 keeps contiguity
+   * in the TOKEN rather than in a parse rule.
+   *
+   * grammar.js polices unit contiguity with a C external scanner that peeks one
+   * character past the operator and only enters the unit arm when what follows
+   * can start a unit. Lezer has NO external scanner, so a widened
+   * `QuantityLiteral` regex is the translation — and a regex that accepts any
+   * character after `/` would swallow `25USD/1kg` whole, turning a binary
+   * division into a single literal. `1` is a digit, not a unit start, so the
+   * token must stop at `25USD` and leave `/ 1kg` to the expression grammar.
+   */
+  it('does NOT swallow `25USD/1kg` — division by a NUMBER stays binary', () => {
+    const src = 'structure def F { let c = 25USD/1kg }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('25USD');
+  });
+
+  it('does NOT swallow a spaced division `25USD / 1kg`', () => {
+    const src = 'structure def F { let c = 25USD / 1kg }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('25USD');
+  });
+
+  /**
+   * Companion guard on the OTHER side: a plain identifier division must stay
+   * binary too. `mass/volume` has a unit-start character after the `/`, so it
+   * is the case a contiguity-only rule would most easily over-capture.
+   */
+  it('does NOT swallow an identifier division `mass/volume`', () => {
+    const src = 'structure def F { let d = mass/volume }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('mass');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
