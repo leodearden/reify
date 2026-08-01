@@ -394,9 +394,9 @@ fn material_frame(build_z: [f64; 3]) -> Value {
         "MaterialFrame",
         vec![
             ("origin", super::point3_length([0.0, 0.0, 0.0])),
-            ("x_axis", vec3_length(x_axis)),
-            ("y_axis", vec3_length(y_axis)),
-            ("z_axis", vec3_length(build_z)),
+            ("x_axis", vec3_dimensionless(x_axis)),
+            ("y_axis", vec3_dimensionless(y_axis)),
+            ("z_axis", vec3_dimensionless(build_z)),
         ],
     )
 }
@@ -442,22 +442,15 @@ fn mass_density(si: f64) -> Value {
     }
 }
 
-/// A `Vector3<Length>` of SI-metre components (mirrors `MaterialFrame`'s axis
-/// representation and the stdlib `vec3(..)` axis literals).
-fn vec3_length(v: [f64; 3]) -> Value {
+/// A `Vector3<Dimensionless>` — the representation `MaterialFrame`'s three
+/// axes declare (task 5848) and what the stdlib `vec3(0, 0, 1)` axis literals
+/// evaluate to. Components are `Value::Real`, the house spelling for a
+/// dimensionless quantity (Invariant V), matching `default_frame3()`'s axes.
+pub(crate) fn vec3_dimensionless(v: [f64; 3]) -> Value {
     Value::Vector(vec![
-        Value::Scalar {
-            si_value: v[0],
-            dimension: DimensionVector::LENGTH,
-        },
-        Value::Scalar {
-            si_value: v[1],
-            dimension: DimensionVector::LENGTH,
-        },
-        Value::Scalar {
-            si_value: v[2],
-            dimension: DimensionVector::LENGTH,
-        },
+        Value::Real(v[0]),
+        Value::Real(v[1]),
+        Value::Real(v[2]),
     ])
 }
 

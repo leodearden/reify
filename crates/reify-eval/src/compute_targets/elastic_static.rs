@@ -3622,19 +3622,27 @@ impl std::fmt::Display for FeaValueShapeError {
     }
 }
 
-/// Shared arity + per-component `Value::Scalar` extraction for
+/// Shared arity + per-component extraction for
 /// `extract_point3_si`/`extract_vec3_si`, once the caller has matched `val`
 /// against `Value::Point`/`Value::Vector` and obtained the ordered component
 /// slice.
 ///
 /// `shape_context` labels a `< 3`-components arity error; `component_context`
-/// labels a per-component non-Scalar error; `noun` names the shape
+/// labels a per-component read failure; `noun` names the shape
 /// (`"Point"`/`"Vector"`) for the arity error's message.
+///
+/// `component` is what SPLITS the two callers (task 5848). They differ in
+/// DIMENSION, so they differ in which `Value` spellings are legitimate:
+/// `extract_point3_si` reads a genuinely dimensioned `Point3<Length>` and
+/// stays strict ([`dimensioned_component`]); `extract_vec3_si` reads the
+/// dimensionless `MaterialFrame` axes and is tolerant
+/// ([`dimensionless_component`]).
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
     component_context: &'static str,
     noun: &'static str,
+    component: fn(&Value) -> Option<f64>,
 ) -> Result<[f64; 3], FeaValueShapeError> {
     if comps.len() < 3 {
         return Err(FeaValueShapeError::ExpectedList {
@@ -3642,14 +3650,39 @@ fn extract_scalar_triple(
             got: format!("{noun} with {} components", comps.len()),
         });
     }
-    let comp = |v: &Value| match v {
-        Value::Scalar { si_value, .. } => Ok(*si_value),
-        other => Err(FeaValueShapeError::ExpectedScalar {
+    let comp = |v: &Value| {
+        component(v).ok_or_else(|| FeaValueShapeError::ExpectedScalar {
             context: component_context,
-            got: format!("{other:?}"),
-        }),
+            got: format!("{v:?}"),
+        })
     };
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+}
+
+/// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
+/// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
+/// genuinely missing dimension, so it must fail (task #5080's contract, pinned
+/// by `extract_point3_si_rejects_non_scalar_component`).
+fn dimensioned_component(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Per-component reader for a DIMENSIONLESS triple — `MaterialFrame`'s three
+/// `Vector3<Dimensionless>` axes (task 5848). A dimensionless `.ri` literal
+/// compiles to `Value::Int`/`Value::Real` and reaches this reader verbatim, so
+/// all three numeric spellings must read; mirrors `modal_ops::read_scalar_si`,
+/// the landed tolerant reader serving `ModalOptions.reference_direction`. A
+/// genuinely non-numeric component still fails.
+fn dimensionless_component(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        Value::Real(r) => Some(*r),
+        Value::Int(n) => Some(*n as f64),
+        _ => None,
+    }
 }
 
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
@@ -3670,18 +3703,23 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
         "extract_point3_si",
         "extract_point3_si component",
         "Point",
+        dimensioned_component,
     )
 }
 
-/// Extract `[f64; 3]` SI values from a `Value::Vector([Scalar<Length>, ...])`.
+/// Extract `[f64; 3]` values from a `Value::Vector` of three numeric
+/// components.
 ///
 /// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
+/// Those axes are `Vector3<Dimensionless>` (task 5848), so the components
+/// arrive as `Int`/`Real` from a `.ri` literal and as `Scalar` from a Rust
+/// minter — see [`dimensionless_component`].
 fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Vector(v) => v,
         other => {
             return Err(FeaValueShapeError::ExpectedList {
-                context: "extract_vec3_si (Vector3<Length>)",
+                context: "extract_vec3_si (Vector3<Dimensionless>)",
                 got: format!("{other:?}"),
             })
         }
@@ -3691,6 +3729,7 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
         "extract_vec3_si",
         "extract_vec3_si component",
         "Vector",
+        dimensionless_component,
     )
 }
 
@@ -9912,18 +9951,39 @@ mod tests {
         );
     }
 
-    /// Amendment (task #5080 review, suggestion 1): a `Value::Vector` with 3
-    /// components where one is not a `Value::Scalar` must report
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` from the
-    /// per-component check, not `ExpectedList`.
+    /// Task 5848 RETARGET of the task-#5080 review amendment (suggestion 1),
+    /// which pinned that a `Value::Vector` component that is not a
+    /// `Value::Scalar` must report `Err(ExpectedScalar)`.
+    ///
+    /// That contract was written when `MaterialFrame`'s axes were
+    /// `Vector3<Length>`, where a bare `Real`/`Int` component genuinely IS a
+    /// missing dimension. The axes are now `Vector3<Dimensionless>`, where
+    /// `Real`/`Int` is the CORRECT spelling — so the Vector path reads all
+    /// three numeric spellings and returns their f64s.
+    ///
+    /// #5080 is preserved where it is still true rather than overturned: its
+    /// Point-path twin `extract_point3_si_rejects_non_scalar_component` above
+    /// still pins the strict reading for the genuinely dimensioned
+    /// `Point3<Length>` (`aabb_min`/`aabb_max`), and is deliberately untouched.
+    ///
+    /// The rejection half survives here too: a genuinely NON-NUMERIC component
+    /// must still report `Err(ExpectedScalar)`.
     #[test]
-    fn extract_vec3_si_rejects_non_scalar_component() {
+    fn extract_vec3_si_reads_numeric_components_and_rejects_non_numeric() {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
-        let mixed = Value::Vector(vec![scalar(1.0), scalar(2.0), Value::Real(3.0)]);
-        let res = extract_vec3_si(&mixed);
+        let mixed = Value::Vector(vec![scalar(1.0), Value::Real(2.0), Value::Int(3)]);
+        assert_eq!(
+            extract_vec3_si(&mixed),
+            Ok([1.0, 2.0, 3.0]),
+            "Scalar/Real/Int axis components must all read as their f64 value"
+        );
+
+        let non_numeric =
+            Value::Vector(vec![scalar(1.0), scalar(2.0), Value::String("z".to_string())]);
+        let res = extract_vec3_si(&non_numeric);
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a Vector with a non-Scalar component, got: {:?}",
+            "expected Err(ExpectedScalar) for a Vector with a non-numeric component, got: {:?}",
             res
         );
     }
