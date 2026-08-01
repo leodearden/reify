@@ -3135,7 +3135,7 @@ mod tests {
             .execute(&GeometryOp::Draft {
                 target: target.id,
                 faces: vec![],
-                angle: Value::Real(0.05),
+                angle: Value::angle(0.05),
                 plane: plane.id,
             })
             .unwrap();
