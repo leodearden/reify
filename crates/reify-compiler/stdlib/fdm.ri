@@ -97,19 +97,14 @@ structure def FDMProcess {
     // model uses this to compute the build-Z direction cosines for
     // inter-layer shear stiffness reduction.
     //
-    // Type: Vector3<Length> — the quantity slot carries Length so the
-    // vec3 args have consistent dimensions (each is a 1mm unit vector
-    // component). The meaningful quantity is the *direction* (dimensionless
-    // ratio), but the type captures the physical coordinate system.
+    // Type: a DIRECTION, so the quantity slot is dimensionless (task 5848).
+    // The ruling lives on the `Vec3<Q>` alias in trajectory.ri.
     //
-    // TODO(β-phase): β-phase property-correlation consumers must normalize // ptodo:allow type-placeholder awaiting future type-system PRD
-    // build_direction before computing direction cosines (e.g. call
-    // `normalize(build_direction)` or extract the unit-vector ratio) to
-    // guard against callers who pass a non-unit vector. A future slice
-    // could revisit whether a dimensionless Vector3<Real> (e.g.
-    // `vec3(0.0, 0.0, 1.0)`) more honestly models the intent — deferred to
-    // the β/γ/δ review once the property-correlation call sites exist.
-    param build_direction : Vec3<Length> = vec3(0mm, 0mm, 1mm)
+    // Consumers must still normalize build_direction before computing
+    // direction cosines: `unit3(..).unwrap_or([0, 0, 1])` in the R-fast
+    // trampoline is a degenerate-input fallback, not a guarantee that callers
+    // supplied a unit vector.
+    param build_direction : Vec3<Dimensionless> = vec3(0, 0, 1)
 
     // layer_height is the slicer-equivalent layer thickness — the
     // perpendicular distance between adjacent layer centrelines. This

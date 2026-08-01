@@ -542,3 +542,40 @@ mod iota_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task 5848 retypes `FDMProcess.build_direction` from `Vec3<Length>` to a
+    /// dimensionless 3-vector, moving its default from `vec3(0mm, 0mm, 1mm)` to
+    /// `vec3(0, 0, 1)`. That is behaviour-preserving for the knockdown path
+    /// because [`field_vec3`] reads components through `as_f64()` — blind to
+    /// the dimension AND to the `Value` variant — and [`unit3`] normalises
+    /// immediately, so `[0, 0, 0.001]` and `[0, 0, 1]` both reduce to the same
+    /// `build_unit`.
+    #[test]
+    fn build_unit_is_identical_for_the_length_and_dimensionless_spellings() {
+        let process = |build_direction: Value| StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "FDMProcess".to_string(),
+            version: 1,
+            fields: [("build_direction".to_string(), build_direction)]
+                .into_iter()
+                .collect(),
+        };
+        let millimetres = Value::Vector(vec![
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 0.0, dimension: DimensionVector::LENGTH },
+            Value::Scalar { si_value: 1e-3, dimension: DimensionVector::LENGTH },
+        ]);
+        let dimensionless = vec3_dimensionless([0.0, 0.0, 1.0]);
+
+        let build_unit = |v: Value| {
+            unit3(field_vec3(&process(v), "build_direction").expect("build_direction must read"))
+                .expect("a non-degenerate build direction must normalise")
+        };
+        assert_eq!(build_unit(millimetres), build_unit(dimensionless));
+        assert_eq!(build_unit(vec3_dimensionless([0.0, 0.0, 1.0])), [0.0, 0.0, 1.0]);
+    }
+}

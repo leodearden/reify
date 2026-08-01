@@ -92,12 +92,23 @@ pub type Pose3 = Transform3
 
 // Vec3<Q>: parametric 3-D Euclidean vector over any Dimension Q.
 // Generalised from the monomorphic `Vec3 = Vector3<Length>` by task #4794.
-// Vec3<Length> is the canonical concrete form for trajectory and kinematic
-// axis parameters (dimension is observationally irrelevant for normalized
-// directions, but a concrete Dimension is required syntactically).
-// Per affine-map-type.md §4.2 and the established stdlib convention:
-//   fdm.ri `build_direction : Vec3<Length>`,
-//   ports.ri Frame3 members : Vec3<Length>.
+//
+// RULING (task 5848) — which Q a stdlib field takes is decided by what the
+// field DENOTES, not by what its neighbours spell:
+//   - a DIRECTION (joint axis, frame axis, build direction) takes a
+//     DIMENSIONLESS slot: a unit vector is genuinely dimensionless.
+//   - a POSITION or DISPLACEMENT takes Length.
+// This retired the former guidance here, which claimed a concrete Dimension
+// was "required syntactically" and named fdm.ri's `build_direction` and
+// ports.ri's Frame3 members as the convention to copy; both were mis-typed
+// and both now take the dimensionless slot.
+//
+// Two anchors make the ruling checkable rather than advisory:
+// `validate_dimensionless_unit_axis_vec3` (reify-stdlib/src/helpers.rs), the
+// evaluator guard that already REJECTED a dimensioned joint axis, and the
+// landed `ModalOptions.reference_direction : Vector3<Dimensionless>`
+// (modal_analysis.ri).
+//
 // Vec3<Pressure> (and other non-Length instantiations) exercises the full
 // parametric path — previously this was an arity error on the old 0-param alias.
 pub type Vec3<Q: Dimension> = Vector3<Q>

@@ -5448,6 +5448,23 @@ mod tests {
                     rt.clone(),
                 ],
             ),
+            // The axis_y leg of the same guard (task 5848): `Planar.axis_y` is
+            // one of the five joint direction params retyped to dimensionless,
+            // and it was the only one whose constructor-level rejection was
+            // untested. Both legs together are what make the retype a
+            // CORRECTION rather than a risk — the evaluator already required
+            // dimensionless, so `Vec3<Length>` was a declaration the runtime
+            // actively contradicted.
+            (
+                "axis_y: LENGTH-dimensioned",
+                &[
+                    ax.clone(),
+                    length_axis.clone(),
+                    rx.clone(),
+                    ry.clone(),
+                    rt.clone(),
+                ],
+            ),
             (
                 "axis_x: zero",
                 &[
