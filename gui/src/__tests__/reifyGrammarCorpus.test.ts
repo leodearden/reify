@@ -2,8 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { highlightTree, classHighlighter } from '@lezer/highlight';
+import { foldNodeProp, indentNodeProp } from '@codemirror/language';
+import { EditorState } from '@codemirror/state';
+import type { SyntaxNode } from '@lezer/common';
 import { parser } from '../editor/reifyParser.js';
-import { reifyLRLanguage } from '../editor/reifyLanguage';
+import {
+  reifyLRLanguage,
+  BRACE_FIRST_BODIES,
+  KEYWORD_LED_BODIES,
+} from '../editor/reifyLanguage';
 import { KEYWORDS } from '../editor/highlight';
 
 /**
@@ -2363,6 +2370,117 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
    */
   it('still styles a word that remains in the ReservedWord list', () => {
     expect(keywordSpans('structure def F { let x = undef }')).toContain('undef');
+  });
+});
+
+/**
+ * Folding and indentation are configured in `reifyLanguage.ts`, node type by
+ * node type. A brace-delimited body that is its own node type and gets no
+ * entry there parses perfectly cleanly and silently loses its fold arrow and
+ * its delimited indent — a failure EVERY other assertion in this file is blind
+ * to, because they all count error nodes or read node names.
+ *
+ * So the invariant gets the same data-driven treatment as the `kw<>` →
+ * KEYWORDS guard above: derive the brace-delimited node types from the grammar
+ * SOURCE and require the two lists to cover them.
+ */
+describe('reifyLanguage — fold and indent coverage', () => {
+  /**
+   * `Interpolation` (`"{" expression "}"`) is brace-delimited but is a string
+   * HOLE, not a body: folding it would hide the enclosing string's content and
+   * it lives in the grammar's no-skip context. Excluded deliberately, and named
+   * here so the exclusion is a decision rather than an omission.
+   */
+  const EXCLUDED_BRACE_NODES = ['Interpolation'];
+
+  /**
+   * Every capitalised production in reify.grammar whose own body contains a
+   * literal `"{"` token. Scans line by line, tracking the most recent
+   * production header, and stops at `@tokens` — inside that block `"{"` is a
+   * token declaration, not a body.
+   */
+  function braceDelimitedNodeTypes(grammarSrc: string): string[] {
+    const found = new Set<string>();
+    let current: string | null = null;
+    for (const rawLine of grammarSrc.split('\n')) {
+      if (/^@tokens\b/.test(rawLine)) break;
+      // Strip line comments so prose about braces never counts as a body.
+      const line = rawLine.replace(/\/\/.*$/, '');
+      const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
+      if (header) current = header[1];
+      if (current && line.includes('"{"')) found.add(current);
+    }
+    return [...found].sort();
+  }
+
+  it('gives every brace-delimited body a fold and an indent entry', () => {
+    const declared = braceDelimitedNodeTypes(readFixture('gui/src/editor/reify.grammar'));
+    // Sanity: an empty or tiny extraction must not let the check pass
+    // vacuously. `Block` is the oldest brace-delimited body in the grammar.
+    expect(declared.length).toBeGreaterThan(10);
+    expect(declared).toContain('Block');
+
+    const covered = new Set([...BRACE_FIRST_BODIES, ...KEYWORD_LED_BODIES, ...EXCLUDED_BRACE_NODES]);
+    const missing = declared.filter((name) => !covered.has(name));
+    expect(
+      missing,
+      `These node types are brace-delimited bodies in reify.grammar but appear ` +
+        `in neither BRACE_FIRST_BODIES nor KEYWORD_LED_BODIES in ` +
+        `gui/src/editor/reifyLanguage.ts, so they fold and indent as if they ` +
+        `were not blocks at all. Add each to the list that matches whether its ` +
+        `\`{\` is the FIRST child, in the same commit as the production.`,
+    ).toEqual([]);
+  });
+
+  /**
+   * The reverse direction: a list entry naming a node type the grammar no
+   * longer declares is dead configuration that the check above cannot see.
+   */
+  it('lists no node type the grammar does not declare', () => {
+    const declared = new Set(braceDelimitedNodeTypes(readFixture('gui/src/editor/reify.grammar')));
+    const stale = [...BRACE_FIRST_BODIES, ...KEYWORD_LED_BODIES].filter((n) => !declared.has(n));
+    expect(stale).toEqual([]);
+  });
+
+  /**
+   * And the props actually RESOLVE on the configured parser. The list check
+   * above compares two string arrays; it would stay green if `parser.configure`
+   * silently dropped the props (a rename of `foldNodeProp`, a node type that
+   * exists in the grammar but not in the generated node set). This reads the
+   * props back off the exact parser object the editor drives.
+   */
+  it.each([...BRACE_FIRST_BODIES, ...KEYWORD_LED_BODIES])(
+    'resolves fold and indent props on %s',
+    (name) => {
+      const nodeType = reifyLRLanguage.parser.nodeSet.types.find((t) => t.name === name);
+      expect(nodeType, `${name} is not a node type in the generated parser`).toBeDefined();
+      expect(nodeType!.prop(foldNodeProp)).toBeDefined();
+      expect(nodeType!.prop(indentNodeProp)).toBeDefined();
+    },
+  );
+
+  /**
+   * The behavioural half. `foldInside` — the obvious helper, and the one this
+   * file used before the keyword-led bodies were added — keys off the FIRST
+   * child, which is the `{` only when the brace opens the node. For
+   * `enum Color { … }` the first child is `enum`, so `foldInside` would start
+   * the fold right after `enum` and hide the enum's NAME. This pins that the
+   * fold range starts at the body brace instead.
+   */
+  it('folds a keyword-led body from its own brace, not from the leading keyword', () => {
+    const src = 'enum Color {\n  Red,\n  Green\n}';
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    let decl: SyntaxNode | null = null;
+    do {
+      if (cursor.type.name === 'EnumDeclaration') decl = cursor.node;
+    } while (!decl && cursor.next());
+    expect(decl, 'no EnumDeclaration in the parse').not.toBeNull();
+
+    const fold = decl!.type.prop(foldNodeProp)!;
+    const range = fold(decl!, EditorState.create({ doc: src }));
+    // The fold must start AFTER the body brace and end at the closing one —
+    // not after `enum`, which would hide the name `Color` too.
+    expect(range).toEqual({ from: src.indexOf('{') + 1, to: src.lastIndexOf('}') });
   });
 });
 
