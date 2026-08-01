@@ -10444,6 +10444,161 @@ mod tests {
         let _ = anisotropic_material_from_value(&anisotropic_material(fields));
     }
 
+    // ── task 5848: MaterialFrame's axes are DIMENSIONLESS, and nothing on the
+    // path to `rotate_voigt` normalises them ─────────────────────────────────
+
+    /// Build a `MaterialFrame` Value with explicit axes, spelling every axis
+    /// component with `component` — the `Value` variant a `.ri` literal of
+    /// that kind compiles to. `origin` stays `Point3<Length>` either way.
+    fn frame_with_axes(
+        x: [f64; 3],
+        y: [f64; 3],
+        z: [f64; 3],
+        component: fn(f64) -> Value,
+    ) -> Value {
+        let len = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let axis =
+            |v: [f64; 3]| Value::Vector(vec![component(v[0]), component(v[1]), component(v[2])]);
+        let fields: PersistentMap<String, Value> = [
+            (
+                "origin".to_string(),
+                Value::Point(vec![len(0.0), len(0.0), len(0.0)]),
+            ),
+            ("x_axis".to_string(), axis(x)),
+            ("y_axis".to_string(), axis(y)),
+            ("z_axis".to_string(), axis(z)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MaterialFrame".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// A genuinely ANISOTROPIC orthotropic law (distinct `e1`/`e2`/`e3`), so
+    /// the frame actually moves `D_global`. `het_ortho_law`'s isotropic alias
+    /// would make any orthonormal rotation a no-op and the invariance
+    /// assertion below vacuous.
+    fn anisotropic_ortho_law() -> Value {
+        let pa = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let fields: PersistentMap<String, Value> = [
+            ("e1".to_string(), pa(205e9)),
+            ("e2".to_string(), pa(120e9)),
+            ("e3".to_string(), pa(68e9)),
+            ("g12".to_string(), pa(50e9)),
+            ("g13".to_string(), pa(40e9)),
+            ("g23".to_string(), pa(28e9)),
+            ("nu12".to_string(), Value::Real(0.29)),
+            ("nu13".to_string(), Value::Real(0.25)),
+            ("nu23".to_string(), Value::Real(0.20)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// `d_matrix_global()` for [`anisotropic_ortho_law`] under the given frame
+    /// axes and axis-component spelling, read through the production
+    /// `anisotropic_material_from_value` seam.
+    fn d_global_under_frame(
+        x: [f64; 3],
+        y: [f64; 3],
+        z: [f64; 3],
+        component: fn(f64) -> Value,
+    ) -> [[f64; 6]; 6] {
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), anisotropic_ortho_law()),
+            ("frame".to_string(), frame_with_axes(x, y, z, component)),
+        ]
+        .into_iter()
+        .collect();
+        anisotropic_material_from_value(&anisotropic_material(fields))
+            .expect("a well-formed AnisotropicMaterial must read")
+            .d_matrix_global()
+    }
+
+    /// Task 5848 retypes `MaterialFrame`'s three axes from `Vector3<Length>`
+    /// to `Vector3<Dimensionless>`, so the DSL spelling moves from
+    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every numeric `Value` spelling a
+    /// component can arrive as must therefore yield a BITWISE identical
+    /// `D_global` — the retype moves the declaration, not the solve.
+    ///
+    /// The basis for exactness is NOT normalisation (there is none — see the
+    /// fence below). It is that the per-component reader takes the same f64
+    /// out of `Scalar { si_value: 1.0 }`, `Real(1.0)` and `Int(1)`, so the
+    /// identical numbers reach `rotate_voigt`'s `T`.
+    ///
+    /// The `Int` leg is the load-bearing one: an integer `.ri` literal
+    /// compiles to `Value::Int`, so `vec3(0, 1, 0)` — the natural dimensionless
+    /// spelling, and the one `examples/anisotropic_bar.ri` now uses — reaches
+    /// this reader as `Int`, not `Real`.
+    #[test]
+    fn material_frame_axes_read_identically_across_numeric_spellings() {
+        let (x, y, z) = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        let as_length: fn(f64) -> Value = |v| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let as_real: fn(f64) -> Value = Value::Real;
+        let as_int: fn(f64) -> Value = |v| Value::Int(v as i64);
+
+        let baseline = d_global_under_frame(x, y, z, as_length);
+        assert_eq!(
+            d_global_under_frame(x, y, z, as_real),
+            baseline,
+            "Real-spelled axis components must give a bitwise-identical D_global \
+             to the former Length spelling"
+        );
+        assert_eq!(
+            d_global_under_frame(x, y, z, as_int),
+            baseline,
+            "Int-spelled axis components (what `vec3(0, 1, 0)` compiles to) must \
+             give a bitwise-identical D_global to the former Length spelling"
+        );
+    }
+
+    /// FENCE: nothing on the path `extract_vec3_si` →
+    /// `AnisotropicMaterial::from_law` → `rotate_voigt` normalises the frame —
+    /// no `normalize`, no `.norm()`, no `debug_assert!`. `rotate_voigt`
+    /// consumes the rows raw as direction cosines and `D_global` is homogeneous
+    /// of DEGREE 4 in them, so a frame supplied non-unit silently rescales the
+    /// stiffness (a 1mm-spelled "unit" axis would have scaled it by 1e-12).
+    ///
+    /// This is the executable replacement for constitutive.ri's former claims
+    /// that `rotate_voigt` "normalises each axis to unit magnitude", that
+    /// `vec3(1mm, 0mm, 0mm)` and `vec3(2m, 0m, 0m)` "produce the same
+    /// D_global", and that it "debug-asserts the basis is orthonormal". All
+    /// three were false. Orthonormality is a real but UNENFORCED precondition,
+    /// and this test is what makes a future non-unit producer fail loudly
+    /// instead of quietly rescaling.
+    #[test]
+    fn material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global() {
+        let as_real: fn(f64) -> Value = Value::Real;
+        let unit = d_global_under_frame([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_real);
+        let doubled_x =
+            d_global_under_frame([0.0, 2.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_real);
+        assert_ne!(
+            unit, doubled_x,
+            "doubling x_axis must move D_global — if this ever passes, something \
+             started normalising the frame and constitutive.ri's precondition \
+             comment needs revisiting"
+        );
+    }
+
     // ── task 5087 (PRD compute-fea-hardening D9): validate-all-inputs gate ────
     // tests. Mechanism (check order, no-panic diagnostic) is documented at
     // the `gate_or_fail!` macro above — not restated here. Each test below
