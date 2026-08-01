@@ -33,7 +33,7 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
-import { initDebugBridge, SET_FEA_CHANNEL_ERRORS } from '../debug/bridge';
+import { initDebugBridge, SET_FEA_CHANNEL_ERRORS, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
@@ -4376,5 +4376,164 @@ describe('debug bridge set_fea_channel', () => {
       expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(badId) });
     }
     expect(designMain.state.channel).toBe('vonMises');
+  });
+});
+
+describe('debug bridge resolveByTestId viewport scoping', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  /**
+   * Mount one pane's REAL FeaModeToolbar under `viewportId`, enabled.
+   *
+   * Copied from the `set_fea_channel` suite's helper above (#5670) so these
+   * scoping tests run against the genuine `data-viewport-id` substrate the
+   * production component stamps — a hand-built DOM stub could drift from it
+   * and would not prove that the toolbar's own markup is addressable.
+   * `setEnabled(true)` is what makes `fea-mode-enable-toggle` a discriminating
+   * target: a click flips that pane's store true → false, so "which pane was
+   * driven" is directly readable off the two returned stores.
+   */
+  function mountPane(viewportId: string) {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => (
+      <FeaModeToolbar
+        store={store}
+        availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
+        viewportId={viewportId}
+      />
+    ));
+    ((window.__REIFY_DEBUG__!).feaModes ??= {})[viewportId] = store;
+    return store;
+  }
+
+  /** design-main mounts FIRST, so it is the document-wide first match. */
+  async function mountTwoPanes() {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = mountPane('design-main');
+    const pane1 = mountPane('pane-1');
+    return { designMain, pane1 };
+  }
+
+  it('(a) a viewportId-scoped click_element drives that pane only — no cross-pane bleed', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5100, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+    // pane-1 is NOT the first match, so an unscoped resolver would have driven
+    // design-main here. This pair of assertions is the whole point of #5891.
+    expect(pane1.state.enabled).toBe(false);
+    expect(designMain.state.enabled).toBe(true);
+  });
+
+  it('(b) the scope is symmetric — viewportId:"design-main" drives design-main only', async () => {
+    // (a) alone would still pass if the resolver were accidentally hardcoded to
+    // the LAST match rather than reading viewportId. Driving the other pane by
+    // name rules that out.
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5101, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'design-main',
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(designMain.state.enabled).toBe(false);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(c) descendant-OR-self: a scoped fea-mode-toolbar resolves the root that carries BOTH attributes', async () => {
+    // FeaModeToolbar puts data-testid="fea-mode-toolbar" and data-viewport-id on
+    // the SAME element, so a descendant-only selector would fail to resolve the
+    // root by its own testid while succeeding for all nine sibling controls.
+    await mountTwoPanes();
+
+    const result = await dispatchCmd(5102, 'click_element', {
+      testId: 'fea-mode-toolbar',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('(d) an unknown viewportId returns notFoundForViewport and drives neither pane', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5103, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'nope',
+    });
+
+    expect(result).toEqual({
+      error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('fea-mode-enable-toggle', 'nope'),
+    });
+    // Distinct from a silent fallback to the document-wide first match: the
+    // caller named a pane that does not exist, so nothing may be driven.
+    expect(designMain.state.enabled).toBe(true);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(e) a non-string viewportId is a schema violation, matching pickViewport/pickFeaChannelSelect', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5104, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 5,
+    });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+    expect(designMain.state.enabled).toBe(true);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(f) a viewportId carrying selector metacharacters returns notFoundForViewport, not a CSS-parser throw', async () => {
+    // Mirrors set_fea_channel case (s): the id is interpolated into an attribute
+    // selector, so an unescaped quote or backslash makes querySelector THROW a
+    // DOMException that the dispatcher surfaces as an opaque parser message —
+    // an unknown pane reading as a bridge malfunction.
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    for (const [i, badId] of ['pane-"1"', 'pane-\\1', 'pane-1"]'].entries()) {
+      const result = await dispatchCmd(5105 + i, 'click_element', {
+        testId: 'fea-mode-enable-toggle',
+        viewportId: badId,
+      });
+
+      expect(result).toEqual({
+        error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('fea-mode-enable-toggle', badId),
+      });
+    }
+    expect(designMain.state.enabled).toBe(true);
+    expect(pane1.state.enabled).toBe(true);
   });
 });
