@@ -3571,6 +3571,153 @@ describe('debug bridge scroll', () => {
 });
 
 // ---------------------------------------------------------------------------
+// debug bridge dom_query viewport scoping (#5891 step-7 RED → step-8 GREEN)
+//
+// dom_query had NO dedicated unit test before this task, so this block is its
+// first coverage — the pre-#5891 payload shape is pinned here for the first time
+// rather than merely preserved.
+//
+// dom_query's contract differs deliberately from the driving tools above: it is
+// an EXISTENCE PROBE, so "no match in that pane" is `{exists:false}`, not an
+// error. Harnesses poll it while waiting for a pane to appear; turning a
+// not-yet-there pane into an error would make every such poll a failure instead
+// of a `false`. A malformed request — a non-string `viewportId` — is still a
+// loud error, because that is a caller bug rather than an observation.
+// ---------------------------------------------------------------------------
+describe('debug bridge dom_query viewport scoping', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    await capturedHandler!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Two panes each holding a same-testid element with DISTINGUISHABLE text, so
+   * asserting on `text` proves WHICH element was described — not merely that
+   * something existed. jsdom implements no layout and no innerText, so `text` is
+   * stubbed per element; `bounds` stays all-zero (and therefore `visible` false)
+   * exactly as it already does for every other jsdom-hosted dom_query.
+   */
+  function twoPanesWithBadge() {
+    document.body.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="badge"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="badge"></div></div>
+    `;
+    const [designMain, pane1] = ['design-main', 'pane-1'].map((id) => {
+      const el = document.querySelector(
+        `[data-viewport-id="${id}"] [data-testid="badge"]`,
+      ) as HTMLElement;
+      Object.defineProperty(el, 'innerText', { configurable: true, value: `${id} body` });
+      return el;
+    });
+    return { designMain, pane1 };
+  }
+
+  /** The complete pre-#5891 five-key payload — asserted with toEqual so an extra key fails. */
+  const description = (text: string) => ({
+    exists: true,
+    visible: false, // jsdom reports a zero-width rect for every element
+    text,
+    tagName: 'div',
+    bounds: { x: 0, y: 0, width: 0, height: 0 },
+  });
+
+  it('#5891 scoped: describes the named pane\'s element, not the first match', async () => {
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5420, 'dom_query', { testId: 'badge', viewportId: 'pane-1' });
+
+    expect(result).toEqual(description('pane-1 body'));
+  });
+
+  it('#5891 scoped to the FIRST pane still describes that pane — not merely the last match', async () => {
+    // The mirror of the case above. Without it, a resolver that always returned
+    // the LAST match would pass the 'pane-1' case for the wrong reason.
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5421, 'dom_query', {
+      testId: 'badge', viewportId: 'design-main',
+    });
+
+    expect(result).toEqual(description('design-main body'));
+  });
+
+  it('#5891 unknown viewportId returns {exists:false} — the deliberate existence-probe contract', async () => {
+    // NOT an error, unlike click_element/focus_element/scroll: dom_query is how a
+    // harness ASKS whether a pane's element is there yet. "That pane has no such
+    // element" is a legitimate observation and must stay pollable as `false`.
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5422, 'dom_query', { testId: 'badge', viewportId: 'nope' });
+
+    expect(result).toEqual({ exists: false });
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString', async () => {
+    // A malformed param is a CALLER bug, not an observation, so it stays loud even
+    // though a missing element does not.
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5423, 'dom_query', { testId: 'badge', viewportId: 5 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+  });
+
+  it('#5891 unscoped multi-match describes pane 0 and reports the guessed pane', async () => {
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5424, 'dom_query', { testId: 'badge' });
+
+    expect(result).toEqual({
+      ...description('design-main body'),
+      viewportId: 'design-main',
+      matchCount: 2,
+    });
+  });
+
+  it('#5891 single match keeps today\'s exact five-key payload — no diagnostic keys leak', async () => {
+    document.body.innerHTML = '<div data-testid="lonely-badge"></div>';
+    const el = document.querySelector('[data-testid="lonely-badge"]') as HTMLElement;
+    Object.defineProperty(el, 'innerText', { configurable: true, value: 'only one' });
+
+    const result = await dispatchCmd(5425, 'dom_query', { testId: 'lonely-badge' });
+
+    expect(result).toEqual(description('only one'));
+  });
+
+  it('#5891 zero-match unscoped query still returns {exists:false}', async () => {
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5426, 'dom_query', { testId: 'no-such-testid' });
+
+    expect(result).toEqual({ exists: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // debug bridge apply_gui_state (task-3026 step-24 RED → step-25 GREEN)
 //
 // The Rust `handle_set_fea_case` pushes a rebuilt GuiState to the frontend
