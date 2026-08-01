@@ -1520,6 +1520,154 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
     )
 }
 
+/// The ONE cross-template value-cell read graph (task #5467 / PRD2 α), and the
+/// single authority for walking it in either direction.
+///
+/// Three passes in this file need the same graph and the same two-namespace
+/// bridge over it:
+///
+/// * [`build_dependent_cells`] — the FORWARD closure of the objective/constraint
+///   seeds, then the REVERSE auto-reachability over it;
+/// * [`filter_constraints_reading_autos`] (layer 1) — the REVERSE direction, to
+///   admit a constraint that reads an auto only THROUGH a `let`;
+/// * [`detect_underdetermined`] (layer 4) — the FORWARD direction, to stop
+///   flagging an auto that a constraint pins only through a `let`.
+///
+/// Open-coding the walk three times would be the G7 no-lockstep-duplication
+/// failure PRD2 §3 decision 9 exists to prevent, and the instance-path bridge
+/// below is precisely the part a re-implementation gets subtly wrong (the
+/// #5334/#5189 step-10 failure).
+///
+/// ## The two-namespace bridge (task #5189 step-10, δ's #5334 primitives)
+///
+/// Cell ids arrive in TWO namespaces and every hop must speak both:
+///
+/// * TEMPLATE-KEYED (`Rivet.line_cost`) — what the compiler mints for a
+///   `value_cells` decl, hence what `cell_map` and every caller's `auto_ids`
+///   hold;
+/// * INSTANCE-PATH (`RivetedPanel.rivets.line_cost`) — what
+///   `apply_cost_aggregation` mints for an expanded `cost(self.descendants)`
+///   term, and what the compiler mints for a `self.<sub>.<member>` read. These
+///   have NO `ValueCellDecl`; only sub-elaboration writes them.
+///
+/// Both `read_closure` and `cells_reaching` therefore run EVERY id — seed reads
+/// and mid-walk reads alike — through [`crate::resolve_order::normalize_cell_id`]
+/// against `path_map`, which is identity for an already-template-keyed id.
+struct CellReadIndex<'t> {
+    /// Every NON-AUTO cell across all templates that carries a plain
+    /// `default_expr`, keyed by id. Autos have no `default_expr` and are
+    /// skipped; a `ComputeNode`-produced cell without a foldable `default_expr`
+    /// never enters.
+    cell_map: HashMap<ValueCellId, &'t CompiledExpr>,
+    /// δ's INSTANCE-PATH → STRUCTURE-NAME map, built once at the same budgets
+    /// δ's own call site uses so the two sides of the seam truncate identically.
+    path_map: HashMap<String, String>,
+}
+
+impl<'t> CellReadIndex<'t> {
+    fn build(
+        all_templates: &'t [TopologyTemplate],
+        max_unfold_depth: usize,
+        max_unfold_nodes: usize,
+    ) -> Self {
+        let mut cell_map: HashMap<ValueCellId, &'t CompiledExpr> = HashMap::new();
+        for template in all_templates {
+            for cell in &template.value_cells {
+                if cell.kind.is_auto() {
+                    continue;
+                }
+                if let Some(expr) = cell.default_expr.as_ref() {
+                    cell_map.entry(cell.id.clone()).or_insert(expr);
+                }
+            }
+        }
+        let path_map = crate::resolve_order::build_instance_path_structure_map(
+            all_templates,
+            max_unfold_depth,
+            max_unfold_nodes,
+        );
+        Self { cell_map, path_map }
+    }
+
+    /// Identity for an already-template-keyed id (`normalize_cell_id` returns
+    /// `None` when `entity` is not a known instance path).
+    fn normalize(&self, id: ValueCellId) -> ValueCellId {
+        crate::resolve_order::normalize_cell_id(&id, &self.path_map).unwrap_or(id)
+    }
+
+    /// FORWARD: every id transitively read by `seeds`, following each in-map
+    /// cell's `default_expr` reads DOWNWARD. The seeds' own direct reads are
+    /// included; the seed expressions themselves are not ids and so are not.
+    fn read_closure<I>(&self, seeds: I) -> HashSet<ValueCellId>
+    where
+        I: IntoIterator<Item = &'t CompiledExpr>,
+    {
+        let mut closure: HashSet<ValueCellId> = HashSet::new();
+        let mut frontier: Vec<ValueCellId> = Vec::new();
+        for expr in seeds {
+            for id in crate::deps::extract_value_deps(expr) {
+                let id = self.normalize(id);
+                if closure.insert(id.clone()) {
+                    frontier.push(id);
+                }
+            }
+        }
+        while let Some(id) = frontier.pop() {
+            if let Some(expr) = self.cell_map.get(&id) {
+                for dep in crate::deps::extract_value_deps(expr) {
+                    let dep = self.normalize(dep);
+                    if closure.insert(dep.clone()) {
+                        frontier.push(dep);
+                    }
+                }
+            }
+        }
+        closure
+    }
+
+    /// REVERSE: the NON-AUTO cells that transitively READ at least one id in
+    /// `auto_ids`, by propagating up reader edges (`reverse[d]` = cells whose
+    /// `default_expr` reads `d`).
+    ///
+    /// The autos themselves are deliberately NOT echoed back: every caller
+    /// either already holds `auto_ids` (layer 1 unions the two) or excludes
+    /// autos by a separate disjunct (`build_dependent_cells`' stage (e)), and
+    /// returning them would make the union's meaning order-dependent to reason
+    /// about. An EMPTY `auto_ids` therefore yields an empty set — the D1
+    /// identity branch every consumer degenerates to on a direct-only model.
+    fn cells_reaching(&self, auto_ids: &HashSet<ValueCellId>) -> HashSet<ValueCellId> {
+        if auto_ids.is_empty() {
+            return HashSet::new();
+        }
+        let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+        for (id, expr) in &self.cell_map {
+            for dep in crate::deps::extract_value_deps(expr) {
+                reverse
+                    .entry(self.normalize(dep))
+                    .or_default()
+                    .push(id.clone());
+            }
+        }
+        let mut reaches: HashSet<ValueCellId> = HashSet::new();
+        let mut frontier: Vec<ValueCellId> = auto_ids.iter().cloned().collect();
+        while let Some(id) = frontier.pop() {
+            if let Some(readers) = reverse.get(&id) {
+                for reader in readers {
+                    if reaches.insert(reader.clone()) {
+                        frontier.push(reader.clone());
+                    }
+                }
+            }
+        }
+        // A cell that is BOTH in `cell_map` and in `auto_ids` cannot exist
+        // (stage (a) skips autos), but a caller may pass an id that is both an
+        // auto and a reader in a malformed model — drop it defensively so the
+        // documented "non-auto cells only" contract holds unconditionally.
+        reaches.retain(|id| !auto_ids.contains(id));
+        reaches
+    }
+}
+
 /// Build the authoritative, topologically-ordered list of coupled non-auto
 /// value cells to re-materialize after a solve — the single cross-scope
 /// authority both the post-solve write-back (task #5188 step-8) and β's
@@ -1623,93 +1771,27 @@ fn build_dependent_cells(
     max_unfold_nodes: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
-    // (a) Cross-template map: every non-auto cell that carries a plain
-    //     default_expr, keyed by id. Autos have no default_expr and are skipped;
-    //     ComputeNode-produced cells without a foldable default_expr never enter.
-    let mut cell_map: HashMap<ValueCellId, &CompiledExpr> = HashMap::new();
-    for template in all_templates {
-        for cell in &template.value_cells {
-            if cell.kind.is_auto() {
-                continue;
-            }
-            if let Some(expr) = cell.default_expr.as_ref() {
-                cell_map.entry(cell.id.clone()).or_insert(expr);
-            }
-        }
-    }
+    // (a)/(a′) Cross-template `cell_map` + δ's instance-path bridge, built ONCE
+    //          by the shared [`CellReadIndex`] (task #5467) so layers 1 and 4 —
+    //          `filter_constraints_reading_autos` and `detect_underdetermined` —
+    //          consume the SAME walk instead of each re-implementing it.
+    let index = CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes);
+    let cell_map = &index.cell_map;
+    let path_map = &index.path_map;
 
-    // (a′) δ's INSTANCE-PATH → STRUCTURE-NAME map (task #5334), built ONCE and
-    //      consumed at every hop below. Same budgets δ's own call site uses, so
-    //      the two sides of the seam truncate identically. See the fn
-    //      doc-comment's "two-namespace bridge" section for why this is needed
-    //      at all, and `normalize_cell_id`'s doc for the two-sided root cause.
-    let path_map = crate::resolve_order::build_instance_path_structure_map(
-        all_templates,
-        max_unfold_depth,
-        max_unfold_nodes,
-    );
-    // Identity for an already-template-keyed id (`normalize_cell_id` returns
-    // `None` when `entity` is not a known instance path).
-    let normalize = |id: ValueCellId| -> ValueCellId {
-        crate::resolve_order::normalize_cell_id(&id, &path_map).unwrap_or(id)
-    };
+    // (b)/(c) FORWARD transitive read-closure of the expanded objective-term /
+    //         constraint seeds.
+    let closure = index.read_closure(seed_exprs.iter().copied());
 
-    // (b) Seed the closure with the DIRECT reads of every expanded objective
-    //     term / constraint expr, then (c) take the transitive closure by
-    //     following each in-map cell's default_expr reads. Both hops NORMALISE:
-    //     a seed read is instance-path-keyed whenever the objective went through
-    //     `apply_cost_aggregation`, and instance-path ids also surface MID-WALK
-    //     (a parent's own `default_expr` reading `self.<sub>.<member>`).
-    let mut closure: HashSet<ValueCellId> = HashSet::new();
-    let mut frontier: Vec<ValueCellId> = Vec::new();
-    for expr in seed_exprs {
-        for id in crate::deps::extract_value_deps(expr) {
-            let id = normalize(id);
-            if closure.insert(id.clone()) {
-                frontier.push(id);
-            }
-        }
-    }
-    while let Some(id) = frontier.pop() {
-        if let Some(expr) = cell_map.get(&id) {
-            for dep in crate::deps::extract_value_deps(expr) {
-                let dep = normalize(dep);
-                if closure.insert(dep.clone()) {
-                    frontier.push(dep);
-                }
-            }
-        }
-    }
-
-    // (d) Auto-reachability over the closure: reverse-propagate "transitively
-    //     reads an auto" from `auto_ids` up through reader edges.
-    //     `reverse[d]` = cells whose default_expr reads `d`. Reader ids come
-    //     from `closure` (already normalised); dep ids are normalised here, so
-    //     the reverse edges land in the same namespace as `auto_ids`.
-    let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
-    for id in &closure {
-        if let Some(expr) = cell_map.get(id) {
-            for dep in crate::deps::extract_value_deps(expr) {
-                reverse.entry(normalize(dep)).or_default().push(id.clone());
-            }
-        }
-    }
-    let mut reaches_auto: HashSet<ValueCellId> = HashSet::new();
-    let mut ra_frontier: Vec<ValueCellId> = Vec::new();
-    for id in &closure {
-        if auto_ids.contains(id) && reaches_auto.insert(id.clone()) {
-            ra_frontier.push(id.clone());
-        }
-    }
-    while let Some(id) = ra_frontier.pop() {
-        if let Some(readers) = reverse.get(&id) {
-            for reader in readers {
-                if reaches_auto.insert(reader.clone()) {
-                    ra_frontier.push(reader.clone());
-                }
-            }
-        }
-    }
+    // (d) REVERSE auto-reachability: which non-auto cells transitively READ an
+    //     auto. The index computes this over the whole `cell_map` rather than
+    //     restricted to `closure` as this stage once did — the two agree on
+    //     every closure member (any X on an `auto → X → Y` path with `Y ∈
+    //     closure` is itself in `closure`, because stage (c) follows reads
+    //     DOWNWARD), and stage (e) below iterates `closure` regardless. The
+    //     index also omits the autos themselves, which stage (e)'s
+    //     `auto_ids.contains(id)` disjunct already excluded.
+    let reaches_auto = index.cells_reaching(auto_ids);
 
     // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
     //     auto) and topologically sort the induced sub-DAG via the same
