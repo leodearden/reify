@@ -43,3 +43,7 @@ mod flat_sort_kahn_core_delegation;
 // reason as #5196's and #5045's above.
 #[path = "harness_engine/nested_sub_derived_let_e2e.rs"]
 mod nested_sub_derived_let_e2e;
+// Task #5417's DIC γ runtime-half e2e lands here for the same anti-re-accretion
+// reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/objective_consumption_e2e.rs"]
+mod objective_consumption_e2e;
