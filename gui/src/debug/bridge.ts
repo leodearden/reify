@@ -1111,14 +1111,10 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     focus_element: (params) => {
       const testId = params.testId as string;
       if (!testId) return { error: 'testId is required' };
-      // CSS.escape fallback for jsdom — mirrors buildSelectorPredicate (:175-177).
-      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(testId)
-        : testId.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`);
-      if (!el) return { error: `element with data-testid="${testId}" not found` };
-      (el as HTMLElement).focus();
-      return { ok: true };
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
+      (r.el as HTMLElement).focus();
+      return { ok: true, ...paneDiagnostics(r, params.viewportId !== undefined) };
     },
 
     // Focus the CodeMirror editor so subsequent keyboard() calls reach it.
