@@ -21,13 +21,10 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// fire. If the corpus is ever intentionally trimmed below this floor,
 /// lower the constant to match.
 ///
-/// Dated snapshot, last reviewed 2026-08-01 (not a live claim): the
-/// examples/ corpus holds 258 `.ri` files today, so 200 leaves 58 files of
-/// headroom before ordinary corpus growth/shrinkage would flake
-/// [`all_examples_parse_and_compile_with_stdlib`]'s discovery-count
-/// assertion, and `200 * 2 = 400 >= 258` clears
-/// [`discovery_floors_track_the_live_corpus`]'s freshness ratchet with room
-/// for ~55% corpus growth before this constant needs raising again.
+/// Kept in lockstep with [`MIN_EXERCISED_RI_FILES`] (both are reviewed and
+/// raised together — see that constant's doc comment for the current live
+/// count); [`discovery_floors_track_the_live_corpus`] ratchets the sibling
+/// constant only, since its gate is the strictly stronger of the two.
 const MIN_DISCOVERED_RI_FILES: usize = 200;
 
 /// Discovery-regression TRIPWIRE, NOT a corpus-size target: mirrors
@@ -39,12 +36,10 @@ const MIN_DISCOVERED_RI_FILES: usize = 200;
 /// ever intentionally trimmed below this floor, lower the constant to
 /// match.
 ///
-/// Dated snapshot, last reviewed 2026-08-01 (not a live claim): SKIP_SET has
-/// 8 entries today, so `exercised` is 250 (258 discovered − 8 skipped); 200
-/// leaves 50 entries of SKIP_SET-growth headroom before this guard would
-/// flake, and `200 * 2 = 400 >= 258` clears
-/// [`discovery_floors_track_the_live_corpus`]'s freshness ratchet with the
-/// same ~55% growth headroom as its sibling above.
+/// [`discovery_floors_track_the_live_corpus`] is the freshness ratchet that
+/// keeps this constant from drifting stale the way the old hard-coded `40`
+/// did; its assertion message reports the current live count on failure, so
+/// that number isn't duplicated here where it would go stale silently.
 const MIN_EXERCISED_RI_FILES: usize = 200;
 
 /// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
@@ -62,9 +57,8 @@ const MIN_EXERCISED_RI_FILES: usize = 200;
 /// Deliberately does not pin a corpus count or set size here — the previous
 /// version of this comment ("all 43 example files ... merged on 2026-04-26")
 /// went stale exactly that way. The live corpus size is enforced by
-/// [`discovery_floors_track_the_live_corpus`], and dated snapshots of it live
-/// in the [`MIN_DISCOVERED_RI_FILES`] / [`MIN_EXERCISED_RI_FILES`] doc
-/// comments, not here.
+/// [`discovery_floors_track_the_live_corpus`], whose failure message reports
+/// the current count — not pinned here, to avoid the same drift.
 const SKIP_SET: &[(&str, &str)] = &[
     (
         "topology_selectors/fillet_top_edges.ri",
@@ -419,45 +413,52 @@ fn relative_to_examples_dir_accepts_all_discovered_paths() {
 /// undiscovered — that silent drift is exactly what went unnoticed for
 /// three months before this test existed.
 ///
-/// This ratchet is safe to sit right next to the absolute gates it
-/// complements rather than replaces: under a real discovery regression
-/// `total` SHRINKS, so `floor * 2 >= total` only becomes EASIER to satisfy,
-/// while the absolute gate (`total >= MIN_DISCOVERED_RI_FILES` in
-/// [`all_examples_parse_and_compile_with_stdlib`], and the analogous
-/// `exercised >= MIN_EXERCISED_RI_FILES` in
-/// [`no_example_emits_ctor_field_conformance_diagnostics`]) is what actually
-/// fires. The ratchet is therefore strictly one-directional and cannot mask
-/// the regression the absolute gates exist to catch — it only fires when
-/// the corpus GROWS past 2x a floor, which is exactly the maintenance
-/// signal that the floor itself needs raising.
+/// Checks [`MIN_EXERCISED_RI_FILES`] only, against the SKIP_SET-filtered
+/// `exercised` count — the same quantity its own gate
+/// ([`no_example_emits_ctor_field_conformance_diagnostics`]) compares
+/// against, not the raw discovered count. A single assertion is enough for
+/// both constants: since `exercised <= total` and the two floors are kept
+/// in lockstep (see [`MIN_DISCOVERED_RI_FILES`]'s doc comment), the
+/// `exercised`-based gate is the strictly stronger — and thus binding — of
+/// the two absolute gates, so this is the constant that goes stale first in
+/// practice. `exercised` is recomputed here as `total - SKIP_SET.len()`
+/// rather than re-running the skip-filter loop, which
+/// [`skip_set_entries_exist_under_examples_dir`] guarantees is equivalent
+/// (every `SKIP_SET` entry names a currently-discovered file).
 ///
-/// Integer arithmetic only (`floor * 2 >= total`, no float ratio and no
+/// This ratchet is safe to sit right next to the absolute gate it
+/// complements rather than replaces: under a real discovery regression
+/// `exercised` SHRINKS, so `floor * 2 >= exercised` only becomes EASIER to
+/// satisfy, while the absolute gate is what actually fires. The ratchet is
+/// therefore strictly one-directional and cannot mask the regression the
+/// absolute gate exists to catch — it only fires when the corpus GROWS past
+/// 2x the floor, which is exactly the maintenance signal that the floor
+/// itself needs raising.
+///
+/// Integer arithmetic only (`floor * 2 >= exercised`, no float ratio and no
 /// tolerance), and this walks the directory tree only — it compiles and
 /// checks zero `.ri` files, so it stays as cheap as the other sanity guards
 /// in this file.
 #[test]
 fn discovery_floors_track_the_live_corpus() {
     let total = discover_ri_files().len();
+    let skipped = SKIP_SET.len();
+    let exercised = total - skipped;
 
     assert!(
-        MIN_DISCOVERED_RI_FILES * 2 >= total,
-        "MIN_DISCOVERED_RI_FILES ({}) has drifted stale: the live examples/ \
-         corpus now has {} .ri files, more than 2x the floor. Raise \
-         MIN_DISCOVERED_RI_FILES to at least {}/2 and re-review its tripwire \
-         doc comment.",
-        MIN_DISCOVERED_RI_FILES,
-        total,
-        total
-    );
-    assert!(
-        MIN_EXERCISED_RI_FILES * 2 >= total,
+        MIN_EXERCISED_RI_FILES * 2 >= exercised,
         "MIN_EXERCISED_RI_FILES ({}) has drifted stale: the live examples/ \
-         corpus now has {} .ri files, more than 2x the floor. Raise \
-         MIN_EXERCISED_RI_FILES to at least {}/2 and re-review its tripwire \
-         doc comment.",
+         corpus now exercises {} .ri files ({} discovered, {} in SKIP_SET), \
+         more than 2x the floor. Raise MIN_EXERCISED_RI_FILES (and its \
+         lockstep sibling MIN_DISCOVERED_RI_FILES) to ~{} — headroom above \
+         the bare {}/2 boundary, which would re-flake on the very next file \
+         added — and re-review both constants' tripwire doc comments.",
         MIN_EXERCISED_RI_FILES,
+        exercised,
         total,
-        total
+        skipped,
+        exercised * 4 / 5,
+        exercised
     );
 }
 
