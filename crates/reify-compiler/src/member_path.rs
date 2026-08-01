@@ -327,6 +327,273 @@ fn visibility_of(v: Visibility) -> MemberVisibility {
     }
 }
 
+// ─────────────────────────── chain resolution ───────────────────────────
+
+/// What a fully-resolved member path lands ON — the four C1 terminal kinds.
+///
+/// The split is by **lowering shape**, not by member kind alone, because C1
+/// lists `ValueCell` and `InstanceField` as distinct terminals even though both
+/// can name a `value_cells` member. Which one applies decides which lowering a
+/// consumer must emit, and that is the whole reason β/η can pick a lowering from
+/// this verdict instead of re-matching AST shapes (C1-iv).
+///
+/// * [`TerminalKind::ValueCell`] — a solver-visible **scoped cell**. Reached only
+///   by an all-`Sub`-hop chain from a `self`/sub root, whose entity stamp follows
+///   the existing `format!("{}.{}", entity, sub)` convention (expr.rs:843).
+/// * [`TerminalKind::InstanceField`] — a projection out of a runtime
+///   `Value::StructureInstance`, i.e. what `CompiledExpr::index_access(obj,
+///   "member")` reads. Applies once the chain crosses a value-typed
+///   (`let m = Inner()`) receiver, and to `Sub`/`Port` terminals, which carry no
+///   solver cell of their own (today's `expr.rs` lowers those to exactly this
+///   `IndexAccess` shape under its permissive dimensionless fallback).
+/// * [`TerminalKind::Realization`] — a named realization, `Type::Geometry`.
+/// * [`TerminalKind::Synthesized`] — the PRD §7 extension point.
+// TODO(#5425): first production consumer — task β's type-driven geometry-position
+// acceptance calls `resolve_member_path`; #5430 (η) then converts the two-level
+// `self.<sub>.<member>` matchers. Until one of those lands the chain walk has no
+// non-`cfg(test)` caller, and `scripts/verify.sh` runs
+// `cargo clippy --all-targets -- -D warnings`, which builds the lib WITHOUT
+// `cfg(test)` — so the unit tests below do not keep these items alive.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalKind {
+    ValueCell(ValueCellId),
+    InstanceField {
+        structure: String,
+        member: String,
+        member_kind: MemberKind,
+    },
+    Realization {
+        structure: String,
+        name: String,
+    },
+    Synthesized(SynthesizedMember),
+}
+
+/// A resolved dotted path: every hop it took, what it landed on, and the static
+/// type of the whole expression.
+// TODO(#5425): see the `TerminalKind` note above — β is the first production
+// consumer, #5430 (η) the second.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Resolved {
+    /// One entry per `.member` step, in source order.
+    pub(crate) segments: Vec<Hop>,
+    pub(crate) terminal: TerminalKind,
+    /// The terminal hop's `next_type`.
+    pub(crate) ty: Type,
+}
+
+/// How the chain's innermost node was typed, and whether it names a
+/// solver-scoped entity.
+///
+/// `scoped_entity` is `Some` only for the roots that lower to scoped cells —
+/// `self` (the entity being compiled) and a bare sub of it. A binding from
+/// `scope.names` is a VALUE, so it is `None` and every terminal beneath it is an
+/// `InstanceField` projection.
+struct RootBinding {
+    ty: Type,
+    scoped_entity: Option<String>,
+}
+
+/// Resolve a whole `<root>.<m0>.<m1>…` chain of arbitrary depth (C1).
+///
+/// Purely static (C1-i): no diagnostic sink, no evaluation. Visibility is
+/// enforced at EVERY hop (C1-ii) and an unknown member is attributed to the
+/// concrete structure at the hop it occurred at (C1-iii).
+///
+/// A thin walk over [`resolve_hop`] — it re-authors no container-scan or
+/// visibility logic. Its two additions are the `hop_index` rewrite (`resolve_hop`
+/// stamps a placeholder `0`) and the synthesized-member table, which lives here
+/// and NOT in `resolve_hop` so that declared members shadow synthesized ones and
+/// `resolve_hop`'s verdict — the one production consumes — stays byte-identical.
+// TODO(#5425): see the `TerminalKind` note above — β is the first production
+// consumer, #5430 (η) the second.
+#[allow(dead_code)]
+pub(crate) fn resolve_member_path(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+) -> Result<Resolved, MemberPathError> {
+    // 1. Flatten the `MemberAccess` spine into (root_expr, members-in-order).
+    let mut members: Vec<&str> = Vec::new();
+    let mut node = expr;
+    while let reify_ast::ExprKind::MemberAccess { object, member } = &node.kind {
+        members.push(member.as_str());
+        node = object;
+    }
+    if members.is_empty() {
+        return Err(MemberPathError::NotAMemberPath);
+    }
+    members.reverse();
+
+    // 2. Type the root statically.
+    let root = root_binding(node, scope).ok_or(MemberPathError::Indeterminate(
+        IndeterminateReason::UnresolvableRoot,
+    ))?;
+    let mut object_type = root.ty;
+    let mut scoped_entity = root.scoped_entity;
+    let mut segments: Vec<Hop> = Vec::with_capacity(members.len());
+    let last = members.len() - 1;
+
+    // 3. Walk, threading `next_type` forward.
+    for (hop_index, member) in members.iter().enumerate() {
+        let (hop, next_type) = match resolve_hop(&object_type, member, scope) {
+            Ok(r) => (r.hop, r.next_type),
+            // 4. Synthesized extension point — consulted ONLY after the five
+            //    declared containers have all missed, so a declared member of the
+            //    same name shadows it.
+            Err(MemberPathError::UnknownMember {
+                object_type: unknown_on,
+                structure,
+                member: name,
+                ..
+            }) => match synthesized_member(&name) {
+                Some((synthesized, ty)) => (
+                    Hop {
+                        object_type: object_type.clone(),
+                        object_structure: Some(structure),
+                        member: name,
+                        member_kind: MemberKind::Synthesized(synthesized),
+                        // Synthesized members carry no `priv` axis.
+                        visibility: MemberVisibility::Public,
+                    },
+                    ty,
+                ),
+                None => {
+                    return Err(MemberPathError::UnknownMember {
+                        hop_index,
+                        object_type: unknown_on,
+                        structure,
+                        member: name,
+                    });
+                }
+            },
+            // C1-ii/C1-iii: rewrite the placeholder index to the real position.
+            // The walk stops here rather than reporting some later hop.
+            Err(MemberPathError::PrivateMember {
+                structure, member, ..
+            }) => {
+                return Err(MemberPathError::PrivateMember {
+                    hop_index,
+                    structure,
+                    member,
+                });
+            }
+            // `Indeterminate` propagates unchanged — the caller falls through to
+            // its existing path. `NotAMemberPath` is unreachable from
+            // `resolve_hop`, and is passed along rather than re-mapped.
+            Err(deferred) => return Err(deferred),
+        };
+
+        // 5. Classify the terminal, or thread the scoped-entity prefix forward.
+        if hop_index == last {
+            let terminal = classify_terminal(&hop, scoped_entity.as_deref());
+            segments.push(hop);
+            return Ok(Resolved {
+                segments,
+                terminal,
+                ty: next_type,
+            });
+        }
+        scoped_entity = match (&hop.member_kind, &scoped_entity) {
+            // Still inside the solver-scoped world: `Test` → `Test.a` → `Test.a.b`.
+            (MemberKind::Sub, Some(prefix)) => Some(format!("{prefix}.{}", hop.member)),
+            // Any other intermediate hop crosses into a VALUE receiver (a
+            // `let m = Inner()` instance, a port, a realization), whose members
+            // are `Value::StructureInstance` fields rather than scoped cells.
+            _ => None,
+        };
+        object_type = next_type;
+        segments.push(hop);
+    }
+    // `members` is non-empty and the `hop_index == last` arm always returns.
+    unreachable!("the terminal hop returns from inside the loop")
+}
+
+/// Type the chain's innermost node — the only place this resolver looks at a
+/// non-`MemberAccess` AST form.
+///
+/// `scope.names` is consulted BEFORE `scope.sub_component_types`: a name
+/// registered as a value shadows a same-named sub, matching the lookup order the
+/// existing `expr.rs` identifier arm uses.
+fn root_binding(expr: &reify_ast::Expr, scope: &CompilationScope) -> Option<RootBinding> {
+    let reify_ast::ExprKind::Ident(name) = &expr.kind else {
+        // Calls, `IndexAccess` roots (`subs[i].member` — task η's collection
+        // shape), literals, … are not typed here.
+        return None;
+    };
+    if name == "self" {
+        // `self` is not a registered name; it is valid only where the compiler
+        // is inside an entity body (false for function and purpose scopes,
+        // where today's code produces an "unresolved name" error).
+        return scope.is_entity_scope.then(|| RootBinding {
+            ty: Type::StructureRef(scope.entity_name.clone()),
+            scoped_entity: Some(scope.entity_name.clone()),
+        });
+    }
+    if let Some((_, ty, _)) = scope.names.get(name.as_str()) {
+        return Some(RootBinding {
+            ty: ty.clone(),
+            scoped_entity: None,
+        });
+    }
+    scope
+        .sub_component_types
+        .get(name.as_str())
+        .map(|structure| RootBinding {
+            ty: Type::StructureRef(structure.clone()),
+            // `self.X` ≡ `X` (spec §8.6): a bare sub root names the same scoped
+            // entity the `self.`-prefixed form does.
+            scoped_entity: Some(format!("{}.{}", scope.entity_name, name)),
+        })
+}
+
+/// The PRD §7 synthesized-member table — members no `TopologyTemplate`
+/// container declares but the language nonetheless makes accessible.
+///
+/// `Type::Int` for `count` matches the existing `"count" => Type::Int` arms in
+/// `expr.rs`, so a consumer that routes through here types collection counts
+/// exactly as today.
+fn synthesized_member(member: &str) -> Option<(SynthesizedMember, Type)> {
+    match member {
+        "count" => Some((SynthesizedMember::Count, Type::Int)),
+        _ => None,
+    }
+}
+
+fn classify_terminal(hop: &Hop, scoped_entity: Option<&str>) -> TerminalKind {
+    let structure = hop.object_structure.clone().unwrap_or_default();
+    match hop.member_kind {
+        // Matched exhaustively with NO `_` arm ON PURPOSE: adding a variant to
+        // `SynthesizedMember` (the placement-relations belt's `.world_frame`,
+        // PRD §7) must be a COMPILE ERROR here — a new synthesized member needs
+        // a deliberate terminal-lowering decision, not a silent fall-through.
+        MemberKind::Synthesized(synthesized) => match synthesized {
+            SynthesizedMember::Count => TerminalKind::Synthesized(SynthesizedMember::Count),
+        },
+        MemberKind::Realization => TerminalKind::Realization {
+            structure,
+            name: hop.member.clone(),
+        },
+        MemberKind::ValueCell(_) => match scoped_entity {
+            Some(entity) => TerminalKind::ValueCell(ValueCellId::new(entity, &hop.member)),
+            None => TerminalKind::InstanceField {
+                structure,
+                member: hop.member.clone(),
+                member_kind: hop.member_kind,
+            },
+        },
+        // A sub or port terminal has no solver cell of its own, so it is the
+        // projection shape — which is also exactly what `expr.rs` lowers such an
+        // access to today (`index_access` under the dimensionless fallback).
+        MemberKind::Sub | MemberKind::Port => TerminalKind::InstanceField {
+            structure,
+            member: hop.member.clone(),
+            member_kind: hop.member_kind,
+        },
+    }
+}
+
 impl MemberPathError {
     /// Render this error as the diagnostic the CALLER should push, or `None`
     /// when there is nothing to say and the caller should fall through to its
