@@ -476,3 +476,119 @@ pub fn assert_local_feature_rejects_non_solid_input<T>(
         ),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bounding-box JSON parsing (task 5893)
+//
+// Contract tests for the shared `BBox` / `parse_bbox` helpers that consolidate
+// the seven hand-rolled bbox parsers previously scattered across
+// `tests/harness_occt/`. These `#[test]` fns run as `common::<name>` within the
+// single `harness_occt` test binary (task 5277 folded the 51 former binaries
+// into one compile unit, so `mod common;` is a normal module of it).
+// ---------------------------------------------------------------------------
+
+/// Build a bbox string EXACTLY the way the kernel does
+/// (`crates/reify-kernel-occt/src/lib.rs:3673-3677`): each component goes
+/// through `f64` **Display**, which is not a JSON number encoder.
+fn producer_format(xmin: f64, ymin: f64, zmin: f64, xmax: f64, ymax: f64, zmax: f64) -> String {
+    format!(
+        "{{\"xmin\":{},\"ymin\":{},\"zmin\":{},\"xmax\":{},\"ymax\":{},\"zmax\":{}}}",
+        xmin, ymin, zmin, xmax, ymax, zmax
+    )
+}
+
+/// (a) All six fields are recovered from the producer's exact wire format.
+///
+/// Exact `assert_eq!` is the correct assertion here, not a tolerance: every
+/// literal below is a dyadic rational exactly representable in binary64, `f64`
+/// Display emits the shortest round-tripping form, and Rust's `f64: FromStr` is
+/// correctly rounded — so the round-trip is an exact-representation identity.
+#[test]
+fn parse_bbox_reads_all_six_fields() {
+    let s = producer_format(-1.0, -2.5, -0.5, 4.0, 2.5, 0.5);
+    let bb: BBox = parse_bbox(&s);
+    assert_eq!(bb.xmin, -1.0, "xmin from {s}");
+    assert_eq!(bb.ymin, -2.5, "ymin from {s}");
+    assert_eq!(bb.zmin, -0.5, "zmin from {s}");
+    assert_eq!(bb.xmax, 4.0, "xmax from {s}");
+    assert_eq!(bb.ymax, 2.5, "ymax from {s}");
+    assert_eq!(bb.zmax, 0.5, "zmax from {s}");
+}
+
+/// (b) Non-finite extents parse — the contract that distinguishes this helper
+/// from a `serde_json`-based one.
+///
+/// `<f64 as Display>` emits the bare tokens `inf` / `-inf` / `NaN`, which strict
+/// JSON forbids and `serde_json::from_str` rejects outright, while
+/// `<f64 as FromStr>` accepts exactly those tokens. Unbounded extents are live
+/// in this harness: `extrude_infinite_integration.rs` asserts `is_finite()`
+/// precisely because the op under test is unbounded before clipping, and that
+/// assertion is only meaningful if a non-finite bbox reaches it as a number
+/// rather than dying in the parser.
+#[test]
+fn parse_bbox_accepts_non_finite_extents() {
+    let s = producer_format(
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        f64::INFINITY,
+        f64::INFINITY,
+        0.5,
+    );
+    assert!(
+        s.contains("-inf") && s.contains("\"xmax\":inf"),
+        "f64 Display must emit the bare inf/-inf tokens that strict JSON forbids, got {s}"
+    );
+    let bb = parse_bbox(&s);
+    assert!(
+        bb.xmin.is_infinite() && bb.xmin.is_sign_negative(),
+        "xmin should round-trip as -inf, got {}",
+        bb.xmin
+    );
+    assert!(
+        bb.xmax.is_infinite() && bb.xmax.is_sign_positive(),
+        "xmax should round-trip as +inf, got {}",
+        bb.xmax
+    );
+    assert_eq!(bb.zmin, 0.0, "finite fields still parse alongside inf ones");
+    assert_eq!(bb.zmax, 0.5, "finite fields still parse alongside inf ones");
+
+    // NaN is the other Display token strict JSON forbids.
+    let nan = parse_bbox(&producer_format(f64::NAN, 0.0, 0.0, 1.0, 1.0, 1.0));
+    assert!(nan.xmin.is_nan(), "NaN should round-trip, got {}", nan.xmin);
+}
+
+/// (c) Whitespace around `:` / `,` is trimmed, keys parse with or without
+/// surrounding quotes, and an unrecognised extra key is ignored rather than
+/// fatal.
+#[test]
+fn parse_bbox_tolerates_whitespace_and_quoted_keys() {
+    let s = "{ \"xmin\" : -1.0 , ymin: -2.0 , \"zmin\" :-3.0 , \
+             \"xmax\": 1.0 , ymax : 2.0 , \"zmax\" : 3.0 , \"future_key\": 99.0 }";
+    let bb = parse_bbox(s);
+    assert_eq!(bb.xmin, -1.0);
+    assert_eq!(bb.ymin, -2.0);
+    assert_eq!(bb.zmin, -3.0);
+    assert_eq!(bb.xmax, 1.0);
+    assert_eq!(bb.ymax, 2.0);
+    assert_eq!(bb.zmax, 3.0);
+}
+
+/// (d) An absent key PANICS naming the field — it must NOT silently return
+/// `f64::NAN`, which would make a downstream `(zmax - zmin).abs() < tol`
+/// quietly evaluate false and surface a parse failure as a confusing geometry
+/// assertion.
+#[test]
+#[should_panic(expected = "zmax")]
+fn parse_bbox_panics_on_missing_field() {
+    let _ = parse_bbox("{\"xmin\":-1,\"ymin\":-2,\"zmin\":-3,\"xmax\":1,\"ymax\":2}");
+}
+
+/// (e) A non-numeric value panics, naming the offending pair AND quoting the
+/// full input so the malformed kernel response is visible in the failure.
+#[test]
+#[should_panic(expected = "not-a-number")]
+fn parse_bbox_panics_on_unparseable_value() {
+    let _ =
+        parse_bbox("{\"xmin\":-1,\"ymin\":-2,\"zmin\":not-a-number,\"xmax\":1,\"ymax\":2,\"zmax\":3}");
+}
