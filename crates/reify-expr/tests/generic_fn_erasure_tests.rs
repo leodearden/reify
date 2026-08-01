@@ -7,7 +7,8 @@
 //! These tests PASS immediately (confirming the gate) because the erasure
 //! machinery landed in β. If they ever go RED, it signals an erasure regression.
 //!
-//! Uses the same compile_source + get_let_expr + eval_expr pattern as
+//! Uses the compile_source + get_let_expr + eval_expr pattern, mirroring the
+//! compile-then-eval structure of
 //! crates/reify-compiler/tests/harness_traits/fn_generic_call_inference_tests.rs.
 
 use reify_core::DimensionVector;
