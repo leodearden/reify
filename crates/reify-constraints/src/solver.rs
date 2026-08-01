@@ -6563,6 +6563,203 @@ mod tests {
         }
     }
 
+    /// Pins the suppression rule (task #5711) — a genuinely SUBOPTIMAL
+    /// incumbent must never be reported as non-unique — and, as a corollary,
+    /// the open-interval / infimum-not-attained ruling: `x > 5mm AND x < 6mm`
+    /// is an OPEN interval under `minimize(x)`, so the infimum (5mm) is never
+    /// attained, there is no argmin, and "uniquely optimal" (\u{a7}11.6) is
+    /// vacuous rather than false. `verify_uniqueness` must ABSTAIN (report
+    /// "cannot prove non-unique") rather than manufacture a
+    /// `ConstraintNonUnique` for a problem that simply has no optimum — and
+    /// the `IncumbentSuboptimal` branch is what makes it abstain, for free,
+    /// with no special-casing of open intervals.
+    ///
+    /// MUST be a unit test, not an integration test: the distinction is
+    /// invisible through the public `SolveResult` — this fixture already
+    /// reports `Solved` (i.e. `verify_uniqueness` already returns `true`)
+    /// BOTH before and after step-5, via two entirely different mechanisms.
+    /// Precedent for reaching into the private fn directly:
+    /// `verify_uniqueness_skips_solve_core_when_param_missing`.
+    ///
+    /// Rebuilds the
+    /// `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible`
+    /// shape (solver_integration.rs:617-669) locally: `Part.x`,
+    /// `Type::length()`, `bounds: Some((0.0, 0.1))`, `free: false`;
+    /// `x > 5mm AND x < 6mm`; `minimize(x)`; `current_values: {x: 5.5mm}`.
+    /// `solved = {x: 0.0055}` is that fixture's real, measured `Solved`
+    /// result (the drift fallback returning the exact seed) — taken as a
+    /// given incumbent here rather than re-derived, since the mechanism
+    /// under test is `verify_uniqueness`'s re-solve, not the main solve.
+    ///
+    /// RED today (MEASURED, task #5711 pre-step-5 — not guessed): calling
+    /// `super::verify_uniqueness` on this exact problem/incumbent under a
+    /// WARN-capturing subscriber shows it reaches its `true` verdict via the
+    /// inert `_ =>` arm — the `effective_bounds` anchor (`0.09`, i.e. 90mm)
+    /// is so far outside the 1mm bracket that `solve_core`'s re-solve from
+    /// there lands at `Infeasible` (measured max residual `5.00e-7` — just
+    /// outside `FEASIBILITY_THRESHOLD`), so ZERO WARN events fire;
+    /// `verify_uniqueness` only ever emits a DEBUG event on this path
+    /// ("perturbed solve did not converge; assuming unique"). This is the
+    /// part that makes the test RED: `capture.count()` is `0` today.
+    ///
+    /// AFTER step-5 wires the derived box, the SAME incumbent instead
+    /// re-solves via a FEASIBLE anchor (MEASURED: derived box `(0.005,
+    /// 0.006)`, anchor `0.0051`, re-solve lands `Solved` at exactly `0.0051`
+    /// — strictly below the incumbent's `0.0055` under `minimize(x)`),
+    /// `classify_uniqueness` returns `IncumbentSuboptimal`, and step-5 wires
+    /// `verify_uniqueness` to emit exactly one WARN naming the suppression —
+    /// so `capture.count() == 1` afterward. The (b) block below independently
+    /// re-derives that same anchor/re-solve/verdict chain from the raw
+    /// building blocks (`build_perturbation_anchors`, `solve_core`,
+    /// `classify_uniqueness`), pinning the MECHANISM itself, not just its
+    /// observable side effect.
+    #[test]
+    fn incumbent_suboptimal_is_suppressed_not_reported_non_unique() {
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{
+            AutoParam, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult, Value,
+            ValueMap,
+        };
+        use reify_test_support::{cnid, gt, literal, lt, mm, value_ref, vcid, warn_capturing_subscriber};
+
+        use super::{
+            UniquenessVerdict, build_perturbation_anchors, build_scoring_values,
+            classify_uniqueness, derive_param_intervals, eval_objective_set, resolve_bounds,
+            solve_core, verify_uniqueness,
+        };
+
+        let x_id = vcid("Part", "x");
+        let x_ref = value_ref("Part", "x");
+        let gt_expr = gt(x_ref.clone(), literal(mm(5.0)));
+        let lt_expr = lt(x_ref.clone(), literal(mm(6.0)));
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, x_ref);
+
+        let mut current_values = ValueMap::new();
+        current_values.insert(x_id.clone(), mm(5.5));
+
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.1)),
+                free: false,
+            }],
+            constraints: vec![(cnid("Part", 0), gt_expr), (cnid("Part", 1), lt_expr)],
+            current_values,
+            objective: Some(objective),
+            functions: vec![].into(),
+        };
+
+        // This fixture's real measured Solved result (the drift fallback
+        // returning the exact seed) — see
+        // `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible`,
+        // solver_integration.rs:617-669.
+        let mut solved: std::collections::HashMap<ValueCellId, Value> =
+            std::collections::HashMap::new();
+        solved.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.0055,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        // ---- (a)+(c): the REAL verify_uniqueness call, under a
+        // WARN-capturing subscriber. (a) the verdict is `true` both before
+        // and after step-5 — NOT what distinguishes this test (the public
+        // SolveResult reads Solved either way). (c) the WARN count IS what
+        // distinguishes it: 0 today (inert `_ =>` arm, DEBUG-only), 1 after
+        // step-5 (explicit IncumbentSuboptimal suppression warning).
+        let (subscriber, capture) = warn_capturing_subscriber();
+        let unique = tracing::subscriber::with_default(subscriber, || {
+            verify_uniqueness(&problem, &solved)
+        });
+        assert!(
+            unique,
+            "verify_uniqueness must return true for this incumbent both before and after \
+             step-5 (the public verdict is unchanged — only the INTERNAL mechanism differs)"
+        );
+        capture.assert_count_and_any_message_contains(1, "IncumbentSuboptimal");
+
+        // ---- (b): pin the mechanism directly — recompute the #5618
+        // constraint-derived box and this fixture's perturbation anchor, and
+        // confirm the ACTUAL re-solve from that anchor is what step-5's
+        // wired classifier will see as `IncumbentSuboptimal`.
+        let derived_box = resolve_bounds(
+            &problem.auto_params,
+            &derive_param_intervals(
+                &problem.auto_params,
+                &problem.constraints,
+                &problem.current_values,
+                &problem.functions,
+            ),
+            true,
+        );
+        let (anchor, missing) =
+            build_perturbation_anchors(&problem.auto_params, &solved, &derived_box);
+        assert!(missing.is_empty(), "x must not be missing from `solved`");
+        assert!(
+            anchor[0] > 0.005 && anchor[0] < 0.006,
+            "the derived-box anchor must land INSIDE the (5mm, 6mm) bracket, proving the \
+             mechanism is available once step-5 wires it in; got {anchor:?}"
+        );
+
+        let (perturbed_result, _meta) = solve_core(&problem, &anchor);
+        let SolveResult::Solved {
+            values: perturbed_values,
+            ..
+        } = perturbed_result
+        else {
+            panic!(
+                "re-solving from the derived-box anchor must converge (Solved); got {:?}",
+                perturbed_result
+            );
+        };
+
+        let incumbent_scoring = build_scoring_values(
+            &problem.current_values,
+            &solved,
+            &problem.dependent_cells,
+            &problem.functions,
+        );
+        let perturbed_scoring = build_scoring_values(
+            &problem.current_values,
+            &perturbed_values,
+            &problem.dependent_cells,
+            &problem.functions,
+        );
+        let obj = problem
+            .objective
+            .as_ref()
+            .expect("objective is Some in this fixture");
+        let incumbent_score =
+            eval_objective_set(obj, &incumbent_scoring, &problem.functions).expect("numeric");
+        let perturbed_score =
+            eval_objective_set(obj, &perturbed_scoring, &problem.functions).expect("numeric");
+        assert!(
+            perturbed_score < incumbent_score,
+            "the re-solve must find a STRICTLY better point under minimize(x) \
+             ({perturbed_score} should be < {incumbent_score}) — this is the premise that \
+             makes the incumbent suboptimal rather than the constraints underdetermined"
+        );
+
+        let verdict = classify_uniqueness(
+            &problem.auto_params,
+            &solved,
+            &perturbed_values,
+            Some((incumbent_score, perturbed_score)),
+        );
+        assert_eq!(
+            verdict,
+            UniquenessVerdict::IncumbentSuboptimal,
+            "params differ and the perturbed point scores strictly better — this MUST \
+             classify as IncumbentSuboptimal, not NonUnique: the incumbent is not the \
+             argmin, so this is an optimality finding, not evidence the constraints are \
+             underdetermined"
+        );
+    }
+
     // ---- best_found_reason unit tests ----
 
     /// Deterministic unit test for best_found_reason (B1 sub-test).
