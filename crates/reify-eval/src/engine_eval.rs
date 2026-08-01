@@ -11430,6 +11430,163 @@ mod cell_read_index_tests {
     }
 }
 
+/// [PRD2 α] (task #5467 step-3) — LAYER 1: a constraint that reads an auto only
+/// THROUGH a `let` must still reach the solver.
+///
+/// `filter_constraints_reading_autos` is the gate that decides which constraints
+/// enter the `ResolutionProblem` at all. It is one-hop blind: for
+/// `let s = a + b; constraint s == 10.0` the constraint's dependency trace reads
+/// `{S.s}` and never `{S.a, S.b}`, so it is DROPPED and the autos are left with
+/// no residual at all. Widening it to `auto_ids ∪ cells_reaching(auto_ids)` is
+/// what admits it.
+///
+/// The two identity guards below are the D1/B2 boundary: with an EMPTY reaching
+/// set the filter must behave exactly as it does today, so a model with no
+/// dependent cells is provably unaffected.
+#[cfg(test)]
+mod transitive_constraint_admission_tests {
+    use std::collections::HashSet;
+
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::BinOp;
+    use reify_test_support::{TopologyTemplateBuilder, binop, eq, gt, literal, mm, value_ref};
+
+    use super::{CellReadIndex, filter_constraints_reading_autos};
+
+    const TEST_MAX_UNFOLD_DEPTH: usize = 64;
+    const TEST_MAX_UNFOLD_NODES: usize = 10_000;
+
+    /// The α fixture, in template form:
+    ///
+    /// ```text
+    /// param a : Real = auto        param b : Real = auto
+    /// param p : Real = 1.0         (a PLAIN param — reaches no auto)
+    /// let s = a + b                let d = a - b        let c = 1.0 + p
+    /// constraint[0] s == 10.0      constraint[1] d == 2.0
+    /// constraint[2] c == 1.0       constraint[3] a > 0.0   (DIRECT auto read)
+    /// ```
+    fn fixture() -> Vec<reify_compiler::TopologyTemplate> {
+        vec![
+            TopologyTemplateBuilder::new("S")
+                .auto_param("S", "a", Type::dimensionless_scalar())
+                .auto_param("S", "b", Type::dimensionless_scalar())
+                .param("S", "p", Type::dimensionless_scalar(), Some(literal(mm(1.0))))
+                .let_binding(
+                    "S",
+                    "s",
+                    Type::dimensionless_scalar(),
+                    binop(BinOp::Add, value_ref("S", "a"), value_ref("S", "b")),
+                )
+                .let_binding(
+                    "S",
+                    "d",
+                    Type::dimensionless_scalar(),
+                    binop(BinOp::Sub, value_ref("S", "a"), value_ref("S", "b")),
+                )
+                .let_binding(
+                    "S",
+                    "c",
+                    Type::dimensionless_scalar(),
+                    binop(BinOp::Add, literal(mm(1.0)), value_ref("S", "p")),
+                )
+                .constraint(
+                    "S",
+                    0,
+                    None,
+                    eq(value_ref("S", "s"), literal(mm(10.0))),
+                )
+                .constraint("S", 1, None, eq(value_ref("S", "d"), literal(mm(2.0))))
+                .constraint("S", 2, None, eq(value_ref("S", "c"), literal(mm(1.0))))
+                .constraint("S", 3, None, gt(value_ref("S", "a"), literal(mm(0.0))))
+                .build(),
+        ]
+    }
+
+    /// The surviving constraints' indices, in filter order.
+    fn surviving(
+        templates: &[reify_compiler::TopologyTemplate],
+        reaching: &HashSet<ValueCellId>,
+        index: &CellReadIndex<'_>,
+    ) -> Vec<u32> {
+        let a = ValueCellId::new("S", "a");
+        let b = ValueCellId::new("S", "b");
+        let auto_ids: HashSet<&ValueCellId> = [&a, &b].into_iter().collect();
+        filter_constraints_reading_autos(&templates[0].constraints, &auto_ids, reaching, index)
+            .into_iter()
+            .map(|(id, _)| id.index)
+            .collect()
+    }
+
+    /// THE α FIX — both let-indirected constraints must be admitted, and the
+    /// direct reader alongside them.
+    #[test]
+    fn a_constraint_reading_an_auto_only_through_a_let_is_admitted() {
+        let templates = fixture();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let autos: HashSet<ValueCellId> = [ValueCellId::new("S", "a"), ValueCellId::new("S", "b")]
+            .into_iter()
+            .collect();
+        let reaching = index.cells_reaching(&autos);
+
+        let got = surviving(&templates, &reaching, &index);
+        for idx in [0u32, 1] {
+            assert!(
+                got.contains(&idx),
+                "constraint[{idx}] reads an auto only THROUGH a `let`, but it \
+                 genuinely pins `S.a`/`S.b` — it must be ADMITTED into the \
+                 ResolutionProblem. A one-hop read set stops at `S.s`/`S.d` and \
+                 drops it, leaving both autos with no residual; got {got:?}",
+            );
+        }
+        assert!(
+            got.contains(&3),
+            "constraint[3] reads the auto `S.a` DIRECTLY and must still \
+             survive — widening the filter is a superset, never a swap; got \
+             {got:?}",
+        );
+    }
+
+    /// IDENTITY GUARD (i) — a constraint touching no auto directly OR
+    /// transitively is still DROPPED. Without this the widening would degenerate
+    /// into "admit everything" and hand the solver residuals it cannot move.
+    #[test]
+    fn a_constraint_reaching_no_auto_is_still_dropped() {
+        let templates = fixture();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+        let autos: HashSet<ValueCellId> = [ValueCellId::new("S", "a"), ValueCellId::new("S", "b")]
+            .into_iter()
+            .collect();
+        let reaching = index.cells_reaching(&autos);
+
+        let got = surviving(&templates, &reaching, &index);
+        assert!(
+            !got.contains(&2),
+            "constraint[2] reads only `S.c = 1.0 + p`, which reaches no auto — \
+             it must stay DROPPED; got {got:?}",
+        );
+    }
+
+    /// IDENTITY GUARD (ii) / D1 — with an EMPTY reaching set the filter's output
+    /// is byte-identical to today's direct-only behaviour: only the direct
+    /// reader survives. This is the boundary that makes "a model with no
+    /// dependent cells is unchanged" an asserted invariant rather than a claim.
+    #[test]
+    fn an_empty_reaching_set_reproduces_the_direct_only_filter_exactly() {
+        let templates = fixture();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let got = surviving(&templates, &HashSet::new(), &index);
+        assert_eq!(
+            got,
+            vec![3u32],
+            "with an EMPTY auto-reaching set ONLY the direct reader \
+             constraint[3] may survive — exactly today's behaviour. Any other \
+             output means the widening leaked into the D1 identity branch; got \
+             {got:?}",
+        );
+    }
+}
+
 /// [JOINT-DRIVE β] (task #5189 step-7) — the SCC-ADMISSIBILITY guardrail on
 /// `build_dependent_cells` (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
 /// §6.4).
