@@ -2883,6 +2883,28 @@ impl EngineSession {
         // cannot diverge (the helper keys on `ValueCellId`, not the reallocated
         // kernel handle).
         //
+        // ── DURABILITY INVARIANT (task #5338) ────────────────────────────────
+        //
+        // `tess_result` is an INCREMENTAL DELTA, not a full snapshot. The
+        // normative statement is the DELTA CONTRACT block on
+        // `Engine::demand_scoped_unified_pass` (reify-eval engine_build.rs) — read
+        // it there; it is deliberately not restated or duplicated here.
+        //
+        // The consequence this function must honour: an absent (or `Undef`)
+        // realization in the delta means "RETAIN the previous value", NOT "the
+        // value is gone". Every geometry-derived cell must therefore survive a
+        // delta gap. Concretely, all FOUR GUI entry points that can reach this
+        // rebuild — argv launch (`commands::load_initial_file_impl`), File-Open
+        // (`commands::open_file_engine_impl`), watcher reload
+        // (`commands::reload_for_watch_impl`) and warm edit
+        // (`commands::set_parameter_impl`) — are each followed by the frontend's
+        // `sync_demand` + repeated re-renders, and from the SECOND such re-render
+        // onward the body is hash-exempt and its mass-prop cells arrive `Undef`.
+        // Reading the delta as a snapshot there is what made those cells revert to
+        // `Undef` in the shipped GUI. The matrix test
+        // `rigid_mass_props_determined_across_all_gui_load_paths`
+        // (tests/commands_tests.rs) locks all four entry points against it.
+        //
         // Task #5338: the overlay is DELTA-AWARE. `tess_result` is an incremental
         // delta, so a hash-exempt realization's cells arrive `Undef` even though
         // their values are unchanged and still correct; `geometry_derived_cache`
