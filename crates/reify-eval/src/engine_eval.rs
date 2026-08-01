@@ -11144,6 +11144,210 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
     }
 }
 
+/// [PRD2 α] (task #5467 step-1) — the ONE cross-template read index that layers
+/// 1 (`filter_constraints_reading_autos`), 4 (`detect_underdetermined`) and
+/// `build_dependent_cells` itself all consume.
+///
+/// ## Why this is one type and not three walks
+///
+/// `build_dependent_cells` already computes, as private stages, everything the
+/// other two layers need: the cross-template `cell_map` of non-auto cells with a
+/// plain `default_expr`, the budgeted `build_instance_path_structure_map` +
+/// `normalize_cell_id` two-namespace bridge (task #5334), the FORWARD transitive
+/// read-closure, and the REVERSE "transitively reads an auto" propagation. Three
+/// independent copies of a cross-template graph walk carrying a two-namespace
+/// bridge is exactly the G7 no-lockstep-duplication failure PRD2 §3 decision 9
+/// exists to prevent — and the bridge is the part most likely to be got subtly
+/// wrong in a re-implementation (the #5334/#5189 step-10 failure).
+///
+/// These tests pin the index's two directions independently of
+/// `build_dependent_cells`, so a future change to either direction fails HERE
+/// with a direction-specific message rather than only as a downstream surprise.
+#[cfg(test)]
+mod cell_read_index_tests {
+    use std::collections::HashSet;
+
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::BinOp;
+    use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
+
+    use super::CellReadIndex;
+
+    /// Same budgets the sibling `dependent_cells_admissibility_tests` use — far
+    /// above anything these hand-built templates need, so the budgets are not
+    /// what is under test.
+    const TEST_MAX_UNFOLD_DEPTH: usize = 64;
+    const TEST_MAX_UNFOLD_NODES: usize = 10_000;
+
+    /// The shared fixture for (a)–(c):
+    ///
+    /// ```text
+    /// S.a : auto            S.b : param (plain)
+    /// S.s = a + b           transitively reads the auto  ⇒ auto-reaching
+    /// S.c = 1.0 + b         reads NO auto                ⇒ NOT auto-reaching
+    /// ```
+    fn single_template() -> Vec<reify_compiler::TopologyTemplate> {
+        vec![
+            TopologyTemplateBuilder::new("S")
+                .auto_param("S", "a", Type::dimensionless_scalar())
+                .param("S", "b", Type::dimensionless_scalar(), Some(literal(mm(1.0))))
+                .let_binding(
+                    "S",
+                    "s",
+                    Type::dimensionless_scalar(),
+                    binop(BinOp::Add, value_ref("S", "a"), value_ref("S", "b")),
+                )
+                .let_binding(
+                    "S",
+                    "c",
+                    Type::dimensionless_scalar(),
+                    binop(BinOp::Add, literal(mm(1.0)), value_ref("S", "b")),
+                )
+                .build(),
+        ]
+    }
+
+    /// (a) FORWARD — `read_closure` seeded with a read of the `let` must follow
+    /// the let ONE HOP FURTHER than `extract_value_deps` does, reaching the auto
+    /// behind it. This is the whole point of layer 4: a constraint written
+    /// `constraint s == 10.0` reads `{S.s}` directly, but it genuinely pins
+    /// `S.a`, so `S.a` must be in the closure.
+    #[test]
+    fn read_closure_follows_a_let_through_to_the_auto_behind_it() {
+        let templates = single_template();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let seed = value_ref("S", "s");
+        let closure = index.read_closure(std::iter::once(&seed));
+
+        for expected in [
+            ValueCellId::new("S", "s"),
+            ValueCellId::new("S", "a"),
+            ValueCellId::new("S", "b"),
+        ] {
+            assert!(
+                closure.contains(&expected),
+                "the forward read-closure seeded with `S.s` must contain \
+                 {expected} — a direct one-hop read set would stop at `S.s` and \
+                 miss the auto `S.a` the let genuinely pins; got {closure:?}",
+            );
+        }
+        assert!(
+            !closure.contains(&ValueCellId::new("S", "c")),
+            "the forward closure must NOT contain `S.c`: nothing in the seed \
+             chain reads it, and the closure follows reads DOWNWARD only; got \
+             {closure:?}",
+        );
+    }
+
+    /// (b) REVERSE — `cells_reaching` answers "which NON-AUTO cells transitively
+    /// read one of these autos", which is what layer 1 unions with `auto_ids` to
+    /// admit a let-indirected constraint. The autos themselves must NOT come
+    /// back: layer 1 already holds them, and returning them here would make the
+    /// two sets' union silently order-dependent to reason about.
+    #[test]
+    fn cells_reaching_returns_the_let_but_not_the_auto_itself() {
+        let templates = single_template();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let autos: HashSet<ValueCellId> = [ValueCellId::new("S", "a")].into_iter().collect();
+        let reaching = index.cells_reaching(&autos);
+
+        assert!(
+            reaching.contains(&ValueCellId::new("S", "s")),
+            "`S.s = a + b` transitively reads the auto `S.a`, so it must be in \
+             the auto-reaching set; got {reaching:?}",
+        );
+        assert!(
+            !reaching.contains(&ValueCellId::new("S", "a")),
+            "the auto `S.a` must NOT be echoed back in the auto-reaching set — \
+             that set is the NON-AUTO cells layer 1 unions WITH `auto_ids`; got \
+             {reaching:?}",
+        );
+    }
+
+    /// (c) REVERSE, negative — a cell reading no auto (directly or transitively)
+    /// must be absent, or layer 1 would admit a constraint the solver has no
+    /// business seeing and D1's "a direct-only model is unchanged" boundary
+    /// would leak.
+    #[test]
+    fn cells_reaching_excludes_a_cell_that_reads_no_auto() {
+        let templates = single_template();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let autos: HashSet<ValueCellId> = [ValueCellId::new("S", "a")].into_iter().collect();
+        let reaching = index.cells_reaching(&autos);
+
+        assert!(
+            !reaching.contains(&ValueCellId::new("S", "c")),
+            "`S.c = 1.0 + b` reads no auto directly or transitively, so it must \
+             be ABSENT from the auto-reaching set; got {reaching:?}",
+        );
+
+        // And with NO autos at all the reverse map is empty — the D1 identity
+        // branch layers 1 and 2 both degenerate to.
+        let empty = index.cells_reaching(&HashSet::new());
+        assert!(
+            empty.is_empty(),
+            "with an EMPTY auto set nothing is auto-reaching, so layer 1's \
+             `auto_ids ∪ reaching` union collapses to today's direct-only \
+             behaviour; got {empty:?}",
+        );
+    }
+
+    /// (d) The #5334 two-namespace bridge. A seed read keyed by INSTANCE PATH
+    /// (`RivetedPanel.rivets.line_cost` — the shape `apply_cost_aggregation`
+    /// produces) must normalise to its declaring template's id before the walk,
+    /// or it misses `cell_map` entirely and the closure stops dead at the seed.
+    /// Fixture shape reused from
+    /// `instance_path_alias_expr_is_rescoped_but_keeps_auto_reads_template_keyed`.
+    #[test]
+    fn read_closure_normalizes_an_instance_path_seed_to_its_template() {
+        let parent = TopologyTemplateBuilder::new("RivetedPanel")
+            .sub_component("rivets", "Rivet", vec![])
+            .build();
+        let child = TopologyTemplateBuilder::new("Rivet")
+            .auto_param("Rivet", "quantity_produced", Type::dimensionless_scalar())
+            .param(
+                "Rivet",
+                "unit_cost",
+                Type::dimensionless_scalar(),
+                Some(literal(mm(0.50))),
+            )
+            .let_binding(
+                "Rivet",
+                "line_cost",
+                Type::dimensionless_scalar(),
+                binop(
+                    BinOp::Mul,
+                    value_ref("Rivet", "unit_cost"),
+                    value_ref("Rivet", "quantity_produced"),
+                ),
+            )
+            .build();
+        let templates = vec![parent, child];
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        // The seed is INSTANCE-PATH keyed, exactly as an aggregated objective
+        // term's read is.
+        let seed = value_ref("RivetedPanel.rivets", "line_cost");
+        let closure = index.read_closure(std::iter::once(&seed));
+
+        assert!(
+            closure.contains(&ValueCellId::new("Rivet", "line_cost")),
+            "the instance-path seed `RivetedPanel.rivets.line_cost` must \
+             NORMALISE to its declaring template's id `Rivet.line_cost` — \
+             without the #5334 bridge it misses `cell_map` and the walk stops \
+             at the seed; got {closure:?}",
+        );
+        assert!(
+            closure.contains(&ValueCellId::new("Rivet", "quantity_produced")),
+            "having normalised, the walk must continue THROUGH the let to the \
+             auto `Rivet.quantity_produced`; got {closure:?}",
+        );
+    }
+}
+
 /// [JOINT-DRIVE β] (task #5189 step-7) — the SCC-ADMISSIBILITY guardrail on
 /// `build_dependent_cells` (PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md`
 /// §6.4).
