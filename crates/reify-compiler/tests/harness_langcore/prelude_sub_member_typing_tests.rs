@@ -243,3 +243,101 @@ fn unknown_member_on_prelude_typed_sub_is_diagnosed() {
          silently accepted; got: {errors:?}",
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (e) the MATCH-ARM mirror of the same module-only lookup
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SRC_PRELUDE_MATCH_ARM_SUB: &str = r#"
+enum StyleSel { A, B }
+
+structure def Styled {
+    param sel : StyleSel = StyleSel.A
+    match sel {
+        A => sub s : DisplayStyle,
+        B => sub s : DisplayStyle
+    }
+    let op = self.s.opacity
+}
+"#;
+
+/// Read the declared type of `<member>` on the PRELUDE template `<template>`,
+/// so the expectation below is not a guess about how `Real` surfaces.
+fn prelude_member_type(template_name: &str, member: &str) -> Type {
+    let prelude = reify_compiler::stdlib_loader::load_stdlib();
+    let tmpl = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
+    tmpl.value_cells
+        .iter()
+        .find(|c| c.id.member == member)
+        .unwrap_or_else(|| panic!("prelude template {template_name} has no member {member}"))
+        .cell_type
+        .clone()
+}
+
+/// The match-arm mirror of the plain-`Sub` defect. The same module-only
+/// `find_template` sub-target lookup appears three more times in `entity.rs` —
+/// the match-arm `Sub` pre-pass, the per-arm cluster member maps, and
+/// `compile_match_arm_decl_group::arm_member_types` — so a prelude-typed arm sub
+/// stays broken even after the plain-sub fix.
+///
+/// `DisplayStyle` is the fixture type because every one of its params is
+/// defaulted (`color`, `finish`, `opacity : Real = 1.0`, `wireframe`), so the
+/// bare `sub s : DisplayStyle` arm form needs no constructor args. The enum is
+/// `StyleSel` and not `Mode`: `Mode` collides with a prelude structure and
+/// produces an unrelated `StructureRef("Mode")` mis-resolution (measured).
+///
+/// MEASURED RED with only the plain-sub fix applied: `cell Styled.op : Error`,
+/// a bogus `RealizationDecl { name: Some("op") }`, and TWO false-positive errors
+/// `field 'opacity' is not present in match-arm types: DisplayStyle,
+/// DisplayStyle` — the per-arm member maps come back empty because the arm-type
+/// lookup is still module-only. That false-positive-for-a-resolvable-name is the
+/// same failure mode as esc-5360-9.
+#[test]
+fn prelude_typed_match_arm_sub_member_read_is_typed() {
+    let parsed =
+        reify_compiler::parse_with_stdlib(SRC_PRELUDE_MATCH_ARM_SUB, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture must parse cleanly; got: {:?}",
+        parsed.errors,
+    );
+    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let styled = template(&compiled, "Styled");
+
+    let op_type = let_cell_type(styled, "op");
+    assert_ne!(
+        op_type,
+        Type::Error,
+        "Styled.op must be typed from the prelude DisplayStyle arm types",
+    );
+    assert_ne!(
+        op_type,
+        Type::Geometry,
+        "Styled.op reads a MEMBER VALUE and must not fall through to the \
+         cross-sub-geometry path",
+    );
+    assert_eq!(
+        op_type,
+        prelude_member_type("DisplayStyle", "opacity"),
+        "Styled.op must carry the declared type of DisplayStyle.opacity",
+    );
+
+    assert_no_realization_named(styled, "op");
+
+    let errors: Vec<&reify_core::Diagnostic> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors
+            .iter()
+            .any(|d| d.message.contains("not present in match-arm types")),
+        "`opacity` IS present on every arm type — a prelude-typed arm sub must not \
+         be reported as missing it; got: {errors:?}",
+    );
+}
