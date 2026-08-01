@@ -396,9 +396,9 @@ structure def AnisotropicConstructionProbe {
     )
     let mat_frame = MaterialFrame(
         origin: point3(0m, 0m, 0m),
-        x_axis: vec3(1m, 0m, 0m),
-        y_axis: vec3(0m, 1m, 0m),
-        z_axis: vec3(0m, 0m, 1m),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     let aniso = AnisotropicMaterial(law: ortho_law, frame: mat_frame)
 }
