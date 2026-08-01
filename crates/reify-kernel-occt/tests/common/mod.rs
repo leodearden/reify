@@ -684,3 +684,115 @@ fn parse_bbox_panics_on_unparseable_value() {
     let _ =
         parse_bbox("{\"xmin\":-1,\"ymin\":-2,\"zmin\":not-a-number,\"xmax\":1,\"ymax\":2,\"zmax\":3}");
 }
+
+/// A second, distinct `Debug` error type, so [`bbox_of`]'s `E: Debug`
+/// genericity is exercised by two real instantiations rather than merely
+/// asserted in a doc comment. Stands in for `QueryError`, which this module
+/// deliberately does not import.
+#[derive(Debug)]
+#[allow(dead_code)] // field 0 is read only through the derived Debug impl
+struct FakeQueryError(&'static str);
+
+/// (a) `bbox_of` unwraps a successful `Value::String` query into the same
+/// `BBox` that `parse_bbox` yields for that string, for two different error
+/// types.
+#[test]
+fn bbox_of_unwraps_ok_string() {
+    let s = producer_format(-1.0, -2.0, -3.0, 1.0, 2.0, 3.0);
+    let expected = BBox {
+        xmin: -1.0,
+        ymin: -2.0,
+        zmin: -3.0,
+        xmax: 1.0,
+        ymax: 2.0,
+        zmax: 3.0,
+    };
+
+    // E = String
+    let via_string = bbox_of(Ok::<_, String>(Value::String(s.clone())));
+    assert_eq!(via_string, expected);
+    assert_eq!(via_string, parse_bbox(&s), "bbox_of must agree with parse_bbox");
+
+    // E = FakeQueryError — a second instantiation of the `E: Debug` parameter,
+    // which is what lets one helper serve both `OcctKernel::query` and
+    // `OcctKernelHandle::query`.
+    let via_other = bbox_of(Ok::<_, FakeQueryError>(Value::String(s)));
+    assert_eq!(via_other, expected);
+}
+
+/// (b) A failed query panics with the fixed prefix the seven call sites used.
+#[test]
+#[should_panic(expected = "BoundingBox query should succeed")]
+fn bbox_of_panics_on_query_error() {
+    let _ = bbox_of(Err::<Value, _>(FakeQueryError("kernel exploded")));
+}
+
+/// (b, cont.) …and that panic surfaces the underlying error's `Debug`, so the
+/// kernel's own diagnostic is not swallowed by the shared helper.
+#[test]
+#[should_panic(expected = "kernel exploded")]
+fn bbox_of_error_panic_surfaces_error_debug() {
+    let _ = bbox_of(Err::<Value, _>(FakeQueryError("kernel exploded")));
+}
+
+/// (c) A non-`String` `Value` panics naming the received variant, preserving
+/// the `panic!("expected bbox String, got {:?}", other)` behaviour of the five
+/// call sites that match on `Value::String` today.
+#[test]
+#[should_panic(expected = "Real")]
+fn bbox_of_panics_on_non_string_value() {
+    let _ = bbox_of(Ok::<_, String>(Value::Real(1.0)));
+}
+
+/// (d) `spans()` returns per-axis extents.
+///
+/// Endpoints are chosen so every difference is exact in binary64, so
+/// `assert_eq!` is the correct assertion — no tolerance is needed or
+/// appropriate for a pure subtraction of representable values.
+#[test]
+fn bbox_spans_returns_per_axis_extents() {
+    let bb = BBox {
+        xmin: -1.0,
+        ymin: -2.5,
+        zmin: 0.5,
+        xmax: 3.0,
+        ymax: 2.5,
+        zmax: 4.5,
+    };
+    let (dx, dy, dz) = bb.spans();
+    assert_eq!(dx, 4.0, "x span");
+    assert_eq!(dy, 5.0, "y span");
+    assert_eq!(dz, 4.0, "z span");
+}
+
+/// (e) `all_finite()` is true only when every one of the six components is
+/// finite. This is the predicate that replaces `sweep_guided_integration.rs`'s
+/// per-component `is_finite()` loop, so it must reject an `inf` or a `NaN` in
+/// ANY position, not just the first.
+#[test]
+fn bbox_all_finite_discriminates() {
+    let finite = BBox {
+        xmin: -1.0,
+        ymin: -2.0,
+        zmin: -3.0,
+        xmax: 1.0,
+        ymax: 2.0,
+        zmax: 3.0,
+    };
+    assert!(finite.all_finite(), "an all-finite box is all_finite");
+
+    let cases = [
+        ("xmin=-inf", BBox { xmin: f64::NEG_INFINITY, ..finite }),
+        ("ymin=+inf", BBox { ymin: f64::INFINITY, ..finite }),
+        ("zmin=NaN", BBox { zmin: f64::NAN, ..finite }),
+        ("xmax=+inf", BBox { xmax: f64::INFINITY, ..finite }),
+        ("ymax=NaN", BBox { ymax: f64::NAN, ..finite }),
+        ("zmax=-inf", BBox { zmax: f64::NEG_INFINITY, ..finite }),
+    ];
+    for (label, bad) in cases {
+        assert!(
+            !bad.all_finite(),
+            "a box with {label} must not be all_finite, got {bad:?}"
+        );
+    }
+}
