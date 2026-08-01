@@ -6978,6 +6978,259 @@
     }
 
     // ---------------------------------------------------------------------------
+    // Tests: `arc`'s CENTRE and RADIUS are LENGTH-semantic (task 5623, R1 sweep)
+    //
+    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` — the
+    // angles come BEFORE the axis. Unlike `line_segment` and `helix`, `arc`
+    // DOES have dimensionless neighbours: the two angles (PRD 3's scope, never
+    // ours) and the `ax`/`ay`/`az` unit vector. Four of its nine args are
+    // gated; the other five keep the bare-accepting `f64_arg` path.
+    //
+    // SCOPE PIN (PRD decision D13): every assertion below is on a rejection
+    // DIAGNOSTIC or on a `GeometryOp::Arc` IR field as returned by
+    // `compile_geometry_op`. Nothing asserts on a kernel-realized arc's
+    // geometry or size — the research flagged, unconfirmed, that `arc` may not
+    // consume its radius downstream, and this task builds no signal on that.
+    // Gating the radius is still correct: the gate is about what the argument
+    // MEANS, not about who currently reads it.
+    // ---------------------------------------------------------------------------
+
+    /// Build an `arc` op with a caller-supplied centre and radius, holding both
+    /// angles and the axis fixed and BARE.
+    fn arc_with_center_radius(
+        cx: reify_ir::CompiledExpr,
+        cy: reify_ir::CompiledExpr,
+        cz: reify_ir::CompiledExpr,
+        radius: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Arc,
+            args: vec![
+                ("cx".into(), cx),
+                ("cy".into(), cy),
+                ("cz".into(), cz),
+                ("radius".into(), radius),
+                // ANGLES are PRD 3's, never ours → stay bare.
+                ("start_angle".into(), literal_f64(0.0)),
+                ("end_angle".into(), literal_f64(1.0)),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+            ],
+        }
+    }
+
+    /// The four gated `arc` positions in gate order — centre triple, then
+    /// radius. Deliberately EXCLUDES `start_angle`/`end_angle`/`ax`/`ay`/`az`.
+    const ARC_LENGTH_ARGS: [&str; 4] = ["cx", "cy", "cz", "radius"];
+
+    /// A BARE (dimensionless) centre component or radius must be REJECTED — a
+    /// bare `10` radius would describe a 10 METRE arc instead of a 10 mm one.
+    ///
+    /// Run once per gated position: all four are separate reads.
+    #[test]
+    fn compile_geometry_op_arc_bare_length_arg_rejected() {
+        let values = ValueMap::new();
+
+        for bare in ARC_LENGTH_ARGS {
+            let component = |name: &str| -> reify_ir::CompiledExpr {
+                if name == bare {
+                    literal_f64(1.0)
+                } else {
+                    literal_length(1.0)
+                }
+            };
+            let op = arc_with_center_radius(
+                component("cx"),
+                component("cy"),
+                component("cz"),
+                component("radius"),
+            );
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) arc {bare} must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` centre component must be rejected
+    /// exactly like a bare `Value::Real`. The ANGLE arm is the sharpest arm on
+    /// THIS builtin: `arc` carries two real angle args, so an argument-order
+    /// slip genuinely delivers an ANGLE `Scalar` into a centre slot.
+    #[test]
+    fn compile_geometry_op_arc_wrong_dimension_length_arg_rejected() {
+        let values = ValueMap::new();
+
+        for (label, cx_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op = arc_with_center_radius(
+                cx_expr,
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.01),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar arc centre component must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("cx") && d.message.contains("Length")),
+                "a diagnostic must name the cx arg and the Length requirement for \
+                 a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE radius must drop the op and say
+    /// 'non-finite Length' specifically — the value IS a Length.
+    #[test]
+    fn compile_geometry_op_arc_non_finite_length_arg_rejected() {
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = arc_with_center_radius(
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(si),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length arc radius must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("radius") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length'; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Locks the split AND the scope boundary: a Length centre + Length radius
+    /// alongside BARE angles and a BARE dimensionless axis is the fully clean
+    /// path and must emit NO diagnostic at all.
+    ///
+    /// The bare-angle half is binding scope protection, not decoration — `arc`
+    /// is the only gated builtin carrying TWO angle args, and both belong to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3). Gating
+    /// either here would be a scope violation this test would catch.
+    ///
+    /// Distinct centre components pin the cx/cy/cz → `center` ORDERING, and the
+    /// radius is distinct from all three so a centre/radius transposition
+    /// cannot pass. Assertions are on IR fields only (PRD D13).
+    #[test]
+    fn compile_geometry_op_arc_length_center_radius_bare_angles_axis_accepted() {
+        let values = ValueMap::new();
+
+        let op = arc_with_center_radius(
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Arc {
+                center,
+                radius,
+                start_angle,
+                end_angle,
+                axis,
+            }) => {
+                assert_eq!(center, [0.012, 0.034, 0.056]);
+                assert_eq!(radius, 0.078);
+                assert_eq!(start_angle, 0.0);
+                assert_eq!(end_angle, 1.0);
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+            }
+            other => panic!(
+                "expected Ok(Arc) for a Length centre and radius with bare angles \
+                 and a bare axis, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Length centre + Length radius + dimensionless axis + BARE angles \
+             is the fully clean path and must emit NO diagnostic at all — in \
+             particular neither angle may be gated here (that is PRD 3's scope); \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: the SWEEP BOUNDARY of task 5623's R1 triage
     // ---------------------------------------------------------------------------
 
