@@ -238,8 +238,23 @@ ArgListExpr {
   "(" ArgumentList? ")"
 }
 
+// Mirrors tree-sitter-reify/grammar.js:1542-1546 — a call argument list mixes
+// positional and named arguments freely. `NamedArgument` is the same
+// production `SubDeclaration`'s instantiation form already uses; reusing it
+// keeps one node name for one concept.
+//
+// Both arms begin with `Identifier`, so a `~arg` ambiguity marker was
+// expected here. It turned out unnecessary and is deliberately absent:
+// lezer-generator resolves the two arms on the one-token lookahead that
+// follows the `Identifier` (`:` selects NamedArgument, anything else the
+// bare expression) and reports no conflict. Adding an unneeded marker would
+// suppress a genuine future conflict rather than surface it.
 ArgumentList {
-  expression ("," expression)* ","?
+  argument ("," argument)* ","?
+}
+
+argument {
+  NamedArgument | expression
 }
 
 MemberAccess {
