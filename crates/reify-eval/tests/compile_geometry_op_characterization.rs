@@ -1465,11 +1465,13 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("y2".to_string(), lit_len(0.02)),
             ("z2".to_string(), lit_len(0.03)),
         ],
+        // Centre and radius are LENGTH-gated (task 5623); the two angles and the
+        // ax/ay/az unit vector stay deliberately bare. Golden below unchanged.
         CurveKind::Arc => vec![
-            ("cx".to_string(), lit(0.0)),
-            ("cy".to_string(), lit(0.0)),
-            ("cz".to_string(), lit(0.0)),
-            ("radius".to_string(), lit(0.01)),
+            ("cx".to_string(), lit_len(0.0)),
+            ("cy".to_string(), lit_len(0.0)),
+            ("cz".to_string(), lit_len(0.0)),
+            ("radius".to_string(), lit_len(0.01)),
             ("start_angle".to_string(), lit(0.0)),
             ("end_angle".to_string(), lit(1.0)),
             ("ax".to_string(), lit(0.0)),

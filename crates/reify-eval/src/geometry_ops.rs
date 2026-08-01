@@ -3377,6 +3377,26 @@ fn curve_arc(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // The centre is a point in space and the radius is a length, so all four
+    // are gated (task 5623's R1 sweep). They are read BEFORE the `f64_arg`
+    // closure is declared — the borrow-ordering contract on
+    // `required_length_triple` makes that mandatory, and it preserves the
+    // pre-existing read order exactly (centre and radius were already first).
+    //
+    // What stays BARE is a deliberate triage decision, not an omission:
+    // `start_angle`/`end_angle` are angles (PRD 3's scope, tracked separately)
+    // and `ax`/`ay`/`az` are a dimensionless unit vector.
+    let center = required_length_triple(
+        ["cx", "cy", "cz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    let radius =
+        required_length_arg("radius", kind, args, values, functions, meta_map, diagnostics)?;
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(
             name,
@@ -3392,8 +3412,8 @@ fn curve_arc(
         })
     };
     Ok(reify_ir::GeometryOp::Arc {
-        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
-        radius: f64_arg("radius")?,
+        center,
+        radius,
         start_angle: f64_arg("start_angle")?,
         end_angle: f64_arg("end_angle")?,
         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
