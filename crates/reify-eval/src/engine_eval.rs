@@ -1402,8 +1402,10 @@ fn write_solved_pinned_connector_autos(
 }
 
 /// Filters `constraints` to those whose dependency trace reads at least one
-/// id in `auto_ids`, pairing each surviving constraint's id with its
-/// expression — the shape `ResolutionProblem.constraints` expects.
+/// id in `auto_ids` DIRECTLY, **or** at least one id in `reaching` — the
+/// non-auto cells that transitively read an auto — pairing each surviving
+/// constraint's id with its expression, the shape
+/// `ResolutionProblem.constraints` expects.
 ///
 /// Shared by `build_solver_problem` (single scope, `auto_ids` == that
 /// scope's own regular auto ids) and `build_merged_solver_problem` (called
@@ -1413,15 +1415,48 @@ fn write_solved_pinned_connector_autos(
 /// semantics (e.g. the memoization noted on `build_merged_solver_problem`'s
 /// cost-note doc comment) is applied once instead of twice (amendment, task
 /// #5014).
+///
+/// ## Why the `reaching` disjunct exists (LAYER 1, task #5467 / PRD2 α)
+///
+/// A dependency trace is ONE HOP. For `let s = a + b; constraint s == 10.0`
+/// the trace reads `{S.s}` and never `{S.a, S.b}`, so a direct-only test drops
+/// the one constraint that genuinely pins both autos — they then reach the
+/// solver with no residual at all (and `detect_underdetermined`, layer 4,
+/// reports them free). `reaching` is [`CellReadIndex::cells_reaching`]'s
+/// output for the same auto set, which closes that gap.
+///
+/// ## Why the two disjuncts are asymmetric about normalisation
+///
+/// The `auto_ids` test is deliberately left EXACTLY as it was — raw trace
+/// reads, no namespace bridging. The `reaching` test normalises, because
+/// `reaching` is template-keyed (it comes from the index's `cell_map`) while a
+/// constraint reading `self.<sub>.<member>` traces an INSTANCE-PATH id, and
+/// without the bridge a merged-cluster constraint reading a child's `let`
+/// would miss it.
+///
+/// Keeping the first disjunct un-normalised is what makes D1 exact rather than
+/// approximate: with an EMPTY `reaching` the second disjunct is vacuously
+/// false, so the filter's output on a model with no dependent cells is
+/// byte-identical to the pre-α behaviour. Widening the first disjunct too
+/// would silently start admitting instance-path-keyed DIRECT auto reads that
+/// are dropped today — a real behaviour change on direct-only models, which is
+/// exactly what B2 forbids.
 fn filter_constraints_reading_autos(
     constraints: &[reify_compiler::CompiledConstraint],
     auto_ids: &HashSet<&ValueCellId>,
+    reaching: &HashSet<ValueCellId>,
+    index: &CellReadIndex<'_>,
 ) -> Vec<(ConstraintNodeId, CompiledExpr)> {
     constraints
         .iter()
         .filter(|c| {
             let trace = extract_dependency_trace(&c.expr);
             trace.reads.iter().any(|r| auto_ids.contains(r))
+                || (!reaching.is_empty()
+                    && trace
+                        .reads
+                        .iter()
+                        .any(|r| reaching.contains(&index.normalize(r.clone()))))
         })
         .map(|c| (c.id.clone(), c.expr.clone()))
         .collect()
@@ -2212,8 +2247,21 @@ fn build_solver_problem(
     let auto_ids: HashSet<&ValueCellId> =
         regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
-    let mut filtered_constraints =
-        filter_constraints_reading_autos(&template.constraints, &auto_ids);
+    // LAYER 1 (task #5467 / PRD2 α): the auto-reaching non-auto cells for THIS
+    // scope's autos, so a constraint reading an auto only through a `let` is
+    // still admitted. Built once per problem build and shared with the
+    // `build_dependent_cells` call below.
+    let read_index = CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes);
+    let owned_auto_ids: HashSet<ValueCellId> =
+        regular_auto_cells.iter().map(|cell| cell.id.clone()).collect();
+    let reaching = read_index.cells_reaching(&owned_auto_ids);
+
+    let mut filtered_constraints = filter_constraints_reading_autos(
+        &template.constraints,
+        &auto_ids,
+        &reaching,
+        &read_index,
+    );
     let auto_param_list = build_auto_param_list(&regular_auto_cells);
 
     // α (task #5188): expand objective/constraint-position structural queries
@@ -2416,14 +2464,27 @@ fn build_merged_solver_problem(
     // ordering (that stays on the Vec built above).
     let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
 
+    // LAYER 1 (task #5467 / PRD2 α): built ONCE outside the per-member loop
+    // below, over the CLUSTER-WIDE auto union — the same #5014 semantics the
+    // `auto_ids` set carries, so a member's constraint reading a co-solved
+    // sibling's auto THROUGH a `let` is picked up too.
+    let read_index = CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes);
+    let owned_auto_ids: HashSet<ValueCellId> =
+        auto_cells.iter().map(|cell| cell.id.clone()).collect();
+    let reaching = read_index.cells_reaching(&owned_auto_ids);
+
     // Shared per-scope tail with `build_solver_problem` (amendment, task
     // #5014): filtered once per member so each member's OWN constraints are
     // checked, but against the CLUSTER-WIDE `auto_ids` union so a member's
     // constraint reading a co-solved sibling member's auto is still picked up.
     let mut filtered_constraints = Vec::new();
     for &idx in &cluster.scopes {
-        let mut member_constraints =
-            filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids);
+        let mut member_constraints = filter_constraints_reading_autos(
+            &templates[idx].constraints,
+            &auto_ids,
+            &reaching,
+            &read_index,
+        );
         // α (task #5188): expand each member's constraint-position structural
         // queries against its OWN template (`self.descendants`/`.members` is
         // relative to the member's own scope), BEFORE they enter the merged
