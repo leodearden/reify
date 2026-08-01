@@ -1254,9 +1254,11 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
                 ("ay".to_string(), lit(0.0)),
                 ("az".to_string(), lit(1.0)),
                 ("angle".to_string(), lit(1.0)),
-                ("ox".to_string(), lit(0.0)),
-                ("oy".to_string(), lit(0.0)),
-                ("oz".to_string(), lit(0.0)),
+                // Only the axis ORIGIN is LENGTH-semantic (task 5623);
+                // ax/ay/az/angle stay on `lit`. Golden unchanged.
+                ("ox".to_string(), lit_len(0.0)),
+                ("oy".to_string(), lit_len(0.0)),
+                ("oz".to_string(), lit_len(0.0)),
             ],
         ),
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),

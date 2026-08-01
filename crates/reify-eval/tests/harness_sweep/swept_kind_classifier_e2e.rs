@@ -311,9 +311,9 @@ fn engine_swept_kind_table_records_revolve_realization() {
         kind: SweepKind::Revolve,
         profiles: vec![GeomRef::Step(0)],
         args: vec![
-            ("ox".into(), real_literal(0.0)),
-            ("oy".into(), real_literal(0.0)),
-            ("oz".into(), real_literal(0.0)),
+            ("ox".into(), mm_literal(0.0)),
+            ("oy".into(), mm_literal(0.0)),
+            ("oz".into(), mm_literal(0.0)),
             ("ax".into(), real_literal(0.0)),
             ("ay".into(), real_literal(0.0)),
             ("az".into(), real_literal(1.0)),

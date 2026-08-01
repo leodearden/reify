@@ -2998,6 +2998,19 @@ fn sweep_revolve(
         step_handles,
         named_steps,
     )?;
+    // The axis ORIGIN is a point in space → gated. HOISTED here, above the
+    // `f64_arg` closure: the borrow-ordering contract on
+    // `required_length_origin3` makes this mandatory, not stylistic.
+    //
+    // This is a deliberate PRECEDENCE change — the origin used to be read LAST,
+    // after the degenerate-axis and degenerate-angle checks — so a revolve with
+    // both a bare origin and a degenerate axis now reports the ORIGIN. Pinned by
+    // `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis`. It also
+    // matches the two pre-existing `required_length_origin3` call sites
+    // (`pattern_circular`, `pattern_mirror`), where the origin is likewise read
+    // before the direction's magnitude check.
+    let axis_origin =
+        required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(
             name,
@@ -3031,7 +3044,6 @@ fn sweep_revolve(
         )));
         return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
     }
-    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
     Ok(reify_ir::GeometryOp::Revolve {
         profile: profile_handle,
         axis_origin,

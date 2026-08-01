@@ -1858,9 +1858,11 @@
         // remain present so that f64_arg? short-circuits on (and diagnoses)
         // only the omitted arg under test.
         let full_args: Vec<(&'static str, reify_ir::CompiledExpr)> = vec![
-            ("ox", literal_f64(0.0)),
-            ("oy", literal_f64(0.0)),
-            ("oz", literal_f64(0.0)),
+            // Axis origin is LENGTH-semantic (task 5623); the axis vector
+            // and angle below stay bare. Fans out to all 7 loop iterations.
+            ("ox", literal_length(0.0)),
+            ("oy", literal_length(0.0)),
+            ("oz", literal_length(0.0)),
             ("ax", literal_f64(0.0)),
             ("ay", literal_f64(0.0)),
             ("az", literal_f64(1.0)),
@@ -2047,9 +2049,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
@@ -2092,9 +2094,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(f64::NAN)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(0.0)),
@@ -2135,9 +2137,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -2179,9 +2181,9 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -5351,9 +5353,9 @@
             kind: reify_compiler::SweepKind::Revolve,
             profiles: vec![reify_compiler::GeomRef::Step(0)],
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -7681,8 +7683,8 @@
             kind: SweepKind::Revolve,
             profiles: vec![GeomRef::Step(0)],
             args: vec![
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
