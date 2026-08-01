@@ -1,6 +1,8 @@
-//! Shared assertion helpers for local-feature (fillet/chamfer) integration tests.
+//! Shared helpers for the `harness_occt` integration tests: local-feature
+//! (fillet/chamfer) assertions, and bounding-box query parsing.
 //!
-//! Extracted from `fillet_with_history_integration.rs` and
+//! The local-feature assertions were extracted from
+//! `fillet_with_history_integration.rs` and
 //! `chamfer_with_history_integration.rs` to eliminate byte-for-byte duplication
 //! of the edge-buffer assertion blocks (h)–(l). Future history-record additions
 //! (e.g. result_subshape_index sentinels) require only a single edit here rather
@@ -8,6 +10,12 @@
 //!
 //! Block (g) mirrors the silent_drop_count invariant from
 //! `boolean_op_history_integration.rs` (parity, not extraction).
+//!
+//! The bounding-box half ([`BBox`], [`parse_bbox`]) consolidates seven
+//! hand-rolled `GeometryQuery::BoundingBox` JSON parsers that had accumulated
+//! across `tests/harness_occt/` in two mutually-inconsistent families — a
+//! duplication finding filed during task 5377's reviewer-amendment pass and
+//! resolved by task 5893.
 
 #![cfg(has_occt)]
 
@@ -479,9 +487,93 @@ pub fn assert_local_feature_rejects_non_solid_input<T>(
 
 // ---------------------------------------------------------------------------
 // Bounding-box JSON parsing (task 5893)
-//
-// Contract tests for the shared `BBox` / `parse_bbox` helpers that consolidate
-// the seven hand-rolled bbox parsers previously scattered across
+// ---------------------------------------------------------------------------
+
+/// The six extents returned by `GeometryQuery::BoundingBox`, parsed from the
+/// kernel's wire string by [`parse_bbox`].
+///
+/// Field names match the JSON keys, so a call site can destructure exactly the
+/// axes it cares about: `let BBox { zmin, zmax, .. } = ...`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // fields only read from has_occt integration-test binaries
+pub struct BBox {
+    pub xmin: f64,
+    pub ymin: f64,
+    pub zmin: f64,
+    pub xmax: f64,
+    pub ymax: f64,
+    pub zmax: f64,
+}
+
+/// Parse the bounding-box string returned by `GeometryQuery::BoundingBox`.
+///
+/// Wire format:
+/// `{"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}`
+///
+/// Keys parse with or without surrounding quotes, whitespace around `:` and `,`
+/// is trimmed, and unrecognised keys are ignored.
+///
+/// **Deliberately NOT `serde_json`-based**, even though `serde_json` is already
+/// a dev-dependency of this crate. The producer
+/// (`crates/reify-kernel-occt/src/lib.rs:3673-3677`) builds this string with a
+/// single `format!` that passes each component through `f64` **Display**, which
+/// is not a JSON number encoder: a non-finite extent is emitted as the bare
+/// token `inf` / `-inf` / `NaN`, which strict JSON forbids and
+/// `serde_json::from_str` rejects outright, while `<f64 as FromStr>` accepts
+/// exactly those tokens. Unbounded extents are live in this harness —
+/// `extrude_infinite_integration.rs` asserts `is_finite()` precisely because
+/// the op under test is unbounded before clipping — so a JSON-strict parser
+/// would degrade that assertion's failure mode from "x/y bbox extents should
+/// all be finite" into an opaque "failed to parse as JSON".
+///
+/// # Panics
+///
+/// - naming the absent field, if any of the six keys is missing. This is the
+///   stricter of the two behaviours found among the seven parsers this
+///   consolidates: silently yielding `f64::NAN` would make a downstream
+///   `(zmax - zmin).abs() < tol` quietly evaluate false, surfacing a malformed
+///   kernel response as a confusing geometry assertion rather than a parse
+///   failure.
+/// - quoting the offending pair and the full input, if a value does not parse
+///   as `f64` or a pair carries no `:` separator.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn parse_bbox(s: &str) -> BBox {
+    const NAMES: [&str; 6] = ["xmin", "ymin", "zmin", "xmax", "ymax", "zmax"];
+    let mut fields: [Option<f64>; 6] = [None; 6];
+
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
+        let mut parts = pair.splitn(2, ':');
+        // `splitn` always yields at least one item, so the key is always present.
+        let key = parts.next().unwrap_or_default().trim().trim_matches('"');
+        let Some(slot) = NAMES.iter().position(|n| *n == key) else {
+            continue; // unrecognised key (e.g. a future extension): ignore
+        };
+        let raw = parts
+            .next()
+            .unwrap_or_else(|| panic!("bbox pair {pair:?} has no ':' separator, in {s:?}"));
+        let val: f64 = raw.trim().parse().unwrap_or_else(|e| {
+            panic!("bbox pair {pair:?} has a non-numeric value ({e}), in {s:?}")
+        });
+        fields[slot] = Some(val);
+    }
+
+    let get = |i: usize| -> f64 {
+        fields[i].unwrap_or_else(|| panic!("bbox is missing the {} field, in {s:?}", NAMES[i]))
+    };
+    BBox {
+        xmin: get(0),
+        ymin: get(1),
+        zmin: get(2),
+        xmax: get(3),
+        ymax: get(4),
+        zmax: get(5),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Contract tests for the shared `BBox` / `parse_bbox` helpers above, which
+// consolidate the seven hand-rolled bbox parsers previously scattered across
 // `tests/harness_occt/`. These `#[test]` fns run as `common::<name>` within the
 // single `harness_occt` test binary (task 5277 folded the 51 former binaries
 // into one compile unit, so `mod common;` is a normal module of it).
