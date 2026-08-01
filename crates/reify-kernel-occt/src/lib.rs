@@ -8777,7 +8777,7 @@ mod tests {
         let draft_h = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
             faces: vec![],
-            angle: Value::Real(0.1),
+            angle: Value::angle(0.1),
             plane: plane_h.id,
         });
         // Draft is complex and may fail for certain shapes - we just verify it
@@ -8833,6 +8833,103 @@ mod tests {
         (target_h, plane_h)
     }
 
+    /// Dimensioning a Draft fixture's angle does not change the geometry OCCT
+    /// produces — the premise PRD
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` decision D2 rests on
+    /// at the kernel boundary (task 5777, angle-units α).
+    ///
+    /// The OCCT Draft arm reads its angle via `extract_f64`, a thin wrapper over
+    /// `Value::as_f64`, whose `Scalar` arm returns `si_value` verbatim. So
+    /// `Value::Real(x)` and `Value::angle(x)` should reach OCCT as the same `x`.
+    /// The companion pin at the `Value` layer is
+    /// `reify_ir::value::tests::angle_and_real_agree_bit_exactly_under_as_f64`;
+    /// this one closes the loop by observing actual OCCT output.
+    ///
+    /// This is a CHARACTERIZATION pin, expected green against unchanged
+    /// production code — the six migrated OCCT Draft fixtures build their
+    /// `GeometryOp` by hand and reach the kernel via `execute`, bypassing the
+    /// eval chokepoint entirely, so nothing about their dimension is otherwise
+    /// observable. Its value is prospective.
+    ///
+    /// Anti-vacuity: `draft_angle_on_box` tolerates a legitimate
+    /// `OperationFailed` because Draft is finicky, and so does this test — but
+    /// only when BOTH forms take the SAME branch, and a both-failed run is a
+    /// loud failure rather than a silent pass. A test that "passes" because
+    /// neither arm produced geometry would prove nothing.
+    ///
+    /// It drafts a single CURATED face, the same way
+    /// `execute_draft_curated_faces_honored` does. The all-faces path
+    /// (`faces: vec![]`) is the finicky one that test explicitly declines to
+    /// use as an oracle, and on this fixture it fails outright — the
+    /// both-failed guard below caught exactly that during development.
+    #[test]
+    fn draft_angle_dimensioned_matches_bare_real_volume() {
+        let angle_rad = std::f64::consts::PI / 60.0;
+        let mut kernel = OcctKernel::new();
+
+        let (target, plane) = build_draft_fixture(&mut kernel);
+        let faces = kernel
+            .extract_faces(target.id)
+            .expect("extract_faces must succeed");
+        assert!(
+            faces.len() >= 2,
+            "box must have at least 2 faces, got {}",
+            faces.len()
+        );
+
+        // Any single face can legitimately be one OCCT declines to draft, so
+        // sweep two of them — exactly as `execute_draft_curated_faces_honored`
+        // does — and require at least one where BOTH forms produced geometry.
+        let mut compared = 0usize;
+        for face in [faces[0], *faces.last().unwrap()] {
+            let bare = kernel.execute(&GeometryOp::Draft {
+                target: target.id,
+                faces: vec![face],
+                angle: Value::Real(angle_rad),
+                plane: plane.id,
+            });
+            let dimensioned = kernel.execute(&GeometryOp::Draft {
+                target: target.id,
+                faces: vec![face],
+                angle: Value::angle(angle_rad),
+                plane: plane.id,
+            });
+
+            match (bare, dimensioned) {
+                (Ok(b), Ok(d)) => {
+                    let vb = volume_of(&mut kernel, &b);
+                    let vd = volume_of(&mut kernel, &d);
+                    assert_eq!(
+                        vb, vd,
+                        "Value::angle({angle_rad}) and Value::Real({angle_rad}) must \
+                         produce bit-identical draft geometry — they differ only in a \
+                         dimension tag that extract_f64 discards"
+                    );
+                    compared += 1;
+                }
+                // Same failure from both forms is itself the D2 signal, but it
+                // measures nothing about the geometry — try the other face.
+                (
+                    Err(GeometryError::OperationFailed(_)),
+                    Err(GeometryError::OperationFailed(_)),
+                ) => {}
+                (bare, dimensioned) => panic!(
+                    "dimensioning the angle changed which branch the draft took, which \
+                     contradicts D2: bare -> {:?}, dimensioned -> {:?}",
+                    bare.map(|h| h.id),
+                    dimensioned.map(|h| h.id)
+                ),
+            }
+        }
+
+        assert!(
+            compared > 0,
+            "anti-vacuity: no face produced geometry under EITHER form, so this test \
+             proved nothing about D2 equivalence — the fixture needs repair rather \
+             than a silent pass"
+        );
+    }
+
     /// (a) CURATED SELECTION HONORED: a one-face draft (via `faces: [f0]`)
     /// must succeed with a positive volume that differs both from the
     /// undrafted box volume AND from any other single-face selection (proves
@@ -8858,7 +8955,7 @@ mod tests {
         let result_f0 = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![faces[0]],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8867,7 +8964,7 @@ mod tests {
         let result_fn = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![*faces.last().unwrap()],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8916,7 +9013,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
 
@@ -8959,7 +9056,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: target_h.id,
             faces: vec![foreign_face],
-            angle: Value::Real(std::f64::consts::PI / 60.0),
+            angle: Value::angle(std::f64::consts::PI / 60.0),
             plane: plane_h.id,
         });
         match result {
@@ -9332,7 +9429,7 @@ mod tests {
         let result = kernel.execute(&GeometryOp::Draft {
             target: box_h.id,
             faces: vec![],
-            angle: Value::Real(0.05),
+            angle: Value::angle(0.05),
             plane: sphere_h.id,
         });
 
