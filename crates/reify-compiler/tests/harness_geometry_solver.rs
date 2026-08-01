@@ -20,11 +20,12 @@
 //! (`clippy::duplicate_mod`). Only `structural_physical_tests` consumes it, as
 //! `use crate::common;`.
 //!
-//! Crate-local carve-out — the `geometry*` prefix sweep below has ONE deliberate gap:
-//! `tests/geometry_chunk_smoke.rs` stays a top-level standalone binary. It belongs to task
-//! #5477's `harness_doc_chunks/` (`docs/prds/v0_6/doc-chunk-truth-enforcement.md` §α), whose
-//! own signal is the removal of its baseline row — sweeping it here would satisfy that
-//! precondition silently. The gap is intentional; do not "fix" it.
+//! Crate-local sweep note — the `geometry*` sweep below deliberately skipped
+//! `geometry_chunk_smoke.rs`, leaving it standalone so task #5477 could relocate it itself
+//! (`docs/prds/v0_6/doc-chunk-truth-enforcement.md` §α) and keep its own signal — the removal
+//! of that file's baseline row — non-vacuous. #5477 has since landed (9ce705c5f3): the file
+//! now lives in `harness_doc_chunks/`, and no top-level `tests/*.rs` matches this cluster's
+//! prefixes any more. The sweep is complete; nothing here is left to "fix".
 #[path = "common/mod.rs"]
 mod common;
 #[path = "harness_geometry_solver/fdm_as_printed_stdlib_compile.rs"]
