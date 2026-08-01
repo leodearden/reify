@@ -912,4 +912,633 @@ mod tests {
             );
         }
     }
+
+    // ── step-7: the C1 chain walk (`resolve_member_path`) ─────────────
+    //
+    // C1-i (purely static) is enforced by the SIGNATURE, not by an assertion:
+    // `resolve_member_path(expr, scope)` takes no `&mut Vec<Diagnostic>`, so a
+    // future edit that wants to report from inside the resolver cannot do it
+    // without changing every call site — which is exactly the review signal the
+    // contract wants. Nothing below passes a diagnostic sink because there is
+    // none to pass.
+
+    fn ast_ident(name: &str) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::Ident(name.to_string()),
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    fn ast_dot(object: reify_ast::Expr, member: &str) -> reify_ast::Expr {
+        reify_ast::Expr {
+            kind: reify_ast::ExprKind::MemberAccess {
+                object: Box::new(object),
+                member: member.to_string(),
+            },
+            span: SourceSpan::new(0, 0),
+        }
+    }
+
+    /// `root.m0.m1.…` — the dotted chain these tests resolve.
+    fn ast_path(root: &str, members: &[&str]) -> reify_ast::Expr {
+        members
+            .iter()
+            .fold(ast_ident(root), |acc, m| ast_dot(acc, m))
+    }
+
+    /// `<root_expr>.m0.m1.…` for roots that are not a bare identifier.
+    fn ast_path_from(root: reify_ast::Expr, members: &[&str]) -> reify_ast::Expr {
+        members.iter().fold(root, |acc, m| ast_dot(acc, m))
+    }
+
+    /// What is visible at the chain ROOT: the two maps `resolve_member_path`
+    /// consults (`names`, then `sub_component_types`) plus the `self` gate.
+    ///
+    /// A data seed rather than a `FnOnce(&mut CompilationScope<'_>)` callback:
+    /// the scope borrows the template registry for a higher-ranked lifetime, and
+    /// a mutating callback over it needs an HRTB annotation at every call site.
+    #[derive(Default)]
+    struct RootSeed {
+        /// `scope.names`: the let-instance / param / purpose-param root family.
+        names: Vec<(&'static str, Type)>,
+        /// `scope.sub_component_types`: sub_name → structure_name.
+        subs: Vec<(&'static str, &'static str)>,
+        is_entity_scope: bool,
+    }
+
+    fn with_seeded_scope<R>(
+        entity: &str,
+        templates: &[TopologyTemplate],
+        seed: RootSeed,
+        body: impl FnOnce(&CompilationScope) -> R,
+    ) -> R {
+        let registry: HashMap<String, &TopologyTemplate> =
+            templates.iter().map(|t| (t.name.clone(), t)).collect();
+        let mut scope = CompilationScope::new(entity);
+        scope.set_template_registry(&registry);
+        scope.is_entity_scope = seed.is_entity_scope;
+        for (name, ty) in seed.names {
+            scope.names.insert(
+                name.to_string(),
+                (ValueCellId::new(entity, name), ty, None),
+            );
+        }
+        for (sub, structure) in seed.subs {
+            scope
+                .sub_component_types
+                .insert(sub.to_string(), structure.to_string());
+        }
+        body(&scope)
+    }
+
+    /// `structure def Leaf { param w : Length  priv param secret : Length  let body = <geom> }`
+    fn template_leaf() -> TopologyTemplate {
+        TopologyTemplate {
+            value_cells: vec![
+                value_cell(
+                    "Leaf",
+                    "w",
+                    ValueCellKind::Param,
+                    Visibility::Public,
+                    Type::length(),
+                ),
+                value_cell(
+                    "Leaf",
+                    "secret",
+                    ValueCellKind::Param,
+                    Visibility::Private,
+                    Type::length(),
+                ),
+            ],
+            realizations: vec![realization("Leaf", 0, "body")],
+            ..empty_template("Leaf")
+        }
+    }
+
+    /// `structure def Mid { sub leaf = Leaf()  priv sub hidden = Leaf()  param inner : Length }`
+    fn template_mid() -> TopologyTemplate {
+        TopologyTemplate {
+            value_cells: vec![value_cell(
+                "Mid",
+                "inner",
+                ValueCellKind::Param,
+                Visibility::Public,
+                Type::length(),
+            )],
+            sub_components: vec![
+                sub_component("leaf", "Leaf", Visibility::Public),
+                sub_component("hidden", "Leaf", Visibility::Private),
+            ],
+            ..empty_template("Mid")
+        }
+    }
+
+    /// `structure def Root { sub mid = Mid()  sub direct = Leaf()  let inst = Leaf() }`
+    fn template_root() -> TopologyTemplate {
+        TopologyTemplate {
+            value_cells: vec![value_cell(
+                "Root",
+                "inst",
+                ValueCellKind::Let,
+                Visibility::Public,
+                Type::StructureRef("Leaf".to_string()),
+            )],
+            sub_components: vec![
+                sub_component("mid", "Mid", Visibility::Public),
+                sub_component("direct", "Leaf", Visibility::Public),
+            ],
+            ..empty_template("Root")
+        }
+    }
+
+    fn chain_templates() -> [TopologyTemplate; 3] {
+        [template_root(), template_mid(), template_leaf()]
+    }
+
+    /// (a) ARBITRARY DEPTH — the walk is not the two-level special case today's
+    /// `self.<sub>.<member>` matcher hard-codes. Each hop records the CONCRETE
+    /// type it was taken FROM, which is what C1-iii attribution reads.
+    #[test]
+    fn resolve_member_path_walks_a_three_hop_chain_recording_each_hops_concrete_type() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("self", &["mid", "leaf", "w"]), scope)
+                .expect("self.mid.leaf.w is a fully declared 3-hop chain");
+            assert_eq!(r.segments.len(), 3, "one segment per `.member` step");
+            assert_eq!(
+                r.segments[0].object_type,
+                Type::StructureRef("Root".to_string())
+            );
+            assert_eq!(r.segments[0].object_structure.as_deref(), Some("Root"));
+            assert_eq!(r.segments[0].member, "mid");
+            assert_eq!(r.segments[0].member_kind, MemberKind::Sub);
+
+            assert_eq!(
+                r.segments[1].object_type,
+                Type::StructureRef("Mid".to_string())
+            );
+            assert_eq!(r.segments[1].object_structure.as_deref(), Some("Mid"));
+            assert_eq!(r.segments[1].member, "leaf");
+            assert_eq!(r.segments[1].member_kind, MemberKind::Sub);
+
+            assert_eq!(
+                r.segments[2].object_type,
+                Type::StructureRef("Leaf".to_string()),
+                "the terminal hop is taken FROM Leaf, not from the chain root"
+            );
+            assert_eq!(r.segments[2].object_structure.as_deref(), Some("Leaf"));
+            assert_eq!(
+                r.segments[2].member_kind,
+                MemberKind::ValueCell(ValueCellKind::Param)
+            );
+            assert_eq!(r.ty, Type::length(), "the terminal hop's declared type");
+        });
+    }
+
+    /// (b) HOP_INDEX REWRITE — `resolve_hop` stamps the placeholder `0`; the walk
+    /// must overwrite it with the real position, and attribute to the concrete
+    /// structure at THAT hop (C1-iii, boundary row 11). Asserted on the MIDDLE
+    /// hop so neither "always 0" nor "always last" passes.
+    #[test]
+    fn resolve_member_path_attributes_an_unknown_member_to_the_hop_it_occurred_at() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let err = resolve_member_path(&ast_path("self", &["mid", "nope", "w"]), scope)
+                .expect_err("'nope' is declared by no container of Mid");
+            assert_eq!(
+                err,
+                MemberPathError::UnknownMember {
+                    hop_index: 1,
+                    object_type: Type::StructureRef("Mid".to_string()),
+                    structure: "Mid".to_string(),
+                    member: "nope".to_string(),
+                },
+                "the middle hop's index and the CONCRETE structure at it — \
+                 never hop 0 and never the chain root's structure"
+            );
+        });
+    }
+
+    /// (c) PRIV AT EVERY HOP (C1-ii) — a `priv sub` at an INTERMEDIATE hop is
+    /// denied there; the walk stops rather than continuing and reporting the
+    /// terminal instead.
+    #[test]
+    fn resolve_member_path_enforces_priv_at_an_intermediate_hop_and_stops_there() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let err = resolve_member_path(&ast_path("self", &["mid", "hidden", "w"]), scope)
+                .expect_err("'hidden' is a priv sub of Mid");
+            assert_eq!(
+                err,
+                MemberPathError::PrivateMember {
+                    hop_index: 1,
+                    structure: "Mid".to_string(),
+                    member: "hidden".to_string(),
+                }
+            );
+            // The public sibling proves the pin is not vacuous: the same shape
+            // through `leaf` resolves all the way to the terminal.
+            assert!(
+                resolve_member_path(&ast_path("self", &["mid", "leaf", "w"]), scope).is_ok(),
+                "public control"
+            );
+        });
+    }
+
+    /// (d.1) TERMINAL — an all-`Sub`-hop chain from a `self`/sub root names a
+    /// SOLVER-VISIBLE scoped cell, stamped with the existing
+    /// `format!("{}.{}", entity, sub)` convention (expr.rs:843).
+    #[test]
+    fn resolve_member_path_classifies_a_sub_rooted_chain_as_a_scoped_value_cell() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("self", &["mid", "leaf", "w"]), scope)
+                .expect("declared chain");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::ValueCell(ValueCellId::new("Root.mid.leaf", "w")),
+                "the scoped entity accumulates every sub hop"
+            );
+        });
+        // A bare sub root (`mid.leaf.w`, no `self.` prefix) must land on the
+        // SAME scoped cell — the `self.X` ≡ `X` equivalence (spec §8.6).
+        let seed = RootSeed {
+            subs: vec![("mid", "Mid")],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("mid", &["leaf", "w"]), scope)
+                .expect("declared chain from a bare sub root");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::ValueCell(ValueCellId::new("Root.mid.leaf", "w"))
+            );
+        });
+    }
+
+    /// (d.2) TERMINAL — a chain that passes through a VALUE-typed receiver
+    /// (a `let m = Leaf()` instance) lowers to the `Value::StructureInstance`
+    /// projection, not to a solver cell, so it terminates in `InstanceField`.
+    #[test]
+    fn resolve_member_path_classifies_a_let_instance_projection_as_an_instance_field() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            names: vec![("m", Type::StructureRef("Leaf".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("m", &["w"]), scope)
+                .expect("'w' is a declared param of Leaf");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::InstanceField {
+                    structure: "Leaf".to_string(),
+                    member: "w".to_string(),
+                    member_kind: MemberKind::ValueCell(ValueCellKind::Param),
+                }
+            );
+            assert_eq!(r.ty, Type::length());
+        });
+        // The same distinction INSIDE an entity: `self.inst` is a `let`-kind
+        // value cell typed `StructureRef("Leaf")`, so the hop through it is a
+        // value-typed receiver even though the ROOT was `self`.
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("self", &["inst", "w"]), scope)
+                .expect("self.inst.w projects out of a let-instance");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::InstanceField {
+                    structure: "Leaf".to_string(),
+                    member: "w".to_string(),
+                    member_kind: MemberKind::ValueCell(ValueCellKind::Param),
+                },
+                "a non-Sub intermediate hop breaks the scoped-cell chain"
+            );
+        });
+    }
+
+    /// (d.3) TERMINAL — a named realization is `Type::Geometry`, the same type
+    /// `expr.rs` stamps on a `CrossSubGeometryRef`.
+    #[test]
+    fn resolve_member_path_classifies_a_named_realization_terminal_as_geometry() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            names: vec![("m", Type::StructureRef("Leaf".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("m", &["body"]), scope)
+                .expect("'body' is a named realization of Leaf");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::Realization {
+                    structure: "Leaf".to_string(),
+                    name: "body".to_string(),
+                }
+            );
+            assert_eq!(r.ty, Type::Geometry);
+        });
+    }
+
+    /// (d.4) + (e) SYNTHESIZED — `.count` is the PRD §7 extension point. It is
+    /// consulted ONLY after the five declared containers all miss, and ONLY from
+    /// `resolve_member_path`.
+    #[test]
+    fn resolve_member_path_synthesizes_count_after_the_declared_containers_miss() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            names: vec![("m", Type::StructureRef("Leaf".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("m", &["count"]), scope)
+                .expect("`.count` is synthesized on any receiver");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::Synthesized(SynthesizedMember::Count)
+            );
+            assert_eq!(r.ty, Type::Int, "matching expr.rs's `\"count\" => Type::Int`");
+            assert_eq!(r.segments.len(), 1);
+            assert_eq!(
+                r.segments[0].member_kind,
+                MemberKind::Synthesized(SynthesizedMember::Count)
+            );
+            assert_eq!(r.segments[0].visibility, MemberVisibility::Public);
+        });
+    }
+
+    /// (e) SHADOWING — a DECLARED member named `count` wins over the synthesized
+    /// entry, so a structure that models a real `count` param keeps its own type.
+    #[test]
+    fn a_declared_count_member_shadows_the_synthesized_one() {
+        let templates = [TopologyTemplate {
+            value_cells: vec![value_cell(
+                "Counted",
+                "count",
+                ValueCellKind::Param,
+                Visibility::Public,
+                Type::length(),
+            )],
+            ..empty_template("Counted")
+        }];
+        let seed = RootSeed {
+            names: vec![("c", Type::StructureRef("Counted".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("c", &["count"]), scope)
+                .expect("the declared param resolves");
+            assert_eq!(
+                r.terminal,
+                TerminalKind::InstanceField {
+                    structure: "Counted".to_string(),
+                    member: "count".to_string(),
+                    member_kind: MemberKind::ValueCell(ValueCellKind::Param),
+                },
+                "a declared member must shadow the synthesized entry"
+            );
+            assert_eq!(r.ty, Type::length(), "NOT the synthesized Type::Int");
+        });
+    }
+
+    /// (e) The other half of the shadowing contract, and the reason it is
+    /// load-bearing: `resolve_hop` is the entry point step-10 wires into
+    /// production. If IT learned about `count`, today's
+    /// `structure 'Leaf' has no member 'count'` diagnostic would silently
+    /// disappear the moment the priv delegation lands.
+    #[test]
+    fn resolve_hop_never_synthesizes_count() {
+        let templates = chain_templates();
+        with_scope("Test", &templates, |scope| {
+            let err = resolve_hop(&Type::StructureRef("Leaf".to_string()), "count", scope)
+                .expect_err("resolve_hop knows only DECLARED containers");
+            assert!(
+                matches!(err, MemberPathError::UnknownMember { .. }),
+                "expected UnknownMember, got {err:?} — synthesized members live \
+                 one level up, in resolve_member_path"
+            );
+        });
+    }
+
+    /// (f) `self` ROOT — typed from the entity scope, not from `names`.
+    #[test]
+    fn resolve_member_path_types_a_self_root_from_the_entity_scope() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let r = resolve_member_path(&ast_path("self", &["mid", "inner"]), scope)
+                .expect("self.mid.inner resolves in an entity scope");
+            assert_eq!(
+                r.segments[0].object_type,
+                Type::StructureRef("Root".to_string()),
+                "`self` types as the entity being compiled"
+            );
+            assert_eq!(r.ty, Type::length());
+        });
+    }
+
+    /// (f) …and NOT outside one: in a function / purpose scope `self` is not a
+    /// name, so the root is not statically typable and the caller keeps its
+    /// existing "unresolved name" path.
+    #[test]
+    fn resolve_member_path_defers_on_a_self_root_outside_an_entity_scope() {
+        let templates = chain_templates();
+        with_seeded_scope("Root", &templates, RootSeed::default(), |scope| {
+            assert_eq!(
+                resolve_member_path(&ast_path("self", &["mid", "inner"]), scope),
+                Err(MemberPathError::Indeterminate(
+                    IndeterminateReason::UnresolvableRoot
+                ))
+            );
+        });
+    }
+
+    /// (g) ALIAS STABILITY — the ratified frame rule's STATIC half: an alias
+    /// binding and the sub it aliases must agree on member shape. Types and
+    /// terminal only; frame COMPOSITION is value-level and not α's.
+    #[test]
+    fn an_alias_root_and_a_sub_root_agree_on_terminal_and_type() {
+        let templates = chain_templates();
+        let via_alias = {
+            let seed = RootSeed {
+                names: vec![("h", Type::StructureRef("Leaf".to_string()))],
+                ..RootSeed::default()
+            };
+            with_seeded_scope("Root", &templates, seed, |scope| {
+                resolve_member_path(&ast_path("h", &["body"]), scope).expect("h.body")
+            })
+        };
+        let via_sub = {
+            let seed = RootSeed {
+                is_entity_scope: true,
+                ..RootSeed::default()
+            };
+            with_seeded_scope("Root", &templates, seed, |scope| {
+                resolve_member_path(&ast_path("self", &["direct", "body"]), scope)
+                    .expect("self.direct.body")
+            })
+        };
+        assert_eq!(
+            via_alias.terminal, via_sub.terminal,
+            "`h.body` and `self.direct.body` name the same member of the same \
+             structure — the alias must not change the member shape"
+        );
+        assert_eq!(via_alias.ty, via_sub.ty);
+        assert_eq!(via_alias.ty, Type::Geometry);
+    }
+
+    /// (h) DEFER — not a `.`-chain at all.
+    #[test]
+    fn resolve_member_path_reports_a_non_member_path_expression() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            names: vec![("m", Type::StructureRef("Leaf".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            assert_eq!(
+                resolve_member_path(&ast_ident("m"), scope),
+                Err(MemberPathError::NotAMemberPath)
+            );
+        });
+    }
+
+    /// (h) DEFER — roots this resolver does not type: a call, an `IndexAccess`
+    /// (`subs[i].member` — task η's collection shape), and an unbound name.
+    #[test]
+    fn resolve_member_path_defers_on_an_unresolvable_root() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            names: vec![("m", Type::StructureRef("Leaf".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            let expected = Err(MemberPathError::Indeterminate(
+                IndeterminateReason::UnresolvableRoot,
+            ));
+            let call = reify_ast::Expr {
+                kind: reify_ast::ExprKind::FunctionCall {
+                    name: "make_leaf".to_string(),
+                    args: Vec::new(),
+                    arg_names: Vec::new(),
+                },
+                span: SourceSpan::new(0, 0),
+            };
+            assert_eq!(
+                resolve_member_path(&ast_path_from(call, &["w"]), scope),
+                expected,
+                "a call root"
+            );
+            let indexed = reify_ast::Expr {
+                kind: reify_ast::ExprKind::IndexAccess {
+                    object: Box::new(ast_ident("m")),
+                    index: Box::new(reify_ast::Expr {
+                        kind: reify_ast::ExprKind::NumberLiteral {
+                            value: 0.0,
+                            is_real: false,
+                        },
+                        span: SourceSpan::new(0, 0),
+                    }),
+                },
+                span: SourceSpan::new(0, 0),
+            };
+            assert_eq!(
+                resolve_member_path(&ast_path_from(indexed, &["w"]), scope),
+                expected,
+                "an IndexAccess root"
+            );
+            assert_eq!(
+                resolve_member_path(&ast_path("nowhere", &["w"]), scope),
+                expected,
+                "an unbound identifier root"
+            );
+        });
+    }
+
+    /// (h) DEFER — traits are absent from `template_registry`, so the concrete
+    /// runtime type is not statically known. Preserved byte-for-byte.
+    #[test]
+    fn resolve_member_path_defers_on_a_trait_object_receiver() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            names: vec![("t", Type::TraitObject("SomeTrait".to_string()))],
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Test", &templates, seed, |scope| {
+            assert_eq!(
+                resolve_member_path(&ast_path("t", &["w"]), scope),
+                Err(MemberPathError::Indeterminate(
+                    IndeterminateReason::TraitObjectReceiver
+                ))
+            );
+        });
+    }
+
+    /// (h) DEFER — function and field scopes carry no template registry at all.
+    #[test]
+    fn resolve_member_path_defers_when_the_scope_has_no_template_registry() {
+        let mut scope = CompilationScope::new("Test");
+        scope.names.insert(
+            "m".to_string(),
+            (
+                ValueCellId::new("Test", "m"),
+                Type::StructureRef("Leaf".to_string()),
+                None,
+            ),
+        );
+        assert!(scope.template_registry.is_none());
+        assert_eq!(
+            resolve_member_path(&ast_path("m", &["w"]), &scope),
+            Err(MemberPathError::Indeterminate(
+                IndeterminateReason::NoTemplateRegistry
+            ))
+        );
+    }
+
+    /// (i) C1-i — resolution mutates nothing, so resolving the same path twice
+    /// against the same scope yields the identical verdict. (The stronger half —
+    /// "emits no diagnostics" — is enforced by the signature: there is no sink
+    /// to emit into.)
+    #[test]
+    fn resolve_member_path_is_purely_static_and_repeatable() {
+        let templates = chain_templates();
+        let seed = RootSeed {
+            is_entity_scope: true,
+            ..RootSeed::default()
+        };
+        with_seeded_scope("Root", &templates, seed, |scope| {
+            let path = ast_path("self", &["mid", "leaf", "w"]);
+            let first = resolve_member_path(&path, scope);
+            let second = resolve_member_path(&path, scope);
+            assert_eq!(first, second);
+            let bad = ast_path("self", &["mid", "nope"]);
+            assert_eq!(
+                resolve_member_path(&bad, scope),
+                resolve_member_path(&bad, scope)
+            );
+        });
+    }
 }
