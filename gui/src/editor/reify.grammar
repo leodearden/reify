@@ -27,9 +27,21 @@ ModulePath {
 }
 
 // ── Imports ──────────────────────────────────────────────
-// Mirrors tree-sitter-reify/grammar.js:258-282. The path is followed by the
-// destructured items with NO separator (`import a.b {C, D}`); the `String`
-// alternative is retained for the legacy `import "foo.ri"` form.
+// Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
+// retained for the legacy `import "foo.ri"` form.
+//
+// UNSETTLED — the destructured form's separator. This port follows the
+// tree-sitter RULE, which sequences import_path then import_items with NO
+// separator (`import a.b {C, D}`). But grammar.js's own doc comment on that
+// rule (:263) and the lowering at crates/reify-syntax/src/ts_parser.rs:538
+// both spell it `import a.b.{C, D}`, with a dot. The rule and the two comments
+// therefore disagree, and nothing settles it: `import_items` has no
+// tree-sitter corpus test, no committed `.ri` uses it (every import under
+// examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
+// `import x as y`), and no Rust code matches on the node name. The corpus test
+// deliberately does NOT pin either spelling — asserting one would cement an
+// unverified shape as an intentional GUI contract. Filed as a follow-up so the
+// canonical form is decided against the authoritative surface first.
 ImportDeclaration {
   kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
 }
@@ -252,7 +264,8 @@ CompareOp<expr> { expr }
 // ── M5 Reserved Keywords (forward-compat highlighting) ──
 // These use @specialize to replace Identifier with ReservedWord,
 // causing parse errors when used as identifiers (correct reserved-word behavior).
-// They parse correctly in expression context via the primaryExpression rule.
+// The words REMAINING in this list parse in expression context via the
+// primaryExpression rule (which reaches them through `ReservedWord`).
 //
 // A word promoted to a real `kw<>` production MUST be removed from this list:
 // lezer-generator permits only one replacement name per (base token, literal)
@@ -261,6 +274,15 @@ CompareOp<expr> { expr }
 // `pub`/`def` (StructureDefinition) and `module`/`as` (ModuleDeclaration,
 // ImportDeclaration) were promoted out of this list; their keyword styling is
 // re-pinned explicitly in highlight.ts.
+//
+// Removal has one behavioural consequence worth stating precisely: the four
+// promoted words are NO LONGER reachable from primaryExpression, so they now
+// produce an error node in expression position where they previously produced
+// none (measured: `structure def F { let x = pub }` → 1 error node, and the
+// same for `def`/`module`/`as`, while the still-listed `trait` → 0). No
+// committed fixture is affected, and erroring on a keyword in expression
+// position is the more correct behaviour, so this is recorded rather than
+// worked around.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
     "trait" | "fn" | "enum" | "match" | "connect" | "chain" |

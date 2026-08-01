@@ -1,15 +1,47 @@
 import { styleTags, tags as t } from '@lezer/highlight';
 
+/**
+ * Every word `reify.grammar` promotes to a real `kw<"…">` production.
+ *
+ * This array is the SINGLE source of truth for keyword styling: it is joined
+ * into the `styleTags` selector below, so a word listed here is styled and a
+ * word missing from it renders unstyled.
+ *
+ * Why the list must exist at all: a word promoted out of the `ReservedWord`
+ * `@specialize` list into its own `kw<>` production stops matching the
+ * `ReservedWord: t.keyword` rule (lezer-generator permits only one replacement
+ * name per (base token, literal) pair, so the promotion *requires* removing it
+ * from that list). Without an explicit entry here it would parse fine and
+ * render unstyled — the silent-degradation failure mode.
+ *
+ * `gui/src/__tests__/reifyGrammarCorpus.test.ts` guards this data-driven:
+ * it extracts every `kw<"…">` literal from `reify.grammar` and asserts each is
+ * a member of this array, so a FUTURE promotion fails CI rather than silently
+ * losing its styling.
+ */
+export const KEYWORDS = [
+  'structure',
+  'import',
+  'param',
+  'let',
+  'constraint',
+  'sub',
+  'minimize',
+  'maximize',
+  'where',
+  'else',
+  'if',
+  'then',
+  'auto',
+  'def',
+  'module',
+  'as',
+  'pub',
+];
+
 export const reifyHighlighting = styleTags({
-  // Current keywords.
-  // `def`, `module`, `as` and `pub` are named explicitly because they were
-  // promoted out of the ReservedWord @specialize list into real productions
-  // (lezer-generator permits only one replacement name per (base token,
-  // literal) pair). Without them here they would parse fine but render
-  // unstyled. Any future keyword promotion must be added to this list in the
-  // same commit — gui/src/__tests__/reifyGrammarCorpus.test.ts asserts it.
-  "structure import param let constraint sub minimize maximize where else if then auto def module as pub":
-    t.keyword,
+  // Current keywords (see KEYWORDS above).
+  [KEYWORDS.join(' ')]: t.keyword,
   // M5 reserved keywords (forward-compat via @extend)
   ReservedWord: t.keyword,
   // Literals
