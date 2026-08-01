@@ -2342,6 +2342,79 @@ describe('reify.grammar snippets — radix, imaginary and interpolated literals'
 });
 
 /**
+ * `relate { … }` member blocks — grammar.js:724-734.
+ *
+ * The whole ledger movement of this catch-up round: five committed files
+ * (examples/geometric_relations/{bolt_plate,construction_datum,global_float}.ri
+ * and examples/kinematic/relate_mounted_{fourbar,revolute}.ri) each carry 3-4
+ * error nodes, ALL of them inside a relate block, and the block is their only
+ * blocker.
+ *
+ * The body is a bare-expression repeat, so the relations are newline-separated
+ * with NO comma — the shape the two-relation case below pins directly.
+ */
+describe('reify.grammar snippets — relate blocks', () => {
+  // Corpus-attested verbatim: examples/geometric_relations/global_float.ri:31-36.
+  it('parses a single-relation relate block', () => {
+    const src = 'structure def F { relate { fasten(a.frame, b.frame) } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('RelateBlock');
+    expect(names).toContain('RelationMember');
+  });
+
+  /**
+   * Corpus-attested verbatim: examples/kinematic/relate_mounted_revolute.ri:77-80.
+   * Two relations on separate lines with NO separator between them — the half
+   * a single-relation case cannot cover, since a comma-separated body would
+   * pass that one and fail this.
+   */
+  it('parses a two-relation relate block with no separator', () => {
+    const src =
+      'structure def F {\n  relate {\n    concentric(link.hub_axis, base.mount_axis)\n    flush(link.hub_plane, base.mount_plane)\n  }\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('RelateBlock');
+  });
+
+  // Upstream's `repeat` is zero-or-more, so an empty body is legal.
+  it('parses an empty relate block', () => {
+    const src = 'structure def F { relate { } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('RelateBlock');
+  });
+
+  /**
+   * Three of the five corpus blocks carry `//` comments on or above their
+   * relation lines, and one of them (global_float.ri:32-34) opens with two
+   * comment lines before the first relation. A comment-only body is the
+   * degenerate case of that and must still be a well-formed empty block.
+   */
+  it('parses a comment-only relate block', () => {
+    const src = 'structure def F {\n  relate {\n    // grounds neither operand\n  }\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('RelateBlock');
+  });
+
+  it('styles `relate` as a keyword in the block slot', () => {
+    expect(keywordSpans('structure def F { relate { fasten(a, b) } }')).toContain('relate');
+  });
+
+  /**
+   * THE `ekw` CONTRACT, mirroring the `self` receiver test below. `relate` is
+   * spelled `ekw<"relate">` (contextual) rather than `kw<"relate">`, matching
+   * upstream's treatment at grammar.js:714-719, so it must still lex as an
+   * ordinary identifier off the block slot — and must NOT be styled there.
+   * Both halves are asserted: a `@specialize` would keep the parse green while
+   * silently painting an ordinary variable named `relate` as a keyword.
+   */
+  it('leaves `relate` an ordinary identifier off the block slot', () => {
+    const src = 'structure def F { let relate = 1mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(keywordSpans(src)).not.toContain('relate');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
