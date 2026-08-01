@@ -4320,7 +4320,7 @@ mod tests {
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
     use std::cell::RefCell;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
@@ -7237,5 +7237,200 @@ structure GrowColl {
             ),
             other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // selective-realization-eviction task β (#4729): the shared
+    // recompute-then-compare helper `compute_changed_realizations`.
+    //
+    // These are pure graph-level unit tests — no Engine, no kernel, no
+    // `.ri` source. The fixture style is copied from `dirty.rs:658-735`
+    // (literal `RealizationNodeData` / `ValueCellNode` construction over a
+    // hand-built `EvaluationGraph`), which is what makes the core §11.2
+    // contract testable without OCCT.
+    //
+    // Every expected hash is DERIVED by calling the canonical fold
+    // (`engine_build::compute_realization_upstream_values_hash_from_ops`,
+    // widened to `pub(crate)` by this task's prerequisite) rather than
+    // hard-coded — PRD D1 forbids a second fold, so the test must key on
+    // the same identity the production compare does. These are exact
+    // 32-byte equalities over a deterministic XXH3 fold; there is no
+    // tolerance anywhere.
+    // ------------------------------------------------------------------
+
+    /// Build a one-realization `EvaluationGraph` whose single
+    /// `Primitive{Box}` op reads `E.<cell>` through a `ValueRef` arg, so the
+    /// input-cone fold is non-trivial and moves with the `EvalContext`.
+    ///
+    /// `input_cone_hash` is whatever the caller supplies, standing in for
+    /// α's production write inside `execute_realization_ops`.
+    fn realization_graph_reading_cell(
+        rid: &reify_core::RealizationNodeId,
+        cell: &ValueCellId,
+        input_cone_hash: Option<[u8; 32]>,
+    ) -> EvaluationGraph {
+        use crate::graph::RealizationNodeData;
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+        graph.realizations.insert(
+            rid.clone(),
+            RealizationNodeData {
+                id: rid.clone(),
+                operations: vec![CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![(
+                        "width".to_string(),
+                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
+                    )],
+                }],
+                content_hash: ContentHash::of_str(&rid.to_string()),
+                produced_repr: ReprKind::BRep,
+                produced_kernel: None,
+                geometry_cell: None,
+                input_cone_hash,
+            },
+        );
+        graph
+    }
+
+    /// A `ValueMap` binding `cell` to the real number `v`.
+    fn values_binding(cell: &ValueCellId, v: f64) -> ValueMap {
+        let mut values = ValueMap::default();
+        values.insert(cell.clone(), Value::Real(v));
+        values
+    }
+
+    /// §11.2 case (a): the stored `input_cone_hash` equals the hash
+    /// recomputed over the SAME context → the realization is UNCHANGED and
+    /// must be absent from the returned set.
+    ///
+    /// This is the case that makes β selective at all: if it were ever to
+    /// regress into "always changed", γ's keyed eviction degenerates back
+    /// into the wholesale flush it is meant to replace.
+    #[test]
+    fn compute_changed_realizations_omits_realization_whose_input_cone_is_unmoved() {
+        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
+
+        let rid = reify_core::RealizationNodeId::new("E", 0);
+        let cell = ValueCellId::new("E", "wa");
+        let values = values_binding(&cell, 10.0);
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &HashMap::new());
+
+        // Derive the "as of last execution" hash from the canonical fold
+        // over the very same ctx, exactly as α's production write does.
+        let probe = realization_graph_reading_cell(&rid, &cell, None);
+        let stored = compute_realization_upstream_values_hash_from_ops(
+            &probe.realizations.get(&rid).unwrap().operations,
+            &ctx,
+        );
+
+        let graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
+        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
+
+        assert!(
+            changed.is_empty(),
+            "an unmoved input cone must not be reported changed, got: {changed:?}"
+        );
+    }
+
+    /// §11.2 case (b): the context moved, so the recomputed fold differs
+    /// from the stored hash → the realization IS in the set.
+    #[test]
+    fn compute_changed_realizations_reports_realization_whose_input_cone_moved() {
+        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
+
+        let rid = reify_core::RealizationNodeId::new("E", 0);
+        let cell = ValueCellId::new("E", "wa");
+
+        // "Last execution" was at wa = 10.
+        let old_values = values_binding(&cell, 10.0);
+        let old_ctx = crate::eval_ctx_with_meta(&old_values, &[], &HashMap::new());
+        let probe = realization_graph_reading_cell(&rid, &cell, None);
+        let stored = compute_realization_upstream_values_hash_from_ops(
+            &probe.realizations.get(&rid).unwrap().operations,
+            &old_ctx,
+        );
+
+        // The edit moved wa to 20.
+        let new_values = values_binding(&cell, 20.0);
+        let new_ctx = crate::eval_ctx_with_meta(&new_values, &[], &HashMap::new());
+
+        // Premise lock: the fold genuinely moves with the context. Without
+        // this the test could pass for the wrong reason (e.g. a fold that
+        // ignores its args would make EVERY realization look changed).
+        let recomputed = compute_realization_upstream_values_hash_from_ops(
+            &probe.realizations.get(&rid).unwrap().operations,
+            &new_ctx,
+        );
+        assert_ne!(
+            stored, recomputed,
+            "premise: the input-cone fold must move when a ValueRef arg's value moves"
+        );
+
+        let graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
+        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &new_ctx);
+
+        assert_eq!(
+            changed,
+            HashSet::from([rid.clone()]),
+            "a moved input cone must be reported changed"
+        );
+    }
+
+    /// §11.2 case (c), sub-case 1: the prior entry EXISTS but its
+    /// `input_cone_hash` is `None` — never executed, demand-pruned, or
+    /// un-hydrated. Conservatively CHANGED.
+    #[test]
+    fn compute_changed_realizations_reports_realization_with_no_stored_hash() {
+        let rid = reify_core::RealizationNodeId::new("E", 0);
+        let cell = ValueCellId::new("E", "wa");
+        let values = values_binding(&cell, 10.0);
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &HashMap::new());
+
+        let graph = realization_graph_reading_cell(&rid, &cell, None);
+        let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
+
+        assert_eq!(
+            changed,
+            HashSet::from([rid.clone()]),
+            "a realization that has never executed (input_cone_hash == None) must be \
+             conservatively reported changed (PRD §11.2)"
+        );
+    }
+
+    /// §11.2 case (c), sub-case 2: the realization is present in
+    /// `new_graph` but has NO prior entry at all — newly added by an
+    /// `edit_source` recompile. Conservatively CHANGED.
+    #[test]
+    fn compute_changed_realizations_reports_realization_absent_from_prior_map() {
+        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
+
+        let rid = reify_core::RealizationNodeId::new("E", 0);
+        let cell = ValueCellId::new("E", "wa");
+        let values = values_binding(&cell, 10.0);
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &HashMap::new());
+
+        // The new graph's node even carries a matching stored hash — the
+        // point is that the PRIOR map is what is consulted, and it is empty.
+        let probe = realization_graph_reading_cell(&rid, &cell, None);
+        let stored = compute_realization_upstream_values_hash_from_ops(
+            &probe.realizations.get(&rid).unwrap().operations,
+            &ctx,
+        );
+        let new_graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
+
+        let empty_prior: PersistentMap<reify_core::RealizationNodeId, crate::graph::RealizationNodeData> =
+            PersistentMap::default();
+        let changed = super::compute_changed_realizations(&empty_prior, &new_graph, &ctx);
+
+        assert_eq!(
+            changed,
+            HashSet::from([rid.clone()]),
+            "a realization with no entry in the PRIOR map (newly added by a recompile) \
+             must be conservatively reported changed — the prior map, not the new \
+             node's own field, is the comparison source"
+        );
     }
 }
