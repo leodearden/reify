@@ -471,6 +471,95 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
     }
 }
 
+/// Single-case **NON-PRISMATIC** body fixture (task 4152, step-12).
+/// Structurally identical to `MULTI_CASE_BODY_SOURCE` above and to
+/// `fixtures/fea_body_cantilever.ri` — the ONLY material change is the `let body`
+/// expression, so any behavioural difference is attributable solely to the shape.
+///
+/// ## Why a primitive `cylinder(...)` and NOT a CSG solid
+///
+/// The obvious "non-prismatic" body is a boolean — `difference(box, cyl)` — and
+/// it is the WRONG choice here. Two independent reasons, both recorded in-tree:
+///
+///   1. **Mesher hazard.** `fixtures/morph_box.ri`'s own header records that a
+///      boolean-derived B-rep leaves coplanar/seam triangulation that crashes
+///      tetgen's boundary recovery (`recoveredgebyflips`), which is why that
+///      fixture deliberately uses a primitive box. The only `.ri`-level
+///      CSG → volume-mesh test (`morph_arm_e2e.rs`'s
+///      `e2e_structural_tick_remeshes_and_records_ineligible`) is `#[ignore]`d on
+///      exactly that. A primitive with a curved lateral surface gives us the
+///      shape-agnosticism signal this test is FOR, with no boolean seams.
+///   2. **Syntax.** `difference` is a strictly-BINARY compiler builtin
+///      (`geometry_boolean.rs`, arity-enforced in `units.rs`), not an `.ri`
+///      stdlib fn, and there is NO `-` operator sugar for solids (`BinOp::Sub` is
+///      numeric/length only) — so `box(...) - box(...)` does not even parse.
+///
+/// So: do NOT "improve" this into a `difference(...)`. If curved-vs-boolean
+/// coverage is wanted, that is a separate fixture gated on the tetgen fix.
+///
+/// ## Why the realized grid cannot collide with the synthetic one
+///
+/// `cylinder(radius, height)` rises along +Z, so the realized AABB extent is
+/// `[2r, 2r, h] = [0.1, 0.1, 0.2] m`. The realized §7a arm
+/// (`elastic_static.rs`) derives `nz = 6`, `dz = ext_z`,
+/// `nx = round(ext_x/dz · nz) = round(3) = 3`, `ny = round(3) = 3` — so
+/// `(3+1)(3+1)(6+1) = 112` nodes, nowhere near the synthetic 854. The x-extent
+/// (`2r = 0.1 m`) is also far above `MIN_SOLVE_X_EXTENT` (1e-9), so
+/// `has_usable_realized_solver_mesh`'s non-degeneracy gate passes and the
+/// coordinate-selected clamp (`x ≈ x_min`) / tip (`x ≈ x_max`) node sets land on
+/// opposite sides of the circular cross-section. That is mechanically unusual
+/// for a cantilever, but it is valid for what this test asserts — that a
+/// realization occurred and produced real Sampled fields — not beam-theory
+/// accuracy, which the prismatic capstones above already cover.
+///
+/// ACHIEVABILITY BASIS (measured, not assumed): `reify-kernel-conformance`'s
+/// `occt_fixtures_mesh_to_volume_and_revalidate_through_gmsh` iterates the
+/// `["box", "cylinder", "boolean", "fillet"]` fixtures through OCCT-tessellate →
+/// `GmshKernel::mesh_surface_to_volume` → `assert_valid_volume_mesh` and PASSES
+/// (not `#[ignore]`d) — so a real OCCT cylinder is already proven to mesh
+/// through the exact PLAIN producer this test uses.
+#[cfg(has_gmsh)]
+const NON_PRISMATIC_BODY_SOURCE: &str = r#"
+structure FeaBodyNonPrismatic {
+    let material = Steel_AISI_1045()
+    let body     = cylinder(50mm, 200mm)
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount    = FixedSupport(target: "root")
+    let result = solve_elastic_static(material, body, [tip_load], [mount], ElasticOptions())
+}
+"#;
+
+/// Two-case **NON-PRISMATIC** body fixture (task 4152, step-12 / step-13).
+/// The same `cylinder(50mm, 200mm)` body as `NON_PRISMATIC_BODY_SOURCE`, solved
+/// through the arity-4 `body : Solid` overload of `solve_load_cases` with two
+/// `LoadCase`s differing ONLY in tip force (1000 N vs 2000 N) — so
+/// `(body, material, element_order, mesh_size)` is shared by construction and the
+/// single realized tet VolumeMesh must serve BOTH cases.
+///
+/// Mirrors `MULTI_CASE_BODY_SOURCE`'s verified syntax exactly, including the
+/// INLINE `ElasticOptions()` argument (not a shared `let opts` binding): sharing
+/// is already guaranteed by the single `body`/`material` args, and the inline
+/// form is the shape proven to compile here. See `NON_PRISMATIC_BODY_SOURCE`
+/// above for the cylinder-vs-CSG rationale.
+#[cfg(has_gmsh)]
+const NON_PRISMATIC_MULTI_CASE_BODY_SOURCE: &str = r#"
+structure FeaBodyNonPrismaticMultiCase {
+    let material = Steel_AISI_1045()
+    let body     = cylinder(50mm, 200mm)
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let lc2 = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
+}
+"#;
+
 /// `cfg(has_gmsh)`: de-risking capstone — a **NON-PRISMATIC** (curved-surface)
 /// body realizes and solves on the realized tet VolumeMesh (task 4152, step-11).
 ///
