@@ -109,7 +109,7 @@ module whole_model_cost_min
 // runs BEFORE `materialize_dependent_cells` writes the solved cross-scope
 // alias back. This is an engine gap owned by β/α
 // (docs/prds/v0_6/whole-model-joint-drive-seam.md), not a fixture-authoring
-// one — tracked as a follow-up (ticket tkt_0RRVB5F87BM7HPAMDH3N7TK1SK)
+// one — tracked as a follow-up (#5835)
 // outside this example's scope.
 //
 // The raw auto's own instance path (e.g. `CostAssembly.plate.quantity_produced`)

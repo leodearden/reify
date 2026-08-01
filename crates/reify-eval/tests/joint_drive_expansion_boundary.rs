@@ -1676,7 +1676,7 @@ fn mwhole_bt4_merged_whole_assembly_cost_is_strictly_below_the_frozen_baseline()
 /// dependencies — a purely downstream consumer let is never swept in, and
 /// `evaluate_let_bindings` has already run before `materialize_dependent_cells`
 /// writes the solved values. Making that shape work is an engine change owned
-/// by β/α, tracked separately; it is not a fixture-authoring gap.
+/// by β/α, tracked separately (#5835); it is not a fixture-authoring gap.
 #[test]
 fn mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value() {
     let (merged, frozen) = mwhole_halves();
