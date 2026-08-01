@@ -70,7 +70,19 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// Also not derived from examples_smoke.rs: that sibling has no analogous
 /// floor to share, and hoisting corpus discovery into a common crate is a
 /// cross-crate change outside this single-file task's scope.
-const EXPECTED_MIN_FILES: usize = 100;
+///
+/// In short: this is a discovery-regression TRIPWIRE, not a corpus-size
+/// target — the same framing as its sibling floors in `examples_smoke.rs`.
+/// Dated snapshot, last reviewed 2026-08-01 (not a live claim): the
+/// examples/ corpus holds 258 discovered `.ri` files, SKIP_SET has 8
+/// entries, and `candidates.len()` is therefore 250 today; 200 leaves 50
+/// entries of SKIP_SET-growth headroom below that count.
+/// [`discovery_floor_tracks_the_live_corpus`] is the freshness ratchet that
+/// keeps this constant itself from drifting stale again the way it did at
+/// its previous value of 100, which only caught a >60% discovery loss;
+/// `200 * 2 = 400 >= 258` clears that ratchet with room for ~55% corpus
+/// growth before this constant needs raising again.
+const EXPECTED_MIN_FILES: usize = 200;
 
 /// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
 /// example-corpus perf regression walk
