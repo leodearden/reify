@@ -457,6 +457,93 @@ describe('reify.grammar snippets — keyword logical operators', () => {
 });
 
 /**
+ * Range expressions, transliterated from tree-sitter-reify/grammar.js:1376-1389
+ * — two-sided `a .. b`, exclusive-upper `a ..< b`, and the four single-sided
+ * prefix forms.
+ *
+ * Measured before the fix: `let r = 1mm .. 5mm` produced 2 error nodes,
+ * because `..` lexed as two member-access dots. 59 of the then-failing files
+ * contain `..` and 19 a prefix range.
+ *
+ * Every shape below is attested in a committed fixture: the joint-limit form
+ * in examples/kinematic/counter_mass_balance.ri:18, the exclusive form in
+ * examples/integration_full_v01.ri:157, and all four prefix forms in
+ * examples/single_sided_range.ri:17-26.
+ */
+describe('reify.grammar snippets — range expressions', () => {
+  it('parses a two-sided range `0rad .. 6.28rad`', () => {
+    expect(countErrorNodes('structure def F { let turn = 0rad .. 6.283185307179586rad }')).toBe(0);
+  });
+
+  it('parses a range as a call argument `prismatic(vec3(1, 0, 0), 0mm .. 500mm)`', () => {
+    expect(
+      countErrorNodes('structure def F { let j = prismatic(vec3(1, 0, 0), 0mm .. 500mm) }'),
+    ).toBe(0);
+  });
+
+  it('parses the space-free form `5mm..5mm`', () => {
+    expect(countErrorNodes('structure def F { let r = 5mm..5mm }')).toBe(0);
+  });
+
+  it('parses a negative lower bound `-180deg .. 180deg`', () => {
+    expect(countErrorNodes('structure def F { let r = revolute(axis_y, -180deg .. 180deg) }')).toBe(
+      0,
+    );
+  });
+
+  it('parses the exclusive-upper form `0..<5`', () => {
+    expect(countErrorNodes('structure def F { let r = 0..<5 }')).toBe(0);
+  });
+
+  for (const [name, form] of [
+    ['>', '>2mm'],
+    ['>=', '>=2mm'],
+    ['<', '<100mm'],
+    ['<=', '<=100mm'],
+  ]) {
+    it(`parses the single-sided prefix range \`${name}\``, () => {
+      expect(countErrorNodes(`structure def F { let b = ${form} }`)).toBe(0);
+    });
+  }
+
+  it('yields a RangeExpression node', () => {
+    expect(nodeNames('structure def F { let r = 1mm .. 5mm }')).toContain('RangeExpression');
+    expect(nodeNames('structure def F { let b = >2mm }')).toContain('RangeExpression');
+  });
+
+  /**
+   * grammar.js:1374-1375 pins range at precedence 0 — LOWER than every other
+   * binary operator — so `2mm + 1mm .. 10mm - 1mm` is `(2mm+1mm)..(10mm-1mm)`
+   * and not `2mm + (1mm..10mm) - 1mm`. Pinned by reading the left operand,
+   * since both groupings contain the same nodes.
+   */
+  it('binds `..` looser than the arithmetic operators', () => {
+    const src = 'structure def F { let r = 2mm + 1mm .. 10mm - 1mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(leftOperandOf(src)).toBe('2mm + 1mm');
+  });
+
+  /**
+   * THE HIGHEST-RISK INTERACTION IN THIS SLICE. The prefix range and binary
+   * comparison share their leading operator token, so a mis-resolved conflict
+   * turns every `a < b` into `a` followed by a prefix range. This is the
+   * regression guard.
+   */
+  it('still parses `constraint thickness < 50mm` as a comparison, not a prefix range', () => {
+    const src = 'structure def F { param thickness : Length = 5mm\n  constraint thickness < 50mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('CompareOp');
+    expect(names).not.toContain('RangeExpression');
+  });
+
+  it('still parses a chained comparison-free member access `a.b.c`', () => {
+    // `..` must not swallow the single `.` of member access.
+    expect(countErrorNodes('structure def F { let x = a.b.c }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
