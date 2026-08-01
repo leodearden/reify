@@ -73,15 +73,11 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 ///
 /// In short: this is a discovery-regression TRIPWIRE, not a corpus-size
 /// target — the same framing as its sibling floors in `examples_smoke.rs`.
-/// Dated snapshot, last reviewed 2026-08-01 (not a live claim): the
-/// examples/ corpus holds 258 discovered `.ri` files, SKIP_SET has 8
-/// entries, and `candidates.len()` is therefore 250 today; 200 leaves 50
-/// entries of SKIP_SET-growth headroom below that count.
 /// [`discovery_floor_tracks_the_live_corpus`] is the freshness ratchet that
 /// keeps this constant itself from drifting stale again the way it did at
-/// its previous value of 100, which only caught a >60% discovery loss;
-/// `200 * 2 = 400 >= 258` clears that ratchet with room for ~55% corpus
-/// growth before this constant needs raising again.
+/// its previous value of 100, which only caught a >60% discovery loss; its
+/// assertion message reports the current live count on failure, so that
+/// number isn't pinned here where it would go stale silently.
 const EXPECTED_MIN_FILES: usize = 200;
 
 /// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
@@ -958,20 +954,18 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
 /// measures. This test is a separate, second-order check on the
 /// CONSTANT'S OWN VALUE, and it never gates the perf walk itself.
 ///
-/// It is one-directional, exactly like examples_smoke.rs's sibling ratchet
-/// (`discovery_floors_track_the_live_corpus` there): a real discovery
-/// regression shrinks `total`, which only makes
-/// `EXPECTED_MIN_FILES * 2 >= total` EASIER to satisfy, so it can never mask
-/// the regression the absolute gate above exists to catch — it only fires
-/// when the corpus GROWS past 2x the floor, which is exactly the
-/// maintenance signal that the floor needs raising.
+/// It is one-directional, for the same reason as examples_smoke.rs's
+/// sibling ratchet (`discovery_floors_track_the_live_corpus` there, see its
+/// doc comment for the full argument): a real discovery regression can only
+/// make this assertion easier to satisfy, never harder, so it cannot mask
+/// the regression the absolute gate above exists to catch.
 ///
-/// Deliberately compares against the RAW [`discover_ri_files`] count, not
-/// `candidates.len()` (the SKIP_SET-filtered list the perf walk uses): the
-/// raw count is the stable quantity this floor is meant to track, and using
-/// it keeps this guard independent of ordinary SKIP_SET churn. It calls
-/// `discover_ri_files()` only — no `check_source_with_stdlib` — so it adds
-/// no measurable time to this binary.
+/// Unlike that sibling, this compares against the RAW [`discover_ri_files`]
+/// count, not `candidates.len()` (the SKIP_SET-filtered list the perf walk
+/// uses): the raw count is the stable quantity this floor is meant to
+/// track, and using it keeps this guard independent of ordinary SKIP_SET
+/// churn. It calls `discover_ri_files()` only — no `check_source_with_stdlib`
+/// — so it adds no measurable time to this binary.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
     let total = discover_ri_files().len();
@@ -980,10 +974,12 @@ fn discovery_floor_tracks_the_live_corpus() {
         EXPECTED_MIN_FILES * 2 >= total,
         "EXPECTED_MIN_FILES ({}) has drifted stale: the live examples/ corpus \
          now has {} .ri files, more than 2x the floor. Raise \
-         EXPECTED_MIN_FILES to at least {}/2 and re-review its tripwire doc \
-         comment.",
+         EXPECTED_MIN_FILES to ~{} — headroom above the bare {}/2 boundary, \
+         which would re-flake on the very next file added — and re-review \
+         its tripwire doc comment.",
         EXPECTED_MIN_FILES,
         total,
+        total * 4 / 5,
         total
     );
 }
