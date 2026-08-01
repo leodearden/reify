@@ -5723,6 +5723,237 @@
     }
 
     // ---------------------------------------------------------------------------
+    // Tests: `translate` components are LENGTH-semantic (task 5623, R1 sweep)
+    //
+    // Transposed from task 5350's `compile_geometry_op_circular_pattern_*_origin_*`
+    // quartet (above): a translation component is a displacement in space, so a
+    // bare `5` would be silently read as 5 SI **metres** by `Value::as_f64`
+    // rather than 5 mm — the 1000× hazard this gate closes.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `translate` op with caller-supplied components, so each rejection
+    /// test varies exactly one thing.
+    fn translate_with_components(
+        dx: reify_ir::CompiledExpr,
+        dy: reify_ir::CompiledExpr,
+        dz: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(0),
+            args: vec![("dx".into(), dx), ("dy".into(), dy), ("dz".into(), dz)],
+        }
+    }
+
+    /// A BARE (dimensionless) translation component must be REJECTED: every
+    /// component of a translation is length-semantic, so a bare `5` would move
+    /// the target 5 metres instead of 5 mm with no diagnostic.
+    ///
+    /// Run once per component: `dx`/`dy`/`dz` are three separate reads, so a
+    /// `dx`-only test would not notice `dy` or `dz` regressing back to the
+    /// bare-accepting `f64_arg` closure.
+    #[test]
+    fn compile_geometry_op_translate_bare_component_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for bare in ["dx", "dy", "dz"] {
+            // Exactly one component is BARE; the other two are Lengths.
+            let component = |name: &str| -> reify_ir::CompiledExpr {
+                if name == bare {
+                    literal_f64(0.0)
+                } else {
+                    literal_length(0.0)
+                }
+            };
+            let op =
+                translate_with_components(component("dx"), component("dy"), component("dz"));
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) translate component {bare} must drop the \
+                 op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` component must be rejected exactly like
+    /// a bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
+    /// LENGTH Scalar passes.
+    ///
+    /// Two arms, both of which a `Real`-only test would miss:
+    ///   (a) an ANGLE Scalar (`20deg` where a displacement was meant);
+    ///   (b) a DIMENSIONLESS Scalar — the likeliest silent-regression path, since
+    ///       eval arithmetic can collapse to a dimensionless `Scalar` rather than
+    ///       a `Real` and would sneak past a `Real`-shaped guard.
+    #[test]
+    fn compile_geometry_op_translate_wrong_dimension_component_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, dx_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op = translate_with_components(dx_expr, literal_length(0.0), literal_length(0.0));
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar translate component must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("dx") && d.message.contains("Length")),
+                "a diagnostic must name the dx arg and the Length requirement for \
+                 a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE component (NaN / ±inf — e.g. from a
+    /// divide-by-zero in a parametric expression) must also drop the op, and must
+    /// say so specifically: the value IS a Length, so the generic wrong-dimension
+    /// wording would be wrong.
+    #[test]
+    fn compile_geometry_op_translate_non_finite_length_component_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = translate_with_components(
+                literal_length(si),
+                literal_length(0.0),
+                literal_length(0.0),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length translate component must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("dx") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length' (NOT the wrong-dimension wording — the value \
+                 IS a Length); got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// The clean path: dimensioned components are accepted and reach the IR in SI
+    /// metres (a `12mm` dx arrives as `0.012`, never `12`).
+    ///
+    /// Every component is DISTINCT so this also pins the dx/dy/dz → `Translate`
+    /// field ordering: a transposed assembly is a live regression that an all-zero
+    /// (or single-non-zero) fixture could not see.
+    #[test]
+    fn compile_geometry_op_translate_length_components_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // 12mm/34mm/56mm — the values the bare form would have read as
+        // 12/34/56 metres.
+        let op = translate_with_components(
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Translate {
+                target,
+                dx,
+                dy,
+                dz,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                // Bit-exact: each SI value is an identity pass-through of its
+                // literal, with no arithmetic applied.
+                assert_eq!([dx, dy, dz], [0.012, 0.034, 0.056]);
+            }
+            other => panic!(
+                "expected Ok(Translate) for Length components, got {:?}",
+                other
+            ),
+        }
+        // Assert on CONTENT, not severity: the units gate never emits an `Error`
+        // here — `eval_named_arg_length` pushes `Diagnostic::warning` for every
+        // rejection, and the Error only materialises when the caller maps
+        // `compile_geometry_op`'s `Err(String)`. A severity filter would therefore
+        // pass even if a valid Length component spuriously warned.
+        assert!(
+            diagnostics.is_empty(),
+            "Length translate components are the fully clean path and must emit \
+             NO diagnostic at all (in particular no 'expects Length' / \
+             'non-finite Length' warning); got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
     // ---------------------------------------------------------------------------
 
