@@ -4536,4 +4536,67 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     expect(designMain.state.enabled).toBe(true);
     expect(pane1.state.enabled).toBe(true);
   });
+
+  it('(g) an UNSCOPED multi-match still clicks the first match, but now reports which pane it guessed', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5108, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+    });
+
+    // Back-compat: first match wins, exactly as before #5891.
+    expect(designMain.state.enabled).toBe(false);
+    expect(pane1.state.enabled).toBe(true);
+    // ...but the guess is no longer silent. This is the whole reason unscoped
+    // ambiguity stays first-match instead of becoming a hard error.
+    expect(result).toEqual({ ok: true, viewportId: 'design-main', matchCount: 2 });
+  });
+
+  it('(h) a SINGLE match returns a byte-identical {ok:true} — no diagnostic keys leak into the common case', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    mountPane('design-main');
+
+    const result = await dispatchCmd(5109, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+    });
+
+    // toEqual, not a subset match: asserting the EXACT shape is what pins that
+    // the overwhelmingly common single-match response is unchanged, so no
+    // existing test or harness step comparing with toEqual starts failing.
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('(i) a SCOPED success also stays exactly {ok:true} — the caller already named the pane', async () => {
+    await mountTwoPanes();
+
+    const result = await dispatchCmd(5110, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('(j) zero matches still yields the unchanged notFound wording', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatchCmd(5111, 'click_element', { testId: 'no-such-thing' });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFound('no-such-thing') });
+  });
+
+  it('(k) a multi-match with NO data-viewport-id ancestor reports viewportId:null — pane unknown, ambiguity still surfaced', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // Two bare divs sharing a testid, outside any pane wrapper: the resolver
+    // cannot name a pane, but must not hide that it picked between two.
+    document.body.innerHTML =
+      '<div data-testid="bare-dup"></div><div data-testid="bare-dup"></div>';
+
+    const result = await dispatchCmd(5112, 'click_element', { testId: 'bare-dup' });
+
+    expect(result).toEqual({ ok: true, viewportId: null, matchCount: 2 });
+  });
 });
