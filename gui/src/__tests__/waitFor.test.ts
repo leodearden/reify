@@ -22,7 +22,7 @@ vi.mock('three', () => ({
 
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
-import { initDebugBridge } from '../debug/bridge';
+import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
 import type { ViewStateStore } from '../stores/viewStateStore';
 
@@ -455,6 +455,200 @@ describe('wait_for_selector: default timeout', () => {
     expect(responseCall).toBeDefined();
     const result = JSON.parse((responseCall![1] as any).result);
     expect(result.error).toBe('timeout');
+  });
+});
+
+// ─── #5891 viewport scoping — step-11 RED → step-12 GREEN ────────────────────
+//
+// wait_for_selector and wait_for's selector arm share buildSelectorPredicate, so
+// one block covers both tools.
+//
+// These two OBSERVE rather than drive: unlike click_element / focus_element /
+// scroll / element_screenshot there is no wrong-target ACTION to disclose, so
+// the return shapes stay exactly pollUntil's — {ok:true, waited_ms} and
+// {error:'timeout'} — with no viewportId/matchCount echo even on a multi-match.
+// Scoping the predicate IS the whole fix here.
+describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let root: HTMLElement | null = null;
+
+  /** Give an element a non-zero rect so isElementVisible() reports true under jsdom. */
+  function makeVisible(el: Element) {
+    (el as HTMLElement).getBoundingClientRect = () => ({
+      x: 0, y: 0, width: 100, height: 20,
+      top: 0, right: 100, bottom: 20, left: 0,
+      toJSON: () => ({}),
+    });
+  }
+
+  /**
+   * `design-main` ALWAYS holds a visible `scoped-el`; `pane-1` holds one only when
+   * `inPane1`. That asymmetry is the discriminator for every negative case below:
+   * a predicate still falling back to the document-wide lookup would be satisfied
+   * by design-main's element no matter which pane was actually asked for.
+   */
+  function mountPanes(inPane1: boolean) {
+    root = document.createElement('div');
+    root.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="scoped-el"></div></div>
+      <div data-viewport-id="pane-1">${inPane1 ? '<div data-testid="scoped-el"></div>' : ''}</div>
+    `;
+    document.body.appendChild(root);
+    root.querySelectorAll('[data-testid="scoped-el"]').forEach(makeVisible);
+  }
+
+  /** Settle pending microtasks WITHOUT advancing any fake timer. */
+  async function flushMicrotasks() {
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  }
+
+  /**
+   * Dispatch, then always drain past the timeout so no dangling promise outlives a
+   * failed assertion. `settledBeforePolling` still records whether the handler
+   * answered without ever reaching pollUntil's 16 ms tick — the only way to see a
+   * fail-fast rejection as distinct from one that burned the timeout budget.
+   */
+  async function dispatchDrained(id: number, command: string, params: Record<string, unknown>) {
+    vi.mocked(invoke).mockClear();
+    const dispatchPromise = capturedHandler!({ payload: { id, command, params } });
+    await flushMicrotasks();
+    const settledBeforePolling = vi.mocked(invoke).mock.calls.some((c) => c[0] === 'debug_response');
+    await vi.advanceTimersByTimeAsync(500);
+    await dispatchPromise;
+    const responseCall = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    return {
+      result: JSON.parse((responseCall![1] as any).result) as any,
+      settledBeforePolling,
+    };
+  }
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    const stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    if (root && root.parentNode) document.body.removeChild(root);
+    root = null;
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('(a) scoped wait_for_selector resolves {ok:true} when the element is visible IN THAT PANE', async () => {
+    mountPanes(true);
+
+    const { result } = await dispatchDrained(20, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', viewportId: 'pane-1', timeout_ms: 100,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(typeof result.waited_ms).toBe('number');
+  });
+
+  it('(b) scoped: an element visible only in ANOTHER pane never satisfies the wait', async () => {
+    // THE discriminating case. design-main holds a visible 'scoped-el'; pane-1 does
+    // not. A document-wide fallback would resolve {ok:true} off the wrong pane.
+    mountPanes(false);
+
+    const { result } = await dispatchDrained(21, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', viewportId: 'pane-1', timeout_ms: 100,
+    });
+
+    expect(result).toEqual({ error: 'timeout' });
+  });
+
+  it('(c) scoped state:"gone": an element still present in ANOTHER pane counts as GONE', async () => {
+    // The mirror of (b): scoping has to cut both ways. Unscoped, design-main's
+    // still-visible element would keep the 'gone' predicate false until timeout.
+    mountPanes(false);
+
+    const { result } = await dispatchDrained(22, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'gone', viewportId: 'pane-1', timeout_ms: 100,
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('(d) non-string viewportId is rejected BEFORE any polling', async () => {
+    mountPanes(true);
+
+    const { result, settledBeforePolling } = await dispatchDrained(23, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', viewportId: 5, timeout_ms: 100,
+    });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+    // A malformed param must fail fast, not burn the caller's whole timeout
+    // budget re-deciding the same rejection on every 16 ms tick.
+    expect(settledBeforePolling).toBe(true);
+  });
+
+  it('(e) wait_for selector arm: predicate.viewportId scopes it the same way', async () => {
+    mountPanes(true);
+
+    const { result } = await dispatchDrained(24, 'wait_for', {
+      predicate: { kind: 'selector', testId: 'scoped-el', state: 'visible', viewportId: 'pane-1' },
+      timeout_ms: 100,
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('(e) wait_for selector arm: an element only in ANOTHER pane never satisfies it', async () => {
+    mountPanes(false);
+
+    const { result } = await dispatchDrained(25, 'wait_for', {
+      predicate: { kind: 'selector', testId: 'scoped-el', state: 'visible', viewportId: 'pane-1' },
+      timeout_ms: 100,
+    });
+
+    expect(result).toEqual({ error: 'timeout' });
+  });
+
+  it('(e) wait_for selector arm: non-string predicate.viewportId also fails fast', async () => {
+    // Asserted separately from (d) because the two tools reach the shared
+    // predicate through DIFFERENT call sites — hoisting the validation out of
+    // one closure and not the other would leave this arm polling to timeout.
+    mountPanes(true);
+
+    const { result, settledBeforePolling } = await dispatchDrained(26, 'wait_for', {
+      predicate: { kind: 'selector', testId: 'scoped-el', state: 'visible', viewportId: 5 },
+      timeout_ms: 100,
+    });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+    expect(settledBeforePolling).toBe(true);
+  });
+
+  it('(f) UNSCOPED multi-match keeps the unchanged {ok:true, waited_ms} shape — no pane keys', async () => {
+    mountPanes(true); // two matches — a DRIVING tool would report its guess here
+
+    const { result } = await dispatchDrained(27, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', timeout_ms: 100,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(Object.keys(result).sort()).toEqual(['ok', 'waited_ms']);
+  });
+
+  it('(f) UNSCOPED timeout keeps the unchanged {error:"timeout"} shape', async () => {
+    mountPanes(true);
+
+    const { result } = await dispatchDrained(28, 'wait_for_selector', {
+      testId: 'no-such-el', state: 'visible', timeout_ms: 100,
+    });
+
+    expect(result).toEqual({ error: 'timeout' });
   });
 });
 
