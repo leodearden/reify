@@ -37,7 +37,7 @@ structure def Probe {
         Value::StructureInstance(data) => {
             assert_eq!(data.type_name, "Revolute");
 
-            // spring_rate = some(1 N·m/rad) → Value::Option(Some(Scalar))
+            // spring_rate = some(1 N·m/rad²) → Value::Option(Some(Scalar))
             match field(&data.fields, "spring_rate") {
                 Some(Value::Option(Some(inner))) => match inner.as_ref() {
                     Value::Scalar {

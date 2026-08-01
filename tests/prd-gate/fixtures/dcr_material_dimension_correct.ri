@@ -7,6 +7,9 @@ module dcr_material_dimension_correct
 // This file must EVAL CLEAN (exit 0) today AND after β lands — β must not
 // regress the correct spelling. MEASURED at decompose (2026-07-28,
 // main efba5a8036): spring_rate = 1.3802083333333335 m^2*kg*s^-2*rad^-1.
+// The dimension TAG became m^2*kg*s^-2*rad^-2 when task #5799 re-dimensioned
+// ROTATIONAL_STIFFNESS (Leo's 2026-07-29 ruling); the si_value is unchanged,
+// since a radian is numerically 1.
 
 structure def DcrMaterialDimensionCorrect {
     let m = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)

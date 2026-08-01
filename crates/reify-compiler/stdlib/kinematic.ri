@@ -140,13 +140,13 @@ structure def Prismatic : DrivingJoint + HasMotion {
 // generalized coordinate has dimension Angle).
 //
 // Compliant-joint fields (task 3849 / Phase-1, §8.2):
-//   spring_rate : N·m/rad    — rotational spring coefficient; None = rigid (no spring).
-//   damping     : N·m·s/rad  — rotational damping coefficient; None = rigid (no damper).
+//   spring_rate : N·m/rad²   — rotational spring coefficient; None = rigid (no spring).
+//   damping     : N·m·s/rad² — rotational damping coefficient; None = rigid (no damper).
 //   neutral     : rad        — rest angle; None = consumer-applied (task ι/RBD default: 0).
 structure def Revolute : DrivingJoint + HasMotion {
     param axis : Vec3<Length> // axis : Vec3<Length> (= Vector3<Length>), the joint rotation axis in parent body frame
-    param spring_rate : Option<RotationalStiffness> = none // N·m/rad; None = rigid
-    param damping     : Option<RotationalDamping>   = none // N·m·s/rad; None = rigid
+    param spring_rate : Option<RotationalStiffness> = none // N·m/rad²; None = rigid
+    param damping     : Option<RotationalDamping>   = none // N·m·s/rad²; None = rigid
     param neutral     : Option<Angle>               = none // rad; None → task ι default: 0
     type MotionValue = Angle // rotational generalized coordinate is an Angle
 }

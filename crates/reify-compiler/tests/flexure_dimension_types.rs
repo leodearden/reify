@@ -1,12 +1,16 @@
 //! Compiler-side dimension resolution tests for the four flexure dimensioned types
 //! added in task 3849 (Phase-1 of docs/prds/v0_3/compliant-joints-flexures.md).
 //!
-//! Each test compiles `structure def S { param x : T = literal }` via
+//! Each POSITIVE test compiles `structure def S { param x : T = literal }` via
 //! `common::stdlib_param_si_value` and asserts:
 //!   (a) no Error diagnostics (the name resolves as a type),
 //!   (b) si_value == 1.0 (the compound literal folds to SI base units), and
 //!   (c) the returned DimensionVector equals the corresponding reify_core constant
 //!       (the dimension match).
+//!
+//! The two NEGATIVE tests (task #5799) invert this: they compile the TORQUE
+//! spelling against a rotational stiffness/damping declaration and require an
+//! Error, pinning that the two quantities occupy distinct DimensionVectors.
 
 mod common;
 
@@ -45,9 +49,10 @@ fn rotational_damping_param_resolves_and_folds() {
 // are the executable form of that argument: they demand that the torque
 // spelling be REJECTED where a rotational stiffness/damping is declared.
 //
-// RED before the re-dimensioning, because ROTATIONAL_STIFFNESS and TORQUE are
-// byte-identical vectors today, so `1N*m/rad` satisfies the declared type and
-// no diagnostic is emitted at all.
+// These were RED before task #5799: ROTATIONAL_STIFFNESS and TORQUE were
+// byte-identical vectors, so `1N*m/rad` satisfied the declared type and no
+// diagnostic was emitted at all. The re-dimensioning to rad⁻² is what separates
+// them and turns these green.
 
 /// Compile `structure def S { param x : <ty> = <literal> }` and return its
 /// Error-severity diagnostics.

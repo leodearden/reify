@@ -2098,9 +2098,9 @@ mod tests {
 
     #[test]
     fn flexure_dims_distinct_from_energy_and_dynamic_viscosity() {
-        // ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — differs by angle slot.
+        // ROTATIONAL_STIFFNESS (kg·m²·s⁻²·rad⁻²) ≠ ENERGY (kg·m²·s⁻²) — differs by angle slot.
         assert_ne!(DimensionVector::ROTATIONAL_STIFFNESS, DimensionVector::ENERGY);
-        // ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻¹) ≠ ENERGY (kg·m²·s⁻²) — time AND angle differ.
+        // ROTATIONAL_DAMPING (kg·m²·s⁻¹·rad⁻²) ≠ ENERGY (kg·m²·s⁻²) — time AND angle differ.
         assert_ne!(DimensionVector::ROTATIONAL_DAMPING, DimensionVector::ENERGY);
         // TRANSLATIONAL_DAMPING (kg·s⁻¹) ≠ DYNAMIC_VISCOSITY (kg·m⁻¹·s⁻¹) — length slot differs.
         assert_ne!(

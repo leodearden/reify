@@ -2742,10 +2742,10 @@ mod tests {
     // These tests fail until step-4 wires joint_compliance into the link loop:
     // currently compliance is hardcoded None, so every Δτ is 0.
     //
-    // (a) TRAJECTORY SPRING: a compliant revolute (spring_rate=2.0 N·m/rad,
+    // (a) TRAJECTORY SPRING: a compliant revolute (spring_rate=2.0 N·m/rad²,
     //     neutral=π/12 rad) driven at θ=π/6 (vels=accels=0) via the trajectory
     //     path; Δτ = −k·(θ−neutral) = −2.0·(π/12) = −π/6 within 1e-12.
-    // (b) SNAPSHOT-PATH DAMPING: a damping-only revolute (c=3.5 N·m·s/rad) at
+    // (b) SNAPSHOT-PATH DAMPING: a damping-only revolute (c=3.5 N·m·s/rad²) at
     //     q̇=1.7 rad/s via the snapshot path; Δτ = −c·q̇ = −5.95 within 1e-12.
     // (c) NO-REGRESSION: plain joint trajectory torque still ≈ 0.4905 N·m.
 
@@ -2834,7 +2834,7 @@ mod tests {
 
         let theta = PI / 6.0; // position > neutral → spring pushes back
 
-        // Compliant mechanism: spring_rate=2.0 N·m/rad, neutral=π/12 rad.
+        // Compliant mechanism: spring_rate=2.0 N·m/rad², neutral=π/12 rad.
         let compliant_joint =
             make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         let compliant_mech = {
@@ -2891,7 +2891,7 @@ mod tests {
         let theta = -PI / 6.0; // same angle as the static test (-30°)
         let omega = 1.7_f64;
 
-        // Compliant mechanism: damping=3.5 N·m·s/rad, no spring.
+        // Compliant mechanism: damping=3.5 N·m·s/rad², no spring.
         let damping_joint =
             make_compliant_revolute_joint(None, Some(3.5), 0.0);
         let damping_mech = {
@@ -2955,11 +2955,11 @@ mod tests {
         let delta_got = tau_damp - tau_plain;
         assert!(
             (delta_got - delta_expected).abs() < 1e-12,
-            "damping Δτ: expected {delta_expected:.15} N·m·s/rad, got {delta_got:.15}"
+            "damping Δτ: expected {delta_expected:.15} N·m·s/rad², got {delta_got:.15}"
         );
     }
 
-    /// Trajectory-path damping: compliant pendulum (c=3.5 N·m·s/rad, no spring)
+    /// Trajectory-path damping: compliant pendulum (c=3.5 N·m·s/rad², no spring)
     /// driven via `inverse_dynamics_lower` at θ=π/6, q̇=1.7 rad/s.
     /// Δτ = −c·q̇ = −3.5·1.7 = −5.95 within 1e-12.
     ///
@@ -2975,7 +2975,7 @@ mod tests {
         let theta = PI / 6.0;
         let omega = 1.7_f64;
 
-        // Compliant mechanism: damping=3.5 N·m·s/rad, no spring.
+        // Compliant mechanism: damping=3.5 N·m·s/rad², no spring.
         let damping_joint = make_compliant_revolute_joint(None, Some(3.5), 0.0);
         let damping_mech = {
             let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);
