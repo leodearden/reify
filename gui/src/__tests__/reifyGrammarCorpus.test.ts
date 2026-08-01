@@ -1050,6 +1050,31 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
   it('still parses a specialization body with a param assignment', () => {
     expect(countErrorNodes('structure def F { sub b : Bearing { bore = auto } }')).toBe(0);
   });
+
+  /**
+   * `self` IS THE ONE PROMOTION THAT HAD TO BE CONTEXTUAL, and these pin why.
+   *
+   * `self` appears 146 times in the committed corpus, every one of them in
+   * EXPRESSION position (`constraint self.b.bore == 10mm`,
+   * `[self.a.line_cost, self.b.line_cost].sum`). tree-sitter accepts those
+   * because its lexer is parse-state-driven: `'self'` is a bare string used
+   * only inside `fn_param_list`, so it keeps lexing as `identifier`
+   * everywhere else. Lezer's `@specialize` is context-FREE, so a `kw<"self">`
+   * would have reserved the word globally and turned every one of those lines
+   * into an error node — which is why the receiver slot uses `ekw<"self">`.
+   *
+   * The drift ledger would catch that regression too, but only as "these 40
+   * files stopped parsing"; these name the actual cause.
+   */
+  it('still parses expression-position `self` — `constraint self.b.bore == 10mm`', () => {
+    expect(countErrorNodes('structure def F { constraint self.b.bore == 10mm }')).toBe(0);
+  });
+
+  it('still parses `self` inside a list literal member chain', () => {
+    expect(
+      countErrorNodes('structure def F { let total = [self.a.line_cost, self.b.line_cost].sum }'),
+    ).toBe(0);
+  });
 });
 
 /**
@@ -1144,8 +1169,33 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
     expect(keywordSpans('structure def F { constraint a implies b }')).toContain('implies');
   });
 
+  it('styles `trait`, `fn` and `type` as keywords', () => {
+    expect(keywordSpans('trait Seal { }')).toContain('trait');
+    expect(keywordSpans('fn area(w: Real) -> Real = w')).toContain('fn');
+    expect(keywordSpans('trait T { type Item }')).toContain('type');
+  });
+
+  /**
+   * `self` is `ekw` (contextual), so it is styled in the RECEIVER slot and
+   * left as an ordinary identifier in expression position — the reading
+   * tree-sitter gives it too. Both halves are asserted: styling the receiver
+   * is the point of the KEYWORDS entry, and NOT styling the expression
+   * occurrence is the observable half of the contextual choice.
+   */
+  it('styles the `self` receiver but not expression-position `self`', () => {
+    expect(keywordSpans('trait T { fn f(self) -> Real = 1.0 }')).toContain('self');
+    expect(keywordSpans('structure def F { constraint self.b.bore == 10mm }')).not.toContain('self');
+  });
+
+  /**
+   * CONTROL. `trait` used to be this test's subject; it was promoted out of
+   * the ReservedWord list in the same change that added TraitDeclaration, so
+   * it stopped being a control and the assertion silently became a second
+   * copy of the promoted-keyword check above. The word here must be one that
+   * is still in the `ReservedWord` @specialize list in reify.grammar.
+   */
   it('still styles a word that remains in the ReservedWord list', () => {
-    expect(keywordSpans('structure def F { let x = trait }')).toContain('trait');
+    expect(keywordSpans('structure def F { let x = undef }')).toContain('undef');
   });
 });
 
@@ -1187,6 +1237,7 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
 const EXPECTED_CLEAN = [
   'examples/affine_tapered_spacer.ri',
   'examples/anisotropic_bar.ri',
+  'examples/appearance_surface.ri',
   'examples/appearance_viewport_egress.ri',
   'examples/aspect_massive.ri',
   'examples/best_practices/bolt_circle.ri',
@@ -1238,6 +1289,10 @@ const EXPECTED_CLEAN = [
   'examples/flexures/yield_warning.ri',
   'examples/gdt_conformance_satisfied.ri',
   'examples/gdt_conformance_violated.ri',
+  'examples/generics/container.ri',
+  'examples/generics/dim_param.ri',
+  'examples/generics/identity.ri',
+  'examples/generics/unbound_param.ri',
   'examples/geometric_relations/feature_datum_axis.ri',
   'examples/half_space.ri',
   'examples/io_export.ri',
@@ -1264,8 +1319,12 @@ const EXPECTED_CLEAN = [
   'examples/litter_tray.ri',
   'examples/load_case.ri',
   'examples/m10_geometric_types.ri',
+  'examples/m5_function_safety_factor.ri',
   'examples/m5_geometry.ri',
   'examples/m5_geometry_flange.ri',
+  'examples/m5_trait_rigid.ri',
+  'examples/m5_trait_structure.ri',
+  'examples/m5_user_function.ri',
   'examples/m6_fallback_recovery.ri',
   'examples/m6_result_fallback.ri',
   'examples/m8_materials.ri',
@@ -1311,6 +1370,7 @@ const EXPECTED_CLEAN = [
   'examples/stdlib/process.ri',
   'examples/structural_query_children_members.ri',
   'examples/structural_query_descendants.ri',
+  'examples/structural_query_filter.ri',
   'examples/structural_traits_dimensioned.ri',
   'examples/structure-instance.ri',
   'examples/sub_placement_assembly.ri',
@@ -1336,12 +1396,16 @@ const EXPECTED_CLEAN = [
   'examples/tolerancing/vc_boundary_solid.ri',
   'examples/topology_selectors/all_topology_selectors_wiring.ri',
   'examples/topology_selectors/block_inertia.ri',
+  'examples/trait_assoc_type_material.ri',
+  'examples/trait_assoc_type_qualified.ri',
+  'examples/trait_hierarchy.ri',
   'examples/trajectory/ei_robustness.ri',
   'examples/trajectory/gcode_import_smoke.ri',
   'examples/trajectory/printer_print_envelope.ri',
   'examples/trajectory/tots_optimal_ptp.ri',
   'examples/trajectory/zv_shaped_ramp.ri',
   'examples/trajectory/zvd_robustness.ri',
+  'examples/type_hygiene/type_hygiene_surface.ri',
   'examples/undef_self_describing.ri',
   'examples/unit_expressions.ri',
   'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
@@ -1350,12 +1414,15 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/collection_sub_member_cell_consumable.ri',
   'tests/prd-gate/fixtures/collection_sub_per_member_cells.ri',
   'tests/prd-gate/fixtures/collection_sub_value_position_undef_baseline.ri',
+  'tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri',
   'tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri',
   'tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri',
+  'tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri',
   'tests/prd-gate/fixtures/cost_min_money_objective.ri',
   'tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri',
   'tests/prd-gate/fixtures/cross_sub_geometry_ref.ri',
   'tests/prd-gate/fixtures/dcr_dimension_rejection_channel_fires.ri',
+  'tests/prd-gate/fixtures/dcr_fn_force_param_already_rejects.ri',
   'tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri',
   'tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri',
   'tests/prd-gate/fixtures/dcr_load_retype_target_resolves.ri',
@@ -1365,6 +1432,7 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri',
   'tests/prd-gate/fixtures/dcr_solver_load_dropped_bare.ri',
   'tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri',
+  'tests/prd-gate/fixtures/expected_type_pushdown_arg.ri',
   'tests/prd-gate/fixtures/expected_type_pushdown_let.ri',
   'tests/prd-gate/fixtures/faces_by_normal_symbolic_eval_silent.ri',
   'tests/prd-gate/fixtures/geometry_let_selector_consumer.ri',
@@ -1393,6 +1461,7 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
   'tests/prd-gate/fixtures/subbody_objective_ignored.ri',
   'tests/prd-gate/fixtures/transform3_unresolved.ri',
+  'tests/prd-gate/fixtures/typeparam_member_access.ri',
   'tests/prd-gate/fixtures/uncons_box_no_error.ri',
   'tests/prd-gate/fixtures/unit_curated_labels_ascii.ri',
   'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',

@@ -14,9 +14,15 @@ export const reifyLRLanguage = LRLanguage.define({
     props: [
       foldNodeProp.add({
         Block: foldInside,
+        // `FnBody` is the one brace-delimited body that is NOT a `Block`
+        // (grammar.js:239-246 gives a fn body its own rule, and its block arm
+        // holds `FnLetBinding* result` rather than members). Without an entry
+        // here a multi-line fn body would silently lose folding/indentation.
+        FnBody: foldInside,
       }),
       indentNodeProp.add({
         Block: delimitedIndent({ closing: '}' }),
+        FnBody: delimitedIndent({ closing: '}' }),
       }),
     ],
   }),

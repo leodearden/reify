@@ -47,6 +47,13 @@ export const KEYWORDS = [
   'priv',
   'aux',
   'at',
+  'trait',
+  'fn',
+  'type',
+  // Contextual (`ekw<"self">`): styled as a keyword in the fn receiver slot,
+  // and left as an ordinary identifier in expression position, which is how
+  // tree-sitter reads it too.
+  'self',
 ];
 
 export const reifyHighlighting = styleTags({

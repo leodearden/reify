@@ -14,6 +14,8 @@
 Declaration {
   StructureDefinition |
   OccurrenceDefinition |
+  TraitDeclaration |
+  FunctionDefinition |
   ImportDeclaration
 }
 
@@ -64,6 +66,37 @@ OccurrenceDefinition {
   kw<"pub">? kw<"occurrence"> kw<"def">? Identifier TypeParameters? (":" TraitBoundList)? Block
 }
 
+// ── Trait ───────────────────────────────────────────────
+// grammar.js:284-306. Same header shape as StructureDefinition — `pub`?,
+// name, optional type parameters, optional `:` refinement bounds — so the
+// TypeParameters/TraitBoundList productions are reused verbatim.
+//
+// THE BODY IS `Block`, NOT A TRAIT-SPECIFIC NODE. Upstream's `trait_member`
+// (grammar.js:295-305) is a strict subset of `_member`: it omits
+// minimize/maximize/guarded blocks and adds `function_signature`. Reusing
+// `Block` therefore makes the GUI parser accept a few members inside a trait
+// that the compiler rejects. That is the deliberate direction of error: this
+// file already records the same stance for SpecializationBody ("rejecting the
+// members that are forbidden in this position is the validator's job
+// upstream"), and an over-permissive highlighting parser degrades to "no
+// squiggle on a program the compiler will still reject", while an
+// under-permissive one paints red on valid code. Reuse also keeps the single
+// `Block` entry in reifyLanguage.ts's fold/indent props correct for trait
+// bodies with no extra wiring.
+TraitDeclaration {
+  kw<"pub">? kw<"trait"> Identifier TypeParameters? (":" TraitBoundList)? Block
+}
+
+// ── Associated type ─────────────────────────────────────
+// grammar.js:471-476. Admitted BOTH in a trait body (the requirement,
+// `type Material`) and in a structure/occurrence body (the conformer's
+// binding, `type Material = Steel`) — upstream lists it in `trait_member`
+// AND in `_member` (:537), and examples/trait_assoc_type_material.ri uses
+// both spellings in the same file.
+AssociatedType {
+  kw<"type"> Identifier ("=" TypeExpr)?
+}
+
 // ── Type parameters and trait bounds ────────────────────
 // grammar.js:478-503. `TraitBoundList` is shared by structure/occurrence
 // headers and by the bounds on an individual type parameter.
@@ -94,6 +127,8 @@ Member {
   SubDeclaration |
   MinimizeDeclaration |
   MaximizeDeclaration |
+  AssociatedType |
+  FunctionDefinition |
   GuardedBlock
 }
 
@@ -242,6 +277,55 @@ NamedArgumentList {
 
 NamedArgument {
   Identifier ":" expression
+}
+
+// ── Function ────────────────────────────────────────────
+// grammar.js:192-215 declares TWO productions — `function_definition` (with a
+// body) and `function_signature` (bodyless, trait-only) — and has to declare a
+// GLR conflict `[function_definition, function_signature]` for them, because
+// they share their entire prefix and diverge only at the `{`/`=` that either
+// does or does not follow the return type.
+//
+// Lezer is LR, so that conflict is not resolvable the same way. They are
+// merged here into ONE production with an optional `FnBody?`: the absence of a
+// body IS the signature form. This removes the conflict entirely rather than
+// working around it, and costs nothing downstream — no GUI code consumes the
+// node-name distinction, and the two nodes carry identical children otherwise.
+//
+// The merge is (deliberately) permissive in one direction: a bodyless `fn` is
+// now also accepted inside a structure body, where upstream admits only the
+// body-bearing override form (:544-547). Same direction-of-error argument as
+// TraitDeclaration's body above.
+FunctionDefinition {
+  kw<"pub">? kw<"fn"> Identifier TypeParameters? "(" FnParamList? ")" ("->" TypeExpr)? FnBody?
+}
+
+// grammar.js:217-231. Two arms: a `self` receiver optionally followed by typed
+// params, or typed params only.
+FnParamList {
+  ekw<"self"> ("," FnParam ("," FnParam)* ","?)? |
+  FnParam ("," FnParam)* ","?
+}
+
+FnParam {
+  Identifier ":" TypeExpr ("=" expression)?
+}
+
+// grammar.js:239-246. Block form `{ let-bindings* result }` and the spec §18
+// #10 expression-body sugar `= result`.
+FnBody {
+  "{" FnLetBinding* expression "}" |
+  "=" expression
+}
+
+// grammar.js:248-255. NOTE THE REQUIRED `;` — a fn-body let binding is
+// terminated, unlike the member-level LetDeclaration, which is not. Upstream
+// pins the shape in tree-sitter-reify/test/corpus/function.txt
+// (`fn f(x: Int) -> Int { let y = x; y }`); no committed `.ri` has a
+// multi-statement fn body at all, so the corpus neither confirms nor
+// contradicts it and the authoritative grammar governs.
+FnLetBinding {
+  kw<"let"> Identifier TypeAnnotation? "=" expression ";"
 }
 
 // ── Where clause ────────────────────────────────────────
@@ -465,12 +549,28 @@ CompareOp<expr> { expr }
 // position is the more correct behaviour, so this is recorded rather than
 // worked around. `set`/`map` are only a partial exception: they are
 // unreachable BARE but still start a SetLiteral/MapLiteral.
+// `trait`/`fn`/`type` were promoted here (TraitDeclaration, FunctionDefinition,
+// AssociatedType). `self` was promoted too, but as a CONTEXTUAL `ekw<"self">`
+// rather than a `kw<>` — see the note on FnParamList and on ekw above. The
+// corpus forced that choice: `self` appears 146 times in committed `.ri`, all
+// of them in EXPRESSION position (`constraint self.b.bore == 10mm`,
+// `[self.a.line_cost, self.b.line_cost].sum`), and tree-sitter admits those
+// because its lexer is parse-state-driven — `'self'` is a bare string used
+// only in `fn_param_list`, so it still lexes as `identifier` everywhere else.
+// A context-FREE `kw<"self">` would have reserved the word globally and broken
+// every one of those files.
+//
+// One styling consequence is accepted and stated: `self` in expression
+// position now lexes as `Identifier` (t.variableName) where it previously
+// lexed as `ReservedWord` (t.keyword). That matches the upstream reading —
+// there, too, expression-position `self` is an ordinary identifier — and in
+// the receiver slot `ekw` still yields the `self` token, which KEYWORDS styles.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
-    "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
+    "enum" | "match" | "connect" | "chain" |
     "purpose" | "field" | "port" |
-    "type" | "unit" | "forall" | "exists" |
-    "in" | "out" | "meta" | "self" |
+    "unit" | "forall" | "exists" |
+    "in" | "out" | "meta" |
     "undef" | "some" | "none">
 }
 
@@ -569,7 +669,9 @@ ReservedWord {
   // an error node — the same trap `->`/`::` fell into above.
   @precedence { "..<", "..", "." }
 
-  "(" ")" "{" "}" "[" "]" "." "," ":" "="
+  // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere
+  // else in the language.
+  "(" ")" "{" "}" "[" "]" "." "," ":" ";" "="
   "||" "&&" "==" "+" "-" "*" "^"
   "::" "->" "=>" "<" ">" ".." "..<"
 }
