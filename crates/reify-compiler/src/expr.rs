@@ -202,73 +202,55 @@ fn propagate_poison() -> CompiledExpr {
     CompiledExpr::literal(Value::Undef, Type::Error)
 }
 
-/// Returns `true` if `template` declares a member named `name` in any of the
-/// three member categories: value cells, ports, or sub-components.
+/// The **acceptance policy** for an external `obj.member` projection: is it safe
+/// to LOWER this member name to a `Value::StructureInstance` field read?
 ///
-/// This is the single source of truth for "is this member name known?" used at
-/// both the purpose-subject concrete-subject validation path (task-2200) and the
-/// SIR-α entity-scope StructureRef member-access path (task-3540 / ds-sentinel
-/// L4, task #4649). Keeping the two sites in lockstep prevents a future member
-/// category addition (e.g. a new declarable member kind) from silently diverging
-/// between the two diagnostics.
+/// Deliberately NOT the membership authority. That is
+/// [`member_path::resolve_hop`] (task #5424, contract C1-iv), which scans the
+/// full five-container union `value_cells ∪ guarded_groups[].members ∪
+/// sub_components ∪ ports ∪ realizations`. This predicate is narrower on
+/// purpose: it accepts `value_cells ∪ ports ∪ sub_components` only.
+///
+/// The two containers it omits are genuine members the resolver knows about,
+/// but accepting them here would lower to a projection the runtime cannot
+/// materialise — `StructureInstanceData.fields` excludes them, so the read
+/// silently evaluates to `Value::Undef`, exactly the pre-existing class already
+/// documented for ports/subs at the `member_known` note below. Trading today's
+/// loud `StructureMemberNotFound` for a silent undef is what PRD decision D9
+/// forbids, so the widening waits on the constructor/eval materialization half
+/// (#5935). #5425 (β) and #5430 (η) convert this site to the resolver; neither
+/// may widen acceptance before #5935 lands.
+///
+/// Used at both the purpose-subject concrete-subject validation path (task-2200)
+/// and the SIR-α entity-scope StructureRef member-access path (task-3540 /
+/// ds-sentinel L4, task #4649), so the two diagnostics stay in lockstep.
 fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
     template.value_cells.iter().any(|vc| vc.id.member == name)
         || template.ports.iter().any(|p| p.name == name)
         || template.sub_components.iter().any(|sc| sc.name == name)
 }
 
-/// Returns `true` if `name` resolves to a `priv` member of `template`: a
-/// `priv param` (a `Param`-kind value cell marked `Visibility::Private`), a
-/// `priv sub` (`Visibility::Private`), a `priv port` (`is_priv == true`), or a
-/// `priv param` nested inside a block-form `where` guarded group
-/// (`guarded_groups[].members`, task #5171). Sibling to
-/// [`template_has_member`]; gates the E_PRIV_MEMBER_ACCESS check on the
-/// external StructureRef member-access path (task #3978 δ).
-///
-/// The `kind == Param` guard is load-bearing: `value_cells` (and
-/// `guarded_groups[].members`) also hold `let` bindings, and a default
-/// (non-`pub`) `let` is `Visibility::Private` too — but `let`s are never
-/// externally accessible by name, so reporting them here would be an
-/// out-of-scope behaviour change. Only a `priv param` carries `Param` +
-/// `Private`.
-fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
-    template.value_cells.iter().any(|vc| {
-        vc.id.member == name
-            && vc.kind == ValueCellKind::Param
-            && vc.visibility == Visibility::Private
-    }) || template
-        .sub_components
-        .iter()
-        .any(|sc| sc.name == name && sc.visibility == Visibility::Private)
-        || template.ports.iter().any(|p| p.name == name && p.is_priv)
-        || template.guarded_groups.iter().any(|g| {
-            g.members.iter().any(|vc| {
-                vc.id.member == name
-                    && vc.kind == ValueCellKind::Param
-                    && vc.visibility == Visibility::Private
-            })
-        })
-}
-
 /// Returns `true` if `template` declares a port named `port_name` with a
 /// nested `priv param` member named `member` (task #5171). Companion to
-/// [`template_member_is_priv`], but keyed by the port-qualified composite
-/// name `CompiledPort::members` cells actually carry
+/// [`member_path::resolve_hop`]'s `PrivateMember` verdict, but keyed by the
+/// port-qualified composite name `CompiledPort::members` cells actually carry
 /// (`ValueCellId.member == "<port_name>.<member>"`, set in entity.rs's
 /// port-member compilation), rather than a bare top-level member name.
 ///
 /// A separate helper is needed because the two-level `<sub>.<port>.<member>`
-/// access shape never reaches `template_member_is_priv`: the intermediate
-/// `<sub>.<port>` access does not resolve to a `Type::StructureRef` (ports
-/// are absent from `value_cells`), so the `Type::StructureRef` member-access
-/// block's priv gate is never entered for the outer `.<member>`. The
-/// AST-pattern branch in `compile_expr_guarded` (mirroring the cluster /
-/// keyed-sub branches) calls this directly instead.
+/// access shape never reaches the resolver: the intermediate `<sub>.<port>`
+/// access does not resolve to a `Type::StructureRef` (ports are absent from
+/// `value_cells`), so the `Type::StructureRef` member-access block's priv gate
+/// is never entered for the outer `.<member>`. The AST-pattern branch in
+/// `compile_expr_guarded` (mirroring the cluster / keyed-sub branches) calls
+/// this directly instead. Retiring that shape — and with it this helper — is
+/// task η's (#5430), which routes the two-level matchers through
+/// `member_path::resolve_member_path`.
 ///
 /// The `kind == Param` guard mirrors the load-bearing guard on
-/// `template_member_is_priv`'s `value_cells` arm: a port may also declare
-/// `let` members, which default to `Visibility::Private` but are never
-/// externally accessible by name.
+/// `member_path::value_cell_visibility`: a port may also declare `let` members,
+/// which default to `Visibility::Private` but are never externally accessible
+/// by name.
 fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
     template.ports.iter().any(|p| {
         // Short-circuit on the name check first so the `format!` allocation
@@ -6509,18 +6491,19 @@ fn member_access_on_structure_like(
                 // `obj.member` dot-access (sibling check at the StructureRef
                 // branch). The wildcard "Structure" subject is already excluded
                 // by the enclosing `struct_name != WILDCARD_STRUCTURE_KIND` guard.
-                if template_member_is_priv(template, member) {
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            span,
-                            "private member accessed here",
-                        ))
-                        .with_code(DiagnosticCode::PrivMemberAccess),
-                    );
+                //
+                // The verdict AND its rendering both come from the single
+                // member-shape authority (task #5424, C1-iv): this site decides
+                // only what to DO with a `PrivateMember` error, never what
+                // counts as one. `resolve_hop` maps an unknown member to
+                // `UnknownMember` and a wildcard / registry-miss / trait-object
+                // receiver to `Indeterminate`, so neither is treated as priv —
+                // identical to the helper this replaced.
+                if let Err(err @ member_path::MemberPathError::PrivateMember { .. }) =
+                    member_path::resolve_hop(&compiled_obj.result_type, member, scope)
+                    && let Some(diagnostic) = err.to_diagnostic(span)
+                {
+                    return make_poison_literal(diagnostics, diagnostic);
                 }
             }
             // Per-param stamp: encode `purpose_name::param_name` as the entity
@@ -6652,21 +6635,20 @@ fn member_access_on_structure_like(
         // every OTHER priv member kind (top-level param / sub / port): those
         // are already `member_known`, so StructureMemberNotFound never fired
         // for them regardless of order.
+        //
+        // The verdict and its rendering both come from the single member-shape
+        // authority (task #5424, C1-iv). The two explicit guards below are kept
+        // even though `resolve_hop` would independently answer "not priv" for
+        // both (a `TraitObject` receiver → `Indeterminate(TraitObjectReceiver)`,
+        // the wildcard → `Indeterminate(WildcardStructure)`): they document the
+        // ordering contract at this site rather than delegating it.
         if matches!(&compiled_obj.result_type, Type::StructureRef(_))
             && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
-            && template.is_some_and(|t| template_member_is_priv(t, member))
+            && let Err(err @ member_path::MemberPathError::PrivateMember { .. }) =
+                member_path::resolve_hop(&compiled_obj.result_type, member, scope)
+            && let Some(diagnostic) = err.to_diagnostic(span)
         {
-            return make_poison_literal(
-                diagnostics,
-                Diagnostic::error(format!(
-                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                ))
-                .with_label(DiagnosticLabel::new(
-                    span,
-                    "private member accessed here",
-                ))
-                .with_code(DiagnosticCode::PrivMemberAccess),
-            );
+            return make_poison_literal(diagnostics, diagnostic);
         }
         if !member_known
             && matches!(&compiled_obj.result_type, Type::StructureRef(_))
