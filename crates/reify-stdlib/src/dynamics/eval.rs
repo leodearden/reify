@@ -1474,6 +1474,74 @@ mod tests {
         super::default_frame3()
     }
 
+    /// Task 5848: `default_frame3()` must mint each member with the quantity the
+    /// retyped `Frame3` declaration gives it — `origin` a LENGTH zero (it is a
+    /// position), the three axes DIMENSIONLESS zeros (they are directions).
+    ///
+    /// This guards task 4547's stated invariant, quoted in `default_frame3`'s own
+    /// doc: the mint exists so "minting a real `Frame3` keeps the runtime value
+    /// faithful to the declared type instead of leaving a type/value divergence".
+    /// Once ports.ri retypes the axes, an all-`Value::length(0.0)` mint
+    /// reintroduces exactly the divergence 4547 removed — and the ctor-conformance
+    /// walker cannot catch it, because its Vector arm is arity-only (accepts any
+    /// vector-shaped arg regardless of quantity). So this test is the only thing
+    /// standing between the retype and a silent regression.
+    ///
+    /// The axes are `Value::Real`, not `Value::Scalar { dimension: DIMENSIONLESS }`:
+    /// a dimensionless quantity is represented as `Value::Real` house-wide
+    /// (Invariant V — see `reify-eval/tests/dimensionless_unification_example_e2e.rs`),
+    /// which is also what the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to.
+    #[test]
+    fn default_frame3_mints_length_origin_and_dimensionless_axes() {
+        let frame = super::default_frame3();
+        let Value::StructureInstance(data) = &frame else {
+            panic!("default_frame3() must mint a StructureInstance, got {frame:?}")
+        };
+
+        let components = |member: &str| -> Vec<Value> {
+            match data.fields.get(member) {
+                Some(Value::Vector(c)) if c.len() == 3 => c.clone(),
+                other => panic!("Frame3.{member} must be a 3-component Vector, got {other:?}"),
+            }
+        };
+
+        // origin is a POSITION — Length-dimensioned zeros.
+        for (i, c) in components("origin").into_iter().enumerate() {
+            assert_eq!(
+                c,
+                Value::length(0.0),
+                "Frame3.origin[{i}] is a position component, so it must be a \
+                 LENGTH-dimensioned zero"
+            );
+        }
+
+        // The three axes are DIRECTIONS — dimensionless zeros.
+        for member in ["x_axis", "y_axis", "z_axis"] {
+            for (i, c) in components(member).into_iter().enumerate() {
+                assert_eq!(
+                    c,
+                    Value::Real(0.0),
+                    "Frame3.{member}[{i}] is a direction component, so it must be a \
+                     dimensionless zero (Value::Real per Invariant V), not a Length"
+                );
+                assert!(
+                    c.dimension().is_dimensionless(),
+                    "Frame3.{member}[{i}] must carry a dimensionless quantity"
+                );
+            }
+        }
+
+        // The ZERO magnitude is deliberate and must be preserved: this degenerate
+        // basis is the production default shared with
+        // `dynamics_ops::assemble_mass_properties`, so "improving" it into an
+        // identity basis would smuggle a behaviour change into a retype.
+        assert!(
+            components("z_axis").iter().all(|c| c.as_f64() == Some(0.0)),
+            "default_frame3()'s basis must stay all-zero (shared with \
+             assemble_mass_properties; both producers must emit an identical origin)"
+        );
+    }
+
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching
     /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
     /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
