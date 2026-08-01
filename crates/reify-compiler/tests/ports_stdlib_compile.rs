@@ -743,9 +743,9 @@ import std.ports.mechanical
 structure def RotaryConformer : RotaryPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
@@ -793,9 +793,9 @@ import std.ports.mechanical
 structure def RotaryConformerMissingTorque : RotaryPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
@@ -1851,9 +1851,9 @@ structure def PinConformer {
         param current_rating : Current = 0.1A
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param pin_id : String = "A1"
     }
@@ -2329,9 +2329,9 @@ import std.ports.thermal
 structure def ContactPatch : ThermalContactPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param region : Geometry = box(10mm, 10mm, 1mm)
     param heat_flow : Power = 1N * 1m / 1s
@@ -2728,9 +2728,9 @@ structure def PipeConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param inner_diameter : Length = 25mm
         param connection_type = PipeConnectionType.Threaded
@@ -2907,9 +2907,9 @@ structure def HydroConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param fitting_type = FittingStandard.NPT
     }
