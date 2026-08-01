@@ -16,7 +16,24 @@ Declaration {
   OccurrenceDefinition |
   TraitDeclaration |
   FunctionDefinition |
+  EnumDeclaration |
   ImportDeclaration
+}
+
+// ── Enum ────────────────────────────────────────────────
+// grammar.js:153-184. A variant is a bare name (`Point`) or a named-field
+// payload (`Circle { radius: Length }`); `TypeParameters` is the same
+// production the structure/trait headers use.
+EnumDeclaration {
+  kw<"pub">? kw<"enum"> Identifier TypeParameters? "{" (EnumVariant ("," EnumVariant)* ","?)? "}"
+}
+
+EnumVariant {
+  Identifier ("{" VariantFieldDecl ("," VariantFieldDecl)* ","? "}")?
+}
+
+VariantFieldDecl {
+  Identifier ":" TypeExpr
 }
 
 // ── Module ───────────────────────────────────────────────
@@ -205,7 +222,7 @@ AutoTypeArg {
 }
 
 DefaultValue {
-  "=" (AutoKeyword | expression)
+  "=" bindingValue
 }
 
 // grammar.js:647-669. Three arms sharing the `auto` prefix. Upstream needs
@@ -238,7 +255,7 @@ AutoParam {
 // `primaryExpression` — upstream keeps it out of `_expression` too — so it has
 // to be admitted at each binding site that accepts it.
 LetDeclaration {
-  kw<"let"> Identifier TypeAnnotation? "=" (AutoKeyword | expression) ~where WhereClause?
+  kw<"let"> Identifier TypeAnnotation? "=" bindingValue ~where WhereClause?
 }
 
 // ── Constraint ──────────────────────────────────────────
@@ -386,7 +403,7 @@ SpecializationBody {
 // with a specialized keyword token, so one token of lookahead separates them
 // from a bare `Identifier`.
 ParamAssignment {
-  Identifier "=" (AutoKeyword | expression)
+  Identifier "=" bindingValue
 }
 
 // Trailing pose: `at auto`, `at transform3(...)`. Last on every arm, matching
@@ -475,16 +492,106 @@ WhereClause {
 //   7: unary -, ! (unary)
 //   8: postfix (member access, function call)
 
+// ── Binding value ───────────────────────────────────────
+// The RHS of every `=` that binds a value: a param default, a `let`, a
+// specialization-body or connect-body param assignment. `AutoKeyword` is
+// admitted here and not in `primaryExpression` because upstream keeps it out
+// of `_expression` too (see LetDeclaration).
+//
+// `VariantConstruction` is admitted HERE AND ONLY HERE (plus a construction's
+// own field values), not in `primaryExpression` — see the note on the
+// production itself for why.
+bindingValue {
+  AutoKeyword | VariantConstruction | expression
+}
+
 expression[@isGroup=Expression] {
   BinaryExpression |
   UnaryExpression |
   ConditionalExpression |
   QuantifierExpression |
+  MatchExpression |
   RangeExpression |
   IndexAccess |
   AdHocSelector |
   LambdaExpression |
   primaryExpression
+}
+
+// ── Match ───────────────────────────────────────────────
+// grammar.js:1275-1320. Upstream requires at least one arm, and so does this.
+//
+// The discriminant is a full expression immediately followed by `{`, which is
+// one of the three shapes that collide with variant construction — see the
+// note on VariantConstruction below for how that is settled.
+MatchExpression {
+  kw<"match"> expression "{" MatchArm ("," MatchArm)* ","? "}"
+}
+
+MatchArm {
+  MatchPattern "=>" expression
+}
+
+// grammar.js:1289-1293. The three arms are separated by one token of
+// lookahead after the leading Identifier: `{` opens a binding pattern, `|`
+// continues an or-pattern, `=>` ends a bare one.
+MatchPattern {
+  VariantBindingPattern |
+  Identifier ("|" Identifier)* |
+  WildcardPattern
+}
+
+// `_` already lexes as an `Identifier` (the token rule admits a leading
+// underscore), so the wildcard is an @extend rather than a new token: it
+// names the node without reserving `_` globally. No committed `.ri` uses a
+// bare `_` as an identifier, but @extend costs nothing and keeps that door
+// open — the same contextual treatment `at`, `self` and `frame` get.
+WildcardPattern {
+  @extend[@name=WildcardPattern]<Identifier, "_">
+}
+
+VariantBindingPattern {
+  Identifier "{" FieldBinding ("," FieldBinding)* ","? "}"
+}
+
+// grammar.js:1310-1315 — the binder is an IDENTIFIER, not a nested pattern.
+FieldBinding {
+  Identifier ":" Identifier
+}
+
+// ── Variant construction ────────────────────────────────
+// grammar.js:1443-1451, and the one production in this port that is
+// DELIBERATELY NARROWER than upstream.
+//
+// Upstream spells it as an ordinary `_primary_expression` alternative and pays
+// for it with an explicitly declared GLR conflict,
+// `[_primary_expression, variant_construction]`: `Name { … }` collides with
+// every expression that reduces to a bare identifier and is followed by `{`.
+// Three of those shapes are committed and load-bearing —
+//
+//     match outline { … }               discriminant, then `{`
+//     where shape == Shape.Round { … }  guard condition, then `{`
+//     connect outlet -> inlet { … }     right port ref, then `{`
+//
+// — and Lezer, being LR, cannot resolve them the way GLR does. Critically the
+// wrong reading is ERROR-FREE: variant construction would silently swallow the
+// match body, so the corpus test could not see the damage by counting error
+// nodes, which is why the three regression assertions check nodeNames instead.
+//
+// So the production is reachable only from `bindingValue` and from a
+// construction's own field values. That covers every committed call site —
+// all four are `param … = Name { … }` or `let … = Name { … }`, one of them
+// nested (examples/m6_generic_enum.ri:36) — and removes the collision
+// structurally rather than papering over it, because a binding value is never
+// followed by `{`. The narrowing is recorded as a follow-up: a construction in
+// argument position (`f(Circle { radius: 5mm })`) is valid upstream and is not
+// accepted here.
+VariantConstruction {
+  Identifier "{" VariantConstructionField ("," VariantConstructionField)* ","? "}"
+}
+
+VariantConstructionField {
+  Identifier ":" (VariantConstruction | expression)
 }
 
 // ── Quantifier expression ───────────────────────────────
@@ -717,10 +824,16 @@ CompareOp<expr> { expr }
 // `pub`/`def` (StructureDefinition), `module`/`as` (ModuleDeclaration,
 // ImportDeclaration), `set`/`map` (SetLiteral, MapLiteral),
 // `not`/`and`/`or`/`implies` (the keyword logical-operator band in
-// UnaryExpression/BinaryExpression), `occurrence` (OccurrenceDefinition) and
+// UnaryExpression/BinaryExpression), `occurrence` (OccurrenceDefinition),
 // `port`/`connect`/`chain`/`forall`/`exists`/`in`/`out` (the topology member
-// families and QuantifierExpression) were promoted out of this list; their
-// keyword styling is re-pinned explicitly in highlight.ts.
+// families and QuantifierExpression) and `enum`/`match` (EnumDeclaration,
+// MatchExpression) were promoted out of this list; their keyword styling is
+// re-pinned explicitly in highlight.ts.
+//
+// `some`/`none` deliberately STAY. They are forward-compat reservations with
+// no production to be promoted INTO — removing them would not enable
+// anything, it would only drop their `ReservedWord: t.keyword` styling and
+// silently make them ordinary variable names.
 //
 // `in`/`out` are the one promotion in that set that reserves a SHORT, common
 // English word globally. It is safe here and was verified rather than assumed:
@@ -756,7 +869,6 @@ CompareOp<expr> { expr }
 // the receiver slot `ekw` still yields the `self` token, which KEYWORDS styles.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
-    "enum" | "match" |
     "purpose" | "field" |
     "unit" | "meta" |
     "undef" | "some" | "none">

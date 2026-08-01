@@ -72,6 +72,9 @@ export const KEYWORDS = [
   // are keywords only in a port body's setting slot and plain names elsewhere.
   'direction',
   'frame',
+  // EnumDeclaration and MatchExpression.
+  'enum',
+  'match',
 ];
 
 export const reifyHighlighting = styleTags({
