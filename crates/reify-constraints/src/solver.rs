@@ -6402,6 +6402,167 @@ mod tests {
         }
     }
 
+    /// §11.6 "flat region → not uniquely optimal" (task #5711): a strict auto
+    /// bracketed by a plain inequality pair (`x > 5mm AND x < 6mm`), with
+    /// `bounds: None` (the production shape — solver.rs:913 records that no
+    /// `.ri` surface ever sets `AutoParam.bounds`), and an objective that is
+    /// FLAT within the bracket (`minimize(if x <= 6.2mm then 1e8 else x)` —
+    /// the exact cost-cliff shape of `defined_objective_at_fallback_returns_solved`,
+    /// scaled to this bracket) must report `ConstraintNonUnique`:
+    /// post-perturbation the params disagree (the anchor lands elsewhere in
+    /// the bracket) and the objective ties (both points fall in the flat
+    /// `1e8` region), so BOTH §11.6 well-determinedness tests fail.
+    ///
+    /// MEASURED (task #5711, not guessed): a naively "flat everywhere" literal
+    /// objective does NOT reproduce today's bug for this shape — a
+    /// featureless cost surface lets Nelder-Mead reconverge cleanly from even
+    /// an astronomically distant anchor (nothing pulls it back toward a
+    /// boundary), so the pre-existing parameter-comparison mechanism already
+    /// (and correctly, if coincidentally) reports `ConstraintNonUnique`
+    /// without step-5. The cost-CLIFF shape here is what reproduces the real
+    /// bug: it drives the SAME "optimizer drifts infeasible, falls back to
+    /// the initial point" mechanism as `defined_objective_at_fallback_returns_solved`
+    /// or `warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible`,
+    /// which is precisely the shape `verify_uniqueness`'s perturbation
+    /// re-solve cannot recover from today.
+    ///
+    /// RED today (MEASURED): `solver.solve(&problem)` returns
+    /// `Solved { values: {x: 0.0055}, unique: true }` — the main solve drifts
+    /// infeasible chasing the cost cliff and falls back to the initial
+    /// 5.5mm; `verify_uniqueness`'s perturbation anchor is still built from
+    /// `effective_bounds`, which degrades to `default_bounds_for` —
+    /// `(1e-6, 10.0)` for `LENGTH`, since `bounds: None` here — landing at
+    /// `0.9 * 10.0 \u{2248} 9.0` (9 metres), wildly outside the 1mm bracket.
+    /// `solve_core`'s re-solve from there does NOT converge (confirmed via a
+    /// DEBUG-capturing subscriber: the exact message
+    /// `"uniqueness check: perturbed solve did not converge; assuming
+    /// unique"` fires), so the inert `_ =>` arm in `verify_uniqueness`
+    /// conservatively reports `true` — silently returning
+    /// `Solved { unique: true }` for a problem that is genuinely NOT
+    /// uniquely determined (any `x` in `(5mm, 6mm)` scores the same flat
+    /// `1e8` objective).
+    ///
+    /// AFTER step-5: the anchor is built from the derived box `(0.005,
+    /// 0.006)`. Incumbent 0.0055 is not below its midpoint, so the anchor is
+    /// `lo + 0.1*(hi-lo) = 0.0051` — feasible AND still below the `6.2mm`
+    /// buffer threshold, so the re-solve lands cleanly at `0.0051` (MEASURED:
+    /// `Solved`, not lured past the cliff). Both `0.0055` and `0.0051` score
+    /// the SAME flat `1e8` (the cliff is at `6.2mm`, well above both), so the
+    /// params differ but the objective ties → `NonUnique`.
+    #[test]
+    fn flat_objective_over_inequality_bracket_reports_non_unique() {
+        use crate::DimensionalSolver;
+        use reify_core::{ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash};
+        use reify_ir::{
+            AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveSense,
+            ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap,
+        };
+
+        let solver = DimensionalSolver;
+        let x_id = ValueCellId::new("Part", "x");
+
+        // x > 5mm AND x < 6mm — two constraint nodes (house convention for
+        // conjunction; see e.g. `strict_auto_non_unique_returns_infeasible`,
+        // solver_integration.rs:1691).
+        let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::length());
+        let five_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.005,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let six_mm = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.006,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref.clone(), five_mm, Type::Bool);
+        let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref.clone(), six_mm, Type::Bool);
+
+        // Objective: minimize(if x <= 6.2mm then 1e8 else x) — the same
+        // cost-cliff shape as `defined_objective_at_fallback_returns_solved`,
+        // scaled to this bracket. Flat (1e8) across the whole feasible region
+        // plus a small buffer; attractive (the raw x value, dramatically
+        // smaller than 1e8) just past the buffer — luring the optimizer past
+        // the x<6mm boundary while chasing it.
+        let buffer_threshold = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0062,
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        let condition = CompiledExpr::binop(BinOp::Le, x_ref.clone(), buffer_threshold, Type::Bool);
+        let then_branch = CompiledExpr::literal(Value::Real(1e8), Type::dimensionless_scalar());
+        let else_branch = x_ref;
+        let cond_hash = ContentHash::of(&[TAG_CONDITIONAL])
+            .combine(condition.content_hash)
+            .combine(then_branch.content_hash)
+            .combine(else_branch.content_hash);
+        let objective_expr = CompiledExpr {
+            kind: CompiledExprKind::Conditional {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                else_branch: Box::new(else_branch),
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash: cond_hash,
+        };
+        let objective = ObjectiveSet::single(ObjectiveSense::Minimize, objective_expr);
+
+        let mut current_values = ValueMap::new();
+        current_values.insert(
+            x_id.clone(),
+            Value::Scalar {
+                si_value: 0.0055,
+                dimension: DimensionVector::LENGTH,
+            },
+        );
+
+        let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
+            auto_params: vec![AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: None,
+                free: false,
+            }],
+            constraints: vec![
+                (ConstraintNodeId::new("Part", 0), gt_expr),
+                (ConstraintNodeId::new("Part", 1), lt_expr),
+            ],
+            current_values,
+            objective: Some(objective),
+            functions: vec![].into(),
+        };
+
+        let result = solver.solve(&problem);
+        match result {
+            SolveResult::Infeasible { ref diagnostics } => {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+                    "expected ConstraintNonUnique for a bracket whose objective is flat \
+                     within the feasible region (\u{a7}11.6: params differ post-perturbation \
+                     and the objective ties, so neither well-determinedness test holds); got \
+                     diagnostics: {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "expected Infeasible/ConstraintNonUnique for x \u{2208} (5mm, 6mm) \
+                 [bounds: None] with a flat-within-bracket objective, got {:?}. If Solved, \
+                 verify_uniqueness's perturbation anchor is still landing outside the \
+                 feasible region under `effective_bounds` (pre-#5711 step-5) rather than the \
+                 #5618 constraint-derived box.",
+                other
+            ),
+        }
+    }
+
     // ---- best_found_reason unit tests ----
 
     /// Deterministic unit test for best_found_reason (B1 sub-test).
@@ -7554,4 +7715,5 @@ mod tests {
             }
         }
     }
+
 }
