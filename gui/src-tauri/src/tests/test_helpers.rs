@@ -124,3 +124,77 @@ pub(crate) fn find_moi_principal_constraint(
             )
         })
 }
+
+/// The four auto-derived `Rigid` mass-property cells, in the order the stdlib
+/// `Rigid : Physical` traits declare them.
+pub(crate) const RIGID_MASS_PROP_CELLS: [&str; 4] =
+    ["mass", "centroid", "moment_of_inertia", "moi_principal"];
+
+/// Assert the full task-5194 post-condition on `state`: each of
+/// [`RIGID_MASS_PROP_CELLS`] is present, `determined`, carries no undef-cause
+/// `reason`, and the `moi_principal[0] > 0` PD constraint reads `Satisfied`.
+///
+/// `ctx` names the matrix row / rebuild iteration under test and is interpolated
+/// into EVERY failure message, so a red row in task #5338's entry-point matrix
+/// (argv / File-Open / watcher / warm edit_param, each followed by N successive
+/// selective-demand re-renders) identifies itself without a bisect.
+///
+/// Determinacy / constraint status only — never analytic magnitudes. The seeded
+/// `MockGeometryKernel` replies are arbitrary stand-ins; exact-value checks live
+/// in the OCCT-gated `crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs`.
+pub(crate) fn assert_rigid_mass_props_determined(state: &crate::types::GuiState, ctx: &str) {
+    for name in RIGID_MASS_PROP_CELLS {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[{ctx}] expected a `{name}` value cell; have: {:?}",
+                    state
+                        .values
+                        .iter()
+                        .map(|v| v.name.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "[{ctx}] `{name}` must be `determined` (auto-derived from geometry + \
+             material.density); got determinacy={:?}, reason={:?}, freshness={:?}",
+            cell.determinacy, cell.reason, cell.freshness
+        );
+        assert!(
+            cell.reason.is_none(),
+            "[{ctx}] `{name}` must carry no undef-cause `reason` once surfaced; got {:?}",
+            cell.reason
+        );
+    }
+
+    let pd = find_moi_principal_constraint(state);
+    assert_eq!(
+        pd.status, "Satisfied",
+        "[{ctx}] the `moi_principal[0] > 0` PD constraint must be Satisfied once \
+         moi_principal resolves; got status={:?}",
+        pd.status
+    );
+}
+
+/// The exact `Entity#realization[N]` key list the frontend feeds to
+/// `EngineSession::sync_demand` — derived from the loaded state's rendered
+/// meshes, i.e. `state.meshes[].entity_path`.
+///
+/// Deriving the keys from the state (rather than hardcoding
+/// `"RigidMassSmoke#realization[0]"`) is what makes the tests' selective-demand
+/// posture faithful to production: these are the same strings
+/// `parse_realization_key` (engine.rs) turns back into `NodeId::Realization`
+/// roots for `Engine::set_demand_selective`. A hardcoded key that stopped
+/// resolving would silently yield an EMPTY demand cone and a vacuously-passing
+/// test.
+pub(crate) fn visible_realization_keys(state: &crate::types::GuiState) -> Vec<String> {
+    state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.clone())
+        .collect()
+}
