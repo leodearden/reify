@@ -2458,6 +2458,16 @@ mod tests {
             "pan_camera",
             "zoom_camera",
             "set_fea_channel", // #5670: viewportId disambiguates WHICH pane's FEA toolbar to drive
+            // #5891: the generic data-testid resolvers. Every one of these took the
+            // document-wide FIRST match, so with N panes mounted they silently drove
+            // or described pane 0. click_element and dom_query get their first-ever
+            // Rust schema coverage here.
+            "click_element",
+            "dom_query",
+            "focus_element",
+            "scroll",
+            "element_screenshot",
+            "wait_for_selector",
         ];
         for tool_name in tools {
             let entry = defs
@@ -2477,6 +2487,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    // #5891 step-13 RED → step-14 GREEN.
+    //
+    // Every other frontend-mediated tool passes its params through WHOLESALE via
+    // query_frontend, so a new schema property reaches the bridge with no Rust
+    // change. wait_for_selector is the one exception: it rebuilds its params by
+    // explicit ALLOWLIST, so an un-listed key is dropped SILENTLY — the schema
+    // would advertise viewportId and the frontend would never see it. That makes
+    // this the only load-bearing Rust edit in the change, so the canonicalization
+    // is extracted as a pure function and pinned here, testable without standing
+    // up a DebugServerState.
+    #[test]
+    fn canonical_wait_for_selector_params_forwards_viewport_id() {
+        // Present: copied through verbatim, alongside the pre-existing four keys.
+        let out = canonical_wait_for_selector_params(&json!({
+            "testId": "fea-mode-warp-slider",
+            "state": "visible",
+            "text": "ready",
+            "timeout_ms": 250,
+            "viewportId": "pane-1",
+        }));
+        assert_eq!(out["viewportId"].as_str(), Some("pane-1"));
+        assert_eq!(out["testId"].as_str(), Some("fea-mode-warp-slider"));
+        assert_eq!(out["state"].as_str(), Some("visible"));
+        assert_eq!(out["text"].as_str(), Some("ready"));
+        assert_eq!(out["timeout_ms"].as_u64(), Some(250));
+
+        // Absent: the KEY is omitted entirely, not emitted as null. The frontend
+        // ladder branches on `viewportId !== undefined`, so a forwarded null would
+        // read as a SCOPED request for a pane that can never match — turning every
+        // unscoped wait into a guaranteed timeout.
+        let out = canonical_wait_for_selector_params(&json!({"testId": "x"}));
+        assert!(
+            !out.as_object()
+                .expect("canonical params must be a JSON object")
+                .contains_key("viewportId"),
+            "viewportId must be absent, not null, when the caller omitted it: {out}"
+        );
+        assert_eq!(
+            out["timeout_ms"].as_u64(),
+            Some(5_000),
+            "the default timeout still applies when timeout_ms is omitted"
+        );
+
+        // Wrongly typed: forwarded VERBATIM so the frontend's ladder stays the one
+        // rejection site. Re-validating here would create a second site that can
+        // drift out of sync with the wording the frontend tests pin.
+        let out = canonical_wait_for_selector_params(&json!({"testId": "x", "viewportId": 5}));
+        assert_eq!(out["viewportId"].as_i64(), Some(5));
     }
 
     // step-9 RED → step-10 GREEN: four C1 app-chrome tools registered in tool_defs().
