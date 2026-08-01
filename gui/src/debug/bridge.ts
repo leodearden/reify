@@ -294,6 +294,28 @@ function resolveByTestId(
   };
 }
 
+/**
+ * The fields a handler spreads into its success payload to report a guess (#5891).
+ *
+ * Returns `{}` — leaving the payload byte-identical to pre-#5891 — unless the
+ * request was UNSCOPED and matched more than one element, i.e. exactly the
+ * condition under which a pane was guessed. Emitting unconditionally would
+ * append keys to responses that existing tests and harness steps compare with
+ * `toEqual`, turning a back-compat fix into broad breakage; emitting never would
+ * leave the wrong-target failure as silent as it was before this task.
+ *
+ * Kept as ONE function rather than repeating `!scoped && matchCount > 1` in each
+ * handler, so the tools that route through `resolveByTestId` cannot drift apart
+ * on when they report.
+ */
+function paneDiagnostics(
+  r: ResolvedByTestId,
+  scoped: boolean,
+): { viewportId?: string | null; matchCount?: number } {
+  if (scoped || r.matchCount <= 1) return {};
+  return { viewportId: r.viewportId, matchCount: r.matchCount };
+}
+
 // Shared element descriptor used by query_selector and query_selector_all.
 // Mirrors the bounds + visible formula from dom_query for cross-tool consistency.
 function describeElement(el: HTMLElement) {
@@ -925,7 +947,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if ('error' in r) return r;
 
       (r.el as HTMLElement).click();
-      return { ok: true };
+      return { ok: true, ...paneDiagnostics(r, params.viewportId !== undefined) };
     },
 
     // Select the active FEA scalar channel (e.g. 'errorIndicator') in the FEA-mode
