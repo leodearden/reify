@@ -47,6 +47,29 @@ function nodeNames(src: string): Set<string> {
 }
 
 /**
+ * Source text of the LEFT OPERAND of the OUTERMOST `BinaryExpression` in
+ * `src` — the discriminator for operator-precedence assertions.
+ *
+ * `a and b or c` grouped as `(a and b) or c` yields `'a and b'`; grouped the
+ * other way it would yield `'a'`. A zero-error-node check cannot tell those
+ * apart (identical node multisets), and a node-name check cannot either, so
+ * precedence claims are pinned through here. Cursor order is outermost-first,
+ * so the first `BinaryExpression` reached is the root of the operator tree.
+ */
+function leftOperandOf(src: string): string {
+  const cursor = parser.parse(src).cursor();
+  do {
+    if (cursor.type.name === 'BinaryExpression') {
+      const outer = cursor.node;
+      const left = outer.firstChild;
+      if (!left) throw new Error('outermost BinaryExpression has no children');
+      return src.slice(left.from, left.to);
+    }
+  } while (cursor.next());
+  throw new Error(`no BinaryExpression in parse of: ${src}`);
+}
+
+/**
  * ANTI-VACUITY GUARD. Every other assertion in this file is of the form
  * `countErrorNodes(...) === 0` or "this path is in the clean set". If the
  * helper ever silently degraded to always returning 0 — a @lezer/lr change to
@@ -63,6 +86,22 @@ describe('reify.grammar — countErrorNodes helper', () => {
 
   it('reports zero on input that parses', () => {
     expect(countErrorNodes('structure def Foo { }')).toBe(0);
+  });
+});
+
+/**
+ * Companion anti-vacuity guard for `leftOperandOf`. Pinned against the
+ * SYMBOLIC operator bands, which predate this file and are not touched by the
+ * keyword-band work below — so if the helper ever stopped discriminating
+ * groupings, these fail independently of whatever the keyword band does.
+ */
+describe('reify.grammar — leftOperandOf helper', () => {
+  it('reports the whole left subtree when the left operator binds tighter', () => {
+    expect(leftOperandOf('structure def F { constraint a * b + c }')).toBe('a * b');
+  });
+
+  it('reports only the leaf when the right operator binds tighter', () => {
+    expect(leftOperandOf('structure def F { constraint a + b * c }')).toBe('a');
   });
 });
 
@@ -351,6 +390,73 @@ describe('reify.grammar snippets — collection literals and indexing', () => {
 });
 
 /**
+ * The keyword logical-operator band — `not`, `and`, `or`, `implies` —
+ * transliterated from tree-sitter-reify/grammar.js:1347-1352 (binary) and
+ * :1391-1397 (unary).
+ *
+ * Measured before the fix: `structure def F { constraint not a }` produced a
+ * `ReservedWord` node plus an error node, because the four words were listed
+ * in the `ReservedWord` @specialize list and so parsed only as bare operands,
+ * never as operators. `constraint not fouls` is a real first-error line in the
+ * committed corpus.
+ */
+describe('reify.grammar snippets — keyword logical operators', () => {
+  it('parses the unary `constraint not a`', () => {
+    expect(countErrorNodes('structure def F { constraint not a }')).toBe(0);
+  });
+
+  it('parses `constraint a and b`', () => {
+    expect(countErrorNodes('structure def F { constraint a and b }')).toBe(0);
+  });
+
+  it('parses `constraint a or b`', () => {
+    expect(countErrorNodes('structure def F { constraint a or b }')).toBe(0);
+  });
+
+  it('parses `constraint a implies b`', () => {
+    expect(countErrorNodes('structure def F { constraint a implies b }')).toBe(0);
+  });
+
+  it('parses the mixed-precedence `constraint a and b or c`', () => {
+    expect(countErrorNodes('structure def F { constraint a and b or c }')).toBe(0);
+  });
+
+  // The symbolic operators are kept for back-compat (grammar.js:1354-1355,
+  // deprecation deferred per PRD §10 Q3), so the two bands must coexist.
+  it('parses keyword and symbolic operators together `a && b or c`', () => {
+    expect(countErrorNodes('structure def F { constraint a && b or c }')).toBe(0);
+  });
+
+  it('parses `not` applied to a comparison `constraint not (a < b)`', () => {
+    expect(countErrorNodes('structure def F { constraint not (a < b) }')).toBe(0);
+  });
+
+  /**
+   * Precedence is a normative claim (spec §16: `and` level 13 binds tighter
+   * than `or` level 14), so it is pinned by assertion rather than left to the
+   * `@precedence` block's declaration order — a zero-error-node check cannot
+   * tell the two groupings apart, since both contain exactly the same nodes.
+   *
+   * `leftOperandOf` reads the LEFT OPERAND of the outermost binary expression,
+   * which is what discriminates them and is independent of how the operator
+   * node ends up named.
+   */
+  it('binds `and` tighter than `or`', () => {
+    expect(leftOperandOf('structure def F { constraint a and b or c }')).toBe('a and b');
+  });
+
+  it('binds `and` tighter than `implies`', () => {
+    expect(leftOperandOf('structure def F { constraint a and b implies c }')).toBe('a and b');
+  });
+
+  // `not` is unary and binds looser than every symbolic operator, so it takes
+  // the whole comparison as its operand rather than just `a`.
+  it('applies `not` to the whole comparison in `not a < b`', () => {
+    expect(countErrorNodes('structure def F { constraint not a < b }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
@@ -420,6 +526,26 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
     const spans = keywordSpans('pub structure def Foo { param w : Length = 1mm }');
     expect(spans).toContain('structure');
     expect(spans).toContain('param');
+  });
+
+  it('styles `set` and `map` as keywords', () => {
+    expect(keywordSpans('structure def F { let s = set { 1 } }')).toContain('set');
+    expect(keywordSpans('structure def F { let m = map { 1 => 2 } }')).toContain('map');
+  });
+
+  /**
+   * The logical operators are the semantically surprising promotions — they
+   * read as operators, so it is easy to reach for `t.operator` (as `ArithOp`
+   * and `CompareOp` do) and never notice they dropped out of `t.keyword`. The
+   * data-driven guard above would catch a missing KEYWORDS entry; these pin
+   * that the styling actually reaches the token in operator POSITION, which it
+   * would not if the word were matched by some other production.
+   */
+  it('styles the keyword logical operators', () => {
+    expect(keywordSpans('structure def F { constraint not a }')).toContain('not');
+    expect(keywordSpans('structure def F { constraint a and b }')).toContain('and');
+    expect(keywordSpans('structure def F { constraint a or b }')).toContain('or');
+    expect(keywordSpans('structure def F { constraint a implies b }')).toContain('implies');
   });
 
   it('still styles a word that remains in the ReservedWord list', () => {
