@@ -54,6 +54,8 @@ export const KEYWORDS = [
   // and left as an ordinary identifier in expression position, which is how
   // tree-sitter reads it too.
   'self',
+  // The `auto(free)` modifier — a `kw<>` production inside AutoKeyword.
+  'free',
 ];
 
 export const reifyHighlighting = styleTags({

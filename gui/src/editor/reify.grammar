@@ -183,20 +183,55 @@ TypeArgList {
 }
 
 typeArg {
-  TypeExpr | Number
+  AutoTypeArg | TypeExpr | Number
+}
+
+// grammar.js:1146-1152 — `Bearing<auto: Seal>`, `Bearing<auto(free): Seal>`.
+// The arm task 5907 deferred when it added ParameterizedType/TypeArgList.
+//
+// The bound stays a BARE Identifier. Upstream defers composite (`auto: A + B`)
+// and parametric (`auto: Container<T>`) bounds explicitly (:1142-1145), so
+// widening it here would invent a third dialect — the GUI grammar accepting
+// what neither the compiler nor tree-sitter does.
+AutoTypeArg {
+  AutoKeyword ":" Identifier
 }
 
 DefaultValue {
   "=" (AutoKeyword | expression)
 }
 
+// grammar.js:647-669. Three arms sharing the `auto` prefix. Upstream needs
+// explicit `prec(2)`/`prec(1)`/`prec(0)` to settle the shift-reduce at `(`;
+// here the arms are distinguished by content — `free` is a distinct literal
+// and `AutoParam` requires an `=` — so no marker is needed, and none is added:
+// an unnecessary ambiguity marker suppresses a genuine future conflict rather
+// than surfacing it (the same reasoning ArgumentList records).
 AutoKeyword {
+  kw<"auto"> "(" kw<"free"> ")" |
+  kw<"auto"> "(" AutoParamList ")" |
   kw<"auto">
 }
 
+AutoParamList {
+  AutoParam ("," AutoParam)* ","?
+}
+
+// `seed = 5mm`, `orientation = orient_identity()`. The value is a full
+// expression (grammar.js:660-668).
+AutoParam {
+  Identifier "=" expression
+}
+
 // ── Let ─────────────────────────────────────────────────
+// The RHS is `AutoKeyword | expression`, not bare `expression`: grammar.js:678
+// binds it to `_binding_value`, the same alternation `param`'s default uses, so
+// `let gap : Length = auto(free)` (examples/interpolation.ri:33) is a `let`
+// with a solver-determined value. `AutoKeyword` is deliberately NOT a member of
+// `primaryExpression` — upstream keeps it out of `_expression` too — so it has
+// to be admitted at each binding site that accepts it.
 LetDeclaration {
-  kw<"let"> Identifier TypeAnnotation? "=" expression ~where WhereClause?
+  kw<"let"> Identifier TypeAnnotation? "=" (AutoKeyword | expression) ~where WhereClause?
 }
 
 // ── Constraint ──────────────────────────────────────────
