@@ -91,11 +91,25 @@
 # FAIL POLICY
 # -----------
 # A missing stamp beside an archive means that archive's provenance is UNPROVEN,
-# which is treated as STALE — never as fresh.  Two conditions instead fail OPEN
-# to a labelled skip, matching the reify-bin-freshness.sh / reify-audit-freshness.sh
+# which is treated as STALE — never as fresh.  Exactly two conditions fail OPEN
+# for the WHOLE run, matching the reify-bin-freshness.sh / reify-audit-freshness.sh
 # precedent: a host with neither sha256sum nor shasum (nothing can be attested,
 # so a hard failure would be a permanent spurious RED), and a target tree with
 # nothing built yet (nothing built means nothing can be stale).
+#
+# A third degradation exists and is deliberately SCOPED TO ONE ARCHIVE: a stamp
+# whose content is the literal UNAVAILABLE — written by build.rs when it could
+# not hash its own inputs — marks that ONE fingerprint dir unattestable.  It is
+# reported as a labelled per-dir SKIP and excluded from the verdict; it never
+# suppresses a sibling's stale verdict and never converts the run into a global
+# skip.  Widening it to the run would be a false GREEN of exactly the class this
+# script exists to close, and a permanent, silent one: dead fingerprint dirs are
+# never rebuilt, so such a stamp is never rewritten, and it would disable the
+# guard for that checkout indefinitely — then propagate, since target/ is
+# CoW-cloned into every lane seeded from that base.  Nor is it an exotic case:
+# build.rs's sha256_of returns None on ANY subprocess failure (fork pressure,
+# EMFILE), not merely a missing binary, so one momentary resource spike during a
+# single build is enough to mint the sentinel on the ordinary Linux host (#5629).
 #
 # `ensure` never fails the build for staleness it can REPAIR — failing the merge
 # gate on a repairable condition would just convert a false GREEN into a spurious
@@ -292,14 +306,28 @@ ts_first_differing_input() {
 #
 # The shared freshness computation behind both `check` and `ensure`.
 # Sets, in the caller's shell:
-#   CURRENT_FP           the current fingerprint manifest
-#   TS_SCAN_STATUS       fresh | stale | skip | none
-#   TS_SCAN_SKIP_REASON  set when status=skip
-#   TS_STALE_REPORT      newline-joined, one actionable line per stale archive
+#   CURRENT_FP              the current fingerprint manifest
+#   TS_SCAN_STATUS          fresh | stale | skip | none
+#   TS_SCAN_SKIP_REASON     set when status=skip
+#   TS_STALE_REPORT         newline-joined, one actionable line per stale archive
+#   TS_UNATTESTABLE_REPORT  newline-joined, one line per archive whose stamp says
+#                           UNAVAILABLE; empty when there are none.  A CAVEAT,
+#                           never a verdict — see FAIL POLICY.  `status` is
+#                           computed from TS_STALE_REPORT alone, so an
+#                           unattestable dir can neither mask a stale sibling nor
+#                           suppress the repair.
+#   TS_UNATTESTABLE_COUNT   how many, so a `fresh` verdict can say PARTIAL rather
+#                           than claim every archive was checked.
+#
+# `skip` means only what the header says it means: the CURRENT host has no
+# hasher, so nothing at all can be attested.  Every archive is examined
+# regardless of what its neighbours' stamps say.
 ts_scan() {
     TS_SCAN_STATUS=""
     TS_SCAN_SKIP_REASON=""
     TS_STALE_REPORT=""
+    TS_UNATTESTABLE_REPORT=""
+    TS_UNATTESTABLE_COUNT=0
 
     local rc=0
     CURRENT_FP=$(ts_fingerprint) || rc=$?
@@ -320,6 +348,7 @@ ts_scan() {
 
     local a dir stamp attested
     local -a stale=()
+    local -a unattestable=()
     while IFS= read -r a; do
         [ -n "$a" ] || continue
         # .../build/tree-sitter-reify-<fingerprint>/out/libtree_sitter_reify.a
@@ -333,15 +362,24 @@ ts_scan() {
 
         attested=$(cat "$stamp")
         if [ "$attested" = "UNAVAILABLE" ]; then
-            TS_SCAN_STATUS="skip"
-            TS_SCAN_SKIP_REASON="$dir was built on a host without sha256sum/shasum — its inputs are unattestable"
-            return 0
+            # Scoped to THIS dir: record it and keep going.  Aborting the scan
+            # here would discard every stale archive already found AND skip
+            # every one not yet reached — see FAIL POLICY (#5629).
+            unattestable+=("SKIP $dir — built where sha256sum/shasum was unavailable or failed; its inputs cannot be attested")
+            continue
         fi
         if [ "$attested" != "$CURRENT_FP" ]; then
             stale+=("$dir — built from different bytes; first differing input: $(ts_first_differing_input "$stamp")")
         fi
     done <<< "$archives"
 
+    if [ "${#unattestable[@]}" -gt 0 ]; then
+        TS_UNATTESTABLE_REPORT=$(printf '%s\n' "${unattestable[@]}")
+        TS_UNATTESTABLE_COUNT="${#unattestable[@]}"
+    fi
+
+    # The verdict rides on stale[] alone. unattestable[] is reported alongside it
+    # in every branch, but never changes it.
     if [ "${#stale[@]}" -gt 0 ]; then
         TS_SCAN_STATUS="stale"
         TS_STALE_REPORT=$(printf '%s\n' "${stale[@]}")
@@ -357,6 +395,23 @@ ts_stale_lines() {
         [ -n "$line" ] || continue
         echo "    $line"
     done <<< "$TS_STALE_REPORT"
+}
+
+# ts_unattestable_lines — mirrors ts_stale_lines for the unattestable set.
+#
+# Always on stdout, in EVERY branch that has one: an unattestable dir is a
+# caveat, not a failure, so it must not land on stderr next to a stale block —
+# but it must not be swallowed either, or a fresh verdict would silently claim
+# to have checked an archive it could not.  Each line carries the literal token
+# SKIP and names its fingerprint dir.
+ts_unattestable_lines() {
+    [ -n "$TS_UNATTESTABLE_REPORT" ] || return 0
+    echo "tree-sitter-freshness: these archives could not be attested and were skipped:"
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "    $line"
+    done <<< "$TS_UNATTESTABLE_REPORT"
 }
 
 # ts_watched_inputs
@@ -421,10 +476,18 @@ ts_mode_check() {
             return 0
             ;;
         fresh)
-            echo "tree-sitter-freshness: FRESH — every built archive matches the sources on disk"
+            ts_unattestable_lines
+            if [ "$TS_UNATTESTABLE_COUNT" -gt 0 ]; then
+                # Not "every archive matches": some were never established either
+                # way. Still exit 0 — unproven is not stale.
+                echo "tree-sitter-freshness: PARTIAL — $TS_UNATTESTABLE_COUNT archive(s) unattestable and skipped; the rest match the sources on disk"
+            else
+                echo "tree-sitter-freshness: FRESH — every built archive matches the sources on disk"
+            fi
             return 0
             ;;
         stale)
+            ts_unattestable_lines
             {
                 echo "tree-sitter-freshness: STALE — these archives were NOT built from the sources now on disk:"
                 ts_stale_lines
@@ -457,7 +520,12 @@ ts_mode_ensure() {
             return 0
             ;;
         fresh)
-            echo "tree-sitter-freshness: FRESH — every built archive matches the sources on disk"
+            ts_unattestable_lines
+            if [ "$TS_UNATTESTABLE_COUNT" -gt 0 ]; then
+                echo "tree-sitter-freshness: PARTIAL — $TS_UNATTESTABLE_COUNT archive(s) unattestable and skipped; the rest match the sources on disk"
+            else
+                echo "tree-sitter-freshness: FRESH — every built archive matches the sources on disk"
+            fi
             ts_write_ledger "$ledger"
             return 0
             ;;
@@ -468,7 +536,12 @@ ts_mode_ensure() {
             ;;
     esac
 
-    # Stale. Was a force already applied for exactly these bytes? If so the
+    # Stale, possibly alongside unattestable dirs. Report those first: they are
+    # neither repaired nor counted against the verdict, so a reader who sees a
+    # force happen must still be told which archives it could not vouch for.
+    ts_unattestable_lines
+
+    # Was a force already applied for exactly these bytes? If so the
     # remaining stale dirs are dead ones cargo will never rebuild, and re-forcing
     # would just buy a full parser.c recompile on every verify run.
     if [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ]; then
