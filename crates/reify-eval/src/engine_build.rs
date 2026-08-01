@@ -3297,6 +3297,7 @@ impl Engine {
             last_guard_phase_group_evals: _, // edit instrumentation
             last_role_flip_probes: _,        // edit instrumentation
             last_diff_value_cells: _,        // edit_source diff snapshot
+            last_changed_realizations: _, // edit-produced changed-realization set, read by the following build (task β/γ)
             last_param_override_type_kind_rejections: _, // eval instrumentation
             last_param_override_dimension_rejections: _, // eval instrumentation
             last_sub_component_unknown_structure_errors: _, // eval instrumentation

@@ -924,6 +924,13 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
+        // selective-realization-eviction β (#4729): the changed-realization
+        // set describes exactly ONE edit, so clear it at entry. Ungated (the
+        // field is always present, like `last_dispatch_count`); the real set
+        // is computed at the post-value-cone seam near the end of this
+        // function, once the input cones can be recomputed against the
+        // UPDATED context.
+        self.last_changed_realizations.clear();
         // Auto-invalidate the realization cache: edit_param changes input
         // parameter values, so any cached `GeometryHandleId` entries point at
         // OLD geometry and would silently be served by a subsequent
@@ -2690,6 +2697,37 @@ impl Engine {
             st.trace_map = new_trace_map;
         } else {
             self.eval_state.as_mut().unwrap().snapshot = new_snapshot;
+        }
+
+        // ── selective-realization-eviction β (#4729): the edit_param
+        // compare site ──────────────────────────────────────────────────
+        //
+        // Placed HERE, after the snapshot install, because every phase that
+        // can still move a value must have run first: the value cone, the
+        // composed-field and guard phases, the solver/wave-2 passes, the
+        // post-wave2 reseed, the collection-grow re-elaboration, and the θ2
+        // grown-instance reseed. D2 requires the input cones to be
+        // recomputed against the UPDATED context, which only exists once
+        // all of those have settled — so this structurally cannot ride the
+        // ValueCell-driven `compute_dirty_cone` call near the top of
+        // `edit_param`, which runs BEFORE the value loop.
+        //
+        // Reading the graph back out of `self.eval_state` (rather than from
+        // `new_snapshot`, which the install just moved) keeps this a single
+        // post-pass instead of one copy per install branch. `eval_state`,
+        // `functions` and `meta_map` are disjoint `Engine` fields, so the
+        // immutable borrows here coexist with the `&mut self.cache` the
+        // seeding step needs (same NLL argument as the would-prune
+        // measurement directly below).
+        //
+        // `edit_param` does not rebuild the graph, so the persisting graph
+        // is BOTH the prior and the new side of the comparison — the
+        // helper's `edit_param` contract.
+        {
+            let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
+            let graph = &self.eval_state.as_ref().unwrap().snapshot.graph;
+            self.last_changed_realizations =
+                compute_changed_realizations(&graph.realizations, graph, &ctx);
         }
 
         // Task 4532: passive would-prune measurement, deferred to here so that

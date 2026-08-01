@@ -578,6 +578,25 @@ pub struct Engine {
     /// role (task 2170).
     #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
+    /// The set of realizations whose INPUT-cone hash moved during the most
+    /// recent `edit_param` / `edit_source` — selective-realization-eviction
+    /// PRD task β (#4729). Cleared at the start of every edit, so it always
+    /// describes exactly one edit.
+    ///
+    /// Produced by `engine_edit::compute_changed_realizations` (which
+    /// recomputes the GHR-β input-cone fold against the post-edit context
+    /// and compares it to α's stored `RealizationNodeData.input_cone_hash`),
+    /// and consumed by the SUBSEQUENT build — which is why
+    /// `reset_per_build_state` classifies it MUST-SURVIVE rather than
+    /// resetting it. Task γ (#4730) reads it to replace the two wholesale
+    /// `clear_realization_cache()` flushes with keyed eviction.
+    ///
+    /// Always present and module-private with no cfg gate — the same shape
+    /// as `last_dispatch_count` — so the `engine_edit.rs` write sites need
+    /// no cfg-gating. Read by callers through the
+    /// `#[cfg(any(test, feature = "test-instrumentation"))]` accessor
+    /// `Engine::last_changed_realizations()` in `engine_admin.rs`.
+    last_changed_realizations: std::collections::HashSet<reify_core::RealizationNodeId>,
     /// Count of param-override rejections due to `TypeKindMismatch` during the
     /// most recent `eval()` or `eval_cached()` call. Reset to 0 at the start
     /// of each call. Incremented inside `emit_param_override_rejection_warning`
