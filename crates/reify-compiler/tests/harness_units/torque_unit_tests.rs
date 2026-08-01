@@ -10,9 +10,7 @@
 //! zero case folding — this file PINS that property against `Nm`/`nm`/`NM`/`nM`
 //! rather than building it.
 
-mod common;
-
-use common::{assert_eq_rel, assert_simple_unit, stdlib_param_si_value};
+use crate::common::{assert_eq_rel, assert_simple_unit, stdlib_param_si_value};
 use reify_core::{DimensionVector, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
