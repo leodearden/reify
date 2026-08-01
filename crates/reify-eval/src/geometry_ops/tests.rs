@@ -6226,6 +6226,300 @@
     }
 
     // ---------------------------------------------------------------------------
+    // Tests: `revolve`'s axis ORIGIN is LENGTH-semantic (task 5623, R1 sweep)
+    //
+    // ARG-VECTOR ORDER TRAP: the DSL surface is
+    // `revolve(profile, ox, oy, oz, ax, ay, az, angle)`, but the `args` vector
+    // built by the existing unit tests and by the characterization harness is
+    // `ax, ay, az, angle, ox, oy, oz`. Everything here is keyed on the arg
+    // NAME, which is what `sweep_revolve` reads.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `revolve` op with a caller-supplied axis ORIGIN, holding the
+    /// axis (+Z) and angle fixed and BARE.
+    fn revolve_with_origin(
+        ox: reify_ir::CompiledExpr,
+        oy: reify_ir::CompiledExpr,
+        oz: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                ("ox".into(), ox),
+                ("oy".into(), oy),
+                ("oz".into(), oz),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                // ANGLE is PRD 3's, never ours → stays bare.
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        }
+    }
+
+    /// A BARE (dimensionless) axis-origin component must be REJECTED: an axis
+    /// origin is a point in space, so a bare `10` would put the revolution
+    /// axis 10 metres away instead of 10 mm.
+    ///
+    /// Run once per component — `ox`/`oy`/`oz` are three separate reads.
+    #[test]
+    fn compile_geometry_op_revolve_bare_origin_component_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for bare in ["ox", "oy", "oz"] {
+            let component = |name: &str| -> reify_ir::CompiledExpr {
+                if name == bare {
+                    literal_f64(0.0)
+                } else {
+                    literal_length(0.0)
+                }
+            };
+            let op = revolve_with_origin(component("ox"), component("oy"), component("oz"));
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) revolve axis-origin component {bare} must \
+                 drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` axis-origin component must be rejected
+    /// exactly like a bare `Value::Real` — `accept_arg`'s dimension check is
+    /// strict. The ANGLE arm covers an argument-order slip on this
+    /// 8-positional-arg signature; the DIMENSIONLESS arm covers eval
+    /// arithmetic collapsing to a dimensionless `Scalar` rather than a `Real`.
+    #[test]
+    fn compile_geometry_op_revolve_wrong_dimension_origin_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, ox_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op = revolve_with_origin(ox_expr, literal_length(0.0), literal_length(0.0));
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar revolve axis origin must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("ox") && d.message.contains("Length")),
+                "a diagnostic must name the ox arg and the Length requirement for \
+                 a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE axis-origin component must drop the
+    /// op and say 'non-finite Length' specifically — the value IS a Length.
+    #[test]
+    fn compile_geometry_op_revolve_non_finite_length_origin_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = revolve_with_origin(
+                literal_length(si),
+                literal_length(0.0),
+                literal_length(0.0),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length revolve axis origin must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("ox") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length'; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Locks the split AND the scope boundary: a `Length` origin with a BARE
+    /// dimensionless axis and a BARE angle is the fully clean path and must
+    /// emit NO diagnostic at all. The bare-angle half is binding scope
+    /// protection — `revolve`'s angle belongs to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3), not here.
+    ///
+    /// Distinct components also pin the ox/oy/oz → `axis_origin` ORDERING.
+    #[test]
+    fn compile_geometry_op_revolve_length_origin_bare_axis_angle_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = revolve_with_origin(
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Revolve {
+                axis_origin,
+                axis_dir,
+                angle_rad,
+                ..
+            }) => {
+                assert_eq!(axis_origin, [0.012, 0.034, 0.056]);
+                assert_eq!(axis_dir, [0.0, 0.0, 1.0]);
+                assert_eq!(angle_rad, std::f64::consts::PI);
+            }
+            other => panic!(
+                "expected Ok(Revolve) for a Length origin with a bare axis and a \
+                 bare angle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Length origin + dimensionless axis + BARE angle is the fully clean \
+             path and must emit NO diagnostic at all — in particular the angle \
+             must NOT be gated here (that is PRD 3's scope); got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// PRECEDENCE PIN for the one deliberate read-order change in task 5623.
+    ///
+    /// `sweep_revolve` used to read its origin LAST — after the
+    /// degenerate-axis and degenerate-angle checks. The borrow-ordering
+    /// contract on `required_length_triple` forces the gated read to happen
+    /// before the `f64_arg` closure is declared, so the origin now goes FIRST
+    /// and an op with BOTH a bare origin AND a degenerate zero axis fails on
+    /// the ORIGIN.
+    ///
+    /// Without this test that shift is invisible behaviour drift. Asserting
+    /// the ABSENCE of the axis diagnostic is the load-bearing half: it pins
+    /// fail-fast (exactly one diagnostic) rather than the mixed state that
+    /// deferring the `?` would have produced — origin warning + axis Err.
+    #[test]
+    fn compile_geometry_op_revolve_bare_origin_beats_degenerate_axis() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::Revolve,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                // BARE origin — the units gate must fire here …
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_f64(0.0)),
+                ("oz".into(), literal_f64(0.0)),
+                // … BEFORE this zero-magnitude axis is even evaluated.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(0.0)),
+                ("angle".into(), literal_f64(std::f64::consts::PI)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a revolve with both a bare origin and a degenerate axis must drop \
+             the op, got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("ox") && d.message.contains("Length")),
+            "the units gate runs FIRST, so the diagnostic must name the bare 'ox' \
+             and the Length requirement; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("degenerate magnitude")),
+            "the op must fail FAST on the origin — the degenerate-axis check is \
+             never reached, so no axis diagnostic may be emitted alongside it; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
     // ---------------------------------------------------------------------------
 
