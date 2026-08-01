@@ -2385,8 +2385,8 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
 //   recursive      : 90 / 329  (the 57 above, plus 33 in subdirectories)
 //
 // MEASUREMENT (task 5927), the catch-up round that inherited this ledger.
-// Fourteen form families were ported, each in its own commit that extended
-// the pinned set below, taking it from 90 to 301 of the same 329 files:
+// Fifteen form families were ported, each in its own commit that extended the
+// pinned set below, taking it from 90 to 301 of the same 329 files:
 //
 //   named call arguments · collection literals + index access · keyword
 //   logical operators · range expressions · type parameters + trait bounds ·
@@ -2394,25 +2394,34 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
 //   declarations · lambdas + `@` selectors · parameterized `auto` +
 //   auto_type_arg · port/connect/chain/forall + the quantifier expression ·
 //   match/enum/variant construction · field def/purpose/unit/type alias/
-//   default/meta/pragma/annotation
+//   default/meta/pragma/annotation · radix/imaginary/interpolated literals
+//
+// The set below holds 302 paths, not 301, and the extra one is NOT a grammar
+// gain: the corpus itself grew to 330 files while this task was in flight
+// (`examples/whole_model_cost_min.ri`), and the new file parses clean. Final
+// measurement is therefore 302 / 330. The fifteenth family is likewise worth
+// zero files — radix, imaginary and interpolated literals already parsed with
+// zero error nodes under the `QuantityLiteral` / `String` catch-alls, so that
+// slice was taken for node SHAPE (an editor cannot style what it cannot name)
+// and is guarded by explicit non-regression assertions above rather than by
+// any movement here.
 //
 // WHAT THE NEXT CATCH-UP TASK INHERITS. The 28 files still not clean need:
 //
-//   - radix (`0xFF`), imaginary (`2j`) and underscore-separated literals as
-//     their own node types. These already parse with ZERO error nodes — the
-//     `QuantityLiteral` token swallows them whole — so they cannot move this
-//     ledger at all, and three files pinned below (radix_literals,
-//     complex_literals, numeric_separators) are clean BECAUSE of that
-//     catch-all. A narrower purpose-built token that misses a shape would
-//     silently un-pin them. Shape-only work, negative expected value unless
-//     done with explicit non-regression assertions on those three files.
-//   - string interpolation (`"a ${b} c"`), likewise already error-free as one
-//     plain `String`, and with zero occurrences in the whole corpus.
 //   - `variant_construction` in ARGUMENT position (`f(Circle { radius: 5mm })`).
 //     Valid upstream; deliberately narrowed here — see the note on that
 //     production in reify.grammar for the LR conflict that forced it.
 //   - `constraint def`, `relate` blocks, `match_arm_decl_block`, and the
 //     `sub_relate_block` that may follow a pose clause.
+//
+// AND ONE KNOWN DIVERGENCE, which is not a gap and must not be "fixed" blindly.
+// Underscore-separated DECIMAL literals did not get their own node: `1_000_000`
+// still lexes as `QuantityLiteral` (`1` + unit `_000_000`). The companion-token
+// trick that made `0xDEAD_BEEF` one `RadixLiteral` cannot be reused, because
+// lezer token precedence beats longest match, so a separator-aware `Number`
+// ordered above `QuantityLiteral` would also win against `5_myunit`-shaped
+// quantities and turn a clean attested form into an error node. Zero ledger
+// impact either way; pinned by a shape test above so it stays visible.
 //
 // WHY A PINNED SET AND NOT A COUNT. An absolute floor (`clean.length >= 90`)
 // is coupled to corpus INVENTORY, not to grammar capability: deleting or
@@ -2660,6 +2669,7 @@ const EXPECTED_CLEAN = [
   'examples/type_hygiene/type_hygiene_surface.ri',
   'examples/undef_self_describing.ri',
   'examples/unit_expressions.ri',
+  'examples/whole_model_cost_min.ri',
   'examples/whole_model_joint_drive.ri',
   'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
   'tests/prd-gate/fixtures/collection_expr_index_resolves.ri',
