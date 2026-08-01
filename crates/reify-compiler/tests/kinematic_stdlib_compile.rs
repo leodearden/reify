@@ -209,7 +209,8 @@ fn conforming_joints_have_driving_joint_bound() {
 //
 // Catch regressions that delete a field or change its type to another
 // still-resolvable type (e.g. Vec3→Int, dropping one of Planar's two axes).
-// Vec3 is `Vector3<Length>` (task #4575, trajectory.ri:96); JointValue is still
+// Vec3<Q> is `Vector3<Q>` (task #4794); axis fields take Q = Dimensionless
+// (direction, task 5848). JointValue is still
 // a `Real` alias (trajectory.ri:76) and resolves to Type::dimensionless_scalar().
 
 #[test]
@@ -231,15 +232,15 @@ fn cylindrical_has_one_vec3_axis_param() {
     assert_eq!(
         params[0].cell_type,
         Type::vec3(Type::Scalar {
-            dimension: DimensionVector::LENGTH
+            dimension: DimensionVector::DIMENSIONLESS
         }),
-        "Cylindrical.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
+        "Cylindrical.axis should be Type::vec3(Dimensionless) (direction field, task 5848)"
     );
 }
 
 // ─── task 3849 step-5: flexure field shape tests ──────────────────────────────
 
-/// Revolute now has four params: axis (Vec3=Vector3<Length>, task #4575), spring_rate
+/// Revolute now has four params: axis (Vec3<Dimensionless>, task 5848), spring_rate
 /// (Option<RotationalStiffness>), damping (Option<RotationalDamping>),
 /// neutral (Option<Angle>). The three new params default to `none`.
 #[test]
@@ -253,13 +254,14 @@ fn revolute_has_four_params_with_correct_types() {
         "Revolute should have exactly (axis, spring_rate, damping, neutral) in that order"
     );
 
-    // axis: Vec3 = Vector3<Length> (tightened by task #4575)
+    // axis: Vec3<Dimensionless> — a direction, not a length (task 5848).
+    // Full five-slot coverage lives in joint_direction_params_are_dimensionless_vec3.
     assert_eq!(
         params[0].cell_type,
         Type::vec3(Type::Scalar {
-            dimension: DimensionVector::LENGTH
+            dimension: DimensionVector::DIMENSIONLESS
         }),
-        "Revolute.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
+        "Revolute.axis should be Type::vec3(Dimensionless) (direction field, task 5848)"
     );
 
     // spring_rate: Option<RotationalStiffness>
@@ -303,7 +305,7 @@ fn revolute_has_four_params_with_correct_types() {
     }
 }
 
-/// Prismatic now has four params: axis (Vec3=Vector3<Length>, task #4575), spring_rate
+/// Prismatic now has four params: axis (Vec3<Dimensionless>, task 5848), spring_rate
 /// (Option<TranslationalStiffness>), damping (Option<TranslationalDamping>),
 /// neutral (Option<Length>). The three new params default to `none`.
 #[test]
@@ -317,13 +319,14 @@ fn prismatic_has_four_params_with_correct_types() {
         "Prismatic should have exactly (axis, spring_rate, damping, neutral) in that order"
     );
 
-    // axis: Vec3 = Vector3<Length> (tightened by task #4575)
+    // axis: Vec3<Dimensionless> — a direction, not a length (task 5848).
+    // Full five-slot coverage lives in joint_direction_params_are_dimensionless_vec3.
     assert_eq!(
         params[0].cell_type,
         Type::vec3(Type::Scalar {
-            dimension: DimensionVector::LENGTH
+            dimension: DimensionVector::DIMENSIONLESS
         }),
-        "Prismatic.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
+        "Prismatic.axis should be Type::vec3(Dimensionless) (direction field, task 5848)"
     );
 
     // spring_rate: Option<TranslationalStiffness>
@@ -381,9 +384,9 @@ fn planar_has_two_vec3_axis_params() {
         assert_eq!(
             p.cell_type,
             Type::vec3(Type::Scalar {
-                dimension: DimensionVector::LENGTH
+                dimension: DimensionVector::DIMENSIONLESS
             }),
-            "Planar.{} should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)",
+            "Planar.{} should be Type::vec3(Dimensionless) (direction field, task 5848)",
             p.id.member
         );
     }
