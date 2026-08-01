@@ -12,13 +12,40 @@ use std::path::{Path, PathBuf};
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
-/// Minimum count of `.ri` files [`discover_ri_files`] must find under
-/// `EXAMPLES_DIR`, asserted in [`all_examples_parse_and_compile_with_stdlib`].
-const MIN_DISCOVERED_RI_FILES: usize = 40;
+/// Discovery-regression TRIPWIRE, NOT a corpus-size target: this floor
+/// exists to catch a walk bug, a bad path resolution, or a refactor that
+/// stops [`discover_ri_files`] from recursing — not to track the corpus's
+/// current size. Deliberately an absolute constant rather than derived from
+/// `discover_ri_files().len()` itself: a derived floor shrinks in lockstep
+/// with exactly the regression it would need to catch, so it could never
+/// fire. If the corpus is ever intentionally trimmed below this floor,
+/// lower the constant to match.
+///
+/// Dated snapshot, last reviewed 2026-08-01 (not a live claim): the
+/// examples/ corpus holds 258 `.ri` files today, so 200 leaves 58 files of
+/// headroom before ordinary corpus growth/shrinkage would flake
+/// [`all_examples_parse_and_compile_with_stdlib`]'s discovery-count
+/// assertion, and `200 * 2 = 400 >= 258` clears
+/// [`discovery_floors_track_the_live_corpus`]'s freshness ratchet with room
+/// for ~55% corpus growth before this constant needs raising again.
+const MIN_DISCOVERED_RI_FILES: usize = 200;
 
-/// Minimum count of non-skipped `.ri` files that
-/// [`no_example_emits_ctor_field_conformance_diagnostics`] must exercise.
-const MIN_EXERCISED_RI_FILES: usize = 40;
+/// Discovery-regression TRIPWIRE, NOT a corpus-size target: mirrors
+/// [`MIN_DISCOVERED_RI_FILES`]'s rationale, applied to the SKIP_SET-filtered
+/// `exercised` count in [`no_example_emits_ctor_field_conformance_diagnostics`]
+/// rather than the raw discovered count. Deliberately absolute for the same
+/// reason: a floor derived from the live `exercised` count would shrink in
+/// lockstep with a discovery regression and never fire. If the corpus is
+/// ever intentionally trimmed below this floor, lower the constant to
+/// match.
+///
+/// Dated snapshot, last reviewed 2026-08-01 (not a live claim): SKIP_SET has
+/// 8 entries today, so `exercised` is 250 (258 discovered − 8 skipped); 200
+/// leaves 50 entries of SKIP_SET-growth headroom before this guard would
+/// flake, and `200 * 2 = 400 >= 258` clears
+/// [`discovery_floors_track_the_live_corpus`]'s freshness ratchet with the
+/// same ~55% growth headroom as its sibling above.
+const MIN_EXERCISED_RI_FILES: usize = 200;
 
 /// Files to skip in the bulk smoke test.  Each entry is `(relative_path, reason)`
 /// where `relative_path` is the forward-slash-separated path rooted at `examples/`
@@ -29,8 +56,15 @@ const MIN_EXERCISED_RI_FILES: usize = 40;
 /// to carry a one-line human-readable justification, making skips auditable at
 /// review time.
 ///
-/// Default: empty — all 43 example files compile clean on HEAD after task #2346
-/// (recursive examples_smoke discovery) was merged on 2026-04-26.
+/// Entries here are files that cannot yet reach a clean `compile_with_stdlib`
+/// run, or are covered instead by a dedicated gated test elsewhere; every
+/// other file discovered under `examples/` is expected to compile clean.
+/// Deliberately does not pin a corpus count or set size here — the previous
+/// version of this comment ("all 43 example files ... merged on 2026-04-26")
+/// went stale exactly that way. The live corpus size is enforced by
+/// [`discovery_floors_track_the_live_corpus`], and dated snapshots of it live
+/// in the [`MIN_DISCOVERED_RI_FILES`] / [`MIN_EXERCISED_RI_FILES`] doc
+/// comments, not here.
 const SKIP_SET: &[(&str, &str)] = &[
     (
         "topology_selectors/fillet_top_edges.ri",
@@ -146,9 +180,11 @@ fn all_examples_parse_and_compile_with_stdlib() {
     let total = paths.len();
     assert!(
         total >= MIN_DISCOVERED_RI_FILES,
-        "examples_smoke discovered only {} .ri files — expected ~42; \
-         did the examples/ directory move or get renamed?",
-        total
+        "examples_smoke discovered only {} .ri files, below the \
+         MIN_DISCOVERED_RI_FILES floor of {} — did the examples/ directory \
+         move or get renamed, or did discover_ri_files() stop recursing?",
+        total,
+        MIN_DISCOVERED_RI_FILES
     );
 
     let mut exercised = 0usize;
@@ -222,9 +258,13 @@ fn no_example_emits_ctor_field_conformance_diagnostics() {
 
     assert!(
         exercised >= MIN_EXERCISED_RI_FILES,
-        "ctor-conformance corpus gate exercised only {} .ri files — expected ~40+; \
-         did the examples/ directory move, or did SKIP_SET grow unexpectedly?",
-        exercised
+        "ctor-conformance corpus gate exercised only {} .ri files, below the \
+         MIN_EXERCISED_RI_FILES floor of {} (SKIP_SET has {} entries) — did \
+         the examples/ directory move or get renamed, did discover_ri_files() \
+         stop recursing, or did SKIP_SET grow unexpectedly?",
+        exercised,
+        MIN_EXERCISED_RI_FILES,
+        skip.len()
     );
 
     if !violations.is_empty() {
