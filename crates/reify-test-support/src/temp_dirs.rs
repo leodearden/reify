@@ -1235,24 +1235,17 @@ mod tests {
     /// entry is deleted, rather than silently rotting the way this module's
     /// earlier six-entry allowlist did.
     ///
-    /// Re-measured (not merely trusted) at this task's branch point off
-    /// `crates/reify-build-utils/src/lib.rs`'s current source: exactly one
-    /// workspace file violates outside `temp_dirs.rs` itself, with exactly
-    /// one site. `temp_dirs.rs`'s own two sites are exempted per-line
-    /// rather than listed here (see pre-2).
-    const SWEEP_EXCEPTIONS: &[(&str, usize, &str)] = &[(
-        "crates/reify-build-utils/src/lib.rs",
-        1,
-        "its `fn tempdir()` test helper still hand-rolls a directory via the \
-         std-library temp-dir accessor instead of routing through the shared \
-         guard; #5639 migrates it. DELETE this entry in the same change that \
-         lands #5639 — the staleness half of \
-         workspace_has_no_unguarded_temp_dirs will fail until you do. If a \
-         SECOND hand-rolled site appears in this file before then, the \
-         pinned count (1) stops matching and the new site surfaces as an \
-         enforced violation rather than being silently exempted alongside \
-         the first.",
-    )];
+    /// Re-measured (not merely trusted) at debug-fix time for this task:
+    /// `crates/reify-build-utils/src/lib.rs` was the sole exception when this
+    /// ratchet was authored, because #5639 (which migrates its `fn
+    /// tempdir()` test helper off the hand-rolled std-library accessor) had
+    /// not yet landed on `main`. #5639 has since landed and this branch
+    /// picked it up, so that file no longer violates — exactly the
+    /// self-cleaning failure this table's staleness check exists to force:
+    /// the ratchet went RED with a stale entry, and the entry was deleted
+    /// here rather than left to rot. `temp_dirs.rs`'s own two self-trigger
+    /// sites are exempted per-line instead of listed here (see pre-2).
+    const SWEEP_EXCEPTIONS: &[(&str, usize, &str)] = &[];
 
     /// The live ratchet. Every `.rs` file in the workspace — `src/`, `tests/`,
     /// and `build.rs` alike — must be free of temp-dir hygiene violations,
