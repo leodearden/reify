@@ -13,6 +13,7 @@
 
 Declaration {
   StructureDefinition |
+  OccurrenceDefinition |
   ImportDeclaration
 }
 
@@ -55,7 +56,31 @@ ImportItems {
 // optional; the bare `structure Foo { }` form is still used by many committed
 // fixtures, so it must keep parsing.
 StructureDefinition {
-  kw<"pub">? kw<"structure"> kw<"def">? Identifier Block
+  kw<"pub">? kw<"structure"> kw<"def">? Identifier TypeParameters? (":" TraitBoundList)? Block
+}
+
+// grammar.js:517-528 — identical header shape to StructureDefinition.
+OccurrenceDefinition {
+  kw<"pub">? kw<"occurrence"> kw<"def">? Identifier TypeParameters? (":" TraitBoundList)? Block
+}
+
+// ── Type parameters and trait bounds ────────────────────
+// grammar.js:478-503. `TraitBoundList` is shared by structure/occurrence
+// headers and by the bounds on an individual type parameter.
+TypeParameters {
+  "<" TypeParameter ("," TypeParameter)* ","? ">"
+}
+
+TypeParameter {
+  Identifier (":" TraitBoundList)? ("=" TypeExpr)?
+}
+
+TraitBoundList {
+  TraitBoundEntry ("+" TraitBoundEntry)*
+}
+
+TraitBoundEntry {
+  Identifier ("<" TypeArgList ">")?
 }
 
 Block {
@@ -353,10 +378,11 @@ CompareOp<expr> { expr }
 // pair and otherwise hard-fails with
 //   Conflicting names for specialization "def" of Identifier
 // `pub`/`def` (StructureDefinition), `module`/`as` (ModuleDeclaration,
-// ImportDeclaration), `set`/`map` (SetLiteral, MapLiteral) and
+// ImportDeclaration), `set`/`map` (SetLiteral, MapLiteral),
 // `not`/`and`/`or`/`implies` (the keyword logical-operator band in
-// UnaryExpression/BinaryExpression) were promoted out of this list; their
-// keyword styling is re-pinned explicitly in highlight.ts.
+// UnaryExpression/BinaryExpression) and `occurrence` (OccurrenceDefinition)
+// were promoted out of this list; their keyword styling is re-pinned
+// explicitly in highlight.ts.
 //
 // Removal has one behavioural consequence worth stating precisely: a promoted
 // word is NO LONGER reachable from primaryExpression, so it now produces an
@@ -370,7 +396,7 @@ CompareOp<expr> { expr }
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
     "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
-    "occurrence" | "purpose" | "field" | "port" |
+    "purpose" | "field" | "port" |
     "type" | "unit" | "forall" | "exists" |
     "in" | "out" | "meta" | "self" |
     "undef" | "some" | "none">
