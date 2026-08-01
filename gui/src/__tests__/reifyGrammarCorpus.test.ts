@@ -1211,6 +1211,108 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
 });
 
 /**
+ * The parameterized `auto` forms and `auto_type_arg`.
+ *
+ * `auto_type_arg` is the one arm task 5907 explicitly deferred when it added
+ * `ParameterizedType`/`TypeArgList`, and this task names it. Measured: 14
+ * failing files use `auto(`, and `param thickness : Length = auto(free)` /
+ * `param side : Real = auto(free)` are real first-error lines.
+ *
+ * The grammar today has `AutoKeyword { kw<"auto"> }` — the bare form only.
+ */
+describe('reify.grammar snippets — auto forms', () => {
+  // Corpus-attested 9x: examples/continuous_cost_min.ri:62,
+  // examples/best_practices/discrete_choice.ri:65, and seven more.
+  it('parses `param thickness : Length = auto(free)`', () => {
+    expect(countErrorNodes('structure def F { param thickness : Length = auto(free) }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/interpolation.ri:33 — the same modifier on a
+  // `let` rather than a `param`.
+  it('parses `let gap : Length = auto(free)`', () => {
+    expect(countErrorNodes('structure def F { let gap : Length = auto(free) }')).toBe(0);
+  });
+
+  /**
+   * The PARAMETERIZED arm (`auto(name = value, …)`) has no corpus occurrence
+   * — every committed `auto(` is `auto(free)`. It is normative:
+   * grammar.js:653 gives `auto_keyword` a distinct `auto_param_list` arm, and
+   * :660-668 documents exactly these value shapes (`5mm`, `self.frame`,
+   * `orient_identity()`).
+   */
+  it('parses a parameterized auto `auto(seed = 5mm)` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { param p : Length = auto(seed = 5mm) }')).toBe(0);
+  });
+
+  it('parses a multi-entry parameterized auto `auto(x = 1mm, y = 2mm)`', () => {
+    expect(countErrorNodes('structure def F { param p : Length = auto(x = 1mm, y = 2mm) }')).toBe(
+      0,
+    );
+  });
+
+  it('parses an expression-valued parameterized auto', () => {
+    expect(
+      countErrorNodes('structure def F { param p : Frame = auto(orientation = orient_identity()) }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/auto/bearing_constraint_select.ri:80,
+  // examples/auto/bearing_unsat.ri:93 (`sub bearing = Bearing<auto: Seal>()`).
+  it('parses the auto type-arg `Bearing<auto: Seal>`', () => {
+    expect(countErrorNodes('structure def F { sub bearing = Bearing<auto: Seal>() }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/bearing_auto_seal.ri:78,
+  // examples/auto/bearing_resolved_value.ri:58.
+  it('parses the modified auto type-arg `Bearing<auto(free): Seal>`', () => {
+    expect(countErrorNodes('structure def F { sub b = Bearing<auto(free): Seal>() }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/auto/bounded_fallback_unsound.ri:102 — seven
+  // auto type-args in one list.
+  it('parses several auto type-args in one list', () => {
+    expect(
+      countErrorNodes('structure def F { sub s = LayeredStack<auto: Layer, auto: Layer>() }'),
+    ).toBe(0);
+  });
+
+  // The plan's spelling of the same arm in a type ANNOTATION rather than a
+  // sub instantiation — the `typeArg` rule is shared, so both reach it.
+  it('parses an auto type-arg in a param annotation', () => {
+    expect(countErrorNodes('structure def F { param b : Bearing<auto: Seal> = auto }')).toBe(0);
+  });
+
+  it('parses a modified auto type-arg in a param annotation', () => {
+    expect(countErrorNodes('structure def F { param b : Bearing<auto(free): Seal> = auto }')).toBe(
+      0,
+    );
+  });
+
+  it('yields AutoTypeArg and AutoParam nodes', () => {
+    expect(nodeNames('structure def F { sub b = Bearing<auto: Seal>() }')).toContain('AutoTypeArg');
+    expect(nodeNames('structure def F { param p : Length = auto(seed = 5mm) }')).toContain(
+      'AutoParam',
+    );
+  });
+
+  /**
+   * REGRESSION GUARD. The bare `auto` is the form the grammar already
+   * accepted, and all three arms of grammar.js:647-651 share it as their
+   * prefix — upstream needs explicit `prec(2)`/`prec(1)`/`prec(0)` to settle
+   * the shift-reduce at `(`. A mis-resolved conflict here would break the
+   * form that works today, in every position that admits it.
+   */
+  it('still parses the bare `param w : Length = auto`', () => {
+    expect(countErrorNodes('structure def F { param w : Length = auto }')).toBe(0);
+  });
+
+  it('still parses a bare `auto` in a specialization body and a pose clause', () => {
+    expect(countErrorNodes('structure def F { sub b : Bearing { bore = auto } }')).toBe(0);
+    expect(countErrorNodes('structure def F { sub bolt : Bolt at auto }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
