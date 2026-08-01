@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 18 |  0 |
-| reify-doc  | 18 | 17 |
-| reify-eval | 18 | 17 |
-| gui-only   | 18 |  3 |
+| docs-only  | 19 |  0 |
+| reify-doc  | 19 | 18 |
+| reify-eval | 19 | 18 |
+| gui-only   | 19 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -198,6 +198,18 @@ git-failure fail-wide paths also return `RUN_RUST=1` with an empty
 closure-available sentinel to tell it apart from "the diff could not be read".
 The merge gate remains unconditional by contract, so a hook-tier skip is
 LATENCY, never a coverage hole._
+
+_Counts bumped 2026-08-01 (task 5629): added
+`./scripts/tree-sitter-freshness.sh ensure` (the compiled-tree-sitter-parser
+freshness gate) to `build_plan` inside the `RUN_RUST=1` block in
+`scripts/verify.sh`, immediately after `tree-sitter-generate.sh` — that
+ordering is load-bearing, since the fingerprint must be taken after
+`src/parser.c` is regenerated on disk and forced before any cargo leaf
+compiles it. Net change: +1 non-comment plan line wherever `RUN_RUST=1` —
+every `scope=all` plan, and `scope=branch` for the `RUN_RUST=1` shapes
+(reify-doc, reify-eval). docs-only branch stays 0 and gui-only branch stays 3
+(`RUN_RUST=0` there, so the leaf is not emitted). The machine sentinel moves
+18 → 19 for those cells._
 
 ## Heavy-Work Narrowed Markers
 
