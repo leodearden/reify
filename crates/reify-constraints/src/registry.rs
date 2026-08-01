@@ -338,11 +338,36 @@ impl SolverRegistry {
             //   trivially a subset, so the filter is the IDENTITY and every
             //   pre-existing single-component solve stays byte-identical
             //   (PRD §6.2 / I1).
-            // - A cell absent from `dependent_auto_reads` is dropped.  That
-            //   cannot happen for a well-formed problem — the map is built from
-            //   this very list — and dropping is the safe direction: a cell whose
-            //   auto reads are unknown is exactly one we cannot prove is
-            //   foldable here.
+            // - A cell absent from `dependent_auto_reads` is dropped.  For a
+            //   well-formed problem the only such cells are cycle members, which
+            //   `dependent_cell_auto_reads` deliberately omits rather than
+            //   publish a partial auto set (reify-eval's `build_dependent_cells`
+            //   drops cycles upstream anyway).  Dropping is the safe direction: a
+            //   cell whose auto reads are unknown is exactly one we cannot prove
+            //   is foldable here.
+            //
+            // # SCOPE of "structurally impossible" — objective refs only
+            //
+            // The expansion above is applied to `obj_refs` ONLY.
+            // `decompose_into_components` still unions a CONSTRAINT's autos
+            // purely SYNTACTICALLY, so the guarantee is scoped to reads that
+            // happen inside the fold and the objective, NOT to every read in the
+            // model.  A constraint that reaches a second auto only THROUGH a
+            // derived cell — `a + side >= K` where `side = SIDE_COEFF*c` — still
+            // splits `a` and `c` into separate components, because the union
+            // step sees only the syntactic ref `side` and filters it away as a
+            // non-auto.  This filter then also removes `side` from the `{a}`
+            // component, since `{c}` is not a subset of `{a}`, and the
+            // constraint is evaluated each trial against whatever stale `side`
+            // sits in `current_values`.
+            //
+            // That coupling gap PRE-DATES task #5720 — decomposition has always
+            // unioned constraint refs syntactically — but this filter does change
+            // its symptom, from a loud `Undef` (the wholesale list folded `side`
+            // against an unowned `c`) to a silent stale read.  Closing it means
+            // expanding constraint refs through `dependent_auto_reads` the same
+            // way, which changes decomposition for every existing model and is
+            // deliberately OUT OF SCOPE here; it is filed as its own follow-up.
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
