@@ -2903,6 +2903,11 @@ impl Engine {
         // `clear_realization_cache_public_api_resets_cache_for_production_callers`
         // in `tests/tolerance_wiring_e2e.rs`.
         self.clear_realization_cache();
+        // selective-realization-eviction β (#4729): the changed-realization
+        // set describes exactly ONE edit, so clear it at entry — symmetric
+        // with the reset at `edit_param`'s entry. The real set is computed at
+        // the post-value-cone seam just before step (15)'s snapshot install.
+        self.last_changed_realizations.clear();
         // Allocate the new snapshot/version pair before taking the
         // `eval_state` borrow below: `allocate_snapshot_version` takes
         // `&mut self` (the whole struct, via a method call), which cannot
@@ -2986,6 +2991,55 @@ impl Engine {
             diff_constraints(&eval_state.snapshot.graph, &new_snapshot.graph);
         let (changed_realizations, added_realizations, removed_realizations) =
             diff_realizations(&eval_state.snapshot.graph, &new_snapshot.graph);
+
+        // selective-realization-eviction β (#4729): carry `input_cone_hash`
+        // FORWARD onto every realization that persists across the recompile.
+        //
+        // `edit_source` rebuilds the graph, and `EvaluationGraph::from_templates`
+        // seeds every new node's `input_cone_hash` to `None` (graph.rs:406).
+        // That field means "the input cone as of the last EXECUTION", so
+        // without this copy a recompile destroys the record and the §11.2
+        // `None` arm marks EVERY realization conservatively changed from then
+        // on — defeating the "an unaffected body's cache entry survives"
+        // boundary case γ/δ depend on.
+        //
+        // Safe even when the ops themselves changed: the fold recomputed over
+        // the NEW ops then differs from the carried-forward hash, so the
+        // realization is still classified changed here AND the build-time gate
+        // in `refresh_and_gate_demanded_realizations` still re-executes it.
+        // This is a carry-forward of history, never a re-stamp — β never
+        // writes a hash derived from the POST-edit context (see
+        // `compute_changed_realizations`' doc for why that would be a
+        // 4317-class stale).
+        //
+        // Collected first, then applied, so the shared borrow of
+        // `eval_state.snapshot.graph` ends before `new_snapshot` is mutated.
+        let carried_input_cone_hashes: Vec<(RealizationNodeId, [u8; 32])> = new_snapshot
+            .graph
+            .realizations
+            .iter()
+            .filter_map(|(rid, _)| {
+                eval_state
+                    .snapshot
+                    .graph
+                    .realizations
+                    .get(rid)
+                    .and_then(|old| old.input_cone_hash)
+                    .map(|h| (rid.clone(), h))
+            })
+            .collect();
+        for (rid, hash) in carried_input_cone_hashes {
+            if let Some(node) = new_snapshot.graph.realizations.get_mut(&rid) {
+                node.input_cone_hash = Some(hash);
+            }
+        }
+
+        // The OLD graph's realization map, captured while the `eval_state`
+        // borrow is still live, so the β compare site below step (14) can use
+        // it as the PRIOR side after `self.eval_state` has been replaced.
+        // `PersistentMap` wraps an immutable `ImHashMap`, so this clone is
+        // O(1) structural sharing, not a deep copy.
+        let prior_realizations = eval_state.snapshot.graph.realizations.clone();
 
         // (4c) Checkout warm state from the pool for every node entering the
         //      topology in this edit, keyed by `NodeId`. Per arch §4.3 lines
@@ -4348,6 +4402,38 @@ impl Engine {
         // without a dedicated sink.
         let overlap_suffix = diagnostics.split_off(pre_overlap_len);
         diagnostics.extend(dedup_diagnostics_preserve_order(overlap_suffix));
+
+        // ── selective-realization-eviction β (#4729): the edit_source
+        // compare site ──────────────────────────────────────────────────
+        //
+        // Placed after R3f's `re_eval_post_walk_mints_from_graph` — the last
+        // value-mutating phase — and before step (15)'s install, where
+        // `values` and `new_snapshot` are both still local and final. D2
+        // requires the input cones be recomputed against the UPDATED context,
+        // which only exists once every value phase has settled.
+        //
+        // The result is UNIONed with `diff_realizations`' changed ∪ added sets
+        // rather than replacing them. The static `content_hash` diff is
+        // INSUFFICIENT — it provably never moves on a value-driven change,
+        // which is the entire design §5.2 gap β exists to close — but it is
+        // not WRONG: an ops-level source change is a genuine change that the
+        // input-cone fold could in principle miss if two different op sets
+        // happened to fold identically. The union is therefore a strict
+        // superset of either set alone and can only over-evict, never
+        // under-evict. Over-eviction costs wasted work; under-eviction serves
+        // stale geometry, so the union is the safe direction for γ's keyed
+        // eviction and for δ's "selective ≡ wholesale on served handles" gate.
+        {
+            let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
+            let mut changed = compute_changed_realizations(
+                &prior_realizations,
+                &new_snapshot.graph,
+                &ctx,
+            );
+            changed.extend(changed_realizations.iter().cloned());
+            changed.extend(added_realizations.iter().cloned());
+            self.last_changed_realizations = changed;
+        }
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
