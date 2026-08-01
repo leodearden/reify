@@ -53,3 +53,7 @@ mod dimensioned_ctor_migration_si_values;
 // entry point that composes evaluation, kernel realization and export.
 #[path = "harness_engine/export_unit_regime_e2e.rs"]
 mod export_unit_regime_e2e;
+// Task #5467's let-tracing transitive closure e2e lands here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/let_tracing_transitive_e2e.rs"]
+mod let_tracing_transitive_e2e;
