@@ -112,17 +112,29 @@ fn collect_value_refs(expr: &CompiledExpr, out: &mut HashSet<ValueCellId>) {
 ///
 /// # INVARIANTS
 ///
-/// - Cycle-safe: a cell reachable from itself terminates with the PARTIAL set
-///   accumulated so far rather than recursing forever. reify-eval's
-///   `build_dependent_cells` already drops cycles, but the visited set costs
-///   nothing and removes the dependency on that upstream guarantee.
+/// - Cycle-safe, and FAIL-SAFE on a cycle: a cell that closes a back edge — or
+///   that transitively reads one — is OMITTED from the returned map entirely
+///   rather than published with the partial set the DFS accumulated. Publishing
+///   a partial set would be the exact under-approximation this function exists
+///   to prevent: the registry's subset filter would wrongly KEEP such a cell in
+///   a component missing one of its autos and the `Undef` fold would come
+///   straight back. ABSENCE is the safe direction — the filter drops a cell it
+///   has no entry for. reify-eval's `build_dependent_cells` already drops
+///   cycles, so this costs nothing on a well-formed problem and removes the
+///   dependency on that upstream guarantee.
 /// - Iterative (explicit stack), so a deep dependent-cell chain cannot blow the
 ///   native stack.
 /// - A ref that is neither an auto nor another dependent cell is ignored: it is
 ///   a plain value that carries no auto dependence.
-/// - A duplicate cell id resolves to its FIRST occurrence, matching the fold
-///   order in `fold_dependent_cells` (stored order, first write wins the
-///   subsequent reads).
+/// - A duplicate cell id resolves to the UNION over ALL of its occurrences —
+///   both as a child edge (a ref to that id inherits every occurrence's set)
+///   and in the returned map. First-occurrence-wins would be unsafe in this
+///   map's PRIMARY consumer: the registry filter keys on id, so every
+///   occurrence of a duplicated cell is retained or dropped TOGETHER. Were a
+///   later occurrence to read a strictly larger auto set, first-wins would keep
+///   both in a component that does not own one of those autos and the fold
+///   would read it unbound. Unioning is the drop-side-safe direction, matching
+///   how every other unknown here resolves.
 pub(crate) fn dependent_cell_auto_reads(
     dependent_cells: &[(ValueCellId, CompiledExpr)],
     auto_params: &[AutoParam],
@@ -134,9 +146,13 @@ pub(crate) fn dependent_cell_auto_reads(
 
     let auto_ids: HashSet<&ValueCellId> = auto_params.iter().map(|ap| &ap.id).collect();
 
-    let mut cell_index: HashMap<&ValueCellId, usize> = HashMap::with_capacity(n);
+    // id → EVERY index carrying that id, not just the first. A ref to a
+    // duplicated cell inherits the union of all of its occurrences' auto sets:
+    // the fold overwrites the cell in stored order, so any occurrence can be
+    // the value a later reader observes.
+    let mut cell_index: HashMap<&ValueCellId, Vec<usize>> = HashMap::with_capacity(n);
     for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        cell_index.entry(id).or_insert(i);
+        cell_index.entry(id).or_default().push(i);
     }
 
     // Split each cell's direct refs into (a) autos it reads outright and (b)
@@ -152,8 +168,8 @@ pub(crate) fn dependent_cell_auto_reads(
         for r in refs {
             if auto_ids.contains(&r) {
                 autos.insert(r);
-            } else if let Some(&ci) = cell_index.get(&r) {
-                children.push(ci);
+            } else if let Some(indices) = cell_index.get(&r) {
+                children.extend(indices.iter().copied());
             }
             // else: a plain value with no auto dependence → ignored.
         }
@@ -164,6 +180,11 @@ pub(crate) fn dependent_cell_auto_reads(
     // Iterative post-order DFS with memoization. `state`: 0 = unvisited,
     // 1 = on the current stack (in progress), 2 = resolved.
     let mut memo: Vec<Option<HashSet<ValueCellId>>> = vec![None; n];
+    // `incomplete[i]`: frame `i` closed a back edge, or inherited one from a
+    // child, so `memo[i]` is a STRICT UNDER-APPROXIMATION of that cell's auto
+    // reads. Such a cell is omitted from the returned map entirely rather than
+    // published partial — see the cycle invariant above.
+    let mut incomplete: Vec<bool> = vec![false; n];
     let mut state: Vec<u8> = vec![0; n];
     let mut stack: Vec<usize> = Vec::new();
 
@@ -186,15 +207,26 @@ pub(crate) fn dependent_cell_auto_reads(
                 }
                 1 => {
                     // Every child has either resolved or is an in-progress
-                    // ancestor (a cycle). Union the resolved ones; a cycle
-                    // contributes its partial set via the ancestor's own frame.
+                    // ancestor (a cycle). Union the resolved ones and RECORD
+                    // whether anything was missed, so a partial set is never
+                    // published as if it were complete.
                     let mut set = direct_autos[top].clone();
+                    let mut partial = false;
                     for &child in &child_cells[top] {
-                        if let Some(child_set) = &memo[child] {
-                            set.extend(child_set.iter().cloned());
+                        match &memo[child] {
+                            Some(child_set) => {
+                                set.extend(child_set.iter().cloned());
+                                // A resolved-but-partial child taints us too:
+                                // our union inherits its shortfall.
+                                partial |= incomplete[child];
+                            }
+                            // Still unresolved at our own resolution point ⇒ an
+                            // in-progress ancestor ⇒ a back edge we skipped.
+                            None => partial = true,
                         }
                     }
                     memo[top] = Some(set);
+                    incomplete[top] = partial;
                     state[top] = 2;
                     stack.pop();
                 }
@@ -206,11 +238,27 @@ pub(crate) fn dependent_cell_auto_reads(
         }
     }
 
+    // Materialise. `take()` MOVES each memoised set out — every index is
+    // materialised exactly once — so the map never holds a second copy of the
+    // DFS's working sets.
     let mut out: HashMap<ValueCellId, HashSet<ValueCellId>> = HashMap::with_capacity(n);
     for (i, (id, _)) in dependent_cells.iter().enumerate() {
-        let set = memo[i].clone().unwrap_or_default();
-        // First occurrence wins, matching `cell_index`.
-        out.entry(id.clone()).or_insert(set);
+        if incomplete[i] {
+            continue;
+        }
+        // UNION across every occurrence of a duplicated id, matching the
+        // all-occurrences child edges above.
+        out.entry(id.clone())
+            .or_default()
+            .extend(memo[i].take().unwrap_or_default());
+    }
+    // An id is only as sound as its WEAKEST occurrence: if ANY occurrence is
+    // incomplete, drop the id outright rather than publish a partial union that
+    // the registry's subset filter would read as authoritative.
+    for (i, (id, _)) in dependent_cells.iter().enumerate() {
+        if incomplete[i] {
+            out.remove(id);
+        }
     }
     out
 }
@@ -504,10 +552,57 @@ mod tests {
             ),
         ];
         let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
-        // Terminating at all IS the assertion; each cell must still report at
-        // least its own directly-read auto.
-        assert!(map.get(&ValueCellId::new("P", "x")).unwrap().contains(&ValueCellId::new("P", "a")));
-        assert!(map.get(&ValueCellId::new("P", "y")).unwrap().contains(&ValueCellId::new("P", "b")));
+
+        // Terminating at all is half the assertion. The other half is that
+        // each cycle member is COMPLETE-OR-ABSENT, never partial. `x` and `y`
+        // each transitively read {a, b}; whichever resolves FIRST can only see
+        // the children already off the stack, so a partial set is what the DFS
+        // naturally accumulates. Publishing it would let the registry's subset
+        // filter keep `y` (apparent reads {b}) in a component owning only `b`,
+        // where folding it reads the unowned auto `a` → `Undef` — precisely the
+        // failure the filter is documented to make structurally impossible.
+        let both = HashSet::from([ValueCellId::new("P", "a"), ValueCellId::new("P", "b")]);
+        for name in ["x", "y"] {
+            let id = ValueCellId::new("P", name);
+            match map.get(&id) {
+                None => {} // Fail-safe: absent, so the filter drops the cell.
+                Some(set) => assert_eq!(
+                    set, &both,
+                    "`{name}` is on a cycle and transitively reads BOTH autos. \
+                     A published set MUST be complete; got the partial {set:?}. \
+                     Omitting the id entirely is the other acceptable answer — \
+                     the registry filter drops a cell it has no entry for."
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn dependent_cell_auto_reads_unions_duplicate_ids() {
+        // The SAME id twice, the second occurrence reading a strictly larger
+        // auto set. The registry filter keys on id, so both occurrences are
+        // retained or dropped together — the map must therefore report the
+        // UNION. First-occurrence-wins would report {a}, the filter would keep
+        // BOTH occurrences in a component owning only `a`, and folding the
+        // second would read the unowned auto `b` → `Undef`.
+        let dup = ValueCellId::new("P", "total");
+        let cells = vec![
+            (dup.clone(), vref("a")),
+            (
+                dup.clone(),
+                CompiledExpr::binop(BinOp::Add, vref("a"), vref("b"), Type::length()),
+            ),
+        ];
+        let map = dependent_cell_auto_reads(&cells, &[auto("a"), auto("b")]);
+        assert_eq!(
+            map.get(&dup),
+            Some(&HashSet::from([
+                ValueCellId::new("P", "a"),
+                ValueCellId::new("P", "b"),
+            ])),
+            "a duplicated cell id must resolve to the union over ALL of its \
+             occurrences — the drop-side-safe direction"
+        );
     }
 
     #[test]
