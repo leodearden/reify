@@ -53,8 +53,22 @@ function nodeNames(src: string): Set<string> {
   return names;
 }
 
-/** Node types that group two operands under an infix operator. */
-const OPERATOR_NODES = new Set(['BinaryExpression', 'RangeExpression']);
+/**
+ * Node types that group two operands under an infix operator.
+ *
+ * Kept EXHAUSTIVE on purpose — the reason is spelled out on `leftOperandOf`
+ * below. Beyond the two arithmetic/comparison shapes, three postfix-or-infix
+ * forms qualify because their FIRST child is a left operand a precedence
+ * assertion may need to name: `AdHocSelector` (`expr @ sel(args)`),
+ * `IndexAccess` (`expr [ expr ]`) and `MapEntry` (`expr => expr`).
+ */
+const OPERATOR_NODES = new Set([
+  'BinaryExpression',
+  'RangeExpression',
+  'AdHocSelector',
+  'IndexAccess',
+  'MapEntry',
+]);
 
 /**
  * Source text of the LEFT OPERAND of the OUTERMOST infix-operator node in
@@ -72,6 +86,14 @@ const OPERATOR_NODES = new Set(['BinaryExpression', 'RangeExpression']);
  * reports an inner operand, which reads as a precedence failure when the
  * grouping is in fact correct. `RangeExpression` is a separate node type
  * precisely because grammar.js models ranges as their own rule.
+ *
+ * That is not a hypothetical. MEASURED while `IndexAccess` was still missing
+ * from the set: `leftOperandOf('structure def F { let x = a[i + 1] }')` walked
+ * straight past the `IndexAccess` root, reached the inner `BinaryExpression`
+ * and returned `'i'` — a confidently wrong answer rather than a throw. Adding
+ * a node type to the grammar therefore means adding it to `OPERATOR_NODES` in
+ * the same change, and the anti-vacuity block below covers one case per shape
+ * so a future omission has somewhere to fail.
  */
 function leftOperandOf(src: string): string {
   const cursor = parser.parse(src).cursor();
@@ -118,6 +140,35 @@ describe('reify.grammar — leftOperandOf helper', () => {
 
   it('reports only the leaf when the right operator binds tighter', () => {
     expect(leftOperandOf('structure def F { constraint a + b * c }')).toBe('a');
+  });
+
+  /**
+   * One case per NON-`BinaryExpression` member of `OPERATOR_NODES`, so a
+   * future edit that adds an infix node type and forgets the set has an
+   * existing shape to break. Each also pins a real grouping claim.
+   *
+   * The selector case is the one that pays twice: grammar.js:1568-1575 gives
+   * `ad_hoc_selector` `prec.left(10)`, and left-associativity is observable
+   * ONLY through a chain — the chained-selector snippet elsewhere in this file
+   * asserts zero error nodes, which the right-associative grouping would
+   * satisfy just as well.
+   */
+  it('reports the inner selector when a selector chain is left-associative', () => {
+    expect(leftOperandOf('structure def F { let e = body @ edge("top") @ nearest(p) }')).toBe(
+      'body @ edge("top")',
+    );
+  });
+
+  /**
+   * The index case is the measured regression named in the docstring above:
+   * with `IndexAccess` absent from the set this returned the inner `'i'`.
+   */
+  it('reports the indexed base, not an operand of the index expression', () => {
+    expect(leftOperandOf('structure def F { let x = a[i + 1] }')).toBe('a');
+  });
+
+  it('reports the key of a map entry', () => {
+    expect(leftOperandOf('structure def F { let m = map { k + 1 => v } }')).toBe('k + 1');
   });
 });
 
