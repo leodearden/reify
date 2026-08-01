@@ -1455,13 +1455,15 @@ const ALL_CURVE: [CurveKind; 6] = [
 /// degree-1 / 2-point curve).
 fn curve_case(k: CurveKind) -> CompiledGeometryOp {
     let args = match k {
+        // Both endpoints are LENGTH-gated (task 5623). The golden below is
+        // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         CurveKind::LineSegment => vec![
-            ("x1".to_string(), lit(0.0)),
-            ("y1".to_string(), lit(0.0)),
-            ("z1".to_string(), lit(0.0)),
-            ("x2".to_string(), lit(0.01)),
-            ("y2".to_string(), lit(0.02)),
-            ("z2".to_string(), lit(0.03)),
+            ("x1".to_string(), lit_len(0.0)),
+            ("y1".to_string(), lit_len(0.0)),
+            ("z1".to_string(), lit_len(0.0)),
+            ("x2".to_string(), lit_len(0.01)),
+            ("y2".to_string(), lit_len(0.02)),
+            ("z2".to_string(), lit_len(0.03)),
         ],
         CurveKind::Arc => vec![
             ("cx".to_string(), lit(0.0)),
@@ -1474,10 +1476,12 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
         ],
+        // radius / pitch / height are all LENGTH-gated (task 5623); `pitch` is a
+        // rise per turn, not an angle. Golden below unchanged.
         CurveKind::Helix => vec![
-            ("radius".to_string(), lit(0.01)),
-            ("pitch".to_string(), lit(0.005)),
-            ("height".to_string(), lit(0.05)),
+            ("radius".to_string(), lit_len(0.01)),
+            ("pitch".to_string(), lit_len(0.005)),
+            ("height".to_string(), lit_len(0.05)),
         ],
         // 2 points → 6 coords.
         CurveKind::InterpCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.02, 0.03]),

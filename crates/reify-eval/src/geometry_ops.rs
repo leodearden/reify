@@ -3337,27 +3337,35 @@ fn curve_line_segment(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
+    // BOTH endpoints are points in space, so all six components are gated
+    // (task 5623's R1 sweep). `line_segment` has no dimensionless neighbour —
+    // no direction vector, no count, no angle — so no `f64_arg` closure
+    // survives to contend for the `&mut diagnostics` borrow.
+    let [x1, y1, z1] = required_length_triple(
+        ["x1", "y1", "z1"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    let [x2, y2, z2] = required_length_triple(
+        ["x2", "y2", "z2"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::LineSegment {
-        x1: f64_arg("x1")?,
-        y1: f64_arg("y1")?,
-        z1: f64_arg("z1")?,
-        x2: f64_arg("x2")?,
-        y2: f64_arg("y2")?,
-        z2: f64_arg("z2")?,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
     })
 }
 
@@ -3400,24 +3408,20 @@ fn curve_helix(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
+    // All three are lengths — a radius, a rise-per-turn, and a height — so all
+    // three are gated (task 5623's R1 sweep) and, as in `curve_line_segment`,
+    // no `f64_arg` closure survives. `pitch` is a LENGTH per turn, not an
+    // angle: the turn count is implied by `height / pitch`.
+    let radius =
+        required_length_arg("radius", kind, args, values, functions, meta_map, diagnostics)?;
+    let pitch =
+        required_length_arg("pitch", kind, args, values, functions, meta_map, diagnostics)?;
+    let height =
+        required_length_arg("height", kind, args, values, functions, meta_map, diagnostics)?;
     Ok(reify_ir::GeometryOp::Helix {
-        radius: f64_arg("radius")?,
-        pitch: f64_arg("pitch")?,
-        height: f64_arg("height")?,
+        radius,
+        pitch,
+        height,
     })
 }
 
