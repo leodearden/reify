@@ -1078,6 +1078,139 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
 });
 
 /**
+ * Lambda expressions and the `@` ad-hoc port selector.
+ *
+ * Both are named in this task's scope list. Measured: lambdas in 24 of the
+ * failing files (`let doubled = sample(fn_field(|p| 2.0 * p), 3.0)` is a real
+ * first-error line), `@` selectors in 13 (`let top_frame = post @ face("top")`).
+ *
+ * THE `||` COLLISION IS THE RISK IN THIS SLICE. A zero-parameter lambda opens
+ * with two adjacent `|` characters, which is character-for-character the
+ * symbolic OR operator the grammar has accepted since before this task. The
+ * regression assertion at the bottom is the one that must never be relaxed:
+ * `a || b` is attested throughout the corpus, a zero-parameter lambda is
+ * attested nowhere in it.
+ */
+describe('reify.grammar snippets — lambdas and @ selectors', () => {
+  // Corpus-attested: examples/fields/compose.ri:19 (`|x| 2.0 * x`).
+  it('parses a single-parameter lambda `|x| x * 2`', () => {
+    expect(countErrorNodes('structure def F { let f = |x| x * 2 }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/option_map_or.ri:30
+  // (`map_or(some(5mm), 0mm, |x: Length| x * 2.0)`).
+  it('parses a typed lambda parameter `|x : Real| x * 2`', () => {
+    expect(countErrorNodes('structure def F { let f = |x : Real| x * 2 }')).toBe(0);
+  });
+
+  /**
+   * Multi-parameter and zero-parameter lambdas have NO corpus occurrence.
+   * Both are normative — grammar.js:1222-1227 wraps the parameter list in
+   * `commaSep`, which is `optional(seq(rule, repeat(...), optional(',')))`,
+   * so zero, one and many are all admitted upstream.
+   */
+  it('parses a multi-parameter lambda `|a, b| a + b` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { let f = |a, b| a + b }')).toBe(0);
+  });
+
+  /**
+   * The zero-parameter lambda is the collision case: `|| 1` and the OR
+   * operator are the same two characters. It is admitted upstream — the
+   * `commaSep` above makes the parameter list optional, and tree-sitter's
+   * lexer is parse-state-driven, so at an expression START (where `||` is not
+   * a valid token) it reads `|`, while after a complete expression (where `|`
+   * is not valid) it reads `||`. Lezer partitions tokens into per-state groups
+   * for the same reason, so the two spellings are expected to separate the
+   * same way — but only if `"||"` and `"|"` never share a group. If they do,
+   * this assertion is the one that yields (it has no corpus occurrence,
+   * whereas `a || b` has many) and the narrowing is recorded here.
+   */
+  it('parses a zero-parameter lambda `|| 1` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { let f = || 1 }')).toBe(0);
+  });
+
+  // Corpus-attested verbatim: examples/fields/fn_field.ri:14.
+  it('parses a lambda as a call argument `sample(fn_field(|p| 2.0 * p), 3.0)`', () => {
+    expect(countErrorNodes('structure def F { let d = sample(fn_field(|p| 2.0 * p), 3.0) }')).toBe(
+      0,
+    );
+  });
+
+  // Corpus-attested: examples/generate_bolt_circle.ri:16,28.
+  it('parses a lambda in the trailing argument position `generate(n, |i| i * 2mm)`', () => {
+    expect(countErrorNodes('structure def F { let ps = generate(n, |i| i * 2mm) }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/generate_bolt_circle.ri:16-22 — the body spans
+  // lines, which is the shape that proves the body extends as far right (and
+  // as far down) as it can rather than stopping at the first newline.
+  it('parses a lambda whose body spans several lines', () => {
+    expect(
+      countErrorNodes(
+        'structure def F {\n  let ps = generate(n, |i|\n    point3(\n      r * cos(i),\n      r * sin(i),\n      0mm\n    )\n  )\n}',
+      ),
+    ).toBe(0);
+  });
+
+  it('yields a LambdaExpression node', () => {
+    expect(nodeNames('structure def F { let f = |x| x * 2 }')).toContain('LambdaExpression');
+  });
+
+  // Corpus-attested verbatim: examples/multi_kernel/attribute_selectors.ri:78,
+  // examples/ad_hoc_face_selector.ri:68.
+  it('parses the ad-hoc selector `post @ face("top")`', () => {
+    expect(countErrorNodes('structure def F { let top = post @ face("top") }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m10_combined.ri:88
+  // (`let supply_point = supply @ point(0mm, 0mm, 0mm)`).
+  it('parses a selector with several arguments `supply @ point(0mm, 0mm, 0mm)`', () => {
+    expect(countErrorNodes('structure def F { let p = supply @ point(0mm, 0mm, 0mm) }')).toBe(0);
+  });
+
+  /**
+   * Chaining has no corpus occurrence. It is normative rather than invented:
+   * grammar.js:1568-1575 gives `ad_hoc_selector` `prec.left(10)`, and
+   * left-associativity is only observable through a chain.
+   */
+  it('parses a chained selector (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { let e = body @ edge("top") @ nearest(p) }')).toBe(0);
+  });
+
+  // grammar.js puts the selector (10) tighter than index access (9) and looser
+  // than member access (11), so a selector applied to a member-access base is
+  // the interaction worth pinning.
+  it('parses a selector on a member-access base `a.b @ face("top")`', () => {
+    expect(countErrorNodes('structure def F { let t = a.b @ face("top") }')).toBe(0);
+  });
+
+  it('yields an AdHocSelector node', () => {
+    expect(nodeNames('structure def F { let top = post @ face("top") }')).toContain('AdHocSelector');
+  });
+
+  /**
+   * REGRESSION GUARD — the highest-risk interaction in this slice. `a || b`
+   * must stay ONE symbolic OR operator and must not be re-read as a
+   * zero-parameter lambda whose body is `b`. Zero error nodes alone cannot
+   * tell those apart (the lambda reading also has none), so this asserts the
+   * node shape and the operand grouping as well.
+   */
+  it('still parses `constraint a || b` as a single `||` operator', () => {
+    const src = 'structure def F { constraint a || b }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).not.toContain('LambdaExpression');
+    expect(leftOperandOf(src)).toBe('a');
+  });
+
+  it('still parses a chained `a || b || c`', () => {
+    const src = 'structure def F { constraint a || b || c }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).not.toContain('LambdaExpression');
+    expect(leftOperandOf(src)).toBe('a || b');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
