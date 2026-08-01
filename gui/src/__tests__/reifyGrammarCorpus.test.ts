@@ -2152,28 +2152,55 @@ describe('reify.grammar snippets — radix, imaginary and interpolated literals'
     expect(nodeNames(src)).toContain('BinaryExpression');
   });
 
-  // examples/interpolation.ri:25 — `{{`/`}}` are CONTENT, not holes
-  // (scanner.c STRING_CONTENT: "doubled open/close brace → both chars
-  // consumed as content"). Zero holes, so no Interpolation node.
+  /**
+   * examples/interpolation.ri:25 — `{{`/`}}` are CONTENT, not holes (scanner.c
+   * STRING_CONTENT: "doubled open/close brace → both chars consumed as
+   * content"), so there is no `Interpolation` node here.
+   *
+   * DIVERGENCE, RECORDED. Upstream calls this an `interpolated_string` with one
+   * chunk and no holes, because ITS split is on the presence of a BRACE: the
+   * whole-string `token()` has a brace-excluding char class and fails here.
+   * Lezer cannot keep a whole-string token at all — it overlaps the bare `"`
+   * delimiter, and the resulting precedence applies at every quote in the file
+   * (see the `String` rule in reify.grammar for the measured failure) — so both
+   * readings are built from the same two tokens and the split lands on the
+   * presence of a HOLE instead. Both grammars agree on the only semantic claim
+   * being made here, which is that the doubled braces are literal content.
+   */
   it('treats doubled braces `"{{braces}}"` as content, not a hole', () => {
     const src = 'structure def F { let s = "{{braces}}" }';
     expect(countErrorNodes(src)).toBe(0);
     const names = nodeNames(src);
-    expect(names).toContain('InterpolatedString');
+    expect(names).toContain('String');
     expect(names).not.toContain('Interpolation');
   });
 
   /**
-   * REGRESSION GUARD for the `String` token narrowing. Admitting
-   * `InterpolatedString` requires the plain-string token to STOP at a bare
-   * brace (grammar.js:1628-1635 narrows its char class for exactly this
-   * reason). Every brace-free string in the corpus must still take the
-   * single-token fast path, or 300-odd pinned files change shape at once.
+   * REGRESSION GUARD for the node name every other consumer sees. Admitting
+   * interpolation cost the whole-string token, so `String` became a RULE over
+   * `stringQuote`/`StringChunk`. The node name and its span must be unchanged,
+   * or 300-odd pinned files silently change shape and the `String: t.string`
+   * styleTags rule stops matching anything.
    */
-  it('still parses a brace-free string as one plain String node', () => {
+  it('still parses a brace-free string as a String node', () => {
     const names = nodeNames('structure def F { let s = "steel" }');
     expect(names).toContain('String');
     expect(names).not.toContain('InterpolatedString');
+  });
+
+  it('still parses the empty string and the legacy `import "foo.ri"` form', () => {
+    expect(countErrorNodes('structure def F { let s = "" }')).toBe(0);
+    expect(nodeNames('import "foo.ri"')).toContain('String');
+  });
+
+  /**
+   * `StringChunk` admits `{{` and `}}` as units, which forces it ABOVE the
+   * `"{"`/`"}"` delimiters in the token precedence order. This pins that the
+   * doubled-brace units do not leak OUT of string bodies: `}}` closing two
+   * nested blocks at once is ordinary source and must keep parsing clean.
+   */
+  it('still parses adjacent block-closing braces `}}` in ordinary code', () => {
+    expect(countErrorNodes('structure def F { let m = map { 1 => 2 }}')).toBe(0);
   });
 
   it('still parses a string containing an escape and a comment marker', () => {

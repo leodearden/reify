@@ -816,8 +816,13 @@ ConditionalExpression {
 
 primaryExpression {
   QuantityLiteral |
+  RadixQuantityLiteral |
+  ImaginaryQuantityLiteral |
+  RadixLiteral |
+  ImaginaryLiteral |
   Number |
   String |
+  InterpolatedString |
   Boolean |
   FunctionCall |
   MemberAccess |
@@ -847,6 +852,56 @@ MapLiteral {
 
 MapEntry {
   expression "=>" expression
+}
+
+// ── Strings and interpolated strings ────────────────────
+// Transliterated from grammar.js:1628-1670. THE HOLE IS `{expr}`, NOT
+// `${expr}`: examples/interpolation.ri:18 is `"thickness is {t}, doubled is
+// {2 * t}"`. `{{`/`}}` are literal content rather than holes, which is why
+// `StringChunk` admits a doubled brace as one of its units — scanner.c's
+// STRING_CONTENT block consumes a doubled brace and stops at a single one.
+//
+// WHY `String` IS A RULE HERE AND A TOKEN UPSTREAM. tree-sitter keeps a
+// whole-string `token()` as a fast path and falls through to
+// `interpolated_string` when its (brace-excluding) char class fails. Lezer
+// cannot: a whole-string token and the bare `"` delimiter of an interpolated
+// string OVERLAP — one is a prefix of the other — so lezer-generator forces
+// them into one precedence order that applies at EVERY quote. MEASURED: with
+// the whole-string token winning, the CLOSING quote of an interpolated string
+// lexes as the opening of a new string that runs to the next quote in the file,
+// which swallowed four spans of examples/interpolation.ri into error nodes; with
+// the delimiter winning, the whole-string token never fires at all. So both
+// readings are built from the SAME two non-overlapping tokens (`stringQuote`,
+// `StringChunk`) and the split is by rule, not by lexer.
+//
+// The consequence — recorded because it is a real divergence — is that the
+// split is on the presence of a HOLE, not the presence of a brace. Upstream's
+// `"{{braces}}"` is an `interpolated_string` with one chunk and no holes; here
+// it is a `String` with one chunk. Both agree the doubled braces are content.
+//
+// WHY TWO @skip BLOCKS. The string body must NOT skip whitespace or comments —
+// otherwise the spaces between chunks would be dropped from the tree and a
+// `//` inside a string would start a LineComment that eats the closing quote.
+// But a hole holds a whole expression, which DOES need the normal skip set
+// (`{2 * t}`). Declaring `Interpolation` in its own block with the default skip
+// expression restores it inside the braces only. `expression` is reached solely
+// through that block, so the generator does not duplicate the expression
+// grammar for the no-skip context.
+@skip {} {
+  String { stringQuote StringChunk? stringQuote }
+
+  // At least one hole — that requirement is what keeps this decidable against
+  // `String` above with one token of lookahead: after the leading chunk, a
+  // `"` reduces the String and a `{` shifts into the first hole.
+  InterpolatedString {
+    stringQuote StringChunk? Interpolation stringPart* stringQuote
+  }
+
+  stringPart { StringChunk | Interpolation }
+}
+
+@skip { whitespace | LineComment | BlockComment } {
+  Interpolation { "{" expression "}" }
 }
 
 // ── Index access ────────────────────────────────────────
@@ -1035,7 +1090,85 @@ ReservedWord {
   blockCommentRest { ![*] blockCommentRest | "*" blockCommentAfterStar }
   blockCommentAfterStar { "/" | ![/*] blockCommentRest | "*" blockCommentAfterStar }
 
-  @precedence { QuantityLiteral, Number, Identifier }
+  // ORDERING IS EVERYTHING HERE, and it is NOT a tie-break list.
+  //
+  // MEASURED: lezer token precedence OVERRIDES longest match. With
+  // `@precedence { A, B }`, input `0xFFmm` where A matches `0xFF` and B matches
+  // all six characters yields `A[0,4]` plus an ERROR node — B never gets a
+  // chance. (Omitting the declaration is not an option either: the generator
+  // hard-fails with "Overlapping tokens … used in same context".)
+  //
+  // That single fact dictates the pair-wise shape below. A bare `RadixLiteral`
+  // placed above `QuantityLiteral` would break `0xFFmm`, which grammar.js
+  // :1484-1497 accepts via quantity_literal's RADIX ARM; placed below it, it
+  // would never fire at all, because `QuantityLiteral` already matches `0xFF`
+  // as `0` + unit `xFF`. So each narrow literal is declared as a PAIR — the
+  // bare token, plus a companion that matches the same literal WITH a trailing
+  // unit and is aliased back to `QuantityLiteral` — with every companion above
+  // every bare token. The longest reading is then also the highest-precedence
+  // one in each case, and the "precedence beats length" rule stops working
+  // against us.
+  @precedence {
+    RadixQuantityLiteral,
+    ImaginaryQuantityLiteral,
+    RadixLiteral,
+    ImaginaryLiteral,
+    QuantityLiteral,
+    Number,
+    Identifier
+  }
+
+  // RadixLiteral: `0xFF`, `0b1010`, `0xDEAD_BEEF`. Upstream produces these from
+  // the RADIX_LITERAL external token (tree-sitter-reify/src/scanner.c) and
+  // aliases them to `number_literal`; a distinct node name is more useful to an
+  // editor, and both style as `t.number`.
+  //
+  // HEX AND BINARY ONLY. The scanner admits `x`/`X` and `b`/`B` as radix
+  // prefixes and returns false for anything else, so `0o17` is a quantity
+  // literal (`0` + unit `o17`), not an octal literal. `_` separators are part
+  // of the run, but a TRAILING `_` is not — hence `("_"? hexDigit)*` rather
+  // than a separator that may dangle.
+  RadixLiteral { hexRun | binRun }
+
+  hexRun { "0" $[xX] hexDigit ("_"? hexDigit)* }
+  binRun { "0" $[bB] binDigit ("_"? binDigit)* }
+  hexDigit { $[0-9a-fA-F] }
+  binDigit { $[01] }
+
+  // The radix arm of grammar.js:1484-1497's quantity_literal — `0xFFmm` is a
+  // quantity whose value happens to be written in hex. Aliased to
+  // `QuantityLiteral` so callers see ONE node name for one concept.
+  //
+  // WHY THE UNIT CLASSES ARE NARROWED. Upstream's scanner consumes radix digits
+  // GREEDILY and only then lets the unit start, so a unit can never begin with
+  // a character the digit run would have eaten. The hex arm therefore excludes
+  // `[0-9a-fA-F]` from the unit's first character, and BOTH arms exclude `_`:
+  // without that, this higher-precedence token would read `0xDEAD_BEEF` as
+  // `0xDEAD` + unit `_BEEF`, silently turning a corpus-attested radix literal
+  // (examples/radix_literals.ri:17) into a quantity.
+  RadixQuantityLiteral[@name=QuantityLiteral] {
+    hexRun hexUnitStart $[a-zA-Z0-9_]* unitPow? (unitOp unitAtom)* |
+    binRun $[a-zA-Z] $[a-zA-Z0-9_]* unitPow? (unitOp unitAtom)*
+  }
+
+  hexUnitStart { $[g-zG-Z] }
+
+  // ImaginaryLiteral: `4j`, `4.1j`, `1.5e-3j` (grammar.js:1459-1477).
+  ImaginaryLiteral { numberRun "j" }
+
+  // The `j`-unit carve-out, kept faithfully. grammar.js:1462-1467 records that
+  // the scanner refuses the imaginary reading when a word character follows the
+  // `j`, so `2joule` and `jk` stay quantity literals — capital `J` never
+  // reaches here at all, since the imaginary suffix is lowercase-only.
+  ImaginaryQuantityLiteral[@name=QuantityLiteral] {
+    numberRun "j" $[a-zA-Z0-9_]+ unitPow? (unitOp unitAtom)*
+  }
+
+  // Upstream's number_literal: /\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/
+  // (grammar.js:1626). Used for the imaginary literals above and for `Number`.
+  numberRun {
+    @digit+ ("_"? @digit+)* ("." @digit+ ("_"? @digit+)*)? ($[eE] $[+\-]? @digit+ ("_"? @digit+)*)?
+  }
 
   // QuantityLiteral: digits immediately followed by a contiguous UNIT
   // EXPRESSION — `80mm`, `3.5deg`, `7850kg/m^3`, `0.5W/(m*K)`, `1m^-1`.
@@ -1071,9 +1204,30 @@ ReservedWord {
   // committed corpus is exactly this shape.
   unitParen { "(" unitName unitPow? (unitOp unitName unitPow?)* ")" }
 
-  Number { @digit+ ("." @digit+)? }
+  // Widened to upstream's full number_literal shape (separators + exponent).
+  //
+  // HONEST NOTE ON WHAT THIS DOES NOT BUY. `QuantityLiteral` sits ABOVE
+  // `Number` and matches `1_000_000` as `1` + unit `_000_000` (and `1.0e6` as
+  // `1.0` + unit `e6`), so those still lex as quantities — the widening is
+  // inert for them. Lifting `Number` above `QuantityLiteral` is NOT the fix:
+  // precedence beats length there too, so `80mm` would lex as `80` + a dangling
+  // `mm`. The companion-token trick used for radix and imaginary literals above
+  // would work, but its unit class would have to exclude `_`, which turns the
+  // attested `5_myunit` shape into an error node. Left as a divergence,
+  // deliberately, and pinned by a test so it stays visible.
+  Number { numberRun }
 
-  String { '"' (![\\\"] | "\\" _)* '"' }
+  // The two string tokens. They are deliberately NON-OVERLAPPING — see the
+  // `String` rule above for the measured reason a whole-string token cannot
+  // coexist with the `"` delimiter of an interpolated string.
+  stringQuote { '"' }
+
+  // A run of literal bytes inside a string. Doubled braces are CONTENT
+  // (scanner.c STRING_CONTENT), a single brace stops the run and is left to
+  // `Interpolation`. The `@precedence` entry below is what makes that split
+  // work: `{{` must beat the `"{"` delimiter token, while a lone `{` falls
+  // through to it because this token cannot match there at all.
+  StringChunk { (![\\\"{}] | "\\" _ | "{{" | "}}")+ }
 
   Identifier { $[a-zA-Z_] $[a-zA-Z0-9_]* }
 
@@ -1089,6 +1243,9 @@ ReservedWord {
   @precedence { "->", "-" }
   @precedence { "::", ":" }
   @precedence { BlockComment, LineComment, "/" }
+  // Inside a string body, `{{` is content and a single `{` opens a hole. Same
+  // for `}}` versus the closing delimiter of a hole.
+  @precedence { StringChunk, "{", "}" }
 
   // `=>` must win over `=` for the same reason `->` wins over `-`.
   @precedence { "=>", "=" }

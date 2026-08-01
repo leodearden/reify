@@ -100,7 +100,16 @@ export const reifyHighlighting = styleTags({
   // Literals
   Number: t.number,
   QuantityLiteral: t.number,
+  // `0xFF` / `0b1010` and `4.1j`. Node names, not `kw<>` words, so they belong
+  // here rather than in KEYWORDS.
+  RadixLiteral: t.number,
+  ImaginaryLiteral: t.number,
   String: t.string,
+  // An interpolated string is styled per PART, which is the whole point of
+  // giving it a shape: the literal runs are string-coloured and each `{expr}`
+  // hole keeps the ordinary expression styling of its contents.
+  StringChunk: t.string,
+  Interpolation: t.special(t.string),
   Boolean: t.bool,
   // Names
   "Identifier": t.variableName,
