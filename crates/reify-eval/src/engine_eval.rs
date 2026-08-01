@@ -8289,14 +8289,28 @@ impl Engine {
                                 DeterminacyRule::UnconditionalDetermined,
                                 // `CachedServe` denotes eval_cached-PASS provenance, not a cache
                                 // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
-                                // a cold eval within the cached-serve pass. The genuine cache-hit
-                                // reuse arm (~@6399) does NOT route through commit_cell_result
-                                // (it is the deferred preserve-freshness path), so this slug has a
-                                // single emitter and never collides; a §2.6 divergence audit that
-                                // keys on it reads "produced by the eval_cached pass". Kept as
-                                // CachedServe (not ColdEval) per the frozen γ plan — the test that
-                                // pins the "cached-serve" slug lives in the sibling test module,
-                                // outside this amendment's edit scope.
+                                // a cold eval within the cached-serve pass.
+                                //
+                                // task #5238: the slug is deliberately SHARED, not unique to this
+                                // arm. Three sites inside eval_cached now stamp `cached-serve`:
+                                // this miss arm, the migrated Param preserve-freshness re-serve
+                                // (~@6675) and the migrated Let one (~@6884). So a §2.6
+                                // divergence audit must read it only as "produced by the
+                                // eval_cached pass" and must NOT treat it as identifying the miss
+                                // arm; to separate them, key on the commit's `CacheLeg`
+                                // (`CacheLeg::Record` here vs `CacheLeg::RecordWithFreshness` at
+                                // the two re-serves) or on `stats.cache_misses`/`cache_hits` —
+                                // never on the slug alone. The sibling tests pin exactly this
+                                // (tests/engine_eval_commit_migration.rs: the last-event KIND, not
+                                // the provenance slug, separates a re-serve from a miss).
+                                //
+                                // Still true: the Auto-cell pre-seed re-serve (~@6461) does NOT
+                                // route through commit_cell_result and emits no slug at all — see
+                                // its own note for why it stays unmigrated.
+                                //
+                                // Kept as CachedServe (not ColdEval) per the frozen γ plan;
+                                // `TraceSource::as_str` declares these strings stable once
+                                // shipped, so the fix is to this comment, not to the slug.
                                 TraceSource::CachedServe,
                                 trace,
                                 version,
