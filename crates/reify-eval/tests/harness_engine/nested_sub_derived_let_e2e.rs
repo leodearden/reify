@@ -918,6 +918,62 @@ structure def Parent {
     );
 }
 
+/// Task #5867 ACCEPTANCE — a `let` that RELAYS a member of a PRELUDE-typed sub
+/// must carry the member's VALUE, at template scope AND at instance scope.
+///
+/// This is the half [`prelude_typed_nested_sub_resolves_at_instance_scope`]
+/// deliberately did not assert: that test pinned the nested prelude entity's
+/// OWN cells (`Mid.tol.tolerance_band`), because a relaying `let relay =
+/// self.tol.tolerance_band` was at the time typed `Geometry` by the compiler
+/// and evaluated to a `GeometryHandle { kernel_handle: None }` — a compiler-side
+/// defect that bit identically at template scope and so was out of scope for
+/// #5360's eval-side change.
+///
+/// The compiler-side fix is `types::find_template_with_prelude`: sub-target
+/// template resolution is module-first with a prelude fallback, mirroring
+/// `unfold::find_template_in_scope` on the eval side. No eval-side change was
+/// needed — #5360's instance-scope elaboration already handles the scoped-id
+/// rewrite once the compiler emits a value cell instead of a realization.
+///
+/// `tolerance_band = 2mm − 1mm = 1mm` is exact, so all four readings are 0.001
+/// SI. The two-level `Parent.echo` relay is included because it is the shape
+/// that composes both defects: an instance-scope read OF a relaying let.
+#[test]
+fn prelude_typed_sub_member_read_relays_at_both_scopes() {
+    const SOURCE: &str = r#"
+structure def Mid {
+    sub tol = DimensionalTolerance(nominal: 10mm, upper_deviation: 2mm, lower_deviation: 1mm)
+    let relay = self.tol.tolerance_band
+}
+
+structure def Parent {
+    sub m = Mid()
+    let echo = self.m.relay
+}
+"#;
+    let compiled = parse_and_compile_with_stdlib(SOURCE);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    // Control / achievability basis: the prelude-typed sub's own derived let,
+    // already pinned by `prelude_typed_nested_sub_resolves_at_instance_scope`.
+    assert_scalar_si(&result.values, "Mid.tol", "tolerance_band", 0.001);
+
+    // (1) TEMPLATE scope: the relay must be the Scalar, not a GeometryHandle.
+    assert_scalar_si(&result.values, "Mid", "relay", 0.001);
+
+    // (2) INSTANCE scope: the same relay, on the nested instance.
+    assert_scalar_si(&result.values, "Parent.m", "relay", 0.001);
+
+    // (3) Two-level: a parent let reading the child's relaying let.
+    assert_scalar_si(&result.values, "Parent", "echo", 0.001);
+
+    assert_no_error_diagnostics(
+        &result.diagnostics,
+        "prelude_typed_sub_member_read_relays_at_both_scopes",
+    );
+}
+
 /// (t9a) An UNGUARDED SELF-recursive plain sub must be CUT at instance scope,
 /// not recursed into forever.
 ///
