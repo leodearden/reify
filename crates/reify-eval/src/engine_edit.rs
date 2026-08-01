@@ -45,7 +45,7 @@ use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo, RealizationNodeData};
 use crate::journal::{EvalEvent, EventKind, EventPayload};
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -438,6 +438,83 @@ pub(crate) fn diff_realizations(
     diff_nodes(&old_graph.realizations, &new_graph.realizations, |n| {
         n.content_hash
     })
+}
+
+/// Classify every realization in `new_graph` as CHANGED or UNCHANGED by
+/// recomputing its INPUT-cone hash against the post-edit context and
+/// comparing it to the prior node's stored `input_cone_hash`
+/// (selective-realization-eviction PRD task β, #4729).
+///
+/// # One helper, two compare sites (PRD §11.3)
+///
+/// This is the single comparison helper shared by both edit entry points,
+/// parameterised only by *where the prior hash lives*:
+///
+/// - `edit_param` does not rebuild the graph, so the persisting graph is
+///   both `prior_realizations` and `new_graph`.
+/// - `edit_source` does rebuild it, so `prior_realizations` is the OLD
+///   graph's realization map and `new_graph` is the new one.
+///
+/// # Why NOT `RealizationNodeData::content_hash` (design §5.2)
+///
+/// [`diff_realizations`] directly above keys on `content_hash`, which
+/// `EvaluationGraph::from_templates` builds (graph.rs:371-396) as
+/// `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))` — a `Debug`
+/// render of the compiled op IR. A `Primitive{Box, args:[("width",
+/// ValueRef(width))]}` renders identically no matter what `width`
+/// *evaluates to*, so that hash provably never moves on a value-driven
+/// change. Keying eviction on it would compile, run, and silently evict
+/// nothing — the 4317-class trap design §5.2 warns about. This helper
+/// therefore uses the GHR-β INPUT-cone fold instead: the same canonical
+/// `compute_realization_upstream_values_hash_from_ops` (PRD D1 — never a
+/// second fold) that α's stored hash, the value-cell early cutoff, and the
+/// tag-28 in-memory geometry cache key all agree on.
+///
+/// The two are complementary, not alternatives: an ops-level source change
+/// is a real change that the input-cone fold could in principle miss, so
+/// `edit_source` UNIONs this result with `diff_realizations`' changed∪added
+/// sets rather than replacing them.
+///
+/// # Read-only with respect to `input_cone_hash`
+///
+/// This helper never writes the stored hash. That field means "the input
+/// cone **as of the last EXECUTION**" — owned by α's write inside
+/// `execute_realization_ops` and re-stamped by the build-time gate
+/// `refresh_and_gate_demanded_realizations`. Re-stamping it here, at EDIT
+/// time, would make that gate observe `stored == current` for a realization
+/// whose geometry is stale, mark it exempt from re-dispatch, and serve
+/// stale geometry — a textbook 4317-class stale.
+///
+/// # Conservative direction
+///
+/// A missing prior hash — `None` (never executed, demand-pruned, or
+/// un-hydrated) or no prior entry at all (newly added by a recompile) —
+/// classifies as CHANGED (PRD §11.2). Over-eviction is merely wasted work;
+/// under-eviction serves stale geometry, so every uncertain case rounds
+/// towards CHANGED.
+pub(crate) fn compute_changed_realizations(
+    prior_realizations: &PersistentMap<RealizationNodeId, RealizationNodeData>,
+    new_graph: &EvaluationGraph,
+    ctx: &reify_expr::EvalContext<'_>,
+) -> HashSet<RealizationNodeId> {
+    new_graph
+        .realizations
+        .iter()
+        .filter(|(rid, node)| {
+            let current = crate::engine_build::compute_realization_upstream_values_hash_from_ops(
+                &node.operations,
+                ctx,
+            );
+            let prior = prior_realizations
+                .get(*rid)
+                .and_then(|prior_node| prior_node.input_cone_hash);
+            // This single `!=` expresses all three §11.2 cases at once:
+            // a `None` prior — never executed, demand-pruned, or newly
+            // added — can never equal `Some(current)`, so it is CHANGED.
+            prior != Some(current)
+        })
+        .map(|(rid, _)| rid.clone())
+        .collect()
 }
 
 /// Drop-guard for the `pending_warm_seeds` staging map used in `Engine::edit_source`
@@ -7295,6 +7372,14 @@ structure GrowColl {
         graph
     }
 
+    /// Long-lived empty meta-map for the β helper tests.
+    ///
+    /// `eval_ctx_with_meta` borrows the map for the whole lifetime of the
+    /// returned `EvalContext`, so it cannot be a `&HashMap::new()`
+    /// temporary. Same shape as `deps.rs:73`'s `EMPTY_SET`.
+    static NO_META: std::sync::LazyLock<HashMap<String, HashMap<String, String>>> =
+        std::sync::LazyLock::new(HashMap::new);
+
     /// A `ValueMap` binding `cell` to the real number `v`.
     fn values_binding(cell: &ValueCellId, v: f64) -> ValueMap {
         let mut values = ValueMap::default();
@@ -7316,7 +7401,7 @@ structure GrowColl {
         let rid = reify_core::RealizationNodeId::new("E", 0);
         let cell = ValueCellId::new("E", "wa");
         let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &HashMap::new());
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
 
         // Derive the "as of last execution" hash from the canonical fold
         // over the very same ctx, exactly as α's production write does.
@@ -7346,7 +7431,7 @@ structure GrowColl {
 
         // "Last execution" was at wa = 10.
         let old_values = values_binding(&cell, 10.0);
-        let old_ctx = crate::eval_ctx_with_meta(&old_values, &[], &HashMap::new());
+        let old_ctx = crate::eval_ctx_with_meta(&old_values, &[], &NO_META);
         let probe = realization_graph_reading_cell(&rid, &cell, None);
         let stored = compute_realization_upstream_values_hash_from_ops(
             &probe.realizations.get(&rid).unwrap().operations,
@@ -7355,7 +7440,7 @@ structure GrowColl {
 
         // The edit moved wa to 20.
         let new_values = values_binding(&cell, 20.0);
-        let new_ctx = crate::eval_ctx_with_meta(&new_values, &[], &HashMap::new());
+        let new_ctx = crate::eval_ctx_with_meta(&new_values, &[], &NO_META);
 
         // Premise lock: the fold genuinely moves with the context. Without
         // this the test could pass for the wrong reason (e.g. a fold that
@@ -7387,7 +7472,7 @@ structure GrowColl {
         let rid = reify_core::RealizationNodeId::new("E", 0);
         let cell = ValueCellId::new("E", "wa");
         let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &HashMap::new());
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
 
         let graph = realization_graph_reading_cell(&rid, &cell, None);
         let changed = super::compute_changed_realizations(&graph.realizations, &graph, &ctx);
@@ -7410,7 +7495,7 @@ structure GrowColl {
         let rid = reify_core::RealizationNodeId::new("E", 0);
         let cell = ValueCellId::new("E", "wa");
         let values = values_binding(&cell, 10.0);
-        let ctx = crate::eval_ctx_with_meta(&values, &[], &HashMap::new());
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
 
         // The new graph's node even carries a matching stored hash — the
         // point is that the PRIOR map is what is consulted, and it is empty.
