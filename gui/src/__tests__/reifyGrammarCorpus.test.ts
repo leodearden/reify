@@ -1796,6 +1796,219 @@ describe('reify.grammar snippets — match, enum, variants', () => {
 });
 
 /**
+ * The remaining declaration families: `field def`, `purpose`, `unit`, the
+ * top-level `type` alias, `default`, the `meta` block, and the `#pragma` /
+ * `@annotation` pair.
+ *
+ * THE KEYWORD-PROMOTION RISK IS THE WHOLE STORY IN THIS SLICE. Seven of the
+ * words involved are attested as ORDINARY IDENTIFIERS in committed `.ri` —
+ * `source` 37 times (`connect source -> sink` alone accounts for most),
+ * `offset` 8, `field:` 8 as an argument label, `unit:` 6 as an argument label,
+ * `composed` and `imported` as `let`/`sub` names. Every one of those has to
+ * stay a legal name, which is what `ekw<>`/`@extend` is for, and each gets a
+ * regression assertion at the bottom.
+ *
+ * Two of them — `field` and `unit` — are in the ReservedWord @specialize list
+ * TODAY, so their label form does not parse today either. Promoting them
+ * contextually is a strict gain, not merely a non-regression.
+ */
+describe('reify.grammar snippets — remaining declaration families', () => {
+  // ── Field definitions ─────────────────────────────────
+  // Corpus-attested: examples/fea_shell_channels.ri:24-26,
+  // examples/fields/fn_field.ri. The analytical source body is a LAMBDA, so
+  // this arm depends on the lambda slice already being in place.
+  it('parses an analytical field definition', () => {
+    expect(
+      countErrorNodes('field def top_layer : Real -> Real { source = analytical { |x| 100.0 } }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/differential_field_ops.ri:44-52 — config
+  // entries are newline-separated, NOT comma-separated (grammar.js:339-342
+  // spells it `repeat($.field_config_entry)`).
+  it('parses a sampled field definition with config entries', () => {
+    expect(
+      countErrorNodes(
+        'field def quadratic : Length -> Real { source = sampled { grid = "RegularGrid1" spacing = 1.0m data = [0.0, 1.0, 4.0] } }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/fields/composed_stiffness.ri:18.
+  it('parses a composed field definition', () => {
+    expect(
+      countErrorNodes(
+        'field def cs : Real -> Real { source = composed { |p| 2.0 * p + 1.0 } }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/imported_field/openvdb_stress.ri:23.
+  it('parses an imported field definition', () => {
+    expect(
+      countErrorNodes('field def s : Real -> Real { source = imported { format = OpenVDB } }'),
+    ).toBe(0);
+  });
+
+  it('yields a FieldDefinition node', () => {
+    expect(
+      nodeNames('field def f : Real -> Real { source = analytical { |x| 1.0 } }'),
+    ).toContain('FieldDefinition');
+  });
+
+  // ── Purpose declarations ──────────────────────────────
+  // Corpus-attested: examples/determinacy_intrinsics.ri:28,
+  // examples/integration_full_v01.ri:355.
+  it('parses a purpose declaration with one param', () => {
+    expect(
+      countErrorNodes('purpose design_review(subject : Structure) { constraint 1mm > 0mm }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/ambient_default_material/ambient_default_surface.ri:41
+  // — an empty parameter list.
+  it('parses a purpose declaration with no params', () => {
+    expect(countErrorNodes('purpose Exploration() { constraint 1mm > 0mm }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/integration_full_v01.ri:371.
+  it('parses `pub purpose weight_target(part : Structure) { … }`', () => {
+    expect(countErrorNodes('purpose weight_target(part : Structure) { minimize part.mass }')).toBe(
+      0,
+    );
+    expect(countErrorNodes('pub purpose w(part : Structure) { minimize part.mass }')).toBe(0);
+  });
+
+  it('yields a PurposeDeclaration node', () => {
+    expect(nodeNames('purpose p(s : Structure) { constraint 1mm > 0mm }')).toContain(
+      'PurposeDeclaration',
+    );
+  });
+
+  // ── Unit declarations ─────────────────────────────────
+  // Corpus-attested: examples/integration_full_v01.ri:33, examples/m9_combined.ri:46.
+  it('parses a unit declaration `unit mil : Length = 0.0000254`', () => {
+    expect(countErrorNodes('unit mil : Length = 0.0000254')).toBe(0);
+  });
+
+  it('parses a unit declaration with a quantity conversion', () => {
+    expect(countErrorNodes('unit inch : Length = 25.4mm')).toBe(0);
+  });
+
+  // grammar.js:432-434 — both the conversion and the offset are optional.
+  it('parses the bodyless and offset unit forms (normative, unattested)', () => {
+    expect(countErrorNodes('unit furlong : Length')).toBe(0);
+    expect(countErrorNodes('unit degF : Temperature = 0.5556 offset 255.372')).toBe(0);
+  });
+
+  // ── Type aliases ──────────────────────────────────────
+  // Corpus-attested: examples/integration_corner_cases.ri:23-25,
+  // examples/integration_full_v01.ri:28.
+  it('parses a dimensional type alias `type Pressure = Force / Area`', () => {
+    expect(countErrorNodes('type Pressure = Force / Area')).toBe(0);
+    expect(countErrorNodes('type Velocity = Length / Time')).toBe(0);
+  });
+
+  it('parses a multi-operator and a parameterized type alias', () => {
+    expect(countErrorNodes('type Power = Force * Length / Time')).toBe(0);
+    expect(countErrorNodes('type Stress<T> = Force / Area')).toBe(0);
+  });
+
+  // ── Default declarations ──────────────────────────────
+  // Corpus-attested: tests/prd-gate/fixtures/purpose_nested_structure.ri:14
+  // (top level) and .../ambient_default_surface.ri:30,42 (nested in a purpose).
+  it('parses a default declaration `default Material = steel`', () => {
+    expect(countErrorNodes('default Material = steel')).toBe(0);
+  });
+
+  it('parses a default declaration whose value is a call', () => {
+    expect(
+      countErrorNodes('default Material = Material(name: "steel", density: 7850kg/m^3)'),
+    ).toBe(0);
+  });
+
+  it('parses a default declaration inside a purpose body', () => {
+    expect(countErrorNodes('purpose E() { default Material = aluminum }')).toBe(0);
+  });
+
+  // ── Meta blocks ───────────────────────────────────────
+  // Corpus-attested: examples/integration_full_v01.ri:120-123,
+  // examples/m9_combined.ri:54. Comma-separated, unlike the field config
+  // entries above.
+  it('parses a meta block', () => {
+    expect(
+      countErrorNodes('structure def F { meta { project = "integration-test", version = "0.1" } }'),
+    ).toBe(0);
+  });
+
+  // ── Pragmas and annotations ───────────────────────────
+  // Corpus-attested: examples/integration_full_v01.ri:22-23,
+  // examples/multi_kernel/pragma_override.ri:21,
+  // examples/conditional_compilation/main.ri:3.
+  it('parses the attested pragma forms', () => {
+    expect(countErrorNodes('#version(0.1)')).toBe(0);
+    expect(countErrorNodes('#precision(0.001m)')).toBe(0);
+    expect(countErrorNodes('#kernel(occt)')).toBe(0);
+    expect(countErrorNodes('#cfg(target = "linux")')).toBe(0);
+  });
+
+  it('parses a bare pragma with no argument list (normative, unattested)', () => {
+    expect(countErrorNodes('#experimental')).toBe(0);
+  });
+
+  // Corpus-attested: examples/integration_full_v01.ri:294-318 — an annotation
+  // preceding a structure definition.
+  it('parses an annotation preceding a declaration', () => {
+    expect(countErrorNodes('@test structure TestHeightPositive { constraint 1mm > 0mm }')).toBe(0);
+  });
+
+  /**
+   * REGRESSION GUARD — every word this slice promotes that is ALSO attested as
+   * an ordinary identifier. `source` is the sharpest case: `connect source ->
+   * sink` is a committed connect statement, so a context-free promotion would
+   * break the topology slice that landed immediately before this one.
+   */
+  it('keeps `source`, `offset`, `composed` and `imported` as ordinary identifiers', () => {
+    expect(countErrorNodes('structure def F { connect source -> sink }')).toBe(0);
+    expect(countErrorNodes('structure def F { param offset : Length = 1mm }')).toBe(0);
+    expect(countErrorNodes('structure def F { let composed = 1mm }')).toBe(0);
+    expect(countErrorNodes('structure def F { sub imported : Part }')).toBe(0);
+    expect(countErrorNodes('structure def F { let x = f(source: a, offset: b) }')).toBe(0);
+  });
+
+  /**
+   * `field` and `unit` are in the ReservedWord @specialize list TODAY, so
+   * their attested argument-label form (`field:` 8 times, `unit:` 6) does not
+   * parse today. Promoting them CONTEXTUALLY has to fix that, not merely
+   * preserve it — which is why this is an assertion and not a comment.
+   */
+  it('makes `field` and `unit` usable as argument labels', () => {
+    expect(countErrorNodes('structure def F { let x = f(field: a, unit: b) }')).toBe(0);
+  });
+
+  /**
+   * REGRESSION GUARD — the `@` collision. An annotation opens a declaration
+   * with `@`; the ad-hoc selector uses `@` INFIX after a complete expression.
+   * The two never share a parse state, and this pins that they still do not.
+   */
+  it('still parses an ad-hoc selector after adding annotations', () => {
+    expect(countErrorNodes('structure def F { let top = post @ face("top") }')).toBe(0);
+    expect(nodeNames('structure def F { let top = post @ face("top") }')).toContain('AdHocSelector');
+  });
+
+  /**
+   * REGRESSION GUARD — `type` is already a `kw<>` for the member-level
+   * AssociatedType (`type Item = Length` inside a trait). The top-level alias
+   * reuses the same keyword with a different RHS grammar, so both readings
+   * must survive.
+   */
+  it('still parses a member-level associated type after adding the top-level alias', () => {
+    expect(countErrorNodes('trait T { type Item }')).toBe(0);
+    expect(countErrorNodes('structure def F { type Material = Steel }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
