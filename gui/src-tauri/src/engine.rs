@@ -2491,10 +2491,24 @@ impl EngineSession {
         // Mirrors the compile_failure clear immediately above.
         self.last_reload_error = None;
         // Task #5338: drop the geometry-derived value retention on every recompile.
-        // NARROWED to `FilePathUpdate::Set` in a follow-up step — clearing here
-        // unconditionally re-opens the delta gap on `update_source` (the watcher and
-        // the editor's dirty-buffer command) and `set_parameter`, which recompile the
-        // SAME file and are precisely the rebuilds whose delta omits these cells.
+        //
+        // Deliberately UNCONDITIONAL, i.e. not narrowed to `FilePathUpdate::Set`.
+        // Clearing here cannot re-open the delta gap, because a recompile also
+        // resets the gate that opens it: `input_cone_hash` is a field on the
+        // realization node inside `eval_state.snapshot.graph` (reify-eval
+        // graph.rs), and `check()` replaces `eval_state` wholesale, so every
+        // recompile resets all hashes to `None`. The first selective tessellate
+        // after ANY recompile therefore always dispatches and repopulates this
+        // cache from a complete delta; only the SECOND and later ones can be
+        // hash-exempt, and no `commit_state` runs between them.
+        //
+        // Narrowing to `Set` would, by contrast, be actively unsafe:
+        // `load_from_source` also commits with `Preserve` (it has no file on
+        // disk) and can carry an entirely DIFFERENT module, whose entities may
+        // collide with the previous module's on `ValueCellId` (`entity+member`) —
+        // two files each declaring a `Body : Rigid` both key `Body.mass`. The
+        // unconditional clear is what stops one module's mass from being
+        // re-surfaced onto another's.
         self.geometry_derived_cache.clear();
     }
 
