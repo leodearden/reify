@@ -44,17 +44,23 @@ trait Port {
 // ── Port-frame structure ──────────────────────────────────────────────────────
 
 // A coordinate frame for a port attachment point in 3-D space.
-// All four members are Vec3<Length> (= Vector3<Length>; uniform, per PRD §4 decision 1).
+// The four members are NOT uniform — each takes the quantity slot its meaning
+// requires (task 5848):
+//   origin  — a POSITION,  so Vec3<Length>.
+//   x/y/z_axis — DIRECTIONS, so Vec3<Dimensionless>: a unit vector is
+//                genuinely dimensionless.
 // Shape mirrors constitutive.ri MaterialFrame (origin + 3 axes, axes-as-vectors
-// convention), but uses Vec3<Length> for origin rather than Point3<Length>.
+// convention), but uses Vec3<..> for origin rather than Point3<Length>.
 // LocatedPort.frame uses this type so the compiler can route spatial-port
-// connections through the existing asymmetric-LocatedPort warning (connect.rs).
-// Alias Vec3<Length> seeded from trajectory.ri (topo pos 11, before ports pos 16).
+// connections through the existing asymmetric-LocatedPort warning (connect.rs);
+// that routing keys off the Frame3 type NAME, not its members' quantity slots,
+// so it is unaffected by the split above.
+// Alias Vec3<Q> seeded from trajectory.ri (topo pos 11, before ports pos 16).
 structure def Frame3 {
     param origin : Vec3<Length>
-    param x_axis : Vec3<Length>
-    param y_axis : Vec3<Length>
-    param z_axis : Vec3<Length>
+    param x_axis : Vec3<Dimensionless>
+    param y_axis : Vec3<Dimensionless>
+    param z_axis : Vec3<Dimensionless>
 }
 
 // ── Spatial port traits ───────────────────────────────────────────────────────
