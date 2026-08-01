@@ -1,5 +1,7 @@
     use super::*;
-    use reify_compiler::{CompiledGeometryOp, GeomRef, PatternKind, SweepKind, TransformKind};
+    use reify_compiler::{
+        CompiledGeometryOp, CurveKind, GeomRef, PatternKind, SweepKind, TransformKind,
+    };
     use reify_ir::GeometryHandleId;
 
     /// Helper: build a CompiledExpr literal from a constant f64.
@@ -6517,6 +6519,532 @@
             "the op must fail FAST on the origin — the degenerate-axis check is \
              never reached, so no axis diagnostic may be emitted alongside it; \
              got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests: `line_segment`'s two ENDPOINTS are LENGTH-semantic (task 5623, R1)
+    //
+    // `line_segment(x1, y1, z1, x2, y2, z2)` has NO dimensionless neighbour —
+    // every one of its six args is a point coordinate, so all six are gated and
+    // the function's `f64_arg` closure disappears entirely.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `line_segment` op from its six endpoint components.
+    fn line_segment_with_endpoints(
+        x1: reify_ir::CompiledExpr,
+        y1: reify_ir::CompiledExpr,
+        z1: reify_ir::CompiledExpr,
+        x2: reify_ir::CompiledExpr,
+        y2: reify_ir::CompiledExpr,
+        z2: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::LineSegment,
+            args: vec![
+                ("x1".into(), x1),
+                ("y1".into(), y1),
+                ("z1".into(), z1),
+                ("x2".into(), x2),
+                ("y2".into(), y2),
+                ("z2".into(), z2),
+            ],
+        }
+    }
+
+    /// The six endpoint components in gate order — the single source of truth
+    /// for the per-component loops below, so a new component cannot be added to
+    /// the fixture without also being swept.
+    const LINE_SEGMENT_COMPONENTS: [&str; 6] = ["x1", "y1", "z1", "x2", "y2", "z2"];
+
+    /// A BARE (dimensionless) endpoint component must be REJECTED: an endpoint
+    /// is a point in space, so a bare `10` would place it 10 metres out instead
+    /// of 10 mm.
+    ///
+    /// Run once per component — all SIX are separate reads, and a single-arg
+    /// test would not notice five of them regressing to the bare-accepting
+    /// `f64_arg` path.
+    #[test]
+    fn compile_geometry_op_line_segment_bare_component_rejected() {
+        let values = ValueMap::new();
+
+        for bare in LINE_SEGMENT_COMPONENTS {
+            let component = |name: &str| -> reify_ir::CompiledExpr {
+                if name == bare {
+                    literal_f64(0.0)
+                } else {
+                    literal_length(0.0)
+                }
+            };
+            let op = line_segment_with_endpoints(
+                component("x1"),
+                component("y1"),
+                component("z1"),
+                component("x2"),
+                component("y2"),
+                component("z2"),
+            );
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) line_segment endpoint component {bare} must \
+                 drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` endpoint component must be rejected
+    /// exactly like a bare `Value::Real` — `accept_arg`'s dimension check is
+    /// strict. The DIMENSIONLESS arm is the likeliest silent-regression path:
+    /// eval arithmetic can collapse to a dimensionless `Scalar` rather than a
+    /// `Real`, which would sneak past a `Real`-shaped guard.
+    #[test]
+    fn compile_geometry_op_line_segment_wrong_dimension_component_rejected() {
+        let values = ValueMap::new();
+
+        for (label, x1_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op = line_segment_with_endpoints(
+                x1_expr,
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar line_segment endpoint component must drop the \
+                 op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("x1") && d.message.contains("Length")),
+                "a diagnostic must name the x1 arg and the Length requirement for \
+                 a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE endpoint component must drop the op
+    /// and say 'non-finite Length' specifically — the value IS a Length, so the
+    /// wrong-dimension wording would misdescribe it.
+    #[test]
+    fn compile_geometry_op_line_segment_non_finite_length_component_rejected() {
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = line_segment_with_endpoints(
+                literal_length(si),
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+                literal_length(0.0),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length line_segment endpoint component must drop the \
+                 op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("x1") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length'; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Six DISTINCT Length endpoint components are accepted and land in their
+    /// own IR slots. Distinctness is load-bearing twice over: it pins the
+    /// x1/y1/z1 → x2/y2/z2 ORDERING (an all-zero fixture cannot see a swapped
+    /// x1/x2 or a transposed endpoint), and the SI values chosen are exactly
+    /// what the bare form would have misread as 12/34/56/78/90/11 metres.
+    #[test]
+    fn compile_geometry_op_line_segment_length_components_accepted() {
+        let values = ValueMap::new();
+
+        let op = line_segment_with_endpoints(
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::LineSegment {
+                x1,
+                y1,
+                z1,
+                x2,
+                y2,
+                z2,
+            }) => {
+                assert_eq!([x1, y1, z1], [0.012, 0.034, 0.056]);
+                assert_eq!([x2, y2, z2], [0.078, 0.090, 0.011]);
+            }
+            other => panic!(
+                "expected Ok(LineSegment) for six Length endpoint components, \
+                 got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "six Length endpoint components are the fully clean path and must \
+             emit NO diagnostic at all; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Tests: `helix`'s radius/pitch/height are all LENGTH-semantic (task 5623, R1)
+    //
+    // Like `line_segment`, `helix` has NO dimensionless neighbour — a pitch is
+    // a rise per turn (a length) and a height is a length, so all three args
+    // are gated and the `f64_arg` closure disappears.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `helix` op from its three length components.
+    fn helix_with_components(
+        radius: reify_ir::CompiledExpr,
+        pitch: reify_ir::CompiledExpr,
+        height: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind: CurveKind::Helix,
+            args: vec![
+                ("radius".into(), radius),
+                ("pitch".into(), pitch),
+                ("height".into(), height),
+            ],
+        }
+    }
+
+    /// The three helix components in gate order.
+    const HELIX_COMPONENTS: [&str; 3] = ["radius", "pitch", "height"];
+
+    /// A BARE (dimensionless) helix component must be REJECTED — a bare `10`
+    /// pitch would be read as a 10 METRE rise per turn instead of 10 mm.
+    ///
+    /// Run once per component: all three are separate reads.
+    #[test]
+    fn compile_geometry_op_helix_bare_component_rejected() {
+        let values = ValueMap::new();
+
+        for bare in HELIX_COMPONENTS {
+            let component = |name: &str| -> reify_ir::CompiledExpr {
+                if name == bare {
+                    literal_f64(1.0)
+                } else {
+                    literal_length(1.0)
+                }
+            };
+            let op = helix_with_components(
+                component("radius"),
+                component("pitch"),
+                component("height"),
+            );
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) helix component {bare} must drop the op, \
+                 got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` helix component must be rejected
+    /// exactly like a bare `Value::Real`. The ANGLE arm is a plausible slip on
+    /// a helix in particular (a "twist per turn" reading of `pitch`); the
+    /// DIMENSIONLESS arm covers eval arithmetic collapsing to a dimensionless
+    /// `Scalar` rather than a `Real`.
+    #[test]
+    fn compile_geometry_op_helix_wrong_dimension_component_rejected() {
+        let values = ValueMap::new();
+
+        for (label, radius_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op =
+                helix_with_components(radius_expr, literal_length(1.0), literal_length(1.0));
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar helix radius must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("radius") && d.message.contains("Length")),
+                "a diagnostic must name the radius arg and the Length requirement \
+                 for a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE helix component must drop the op and
+    /// say 'non-finite Length' specifically — the value IS a Length.
+    #[test]
+    fn compile_geometry_op_helix_non_finite_length_component_rejected() {
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = helix_with_components(
+                literal_length(si),
+                literal_length(1.0),
+                literal_length(1.0),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length helix radius must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("radius") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length'; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Three DISTINCT Length components are accepted into their own IR slots —
+    /// distinctness pins the radius/pitch/height ORDERING, which an all-equal
+    /// fixture cannot see.
+    #[test]
+    fn compile_geometry_op_helix_length_components_accepted() {
+        let values = ValueMap::new();
+
+        let op = helix_with_components(
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Helix {
+                radius,
+                pitch,
+                height,
+            }) => {
+                assert_eq!([radius, pitch, height], [0.012, 0.034, 0.056]);
+            }
+            other => panic!(
+                "expected Ok(Helix) for three Length components, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "three Length components are the fully clean path and must emit NO \
+             diagnostic at all; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test: the SWEEP BOUNDARY of task 5623's R1 triage
+    // ---------------------------------------------------------------------------
+
+    /// NEGATIVE LOCK on the triage decision that sets this task's position
+    /// count. `extrude_infinite`'s `dx`/`dy`/`dz` look exactly like
+    /// `translate`'s — same names, same neighbourhood, same shape — but they
+    /// are a dimensionless DIRECTION: `sweep_extrude_infinite` magnitude-checks
+    /// them and stores them into `ExtrudeInfinite.axis`, never as a length.
+    /// They MUST stay on the bare-accepting `eval_named_arg_f64` path.
+    ///
+    /// Excluding this triple is precisely what makes R1 land on 22 gated
+    /// positions rather than 25, so it is the triage decision most worth
+    /// executable protection — an over-eager sweep that gated it would make
+    /// every `extrude_infinite` call in the corpus fail. Green before and after
+    /// this task by design.
+    #[test]
+    fn compile_geometry_op_extrude_infinite_bare_direction_still_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let direction_lit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String("positive".to_string()),
+            reify_core::Type::String,
+        );
+        let op = CompiledGeometryOp::Sweep {
+            kind: SweepKind::ExtrudeInfinite,
+            profiles: vec![GeomRef::Step(0)],
+            args: vec![
+                // A dimensionless unit vector — bare on purpose.
+                ("dx".into(), literal_f64(0.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(1.0)),
+                ("direction".into(), direction_lit),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::ExtrudeInfinite {
+                profile,
+                axis,
+                both,
+            }) => {
+                assert_eq!(profile, GeometryHandleId(42));
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+                assert!(!both);
+            }
+            other => panic!(
+                "extrude_infinite's dx/dy/dz are a dimensionless DIRECTION and \
+                 must keep accepting bare values — task 5623 gates 22 positions, \
+                 and these three are deliberately not among them; got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a bare dimensionless extrude_infinite direction must emit NO \
+             diagnostic; got: {:?}",
             diagnostics
         );
     }
