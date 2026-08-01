@@ -592,6 +592,7 @@ const EXPECTED_CLEAN = [
   'examples/affine_tapered_spacer.ri',
   'examples/appearance_viewport_egress.ri',
   'examples/best_practices/bolt_circle.ri',
+  'examples/best_practices/clearance_oracle.ri',
   'examples/best_practices/hollow_primitives.ri',
   'examples/best_practices/negation.ri',
   'examples/best_practices/symmetry_mirror.ri',

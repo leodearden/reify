@@ -39,6 +39,10 @@ export const KEYWORDS = [
   'pub',
   'set',
   'map',
+  'not',
+  'and',
+  'or',
+  'implies',
 ];
 
 export const reifyHighlighting = styleTags({
