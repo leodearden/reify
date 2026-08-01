@@ -411,6 +411,10 @@ fn live_counts_are_within_the_committed_baseline() {
     // `conn`, `jc` and `task_metadata` are inert placeholders: PDIAG is a
     // purely structural lane (ls_files + working-tree reads), touching neither
     // the task DB nor jcodemunch.
+    use reify_audit::{AuditContext, MockJCodemunchOps};
+    use rusqlite::Connection;
+    use std::collections::HashMap;
+
     let git = reify_audit::RealGitOps::new(root.clone());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();

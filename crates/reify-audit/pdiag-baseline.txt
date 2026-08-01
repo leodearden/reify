@@ -74,7 +74,7 @@ crates/reify-eval/src/relate_solve.rs 3
 crates/reify-eval/src/shell_extract_compute.rs 6
 crates/reify-eval/src/structural_query.rs 3
 crates/reify-eval/src/tolerance_combine.rs 1
-crates/reify-eval/src/unfold.rs 8
+crates/reify-eval/src/unfold.rs 10
 crates/reify-shell-extract/src/result.rs 2
 crates/reify-stdlib/src/dfm.rs 12
 crates/reify-stdlib/src/geometry.rs 2
