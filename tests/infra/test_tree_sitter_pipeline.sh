@@ -973,6 +973,84 @@ test_freshness_check_verdicts() {
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
+
+    # ---- (8) an UNAVAILABLE dir sorting FIRST must not suppress a stale sibling ----
+    # An UNAVAILABLE stamp is a caveat about ONE archive, never a verdict about the
+    # run. Degrading the whole scan on it re-creates, inside the guard, exactly the
+    # false GREEN this task exists to close: a genuinely stale sibling goes
+    # unexamined and the gate passes against an archive nothing vouches for. It is
+    # also silent and permanent — dead fingerprint dirs are never rebuilt, so the
+    # stamp is never rewritten, and target/ is CoW-cloned into every lane seeded
+    # from that base. build.rs's sha256_of returns None on ANY subprocess failure
+    # (fork pressure, EMFILE), not just a missing binary, so the sentinel is
+    # reachable on the ordinary Linux build host.
+    #
+    # ts_archives sorts with `LC_ALL=C sort -u`, so the fingerprint-dir names pick
+    # the traversal order. cccc... < dddd..., so the unattestable dir is met FIRST:
+    # this pins that the scan does not ABORT before reaching the stale one.
+    mk_ts_fixture "$tmp/t_unavail_first" "tree-sitter-reify-cccccccccccccccc" "UNAVAILABLE"
+    mk_ts_fixture "$tmp/t_unavail_first" "tree-sitter-reify-dddddddddddddddd" "$altered"
+    run_ts_freshness check "$tmp/t_unavail_first"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check exited $TS_FRESHNESS_RC (expected 1) with an"
+        echo "  UNAVAILABLE dir sorting BEFORE a genuinely stale one."
+        echo "  One unattestable archive must not convert the run into a global skip."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"tree-sitter-reify-dddddddddddddddd"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the stale dir (dddd...) is not named — the scan stopped"
+        echo "  at the unattestable dir (cccc...) instead of continuing past it."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    # The unattestable dir must still be REPORTED, as a labelled per-dir SKIP: it is
+    # unproven, not proven-fresh, and a reader has to be able to act on it.
+    local skip_line=""
+    while IFS= read -r line; do
+        [[ "$line" == *"tree-sitter-reify-cccccccccccccccc"* ]] && skip_line="$line"
+    done <<< "$TS_FRESHNESS_OUT"
+    if [ -z "$skip_line" ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the unattestable dir (cccc...) is not mentioned at all."
+        echo "  Silently dropping it would report FRESH-or-STALE over an archive whose"
+        echo "  provenance was never established."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$skip_line" != *"SKIP"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the unattestable dir's line is not labelled SKIP"
+        echo "  line: <<<$skip_line>>>"
+        return 1
+    fi
+
+    # ---- (9) an UNAVAILABLE dir sorting LAST must not discard an accumulated stale ----
+    # aaaa... < eeee..., so the stale dir is met FIRST and is already in the stale
+    # set when the unattestable one is reached. This pins the OTHER half of the
+    # defect: a whole-scan bail-out also THROWS AWAY everything accumulated so far.
+    # Both orderings are required — either alone leaves half the bug untested.
+    mk_ts_fixture "$tmp/t_unavail_last" "tree-sitter-reify-aaaaaaaaaaaaaaaa" "$altered"
+    mk_ts_fixture "$tmp/t_unavail_last" "tree-sitter-reify-eeeeeeeeeeeeeeee" "UNAVAILABLE"
+    run_ts_freshness check "$tmp/t_unavail_last"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check exited $TS_FRESHNESS_RC (expected 1) with an"
+        echo "  UNAVAILABLE dir sorting AFTER a genuinely stale one."
+        echo "  A stale archive already found must not be discarded by a later"
+        echo "  unattestable sibling."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"tree-sitter-reify-aaaaaaaaaaaaaaaa"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the stale dir (aaaa...) is not named — its already-"
+        echo "  accumulated stale entry was dropped when the scan hit eeee...."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
 }
 
 test_freshness_ensure_forces_and_is_idempotent() {
@@ -1178,6 +1256,48 @@ test_freshness_ensure_forces_and_is_idempotent() {
         echo "  ASSERTION FAILED: ensure forced with nothing built (nothing built = nothing stale)"
         echo "  --- expected (2020 stamp) ---"; echo "$baseline"
         echo "  --- actual ---"; mtimes_now
+        return 1
+    fi
+
+    # ---- (8) an UNAVAILABLE dir must not suppress the REPAIR of a stale sibling ----
+    # The operationally load-bearing half of the scoped-degradation fix: check
+    # merely reports, but ensure is what actually cures the stale archive before
+    # the cargo leaves run. If one unattestable dir degrades the whole scan, ensure
+    # returns a global SKIP and repairs NOTHING — the stale archive survives into
+    # the gate. cccc... sorts before dddd..., so the unattestable dir is met first.
+    #
+    # Fresh target dir => no ledger => the force is genuinely due here. The
+    # fingerprint is recomputed rather than reusing $fp, which case (5) invalidated
+    # by appending to scanner.c.
+    local fp3 altered3
+    fp3=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    if [ "${fp3:0:1}" = "0" ]; then altered3="1${fp3:1}"; else altered3="0${fp3:1}"; fi
+
+    mk_ts_fixture "$tmp/target_unavail" "tree-sitter-reify-cccccccccccccccc" "UNAVAILABLE"
+    mk_ts_fixture "$tmp/target_unavail" "tree-sitter-reify-dddddddddddddddd" "$altered3"
+    stamp_old "$ts"
+    run_ts_freshness ensure "$tmp/target_unavail" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure past an UNAVAILABLE dir exited $TS_FRESHNESS_RC (expected 0)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure did not report a force with one unattestable dir"
+        echo "  present alongside a genuinely stale one — it degraded the whole run to a"
+        echo "  skip instead of scoping the degradation to that one archive."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if ! all_recent; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure did not bump the watched inputs' mtimes, so the"
+        echo "  stale archive stands and cargo will link it unchanged. An unattestable"
+        echo "  sibling must never disable the repair."
+        echo "  --- mtimes ---"; mtimes_now
+        echo "$TS_FRESHNESS_OUT"
         return 1
     fi
 }
