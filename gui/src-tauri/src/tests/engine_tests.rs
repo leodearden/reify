@@ -17,7 +17,8 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, lit
 use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
 use crate::mcp_context::TauriToolContext;
 use crate::tests::test_helpers::{
-    find_moi_principal_constraint, rigid_mass_props_fixture_path, rigid_mass_props_session,
+    assert_rigid_mass_props_determined, find_moi_principal_constraint,
+    rigid_mass_props_fixture_path, rigid_mass_props_session, visible_realization_keys,
 };
 use crate::types::EntityTreeNode;
 
@@ -17490,6 +17491,78 @@ fn rigid_mass_props_stay_determined_after_warm_edit() {
          warm edit; got status={:?}",
         pd.status
     );
+}
+
+/// Task #5338 (step-1, RED): a `: Rigid` body's auto-derived mass-property cells
+/// must survive REPEATED `build_gui_state` rebuilds under the frontend's
+/// SELECTIVE demand posture, with no intervening edit.
+///
+/// This mirrors production argv-launch exactly. `main()` loads the file at
+/// startup (cold, `full_scope`), the frontend then boots, calls `sync_demand`
+/// with the visible realization keys — flipping demand SELECTIVE and `full_scope`
+/// OFF — and calls `get_initial_state`, which rebuilds. That second build is the
+/// state the GUI actually paints.
+///
+/// RED against the pre-fix panel, at rebuild #2 or later: the first SELECTIVE
+/// tessellate stores the realization's `input_cone_hash`
+/// (engine_build.rs `refresh_and_gate_demanded_realizations`), so every
+/// subsequent one finds it HASH-EXEMPT, excludes it from the seed, never calls
+/// `execute_realization_ops`, never hydrates a
+/// `Value::GeometryHandle { kernel_handle: Some(..) }`, and therefore emits
+/// `Undef` for all four mass-prop cells in `TessellateResult.values`.
+/// `surface_geometry_derived_cells` treats that delta as a full SNAPSHOT and
+/// silently leaves the absent cells undetermined — a violation of the engine's
+/// own DELTA CONTRACT (engine_build.rs `demand_scoped_unified_pass` docs), which
+/// states that an absent realization means "retain the previous value", not "the
+/// value is gone".
+///
+/// The `sync_demand` call is load-bearing: `eval()` / `check()` set
+/// `full_scope = true` and `refresh_and_gate_demanded_realizations` early-returns
+/// empty under `full_scope`, so the hash gate is INERT on any cold/load build and
+/// the bug is unreachable there. That is exactly why a debug-MCP `open_file`
+/// "heals" a degraded session.
+///
+/// The loop asserts after EACH of three rebuilds rather than after one: the
+/// invariant is "repeated rebuilds must not degrade a determined cell"; WHICH
+/// iteration the hash gate first bites is an implementation detail of the gate.
+///
+/// Determinacy / constraint status only — never analytic magnitudes.
+#[test]
+fn rigid_mass_props_survive_repeated_rebuild_under_selective_demand() {
+    let mut session = rigid_mass_props_session();
+
+    // (1) Cold load — runs under `full_scope`, so the mass props DO surface.
+    //     This re-pins task 5194's landed behaviour as the baseline.
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+    assert_rigid_mass_props_determined(&state, "load");
+
+    // (2) The frontend's post-load handshake: report the visible realizations,
+    //     flipping the engine to SELECTIVE demand (`full_scope` OFF). Nothing
+    //     else in the GUI turns `full_scope` off, so this is what arms the
+    //     input-cone-hash reuse gate.
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the loaded fixture must render at least one realization mesh — an empty \
+         key list would make sync_demand a no-op and this test vacuous; meshes: {:?}",
+        state
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
+    );
+    session.sync_demand(&keys);
+
+    // (3) Three successive re-renders with NO intervening edit — exactly what the
+    //     GUI does on every frame-driving state refresh. None may degrade.
+    for i in 1..=3 {
+        let state = session
+            .build_gui_state()
+            .unwrap_or_else(|e| panic!("build_gui_state rebuild #{i} should succeed; got {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("rebuild #{i}"));
+    }
 }
 
 // ── Task 5074 step-1: from_engine must delegate to the canonical A1
