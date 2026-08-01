@@ -870,6 +870,189 @@ describe('reify.grammar snippets — unit expressions and exponent', () => {
 });
 
 /**
+ * `trait` declarations and `fn` definitions/signatures.
+ *
+ * Two of the declaration families this task names, and the two largest still
+ * missing: `trait` appears in 35 of the then-failing files (`trait Measurable
+ * {`, `trait Seal {}`, `trait FluidPort {` are all real first-error lines) and
+ * `fn` in 14. Every shape below is attested — in a committed `.ri` where one
+ * exists, otherwise in a tree-sitter corpus test, which is the authoritative
+ * pin for the shapes no example happens to use.
+ *
+ * TWO SHAPES ARE DELIBERATELY NOT THE ONES THE PLAN PROSE SPELLED.
+ *
+ *   1. The fn-body `let` binding is asserted WITH its terminating `;` —
+ *      `{ let a = 1.0; a }`, not `{ let a = 1.0 a }`. grammar.js:252-259 ends
+ *      `fn_let_binding` with a required `';'`, and the upstream corpus test
+ *      `tree-sitter-reify/test/corpus/function.txt:10` pins exactly
+ *      `fn f(x: Int) -> Int { let y = x; y }`. Asserting the separator-free
+ *      form would have forced a Lezer grammar strictly more permissive than
+ *      the authoritative one — the editor would show no error for a program
+ *      the compiler rejects. The normative source wins over the plan prose.
+ *
+ *   2. `AssociatedType` and `FunctionDefinition` are asserted inside a
+ *      STRUCTURE body as well as inside a trait body. grammar.js:529-547 puts
+ *      both in `_member` explicitly (`type X = Concrete` so a conformer can
+ *      satisfy a trait's associated type; `fn f(self) -> T { … }` so it can
+ *      override a default-providing associated fn), and
+ *      examples/trait_assoc_type_material.ri:15 is a committed conformer that
+ *      needs it. Trait-body-only would leave those files failing.
+ */
+describe('reify.grammar snippets — trait and fn declarations', () => {
+  // Corpus-attested 6x: `trait Seal {}`, `trait Bolt {}`, `trait Flow {}`.
+  it('parses the empty `trait Bolt {}`', () => {
+    expect(countErrorNodes('trait Bolt {}')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m5_combined_all.ri:4, examples/m9_integration.ri:56.
+  it('parses a member-bearing trait `trait Measurable { param mass : Mass }`', () => {
+    expect(countErrorNodes('trait Measurable { param mass : Mass }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m9_trait_conformance.ri:15 — a trait body carries
+  // the same member forms a structure body does.
+  it('parses a trait body with param, let and constraint members', () => {
+    expect(
+      countErrorNodes('trait Measurable { param size : Length let half = size / 2 constraint size > 0mm }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: `trait Left : Base {`, `trait Right : Base {`.
+  it('parses the refined `trait Seal : Costed { }`', () => {
+    expect(countErrorNodes('trait Seal : Costed { }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m9_trait_conformance.ri:54
+  // (`trait Physical : Measurable + Weighable {`).
+  it('parses a multi-bound refinement `: Measurable + Weighable`', () => {
+    expect(countErrorNodes('trait Physical : Measurable + Weighable { }')).toBe(0);
+  });
+
+  // grammar.js:287 carries `optional($.type_parameters)` on the trait header,
+  // the same production the structure header already uses.
+  it('parses a parameterized `trait Container<T> { }`', () => {
+    expect(countErrorNodes('trait Container<T> { }')).toBe(0);
+  });
+
+  it('parses a `pub trait`', () => {
+    expect(countErrorNodes('pub trait Seal { }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/trait_assoc_type_material.ri:12 (`type Material`).
+  it('parses a required associated type `trait T { type Item }`', () => {
+    expect(countErrorNodes('trait T { type Item }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/trait_assoc_type_material.ri:15
+  // (`type Material = Steel`), which sits in a STRUCTURE body — see the note
+  // above on why `_member` admits it too.
+  it('parses a defaulted associated type `trait T { type Item = Length }`', () => {
+    expect(countErrorNodes('trait T { type Item = Length }')).toBe(0);
+  });
+
+  it('parses an associated-type binding in a STRUCTURE body', () => {
+    expect(
+      countErrorNodes('structure def Beam : HasMaterial { type Material = Steel param mass : Material }'),
+    ).toBe(0);
+  });
+
+  // grammar.js:207-215 — the bodyless signature, reachable only via a trait
+  // member. Corpus-attested shape: examples/trait_assoc_fn_static.ri declares
+  // `fn make_default() -> Length` requirements in the same position.
+  it('parses a bodyless signature `trait T { fn area() -> Area }`', () => {
+    expect(countErrorNodes('trait T { fn area() -> Area }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/trait_assoc_fn_cylinder.ri:43
+  // (`fn lateral_area(self) -> Scalar<Area> { … }`) — the `self` receiver arm
+  // of grammar.js:217-231.
+  it('parses a `self` receiver `trait T { fn scale(self, k : Real) -> Length }`', () => {
+    expect(countErrorNodes('trait T { fn scale(self, k : Real) -> Length }')).toBe(0);
+  });
+
+  it('parses a bare `self` receiver with a body', () => {
+    expect(
+      countErrorNodes('trait Cylindrical { fn lateral_area(self) -> Scalar<Area> { pi * diameter } }'),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/generics/container.ri:7 — verbatim.
+  it('parses the top-level `fn single<T>(x: T) -> List<T> { [x] }`', () => {
+    expect(countErrorNodes('fn single<T>(x: T) -> List<T> { [x] }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m5_user_function.ri:1 (`fn area(w: Real, h: Real) -> Real { w * h }`).
+  it('parses a two-parameter top-level fn', () => {
+    expect(countErrorNodes('fn area(w: Real, h: Real) -> Real { w * h }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/generics/dim_param.ri:15
+  // (`fn scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }`).
+  it('parses a bounded type parameter on a fn header', () => {
+    expect(
+      countErrorNodes('fn scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }'),
+    ).toBe(0);
+  });
+
+  // grammar.js:239-246 expression-body arm, pinned upstream by
+  // tree-sitter-reify/test/corpus/function.txt (`fn double(x: Int) -> Int = x * 2`).
+  it('parses the expression-bodied `fn twice(x : Real) -> Real = x * 2`', () => {
+    expect(countErrorNodes('fn twice(x : Real) -> Real = x * 2')).toBe(0);
+  });
+
+  // grammar.js:233-237 `optional(seq('=', field('default', …)))`, pinned
+  // upstream by tree-sitter-reify/test/corpus/fn_param_default.txt.
+  it('parses a defaulted parameter `fn f(x : Real = 1.0) -> Real = x`', () => {
+    expect(countErrorNodes('fn f(x : Real = 1.0) -> Real = x')).toBe(0);
+  });
+
+  // The `;`-terminated block form — see note 1 above.
+  it('parses fn-body let bindings `fn g() -> Real { let a = 1.0; a }`', () => {
+    expect(countErrorNodes('fn g() -> Real { let a = 1.0; a }')).toBe(0);
+  });
+
+  // grammar.js:200 makes the return type optional.
+  it('parses a fn with no return type', () => {
+    expect(countErrorNodes('fn noop() { 1 }')).toBe(0);
+  });
+
+  it('parses a `pub fn`', () => {
+    expect(countErrorNodes('pub fn area(w: Real) -> Real = w')).toBe(0);
+  });
+
+  // grammar.js:529-547 — the structure-body override arm of `_member`.
+  it('parses an override fn inside a STRUCTURE body', () => {
+    expect(
+      countErrorNodes('structure def Pin : Cylindrical { fn lateral_area(self) -> Area { 1mm } }'),
+    ).toBe(0);
+  });
+
+  it('yields TraitDeclaration, AssociatedType and FunctionDefinition nodes', () => {
+    const names = nodeNames('trait T { type Item fn area() -> Area }');
+    expect(names).toContain('TraitDeclaration');
+    expect(names).toContain('AssociatedType');
+    expect(names).toContain('FunctionDefinition');
+  });
+
+  /**
+   * REGRESSION GUARD. `trait`, `fn`, `type` and `self` all leave the
+   * `ReservedWord` @specialize list in this slice, and `type`'s `=` plus
+   * `fn`'s `=`-bodied arm both collide with shapes the grammar already
+   * accepts (`DefaultValue`, `ParamAssignment`, `LetDeclaration`). These pin
+   * that the incumbent forms still parse.
+   */
+  it('still parses a structure body with param defaults and a sub', () => {
+    expect(
+      countErrorNodes('structure def F { param w : Length = 1mm sub s = Screw(len: 10mm) }'),
+    ).toBe(0);
+  });
+
+  it('still parses a specialization body with a param assignment', () => {
+    expect(countErrorNodes('structure def F { sub b : Bearing { bore = auto } }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
