@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::tests::test_helpers::cwd_lock;
+use crate::tests::test_helpers::{
+    assert_rigid_mass_props_determined, cwd_lock, rigid_mass_props_fixture_path,
+    rigid_mass_props_session, visible_realization_keys,
+};
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_mcp::SelectionInfo;
@@ -2400,4 +2403,134 @@ fn set_and_get_active_fea_case_impl_contract() {
         Some("nonexistent_case".to_string()),
         "active case stored as given even if not found in cases map"
     );
+}
+
+// ── Task #5338: Rigid mass-prop cells must survive every GUI load path ────────
+//
+// `TessellateResult` is an INCREMENTAL DELTA (see the DELTA CONTRACT block on
+// `Engine::demand_scoped_unified_pass`). Under the frontend's SELECTIVE demand
+// posture a HASH-EXEMPT realization's kernel ops are skipped, so its auto-derived
+// mass-property cells arrive `Undef` even though their values are unchanged and
+// still correct. These tests drive the REAL production command entry points
+// headlessly (no Tauri runtime) and assert the cells never degrade.
+//
+// Faithfulness note: `check()` turns the cold `full_scope` override back ON
+// (engine_eval.rs), and only `sync_demand` turns it off again — so every reload /
+// recompile is followed here by a fresh `sync_demand_impl`, exactly as the
+// frontend re-syncs demand after each re-render. Without that re-sync the
+// rebuilds would run under full scope and the delta gap would be unreachable.
+
+/// Copy the committed `examples/rigid_mass_props_smoke.ri` fixture into `dir`
+/// so a reload can rewrite it without touching the tracked file. Returns the
+/// path (as a `String`, the shape the watcher/`update_source` commands take)
+/// alongside the original text.
+fn rigid_mass_props_tempfile(dir: &std::path::Path) -> (String, String) {
+    let text = std::fs::read_to_string(rigid_mass_props_fixture_path())
+        .expect("the committed rigid_mass_props_smoke.ri fixture must be readable");
+    let path = dir.join("rigid_mass_props_smoke.ri");
+    std::fs::write(&path, &text).expect("writing the fixture copy should succeed");
+    (path.to_string_lossy().into_owned(), text)
+}
+
+/// Task #5338 (step-3, RED): a watcher-driven reload must not degrade a `: Rigid`
+/// body's auto-derived mass-property cells — neither on the reload build itself
+/// nor on the SELECTIVE-demand re-renders that follow it, which are the states
+/// the GUI actually paints.
+///
+/// `reload_for_watch_impl` is the watcher's exact entry point (main.rs wires the
+/// notify callback straight to it). It routes through `update_source_impl` →
+/// `EngineSession::update_source` → `commit_state` → `build_gui_state`.
+///
+/// GREEN as landed — a regression LOCK, not a reproduction. The task's plan
+/// predicted this would be RED until `commit_state`'s cache clear was narrowed to
+/// `FilePathUpdate::Set`, on the theory that a same-file reload leaves the
+/// realization hash-exempt while the clear has just discarded the retained value.
+/// MEASURED, that cannot happen: `input_cone_hash` is a field on the realization
+/// node inside `eval_state.snapshot.graph`, and `check()` replaces `eval_state`
+/// wholesale, so a recompile resets every hash to `None`. The first selective
+/// tessellate after ANY recompile dispatches and repopulates the cache from a
+/// complete delta; only the SECOND and later ones are hash-exempt, and no
+/// `commit_state` runs between them. Hence the clear stays unconditional (see
+/// `EngineSession::commit_state`) and this test locks the watcher path against
+/// the delta-gap regression that the engine-level test reproduced.
+///
+/// It still earns its keep, and is not vacuous: it is the only coverage that
+/// drives the watcher's REAL entry point end-to-end, and a negative control
+/// (retention fallback removed, i.e. task 5194's snapshot behaviour restored)
+/// puts it RED at "reload#1 re-render 2" — re-render 1 dispatches because the
+/// recompile reset the hash, re-render 2 is hash-exempt.
+///
+/// The second reload carries CHANGED content (`depth = 250mm`) and asserts
+/// `depth` reads `"250"`: that proves the fix refreshes from the fresh delta
+/// rather than replaying a stale cached mass. `depth` is a plain arithmetic cell
+/// resolved by the kernel-less check, not a geometry query — the only magnitude
+/// asserted anywhere in this suite.
+#[test]
+fn rigid_mass_props_survive_watcher_reload() {
+    use crate::commands::{
+        get_initial_state_impl, open_file_engine_impl, reload_for_watch_impl, sync_demand_impl,
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, text) = rigid_mass_props_tempfile(dir.path());
+    let engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+
+    // (1) Open through the shared #5193 funnel.
+    let state = open_file_engine_impl(&engine, &path).expect("open_file_engine_impl should succeed");
+    assert_rigid_mass_props_determined(&state, "open_file");
+
+    // (2) The frontend's post-load handshake → SELECTIVE demand.
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the fixture must render at least one realization mesh, else sync_demand \
+         is a no-op and this test is vacuous"
+    );
+    sync_demand_impl(&engine, &keys).expect("sync_demand_impl should succeed");
+
+    // (3) Watcher fires with UNCHANGED content (a touch / no-op save). The reload
+    //     build itself runs under the full scope `check()` restored, so the
+    //     degradation lands on the re-renders that follow it.
+    let state = reload_for_watch_impl(&engine, &path, &text)
+        .expect("reload_for_watch_impl with unchanged content should succeed");
+    assert_rigid_mass_props_determined(&state, "reload#1 (unchanged)");
+
+    sync_demand_impl(&engine, &visible_realization_keys(&state))
+        .expect("sync_demand_impl after reload#1 should succeed");
+    for i in 1..=2 {
+        let state = get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("get_initial_state_impl #{i} after reload#1: {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("reload#1 re-render {i}"));
+    }
+
+    // (4) Watcher fires with CHANGED content — the edit must actually take.
+    let changed = text.replace("param depth : Length = 300mm", "param depth : Length = 250mm");
+    assert_ne!(
+        changed, text,
+        "the depth-param rewrite must actually change the fixture text; the \
+         fixture's `param depth : Length = 300mm` line may have been reworded"
+    );
+    let state = reload_for_watch_impl(&engine, &path, &changed)
+        .expect("reload_for_watch_impl with changed content should succeed");
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` value cell after the changed reload");
+    assert_eq!(
+        depth.value, "250",
+        "depth must read 250 (mm) after the changed reload — proving the reload \
+         took effect rather than replaying a stale cached state; got {:?}",
+        depth.value
+    );
+    assert_rigid_mass_props_determined(&state, "reload#2 (depth=250mm)");
+
+    // (5) …and the re-renders after the changed reload must hold too.
+    sync_demand_impl(&engine, &visible_realization_keys(&state))
+        .expect("sync_demand_impl after reload#2 should succeed");
+    for i in 1..=2 {
+        let state = get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("get_initial_state_impl #{i} after reload#2: {e}"));
+        assert_rigid_mass_props_determined(&state, &format!("reload#2 re-render {i}"));
+    }
 }
