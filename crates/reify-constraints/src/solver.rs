@@ -2366,10 +2366,7 @@ fn solutions_agree(
 /// must be either uniquely determined by constraints, or uniquely optimal
 /// under the applicable objective.
 ///
-/// `#[allow(dead_code)]`: not yet reachable from non-test code — task #5711
-/// step-2 adds this classifier unwired (a behaviour-preserving commit); step-5
-/// wires it into [`verify_uniqueness`], at which point this allow is removed.
-#[allow(dead_code)]
+/// Wired into [`verify_uniqueness`] as of task #5711 step-5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UniquenessVerdict {
     /// The incumbent and perturbed parameter values agree within tolerance —
@@ -2413,9 +2410,6 @@ enum UniquenessVerdict {
 /// abstaining there would silently convert
 /// `strict_auto_non_unique_returns_infeasible`'s synthetic-centrality-objective
 /// fixture (solver_integration.rs:1659) into a false `Solved`.
-///
-/// `#[allow(dead_code)]`: see [`UniquenessVerdict`] — unwired until step-5.
-#[allow(dead_code)]
 fn classify_uniqueness(
     auto_params: &[AutoParam],
     solved_values: &HashMap<ValueCellId, Value>,
@@ -2538,9 +2532,21 @@ fn verify_uniqueness(
     solved_values: &HashMap<ValueCellId, Value>,
 ) -> bool {
     // Build perturbed initial point: reflect each param to the opposite
-    // end of its bounds range from the solution.  See the header note above
-    // for why this box is NOT the #5618 constraint-derived seed box.
-    let bounds: Vec<(f64, f64)> = problem.auto_params.iter().map(effective_bounds).collect();
+    // end of its bounds range from the solution.  #5711 step-5: this is now
+    // the #5618 constraint-derived SEED box (mirrors multistart_points
+    // exactly; include_strict = true since an anchor is a seed point, not a
+    // clamp target) rather than the unconstrained effective_bounds box — see
+    // the header note above for the measured mechanism this fixes.
+    let bounds: Vec<(f64, f64)> = resolve_bounds(
+        &problem.auto_params,
+        &derive_param_intervals(
+            &problem.auto_params,
+            &problem.constraints,
+            &problem.current_values,
+            &problem.functions,
+        ),
+        true,
+    );
     let (perturbed, missing) =
         build_perturbation_anchors(&problem.auto_params, solved_values, &bounds);
     if !missing.is_empty() {
@@ -2571,8 +2577,63 @@ fn verify_uniqueness(
             values: perturbed_values,
             ..
         } => {
-            // Compare solutions: all params must match within tolerance
-            solutions_agree(&problem.auto_params, solved_values, &perturbed_values)
+            // #5711: classify against BOTH §11.6 well-determinedness tests,
+            // not parameter agreement alone. Objective scoring consults ONLY
+            // the EXPLICIT `problem.objective` — never
+            // `.or(build_centrality_objective(..))` — deliberately diverging
+            // from `solve_core_with_sd_tolerance`'s `effective_objective`.
+            // See this function's doc for the ruling (esc-5711-1): the
+            // centrality objective is a solver-internal tie-break with no
+            // user-authored semantic contract behind it, and a
+            // strictly-better centrality score at a different point is
+            // evidence FOR non-uniqueness, not a suppression signal. Do NOT
+            // "fix" this by adding `.or(synth)`.
+            let objective_scores = problem.objective.as_ref().and_then(|obj| {
+                let incumbent_full = build_scoring_values(
+                    &problem.current_values,
+                    solved_values,
+                    &problem.dependent_cells,
+                    &problem.functions,
+                );
+                let perturbed_full = build_scoring_values(
+                    &problem.current_values,
+                    &perturbed_values,
+                    &problem.dependent_cells,
+                    &problem.functions,
+                );
+                let incumbent_score =
+                    eval_objective_set(obj, &incumbent_full, &problem.functions)?;
+                let perturbed_score =
+                    eval_objective_set(obj, &perturbed_full, &problem.functions)?;
+                Some((incumbent_score, perturbed_score))
+            });
+            match classify_uniqueness(
+                &problem.auto_params,
+                solved_values,
+                &perturbed_values,
+                objective_scores,
+            ) {
+                UniquenessVerdict::Unique => true,
+                UniquenessVerdict::IncumbentSuboptimal => {
+                    // Suppress: an optimality finding, not a §11.6
+                    // non-uniqueness one — see
+                    // `UniquenessVerdict::IncumbentSuboptimal`'s doc.
+                    let (incumbent_score, perturbed_score) = objective_scores.expect(
+                        "IncumbentSuboptimal is only reachable via classify_uniqueness's \
+                         Some(scores) arm",
+                    );
+                    tracing::warn!(
+                        incumbent_score,
+                        perturbed_score,
+                        "verify_uniqueness: IncumbentSuboptimal — perturbed re-solve scored \
+                         strictly better than the incumbent under the explicit objective; \
+                         suppressing (cannot prove non-unique) rather than reporting \
+                         ConstraintNonUnique, since the incumbent was never the argmin"
+                    );
+                    true
+                }
+                UniquenessVerdict::NonUnique => false,
+            }
         }
         _ => {
             // If the perturbed solve fails (Infeasible/NoProgress), we can't
@@ -6044,7 +6105,16 @@ mod tests {
                 id: x_id.clone(),
                 param_type: Type::length(),
                 bounds: Some((0.001, 0.1)),
-                free: false,
+                // not testing uniqueness — MEASURED (#5711 pre-1): the
+                // objective is the constant 1e8 across the whole feasible
+                // region [0.001, 0.020] (plus the 0.020..0.022 buffer), so
+                // the derived-box perturbed re-solve ties the incumbent's
+                // objective score exactly — a genuine §11.6 flat-region
+                // non-uniqueness, not the drift-fallback mechanism this
+                // fixture exists to cover. free: true keeps the fallback
+                // path under test alive without asserting a uniqueness
+                // verdict this problem cannot support.
+                free: true,
             }],
             constraints: vec![(ConstraintNodeId::new("Part", 0), le_expr)],
             current_values: current,
