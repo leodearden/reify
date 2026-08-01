@@ -20,7 +20,7 @@
 //! RED until step-18 creates the `.ri` fixture (this test panics on the missing
 //! file read).
 
-use reify_compiler::{CompiledGeometryOp, CompiledModule, SweepKind};
+use reify_compiler::{CompiledGeometryOp, CompiledModule, SweepKind, TopologyTemplate};
 use reify_core::{DimensionVector, Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -61,6 +61,23 @@ fn compile_example() -> CompiledModule {
     );
 
     module
+}
+
+/// The compiled `Cyl` structure template — the example's single structure, and
+/// the entry point every assertion below reaches through. Shared the same way
+/// `compile_example()` is, so the lookup and its diagnostic message live in one
+/// place rather than once per test.
+fn cyl_template(module: &CompiledModule) -> &TopologyTemplate {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == "Cyl")
+        .unwrap_or_else(|| {
+            panic!(
+                "Cyl template not found; got: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        })
 }
 
 /// The dimension a compiled argument expression carries, for the
@@ -124,17 +141,7 @@ fn describe_arg(expr: &CompiledExpr) -> String {
 #[test]
 fn feature_datum_axis_example_revolve_angle_is_angle_dimensioned() {
     let module = compile_example();
-
-    let cyl = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Cyl")
-        .unwrap_or_else(|| {
-            panic!(
-                "Cyl template not found; got: {:?}",
-                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-            )
-        });
+    let cyl = cyl_template(&module);
 
     // Anti-vacuity: locate the revolve explicitly and require EXACTLY one, so a
     // future refactor that renames the op or drops the realization fails loudly
@@ -260,17 +267,7 @@ fn feature_datum_axis_example_compiles_under_stdlib_with_zero_errors() {
 #[test]
 fn feature_datum_axis_example_lowers_cyl_axis_to_value_cell() {
     let module = compile_example();
-
-    let cyl = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Cyl")
-        .unwrap_or_else(|| {
-            panic!(
-                "Cyl template not found; got: {:?}",
-                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-            )
-        });
+    let cyl = cyl_template(&module);
 
     let a_cell = cyl
         .value_cells

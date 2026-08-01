@@ -8853,9 +8853,15 @@ mod tests {
     ///
     /// Anti-vacuity: `draft_angle_on_box` tolerates a legitimate
     /// `OperationFailed` because Draft is finicky, and so does this test — but
-    /// only when BOTH forms take the SAME branch, and a both-failed run is a
-    /// loud failure rather than a silent pass. A test that "passes" because
-    /// neither arm produced geometry would prove nothing.
+    /// only when BOTH forms take the SAME branch, and a run where NO face
+    /// produced geometry is a loud failure rather than a silent pass. A test
+    /// that "passes" because neither arm produced geometry would prove nothing.
+    ///
+    /// Failure diagnosis is split three ways so the message names the actual
+    /// culprit: the two forms DIVERGING is the D2 contradiction; both failing
+    /// IDENTICALLY with something other than `OperationFailed` exonerates the
+    /// dimension tag and indicts the fixture; neither producing geometry at all
+    /// trips the `compared > 0` guard.
     ///
     /// It drafts a single CURATED face, the same way
     /// `execute_draft_curated_faces_honored` does. The all-faces path
@@ -8878,8 +8884,9 @@ mod tests {
         );
 
         // Any single face can legitimately be one OCCT declines to draft, so
-        // sweep two of them — exactly as `execute_draft_curated_faces_honored`
-        // does — and require at least one where BOTH forms produced geometry.
+        // sweep up to two of them — exactly as
+        // `execute_draft_curated_faces_honored` does — stopping at the first
+        // where BOTH forms produced geometry, and requiring at least one.
         let mut compared = 0usize;
         for face in [faces[0], *faces.last().unwrap()] {
             let bare = kernel.execute(&GeometryOp::Draft {
@@ -8913,12 +8920,35 @@ mod tests {
                     Err(GeometryError::OperationFailed(_)),
                     Err(GeometryError::OperationFailed(_)),
                 ) => {}
+                // Both forms failed the SAME way, but not with the tolerated
+                // `OperationFailed`. The dimension tag is EXONERATED here — it
+                // changed nothing — so blaming D2 would be a misdiagnosis of
+                // what is really a broken fixture. Named separately for exactly
+                // that reason (the `compared > 0` guard below exists to stop the
+                // same confusion from the other direction).
+                (Err(bare_err), Err(dim_err))
+                    if std::mem::discriminant(&bare_err) == std::mem::discriminant(&dim_err) =>
+                {
+                    panic!(
+                        "both forms failed identically with {bare_err:?} — this says nothing \
+                         about D2 (the dimension tag changed neither branch nor error); \
+                         repair the fixture"
+                    )
+                }
                 (bare, dimensioned) => panic!(
                     "dimensioning the angle changed which branch the draft took, which \
                      contradicts D2: bare -> {:?}, dimensioned -> {:?}",
                     bare.map(|h| h.id),
                     dimensioned.map(|h| h.id)
                 ),
+            }
+
+            // One face where both forms produced geometry is the whole signal;
+            // a second costs another OCCT draft + volume pair for no added
+            // information. The sweep exists only to survive a face OCCT
+            // declines to draft.
+            if compared > 0 {
+                break;
             }
         }
 
