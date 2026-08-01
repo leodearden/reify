@@ -350,7 +350,41 @@ expression[@isGroup=Expression] {
   ConditionalExpression |
   RangeExpression |
   IndexAccess |
+  AdHocSelector |
+  LambdaExpression |
   primaryExpression
+}
+
+// ── Lambda ──────────────────────────────────────────────
+// grammar.js:1222-1232, `prec.right(0)` — the body extends as far right as it
+// can, which is why `lambda` is the LOOSEST level in the @precedence block.
+//
+// THE `||` COLLISION. A zero-parameter lambda opens with the same two
+// characters as the symbolic OR operator. No `@precedence { "||", "|" }` is
+// declared, and that is deliberate: lezer-generator partitions tokens into
+// per-state groups, and `"|"` (only ever at an expression START or closing a
+// parameter list) and `"||"` (only ever after a COMPLETE expression) never
+// share a state, so they never compete. Declaring a precedence would force
+// `"||"` to win unconditionally and silently break `|| 1`. If a future edit
+// does make them share a state, lezer-generator raises an overlapping-token
+// error at build time rather than picking one silently — the loud failure is
+// the reason for leaving the declaration out. Both readings are pinned by
+// assertions in reifyGrammarCorpus.test.ts.
+LambdaExpression {
+  !lambda "|" (LambdaParam ("," LambdaParam)* ","?)? "|" expression
+}
+
+LambdaParam {
+  Identifier (":" TypeExpr)?
+}
+
+// ── Ad-hoc port selector ────────────────────────────────
+// grammar.js:1568-1575 — `expr @ selector(args)`, `prec.left(10)`: tighter
+// than index access (9), looser than member access / function call (11).
+// This port collapses those two into the single `postfix` level, so `selector`
+// sits immediately below it and above every binary band.
+AdHocSelector {
+  expression !selector "@" Identifier ArgListExpr
 }
 
 // ── Ranges ──────────────────────────────────────────────
@@ -582,6 +616,9 @@ ReservedWord {
 // operator, which is why `kwNot` is here rather than beside `unary`.
 @precedence {
   postfix @left,
+  // `@` ad-hoc selector — tree-sitter prec.left(10), between member access
+  // (11, folded into `postfix` here) and index access (9).
+  selector @left,
   // Value-level `^` — tree-sitter prec.right 8, i.e. TIGHTER than unary (7)
   // and multiplicative (6). So `-2 ^ 2` is `-(2 ^ 2)` and `2 * 3 ^ 2` is
   // `2 * (3 ^ 2)`, both pinned by leftOperandOf assertions in the corpus test.
@@ -600,7 +637,11 @@ ReservedWord {
   kwOr @left,
   kwImplies @right,
   range @left,
-  conditional @right
+  conditional @right,
+  // LOOSEST level in the block: grammar.js gives `lambda_expression`
+  // prec.right(0) so the body swallows everything to its right —
+  // `|x| a + b * c` is `|x| (a + b * c)`, never `(|x| a) + b * c`.
+  lambda @right
 }
 
 @tokens {
@@ -672,6 +713,6 @@ ReservedWord {
   // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere
   // else in the language.
   "(" ")" "{" "}" "[" "]" "." "," ":" ";" "="
-  "||" "&&" "==" "+" "-" "*" "^"
+  "||" "&&" "==" "+" "-" "*" "^" "|" "@"
   "::" "->" "=>" "<" ">" ".." "..<"
 }
