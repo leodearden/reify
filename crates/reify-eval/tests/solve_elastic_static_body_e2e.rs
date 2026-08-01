@@ -471,6 +471,133 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
     }
 }
 
+/// `cfg(has_gmsh)`: de-risking capstone — a **NON-PRISMATIC** (curved-surface)
+/// body realizes and solves on the realized tet VolumeMesh (task 4152, step-11).
+///
+/// Every body-arg capstone above drives a `box(...)`, whose realized AABB grid
+/// happens to be near-prismatic. This test proves the chain is not box-specific:
+/// a body with a genuinely curved lateral surface realizes through the same
+/// OCCT-tessellate → gmsh `mesh_surface_to_volume` producer and drives the §7a
+/// resample grid off ITS AABB, so the resulting node count cannot coincide with
+/// the {`SYNTHETIC_GRID_NODES`}-node synthetic `nx×1×6` box.
+///
+/// Uses the arity-5 `solve_elastic_static(material, body, loads, supports,
+/// options)` overload (`stdlib/solver_elastic.ri`), registering ONLY the
+/// `solver::elastic_static` trampoline + `register_volume_mesh_demand` — NOT
+/// `register_compute_fns` (see the module doc's #4876 boundary-demand
+/// rationale).
+///
+/// Asserts:
+///   (1) `build()` yields no `Severity::Error` diagnostics;
+///   (2) EXACTLY ONE `(VolumeMesh, Gmsh)` realization (the single geometry
+///       `let body` yields one realization edge);
+///   (3) `displacement` is a 3-axis Regular Sampled field whose node count
+///       DIFFERS from the {`SYNTHETIC_GRID_NODES`}-node synthetic grid — i.e.
+///       the realized curved-body AABB, not the synthetic box, drove the grid;
+///   (4) converged.
+#[cfg(has_gmsh)]
+#[test]
+fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
+    use reify_core::{KernelId, Severity, ValueCellId};
+    use reify_ir::{ExportFormat, ReprKind, Value};
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping non_prismatic_body_solve_runs_on_realized_volume_mesh: OCCT not \
+             available (no BRep kernel to build the cylinder body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(NON_PRISMATIC_BODY_SOURCE);
+
+    let mut engine = make_occt_engine();
+    // Manual registration — see the module doc. Trampoline + VolumeMesh demand
+    // ONLY; NO boundary demand (that routes through the #4876-SIGSEGV attributed
+    // producer, which is exactly the path a curved/seamed B-rep is most likely to
+    // crash on).
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::elastic_static");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+
+    // ── (1) no Error diagnostics — the curved body tessellated and tet-meshed ──
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the non-prismatic body build — a mesher \
+         failure on the curved lateral surface would surface here. got: {errors:?}"
+    );
+
+    // ── (2) exactly one (VolumeMesh, Gmsh) realization ────────────────────────
+    let provenance = engine.realization_kernel_provenance();
+    let vm_realizations: Vec<_> = provenance
+        .iter()
+        .filter(|p| p.repr == ReprKind::VolumeMesh && p.kernel == KernelId::Gmsh)
+        .collect();
+    assert_eq!(
+        vm_realizations.len(),
+        1,
+        "the single geometry `let body` must produce EXACTLY ONE (VolumeMesh, Gmsh) \
+         realization. provenance: {:?}",
+        provenance
+            .iter()
+            .map(|p| (p.realization.clone(), p.repr, p.kernel))
+            .collect::<Vec<_>>()
+    );
+
+    // ── (3) the §7a grid follows the REALIZED curved AABB, not the synthetic box ─
+    let result_cell = ValueCellId::new("FeaBodyNonPrismatic", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaBodyNonPrismatic.result not found in build values"));
+    assert!(
+        matches!(result_val, Value::StructureInstance(_) | Value::Map(_)),
+        "non-prismatic body result must be a populated ElasticResult \
+         (StructureInstance/Map), got: {result_val:?} — a pre-hydration Failed/Undef \
+         here means the redispatch did not deliver the realized mesh to the trampoline"
+    );
+
+    let disp = sampled_field(result_val, "displacement");
+    let node_count = disp.data.len() / 3;
+    eprintln!(
+        "non-prismatic body: realized §7a grid axes = {:?}, nodes = {node_count}",
+        disp.axis_grids.iter().map(|a| a.len()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        disp.axis_grids.len(),
+        3,
+        "displacement must be a 3D Regular grid, got {} axes",
+        disp.axis_grids.len()
+    );
+    assert_ne!(
+        node_count, SYNTHETIC_GRID_NODES,
+        "the non-prismatic body solve must NOT reproduce the {SYNTHETIC_GRID_NODES}-node \
+         synthetic grid — the realized curved-body VolumeMesh must drive the §7a \
+         resample grid"
+    );
+
+    // ── (4) converged ─────────────────────────────────────────────────────────
+    assert_eq!(
+        extract_field(result_val, "converged"),
+        Some(Value::Bool(true)),
+        "the non-prismatic realized-mesh solve must converge"
+    );
+}
+
 /// `cfg(has_gmsh)`: companion regression — the unchanged scalar-dims fixture
 /// still yields the 854-node synthetic grid.
 ///
