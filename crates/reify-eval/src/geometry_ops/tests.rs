@@ -5981,6 +5981,247 @@
     }
 
     // ---------------------------------------------------------------------------
+    // Tests: `rotate_around`'s PIVOT is LENGTH-semantic (task 5623, R1 sweep)
+    //
+    // The pivot is a point in space. The co-located axis (`ax`/`ay`/`az`, a
+    // dimensionless unit vector) and `angle` are NOT gated by this task — all
+    // ANGLE gating belongs to docs/prds/v0_6/angle-units-surface-convergence.md
+    // (PRD 3) by seam-table decree — and the accepted test below is the
+    // executable lock on that boundary.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `rotate_around` op with a caller-supplied PIVOT, holding the
+    /// axis (+Z) and angle fixed and BARE, so each rejection test varies
+    /// exactly one thing.
+    fn rotate_around_with_point(
+        px: reify_ir::CompiledExpr,
+        py: reify_ir::CompiledExpr,
+        pz: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Transform {
+            kind: TransformKind::RotateAround,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("px".into(), px),
+                ("py".into(), py),
+                ("pz".into(), pz),
+                // Axis DIRECTION is a dimensionless unit vector → stays bare.
+                ("ax".into(), literal_f64(0.0)),
+                ("ay".into(), literal_f64(0.0)),
+                ("az".into(), literal_f64(1.0)),
+                // ANGLE is PRD 3's, never ours → stays bare.
+                ("angle".into(), literal_f64(std::f64::consts::FRAC_PI_2)),
+            ],
+        }
+    }
+
+    /// A BARE (dimensionless) pivot component must be REJECTED: a pivot is a
+    /// point in space, so a bare `50` would place it 50 metres out instead of
+    /// 50 mm and swing the target through a wildly different arc.
+    ///
+    /// Run once per component — `px`/`py`/`pz` are three separate reads.
+    #[test]
+    fn compile_geometry_op_rotate_around_bare_point_component_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for bare in ["px", "py", "pz"] {
+            let component = |name: &str| -> reify_ir::CompiledExpr {
+                if name == bare {
+                    literal_f64(0.0)
+                } else {
+                    literal_length(0.0)
+                }
+            };
+            let op =
+                rotate_around_with_point(component("px"), component("py"), component("pz"));
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "bare (dimensionless) rotate_around pivot component {bare} must \
+                 drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains(bare) && d.message.contains("Length")),
+                "a diagnostic must name the {bare} arg and the Length units \
+                 requirement; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A WRONG-DIMENSION `Value::Scalar` pivot component must be rejected
+    /// exactly like a bare `Value::Real`.
+    ///
+    /// The ANGLE arm is not decoration: `rotate_around` is an 8-positional-arg
+    /// signature that ENDS in an angle, so passing an angle where a pivot
+    /// component was meant is a plausible argument-order slip. The
+    /// DIMENSIONLESS arm covers eval arithmetic collapsing to a dimensionless
+    /// `Scalar` rather than a `Real`.
+    #[test]
+    fn compile_geometry_op_rotate_around_wrong_dimension_point_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, px_expr) in [
+            (
+                "ANGLE",
+                literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
+            ),
+            (
+                "dimensionless",
+                literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
+            ),
+        ] {
+            let op =
+                rotate_around_with_point(px_expr, literal_length(0.0), literal_length(0.0));
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Scalar rotate_around pivot component must drop the op, \
+                 got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("px") && d.message.contains("Length")),
+                "a diagnostic must name the px arg and the Length requirement for \
+                 a {label} Scalar; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// A LENGTH-dimensioned but NON-FINITE pivot component must drop the op and
+    /// say 'non-finite Length' specifically — the value IS a Length, so the
+    /// wrong-dimension wording would be wrong.
+    #[test]
+    fn compile_geometry_op_rotate_around_non_finite_length_point_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, si) in [
+            ("NaN", f64::NAN),
+            ("+inf", f64::INFINITY),
+            ("-inf", f64::NEG_INFINITY),
+        ] {
+            let op = rotate_around_with_point(
+                literal_length(si),
+                literal_length(0.0),
+                literal_length(0.0),
+            );
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a {label} Length rotate_around pivot component must drop the op, \
+                 got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| {
+                    d.message.contains("px") && d.message.contains("non-finite Length")
+                }),
+                "the diagnostic for a {label} Length must name the arg and say \
+                 'non-finite Length'; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// Locks the split AND the scope boundary: a `Length` pivot with a BARE
+    /// dimensionless axis and a BARE angle is the fully clean path and must
+    /// emit NO diagnostic at all.
+    ///
+    /// The bare-angle half is binding scope protection, not decoration. PRD 1
+    /// gates NO angle position; `rotate_around`'s rotation angle belongs to
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` (PRD 3) by
+    /// seam-table decree, and gating it here would be a scope violation. The
+    /// boundary is one careless edit away — it sits immediately beside a gated
+    /// triple — so it is encoded as a passing test rather than a comment.
+    ///
+    /// Distinct components also pin the px/py/pz → `point` ORDERING against a
+    /// transposed assembly.
+    #[test]
+    fn compile_geometry_op_rotate_around_length_point_bare_axis_angle_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = rotate_around_with_point(
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+        );
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::RotateAround {
+                target,
+                point,
+                axis,
+                angle_rad,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(point, [0.012, 0.034, 0.056]);
+                assert_eq!(axis, [0.0, 0.0, 1.0]);
+                assert_eq!(angle_rad, std::f64::consts::FRAC_PI_2);
+            }
+            other => panic!(
+                "expected Ok(RotateAround) for a Length pivot with a bare axis and \
+                 a bare angle, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "a Length pivot + dimensionless axis + BARE angle is the fully clean \
+             path and must emit NO diagnostic at all — in particular the angle \
+             must NOT be gated here (that is PRD 3's scope); got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Tests: INVALID sentinel preserves step index alignment (task-612, step-9)
     // ---------------------------------------------------------------------------
 
