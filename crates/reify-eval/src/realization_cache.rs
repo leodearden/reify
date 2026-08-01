@@ -97,6 +97,9 @@ pub const NO_OPTIONS: ContentHash = ContentHash(0);
 #[derive(Debug, Default)]
 pub struct RealizationCache<V> {
     buckets: HashMap<ReprKind, HashMap<String, HashMap<ContentHash, ToleranceBucket<V>>>>,
+    /// Monotonic lifetime count of NEW *terminal* realization entries.
+    /// See [`RealizationCache::realization_entries`] for the full contract.
+    terminal_entries: usize,
 }
 
 impl<V> RealizationCache<V> {
@@ -104,7 +107,67 @@ impl<V> RealizationCache<V> {
     pub fn new() -> Self {
         Self {
             buckets: HashMap::new(),
+            terminal_entries: 0,
         }
+    }
+
+    /// Number of NEW **terminal** realization entries created over this cache's
+    /// lifetime — the signal behind [`crate::CacheStats::realization_entries`].
+    ///
+    /// # Contract
+    ///
+    /// - **Monotonic.** Incremented only by an *accepted* [`insert_terminal`](Self::insert_terminal)
+    ///   (one that returns `true`, i.e. genuinely realized and cached new geometry).
+    ///   Never decremented — not by [`remove`](Self::remove), not by
+    ///   [`clear_entity`](Self::clear_entity), and not across a
+    ///   `clear_realization_cache()` reseat (which `edit_param`/`edit_source` perform
+    ///   on every edit, so a reset-on-flush counter would be useless for cross-edit
+    ///   measurement).
+    /// - **Terminal only.** Plain [`insert`](Self::insert) — the intermediate
+    ///   cross-kernel conversion path — is deliberately NOT counted. Conversion
+    ///   intermediates are steps *within* one realization, not realizations.
+    /// - **NOT a live size.** This is deliberately not [`len`](Self::len): each
+    ///   [`ToleranceBucket`] caps at `SOFT_CAPACITY` and evicts its loosest entry
+    ///   inside the same `insert` call, so a genuinely-new insert can be net-zero
+    ///   growth. `len()` would silently under-report realizations by the eviction
+    ///   count; this counter answers "how many times did we actually realize and
+    ///   cache new geometry", which is the re-mesh-avoidance question.
+    pub fn realization_entries(&self) -> usize {
+        self.terminal_entries
+    }
+
+    /// Inserts a **terminal realization** at `(entity, repr_kind, options_hash, tol)`,
+    /// counting it in [`realization_entries`](Self::realization_entries).
+    ///
+    /// Identical to [`insert`](Self::insert) in every respect except that an
+    /// accepted insert (returning `true`) also increments the monotonic lifetime
+    /// counter. A rejected insert (`false` — an existing entry with a tighter or
+    /// equal tolerance already dominates this one) is a cache *hit*: nothing was
+    /// realized, so nothing is counted.
+    ///
+    /// This is the counted half of a deliberate split. The realization pipeline has
+    /// exactly two cache-insert sites: the cross-kernel *conversion intermediate*
+    /// site uses plain [`insert`](Self::insert) and is uncounted, while the terminal
+    /// realization site (gated on `is_terminal_realization`, in `engine_build.rs`)
+    /// uses this method. Keeping the split in two named methods — rather than a
+    /// boolean parameter — makes it explicit at every call site which side it is on.
+    ///
+    /// # Panics
+    ///
+    /// Forwards [`insert`](Self::insert)'s debug-build precondition on `tol`.
+    pub fn insert_terminal(
+        &mut self,
+        entity: &str,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+        val: V,
+    ) -> bool {
+        let inserted = self.insert(entity, repr_kind, tol, options_hash, val);
+        if inserted {
+            self.terminal_entries += 1;
+        }
+        inserted
     }
 
     /// Inserts `val` at `(entity, repr_kind, options_hash, tol)`.
@@ -114,6 +177,12 @@ impl<V> RealizationCache<V> {
     /// `options_hash` bucket — mirroring [`ToleranceBucket::insert`]'s semantics.
     ///
     /// `options_hash = ContentHash(0)` is the "no options" sentinel (PRD §4).
+    ///
+    /// **Uncounted path.** This does NOT move
+    /// [`realization_entries`](Self::realization_entries) — it is the
+    /// intermediate/conversion insert. Use
+    /// [`insert_terminal`](Self::insert_terminal) at the terminal-realization site
+    /// so the realization is counted.
     ///
     /// **Allocation discipline:** the entity `String` key is allocated at most once per
     /// `(entity, repr_kind)` pair, regardless of `options_hash`.  Subsequent inserts at
@@ -856,7 +925,10 @@ mod tests {
 
         // Equal tolerance: dominated by the existing entry.
         let equal = cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 99);
-        assert!(!equal, "equal-tolerance re-insert must be rejected as a hit");
+        assert!(
+            !equal,
+            "equal-tolerance re-insert must be rejected as a hit"
+        );
         assert_eq!(
             cache.realization_entries(),
             1,
