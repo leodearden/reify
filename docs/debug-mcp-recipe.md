@@ -60,14 +60,14 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state}` | `{ok}` — waits until element matches state |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
 
 ### I1 — Editor interaction
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `scroll` | `{target:'editor'\|'preview', top}` | `{ok, scrollTop}` |
+| `scroll` | `{target:'editor'\|'preview', top}` or `{testId, top, viewportId?}` | `{ok, scrollTop}` — `viewportId` applies to the testId (DOM) form only |
 | `type_in_editor` | `{text}` | `{ok}` |
 | `keyboard` | `{key, modifiers?}` | `{ok}` |
 
@@ -85,7 +85,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 | Tool | Args | Returns |
 |------|------|---------|
 | `open_menu` | `{name}` | `{ok, open}` — clicks `[data-testid=menu-trigger-<name>]` |
-| `click_element` | `{testId}` | `{ok}` |
+| `click_element` | `{testId, viewportId?}` | `{ok}` — `viewportId` picks which pane's control to click |
 | `expand_tree_node` | `{testId}` | `{ok}` |
 | `collapse_tree_node` | `{testId}` | `{ok}` |
 
@@ -104,7 +104,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
 | `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection |
-| `element_screenshot` | `{testId}` | `{data}` — base64 PNG of a single element |
+| `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 
 ### F2 — LSP probes

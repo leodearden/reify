@@ -173,12 +173,15 @@ const FEA_CHANNEL_SELECT = '[data-testid="fea-mode-channel-select"]';
  * toolbar is equally valid to drive, so guessing between N of them would
  * silently misapply a channel switch. Ambiguity is an error, not a heuristic.
  *
- * SCOPE (#5891): this ladder covers the channel `<select>` only. The toolbar's
- * other controls still resolve through the generic first-match testid lookup
- * used by click_element/wait_for_selector/dom_query, which with N panes mounted
- * drives pane 0 silently — the loud failure below has no counterpart there yet.
- * Generalizing those resolvers to an optional viewportId scope is #5891; the
- * `data-viewport-id` FeaModeToolbar stamps on its root is the substrate for it.
+ * SCOPE: this ladder covers the channel `<select>` only. Every other control is
+ * scoped by `resolveByTestId` below (#5891), which reads the same
+ * `data-viewport-id`. The two ladders agree on everything except what an
+ * UNSCOPED multi-match means: here it is an ERROR (`selectAmbiguous`), there it
+ * is first-match plus a reported `viewportId`/`matchCount`. That is not drift —
+ * this helper owns exactly one testid, so ambiguity is always a genuine
+ * multi-pane request, whereas the generic resolver serves hundreds of testids
+ * that legitimately repeat and would break every existing caller if it hard-
+ * failed. See `resolveByTestId`'s header for the full reasoning.
  */
 function pickFeaChannelSelect(
   params: Record<string, unknown>,

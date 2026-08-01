@@ -16,23 +16,25 @@
  *   viewportId       — optional id of the pane this toolbar belongs to (#5670).
  *                       Stamped as `data-viewport-id` on the root and on the
  *                       channel select. It is the disambiguator the debug
- *                       bridge's `set_fea_channel` uses to target one pane's
- *                       toolbar when several panes are mounted: the bare
- *                       `data-testid` alone cannot distinguish N toolbars, and
- *                       a document-wide lookup hard-fails with selectAmbiguous.
+ *                       bridge uses to target one pane's toolbar when several
+ *                       panes are mounted: the bare `data-testid` alone cannot
+ *                       distinguish N toolbars. `set_fea_channel` reads it via
+ *                       `pickFeaChannelSelect`; every generic testid resolver
+ *                       reads it via `resolveByTestId` (#5891).
  *                       Optional by design — when omitted no attribute is
  *                       emitted at all, so a single-toolbar caller renders
  *                       exactly as it did before #5670.
  *
- * KNOWN GAP (#5891): only the channel `<select>` is addressable per-viewport.
- * Every sibling control here — the enable toggle, palette select, range-mode
- * radios, range min/max, lock-current, show-deformed and warp slider — is still
- * resolved by the debug bridge's generic first-match
- * `document.querySelector('[data-testid=…]')` (click_element, wait_for_selector,
- * dom_query, focus_element). With N panes mounted those tools silently drive
- * pane 0's toolbar with no diagnostic, where `set_fea_channel` would have failed
- * loudly with selectAmbiguous. The `data-viewport-id` stamped on the ROOT below
- * is the substrate that fix needs — it is already in the DOM, just unread.
+ * Every control here is addressable per-viewport (#5891 closed the gap #5670
+ * left): the enable toggle, palette select, range-mode radios, range min/max,
+ * lock-current, show-deformed and warp slider are all reachable by passing
+ * `viewportId` to click_element / focus_element / scroll / dom_query /
+ * element_screenshot / wait_for_selector, which resolve through the bridge's
+ * shared `resolveByTestId`. What it scopes on is the `data-viewport-id` stamped
+ * on the ROOT below: the scoped query is descendant-OR-SELF, so the root
+ * matches by its own `fea-mode-toolbar` testid as well as containing the nine
+ * controls. Omitting `viewportId` still yields the document-wide first match,
+ * so single-pane callers are unaffected.
  */
 import { Show, createSignal, For, type Component } from 'solid-js';
 import type { FeaModeStore } from '../stores';
@@ -65,10 +67,11 @@ export interface FeaModeToolbarProps {
   /**
    * Id of the pane this toolbar belongs to (#5670), stamped as
    * `data-viewport-id` on the root and on the channel select so the debug
-   * bridge can address one pane's toolbar among several. Omitting it emits no
-   * attribute (Solid drops undefined attribute values), which is what keeps
-   * single-toolbar callers byte-identical and lets the bridge's legacy
-   * unscoped resolution path keep working.
+   * bridge can address one pane's toolbar among several — `set_fea_channel`
+   * via `pickFeaChannelSelect`, and every generic testid resolver via
+   * `resolveByTestId` (#5891). Omitting it emits no attribute (Solid drops
+   * undefined attribute values), which is what keeps single-toolbar callers
+   * byte-identical and lets the bridge's unscoped resolution path keep working.
    */
   viewportId?: string;
 }
