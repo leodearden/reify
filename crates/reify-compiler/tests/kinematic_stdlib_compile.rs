@@ -1026,3 +1026,81 @@ fn coupling_is_generic_with_driving_joint_and_has_motion_bound() {
         entry.resolved
     );
 }
+
+// ─── task 5848: joint direction params are DIMENSIONLESS ──────────────────────
+
+/// The five joint direction params — `Prismatic.axis`, `Revolute.axis`,
+/// `Cylindrical.axis`, `Planar.axis_x`, `Planar.axis_y` — resolve to a
+/// DIMENSIONLESS 3-vector, not `Vec3<Length>`.
+///
+/// Asserts on the RESOLVED `Type`, never on the source spelling, so it is
+/// immune to whether the field is written `Vec3<Dimensionless>` or
+/// `Vector3<Dimensionless>` (both resolve to the same internal type).
+///
+/// This is a correction of a live decl/runtime divergence, not a cosmetic
+/// change: `reify-stdlib/src/helpers.rs validate_dimensionless_unit_axis_vec3`
+/// REJECTS a non-dimensionless axis outright, and gates the joint constructors
+/// in joints.rs — so `revolute(vec3(0mm,0mm,1mm), …)` already evaluated to
+/// `Value::Undef` while kinematic.ri declared `Vec3<Length>`.
+#[test]
+fn joint_direction_params_are_dimensionless_vec3() {
+    let dimensionless_vec3 = Type::vec3(Type::Scalar {
+        dimension: DimensionVector::DIMENSIONLESS,
+    });
+
+    for (structure_name, field) in [
+        ("Prismatic", "axis"),
+        ("Revolute", "axis"),
+        ("Cylindrical", "axis"),
+        ("Planar", "axis_x"),
+        ("Planar", "axis_y"),
+    ] {
+        let template = find_structure(structure_name);
+        let params = param_cells(template);
+        let p = params
+            .iter()
+            .find(|p| p.id.member == field)
+            .unwrap_or_else(|| panic!("{structure_name}.{field} param must exist"));
+        assert_eq!(
+            p.cell_type, dimensionless_vec3,
+            "{structure_name}.{field} denotes a DIRECTION, so its quantity slot must be \
+             dimensionless (task 5848); got: {:?}",
+            p.cell_type
+        )
+    }
+}
+
+/// FENCE for `joint_direction_params_are_dimensionless_vec3`: the retype must
+/// touch ONLY the direction slots. The compliant-joint fields carry genuine
+/// physical dimensions and must keep them — proving dimensionlessness was not
+/// smeared across the whole structure.
+#[test]
+fn compliant_joint_fields_keep_their_dimensions() {
+    let prismatic = param_cells(find_structure("Prismatic"));
+    let neutral = prismatic
+        .iter()
+        .find(|p| p.id.member == "neutral")
+        .expect("Prismatic.neutral param must exist");
+    assert_eq!(
+        neutral.cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        })),
+        "Prismatic.neutral is a rest POSITION, so it stays Option<Length>; got: {:?}",
+        neutral.cell_type
+    );
+
+    let revolute = param_cells(find_structure("Revolute"));
+    let spring_rate = revolute
+        .iter()
+        .find(|p| p.id.member == "spring_rate")
+        .expect("Revolute.spring_rate param must exist");
+    assert_eq!(
+        spring_rate.cell_type,
+        Type::Option(Box::new(Type::Scalar {
+            dimension: DimensionVector::ROTATIONAL_STIFFNESS
+        })),
+        "Revolute.spring_rate stays Option<RotationalStiffness>; got: {:?}",
+        spring_rate.cell_type
+    )
+}
