@@ -9913,7 +9913,7 @@ mod tests {
                 GeometryOp::Draft {
                     target: GeometryHandleId(1),
                     faces: vec![],
-                    angle: Value::Real(0.1),
+                    angle: Value::angle(0.1),
                     plane: GeometryHandleId(2),
                 },
             ),
