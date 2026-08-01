@@ -1,7 +1,11 @@
 // Lezer grammar for the Reify CAD language
 // Ported from tree-sitter-reify/grammar.js
 
-@top SourceFile { Declaration* }
+// `module` is admitted ONLY here, never as a member of `Declaration`, so a
+// module decl after any other declaration is a natural parse ERROR — the
+// grammar enforces the top-of-file / one-per-file rule (PRD D-5 §7.2) with no
+// extra code, exactly as tree-sitter-reify/grammar.js:126-132 does.
+@top SourceFile { ModuleDeclaration? Declaration* }
 
 @skip { whitespace | LineComment | BlockComment }
 
@@ -12,14 +16,46 @@ Declaration {
   ImportDeclaration
 }
 
+// ── Module ───────────────────────────────────────────────
+ModuleDeclaration {
+  kw<"module"> ModulePath
+}
+
+// Dot-separated module path: `std.mechanical.fasteners`
+ModulePath {
+  Identifier ("." Identifier)*
+}
+
 // ── Imports ──────────────────────────────────────────────
+// Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
+// retained for the legacy `import "foo.ri"` form.
+//
+// UNSETTLED — the destructured form's separator. This port follows the
+// tree-sitter RULE, which sequences import_path then import_items with NO
+// separator (`import a.b {C, D}`). But grammar.js's own doc comment on that
+// rule (:263) and the lowering at crates/reify-syntax/src/ts_parser.rs:538
+// both spell it `import a.b.{C, D}`, with a dot. The rule and the two comments
+// therefore disagree, and nothing settles it: `import_items` has no
+// tree-sitter corpus test, no committed `.ri` uses it (every import under
+// examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
+// `import x as y`), and no Rust code matches on the node name. The corpus test
+// deliberately does NOT pin either spelling — asserting one would cement an
+// unverified shape as an intentional GUI contract. Filed as a follow-up so the
+// canonical form is decided against the authoritative surface first.
 ImportDeclaration {
-  kw<"import"> String
+  kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
+}
+
+ImportItems {
+  "{" (Identifier ("," Identifier)* ","?)? "}"
 }
 
 // ── Structure ───────────────────────────────────────────
+// Mirrors tree-sitter-reify/grammar.js:504-515 — `pub` and `def` are both
+// optional; the bare `structure Foo { }` form is still used by many committed
+// fixtures, so it must keep parsing.
 StructureDefinition {
-  kw<"structure"> Identifier Block
+  kw<"pub">? kw<"structure"> kw<"def">? Identifier Block
 }
 
 Block {
@@ -50,8 +86,44 @@ TypeAnnotation {
   ":" TypeExpr
 }
 
+// Four-way choice transliterated from tree-sitter-reify grammar.js:1064-1140.
+// The leading token is unique per alternative — `(` for FunctionType, `Name<`
+// for ParameterizedType, `Name::` for QualifiedType — so no precedence hacks
+// are needed. `auto_type_arg` (`Bearing<auto: Seal>`) is deliberately deferred:
+// no manifest fixture exercises it and it is outside this header-level scope.
 TypeExpr {
+  FunctionType |
+  ParameterizedType |
+  QualifiedType |
   Identifier
+}
+
+// Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U`
+FunctionType {
+  "(" (TypeExpr ("," TypeExpr)* ","?)? ")" "->" TypeExpr
+}
+
+// A type with type arguments: `Box<T>`, `Tensor<2, 3, Force>`
+ParameterizedType {
+  Identifier "<" TypeArgList ">"
+}
+
+// Qualified type-expr: `Beam::Material`, `Beam::(HasMaterial::Material)`.
+// The parenthesized form encodes the FORK-G trait disambiguator (PRD §3.5
+// Phase 8). The base is widened to `Identifier | ParameterizedType` for
+// applied-base projection (`Coupling<Prismatic>::MotionValue`); restricting it
+// to ParameterizedType rather than full TypeExpr avoids recursive
+// qualified-in-base ambiguity.
+QualifiedType {
+  (Identifier | ParameterizedType) "::" (Identifier | "(" Identifier "::" Identifier ")")
+}
+
+TypeArgList {
+  typeArg ("," typeArg)* ","?
+}
+
+typeArg {
+  TypeExpr | Number
 }
 
 DefaultValue {
@@ -192,14 +264,32 @@ CompareOp<expr> { expr }
 // ── M5 Reserved Keywords (forward-compat highlighting) ──
 // These use @specialize to replace Identifier with ReservedWord,
 // causing parse errors when used as identifiers (correct reserved-word behavior).
-// They parse correctly in expression context via the primaryExpression rule.
+// The words REMAINING in this list parse in expression context via the
+// primaryExpression rule (which reaches them through `ReservedWord`).
+//
+// A word promoted to a real `kw<>` production MUST be removed from this list:
+// lezer-generator permits only one replacement name per (base token, literal)
+// pair and otherwise hard-fails with
+//   Conflicting names for specialization "def" of Identifier
+// `pub`/`def` (StructureDefinition) and `module`/`as` (ModuleDeclaration,
+// ImportDeclaration) were promoted out of this list; their keyword styling is
+// re-pinned explicitly in highlight.ts.
+//
+// Removal has one behavioural consequence worth stating precisely: the four
+// promoted words are NO LONGER reachable from primaryExpression, so they now
+// produce an error node in expression position where they previously produced
+// none (measured: `structure def F { let x = pub }` → 1 error node, and the
+// same for `def`/`module`/`as`, while the still-listed `trait` → 0). No
+// committed fixture is affected, and erroring on a keyword in expression
+// position is the more correct behaviour, so this is recorded rather than
+// worked around.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
     "trait" | "fn" | "enum" | "match" | "connect" | "chain" |
-    "occurrence" | "purpose" | "field" | "pub" | "def" | "port" |
-    "type" | "module" | "unit" | "forall" | "exists" | "implies" |
+    "occurrence" | "purpose" | "field" | "port" |
+    "type" | "unit" | "forall" | "exists" | "implies" |
     "and" | "or" | "not" | "in" | "out" | "meta" | "self" |
-    "undef" | "some" | "none" | "set" | "map" | "as">
+    "undef" | "some" | "none" | "set" | "map">
 }
 
 @external propSource reifyHighlighting from "./highlight"
@@ -239,8 +329,13 @@ ReservedWord {
   @precedence { "<=", "<" }
   @precedence { ">=", ">" }
   @precedence { "!=", "!" }
+  // `->` must win over `-` and `::` over `:`, else the longer token is never
+  // formed (arrow types and qualified types both become error nodes).
+  @precedence { "->", "-" }
+  @precedence { "::", ":" }
   @precedence { BlockComment, LineComment, "/" }
 
   "(" ")" "{" "}" "." "," ":" "="
   "||" "&&" "==" "+" "-" "*"
+  "::" "->" "<" ">"
 }
