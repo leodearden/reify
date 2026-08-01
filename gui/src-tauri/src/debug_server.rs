@@ -105,13 +105,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "dom_query",
-            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect.",
+            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect. Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value to query"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Scope the query to the pane whose [data-viewport-id] subtree contains (or is) the element. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched. A testId not present in the named pane yields { exists: false }, not an error."
                     }
                 },
                 "required": ["testId"]
@@ -124,13 +128,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "click_element",
-            description: "Click a DOM element by data-testid. Dispatches a synthetic click event.",
+            description: "Click a DOM element by data-testid. Dispatches a synthetic click event. Optional viewportId scopes resolution to one viewport pane — required to click a per-pane control unambiguously when several panes are mounted.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value of the element to click"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Click the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched."
                     }
                 },
                 "required": ["testId"]
@@ -263,13 +271,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "element_screenshot",
-            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Frontend-mediated (no Rust dispatch arm).",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for. Frontend-mediated (no Rust dispatch arm).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "Value of the data-testid attribute on the target element (e.g. \"diagnostics-dialog\")."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched."
                     }
                 },
                 "required": ["testId"]
@@ -587,13 +599,13 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for",
-            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text?, viewportId? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. The selector arm's optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text? } or { kind: 'store', path, equals }"
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -601,7 +613,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -609,6 +621,10 @@ fn tool_defs() -> Vec<ToolDef> {
                     "testId": { "type": "string" },
                     "state": { "type": "string", "enum": ["visible", "gone"] },
                     "text": { "type": "string" },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount."
+                    },
                     "timeout_ms": { "type": "integer" }
                 }
             }),
@@ -827,13 +843,18 @@ fn tool_defs() -> Vec<ToolDef> {
             name: "focus_element",
             description: "Focus a DOM element by its data-testid attribute. \
                           Calls el.focus() on the resolved element. \
-                          Returns {ok: true} on success or {error} if not found or testId is missing.",
+                          Returns {ok: true} on success or {error} if not found or testId is missing. \
+                          Optional viewportId scopes resolution to one viewport pane.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value of the element to focus"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Focus the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched."
                     }
                 },
                 "required": ["testId"]
@@ -860,13 +881,19 @@ fn tool_defs() -> Vec<ToolDef> {
                           DOM mode: pass testId to set scrollTop/scrollLeft on the resolved element. \
                           Editor mode: pass target:'editor' to scroll the CodeMirror scrollDOM. \
                           Returns {ok: true, scrollTop, scrollLeft} with the resulting scroll offsets \
-                          (enabling a get_layout_metrics round-trip to confirm the applied offset).",
+                          (enabling a get_layout_metrics round-trip to confirm the applied offset). \
+                          Optional viewportId scopes DOM-mode resolution to one viewport pane; it is \
+                          ignored in editor mode, which resolves no data-testid.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "data-testid of the DOM element to scroll (DOM mode)"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional, DOM mode only. Scroll the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched. Ignored (never rejected) when target:'editor'."
                     },
                     "target": {
                         "type": "string",
@@ -1667,32 +1694,62 @@ async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Valu
         .await
 }
 
+/// Default poll deadline for `wait_for_selector`, in milliseconds.
+const WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS: u64 = 5_000;
+
+/// Build the params `wait_for_selector` forwards to the frontend.
+///
+/// This is an explicit ALLOWLIST, unlike every other frontend-mediated tool —
+/// those hand their params to `query_frontend` wholesale, so a new schema
+/// property reaches the bridge with no Rust change at all. Here an un-listed key
+/// is dropped SILENTLY, which is why this is a named, separately-tested function
+/// rather than an inline block: adding a param to the schema without adding it
+/// here advertises a capability the frontend never receives.
+///
+/// `viewportId` (#5891) is copied through VERBATIM, including a wrongly-typed
+/// value. Re-validating it here would create a second rejection site that can
+/// drift from the frontend's wording; the frontend's ladder stays the only one.
+/// When the caller omitted it the key is omitted entirely rather than emitted as
+/// null, because the frontend branches on `viewportId !== undefined` — a null
+/// would read as a scoped request for a pane that can never match.
+///
+/// Pure (no `DebugServerState`) so the contract is unit-testable directly.
+fn canonical_wait_for_selector_params(params: &Value) -> Value {
+    let timeout_ms = params
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .filter(|&n| n > 0)
+        .unwrap_or(WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS);
+
+    let mut canonical = serde_json::Map::new();
+    canonical.insert("timeout_ms".to_string(), json!(timeout_ms));
+    for key in ["testId", "state", "text", "viewportId"] {
+        if let Some(v) = params.get(key) {
+            canonical.insert(key.to_string(), v.clone());
+        }
+    }
+    Value::Object(canonical)
+}
+
 async fn handle_wait_for_selector(
     state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
-    // Validate and canonicalize timeout_ms. Default 5000ms.
-    let timeout_ms: u64 = match params.get("timeout_ms") {
-        None => 5_000,
-        Some(v) => match v.as_u64().filter(|&n| n > 0) {
-            Some(n) => n,
-            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
-        },
-    };
+    // Validate timeout_ms — the only rejection this handler owns. Canonicalization
+    // itself lives in the pure helper below.
+    if let Some(v) = params.get("timeout_ms") {
+        if v.as_u64().filter(|&n| n > 0).is_none() {
+            return Ok(json!({"error": "timeout_ms must be a positive integer"}));
+        }
+    }
 
-    // Build canonical params and pass through to the frontend.
-    let mut canonical_params = serde_json::Map::new();
-    canonical_params.insert("timeout_ms".to_string(), json!(timeout_ms));
-    if let Some(v) = params.get("testId") {
-        canonical_params.insert("testId".to_string(), v.clone());
-    }
-    if let Some(v) = params.get("state") {
-        canonical_params.insert("state".to_string(), v.clone());
-    }
-    if let Some(v) = params.get("text") {
-        canonical_params.insert("text".to_string(), v.clone());
-    }
-    let canonical_params = Value::Object(canonical_params);
+    let canonical_params = canonical_wait_for_selector_params(&params);
+    // Read the timeout back OUT of the canonical params rather than re-deriving it,
+    // so the Rust-side guard and the value the frontend actually polls on cannot
+    // drift apart.
+    let timeout_ms = canonical_params["timeout_ms"]
+        .as_u64()
+        .unwrap_or(WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS);
 
     let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
     state
