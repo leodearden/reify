@@ -262,6 +262,95 @@ describe('reify.grammar snippets — named call arguments', () => {
 });
 
 /**
+ * Collection literals and index access, transliterated from
+ * tree-sitter-reify/grammar.js:1557-1566 (`list_literal`, `set_literal`,
+ * `map_literal`, `map_entry`) and :1578-1583 (`index_access`).
+ *
+ * Measured before the fix: `structure def F { let x = [1, 2] }` → 3 error
+ * nodes, because the grammar had no `[` token at all. List literals appear in
+ * 83 of the 239 then-failing files and index access in 50 — the second-largest
+ * lever after named call arguments, and inseparable from it because the same
+ * files use both.
+ */
+describe('reify.grammar snippets — collection literals and indexing', () => {
+  it('parses a list literal `[1, 2]`', () => {
+    expect(countErrorNodes('structure def F { let x = [1, 2] }')).toBe(0);
+  });
+
+  it('parses the empty list `[]`', () => {
+    expect(countErrorNodes('structure def F { let x = [] }')).toBe(0);
+  });
+
+  it('parses a trailing comma in a list `[1, 2,]`', () => {
+    expect(countErrorNodes('structure def F { let x = [1, 2,] }')).toBe(0);
+  });
+
+  it('parses a nested list `[[1], [2]]`', () => {
+    expect(countErrorNodes('structure def F { let x = [[1], [2]] }')).toBe(0);
+  });
+
+  // Corpus-attested (examples/assembly_rollup.ri): a list literal is a primary
+  // expression, so `.sum` must still reach it through MemberAccess.
+  it('parses a member access on a list literal `[a.b, c.d].sum`', () => {
+    expect(
+      countErrorNodes('structure def F { let total = [self.a.cost, self.b.cost].sum }'),
+    ).toBe(0);
+  });
+
+  it('parses index access `pts[0]`', () => {
+    expect(countErrorNodes('structure def F { let a = pts[0] }')).toBe(0);
+  });
+
+  it('parses a chained index access `m.rows[i]`', () => {
+    expect(countErrorNodes('structure def F { let a = m.rows[i] }')).toBe(0);
+  });
+
+  it('parses an index into a call result `f(x)[0]`', () => {
+    expect(countErrorNodes('structure def F { let a = f(x)[0] }')).toBe(0);
+  });
+
+  it('parses a set literal `set { 1, 2 }`', () => {
+    expect(countErrorNodes('structure def F { let s = set { 1, 2 } }')).toBe(0);
+  });
+
+  // Corpus-attested (tests/prd-gate/fixtures/expected_type_pushdown_let.ri).
+  it('parses the empty set literal `set {}`', () => {
+    expect(countErrorNodes('structure def F { let s : Set<Length> = set {} }')).toBe(0);
+  });
+
+  it('parses a map literal `map { 1 => 2 }`', () => {
+    expect(countErrorNodes('structure def F { let m = map { 1 => 2 } }')).toBe(0);
+  });
+
+  // Corpus-attested spelling (examples/load_case.ri): no space before `{`.
+  it('parses the tight map form `map{"a" => 1, "b" => 2}`', () => {
+    expect(countErrorNodes('structure def F { let raw = map{"a" => 1, "b" => 2} }')).toBe(0);
+  });
+
+  it('yields ListLiteral and IndexAccess nodes', () => {
+    const names = nodeNames('structure def F { let a = [1, 2][0] }');
+    expect(names).toContain('ListLiteral');
+    expect(names).toContain('IndexAccess');
+  });
+
+  it('yields SetLiteral, MapLiteral and MapEntry nodes', () => {
+    expect(nodeNames('structure def F { let s = set { 1 } }')).toContain('SetLiteral');
+    const mapNames = nodeNames('structure def F { let m = map { 1 => 2 } }');
+    expect(mapNames).toContain('MapLiteral');
+    expect(mapNames).toContain('MapEntry');
+  });
+
+  // `set` and `map` must leave the ReservedWord @specialize list to become
+  // `kw<>` productions (lezer-generator permits one replacement name per
+  // (base token, literal) pair). Guard the consequence: a Block still opens
+  // with `{` after a plain declaration header, i.e. the new `kw<"set"> "{"`
+  // sequence did not capture the brace.
+  it('still parses a plain block after promoting `set`/`map`', () => {
+    expect(countErrorNodes('structure def F { param a : Length = 1mm }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
