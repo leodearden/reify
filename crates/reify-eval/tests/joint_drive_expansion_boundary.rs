@@ -1036,33 +1036,27 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 
     // ---- (ii) merged whole-assembly cost STRICTLY LESS than the baseline. ----
 
-    // Prefer the parent's `let total_cost` aggregate; fall back to the child's
-    // derived `Costed.line_cost`. With ONE depth-1 Costed descendant the two are
-    // the same number (`cost(self.descendants)` == `[rivets.line_cost].sum`), so
-    // either is a faithful whole-assembly cost — but BOTH sides must be read
-    // from the SAME cell or the comparison is not apples-to-apples.
-    let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
+    // Read the child's derived `Costed.line_cost`. With ONE depth-1 Costed
+    // descendant it IS the whole-assembly cost, exactly:
+    // `cost(self.descendants)` == `[rivets.line_cost].sum`. Both sides must be
+    // read from the SAME cell or the comparison is not apples-to-apples.
+    //
+    // The parent's own `let total_cost : Money = cost(self.descendants)` is
+    // deliberately NOT a candidate here: it stays unresolved post-solve in
+    // BOTH halves, a known engine gap pinned executably by
+    // `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
+    // (immediately below) and tracked by #5835.
     let line_cost = ValueCellId::new("Rivet", "line_cost");
-    let (cost_id, which) = if scalar_si_opt(&merged, &total_cost).is_some()
-        && scalar_si_opt(&frozen, &total_cost).is_some()
-    {
-        (total_cost, "the parent's `let total_cost` aggregate")
-    } else {
-        (
-            line_cost,
-            "the child's derived `Costed.line_cost` (the parent aggregate did \
-             not materialise as a Scalar post-solve)",
-        )
-    };
 
-    let merged_cost = scalar_si(&merged, &cost_id, "merged");
-    let frozen_cost = scalar_si(&frozen, &cost_id, "frozen-cascade");
+    let merged_cost = scalar_si(&merged, &line_cost, "merged");
+    let frozen_cost = scalar_si(&frozen, &line_cost, "frozen-cascade");
     assert!(
         merged_cost < frozen_cost,
-        "BT-5(ii): the merged whole-assembly cost (read from {which}) must be \
-         STRICTLY LESS than the bottom-up frozen-cascade baseline — that gap IS \
-         the user-observable joint-drive signal. Got merged={merged_cost} vs \
-         frozen={frozen_cost} (saving {}).",
+        "BT-5(ii): the merged whole-assembly cost (read from the child's \
+         derived `Costed.line_cost`) must be STRICTLY LESS than the bottom-up \
+         frozen-cascade baseline — that gap IS the user-observable joint-drive \
+         signal. Got merged={merged_cost} vs frozen={frozen_cost} (saving \
+         {}).",
         frozen_cost - merged_cost,
     );
 
