@@ -1805,15 +1805,13 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         return { error: 'testId is required' };
       }
 
-      // CSS.escape may not be available in all environments (e.g. jsdom).
-      const escaped =
-        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-          ? CSS.escape(testId)
-          : testId.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`);
-      if (!el) {
-        return { error: `element with data-testid="${testId}" not found` };
-      }
+      // #5891: resolution is the ONLY thing that moves here. The guard order —
+      // testId presence/type, then resolution, then the zero-area check, then
+      // capture — is unchanged, so 'element has zero area' and 'screenshot too
+      // large' stay reachable on exactly the conditions they were before.
+      const r = resolveByTestId(testId, params.viewportId);
+      if ('error' in r) return r;
+      const el = r.el;
 
       const rect = el.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) {
@@ -1860,7 +1858,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         return { error: 'screenshot too large', size: cropped.length, limit: MAX_SCREENSHOT_CHARS };
       }
 
-      return { data: cropped };
+      return { data: cropped, ...paneDiagnostics(r, params.viewportId !== undefined) };
     },
   };
 }
