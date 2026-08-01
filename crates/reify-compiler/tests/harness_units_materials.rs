@@ -3,6 +3,25 @@
 //! `tests/{materials,money,unit,cost,affine}_*.rs` binaries.
 //! Task #5284 (leaf CMP-2, batch 2 of 6).
 //!
+//! Routing vs. the sibling `harness_units.rs` root — read this before adding a unit test.
+//! The two unit-flavoured roots exist by concurrent construction, not by design:
+//! `harness_units.rs` did not exist at this batch's fork base (7a21980c88) — task #5786
+//! (angle-units θ) created it on main while this sweep was in flight, and it reached this
+//! branch via the sync-main step. The line between them is subsystem, not filename:
+//!   - `harness_units/` is the angle-units cluster-C home, bound by
+//!     `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md` §C3. It pins
+//!     the stdlib unit *surface* — which symbols `stdlib/units.ri` ships (θ's `Nm`), and how
+//!     the four display-label surfaces round-trip (#5789, pre-bound to
+//!     `harness_units/unit_label_round_trip.rs`).
+//!   - THIS root holds the compiler-side unit *machinery* — `UnitEntry` / `UnitRegistry`,
+//!     the `unit`-declaration pre-pass, dimension resolution — beside the materials / money
+//!     / cost / affine clusters it was swept with.
+//! Do NOT fold the two roots together: #5789's M1 binding and its `harness_units`
+//! delivered_check both require `harness_units.rs` to keep existing. That file's "μ should
+//! add its module here rather than create a second unit-subsystem harness" steer is aimed at
+//! #5789, not at these pre-existing `unit_*_tests.rs`; the reciprocal note there is outside
+//! this leaf's lock set.
+//!
 //! Layout contract C1 (naming, the mandatory `#[path]`, kLOC cap, baseline ratchet):
 //! see `tests/infra/test_harness_kloc_cap.sh` C1 header and
 //! `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1 — kept there, not restated here.
