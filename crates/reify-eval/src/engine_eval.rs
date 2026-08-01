@@ -631,10 +631,22 @@ fn build_combined_param_let_graph(
 /// PRD §3.6/§10.2, boundary sketch B10).
 ///
 /// Walks ALL `templates` and builds a **global** read-set of every
-/// [`ValueCellId`] that any constraint expression or objective term reads, using
-/// [`extract_dependency_trace`].  An `auto` value cell whose id is **absent**
-/// from that global read-set has no constraint or objective pinning it — its
-/// value is underdetermined (free) — and receives a `W_UNDERDETERMINED` warning.
+/// [`ValueCellId`] that any constraint expression or objective term reads —
+/// **transitively**, via [`CellReadIndex::read_closure`].  An `auto` value cell
+/// whose id is **absent** from that closure has no constraint or objective
+/// pinning it — its value is underdetermined (free) — and receives a
+/// `W_UNDERDETERMINED` warning.
+///
+/// **Let-tracing (LAYER 4, task #5467 / PRD2 α):** the read-set is a transitive
+/// CLOSURE and not the one-hop [`extract_dependency_trace`] reads it once was.
+/// For `let s = a + b; constraint s == 10.0` the one-hop read-set is `{S.s}`,
+/// never `{S.a, S.b}`, so both autos were reported free even though that single
+/// constraint pins them jointly.  Because this pass runs OUTSIDE the
+/// `has_active_solver` gate and never consults the `ResolutionProblem`, it is
+/// the direct producer of the user-visible signal: no amount of solver-side
+/// fixing (layers 1–3) clears it.  The closure is a strict SUPERSET of the old
+/// read-set, so a cell unflagged today stays unflagged; a cell becomes unflagged
+/// only when a constraint or objective genuinely reaches it, which is the fix.
 ///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
 /// `has_active_solver` gate so the warning surfaces on `reify check` even
@@ -664,22 +676,32 @@ fn build_combined_param_let_graph(
 /// redundant because it is already present in `cell_id`.  This is intentional for
 /// discoverability (grep/log searches on the scope name alone hit this message)
 /// and the redundancy is pinned by existing tests.
-fn detect_underdetermined(templates: &[reify_compiler::TopologyTemplate]) -> Vec<Diagnostic> {
-    // Build global read-set from ALL templates' constraint expressions AND
+fn detect_underdetermined(
+    templates: &[reify_compiler::TopologyTemplate],
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+) -> Vec<Diagnostic> {
+    // Build the global read-set from ALL templates' constraint expressions AND
     // objective terms.  An auto cell referenced only by an objective (e.g.
     // η/θ centrality designs) is determined by that objective — exclude it.
-    let mut global_reads: HashSet<ValueCellId> = HashSet::new();
+    //
+    // The set is the TRANSITIVE CLOSURE of those reads, not the one-hop reads
+    // themselves (LAYER 4, task #5467 / PRD2 α).  See the "let-tracing" section
+    // of this fn's doc comment for why one hop is not enough.
+    let mut seeds: Vec<&CompiledExpr> = Vec::new();
     for template in templates {
         for constraint in &template.constraints {
-            global_reads.extend(extract_dependency_trace(&constraint.expr).reads);
+            seeds.push(&constraint.expr);
         }
         // Objective read-sets (mirrors detect_scope_coupling at engine_eval.rs:609-614).
         if let Some(obj) = &template.objective {
             for term in &obj.terms {
-                global_reads.extend(extract_dependency_trace(&term.expr).reads);
+                seeds.push(&term.expr);
             }
         }
     }
+    let global_reads = CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes)
+        .read_closure(seeds.into_iter());
 
     // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
     // from the global read-set.  auto(free) cells are intentionally free by
@@ -5995,8 +6017,13 @@ impl Engine {
 
         // Static underdetermination detection (task κ #4019 — W_UNDERDETERMINED, PRD §3.6/§10.2).
         // Placed OUTSIDE the `has_active_solver` gate (same rationale as detect_scope_coupling).
-        // Emits a warning for each auto value cell absent from the global constraint read-set.
-        diagnostics.extend(detect_underdetermined(&module.templates));
+        // Emits a warning for each auto value cell absent from the global constraint read-set —
+        // TRANSITIVELY since task #5467, so an auto pinned only through a `let` is not flagged.
+        diagnostics.extend(detect_underdetermined(
+            &module.templates,
+            self.max_unfold_depth,
+            self.max_unfold_nodes,
+        ));
 
         // Ambiguous objective inheritance detection (task δ #4825 — W_OBJECTIVE_INHERIT_AMBIGUOUS,
         // PRD §3.4/§6.4, BT8). Placed OUTSIDE the `has_active_solver` gate so the warning
