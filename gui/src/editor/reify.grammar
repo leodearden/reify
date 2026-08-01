@@ -308,7 +308,11 @@ BinaryExpression {
   expression !additive ArithOp<"+"> expression |
   expression !additive ArithOp<"-"> expression |
   expression !multiplicative ArithOp<"*"> expression |
-  expression !multiplicative ArithOp<"/"> expression
+  expression !multiplicative ArithOp<"/"> expression |
+  // Value-level exponent. Only ever reached with whitespace around the `^`
+  // (`(5mm ^ 2) / (1mm ^ 2)`, examples/unit_expressions.ri:23) — the
+  // contiguous form is a unit exponent and is lexed inside QuantityLiteral.
+  expression !exponent ArithOp<"^"> expression
 }
 
 UnaryExpression {
@@ -478,6 +482,12 @@ ReservedWord {
 // operator, which is why `kwNot` is here rather than beside `unary`.
 @precedence {
   postfix @left,
+  // Value-level `^` — tree-sitter prec.right 8, i.e. TIGHTER than unary (7)
+  // and multiplicative (6). So `-2 ^ 2` is `-(2 ^ 2)` and `2 * 3 ^ 2` is
+  // `2 * (3 ^ 2)`, both pinned by leftOperandOf assertions in the corpus test.
+  // This is the SPACED reading only; the contiguous `m^3` never reaches the
+  // parser, having been consumed whole by the QuantityLiteral token.
+  exponent @right,
   unary @right,
   multiplicative @left,
   additive @left,
@@ -504,8 +514,39 @@ ReservedWord {
 
   @precedence { QuantityLiteral, Number, Identifier }
 
-  // QuantityLiteral: digits immediately followed by alpha unit (e.g. 80mm, 3.5deg)
-  QuantityLiteral { @digit+ ("." @digit+)? $[a-zA-Z_] $[a-zA-Z0-9_]* }
+  // QuantityLiteral: digits immediately followed by a contiguous UNIT
+  // EXPRESSION — `80mm`, `3.5deg`, `7850kg/m^3`, `0.5W/(m*K)`, `1m^-1`.
+  //
+  // WHY THIS IS A TOKEN AND NOT A PARSE RULE. grammar.js:1508-1533 models
+  // `unit_expr` as a parse rule, but polices it with a C external scanner
+  // (`_unit_expr_start`, `_unit_mul_op`, `_unit_div_op`, `token.immediate('^')`)
+  // that fires only when the operator is IMMEDIATELY adjacent and followed by
+  // something that can start a unit. Lezer has no external scanner, so
+  // transliterating the rule structurally would drop the contiguity constraint
+  // entirely and mis-parse whitespace-separated division as a unit. Contiguity
+  // is intrinsically a lexer property in both systems — `token.immediate` IS a
+  // lexer directive — so keeping it in the token is the faithful translation,
+  // not a shortcut.
+  //
+  // THE GREEDINESS BOUND. `unitAtom` must begin with `[a-zA-Z_(]`, exactly as
+  // the upstream scanner requires. That is what stops `25USD/1kg` being
+  // swallowed whole: `1` is a digit, so the token ends at `25USD` and `/ 1kg`
+  // is left to the expression grammar as a binary division. Pinned by three
+  // `leftOperandOf` assertions, which are needed because the greedy parse has
+  // zero error nodes — it would be wrong, not broken.
+  QuantityLiteral { @digit+ ("." @digit+)? unitName unitPow? (unitOp unitAtom)* }
+
+  unitName { $[a-zA-Z_] $[a-zA-Z0-9_]* }
+  unitPow { "^" "-"? @digit+ }
+  unitOp { "*" | "/" }
+  unitAtom { unitName unitPow? | unitParen }
+
+  // Parenthesised denominator: `(m*K)`, `(kg*K)`, `(m*s)`. Deliberately ONE
+  // level deep and non-recursive — lezer token rules compile to a DFA, so the
+  // centre-embedded `"(" unitExpr ")"` that upstream can express is not a
+  // regular language and would not compile. Every parenthesised unit in the
+  // committed corpus is exactly this shape.
+  unitParen { "(" unitName unitPow? (unitOp unitName unitPow?)* ")" }
 
   Number { @digit+ ("." @digit+)? }
 
@@ -529,6 +570,6 @@ ReservedWord {
   @precedence { "..<", "..", "." }
 
   "(" ")" "{" "}" "[" "]" "." "," ":" "="
-  "||" "&&" "==" "+" "-" "*"
+  "||" "&&" "==" "+" "-" "*" "^"
   "::" "->" "=>" "<" ">" ".." "..<"
 }
