@@ -257,11 +257,17 @@ ts_freshest_run_dir() {
 #
 # WHY MIRROR: a real checkout accumulates leftover fingerprint dirs (7 in this
 # lane) that cargo will never rebuild again and which therefore carry no
-# attestation. They are correctly reported by a plain `check` — the ledger in
-# `ensure` is what stops them costing a recompile per run — but in an end-to-end
-# test they would drown the one signal under test. Nothing is weakened: the
-# stamp mirrored here is the one build.rs genuinely wrote next to the archive
-# cargo genuinely just built.
+# attestation. In an end-to-end test they would drown the one signal under test.
+# Nothing is weakened: the stamp mirrored here is the one build.rs genuinely
+# wrote next to the archive cargo genuinely just built.
+#
+# This is NOT compensating for `check` being unusable against a real target/ —
+# that was true when this helper was written, and is no longer (#5629 review
+# round 2). `check` now scopes its failing verdict to the LIVE fingerprint dir
+# and demotes those leftovers to informational lines, so a plain `check` against
+# the real tree is meaningful and is what verify.sh runs after the cargo wave.
+# The mirror is kept only to pin the assertion to one KNOWN dir, so the test
+# cannot be perturbed by whatever else has been built in the lane.
 ts_mirror_run_dir() {
     local dest="$1" run_dir name out
     run_dir=$(ts_freshest_run_dir)
