@@ -541,9 +541,58 @@ structure FeaBodyNonPrismatic {
 /// is already guaranteed by the single `body`/`material` args, and the inline
 /// form is the shape proven to compile here. See `NON_PRISMATIC_BODY_SOURCE`
 /// above for the cylinder-vs-CSG rationale.
+///
+/// ## Why this fixture declares a `RepresentationWithin` bound — PRECONDITION
+///
+/// **Without the bound, `realization_entries` cannot move for ANY body shape.**
+/// This is not incidental; it is a deliberate production semantic, and reading
+/// this fixture without understanding it will mislead.
+///
+/// The terminal realization-cache insert (`engine_build.rs`, the site
+/// `insert_terminal` was wired into) is triple-gated on
+/// `is_terminal_realization && demanded_tol.is_some() && realization_name.is_some()`.
+/// `demanded_tol` comes from `compute_demanded_tols` →
+/// `demanded_tolerance_for_output(&t.name, &r.id.entity)`, whose priority chain
+/// is `extract_output_tolerance_bound` then `active_tolerance_for`. A `.ri`
+/// module with NO tolerance contract yields `None` on both, and
+/// `engine_build.rs` states the consequence outright: *"when both return None no
+/// cache entry is written (the helper preserves historical 'no tolerance
+/// contract → no caching' semantics)"*. Measured on the un-bounded form of this
+/// very fixture: `realization_cache().len() == 0` and the counter stayed 0, even
+/// though `realization_kernel_provenance()` reported one `(VolumeMesh, Gmsh)`
+/// realization — the mesh IS built, it is simply never cached.
+///
+/// So the bound below is what makes the re-mesh-avoidance signal OBSERVABLE. It
+/// does not manufacture the signal: the realization count is whatever it is;
+/// the bound only decides whether the cache records it.
+///
+/// Two mechanical notes on the shape, both load-bearing:
+///   * `extract_output_tolerance_bound`'s gate 1 is `id.entity !=
+///     output_template_name → continue`, and `output_template_name` is bound to
+///     the template that OWNS the realization. So the constraint must live in
+///     THIS structure — a sibling checker structure (the
+///     `examples/representation_within.ri` / `fea_bracket_member_access.ri`
+///     shape) would be filtered out here.
+///   * The extractor DISCARDS the subject (`let Some((_vcid, _struct_name,
+///     si_value)) = …`) and min-folds only the bound, so the subject need only
+///     satisfy the recognition shape: `arg0.result_type` must be
+///     `Type::StructureRef(_)` and `arg0.kind` a bare `ValueRef`. `mesh_tol`
+///     below is exactly that. It is deliberately NOT the cylinder: pointing the
+///     assertion at realized geometry would make it a three-valued
+///     Satisfied/Violated *measurement* of chord deviation, which is
+///     `representation_within.ri`'s subject and not this test's. Here it stays
+///     Indeterminate (no realization under `FeaMeshTolerance`), which is the
+///     graceful no-diagnostic path.
 #[cfg(has_gmsh)]
 const NON_PRISMATIC_MULTI_CASE_BODY_SOURCE: &str = r#"
+structure FeaMeshTolerance {
+    param nominal : Real = 1.0
+}
+
 structure FeaBodyNonPrismaticMultiCase {
+    param mesh_tol : FeaMeshTolerance = FeaMeshTolerance()
+    constraint RepresentationWithin(mesh_tol, 100um)
+
     let material = Steel_AISI_1045()
     let body     = cylinder(50mm, 200mm)
     let lc1 = LoadCase(
@@ -557,6 +606,36 @@ structure FeaBodyNonPrismaticMultiCase {
         supports: [FixedSupport(target: "root")],
     )
     let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
+}
+"#;
+
+/// ONE-case control variant of [`NON_PRISMATIC_MULTI_CASE_BODY_SOURCE`] — byte-
+/// identical but for the dropped `lc2` (task 4152, step-13 assertion 2).
+///
+/// This is the shape-robust half of the B9 signal. Asserting "the two-case build
+/// realizes exactly once" alone is weak: a module that realized once for reasons
+/// unrelated to case-sharing would satisfy it. Comparing the two-case delta
+/// against the ONE-case delta over the SAME body isolates the actual claim —
+/// adding a second load case adds ZERO new realization entries — independently
+/// of how many realizations the module contains for other reasons.
+#[cfg(has_gmsh)]
+const NON_PRISMATIC_ONE_CASE_BODY_SOURCE: &str = r#"
+structure FeaMeshTolerance {
+    param nominal : Real = 1.0
+}
+
+structure FeaBodyNonPrismaticMultiCase {
+    param mesh_tol : FeaMeshTolerance = FeaMeshTolerance()
+    constraint RepresentationWithin(mesh_tol, 100um)
+
+    let material = Steel_AISI_1045()
+    let body     = cylinder(50mm, 200mm)
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(material, body, [lc1], ElasticOptions())
 }
 "#;
 
@@ -684,6 +763,287 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
         extract_field(result_val, "converged"),
         Some(Value::Bool(true)),
         "the non-prismatic realized-mesh solve must converge"
+    );
+}
+
+/// Build a fresh OCCT+Gmsh engine with the multi-case FEA trampolines installed,
+/// run `build()` on `source`, and return `(realization_entries delta, build)`.
+///
+/// Manual registration (`solver::multi_case` + `solver::elastic_static` +
+/// `register_volume_mesh_demand`) — NOT `register_compute_fns`, see the module
+/// doc's #4876 boundary-demand rationale. The delta is taken across the build on
+/// a FRESH engine, so it is attributable to this build alone.
+#[cfg(has_gmsh)]
+fn build_multi_case_and_count_realizations(
+    source: &str,
+) -> (usize, reify_eval::BuildResult) {
+    use reify_ir::ExportFormat;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_occt_engine();
+    engine.register_compute_fn(
+        "solver::multi_case",
+        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::multi_case");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let before = engine.cache_stats().realization_entries;
+    assert_eq!(
+        before, 0,
+        "a freshly constructed engine must report zero terminal realization \
+         cache entries before any build()"
+    );
+
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    let after = engine.cache_stats().realization_entries;
+
+    // Cross-check the counter against provenance so a divergence between "what
+    // was realized" and "what was cached" is diagnosable rather than a bare
+    // count mismatch.
+    let vm_count = engine
+        .realization_kernel_provenance()
+        .iter()
+        .filter(|p| p.repr == reify_ir::ReprKind::VolumeMesh && p.kernel == reify_core::KernelId::Gmsh)
+        .count();
+    assert_eq!(
+        vm_count, 1,
+        "expected EXACTLY ONE (VolumeMesh, Gmsh) realization for the shared body; \
+         provenance disagrees with the realization_entries delta of {}. \
+         provenance: {:?}",
+        after - before,
+        engine
+            .realization_kernel_provenance()
+            .iter()
+            .map(|p| (p.realization.clone(), p.repr, p.kernel))
+            .collect::<Vec<_>>()
+    );
+
+    (after - before, build_result)
+}
+
+/// `cfg(has_gmsh)`: **B9** — a two-case `solve_load_cases` over a shared
+/// non-prismatic body realizes and caches the volume mesh EXACTLY ONCE
+/// (PRD `docs/prds/v0_4/fea-result-model.md` boundary-test B9, re-homed from
+/// task 4088 to task 4152).
+///
+/// This is the first reader of `CacheStats::realization_entries` on a real FEA
+/// solve, and the re-mesh-avoidance claim the counter exists to express: two
+/// load cases sharing `(body, material, element_order, mesh_size)` — they share
+/// the single `body`/`material` args and the one inline `ElasticOptions()`, and
+/// differ ONLY in tip force (1000 N vs 2000 N) — must mesh the body ONCE.
+///
+/// **Read the `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` doc before changing this
+/// fixture.** The counter can only move because that fixture declares a
+/// `RepresentationWithin` bound; with no tolerance contract the terminal
+/// cache insert is gated off and the delta is 0 for every body shape. That is a
+/// deliberate production semantic ("no tolerance contract → no caching"), NOT a
+/// bug in the counter.
+///
+/// Asserts:
+///   (1) the two-case build's `realization_entries` delta is exactly 1;
+///   (2) the shape-robust control — the ONE-case variant of the same body
+///       yields the SAME delta, so adding a second case adds ZERO entries;
+///   (3) `result["cases"]` is a 2-entry `Value::Map` keyed "operating"/
+///       "overload", neither `Undef`;
+///   (4) each case carries REAL Sampled fields — `displacement` a 3-axis
+///       Regular grid of all-finite data, `stress` present — and converged;
+///   (5) per-case independence still holds
+///       (`overload.max_von_mises > operating.max_von_mises`).
+///
+/// # Why this is `#[ignore]`d — assertions (1)/(2) PASS, (3)/(4)/(5) cannot
+///
+/// The assertion is deliberately preserved VERBATIM rather than weakened. Its
+/// two halves are currently satisfiable only by mutually exclusive fixtures, and
+/// that is a production defect (#5951), not a defect in this test or in the
+/// counter.
+///
+/// Measured 2×2 on this harness — a fresh engine per build, manual trampolines,
+/// `build(&compiled, ExportFormat::Step)`:
+///
+/// | fixture                       | `realization_entries` delta | `cases`   |
+/// |-------------------------------|-----------------------------|-----------|
+/// | cylinder, no bound            | 0                           | populated |
+/// | cylinder + 100 µm bound       | 1                           | **empty** |
+/// | box + 100 µm bound            | 1                           | **empty** |
+/// | box, no bound                 | 0                           | populated |
+///
+/// (the last row is today's green `multi_case_body_solve_shares_one_realization_
+/// across_cases`). So it is the tolerance contract, not the body shape —
+/// consistent with the single-case
+/// `non_prismatic_body_solve_runs_on_realized_volume_mesh` above, which is green
+/// and carries no bound.
+///
+/// Assertions (1) and (2) were OBSERVED PASSING before (3) panicked: the delta is
+/// exactly 1 for the two-case build, the one-case control matches it, and the
+/// provenance cross-check finds exactly one `(VolumeMesh, Gmsh)` realization. So
+/// the re-mesh-avoidance half of B9 is real and measurable. What fails is that
+/// the same bound which makes the counter observable also makes the solve return
+/// the stdlib's inline `MultiCaseResult()` fallback with an empty `cases` map —
+/// SILENTLY: the only diagnostic in the whole build is an unrelated
+/// `Severity::Warning` for the Indeterminate `RepresentationWithin` itself.
+///
+/// Fixing that is out of scope here (it is FEA-solve / demand-pass territory,
+/// tasks 4870/4092), so it is filed as its own task with the full measurement
+/// set. This test goes green unchanged once #5951 lands — do not adjust the
+/// assertions to make it pass sooner.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "blocked on #5951 — a demanded-tolerance bound is required for realization_entries to move, but that same bound silently empties the multi-case solve's `cases` map; assertions (1)/(2) pass, (3)+ cannot"]
+fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
+    use reify_core::{Severity, ValueCellId};
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping multi_case_non_prismatic_body_caches_one_realization_for_both_cases: \
+             OCCT not available (no BRep kernel to build the cylinder body)"
+        );
+        return;
+    }
+
+    // ── (1) the two-case build realizes + caches the shared mesh exactly once ──
+    let (two_case_delta, build_result) =
+        build_multi_case_and_count_realizations(NON_PRISMATIC_MULTI_CASE_BODY_SOURCE);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the two-case non-prismatic build, got: {errors:?}"
+    );
+
+    assert_eq!(
+        two_case_delta, 1,
+        "the shared `body` must be realized and cached EXACTLY ONCE across BOTH \
+         load cases — the multi_case trampoline forwards realization_inputs \
+         unchanged, so no case re-meshes. realization_entries delta = {two_case_delta}"
+    );
+
+    // ── (2) shape-robust control: the second case adds ZERO new entries ───────
+    let (one_case_delta, one_case_build) =
+        build_multi_case_and_count_realizations(NON_PRISMATIC_ONE_CASE_BODY_SOURCE);
+    let one_case_errors: Vec<_> = one_case_build
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        one_case_errors.is_empty(),
+        "expected no Error diagnostics from the ONE-case control build, got: {one_case_errors:?}"
+    );
+    assert_eq!(
+        two_case_delta, one_case_delta,
+        "adding a SECOND load case over the same body must add ZERO new \
+         realization entries: one-case delta = {one_case_delta}, two-case delta \
+         = {two_case_delta}. This is the shape-robust half of B9 — it holds \
+         regardless of how many realizations the module contains for other reasons."
+    );
+
+    // ── (3) both cases present and populated ─────────────────────────────────
+    let result_cell = ValueCellId::new("FeaBodyNonPrismaticMultiCase", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| {
+            panic!("cell FeaBodyNonPrismaticMultiCase.result not found in build values")
+        });
+    let cases_map = match result_val {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(inner)) => inner.clone(),
+            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!(
+            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?} \
+             — a pre-hydration Failed/Undef here means the redispatch did not deliver \
+             the realized mesh to the multi_case trampoline"
+        ),
+    };
+    assert_eq!(
+        cases_map.len(),
+        2,
+        "cases map must have exactly 2 entries (operating, overload), got {}",
+        cases_map.len()
+    );
+
+    // ── (4) each case carries REAL Sampled fields, converged ──────────────────
+    let mut von_mises: Vec<(&str, f64)> = Vec::new();
+    for case_name in ["operating", "overload"] {
+        let case_val = cases_map
+            .get(&Value::String(case_name.to_string()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "cases map must contain \"{case_name}\"; got: {:?}",
+                    cases_map.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            !matches!(case_val, Value::Undef),
+            "case \"{case_name}\" must not be Undef"
+        );
+
+        let disp = sampled_field(case_val, "displacement");
+        assert_eq!(
+            disp.axis_grids.len(),
+            3,
+            "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
+            disp.axis_grids.len()
+        );
+        assert!(
+            !disp.data.is_empty() && disp.data.iter().all(|v| v.is_finite()),
+            "case \"{case_name}\": displacement data must be non-empty and all-finite \
+             (a NaN/inf here means the solve diverged on the realized curved mesh)"
+        );
+        assert_ne!(
+            disp.data.len() / 3,
+            SYNTHETIC_GRID_NODES,
+            "case \"{case_name}\": must NOT reproduce the {SYNTHETIC_GRID_NODES}-node \
+             synthetic grid — the shared realized VolumeMesh must drive the §7a grid"
+        );
+
+        // `stress` must be a real Sampled field too, not merely present.
+        let stress = sampled_field(case_val, "stress");
+        assert!(
+            !stress.data.is_empty() && stress.data.iter().all(|v| v.is_finite()),
+            "case \"{case_name}\": stress data must be non-empty and all-finite"
+        );
+
+        assert_eq!(
+            extract_field(case_val, "converged"),
+            Some(Value::Bool(true)),
+            "case \"{case_name}\": the shared realized-mesh solve must converge"
+        );
+
+        match extract_field(case_val, "max_von_mises") {
+            Some(Value::Scalar { si_value, .. }) => von_mises.push((case_name, si_value)),
+            other => panic!(
+                "case \"{case_name}\": max_von_mises must be a Scalar, got {other:?}"
+            ),
+        }
+    }
+
+    // ── (5) per-case independence: 2× the tip force ⇒ strictly higher stress ──
+    let operating = von_mises.iter().find(|(n, _)| *n == "operating").unwrap().1;
+    let overload = von_mises.iter().find(|(n, _)| *n == "overload").unwrap().1;
+    assert!(
+        overload > operating,
+        "the 2000 N \"overload\" case must yield strictly higher max_von_mises than \
+         the 1000 N \"operating\" case — equal values would mean the cases were not \
+         solved independently (one result reused for both). operating = {operating}, \
+         overload = {overload}"
     );
 }
 
