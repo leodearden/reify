@@ -3150,7 +3150,12 @@ mod tests {
             } => {
                 assert_eq!(*target, GeometryHandleId(1));
                 assert!(faces.is_empty(), "expected empty faces for back-compat draft");
-                assert_eq!(*angle, Value::Real(0.05));
+                assert_eq!(
+                    *angle,
+                    Value::angle(0.05),
+                    "a Draft fixture's angle must be an ANGLE-dimensioned Value, \
+                     matching what production emits (task 5777)"
+                );
                 assert_eq!(*plane, GeometryHandleId(2));
             }
             other => panic!("expected Draft, got {:?}", other),

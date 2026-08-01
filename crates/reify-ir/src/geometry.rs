@@ -11458,11 +11458,17 @@ mod tests {
             plane: GeometryHandleId(3),
         };
         match curated {
-            GeometryOp::Draft { faces, .. } => {
+            GeometryOp::Draft { faces, angle, .. } => {
                 assert_eq!(
                     faces.len(),
                     1,
                     "curated draft must record the 1 curated face"
+                );
+                assert_eq!(
+                    angle,
+                    Value::angle(0.05),
+                    "a Draft fixture's angle must be an ANGLE-dimensioned Value, \
+                     matching what production emits (task 5777)"
                 );
             }
             _ => panic!("expected GeometryOp::Draft"),
@@ -11476,10 +11482,16 @@ mod tests {
             plane: GeometryHandleId(3),
         };
         match all_faces {
-            GeometryOp::Draft { faces, .. } => {
+            GeometryOp::Draft { faces, angle, .. } => {
                 assert!(
                     faces.is_empty(),
                     "3-arg back-compat draft must record an empty face selection"
+                );
+                assert_eq!(
+                    angle,
+                    Value::angle(0.05),
+                    "a Draft fixture's angle must be an ANGLE-dimensioned Value, \
+                     matching what production emits (task 5777)"
                 );
             }
             _ => panic!("expected GeometryOp::Draft"),
