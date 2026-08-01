@@ -47,8 +47,7 @@ reify-build-utils.workspace = true
 # into the link closure of the `tests/harness_occt/dispatcher_integration.rs` test binary;
 # the production library stays free of the eval dependency.
 #
-# The cycle with `reify-eval/Cargo.toml:40 [dev-dependencies]
-# reify-ir.workspace = true
+# The cycle with `reify-eval/Cargo.toml [dev-dependencies]
 # reify-kernel-occt.workspace = true` is allowed by Cargo because dev-deps
 # do not transitively propagate to consumers — verified safe by the existing
 # openvdb/manifold/gmsh adapters which already exercise this same pattern.
