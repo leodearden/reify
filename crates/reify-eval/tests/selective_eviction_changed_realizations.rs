@@ -19,9 +19,11 @@
 //! helper itself stay in-crate, where they need no kernel at all.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_core::{RealizationNodeId, ValueCellId};
-use reify_ir::{ExportFormat, Value};
+use reify_eval::cache::NodeId;
+use reify_ir::{ExportFormat, Freshness, Value};
 
 /// Two independent bodies plus a display-only `let` feeding no realization.
 ///
@@ -354,5 +356,162 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
          body_b unreported — if the recompile had wiped its stored hash, the §11.2 \
          `None` arm would mark it changed forever. Got: {:?}",
         engine.last_changed_realizations()
+    );
+}
+
+// ── The propagation contract: the FIRST production caller of
+//    `compute_dirty_cone_with_realizations` ────────────────────────────────
+
+/// Number of times [`probe_fn`] was invoked.
+///
+/// **Single-test ownership invariant** (the
+/// `freshness_pending_compute_dispatch.rs:31` idiom): this static is touched
+/// exclusively by `probe_fn`, registered only by
+/// [`edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization`].
+/// A second test in this binary registering a trampoline that calls it would
+/// silently corrupt the count. Reset at test entry as belt-and-braces against
+/// the cargo-test process being reused.
+static PROBE_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Trivial synthetic `ComputeFn` — counts its invocations and returns a
+/// constant. Deliberately kernel-free: no gmsh/FEA adapter is needed to
+/// observe the eviction contract.
+fn probe_fn(
+    _value_inputs: &[Value],
+    _realization_inputs: &[reify_eval::RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&reify_ir::OpaqueState>,
+    _cancellation: &reify_eval::CancellationHandle,
+) -> reify_eval::ComputeOutcome {
+    PROBE_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+    reify_eval::ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// Two bodies, each read by its own `@optimized` probe. The probes return
+/// `Int` (a NON-Geometry type) so each output stays a value cell rather than
+/// lowering to a separate realization — the `tests/fixtures/morph_box.ri`
+/// shape.
+const TWO_BODY_PROBED_SRC: &str = r#"
+@optimized("test::sel-evict-probe")
+fn probe(g: Geometry) -> Int {
+    0
+}
+
+structure TwoBodyProbed {
+    param wa: Length = 10mm
+    param wb: Length = 20mm
+
+    let body_a = box(wa, 5mm, 5mm)
+    let body_b = box(wb, 5mm, 5mm)
+    let probe_a = probe(body_a)
+    let probe_b = probe(body_b)
+}
+"#;
+
+/// β's propagation half: seeding `compute_dirty_cone_with_realizations` with
+/// `changed_realizations` must drop the freshness of the ComputeNode
+/// downstream of the MOVED realization — and only that one.
+///
+/// This is the task's stated user-observable signal, expressed exactly as
+/// "observable via its output value cell freshness".
+///
+/// It is also the test that catches the edge-#10 ordering hazard. If the
+/// implementation seeds the walk with a reverse index built BEFORE ComputeNodes
+/// were inserted into the graph, `realization_dependents_of` returns nothing,
+/// the cone comes back EMPTY, and `probe_a` stays `Final` — the whole
+/// propagation half would compile, run, and silently do nothing. Do NOT weaken
+/// this to accept an empty cone.
+#[test]
+fn edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    PROBE_INVOCATIONS.store(0, Ordering::SeqCst);
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_PROBED_SRC);
+    let mut engine = make_occt_engine();
+    engine.register_compute_fn("test::sel-evict-probe", probe_fn);
+
+    // `build()` establishes the eval_state snapshot internally, and a separate
+    // `eval()` first would finalise the probe cells — leaving each body's
+    // compute node with non-empty realization_inputs so `build()`'s redispatch
+    // gate skips it (morph_arm_e2e.rs:186-191).
+    engine.build(&compiled, ExportFormat::Step);
+
+    let ra = realization_for_cell(&engine, "TwoBodyProbed", "body_a");
+    let rb = realization_for_cell(&engine, "TwoBodyProbed", "body_b");
+    let cell_a = ValueCellId::new("TwoBodyProbed", "probe_a");
+    let cell_b = ValueCellId::new("TwoBodyProbed", "probe_b");
+
+    // ── PREMISE LOCKS ──────────────────────────────────────────────────
+    //
+    // Without these the assertions below could pass vacuously: an absent
+    // edge #10 makes the cone empty, and a probe cell that was never `Final`
+    // trivially satisfies "no longer Final".
+    {
+        let graph = &engine.snapshot().unwrap().graph;
+        let node_for = |r: &RealizationNodeId| {
+            graph
+                .compute_nodes
+                .iter()
+                .find(|(_, cn)| cn.realization_inputs.contains(r))
+                .map(|(_, cn)| cn.clone())
+        };
+        for (rid, label) in [(&ra, "body_a"), (&rb, "body_b")] {
+            let cn = node_for(rid).unwrap_or_else(|| {
+                panic!(
+                    "premise: a ComputeNode consuming {label}'s realization must exist with a \
+                     NON-EMPTY realization_inputs (edge #10). compute_nodes present: {:?}",
+                    graph
+                        .compute_nodes
+                        .iter()
+                        .map(|(id, cn)| (id.clone(), cn.realization_inputs.clone()))
+                        .collect::<Vec<_>>()
+                )
+            });
+            assert!(
+                !cn.realization_inputs.is_empty(),
+                "premise: {label}'s ComputeNode must carry a non-empty realization_inputs"
+            );
+        }
+    }
+    for (cell, label) in [(&cell_a, "probe_a"), (&cell_b, "probe_b")] {
+        assert_eq!(
+            engine.freshness(&NodeId::Value(cell.clone())),
+            Freshness::Final,
+            "premise: {label}'s output value cell must be Final after build(), else \
+             'no longer Final' below is trivially true"
+        );
+    }
+
+    // ── The contract ───────────────────────────────────────────────────
+    engine
+        .edit_param(ValueCellId::new("TwoBodyProbed", "wa"), Value::length(0.030))
+        .expect("edit_param on TwoBodyProbed.wa must succeed");
+
+    assert_ne!(
+        engine.freshness(&NodeId::Value(cell_a.clone())),
+        Freshness::Final,
+        "body_a's input cone moved, so the ComputeNode consuming it must lose its cached \
+         result: `probe_a`'s output cell must NOT still be Final. An empty realization \
+         dirty cone (the edge-#10 ordering hazard — a reverse index built before \
+         ComputeNodes were inserted) leaves it Final and lands here."
+    );
+    assert_eq!(
+        engine.freshness(&NodeId::Value(cell_b.clone())),
+        Freshness::Final,
+        "body_b's input cone did NOT move, so its consumer must retain its cached result. \
+         Losing it here means β over-evicted and degraded to the wholesale flush."
     );
 }
