@@ -619,7 +619,7 @@ sandbox:
 #   `npm install` exit 1 — ~/.npm/_logs unwritable). Warm paths still
 #   succeed, so this bites exactly on dependency-adding / cold-cache tasks.
 #   Upstream fix (add ~/.cargo + ~/.npm carve-outs to compute_write_set
-#   directly, which would retire this whole redirect): reify task 5724.
+#   directly, which would retire this whole redirect): dark_factory:3162.
 #   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
 #   workflow.py:_build_agent_env for every role. verify_env (above) is the
 #   WRONG surface for this — verify subprocesses are not sandboxed.
