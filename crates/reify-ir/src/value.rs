@@ -4580,6 +4580,59 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
+    /// Dimensioning an angle literal does not change the number any `as_f64`
+    /// consumer sees — the premise PRD
+    /// `docs/prds/v0_6/angle-units-surface-convergence.md` decision D2 rests on
+    /// (task 5777, angle-units α).
+    ///
+    /// `as_f64`'s `Scalar` arm returns `si_value` verbatim, and
+    /// `Value::angle(r)` stores `r` as `si_value` with no scaling (`rad` has a
+    /// conversion factor of exactly 1.0). So `Value::angle(x)` and
+    /// `Value::Real(x)` are indistinguishable to every consumer that reads
+    /// through `as_f64` — including `reify-kernel-occt`'s `extract_f64`, which
+    /// is a thin wrapper over it, and which is how the migrated OCCT `Draft`
+    /// fixtures reach the kernel.
+    ///
+    /// This is a CHARACTERIZATION pin, expected green against unchanged
+    /// production code. Its value is prospective: it is what would fail if
+    /// `as_f64` ever started scaling or rejecting dimensioned scalars, which
+    /// would otherwise silently re-dimension the whole migrated corpus.
+    ///
+    /// The constants are exactly those α migrated. Compares are bit-exact `==`,
+    /// never an epsilon — an approximate compare would mask precisely the drift
+    /// this exists to catch.
+    #[test]
+    fn angle_and_real_agree_bit_exactly_under_as_f64() {
+        for x in [
+            std::f64::consts::TAU,
+            std::f64::consts::PI / 60.0,
+            0.1,
+            0.05,
+        ] {
+            assert_eq!(
+                Value::angle(x).as_f64(),
+                Value::Real(x).as_f64(),
+                "Value::angle({x}) and Value::Real({x}) must be indistinguishable \
+                 through as_f64 (PRD D2 behaviour-preservation premise)"
+            );
+            assert_eq!(
+                Value::angle(x).as_f64(),
+                Some(x),
+                "Value::angle({x}).as_f64() must return the source magnitude \
+                 unscaled — `rad` converts by a factor of exactly 1.0"
+            );
+            // Anti-vacuity: the pin above would also hold if BOTH sides
+            // degenerated to a bare `Real`. Require the dimension to actually
+            // be there.
+            assert_eq!(
+                Value::angle(x).dimension(),
+                DimensionVector::ANGLE,
+                "Value::angle({x}) must genuinely carry ANGLE dimension, else the \
+                 equivalence above passes vacuously"
+            );
+        }
+    }
+
     // Boundary float values used by IEEE 754 totalOrder ordering tests.
     // All 7 values are bit-distinct; insertion order is intentionally scrambled
     // so that tests exercise the sort rather than relying on insertion sequence.
