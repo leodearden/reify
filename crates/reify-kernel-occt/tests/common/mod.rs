@@ -571,6 +571,61 @@ pub fn parse_bbox(s: &str) -> BBox {
     }
 }
 
+impl BBox {
+    /// Per-axis extents `(xmax - xmin, ymax - ymin, zmax - zmin)`.
+    #[allow(dead_code)] // only called from has_occt integration-test binaries
+    pub fn spans(&self) -> (f64, f64, f64) {
+        (
+            self.xmax - self.xmin,
+            self.ymax - self.ymin,
+            self.zmax - self.zmin,
+        )
+    }
+
+    /// True when all six components are finite (no `inf`, no `NaN`).
+    ///
+    /// Replaces the per-component `is_finite()` loops that several call sites
+    /// hand-rolled; `BBox`'s `Debug` derive makes the resulting failure message
+    /// strictly more informative than a single offending component.
+    #[allow(dead_code)] // only called from has_occt integration-test binaries
+    pub fn all_finite(&self) -> bool {
+        self.xmin.is_finite()
+            && self.ymin.is_finite()
+            && self.zmin.is_finite()
+            && self.xmax.is_finite()
+            && self.ymax.is_finite()
+            && self.zmax.is_finite()
+    }
+}
+
+/// Unwrap the result of a `GeometryQuery::BoundingBox` query into a [`BBox`].
+///
+/// Takes the already-produced `Result` rather than a kernel plus a handle id
+/// because the call sites use two unrelated kernel types — `OcctKernel`
+/// (`src/lib.rs:3628`) and `OcctKernelHandle` (`src/handle.rs:370`) — with no
+/// `Deref` between them. Both expose
+/// `pub fn query(&self, &GeometryQuery) -> Result<Value, QueryError>`, so
+/// accepting the `Result` lets ONE helper serve both without introducing a
+/// trait or duplicating an accessor per kernel type.
+///
+/// Generic over `E: Debug` rather than hard-coding `QueryError` so this module
+/// need not import reify-ir's error enum, and so a future change to that enum
+/// does not ripple into the shared test module.
+///
+/// # Panics
+///
+/// Panics if the query failed (surfacing the underlying error's `Debug`), or
+/// if it returned any `Value` variant other than `String` (naming the variant
+/// received).
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn bbox_of<E: std::fmt::Debug>(query_result: Result<Value, E>) -> BBox {
+    let value = query_result.expect("BoundingBox query should succeed");
+    match value {
+        Value::String(s) => parse_bbox(&s),
+        other => panic!("expected bbox String, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract tests for the shared `BBox` / `parse_bbox` helpers above, which
 // consolidate the seven hand-rolled bbox parsers previously scattered across
