@@ -782,11 +782,22 @@ fn main() {
     // realpath before loading so the engine's `file_path` field (used by
     // `update_source` for import resolution) is always an absolute canonical
     // path, regardless of how the user spelled the CLI argument.
-    let mut session = session;
+    // `engine_arc` is built BEFORE the argv load so the load can go through the
+    // shared #5193 open funnel (`load_initial_file_impl`), which takes a
+    // `&Mutex<EngineSession>`. The previous inline `session.load_file(..)` here
+    // bypassed that funnel and discarded the returned `GuiState`, so
+    // `UnresolvedGuiState::resolve` never ran and an argv-launched GUI received
+    // stem-only `files[].path` module keys instead of canonical absolute paths
+    // (#5193 / #5338). The emitter/sink installation block still runs later in
+    // `setup()` against this same `engine_arc`.
+    let engine_arc = Arc::new(Mutex::new(session));
+
     let mut initial_file: Option<std::path::PathBuf> = None;
     if let Some(path_str) = std::env::args().nth(1) {
         if let Some(canonical_path) = reify_gui::commands::resolve_initial_file_path(&path_str) {
-            if let Err(e) = session.load_file(&canonical_path) {
+            if let Err(e) =
+                reify_gui::commands::load_initial_file_impl(&engine_arc, &canonical_path)
+            {
                 eprintln!(
                     "Warning: failed to load initial file {}: {}",
                     canonical_path.display(),
@@ -799,8 +810,6 @@ fn main() {
     }
 
     let debug_enabled = std::env::var("REIFY_DEBUG").is_ok_and(|v| v == "1");
-
-    let engine_arc = Arc::new(Mutex::new(session));
     let selection_arc = Arc::new(RwLock::new(reify_mcp::SelectionInfo::default()));
 
     // Shared slot for in-flight FEA solve handle (task γ/4086).

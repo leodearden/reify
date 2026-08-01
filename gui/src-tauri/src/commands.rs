@@ -615,6 +615,33 @@ pub fn open_file_engine_impl(
     Ok(state.resolve(Path::new(&canonical)))
 }
 
+/// Load the startup **argv** file, through the same #5193 choke-point as
+/// [`open_file_engine_impl`].
+///
+/// The argv sibling of [`open_file_engine_impl`] and
+/// `debug_server::open_source_into_engine_and_refresh_baseline` — the third and
+/// final consumer of the one funnel, rather than a fourth drifting copy.
+///
+/// `main()` previously called `EngineSession::load_file` inline and DISCARDED the
+/// returned `GuiState`, so [`UnresolvedGuiState::resolve`] never ran on the argv
+/// path: an argv-launched GUI received stem-only module keys (`"design.ri"`) in
+/// `files[].path` where a File-Open launch received canonical absolute paths.
+/// Routing argv through here closes that identity split (#5193) and makes the
+/// startup state observable to tests (#5338).
+///
+/// Takes an already-canonical `path` — [`resolve_initial_file_path`] is the argv
+/// string → canonical `PathBuf` step and stays the caller's responsibility, so
+/// this function does not re-canonicalize. `resolve` runs AFTER the engine lock
+/// is released, exactly as in [`open_file_engine_impl`].
+pub fn load_initial_file_impl(
+    engine: &Mutex<EngineSession>,
+    path: &Path,
+) -> Result<GuiState, String> {
+    let state = crate::engine_lock::with_engine_lock(engine, |s| load_file_into_engine(s, path))
+        .and_then(std::convert::identity)?;
+    Ok(state.resolve(path))
+}
+
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
 /// passing to `EngineSession::load_file`.
 ///
