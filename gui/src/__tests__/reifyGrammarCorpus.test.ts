@@ -2148,11 +2148,35 @@ describe('reify.grammar — keyword highlighting for promoted keywords', () => {
 //                              reference prototype exactly
 //   recursive      : 90 / 329  (the 57 above, plus 33 in subdirectories)
 //
-// The remaining files need expression- and declaration-level work explicitly
-// out of this task's scope (prefix ranges, `^`, index access, lambdas, `@`
-// selectors, string interpolation, and the
-// fn/enum/trait/port/connect/chain/forall/match/unit/occurrence/purpose/field
-// declaration families).
+// MEASUREMENT (task 5927), the catch-up round that inherited this ledger.
+// Fourteen form families were ported, each in its own commit that extended
+// the pinned set below, taking it from 90 to 301 of the same 329 files:
+//
+//   named call arguments · collection literals + index access · keyword
+//   logical operators · range expressions · type parameters + trait bounds ·
+//   the rich `sub` forms · unit expressions + value-level `^` · trait and fn
+//   declarations · lambdas + `@` selectors · parameterized `auto` +
+//   auto_type_arg · port/connect/chain/forall + the quantifier expression ·
+//   match/enum/variant construction · field def/purpose/unit/type alias/
+//   default/meta/pragma/annotation
+//
+// WHAT THE NEXT CATCH-UP TASK INHERITS. The 28 files still not clean need:
+//
+//   - radix (`0xFF`), imaginary (`2j`) and underscore-separated literals as
+//     their own node types. These already parse with ZERO error nodes — the
+//     `QuantityLiteral` token swallows them whole — so they cannot move this
+//     ledger at all, and three files pinned below (radix_literals,
+//     complex_literals, numeric_separators) are clean BECAUSE of that
+//     catch-all. A narrower purpose-built token that misses a shape would
+//     silently un-pin them. Shape-only work, negative expected value unless
+//     done with explicit non-regression assertions on those three files.
+//   - string interpolation (`"a ${b} c"`), likewise already error-free as one
+//     plain `String`, and with zero occurrences in the whole corpus.
+//   - `variant_construction` in ARGUMENT position (`f(Circle { radius: 5mm })`).
+//     Valid upstream; deliberately narrowed here — see the note on that
+//     production in reify.grammar for the LR conflict that forced it.
+//   - `constraint def`, `relate` blocks, `match_arm_decl_block`, and the
+//     `sub_relate_block` that may follow a pose clause.
 //
 // WHY A PINNED SET AND NOT A COUNT. An absolute floor (`clean.length >= 90`)
 // is coupled to corpus INVENTORY, not to grammar capability: deleting or

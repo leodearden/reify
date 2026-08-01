@@ -287,8 +287,8 @@ TypeAnnotation {
 // Four-way choice transliterated from tree-sitter-reify grammar.js:1064-1140.
 // The leading token is unique per alternative — `(` for FunctionType, `Name<`
 // for ParameterizedType, `Name::` for QualifiedType — so no precedence hacks
-// are needed. `auto_type_arg` (`Bearing<auto: Seal>`) is deliberately deferred:
-// no manifest fixture exercises it and it is outside this header-level scope.
+// are needed. `auto_type_arg` (`Bearing<auto: Seal>`), which task 5907 left
+// deferred here, is now implemented — see AutoTypeArg below.
 TypeExpr {
   FunctionType |
   ParameterizedType |
