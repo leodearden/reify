@@ -3324,6 +3324,68 @@ describe('debug bridge focus_element', () => {
     const result = await dispatchCmd(5303, 'focus_element', { testId: 'no-such-element' });
     expect(typeof result.error).toBe('string');
   });
+
+  // --- viewport scoping (#5891) ---
+  // Plain DOM is enough here: the resolveByTestId block above already proves the
+  // scoping works against a real mounted FeaModeToolbar, so these cases only
+  // need to establish that focus_element routes through the shared resolver.
+
+  /** Two panes, each holding an input under the same testId. design-main is first. */
+  function twoPanesWithInput() {
+    document.body.innerHTML = `
+      <div data-viewport-id="design-main"><input data-testid="fld" /></div>
+      <div data-viewport-id="pane-1"><input data-testid="fld" /></div>
+    `;
+    return {
+      designMain: document.querySelector('[data-viewport-id="design-main"] [data-testid="fld"]')!,
+      pane1: document.querySelector('[data-viewport-id="pane-1"] [data-testid="fld"]')!,
+    };
+  }
+
+  it('#5891 scoped: focuses the named pane\'s element, not the first match', async () => {
+    const { designMain, pane1 } = twoPanesWithInput();
+
+    const result = await dispatchCmd(5310, 'focus_element', { testId: 'fld', viewportId: 'pane-1' });
+
+    expect(result).toEqual({ ok: true });
+    expect(document.activeElement).toBe(pane1);
+    expect(document.activeElement).not.toBe(designMain);
+  });
+
+  it('#5891 unknown viewportId returns notFoundForViewport', async () => {
+    twoPanesWithInput();
+
+    const result = await dispatchCmd(5311, 'focus_element', { testId: 'fld', viewportId: 'nope' });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('fld', 'nope') });
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString', async () => {
+    twoPanesWithInput();
+
+    const result = await dispatchCmd(5312, 'focus_element', { testId: 'fld', viewportId: 5 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+  });
+
+  it('#5891 unscoped multi-match focuses the first and reports the guessed pane', async () => {
+    const { designMain } = twoPanesWithInput();
+
+    const result = await dispatchCmd(5313, 'focus_element', { testId: 'fld' });
+
+    expect(document.activeElement).toBe(designMain);
+    expect(result).toEqual({ ok: true, viewportId: 'design-main', matchCount: 2 });
+  });
+
+  it('#5891 single match keeps today\'s exact {ok:true} payload', async () => {
+    const input = document.createElement('input');
+    input.setAttribute('data-testid', 'lonely');
+    document.body.appendChild(input);
+
+    const result = await dispatchCmd(5314, 'focus_element', { testId: 'lonely' });
+
+    expect(result).toEqual({ ok: true });
+  });
 });
 
 describe('debug bridge scroll', () => {
@@ -3419,6 +3481,92 @@ describe('debug bridge scroll', () => {
     (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
     const result = await dispatchCmd(5407, 'scroll', { target: 'editor', left: Infinity });
     expect(typeof result.error).toBe('string');
+  });
+
+  // --- viewport scoping (#5891), DOM arm only ---
+
+  /** Two panes, each holding a scrollable panel under the same testId. */
+  function twoPanesWithPanel() {
+    document.body.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="panel"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="panel"></div></div>
+    `;
+    const panels = ['design-main', 'pane-1'].map((id) => {
+      const el = document.querySelector(`[data-viewport-id="${id}"] [data-testid="panel"]`)!;
+      // jsdom's native scrollTop/scrollLeft are no-ops — make them writable.
+      Object.defineProperty(el, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(el, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+      return el as HTMLElement;
+    });
+    return { designMain: panels[0], pane1: panels[1] };
+  }
+
+  it('#5891 scoped: scrolls the named pane\'s panel, leaving the other at 0', async () => {
+    const { designMain, pane1 } = twoPanesWithPanel();
+
+    const result = await dispatchCmd(5410, 'scroll', {
+      testId: 'panel', viewportId: 'pane-1', top: 120, left: 30,
+    });
+
+    expect(result).toEqual({ ok: true, scrollTop: 120, scrollLeft: 30 });
+    expect(pane1.scrollTop).toBe(120);
+    expect(designMain.scrollTop).toBe(0);
+  });
+
+  it('#5891 unknown viewportId returns notFoundForViewport', async () => {
+    twoPanesWithPanel();
+
+    const result = await dispatchCmd(5411, 'scroll', { testId: 'panel', viewportId: 'nope', top: 10 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('panel', 'nope') });
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString', async () => {
+    twoPanesWithPanel();
+
+    const result = await dispatchCmd(5412, 'scroll', { testId: 'panel', viewportId: 5, top: 10 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+  });
+
+  it('#5891 unscoped multi-match scrolls the first and reports the guessed pane', async () => {
+    const { designMain, pane1 } = twoPanesWithPanel();
+
+    const result = await dispatchCmd(5413, 'scroll', { testId: 'panel', top: 45 });
+
+    expect(designMain.scrollTop).toBe(45);
+    expect(pane1.scrollTop).toBe(0);
+    expect(result).toEqual({
+      ok: true, scrollTop: 45, scrollLeft: 0, viewportId: 'design-main', matchCount: 2,
+    });
+  });
+
+  it('#5891 single match keeps today\'s exact three-key payload', async () => {
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'lonely-panel');
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(panel, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+
+    const result = await dispatchCmd(5414, 'scroll', { testId: 'lonely-panel', top: 7 });
+
+    expect(result).toEqual({ ok: true, scrollTop: 7, scrollLeft: 0 });
+  });
+
+  it('#5891 editor mode IGNORES viewportId entirely — no error, no echoed fields', async () => {
+    // The editor arm resolves no testid, so a viewportId is meaningless there and
+    // must not become a spurious rejection: a caller that threads viewportId
+    // through generically would otherwise break every editor scroll.
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+
+    const result = await dispatchCmd(5415, 'scroll', {
+      target: 'editor', top: 80, viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true, scrollTop: 80, scrollLeft: 0 });
   });
 });
 
