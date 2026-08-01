@@ -2781,6 +2781,34 @@ build_plan() {
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"  # ld-ok: cargo — MIXED shell+cargo (gui sidecar compile check); needs OCCT
     fi
 
+    # tree-sitter freshness POST-CONDITION (task #5629, review round 2).
+    # The `ensure` leaf above runs BEFORE the cargo wave and only ATTEMPTS the
+    # repair — it bumps mtimes and trusts cargo to act on them, and by design it
+    # never fails for a condition it believes it repaired. So without this line
+    # the gate carried no evidence the rebuild actually happened: if the mtime
+    # force failed to trigger one, the run went green having linked an archive it
+    # never compiled — the same false-GREEN class the task exists to close, one
+    # level up. `check` closes it by ASSERTING, after the fact, that the archive
+    # cargo just built matches the sources on disk.
+    #
+    # Guarded identically to the compile-gate line above (RUN_RUST && (lint ||
+    # typecheck)) — deliberately, because that is exactly the condition under
+    # which a `cargo check --tests` / `cargo clippy` leaf has already been
+    # emitted ABOVE this point. The assertion is only meaningful once something
+    # has actually compiled; emitting it unconditionally would hard-fail
+    # action=test plans on a repairable pre-build condition, converting the false
+    # GREEN into a spurious RED. action=all — every merge path — satisfies both.
+    #
+    # `check` scopes its failing verdict to the LIVE fingerprint dir (the one
+    # cargo most recently ran the build script for) and demotes dormant dirs to
+    # informational lines; a checkout carries 7-9 dormant dirs that are stale
+    # forever, so a whole-tree assertion here would be permanently RED.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
+        add "./scripts/tree-sitter-freshness.sh check"
+    fi
+
     # Overlap join: wait for the background node lane before infra checks / pole.
     # Maximises the concurrency window (join as late as possible while still
     # preceding the expensive pole and infra checks).

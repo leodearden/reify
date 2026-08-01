@@ -59,16 +59,61 @@
 #                   Print the per-file sha256 manifest for that input set —
 #                   '<hash>  <relpath>' lines, sorted by relpath.  Exactly what
 #                   build.rs writes to $OUT_DIR/tree_sitter_inputs.stamp.
-#   check           Hard assertion.  Exit 1 if ANY built archive's sibling stamp
-#                   is missing or disagrees with the current fingerprint, naming
-#                   the offending fingerprint dir and the first differing input.
-#                   For a human/agent checkpoint.
-#   ensure          check, plus REPAIR.  On a stale verdict, bump the mtime of the
-#                   watched inputs — grammar.js, src/scanner.c, src/tree_sitter/*.h —
-#                   so cargo is guaranteed to re-run the build script (and thus
-#                   recompile) on the next invocation.  This is what verify.sh runs,
-#                   after tree-sitter-generate.sh and before every cargo leaf.
+#   check           Hard assertion, scoped to the LIVE fingerprint dir (below).
+#                   Exit 1 if the live archive's sibling stamp is missing or
+#                   disagrees with the current fingerprint, naming the offending
+#                   dir and the first differing input.  Stale DORMANT dirs are
+#                   reported as informational `note:` lines and do NOT fail.
+#                   verify.sh runs this AFTER the cargo compile wave, to prove the
+#                   archive cargo just linked is fresh; also the mode to run at a
+#                   human/agent checkpoint.
+#   ensure          REPAIR, scoped to the WHOLE tree.  On any stale archive — live
+#                   or dormant — bump the mtime of the watched inputs (grammar.js,
+#                   src/scanner.c, src/tree_sitter/*.h) so cargo is guaranteed to
+#                   re-run the build script, and thus recompile, on the next
+#                   invocation.  This is what verify.sh runs after
+#                   tree-sitter-generate.sh and before every cargo leaf.
 #   --help, -h      This message.
+#
+# LIVE vs DORMANT — WHY `check` AND `ensure` HAVE DIFFERENT SCOPES
+# ---------------------------------------------------------------
+# A checkout accumulates one build RUN dir per distinct build fingerprint
+# (profile x features x RUSTFLAGS x target): 7 in this lane, 9 in the main
+# checkout.  Cargo will only ever rebuild the one matching the config it is
+# invoked with; all the others are DORMANT — never rebuilt, so once their
+# sources move on they are stale forever, with no path back to fresh.
+#
+# That is why `check` cannot simply assert over every dir: it would be
+# guaranteed RED in any long-lived checkout, which makes it useless as an
+# assertion — a permanently-red gate is one nobody can act on.  So `check`
+# hard-asserts on the LIVE dir and demotes the rest to `note:` lines.
+#
+# The LIVE dir is the one whose build script cargo ran most recently, read from
+# cargo's OWN per-run markers inside the run dir — `output` (its verbatim
+# capture of build-script stdout), falling back to `invoked.timestamp`.  Measured
+# on this host rather than assumed: a `cargo check` that re-ran the build script
+# bumped both markers together, and the next one — which cargo resolved as fresh
+# and did not re-run — bumped neither.  So "newest marker" names the dir cargo
+# last executed the build script for.
+#
+# `ensure` deliberately keeps the WHOLE-tree scope.  A dormant dir is only
+# dormant until someone flips RUSTFLAGS or profile back, at which point cargo
+# resurrects it — and it would resurrect it WITHOUT rebuilding, because the mtime
+# comparison that drives rerun-if-changed can perfectly well say "fresh" for an
+# archive built from different bytes (that is the whole defect this script
+# exists to close).  Forcing on dormant staleness too is what keeps a resurrected
+# dir honest; the ledger below is what stops it costing a recompile every run.
+#
+# The two scopes compose into the actual gate guarantee.  `ensure` runs BEFORE
+# the cargo wave and repairs anything stale; `check` runs AFTER it and asserts
+# the archive cargo actually built is fresh.  Without the second leaf the gate
+# only ever ATTEMPTED the repair — if the mtime force failed to trigger a
+# rebuild, the run went green with no signal at all, which is the same
+# false-GREEN class as the original defect, one level up (#5629 review round 2).
+#
+# When NO dir carries either marker, liveness is undeterminable and EVERY
+# archive is treated as live.  Fail-closed: an unknown-liveness tree asserts
+# over everything rather than silently asserting over nothing.
 #
 # WHY `touch`, AND WHY A LEDGER
 # -----------------------------
@@ -162,13 +207,15 @@ Modes:
   --print-fingerprint  Print the per-file sha256 manifest for that input set
                        ('<hash>  <relpath>' lines, sorted by relpath) — exactly
                        what build.rs writes to $OUT_DIR/tree_sitter_inputs.stamp.
-  check                Assert every built libtree_sitter_reify.a was compiled
-                       from the sources currently on disk. Exit 1 on any
-                       mismatch or missing attestation.
-  ensure               check, plus REPAIR: on a stale verdict, bump the mtime of
-                       the watched inputs so cargo re-runs the build script (and
-                       thus recompiles) next invocation. Exit 1 only if the
-                       repair itself fails.
+  check                Assert the LIVE libtree_sitter_reify.a — the one cargo
+                       most recently ran the build script for — was compiled
+                       from the sources currently on disk. Exit 1 on a mismatch
+                       or missing attestation. Stale dormant fingerprint dirs
+                       are reported as 'note:' lines and do not fail.
+  ensure               REPAIR, over the WHOLE tree: on any stale archive, live or
+                       dormant, bump the mtime of the watched inputs so cargo
+                       re-runs the build script (and thus recompiles) next
+                       invocation. Exit 1 only if the repair itself fails.
   --help, -h           Show this message.
 EOF
 }
@@ -268,6 +315,52 @@ ts_archives() {
     fi
 }
 
+# ts_run_dir_marker <run-dir>
+#
+# Epoch mtime of cargo's own per-run marker for a build-script RUN dir:
+# `output` if present, else `invoked.timestamp`.  Prints 0 when neither exists
+# (a dir cargo has never executed the build script in, or a test fixture).
+#
+# `stat -c %Y` is GNU; `stat -f %m` is BSD/macOS.  Both are tried before giving
+# up, matching the portability posture of compute_sha256 in lib.sh.
+ts_run_dir_marker() {
+    local run_dir="$1" f m
+    for f in "$run_dir/output" "$run_dir/invoked.timestamp"; do
+        [ -f "$f" ] || continue
+        m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
+        case "$m" in
+            '' | *[!0-9]*) continue ;;
+            *) printf '%s\n' "$m"; return 0 ;;
+        esac
+    done
+    printf '0\n'
+}
+
+# ts_live_run_dir
+#
+# Print the ABSOLUTE path of the live build-script run dir — the one carrying the
+# newest marker among the dirs that actually hold an archive.  Prints nothing
+# when no candidate carries a marker at all, which callers read as "liveness
+# undeterminable, treat every archive as live" (see the header).
+#
+# Ties are broken by LC_ALL=C path order so the answer is deterministic: two run
+# dirs written inside the same filesystem-timestamp granularity must not make the
+# verdict depend on readdir order.
+ts_live_run_dir() {
+    local a run_dir m best="" best_m=0
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        run_dir="$(dirname "$(dirname "$a")")"
+        m=$(ts_run_dir_marker "$run_dir")
+        [ "$m" -gt 0 ] || continue
+        if [ "$m" -gt "$best_m" ] || { [ "$m" -eq "$best_m" ] && [ "$run_dir" \> "$best" ]; }; then
+            best_m="$m"
+            best="$run_dir"
+        fi
+    done < <(ts_archives)
+    printf '%s' "$best"
+}
+
 # ts_first_differing_input <stamp-file>
 #
 # Name the first input whose attested hash differs from the current one, so a
@@ -307,9 +400,19 @@ ts_first_differing_input() {
 # The shared freshness computation behind both `check` and `ensure`.
 # Sets, in the caller's shell:
 #   CURRENT_FP              the current fingerprint manifest
-#   TS_SCAN_STATUS          fresh | stale | skip | none
+#   TS_SCAN_STATUS          fresh | stale | dormant | skip | none
+#                           `stale`   the LIVE archive was built from other bytes
+#                           `dormant` only non-live archives are stale — `check`
+#                                     reports these and exits 0; `ensure` still
+#                                     repairs them (see the header on scopes)
 #   TS_SCAN_SKIP_REASON     set when status=skip
-#   TS_STALE_REPORT         newline-joined, one actionable line per stale archive
+#   TS_LIVE_DIR             basename of the live run dir, or the empty string when
+#                           liveness is undeterminable (then EVERY archive is
+#                           treated as live — fail-closed)
+#   TS_STALE_REPORT         newline-joined, one actionable line per stale LIVE
+#                           archive
+#   TS_DORMANT_REPORT       newline-joined, one line per stale DORMANT archive
+#   TS_DORMANT_COUNT        how many, so `check` can say so without failing
 #   TS_UNATTESTABLE_REPORT  newline-joined, one line per archive whose stamp says
 #                           UNAVAILABLE; empty when there are none.  A CAVEAT,
 #                           never a verdict — see FAIL POLICY.  `status` is
@@ -325,7 +428,10 @@ ts_first_differing_input() {
 ts_scan() {
     TS_SCAN_STATUS=""
     TS_SCAN_SKIP_REASON=""
+    TS_LIVE_DIR=""
     TS_STALE_REPORT=""
+    TS_DORMANT_REPORT=""
+    TS_DORMANT_COUNT=0
     TS_UNATTESTABLE_REPORT=""
     TS_UNATTESTABLE_COUNT=0
 
@@ -346,30 +452,47 @@ ts_scan() {
         return 0
     fi
 
-    local a dir stamp attested
+    # Empty when no run dir carries a cargo marker: liveness is undeterminable,
+    # so the `is_live` test below is true for every archive (fail-closed).
+    local live_dir
+    live_dir=$(ts_live_run_dir)
+    [ -n "$live_dir" ] && TS_LIVE_DIR="$(basename "$live_dir")"
+
+    local a run_dir dir stamp attested detail
     local -a stale=()
+    local -a dormant=()
     local -a unattestable=()
     while IFS= read -r a; do
         [ -n "$a" ] || continue
         # .../build/tree-sitter-reify-<fingerprint>/out/libtree_sitter_reify.a
-        dir="$(basename "$(dirname "$(dirname "$a")")")"
+        run_dir="$(dirname "$(dirname "$a")")"
+        dir="$(basename "$run_dir")"
         stamp="$(dirname "$a")/$STAMP_NAME"
 
+        detail=""
         if [ ! -f "$stamp" ]; then
-            stale+=("$dir — no $STAMP_NAME beside the archive; its provenance is UNPROVEN")
-            continue
+            detail="$dir — no $STAMP_NAME beside the archive; its provenance is UNPROVEN"
+        else
+            attested=$(cat "$stamp")
+            if [ "$attested" = "UNAVAILABLE" ]; then
+                # Scoped to THIS dir: record it and keep going.  Aborting the scan
+                # here would discard every stale archive already found AND skip
+                # every one not yet reached — see FAIL POLICY (#5629).
+                unattestable+=("SKIP $dir — built where sha256sum/shasum was unavailable or failed; its inputs cannot be attested")
+                continue
+            fi
+            if [ "$attested" != "$CURRENT_FP" ]; then
+                detail="$dir — built from different bytes; first differing input: $(ts_first_differing_input "$stamp")"
+            fi
         fi
+        [ -n "$detail" ] || continue
 
-        attested=$(cat "$stamp")
-        if [ "$attested" = "UNAVAILABLE" ]; then
-            # Scoped to THIS dir: record it and keep going.  Aborting the scan
-            # here would discard every stale archive already found AND skip
-            # every one not yet reached — see FAIL POLICY (#5629).
-            unattestable+=("SKIP $dir — built where sha256sum/shasum was unavailable or failed; its inputs cannot be attested")
-            continue
-        fi
-        if [ "$attested" != "$CURRENT_FP" ]; then
-            stale+=("$dir — built from different bytes; first differing input: $(ts_first_differing_input "$stamp")")
+        # Live when it IS the newest-marker dir, or when liveness could not be
+        # determined at all (then nothing may be demoted).
+        if [ -z "$live_dir" ] || [ "$run_dir" = "$live_dir" ]; then
+            stale+=("$detail")
+        else
+            dormant+=("$detail")
         fi
     done <<< "$archives"
 
@@ -377,12 +500,19 @@ ts_scan() {
         TS_UNATTESTABLE_REPORT=$(printf '%s\n' "${unattestable[@]}")
         TS_UNATTESTABLE_COUNT="${#unattestable[@]}"
     fi
+    if [ "${#dormant[@]}" -gt 0 ]; then
+        TS_DORMANT_REPORT=$(printf '%s\n' "${dormant[@]}")
+        TS_DORMANT_COUNT="${#dormant[@]}"
+    fi
 
-    # The verdict rides on stale[] alone. unattestable[] is reported alongside it
-    # in every branch, but never changes it.
+    # The FAILING verdict rides on stale[] — the live archive — alone.
+    # dormant[] downgrades to its own non-failing status so `ensure` can still
+    # see it and repair; unattestable[] is reported alongside but never decides.
     if [ "${#stale[@]}" -gt 0 ]; then
         TS_SCAN_STATUS="stale"
         TS_STALE_REPORT=$(printf '%s\n' "${stale[@]}")
+    elif [ "${#dormant[@]}" -gt 0 ]; then
+        TS_SCAN_STATUS="dormant"
     else
         TS_SCAN_STATUS="fresh"
     fi
@@ -395,6 +525,33 @@ ts_stale_lines() {
         [ -n "$line" ] || continue
         echo "    $line"
     done <<< "$TS_STALE_REPORT"
+}
+
+# ts_dormant_lines — the stale-but-not-live set, on stdout, as `note:` lines.
+#
+# Never on stderr and never fatal: these dirs are genuinely stale, but cargo will
+# not link them and will never rebuild them, so there is no action a reader can
+# take. Reported rather than swallowed so a green `check` still discloses exactly
+# what it declined to assert on.
+ts_dormant_lines() {
+    [ -n "$TS_DORMANT_REPORT" ] || return 0
+    echo "tree-sitter-freshness: note: $TS_DORMANT_COUNT dormant fingerprint dir(s) are stale."
+    echo "    Cargo neither links nor rebuilds these, so they cannot affect this build;"
+    echo "    'ensure' still forces for them once (ledger-bounded). Not asserted on:"
+    local line
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "    $line"
+    done <<< "$TS_DORMANT_REPORT"
+}
+
+# ts_live_label — how the live dir is named in output, for both modes.
+ts_live_label() {
+    if [ -n "$TS_LIVE_DIR" ]; then
+        printf 'live fingerprint dir: %s' "$TS_LIVE_DIR"
+    else
+        printf 'liveness undeterminable (no cargo run marker) — asserting on EVERY archive'
+    fi
 }
 
 # ts_unattestable_lines — mirrors ts_stale_lines for the unattestable set.
@@ -475,22 +632,27 @@ ts_mode_check() {
             echo "tree-sitter-freshness: no built archive under $TARGET_DIR; nothing to check"
             return 0
             ;;
-        fresh)
+        fresh | dormant)
             ts_unattestable_lines
+            ts_dormant_lines
             if [ "$TS_UNATTESTABLE_COUNT" -gt 0 ]; then
                 # Not "every archive matches": some were never established either
                 # way. Still exit 0 — unproven is not stale.
-                echo "tree-sitter-freshness: PARTIAL — $TS_UNATTESTABLE_COUNT archive(s) unattestable and skipped; the rest match the sources on disk"
+                echo "tree-sitter-freshness: PARTIAL — $TS_UNATTESTABLE_COUNT archive(s) unattestable and skipped; the rest match the sources on disk ($(ts_live_label))"
             else
-                echo "tree-sitter-freshness: FRESH — every built archive matches the sources on disk"
+                echo "tree-sitter-freshness: FRESH — the archive cargo built matches the sources on disk ($(ts_live_label))"
             fi
             return 0
             ;;
         stale)
             ts_unattestable_lines
+            ts_dormant_lines
             {
-                echo "tree-sitter-freshness: STALE — these archives were NOT built from the sources now on disk:"
+                echo "tree-sitter-freshness: STALE — the archive cargo will link was NOT built from the sources now on disk:"
                 ts_stale_lines
+                echo "    ($(ts_live_label))"
+                echo "    This is the false-GREEN case: the gate would verify a parser it never compiled."
+                echo "    Run './scripts/tree-sitter-freshness.sh ensure' then rebuild."
             } >&2
             return 1
             ;;
@@ -529,7 +691,7 @@ ts_mode_ensure() {
             ts_write_ledger "$ledger"
             return 0
             ;;
-        stale) ;;
+        stale | dormant) ;;
         *)
             echo "ERROR: internal — unexpected scan status '$TS_SCAN_STATUS'" >&2
             return 1
@@ -541,20 +703,36 @@ ts_mode_ensure() {
     # force happen must still be told which archives it could not vouch for.
     ts_unattestable_lines
 
-    # Was a force already applied for exactly these bytes? If so the
-    # remaining stale dirs are dead ones cargo will never rebuild, and re-forcing
-    # would just buy a full parser.c recompile on every verify run.
-    if [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ]; then
-        echo "tree-sitter-freshness: stale archives remain, but the force was already applied for these exact inputs:"
+    # Was a force already applied for exactly these bytes? If so, and the only
+    # staleness left is DORMANT, those are dirs cargo will never rebuild — the
+    # force cannot clear them, and re-applying it would buy a full parser.c
+    # recompile on every verify run for no gain.
+    #
+    # The ledger is deliberately BYPASSED when a stale LIVE archive is present.
+    # That archive is the one cargo will actually link, so it must be re-forced
+    # on every run until it comes back fresh; letting the ledger silence it would
+    # recreate the false GREEN this script exists to close — and it is exactly
+    # the state a force that failed to take leaves behind.
+    #
+    # The bypass requires POSITIVE evidence, i.e. a determinable live dir. When
+    # no run dir carries a cargo marker the scan treats every archive as live
+    # (fail-closed for `check`), but that is an absence of information, not
+    # evidence that a force failed — so here the ledger still applies and the
+    # pre-liveness force-once-per-source-state behaviour is preserved.
+    if { [ "$TS_SCAN_STATUS" = "dormant" ] || [ -z "$TS_LIVE_DIR" ]; } \
+        && [ -f "$ledger" ] && [ "$(cat "$ledger")" = "$CURRENT_FP" ]; then
         ts_stale_lines
-        echo "tree-sitter-freshness: leaving mtimes alone (ledger: $ledger)."
-        echo "    Dead fingerprint dirs are never rebuilt, so they stay stale forever; without"
-        echo "    this guard every verify run would pay a full parser.c recompile."
+        ts_dormant_lines
+        echo "tree-sitter-freshness: the force was already applied for these exact inputs;"
+        echo "    leaving mtimes alone (ledger: $ledger)."
+        echo "    Dormant fingerprint dirs are never rebuilt, so they stay stale forever;"
+        echo "    without this guard every verify run would pay a full parser.c recompile."
         return 0
     fi
 
     echo "tree-sitter-freshness: forcing rebuild — a built archive does not match the sources on disk:"
     ts_stale_lines
+    ts_dormant_lines
     echo "tree-sitter-freshness: bumping the mtime (content untouched) of every input build.rs watches,"
     echo "    so cargo must re-run the build script — and recompile — on the next invocation:"
 

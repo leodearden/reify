@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 18 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 18 | 17 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 18 | 17 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 18 | 3 |
+| (a) docs-only | `docs/note.md` | — | 20 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 20 | 19 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 20 | 19 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 20 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 19 |  0 |
-| reify-doc  | 19 | 18 |
-| reify-eval | 19 | 18 |
-| gui-only   | 19 |  3 |
+| docs-only  | 20 |  0 |
+| reify-doc  | 20 | 19 |
+| reify-eval | 20 | 19 |
+| gui-only   | 20 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -210,6 +210,20 @@ every `scope=all` plan, and `scope=branch` for the `RUN_RUST=1` shapes
 (reify-doc, reify-eval). docs-only branch stays 0 and gui-only branch stays 3
 (`RUN_RUST=0` there, so the leaf is not emitted). The machine sentinel moves
 18 → 19 for those cells._
+
+_Counts bumped 2026-08-01 (task 5629, review round 2): added a SECOND
+tree-sitter leaf, `./scripts/tree-sitter-freshness.sh check`, to `build_plan`
+after the cargo compile wave. The `ensure` leaf above only ATTEMPTS the repair —
+it bumps mtimes and trusts cargo to act on them, and never fails for a condition
+it believes it fixed — so a plan carrying `ensure` alone had no evidence the
+rebuild actually happened. `check` asserts, after the fact, that the archive
+cargo just linked was built from the sources on disk. Guarded on
+`RUN_RUST=1 && (DO_LINT || DO_TYPECHECK)`, i.e. exactly when a `cargo check` /
+`cargo clippy` leaf precedes it — an assertion emitted before anything compiled
+would hard-fail the very staleness `ensure` had queued a repair for. Net change:
++1 non-comment plan line in the same cells as the `ensure` leaf, since all four
+shapes here run `action=all`. The machine sentinel moves 19 → 20 for those
+cells._
 
 ## Heavy-Work Narrowed Markers
 
