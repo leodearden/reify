@@ -507,6 +507,8 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "screenshot_window",
   "type_in_editor",
   "keyboard",
+  "focus_element",
+  "scroll",
   "select_entity",
   "clear_selection",
   "fit_to_view",
