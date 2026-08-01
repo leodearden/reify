@@ -1691,3 +1691,64 @@ fn realization_entries_counts_terminal_cache_entry_once_and_not_on_cache_hit() {
          counter — a cache hit realized nothing"
     );
 }
+
+/// Task 4152: `realization_entries` SURVIVES `clear_realization_cache()`.
+///
+/// The counter is a lifetime metric, not a live size. `clear_realization_cache`
+/// reseats the cache to a fresh `RealizationCache::new()`, which would zero a
+/// naively-housed counter. That matters in production, not just in principle:
+/// both `Engine::edit_param` and `Engine::edit_source` call the same reset
+/// internally, so a reset-on-flush counter would return to 0 on every parameter
+/// edit and be useless for measuring realization work across edits.
+///
+/// Asserts the flush genuinely emptied the cache (so this is not vacuously
+/// true), that the counter is unmoved, and that a subsequent build re-realizes
+/// — taking the counter to 2, because a flushed cache means a genuinely new
+/// entry rather than a hit.
+#[test]
+fn realization_entries_survives_clear_realization_cache() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_realization_entries_survives_clear".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(my_design_template_with_box_realization())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    let checker = MockConstraintChecker::new();
+    let kernel = MockGeometryKernel::new();
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+    let _build = engine.build(&module, ExportFormat::Step);
+
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        1,
+        "precondition: the first build must have counted one terminal entry"
+    );
+
+    engine.clear_realization_cache();
+
+    assert!(
+        engine.realization_cache().is_empty(),
+        "clear_realization_cache() must genuinely empty the cache — otherwise \
+         the counter assertion below would be vacuous"
+    );
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        1,
+        "the LIFETIME counter must survive a cache flush; edit_param/edit_source \
+         both flush, so a reset here would zero the metric on every edit"
+    );
+
+    // Flushed cache → the next build cannot hit, so it genuinely re-realizes.
+    let _build2 = engine.build(&module, ExportFormat::Step);
+    assert_eq!(
+        engine.cache_stats().realization_entries,
+        2,
+        "after a flush the next build must create a genuinely new entry, so the \
+         counter advances to 2 (contrast the cache-hit case, which stays put)"
+    );
+}
