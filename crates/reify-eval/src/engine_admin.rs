@@ -2034,6 +2034,29 @@ impl Engine {
         self.last_diff_value_cells.as_ref()
     }
 
+    /// The set of realizations whose INPUT-cone hash moved during the most
+    /// recent `edit_param` / `edit_source` (selective-realization-eviction
+    /// PRD task β, #4729). Cleared at the start of every edit, so it always
+    /// describes exactly one edit; empty means no realization's inputs
+    /// moved (e.g. a display-only param edit).
+    ///
+    /// Consumed by task γ (#4730) keyed eviction. Note this is the
+    /// INPUT-cone comparison, not the static
+    /// `RealizationNodeData::content_hash` diff that
+    /// [`Engine::last_diff_value_cells`]' realization analogue would give —
+    /// see `engine_edit::compute_changed_realizations` for why the static
+    /// hash provably never moves on a value-driven change.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn last_changed_realizations(
+        &self,
+    ) -> &std::collections::HashSet<reify_core::RealizationNodeId> {
+        &self.last_changed_realizations
+    }
+
     /// Returns the number of param-override rejections due to `TypeKindMismatch`
     /// during the most recent `eval()` or `eval_cached()` call. Reset to 0 at
     /// the start of each call.
