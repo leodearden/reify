@@ -4,8 +4,6 @@ import type { ViewportProps } from './Viewport';
 import { Splitter } from '../components/Splitter';
 import type { DefPreviewStore } from '../stores/defPreviewStore';
 import type { ViewportStore } from '../stores/viewportStore';
-import { createFeaModeStore } from '../stores/feaModeStore';
-import { registerDebugPanel } from '../debug/types';
 import styles from './DualViewport.module.css';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +26,7 @@ type PassthroughProps = Pick<
   | 'evalStatus'
   | 'entityVisibility'
   | 'displayAppearance'
+  | 'feaModeStore'
   | 'feaDiagnostics'
   | 'feaConvergence'
 >;
@@ -78,14 +77,23 @@ export interface DualViewportProps extends PassthroughProps, RefProps {
  * **Back-compat note:** the two-viewport layout that DualViewport implements is
  * equivalent to a degenerate two-pane MultiViewport grid (1 row × 2 columns
  * side-by-side) verified by the `(degenerate-2up)` test in MultiViewport.test.tsx.
+ *
+ * **FEA store ownership is App-scope (#5670).** This component used to create
+ * its own `createFeaModeStore()` and register it on `__REIFY_DEBUG__.feaMode`.
+ * App now owns exactly one `createFeaModeStoreRegistry()` serving BOTH this
+ * branch and the MultiViewport branch, and is the sole writer of the debug
+ * slots; `feaModeStore` arrives as an ordinary passthrough prop, so this
+ * component enforces no FEA policy and synthesizes no default — matching
+ * MultiViewport. The old component-local store made single- and multi-pane
+ * mode two different owners of "the" FEA state, so flipping a file between
+ * layouts silently reset the user's channel/palette/warp selection.
+ *
+ * The def-preview `<Viewport>` deliberately receives no `feaModeStore`, even
+ * when one is passed in: definition-preview geometry never carries FEA scalar
+ * channels, so it is not a model pane and the exclusion survives #5670's
+ * "every model pane gets its own store" generalization.
  */
 export function DualViewport(props: DualViewportProps) {
-  // ── FEA-mode store — created once per DualViewport mount ─────────────────
-  // Lifetime is tied to this component instance (SolidJS bodies run once per mount).
-  // Passed to the design-main <Viewport> so contour/deformed rendering is live.
-  const feaModeStore = createFeaModeStore();
-  registerDebugPanel('feaMode', feaModeStore);
-
   // ── Container ref for resize calculations ─────────────────────────────────
   let containerRef!: HTMLDivElement;
 
@@ -240,7 +248,7 @@ export function DualViewport(props: DualViewportProps) {
               displayAppearance={props.displayAppearance}
               feaDiagnostics={props.feaDiagnostics}
               feaConvergence={props.feaConvergence}
-              feaModeStore={feaModeStore}
+              feaModeStore={props.feaModeStore}
             />
           </div>
         </Show>

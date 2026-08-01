@@ -259,6 +259,14 @@ describe('MultiViewport', () => {
 
     // A pane whose config omits the FEA keys must receive undefined — MultiViewport
     // enforces no pane policy and must not synthesize a default store/diagnostics.
+    //
+    // This is a claim about the COMPONENT, not about which panes App gives FEA
+    // props to. Since #5670 the caller populates the FEA trio for every pane
+    // from a viewportId-keyed registry (App.tsx's `panes` mapArray; pinned by
+    // App.test.tsx's '#5670: the FEA trio reaches EVERY pane' test). Rewriting
+    // the fixture below to match that caller-side policy would make this test
+    // inert — the point is precisely that MultiViewport forwards whatever it is
+    // given, so a pane config WITHOUT the keys must stay without them.
     const otherPane = capturedViewportPropsByid['pane-1'];
     expect(otherPane, 'pane-1 Viewport should have been captured').toBeDefined();
     expect(otherPane.feaModeStore).toBeUndefined();

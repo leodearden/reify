@@ -44,8 +44,11 @@ export const SET_FEA_CHANNEL_ERRORS = {
   channelRequired: 'channel is required',
   channelNotString: 'channel must be a string',
   selectNotFound: 'element with data-testid="fea-mode-channel-select" not found',
+  selectNotFoundForViewport: (id: string) =>
+    `element with data-testid="fea-mode-channel-select" not found for viewport '${id}'`,
+  viewportIdNotString: 'viewportId must be a string',
   selectAmbiguous: (count: number) =>
-    `multiple elements with data-testid="fea-mode-channel-select" found (${count}) — ambiguous which viewport to target`,
+    `multiple elements with data-testid="fea-mode-channel-select" found (${count}) — ambiguous which viewport to target; pass viewportId to disambiguate`,
   selectDisabled: 'channel select is disabled',
   channelNotAvailable: 'channel not available',
   didNotPropagate: (actual: string, expected: string) =>
@@ -137,6 +140,59 @@ function pickViewport(
   if (ctx.viewport) return { viewport: ctx.viewport };
 
   return { error: 'viewport not ready' };
+}
+
+const FEA_CHANNEL_SELECT = '[data-testid="fea-mode-channel-select"]';
+
+/**
+ * Resolve which pane's FEA channel `<select>` to drive (#5670).
+ *
+ * Deliberately mirrors `pickViewport`'s precedence ladder above — same param
+ * name, same non-string rejection, same `{ value } | { error }` shape — so the
+ * two read as one convention:
+ *  1. params.viewportId present → reject non-string, then the scoped selector;
+ *     no match is `selectNotFoundForViewport` (distinct from a bare
+ *     `selectNotFound`, which means no FEA toolbar is mounted ANYWHERE).
+ *  2. No id → the document-wide lookup: exactly one match is unambiguous;
+ *     zero is `selectNotFound`; more than one is `selectAmbiguous`.
+ *
+ * There is no "first populated" tiebreak as in `pickViewport`: every mounted
+ * toolbar is equally valid to drive, so guessing between N of them would
+ * silently misapply a channel switch. Ambiguity is an error, not a heuristic.
+ *
+ * SCOPE (#5891): this ladder covers the channel `<select>` only. The toolbar's
+ * other controls still resolve through the generic first-match testid lookup
+ * used by click_element/wait_for_selector/dom_query, which with N panes mounted
+ * drives pane 0 silently — the loud failure below has no counterpart there yet.
+ * Generalizing those resolvers to an optional viewportId scope is #5891; the
+ * `data-viewport-id` FeaModeToolbar stamps on its root is the substrate for it.
+ */
+function pickFeaChannelSelect(
+  params: Record<string, unknown>,
+): { select: HTMLSelectElement } | { error: string } {
+  const id = params.viewportId;
+
+  if (id !== undefined) {
+    if (typeof id !== 'string') return { error: SET_FEA_CHANNEL_ERRORS.viewportIdNotString };
+    // Escape before interpolating: an id carrying a quote or backslash would
+    // otherwise build an invalid selector and make querySelector THROW, which
+    // the dispatcher would surface as an opaque CSS-parser message instead of
+    // the intended selectNotFoundForViewport. Same CSS.escape-with-jsdom-
+    // fallback pattern as buildSelectorPredicate above.
+    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+      ? CSS.escape(id)
+      : id.replace(/["\\]/g, '\\$&');
+    const scoped = document.querySelector(
+      `${FEA_CHANNEL_SELECT}[data-viewport-id="${escaped}"]`,
+    ) as HTMLSelectElement | null;
+    if (!scoped) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(id) };
+    return { select: scoped };
+  }
+
+  const matches = document.querySelectorAll(FEA_CHANNEL_SELECT);
+  if (matches.length === 0) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFound };
+  if (matches.length > 1) return { error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(matches.length) };
+  return { select: matches[0] as HTMLSelectElement };
 }
 
 // Shared element descriptor used by query_selector and query_selector_all.
@@ -788,35 +844,19 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if (channel === undefined) return { error: SET_FEA_CHANNEL_ERRORS.channelRequired };
       if (typeof channel !== 'string') return { error: SET_FEA_CHANNEL_ERRORS.channelNotString };
 
-      // querySelectorAll (not querySelector) + a uniqueness check: today only
-      // one FEA-capable pane (design-main) ever mounts this <select> —
-      // DualViewport.tsx wires feaModeStore into the design-main Viewport
-      // only, never into def-preview. The N-pane mesh/pane wiring (task 4767)
-      // has already landed in App.tsx/MultiViewport.tsx, but FEA mode has not
-      // yet been generalized to run per-pane. If/when it is, silently driving
-      // whichever select happens to be first in DOM order would misapply a
-      // channel switch to the wrong viewport with no diagnostic — exactly the
-      // kind of silent-wrong-target failure the guards below (disabled,
-      // value-mismatch) already exist to rule out for a single pane. Failing
-      // loudly on ambiguity now means a second pane is caught the moment it
-      // starts rendering the select, not discovered later via a mysteriously
-      // wrong screenshot.
-      //
-      // That same generalization must also move `ctx.feaMode` registration
-      // (today a single top-level slot DualViewport sets once) to per-pane
-      // wiring keyed by viewportId — otherwise a second pane's
-      // registerDebugPanel('feaMode', ...) call would just overwrite the
-      // first's, and the store guard below would silently read the wrong
-      // pane's store (task 4981 follow-up).
-      const matches = document.querySelectorAll('[data-testid="fea-mode-channel-select"]');
-      if (matches.length === 0) {
-        return { error: SET_FEA_CHANNEL_ERRORS.selectNotFound };
-      }
-      if (matches.length > 1) {
-        return { error: SET_FEA_CHANNEL_ERRORS.selectAmbiguous(matches.length) };
-      }
-
-      const select = matches[0] as HTMLSelectElement;
+      // Since #5670 every pane owns a keyed FeaModeStore, so N panes mount N
+      // toolbars — each an individually addressable per-pane control rather
+      // than N views of one state. `pickFeaChannelSelect` resolves which one to
+      // drive: an explicit `viewportId` scopes the lookup by the
+      // `data-viewport-id` the toolbar stamps, and an unscoped request is
+      // accepted only when exactly one toolbar is mounted. Ambiguity stays a
+      // loud error — silently driving whichever select happens to be first in
+      // DOM order would misapply a channel switch to the wrong viewport with no
+      // diagnostic, the same silent-wrong-target failure the guards below
+      // (disabled, value-mismatch, store read-back) rule out for one pane.
+      const picked = pickFeaChannelSelect(params);
+      if ('error' in picked) return { error: picked.error };
+      const select = picked.select;
       // Defense in depth: the toolbar only renders this <select> when FEA mode
       // is enabled, so `disabled` is currently unreachable — but a 'change'
       // event dispatched on a disabled control would not fire the component's
@@ -833,17 +873,31 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       // task 4981). The DOM read-back below catches a value-reverting
       // listener, but alone it can't see a silently-inert onChange —
       // `select.value` was already set to `channel` above, before dispatch.
-      // The store read-back closes that gap via `ctx.feaMode`, the
-      // FeaModeStore DualViewport registers with `registerDebugPanel('feaMode',
-      // ...)` — a signal outside the DOM value this handler just wrote. A
-      // rendered select implies a mounted FeaModeToolbar implies a registered
-      // store, so a missing `ctx.feaMode` here is itself a wiring anomaly to
-      // fail loudly on, not silently degrade to the DOM guard's weaker
-      // guarantee.
+      // The store read-back closes that gap with a signal outside the DOM value
+      // this handler just wrote. A rendered select implies a mounted
+      // FeaModeToolbar implies a registered store, so an unresolvable store here
+      // is itself a wiring anomaly to fail loudly on, not silently degrade to
+      // the DOM guard's weaker guarantee.
       if (select.value !== channel) {
         return { error: SET_FEA_CHANNEL_ERRORS.didNotPropagate(select.value, channel) };
       }
-      const feaStore = ctx.feaMode;
+      // Key the store lookup off the element just driven — its OWN
+      // data-viewport-id — not off the request parameter, which is optional and
+      // therefore absent on the single-toolbar path. That guarantees the store
+      // checked is the one that toolbar actually drives, closing the "silently
+      // read the wrong pane's store" hole a global slot would leave open with N
+      // panes mounted (#5670). The legacy scalar `ctx.feaMode` is the fallback
+      // ONLY for a select carrying no id — the pre-#5670 single-toolbar wiring.
+      //
+      // A KEYED select deliberately does NOT fall back: App registers both
+      // slots (`feaMode` = design-main's store, `feaModes` = the live record),
+      // so falling back on a missing keyed entry would resolve to design-main's
+      // store and, whenever its channel already equalled the requested one,
+      // report {ok:true} having verified nothing about the pane it actually
+      // drove — the exact false-success this read-back exists to eliminate. A
+      // stamped select whose entry is absent is a wiring anomaly; fail loudly.
+      const selectViewportId = select.getAttribute('data-viewport-id');
+      const feaStore = selectViewportId ? ctx.feaModes?.[selectViewportId] : ctx.feaMode;
       if (!feaStore) return { error: SET_FEA_CHANNEL_ERRORS.storeUnavailable };
       if (feaStore.state.channel !== channel) {
         return { error: SET_FEA_CHANNEL_ERRORS.didNotReachStore(feaStore.state.channel, channel) };

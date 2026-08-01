@@ -40,7 +40,7 @@ import { createViewStateStore, type ViewStateStore } from './stores/viewStateSto
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
-import { createFeaModeStore, type FeaModeStore } from './stores/feaModeStore';
+import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
 import { createMechanismStore } from './stores/mechanismStore';
 import { createBucklingStore, subscribeModeShapeFrames } from './stores/bucklingStore';
 import { createDefPreviewActivation } from './hooks/useDefPreviewActivation';
@@ -414,21 +414,27 @@ const SPLITTER_THICKNESS = 4;
 let toastIdCounter = 0;
 
 /**
- * Registration-only (renders nothing): scopes `__REIFY_DEBUG__.feaMode` to the
- * MultiViewport branch's lifetime.
+ * Registration-only (renders nothing): publishes App's FeaModeStore registry
+ * onto `__REIFY_DEBUG__` for the debug bridge's set_fea_channel (#5670).
  *
- * `registerDebugPanel` wraps onMount/onCleanup unconditionally, so calling it
- * from App's body would fire in BOTH branches. In single-pane mode Solid runs
- * the child's onMount (DualViewport, which registers its own component-local
- * store) before the parent's, so App's registration would land last and leave
- * ctx.feaMode pointing at a store no rendered toolbar drives — every
- * set_fea_channel would then return didNotReachStore. Rendered inside the
- * <Show> true-branch instead, this exists exactly when <MultiViewport> does and
- * releases the slot on cleanup; registerDebugPanel's identity guard makes a
- * branch flip order-independent in both directions.
+ * Rendered UNCONDITIONALLY — outside the <Show> — because there is now exactly
+ * one registry and exactly one writer. The old branch-scoping rationale (that an
+ * unconditional registration would, in single-pane mode, land after
+ * DualViewport's own registration — Solid runs child onMount before parent
+ * onMount — and leave the slot pointing at a store no rendered toolbar drives)
+ * no longer applies: DualViewport neither creates nor registers a store, it is
+ * handed the registry's 'design-main' entry, so nothing can clobber anything and
+ * the registration is correct in both branches.
+ *
+ * Two slots, mirroring the `viewports` / `viewport` precedent:
+ *  - `feaModes` — the registry's LIVE backing record, so entries the `panes`
+ *    mapper adds later are visible through the same reference.
+ *  - `feaMode`  — the legacy scalar mirror of the 'design-main' entry; the
+ *    `get` here also guarantees that entry exists in BOTH branches.
  */
-function FeaModeDebugRegistrar(props: { store: FeaModeStore }) {
-  registerDebugPanel('feaMode', props.store);
+function FeaModeDebugRegistrar(props: { registry: FeaModeStoreRegistry }) {
+  registerDebugPanel('feaModes', props.registry.stores);
+  registerDebugPanel('feaMode', props.registry.get('design-main'));
   return null;
 }
 
@@ -479,14 +485,18 @@ const App: Component = () => {
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
   const bucklingStore = createBucklingStore();
-  // FEA-mode store for the MultiViewport (multi-pane) branch only, threaded to
-  // pane 0 via the `panes` mapArray below. The DualViewport (single-pane) branch
-  // keeps its own component-local store (DualViewport.tsx) so its landed contract
-  // — including the `__REIFY_DEBUG__.feaMode` registration — is untouched. The two
-  // branches are mutually exclusive at runtime, so two stores never coexist as
-  // rendered state; the cost is that flipping a file between single- and
-  // multi-pane layouts resets FEA-mode state.
-  const paneFeaModeStore = createFeaModeStore();
+  // The single owner of every FeaModeStore in the app (#5670). One registry,
+  // keyed by viewportId, serving BOTH render branches: the `panes` mapArray
+  // below draws each pane's store from it, and the DualViewport branch is
+  // handed its `design-main` entry. DualViewport no longer creates or registers
+  // one of its own, so there is exactly one writer of the debug slots and no
+  // competing instance to clobber.
+  //
+  // App scope, not mapper scope, so the store survives a non-structural pulse;
+  // and registry entries are never evicted, so FEA state now survives a flip
+  // between single- and multi-pane layouts (under the old two-singleton design
+  // that flip handed control to a different store and silently reset it).
+  const feaModeStores = createFeaModeStoreRegistry();
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
@@ -843,28 +853,27 @@ const App: Component = () => {
         // design-main only: tensegrity overlay + fit/fly registration callbacks.
         get tensegrityWires() { return pane === 0 ? engineStore.state.tensegrityWires : undefined; },
         get tensegritySurfaces() { return pane === 0 ? engineStore.state.tensegritySurfaces : undefined; },
-        // design-main only: FEA toolbar + contour/warp colorization + diagnostic overlay.
-        // Restricted to pane 0 because <Viewport> renders its own <FeaModeToolbar>
-        // overlay whenever feaModeStore is present: handing the same store to N panes
-        // would render N toolbars all driving one state, and the debug bridge resolves
-        // the toolbar by a document-wide querySelectorAll on
-        // [data-testid="fea-mode-channel-select"], hard-failing with selectAmbiguous on
-        // more than one match. Per-pane FEA (a toolbar and a ctx.feaMode registration
-        // keyed by viewportId) is tracked as #5670. Note bridge.ts's neighbouring
-        // note says "task 4981 follow-up" meaning a successor TO 4981, which is
-        // itself done — #5670 is that successor.
+        // FEA trio — uniform across every pane since #5670. Each pane gets its
+        // OWN store from the keyed registry, so the N toolbars <Viewport>
+        // renders are N independent per-pane controls rather than N views of
+        // one state; each is addressable by the debug bridge via the
+        // data-viewport-id the toolbar stamps.
         //
-        // Observable cost of the carve-out, for #5670 to close: fea_diagnostics is
-        // global to the model, but only pane 0 receives it. A display_panes directive
-        // that routes an FEA-relevant subject to a model pane makes that entity's
-        // ProblemElements/Unconstrained overlay silently vanish — pane 0's
-        // diagnosticOverlay.sync (Viewport.tsx) intersects the global diagnostics with
-        // its OWN meshes and finds none, and no pane ≥ 1 is handed the diagnostics at
-        // all. Same file in single-pane mode renders the overlay; there is no
-        // user-visible signal for the difference.
-        get feaModeStore() { return pane === 0 ? paneFeaModeStore : undefined; },
-        get feaDiagnostics() { return pane === 0 ? engineStore.state.feaDiagnostics : undefined; },
-        get feaConvergence() { return pane === 0 ? engineStore.state.feaConvergence : undefined; },
+        // Plain eager property, NOT a reactive getter: identity is stable per
+        // viewportId for the pane's lifetime, and eager evaluation guarantees
+        // the entry exists in registry.stores at pane-config construction time
+        // rather than whenever some consumer first reads a lazy getter — which
+        // would make the contents of ctx.feaModes order-dependent on who reads
+        // what first.
+        feaModeStore: feaModeStores.get(viewportId),
+        // feaDiagnostics/feaConvergence are global to the model, so every pane
+        // gets them. Withholding them from pane ≥ 1 was the observable defect
+        // #5670 closes: each pane's diagnosticOverlay.sync (Viewport.tsx)
+        // already intersects the global diagnostics with that pane's OWN
+        // meshes, so routing an FEA-relevant subject to a model pane now
+        // renders its overlay there instead of silently vanishing.
+        get feaDiagnostics() { return engineStore.state.feaDiagnostics; },
+        get feaConvergence() { return engineStore.state.feaConvergence; },
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
         get displayAppearance() { return appearanceData().overrides; },
@@ -2126,6 +2135,8 @@ const App: Component = () => {
             </div>
             <Splitter orientation="vertical" onResize={handleLeftResize} data-testid="splitter-left" />
             <div data-testid="viewport-panel" class={styles.viewportPanel}>
+              {/* Branch-independent: one registry serves both branches (#5670). */}
+              <FeaModeDebugRegistrar registry={feaModeStores} />
               <Show
                 when={hasModelPanes()}
                 fallback={
@@ -2149,13 +2160,11 @@ const App: Component = () => {
                     displayAppearance={appearanceData().overrides}
                     feaDiagnostics={engineStore.state.feaDiagnostics}
                     feaConvergence={engineStore.state.feaConvergence}
+                    feaModeStore={feaModeStores.get('design-main')}
                   />
                 }
               >
-                <>
-                  <FeaModeDebugRegistrar store={paneFeaModeStore} />
-                  <MultiViewport panes={panes()} viewportStore={viewportStore} />
-                </>
+                <MultiViewport panes={panes()} viewportStore={viewportStore} />
               </Show>
             </div>
             <Splitter orientation="vertical" onResize={handleRightResize} data-testid="splitter-right" />

@@ -404,19 +404,37 @@ fn tool_defs() -> Vec<ToolDef> {
                           view-state (no engine re-solve, unlike set_fea_case) — frontend-mediated, \
                           no dispatch_tool arm. Used by the visual-regression harness to select a \
                           channel before taking a screenshot. Returns { ok: true }, or \
-                          { error: <reason> } if `channel` is missing/non-string, the channel is \
-                          not an available option, the select is disabled, the toolbar select is \
-                          not present in the DOM, or the select's value does not settle on the \
-                          requested channel after the change event dispatches. NOTE: that last \
-                          check only catches a listener reverting the value — it cannot detect a \
-                          silently-inert onChange, since the DOM value is set before the event \
-                          fires (see the set_fea_channel comment in bridge.ts).",
+                          { error: <reason> } if `channel` is missing/non-string, `viewportId` is \
+                          present but not a string, the channel is not an available option, the \
+                          select is disabled, no FEA toolbar select is present in the DOM at all, \
+                          an explicit `viewportId` matches no mounted toolbar (distinct from the \
+                          none-mounted-anywhere case), more than one toolbar is mounted and no \
+                          `viewportId` was given to disambiguate, or the select's value does not \
+                          settle on the requested channel after the change event dispatches. \
+                          (SET_FEA_CHANNEL_ERRORS in bridge.ts is the single source of truth for \
+                          the exact strings; the conditions are what is contracted here.) The \
+                          ambiguity case became reachable in #5670: previously only pane 0 was \
+                          handed a FeaModeStore, so at most one toolbar ever existed; App.tsx now \
+                          gives every pane its own keyed store, so an N-pane document mounts N \
+                          toolbars and `viewportId` is required in practice for multi-pane \
+                          documents. NOTE: the value-settling check only catches a listener \
+                          reverting the value — it cannot detect a silently-inert onChange, since \
+                          the DOM value is set before the event fires (see the set_fea_channel \
+                          comment in bridge.ts).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "channel": {
                         "type": "string",
                         "description": "Name of the scalar channel to activate (e.g. 'errorIndicator', 'vonMises', 'displacement_magnitude')."
+                    },
+                    // #5670: deliberately NOT the "first populated viewport is targeted"
+                    // boilerplate the nine camera/canvas tools share — pickFeaChannelSelect
+                    // has no first-populated tiebreak, because every mounted toolbar is
+                    // equally valid to drive and guessing would silently misapply a switch.
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional id of the pane whose FEA toolbar to target (e.g. 'design-main', 'pane-1'). When omitted, the single mounted FEA toolbar is targeted; if more than one pane has one, the call fails as ambiguous rather than guessing — pass this to disambiguate."
                     }
                 },
                 "required": ["channel"]
@@ -2430,6 +2448,7 @@ mod tests {
             "orbit_camera",
             "pan_camera",
             "zoom_camera",
+            "set_fea_channel", // #5670: viewportId disambiguates WHICH pane's FEA toolbar to drive
         ];
         for tool_name in tools {
             let entry = defs

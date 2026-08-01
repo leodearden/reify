@@ -55,6 +55,13 @@ export interface ViewportProps {
    * overlay and bridges store state changes into the meshManager colorize
    * pipeline. When absent, no FEA UI is rendered (existing behaviour).
    *
+   * **Any pane may be handed one** (#5670). The store is no longer a
+   * design-main singleton: App owns a viewportId-keyed registry and gives
+   * each pane its own instance, so several `<Viewport>`s can render FEA UI
+   * simultaneously without sharing state. The toolbar this Viewport renders is
+   * scoped with `viewportId` (stamped as `data-viewport-id`) so the debug
+   * bridge can address one pane's controls unambiguously among N.
+   *
    * **Captured at mount** — captured once inside `onMount`. Swap by
    * unmounting and remounting the `<Viewport>`.
    */
@@ -547,6 +554,7 @@ export function Viewport(props: ViewportProps) {
       <Show when={props.feaModeStore}>
         <FeaModeToolbar
           store={props.feaModeStore!}
+          viewportId={props.viewportId}
           availableChannels={feaToolbarChannels(props.meshes)}
           onLockCurrent={() => {
             const r = activeScalarRange();

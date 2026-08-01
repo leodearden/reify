@@ -7201,7 +7201,7 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(pane1.onHover).toBeDefined();
   });
 
-  it('#5668: FEA props reach pane 0 only', async () => {
+  it('#5670: the FEA trio reaches EVERY pane, each with its own keyed store', async () => {
     // Non-empty fea_diagnostics + non-null fea_convergence so the forwarded values
     // are distinguishable from engineStore's empty/null defaults.
     const feaDiagnostics = [{ kind: 'ProblemElements' as const, ids: [3, 5] }];
@@ -7232,27 +7232,47 @@ describe('App N-pane render integration tests (task-4767 δ)', () => {
     expect(mainPane.feaModeStore.state.enabled).toBe(false);
     expect(mainPane.feaDiagnostics).toHaveLength(feaDiagnostics.length);
     expect(mainPane.feaConvergence).toEqual(feaConvergence);
+    const panes0Store = mainPane.feaModeStore;
 
-    // ── Pane 1 (model pane) gets none of it ───────────────────────────────────
-    // Pane-0-only carve-out: <Viewport> renders its own <FeaModeToolbar> whenever
-    // feaModeStore is present, so a second FEA-capable pane would spawn a second
-    // toolbar (and trip the debug bridge's selectAmbiguous guard). Pinned here so
-    // a future "just share it with every pane" edit fails loudly.
+    // ── Pane 1 (model pane) gets the trio too ─────────────────────────────────
+    // The old pane-0-only carve-out existed because <Viewport> renders its own
+    // <FeaModeToolbar> whenever feaModeStore is present, and N toolbars all
+    // driving ONE store tripped the bridge's selectAmbiguous guard. #5670
+    // dissolves that: each pane gets its OWN store, and each toolbar is stamped
+    // with data-viewport-id so the bridge can address it individually.
     const pane1 = capturedMultiViewportProps.panes[1];
     expect(pane1.viewportId).toBe('pane-1');
-    expect(pane1.feaModeStore).toBeUndefined();
-    expect(pane1.feaDiagnostics).toBeUndefined();
-    expect(pane1.feaConvergence).toBeUndefined();
+    expect(pane1.feaModeStore).toBeDefined();
+    expect(typeof pane1.feaModeStore.setEnabled).toBe('function');
+    expect(pane1.feaModeStore.state.enabled).toBe(false);
 
-    // NOTE: "the store is App-scope, not built inside the mapArray mapper" is NOT
-    // assertable from `panes[0].feaModeStore` alone, however many reactive pulses
-    // you push through it. computePaneGroups always emits a pane-0 bucket, so key
-    // 0 never leaves the mapArray key list, so the mapper never re-runs and a
-    // mapper-local store would be exactly as stable. The only discriminator is a
-    // second reference to the store that does NOT come through the mapper —
-    // <FeaModeDebugRegistrar> is handed `paneFeaModeStore` directly, so the
-    // identity assertion in 'App feaMode debug-context registration (multi-pane)'
-    // below is what actually pins it.
+    // fea_diagnostics/fea_convergence are GLOBAL to the model, not per-pane.
+    // Withholding them from pane ≥ 1 was the concrete defect #5670 closes: a
+    // display_panes directive routing an FEA-relevant subject to a model pane
+    // made that entity's overlay silently vanish, because pane 0's
+    // diagnosticOverlay.sync intersects the global diagnostics with pane 0's
+    // OWN meshes and finds none, while no other pane was handed them at all.
+    expect(pane1.feaDiagnostics).toEqual(mainPane.feaDiagnostics);
+    expect(pane1.feaDiagnostics).toHaveLength(feaDiagnostics.length);
+    expect(pane1.feaConvergence).toEqual(feaConvergence);
+
+    // ── Keyed, not shared ─────────────────────────────────────────────────────
+    // The failure mode a naive "just delete the carve-out" fix produces is one
+    // shared instance handed to everyone: every pane would then render a toolbar
+    // driving the SAME state, so switching pane 1's channel would silently
+    // switch pane 0's too. The registry is keyed by viewportId precisely to
+    // prevent that.
+    expect(panes0Store).not.toBe(pane1.feaModeStore);
+
+    // NOTE: "the registry is App-scope, not built inside the mapArray mapper" is
+    // NOT assertable from `panes[0].feaModeStore` alone, however many reactive
+    // pulses you push through it. computePaneGroups always emits a pane-0
+    // bucket, so key 0 never leaves the mapArray key list, the mapper never
+    // re-runs, and a mapper-local registry would be exactly as stable. The
+    // discriminator is a reference that does NOT come through the mapper:
+    // <FeaModeDebugRegistrar> is handed the registry directly, so the
+    // `ctx.feaModes` identity assertions in 'App feaMode debug-context
+    // registration' below are what actually pin it.
   });
 
   it('step-9 case B: empty display_panes → DualViewport renders, MultiViewport absent (back-compat inv.2)', async () => {
@@ -7490,15 +7510,22 @@ describe('display-appearance dropped-directive warn/dedup (task-4773 δ amend)',
   });
 });
 
-// ─── App feaMode debug-context registration (#5668) ──────────────────────────
-// `__REIFY_DEBUG__.feaMode` is a single top-level slot, and the debug bridge's
-// set_fea_channel resolves the toolbar through it. App owns a FeaModeStore for
-// the MultiViewport branch only, so its registration must be scoped to that
-// branch: registering unconditionally would, in single-pane mode, land after
-// DualViewport's own registration (Solid runs child onMount before parent
-// onMount) and leave the slot pointing at a store no rendered toolbar drives.
+// ─── App feaMode debug-context registration (#5670) ──────────────────────────
+// `__REIFY_DEBUG__.feaModes` is a viewportId-keyed map (mirroring the existing
+// `viewports` map), and the debug bridge's set_fea_channel resolves a pane's
+// store through it. App owns the ONE FeaModeStore registry serving both render
+// branches, so its registration is unconditional and branch-independent: the
+// registered value is the registry's live backing record, so entries the panes
+// mapper adds later are visible through the same reference.
+//
+// The old branch-scoping rationale — that an unconditional registration would,
+// in single-pane mode, land after DualViewport's own (Solid runs child onMount
+// before parent onMount) and leave the slot pointing at a store no rendered
+// toolbar drives — dissolved with #5670: DualViewport neither creates nor
+// registers a store, so there is exactly one writer and nothing to clobber.
+// `ctx.feaMode` survives as the legacy scalar mirror of feaModes['design-main'].
 
-describe('App feaMode debug-context registration (multi-pane)', () => {
+describe('App feaMode debug-context registration (keyed, #5670)', () => {
   beforeEach(() => {
     // Minimal stub — registerDebugPanel only checks for the global's presence.
     (window as any).__REIFY_DEBUG__ = { stores: {} as any, testMode: () => false };
@@ -7508,7 +7535,7 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
     delete (window as any).__REIFY_DEBUG__;
   });
 
-  it('multi-pane: registers the SAME store instance that pane 0 renders with', async () => {
+  it('(a) multi-pane: EVERY rendered pane is addressable by its viewportId', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
       ...emptyState,
       meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
@@ -7520,36 +7547,40 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
 
     await renderAndWaitForReady();
 
-    const registered = (window as any).__REIFY_DEBUG__.feaMode;
-    expect(registered).toBeDefined();
-    expect(typeof registered.setChannel).toBe('function');
+    const feaModes = (window as any).__REIFY_DEBUG__.feaModes;
+    expect(feaModes).toBeDefined();
+    expect(typeof feaModes['design-main'].setChannel).toBe('function');
+
     // Identity, not mere presence: a registration pointing at a different store
     // than the one driving the rendered toolbar is exactly the didNotReachStore
-    // failure the debug bridge's store guard exists to catch.
-    //
-    // This is also the only assertion in the suite that pins the store as
-    // App-scope rather than mapper-local: the registrar receives
-    // `paneFeaModeStore` directly while pane 0 receives it through the `panes`
-    // mapArray, so a `createFeaModeStore()` moved inside the mapper makes these
-    // two references diverge.
-    expect(registered).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+    // failure the debug bridge's store guard exists to catch. Asserting it for
+    // pane 1 as well as pane 0 is what pins the map as keyed-per-viewport —
+    // under the old single-slot design pane 1 was unaddressable entirely.
+    const panes = capturedMultiViewportProps.panes;
+    expect(feaModes['design-main']).toBe(panes[0].feaModeStore);
+    expect(feaModes['pane-1']).toBe(panes[1].feaModeStore);
+    expect(feaModes['design-main']).not.toBe(feaModes['pane-1']);
   });
 
-  it('single-pane: App does not touch the slot (DualViewport owns it)', async () => {
+  it('(b) single-pane: the DualViewport branch is served by the SAME App registry', async () => {
     // Default mock has display_panes: [] → DualViewport fallback branch.
     await renderAndWaitForReady();
 
     expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
     expect(capturedMultiViewportProps.panes).toBeUndefined();
-    // DualViewport is mocked in this suite, so nothing else registers — an
-    // App-level registration here would be App clobbering the real
-    // DualViewport's own store in production.
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+
+    // The unification proof (#5670). DualViewport used to create and register
+    // its own store here, so App deliberately left the slot alone; now App owns
+    // the one registry and hands DualViewport its 'design-main' entry, so the
+    // registered store and the one the rendered branch drives are one object.
+    const feaModes = (window as any).__REIFY_DEBUG__.feaModes;
+    expect(feaModes['design-main']).toBeDefined();
+    expect(feaModes['design-main']).toBe(capturedDualViewportProps.feaModeStore);
   });
 
-  it('branch flip: the slot is released on the way out and re-acquired on the way back', async () => {
+  it('(c) branch flip: the SAME store — and its state — survives multi → single → multi', async () => {
     // hasModelPanes() is live — onDisplayPanesUpdate can flip the layout
-    // mid-session — so the registrar's scoping claim has to survive a real
+    // mid-session — so the registry's cross-branch claim has to survive a real
     // transition, not just a fixed initial render. Capture the subscription so
     // we can drive display_panes after mount.
     let displayPanesCallback: ((panes: DisplayDirective[]) => void) | undefined;
@@ -7569,29 +7600,55 @@ describe('App feaMode debug-context registration (multi-pane)', () => {
     });
 
     await renderAndWaitForReady();
-    const appStore = (window as any).__REIFY_DEBUG__.feaMode;
-    expect(appStore).toBeDefined();
-    expect(appStore).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+    const designMain = (window as any).__REIFY_DEBUG__.feaModes['design-main'];
+    expect(designMain).toBeDefined();
+    expect(designMain).toBe(capturedMultiViewportProps.panes[0].feaModeStore);
+
+    // Mutate before the flip: losing this on a layout change is the concrete
+    // user-visible regression the two-singleton design caused.
+    designMain.setChannel('errorIndicator');
 
     // ── Flip out: no directives → every mesh collapses onto pane 0 →
-    // hasModelPanes() false → <Show> disposes the true branch → the registrar's
-    // onCleanup runs.
+    // hasModelPanes() false → <Show> swaps to the DualViewport branch.
     displayPanesCallback!([]);
     await flushMacrotasks();
     expect(screen.queryByTestId('dual-viewport')).toBeTruthy();
     expect(screen.queryByTestId('multi-viewport')).toBeNull();
-    // The slot must be released, not left pointing at App's now-orphaned store.
-    // DualViewport is mocked here so nothing re-claims it — a leftover value
-    // could only be App's own store, driving no rendered toolbar, which is
-    // precisely the didNotReachStore failure set_fea_channel's guard catches.
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBeUndefined();
+    // The entry must SURVIVE, not be released: the registrar lives outside the
+    // <Show>, registry entries are never evicted, and the DualViewport branch is
+    // now handed that very store — so the slot keeps driving a rendered toolbar.
+    expect((window as any).__REIFY_DEBUG__.feaModes['design-main']).toBe(designMain);
+    expect(capturedDualViewportProps.feaModeStore).toBe(designMain);
+    expect(designMain.state.channel).toBe('errorIndicator');
 
-    // ── Flip back: the branch is re-created, so a fresh registrar mounts and
-    // re-claims the slot with the same App-scope store.
+    // ── Flip back: the MultiViewport branch is re-created and draws the same
+    // keyed entry from the registry, state intact.
     displayPanesCallback!(twoPanes);
     await flushMacrotasks();
     expect(screen.queryByTestId('multi-viewport')).toBeTruthy();
-    expect((window as any).__REIFY_DEBUG__.feaMode).toBe(appStore);
+    expect((window as any).__REIFY_DEBUG__.feaModes['design-main']).toBe(designMain);
+    expect(capturedMultiViewportProps.panes[0].feaModeStore).toBe(designMain);
+    expect(designMain.state.channel).toBe('errorIndicator');
+  });
+
+  it('(d) legacy scalar slot mirrors feaModes[design-main]', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+    });
+
+    await renderAndWaitForReady();
+
+    // `feaMode` is retained beside `feaModes` exactly as `viewport` is retained
+    // beside `viewports`: the debug bridge's fallback path and the
+    // direct-stub-injection tests in debugBridge.test.tsx resolve through it.
+    const ctx = (window as any).__REIFY_DEBUG__;
+    expect(ctx.feaMode).toBeDefined();
+    expect(ctx.feaMode).toBe(ctx.feaModes['design-main']);
   });
 });
 
