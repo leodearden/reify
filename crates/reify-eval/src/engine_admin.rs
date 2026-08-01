@@ -353,6 +353,10 @@ impl Engine {
             // cached handle satisfies the request under the partial-order
             // rule.
             realization_cache: crate::realization_cache::RealizationCache::new(),
+            // Task 4152: zeroed eval-cache accumulator. Folded forward by
+            // `eval_cached` and surfaced (alongside the live realization
+            // counter) by `Engine::cache_stats`.
+            cumulative_eval_cache_stats: crate::CacheStats::default(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -647,6 +651,37 @@ impl Engine {
         &self,
     ) -> &crate::realization_cache::RealizationCache<reify_ir::KernelHandle> {
         &self.realization_cache
+    }
+
+    /// Cache counters for this engine (task 4152).
+    ///
+    /// **This method is UNGATED**, unlike the neighbouring
+    /// [`realization_cache`](Self::realization_cache) accessor: it returns only
+    /// `usize` counters by value and never exposes a kernel-internal
+    /// `GeometryHandleId`, so there is nothing here to keep out of production
+    /// builds.
+    ///
+    /// The four fields have two different time bases:
+    ///
+    /// - [`realization_entries`](crate::CacheStats::realization_entries) is
+    ///   **live** — read straight off the current
+    ///   [`RealizationCache`](crate::realization_cache::RealizationCache). It is
+    ///   a monotonic lifetime count of new terminal realizations that survives
+    ///   both cache eviction and [`clear_realization_cache`](Self::clear_realization_cache),
+    ///   which is what makes it usable as a re-mesh-avoidance signal across
+    ///   `edit_param` / `edit_source` (both of which flush the cache).
+    /// - `cache_hits` / `cache_misses` / `early_cutoffs` are **cumulative
+    ///   totals** across every [`Engine::eval_cached`](crate::Engine::eval_cached)
+    ///   call on this engine — not the last call's figures. For a single call's
+    ///   own numbers, read `CachedEvalResult::stats` instead.
+    ///
+    /// Only the `build()` family can move `realization_entries`: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub fn cache_stats(&self) -> crate::CacheStats {
+        crate::CacheStats {
+            realization_entries: self.realization_cache.realization_entries(),
+            ..self.cumulative_eval_cache_stats.clone()
+        }
     }
 
     /// Flush the per-engine [`RealizationCache`](crate::realization_cache::RealizationCache),

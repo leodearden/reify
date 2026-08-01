@@ -3214,6 +3214,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
+            cumulative_eval_cache_stats: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
             morph_producer: _,     // mesh-morph producer hook

@@ -954,6 +954,16 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// Running totals of the per-call eval-cache counters, folded in at the end
+    /// of every [`Engine::eval_cached`] call (task 4152).
+    ///
+    /// Only `cache_hits` / `cache_misses` / `early_cutoffs` are accumulated
+    /// here. The `realization_entries` slot of this field is unused and stays
+    /// 0: that counter is a lifetime count already owned by
+    /// [`Engine::realization_cache`], so accumulating it too would double-count.
+    /// [`Engine::cache_stats`] grafts the live cache counter over this field's
+    /// zero when it assembles the public [`CacheStats`].
+    cumulative_eval_cache_stats: CacheStats,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
@@ -1111,6 +1121,25 @@ pub struct CacheStats {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub early_cutoffs: usize,
+    /// Number of NEW geometry-[`RealizationCache`] **terminal** entries created
+    /// over the engine's lifetime — incremented when a realization genuinely
+    /// produced and cached new geometry, NOT on a cache hit.
+    ///
+    /// This is the re-mesh-avoidance signal (PRD
+    /// `docs/prds/v0_4/fea-result-model.md` B9): two load cases sharing one body
+    /// must move it by exactly 1, because the second case reuses the first's
+    /// cached volume mesh rather than re-meshing.
+    ///
+    /// **Monotonic lifetime count, not a live cache size.** It is never
+    /// decremented — not by cache eviction, not by
+    /// [`Engine::clear_realization_cache`], and not across the implicit
+    /// invalidation that `edit_param`/`edit_source` perform. See
+    /// [`RealizationCache::realization_entries`] for the full contract and for
+    /// why `RealizationCache::len()` is deliberately not this signal.
+    ///
+    /// Only [`Engine::build`]-family entry points can move it: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub realization_entries: usize,
 }
 
 /// Result of a cached evaluation, wrapping EvalResult with stats.
