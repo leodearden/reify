@@ -1685,8 +1685,9 @@ fn solve_core_with_sd_tolerance(
     // constraints are `Ge`, and the floored bound is strictly interior to the
     // original `>`/`>=` bound by construction, so the clamp still receives it.
     //
-    // GATED on `floor_applied` (esc-5618-1); plan.json specified an UNCONDITIONAL
-    // clamp.  Rationale: the floored box is the solver's OWN synthesised construct
+    // GATED on `floor_applied` (esc-5618-1); plan.json originally specified an
+    // UNCONDITIONAL clamp.  Rationale (untouched by #5711 — this task does not
+    // revisit it): the floored box is the solver's OWN synthesised construct
     // with known margin semantics, so confining the optimiser to it is safe.  The
     // RAW user constraint box is not — clamping to it unconditionally would promote
     // every user inequality into a hard wall the optimiser can never cross, i.e.
@@ -1694,18 +1695,26 @@ fn solve_core_with_sd_tolerance(
     // assumed) for every non-Money solve in the workspace.  Per floor invariant (ii)
     // above, a floor-free solve stays bit-identical.
     //
-    // MEASURED (unconditional form, `cargo test -p reify-constraints --lib`):
-    // 138 pass / 2 fail — `tests::undefined_objective_at_fallback_triggers_no_progress`
-    // and `tests::defined_objective_at_fallback_returns_solved`.  Both are non-Money
-    // drift-fallback fixtures that deliberately lure the optimiser OUT of the feasible
-    // region (constraint `x <= 0.020`, Undef-objective boundary `x <= 0.022`); a derived
-    // clamp box makes that drift unreachable BY CONSTRUCTION for a single linear
-    // one-auto bound, so option B cannot keep that coverage without a contrived
-    // nonlinear/multi-auto replacement fixture.  The second failure is
-    // `ConstraintNonUnique` via the flat-objective / compare-parameter-values mechanism
-    // documented on `verify_uniqueness` — so the unconditional form is blocked on the
-    // SAME uniqueness-contract decision, now owned by task #5711.  Revisit both
-    // together; neither is actionable in isolation.
+    // RE-MEASURED (task #5711 step-7, unconditional form, scratch/reverted, HEAD
+    // f4dde0b52e, `cargo test -p reify-constraints --lib`): 156 pass / 1 fail —
+    // only `tests::undefined_objective_at_fallback_triggers_no_progress`.
+    // `tests::defined_objective_at_fallback_returns_solved` NO LONGER fails under
+    // the unconditional form: its earlier failure was the `ConstraintNonUnique` /
+    // flat-objective mechanism documented on `verify_uniqueness`, and the
+    // uniqueness half of this blocker is now RESOLVED by #5711 — step-5
+    // dispositioned this exact fixture with `free: true` since its objective is
+    // genuinely flat over the whole feasible region (see `verify_uniqueness`'s
+    // doc, § Per-fixture measurement).  The surviving failure is unrelated to
+    // uniqueness and stands on its own: a non-Money drift-fallback fixture that
+    // deliberately lures the optimiser OUT of the feasible region (constraint
+    // `x <= 0.020`, Undef-objective boundary `x <= 0.022`) to exercise the
+    // fallback path.  A derived clamp box makes that drift unreachable BY
+    // CONSTRUCTION for a single linear one-auto bound, so switching to the
+    // unconditional form cannot keep that coverage without contriving a
+    // nonlinear/multi-auto replacement fixture — testing a workaround, not the
+    // fallback behaviour this fixture exists to cover.  That, together with the
+    // semantics rationale above, is the standing reason the gate stays; neither
+    // ground depends on the other, and #5711 leaves no open coupling between them.
     let bounds = if floor_applied {
         resolve_bounds(
             &problem.auto_params,
