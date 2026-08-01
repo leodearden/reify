@@ -539,8 +539,7 @@ ok "cargo check passed"
 # `role_env_overrides` block in dark-factory-orchestrator.yaml.  /tmp is forced,
 # not chosen: dark-factory's compute_write_set() grants no ~/.cargo / ~/.npm
 # carve-out, so /tmp is the one host-global writable root a static yaml value
-# can name.  That upstream gap is reify task #5724 (blocked, pending cross-repo
-# refile).
+# can name.  That upstream gap is dark_factory:3162.
 #
 # Left unprovisioned, those redirect dirs start EMPTY, which costs twice: the
 # first dependency-touching agent run after every boot re-downloads the
