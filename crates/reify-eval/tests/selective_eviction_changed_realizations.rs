@@ -131,7 +131,12 @@ fn edit_param_reports_only_the_realization_whose_input_cone_moved() {
         let graph = &engine.snapshot().unwrap().graph;
         for rid in [&ra, &rb] {
             assert!(
-                graph.realizations.get(rid).unwrap().input_cone_hash.is_some(),
+                graph
+                    .realizations
+                    .get(rid)
+                    .unwrap()
+                    .input_cone_hash
+                    .is_some(),
                 "premise: build() must populate {rid}'s input_cone_hash (α's write in \
                  execute_realization_ops). It is None, so every realization would be \
                  conservatively 'changed' and this test could not distinguish selective \
@@ -505,6 +510,14 @@ fn edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization()
              after build(), else 'its entry was evicted' below is trivially true"
         );
     }
+    assert!(
+        PROBE_INVOCATIONS.load(Ordering::SeqCst) >= 2,
+        "premise: both probes' trampolines must actually have been dispatched during \
+         build() — otherwise the cached values asserted above came from somewhere other \
+         than a real ComputeNode dispatch and the eviction assertions below would not be \
+         measuring what they claim. Got {} invocation(s).",
+        PROBE_INVOCATIONS.load(Ordering::SeqCst)
+    );
 
     // ── The contract ───────────────────────────────────────────────────
     //
@@ -516,7 +529,10 @@ fn edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization()
     // `last_substantive_value` returns `None` for an absent entry, which is
     // exactly the eviction signal γ (#4730) builds on.
     engine
-        .edit_param(ValueCellId::new("TwoBodyProbed", "wa"), Value::length(0.030))
+        .edit_param(
+            ValueCellId::new("TwoBodyProbed", "wa"),
+            Value::length(0.030),
+        )
         .expect("edit_param on TwoBodyProbed.wa must succeed");
 
     assert!(

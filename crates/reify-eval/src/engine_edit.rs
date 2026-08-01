@@ -4503,11 +4503,8 @@ impl Engine {
         // eviction and for δ's "selective ≡ wholesale on served handles" gate.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
-            let mut changed = compute_changed_realizations(
-                &prior_realizations,
-                &new_snapshot.graph,
-                &ctx,
-            );
+            let mut changed =
+                compute_changed_realizations(&prior_realizations, &new_snapshot.graph, &ctx);
             changed.extend(changed_realizations.iter().cloned());
             changed.extend(added_realizations.iter().cloned());
             self.last_changed_realizations = changed;
@@ -7719,8 +7716,10 @@ structure GrowColl {
         );
         let new_graph = realization_graph_reading_cell(&rid, &cell, Some(stored));
 
-        let empty_prior: PersistentMap<reify_core::RealizationNodeId, crate::graph::RealizationNodeData> =
-            PersistentMap::default();
+        let empty_prior: PersistentMap<
+            reify_core::RealizationNodeId,
+            crate::graph::RealizationNodeData,
+        > = PersistentMap::default();
         let changed = super::compute_changed_realizations(&empty_prior, &new_graph, &ctx);
 
         assert_eq!(
