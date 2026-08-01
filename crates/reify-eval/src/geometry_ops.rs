@@ -2335,6 +2335,20 @@ fn transform_rotate_around(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // The PIVOT is a point in space → gated. Read BEFORE `f64_arg` is declared
+    // (borrow ordering); this is also the existing source order, so both the
+    // read order and the diagnostic order are preserved exactly.
+    let point = required_length_triple(
+        ["px", "py", "pz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    // The axis is a dimensionless unit vector and `angle` is PRD 3's, not
+    // ours — both stay on the bare-accepting path.
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
             .ok_or_else(|| {
@@ -2343,7 +2357,7 @@ fn transform_rotate_around(
     };
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
-        point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
+        point,
         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
         angle_rad: f64_arg("angle")?,
     })

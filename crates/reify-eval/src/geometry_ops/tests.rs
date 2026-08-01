@@ -1440,9 +1440,11 @@
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
-                ("px".into(), literal_f64(0.05)),
-                ("py".into(), literal_f64(0.0)),
-                ("pz".into(), literal_f64(0.0)),
+                // Pivot is LENGTH-semantic (task 5623); the axis + angle below
+                // stay bare.
+                ("px".into(), literal_length(0.05)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(0.0)),
                 ("az".into(), literal_f64(1.0)),
@@ -2687,9 +2689,11 @@
             kind: TransformKind::RotateAround,
             target: GeomRef::Step(0),
             args: vec![
-                ("px".into(), literal_f64(0.0)),
-                ("py".into(), literal_f64(0.0)),
-                ("pz".into(), literal_f64(0.0)),
+                // Pivot is LENGTH-semantic (task 5623), so the failure under
+                // test stays the MISSING `az`, not a units rejection.
+                ("px".into(), literal_length(0.0)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
                 ("ax".into(), literal_f64(0.0)),
                 ("ay".into(), literal_f64(1.0)),
                 // az deliberately omitted

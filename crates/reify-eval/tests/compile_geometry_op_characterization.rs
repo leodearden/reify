@@ -597,10 +597,12 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("angle".to_string(), lit(1.0)),
         ],
         TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
+        // Only the PIVOT is LENGTH-semantic (task 5623); ax/ay/az/angle stay
+        // on `lit`. Golden unchanged.
         TransformKind::RotateAround => vec![
-            ("px".to_string(), lit(0.05)),
-            ("py".to_string(), lit(0.0)),
-            ("pz".to_string(), lit(0.0)),
+            ("px".to_string(), lit_len(0.05)),
+            ("py".to_string(), lit_len(0.0)),
+            ("pz".to_string(), lit_len(0.0)),
             ("ax".to_string(), lit(0.0)),
             ("ay".to_string(), lit(0.0)),
             ("az".to_string(), lit(1.0)),
