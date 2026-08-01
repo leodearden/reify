@@ -1597,6 +1597,205 @@ describe('reify.grammar snippets — port, connect, chain, forall', () => {
 });
 
 /**
+ * `enum` declarations, `match` expressions, and the variant
+ * construction/binding pair they travel with.
+ *
+ * THE BRACE COLLISION IS WHAT MAKES THIS SLICE HARD. `variant_construction` is
+ * `identifier '{' field: value, … '}'` (grammar.js:1443-1451), so ANY
+ * expression that reduces to a bare identifier and is followed by `{` could
+ * start one. Upstream declares an explicit GLR conflict
+ * `[_primary_expression, variant_construction]` for it. Lezer is LR, so the
+ * same collision has to be settled a different way — and there are three
+ * committed shapes it must not break, each with its own regression assertion
+ * at the bottom of this block:
+ *
+ *    match outline { … }              discriminant, then `{`
+ *    where shape == Shape.Round { … } guard condition, then `{`
+ *    connect outlet -> inlet { … }    right port ref, then `{`
+ *
+ * The `=>` token is shared with `MapEntry` (added for map literals) and `|`
+ * with `LambdaExpression`, so both of those get regression assertions too.
+ */
+describe('reify.grammar snippets — match, enum, variants', () => {
+  // ── Enum declarations ─────────────────────────────────
+  // Corpus-attested: examples/integration_full_v01.ri:38,
+  // examples/m5_guarded_enum.ri:1, examples/m5_combined_all.ri:9.
+  it('parses a bare-variant enum `enum Grade { Standard, Reinforced, Premium }`', () => {
+    expect(countErrorNodes('enum Grade { Standard, Reinforced, Premium }')).toBe(0);
+  });
+
+  it('parses a single-variant enum `enum Shape { Point }`', () => {
+    expect(countErrorNodes('enum Shape { Point }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m6_data_carrying_enum.ri:12-16 — payload
+  // variants, a bare variant, and a trailing comma in one body.
+  it('parses a payload-bearing enum with a trailing comma', () => {
+    expect(
+      countErrorNodes(
+        'enum Shape { Circle { radius: Length }, Rect { width: Length, height: Length }, Point, }',
+      ),
+    ).toBe(0);
+  });
+
+  // Corpus-attested: examples/m6_generic_enum.ri:1-9 — a two-parameter enum
+  // and a recursive one-parameter enum whose payload type is itself applied.
+  it('parses a parameterized enum `enum Result<T, E> { Ok { value: T }, Err { error: E } }`', () => {
+    expect(countErrorNodes('enum Result<T, E> { Ok { value: T }, Err { error: E } }')).toBe(0);
+  });
+
+  it('parses a recursive parameterized enum `enum Tree<T> { Node { left: Tree<T> } }`', () => {
+    expect(countErrorNodes('enum Tree<T> { Leaf { value: T }, Node { left: Tree<T> } }')).toBe(0);
+  });
+
+  // grammar.js:154 makes `pub` optional on the declaration; unattested.
+  it('parses `pub enum Grade { Standard }` (normative, unattested)', () => {
+    expect(countErrorNodes('pub enum Grade { Standard }')).toBe(0);
+  });
+
+  it('yields EnumDeclaration, EnumVariant and VariantFieldDecl nodes', () => {
+    const names = nodeNames('enum Shape { Circle { radius: Length }, Point }');
+    expect(names).toContain('EnumDeclaration');
+    expect(names).toContain('EnumVariant');
+    expect(names).toContain('VariantFieldDecl');
+  });
+
+  // ── Match expressions ─────────────────────────────────
+  // Corpus-attested: examples/integration_full_v01.ri:146-150,
+  // examples/m5_guarded_enum.ri:13-17, examples/m5_combined_all.ri:28-31.
+  it('parses a bare-pattern match bound by a let', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { let code = match grade { Standard => 1, Reinforced => 2, Premium => 3 } }',
+      ),
+    ).toBe(0);
+  });
+
+  it('parses a trailing comma after the last match arm', () => {
+    expect(countErrorNodes('structure def F { let c = match g { A => 1, B => 2, } }')).toBe(0);
+  });
+
+  // Corpus-attested: examples/m6_data_carrying_enum.ri:21-25 — binding
+  // patterns with one and two fields, and arithmetic in the arm bodies.
+  it('parses binding-pattern match arms', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { let area = match outline { Circle { radius: r } => 3.14159 * r * r, Rect { width: w, height: h } => w * h, Point => 0mm * 0mm } }',
+      ),
+    ).toBe(0);
+  });
+
+  /**
+   * The wildcard and or-patterns (grammar.js:1289-1293) have no corpus
+   * occurrence — every committed match enumerates its variants explicitly.
+   * The or-pattern is the reason `|` needs to keep working in TWO roles, so
+   * it is pinned here alongside the lambda regression assertion below.
+   */
+  it('parses a wildcard arm `match s { _ => 0mm }` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { let a = match s { _ => 0mm } }')).toBe(0);
+  });
+
+  it('parses an or-pattern arm `match s { A | B => 1mm }` (normative, unattested)', () => {
+    expect(countErrorNodes('structure def F { let a = match s { A | B => 1mm } }')).toBe(0);
+  });
+
+  it('yields MatchExpression, MatchArm and VariantBindingPattern nodes', () => {
+    const names = nodeNames('structure def F { let a = match s { Circle { radius: r } => r } }');
+    expect(names).toContain('MatchExpression');
+    expect(names).toContain('MatchArm');
+    expect(names).toContain('VariantBindingPattern');
+  });
+
+  // ── Variant construction ──────────────────────────────
+  // Corpus-attested: examples/m6_data_carrying_enum.ri:19,
+  // examples/m6_data_carrying_enum_undef.ri:19, examples/m6_generic_enum.ri:29.
+  it('parses a variant construction `param outline : Shape = Rect { width: 20mm, height: 10mm }`', () => {
+    expect(
+      countErrorNodes('structure def F { param outline : Shape = Rect { width: 20mm, height: 10mm } }'),
+    ).toBe(0);
+  });
+
+  /**
+   * Corpus-attested: examples/m6_generic_enum.ri:36. The field VALUE of a
+   * variant construction is a full `_expression` upstream, so a construction
+   * nests inside a construction — the assertion that stops the field value
+   * being narrowed to a literal.
+   */
+  it('parses a nested variant construction', () => {
+    expect(
+      countErrorNodes(
+        'structure def F { param tree : Tree<Length> = Node { left: Leaf { value: 1mm }, right: Leaf { value: 2mm } } }',
+      ),
+    ).toBe(0);
+  });
+
+  it('parses a variant construction as a `let` value', () => {
+    expect(countErrorNodes('structure def F { let s = Circle { radius: 5mm } }')).toBe(0);
+  });
+
+  it('yields VariantConstruction and VariantConstructionField nodes', () => {
+    const names = nodeNames('structure def F { let s = Circle { radius: 5mm } }');
+    expect(names).toContain('VariantConstruction');
+    expect(names).toContain('VariantConstructionField');
+  });
+
+  /**
+   * REGRESSION GUARD — the `match … {` discriminant. This is the exact
+   * collision grammar.js declares its GLR conflict for: `outline` is a bare
+   * identifier and the very next token is `{`, so a parser that lets
+   * VariantConstruction win here consumes the whole match body as a variant
+   * payload. `nodeNames` is the discriminator, because the greedy misreading
+   * can be error-free — it would be wrong, not broken.
+   */
+  it('reads `match outline { … }` as a match, not a variant construction', () => {
+    const names = nodeNames('structure def F { let a = match outline { Point => 1mm } }');
+    expect(names).toContain('MatchExpression');
+    expect(names).not.toContain('VariantConstruction');
+  });
+
+  /**
+   * REGRESSION GUARD — the guarded block. Corpus-attested twice
+   * (examples/m5_guarded_enum.ri:7, examples/m5_guarded_head_type.ri:7), and
+   * the bare-identifier condition, though unattested, is the shape that
+   * collides hardest.
+   */
+  it('still parses a guarded block whose condition ends in an identifier', () => {
+    expect(countErrorNodes('structure def F { where x > 1mm { let a = 1mm } }')).toBe(0);
+    expect(
+      countErrorNodes('structure def F { where shape == Shape.Round { let a = 1mm } }'),
+    ).toBe(0);
+    expect(countErrorNodes('structure def F { where flag { let a = 1mm } }')).toBe(0);
+  });
+
+  /**
+   * REGRESSION GUARD — the connect body. Its right port ref is a full
+   * expression and is followed by `{`, so it collides with variant
+   * construction the same way the match discriminant does.
+   */
+  it('still parses a connect body after adding variant construction', () => {
+    const names = nodeNames(
+      'structure def F { connect outlet -> inlet { diameter -> diameter } }',
+    );
+    expect(names).toContain('ConnectBody');
+    expect(names).not.toContain('VariantConstruction');
+    expect(countErrorNodes('structure def F { connect a -> b : C { gain = auto } }')).toBe(0);
+  });
+
+  /**
+   * REGRESSION GUARD — the two tokens this slice shares with earlier ones.
+   * `=>` is `MapEntry`'s separator as well as `MatchArm`'s, and `|` is
+   * `LambdaExpression`'s delimiter as well as the or-pattern's. Either could
+   * be re-ranked by this slice's additions.
+   */
+  it('still parses map literals and lambdas after adding match arms', () => {
+    expect(countErrorNodes('structure def F { let m = map { 1 => 2 } }')).toBe(0);
+    expect(countErrorNodes('structure def F { let f = |x| x * 2 }')).toBe(0);
+    expect(countErrorNodes('structure def F { let f = || 1 }')).toBe(0);
+    expect(countErrorNodes('structure def F { constraint a || b }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
