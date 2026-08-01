@@ -2534,3 +2534,131 @@ fn rigid_mass_props_survive_watcher_reload() {
         assert_rigid_mass_props_determined(&state, &format!("reload#2 re-render {i}"));
     }
 }
+
+/// Task #5338 (step-5): the startup-argv funnel must deliver the SAME contract as
+/// the File-Open funnel.
+///
+/// `main()`'s argv block used to call `EngineSession::load_file` inline and
+/// DISCARD the returned `GuiState`, so `UnresolvedGuiState::resolve` never ran on
+/// that path. Three contract points follow, each asserted below:
+///
+/// (a) the mass-prop cells surface — the argv launch is the entry point the
+///     2026-07-22 dogfood retest reported as broken;
+/// (b) every `files[].path` is a canonical ABSOLUTE path — the #5193 identity
+///     contract, produced only by `UnresolvedGuiState::resolve`. Without it an
+///     argv-launched GUI receives stem-only module keys like
+///     `"rigid_mass_props_smoke.ri"`;
+/// (c) the state agrees with `open_file_engine_impl`'s for the same file — same
+///     `files[].path` set and same value-cell determinacy map — so the two entry
+///     points cannot silently drift apart again.
+///
+/// RED before the accompanying impl: `commands::load_initial_file_impl` does not
+/// exist, so this does not compile.
+#[test]
+fn load_initial_file_impl_matches_open_file_engine_impl_contract() {
+    use crate::commands::{load_initial_file_impl, open_file_engine_impl};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, _text) = rigid_mass_props_tempfile(dir.path());
+    let canonical = std::fs::canonicalize(&path).expect("fixture copy must canonicalize");
+
+    // ── argv path ──
+    let argv_engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+    let argv_state = load_initial_file_impl(&argv_engine, &canonical)
+        .expect("load_initial_file_impl should succeed for the fixture copy");
+
+    // (a) the headline defect.
+    assert_rigid_mass_props_determined(&argv_state, "argv");
+
+    // (b) the #5193 identity contract.
+    assert!(
+        !argv_state.files.is_empty(),
+        "an argv load must report at least one file entry"
+    );
+    for f in &argv_state.files {
+        let p = std::path::Path::new(&f.path);
+        assert!(
+            p.is_absolute(),
+            "argv `files[].path` must be an absolute canonical path (the #5193 \
+             contract, produced by UnresolvedGuiState::resolve); got {:?}",
+            f.path
+        );
+        assert_eq!(
+            p,
+            canonical.as_path(),
+            "argv `files[].path` must equal the canonicalized fixture path; got {:?}",
+            f.path
+        );
+    }
+
+    // ── File-Open path, same file, freshly seeded session ──
+    let open_engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+    let open_state = open_file_engine_impl(&open_engine, &path)
+        .expect("open_file_engine_impl should succeed for the same fixture copy");
+
+    // (c) the two entry points must agree. Mesh vertex data is excluded: it is
+    //     kernel output, not part of the load contract under test.
+    let argv_files: Vec<&str> = argv_state.files.iter().map(|f| f.path.as_str()).collect();
+    let open_files: Vec<&str> = open_state.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        argv_files, open_files,
+        "argv and File-Open must report the SAME files[].path set for the same file"
+    );
+
+    let determinacy_map = |s: &crate::types::GuiState| -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = s
+            .values
+            .iter()
+            .map(|c| {
+                (
+                    format!("{}.{}", c.entity_path, c.name),
+                    c.determinacy.clone(),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        determinacy_map(&argv_state),
+        determinacy_map(&open_state),
+        "argv and File-Open must produce the SAME value-cell determinacy map"
+    );
+}
+
+/// Task #5338 (step-5): a CWD-relative argv spelling must round-trip through
+/// `resolve_initial_file_path` → `load_initial_file_impl`.
+///
+/// This is the full production argv chain: `main()` takes the raw
+/// `std::env::args().nth(1)` string, canonicalises it with
+/// `resolve_initial_file_path`, and hands the result to `load_initial_file_impl`.
+/// Serialised on `cwd_lock()` per the `main_helpers_tests.rs` idiom, since it
+/// mutates the process CWD.
+#[test]
+fn resolve_initial_file_path_then_load_initial_file_impl_round_trips_relative_argv() {
+    use crate::commands::{load_initial_file_impl, resolve_initial_file_path};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, _text) = rigid_mass_props_tempfile(dir.path());
+    let expected = std::fs::canonicalize(&path).expect("fixture copy must canonicalize");
+
+    let engine = Arc::new(Mutex::new(rigid_mass_props_session()));
+
+    let _guard = cwd_lock().lock().unwrap();
+    let original = std::env::current_dir().expect("current_dir");
+    std::env::set_current_dir(dir.path()).expect("set_current_dir into the tempdir");
+    // Resolve while the CWD is the tempdir; restore immediately so a panic in the
+    // assertions below cannot leave the process in the temp directory.
+    let resolved = resolve_initial_file_path("rigid_mass_props_smoke.ri");
+    std::env::set_current_dir(&original).expect("restore current_dir");
+
+    let resolved = resolved.expect("a CWD-relative .ri argv spelling must resolve to Some(path)");
+    assert_eq!(
+        resolved, expected,
+        "resolve_initial_file_path must canonicalise the relative argv spelling"
+    );
+
+    let state = load_initial_file_impl(&engine, &resolved)
+        .expect("load_initial_file_impl should succeed for the resolved relative argv path");
+    assert_rigid_mass_props_determined(&state, "argv (relative spelling)");
+}
