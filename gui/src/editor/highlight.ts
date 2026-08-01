@@ -44,6 +44,9 @@ export const KEYWORDS = [
   'or',
   'implies',
   'occurrence',
+  'priv',
+  'aux',
+  'at',
 ];
 
 export const reifyHighlighting = styleTags({

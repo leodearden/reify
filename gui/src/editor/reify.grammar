@@ -180,8 +180,56 @@ MaximizeDeclaration {
 }
 
 // ── Sub ─────────────────────────────────────────────────
+// grammar.js:805-899 defines three arms. They share the whole
+// `priv? aux? sub Identifier` prefix and diverge only on the `=` vs `:` that
+// follows, so they are written as ONE production with an inner choice rather
+// than three sibling productions — LR decides on a single token of lookahead
+// and no ambiguity marker is needed.
+//
+// THE COLLECTION ARM IS FOLDED INTO THE SPECIALIZATION ARM. Upstream spells
+// `sub xs : List<T>` as its own arm carrying a BARE `'List'` string token, and
+// grammar.js documents at length (and pins with four Rust tests) that this
+// depends on two TREE-SITTER lexer rules: #1 longest-match, so `Listicle<Foo>`
+// falls through to the specialization arm, and #2 string-beats-regex on equal
+// length, so `List<Foo>` is captured by the collection arm. It further records
+// (esc-3712-201) that the "more explicit" `token(prec(1, 'List'))` BREAKS rule
+// #1 and was rejected on empirical evidence.
+//
+// Lezer's tokenizer does not share either tie-break, so transliterating the
+// bare string would be cargo-culting a mechanism whose stated preconditions do
+// not hold. `List<Pulley>` already matches `ParameterizedType`, and the CST
+// distinction between the two arms is consumed only by Rust-side tests
+// (crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs),
+// never by GUI code — so folding is behaviour-preserving for every consumer
+// here and removes an unresolvable lexer dependency.
 SubDeclaration {
-  kw<"sub"> Identifier "=" Identifier ArgList ~where WhereClause?
+  kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
+    "=" Identifier ("<" TypeArgList ">")? ArgList ~where WhereClause? |
+    ":" (ParameterizedType | Identifier) ~where WhereClause? SpecializationBody?
+  ) PoseClause?
+}
+
+// grammar.js:900-920. Accepts both param assignments and ordinary members;
+// rejecting the members that are forbidden in this position is the validator's
+// job upstream, not the grammar's, so it is not the GUI parser's either.
+SpecializationBody {
+  "{" (ParamAssignment | Member)* "}"
+}
+
+// `bore = auto`. Unambiguous against every `Member` arm: each of those starts
+// with a specialized keyword token, so one token of lookahead separates them
+// from a bare `Identifier`.
+ParamAssignment {
+  Identifier "=" (AutoKeyword | expression)
+}
+
+// Trailing pose: `at auto`, `at transform3(...)`. Last on every arm, matching
+// grammar.js. The `sub_relate_block` that may follow the pose upstream is not
+// modelled here — no committed fixture uses it.
+// `at` is CONTEXTUAL (see `ekw` above): five committed files pass it as a
+// named-argument label, so it must keep lexing as an Identifier off this slot.
+PoseClause {
+  ekw<"at"> (AutoKeyword | expression)
 }
 
 ArgList {
@@ -362,6 +410,26 @@ Boolean {
 
 // ── Keywords ─────────────────────────────────────────────
 kw<term> { @specialize[@name={term}]<Identifier, term> }
+
+// CONTEXTUAL keyword: reserved in its own grammatical slot but still a legal
+// identifier everywhere else. `@specialize` replaces the token unconditionally
+// and is context-FREE, so it is the wrong tool for a word the language also
+// admits as an ordinary name; `@extend` offers both readings and lets the
+// parse context choose.
+//
+// `at` is the motivating case and the corpus proved it empirically. Promoting
+// it with `kw<"at">` for the `sub … at <pose>` clause un-pinned two files that
+// pass `at` as a NAMED ARGUMENT LABEL — `StepForce(at: tip_face, …)` in
+// examples/modal/transient_step_response.ri and `at: "tip"` in
+// tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri — because
+// `NamedArgument` needs `at` to still lex as `Identifier`. Five committed files
+// use the label form. grammar.js:443-461 records the same contextual-keyword
+// treatment upstream for `default`/`unit`/`type`/`undef`.
+//
+// The `kw<"…">` substring in `ekw<"…">` is deliberate: the data-driven styling
+// guard scans for that literal, so a contextual keyword is still required to
+// appear in KEYWORDS and cannot silently go unstyled.
+ekw<term> { @extend[@name={term}]<Identifier, term> }
 
 // ── Operator wrappers (outside @tokens for node naming) ──
 ArithOp<expr> { expr }
