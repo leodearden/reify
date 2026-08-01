@@ -14,16 +14,26 @@
 //!
 //! Nothing is lost by the move — every assertion here reads a PUBLIC surface:
 //! `Engine::last_changed_realizations()` (the `test-instrumentation`-gated
-//! accessor, reached through the self-dev-dep) and `Engine::freshness()`
-//! (public and ungated). The pure graph-level unit tests for the compare
-//! helper itself stay in-crate, where they need no kernel at all.
+//! accessor, reached through the self-dev-dep), `Engine::snapshot()`, and
+//! `Engine::last_substantive_value()` (both public and ungated). The pure
+//! graph-level unit tests for the compare helper itself stay in-crate, where
+//! they need no kernel at all.
+//!
+//! # Eviction is observed via `last_substantive_value`, never `freshness`
+//!
+//! `Freshness::default()` is `Final` (value.rs:4444 — task #2326's deliberate
+//! "default to Final on read" contract), so an ABSENT cache entry reads back
+//! as `Final`. `Engine::freshness` therefore cannot distinguish "evicted"
+//! from "fresh", and any eviction assertion built on it is vacuous.
+//! `last_substantive_value` returns `None` for an absent entry, which is the
+//! actual eviction signal γ (#4730) builds on.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_core::{RealizationNodeId, ValueCellId};
 use reify_eval::cache::NodeId;
-use reify_ir::{ExportFormat, Freshness, Value};
+use reify_ir::{ExportFormat, Value};
 
 /// Two independent bodies plus a display-only `let` feeding no realization.
 ///
@@ -487,31 +497,43 @@ fn edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization()
         }
     }
     for (cell, label) in [(&cell_a, "probe_a"), (&cell_b, "probe_b")] {
-        assert_eq!(
-            engine.freshness(&NodeId::Value(cell.clone())),
-            Freshness::Final,
-            "premise: {label}'s output value cell must be Final after build(), else \
-             'no longer Final' below is trivially true"
+        assert!(
+            engine
+                .last_substantive_value(&NodeId::Value(cell.clone()))
+                .is_some(),
+            "premise: {label}'s output value cell must hold a cached substantive value \
+             after build(), else 'its entry was evicted' below is trivially true"
         );
     }
 
     // ── The contract ───────────────────────────────────────────────────
+    //
+    // Eviction is observed through `last_substantive_value`, NOT through
+    // `Engine::freshness`. `Freshness::default()` is `Final` (value.rs:4444,
+    // task #2326's deliberate "default to Final on read" contract), so an
+    // ABSENT cache entry reads as `Final` — freshness cannot distinguish
+    // "evicted" from "fresh" and any assertion built on it would be vacuous.
+    // `last_substantive_value` returns `None` for an absent entry, which is
+    // exactly the eviction signal γ (#4730) builds on.
     engine
         .edit_param(ValueCellId::new("TwoBodyProbed", "wa"), Value::length(0.030))
         .expect("edit_param on TwoBodyProbed.wa must succeed");
 
-    assert_ne!(
-        engine.freshness(&NodeId::Value(cell_a.clone())),
-        Freshness::Final,
-        "body_a's input cone moved, so the ComputeNode consuming it must lose its cached \
-         result: `probe_a`'s output cell must NOT still be Final. An empty realization \
-         dirty cone (the edge-#10 ordering hazard — a reverse index built before \
-         ComputeNodes were inserted) leaves it Final and lands here."
+    assert!(
+        engine
+            .last_substantive_value(&NodeId::Value(cell_a.clone()))
+            .is_none(),
+        "body_a's input cone moved, so the realization dirty cone must reach the \
+         ComputeNode consuming it and evict its output cell's cache entry. An EMPTY \
+         cone — the edge-#10 ordering hazard, i.e. a reverse index built before \
+         ComputeNodes were inserted — leaves the entry in place and lands here."
     );
-    assert_eq!(
-        engine.freshness(&NodeId::Value(cell_b.clone())),
-        Freshness::Final,
-        "body_b's input cone did NOT move, so its consumer must retain its cached result. \
-         Losing it here means β over-evicted and degraded to the wholesale flush."
+    assert!(
+        engine
+            .last_substantive_value(&NodeId::Value(cell_b.clone()))
+            .is_some(),
+        "body_b's input cone did NOT move, so its consumer must RETAIN its cached \
+         result. Losing it here means β over-evicted and degraded into the wholesale \
+         flush it exists to replace."
     );
 }

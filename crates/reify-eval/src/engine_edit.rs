@@ -517,6 +517,73 @@ pub(crate) fn compute_changed_realizations(
         .collect()
 }
 
+/// Seed the realization-driven dirty cone from `changed_realizations` and drop
+/// the cache entry of every node it reaches — the FIRST production caller of
+/// [`crate::dirty::compute_dirty_cone_with_realizations`]
+/// (selective-realization-eviction PRD task β, #4729).
+///
+/// Shared by both edit seams so the ordering hazard below is handled in one
+/// place. A no-op when `changed_realizations` is empty, so a no-realization
+/// edit pays nothing (the PRD §6 zero-cost row).
+///
+/// # Why the reverse index is rebuilt here
+///
+/// Edge #10 (Realization → Compute) is registered by
+/// `ReverseDependencyIndex::build_from_graph_and_fields` by iterating
+/// `graph.compute_nodes` (deps.rs:234-242). Both indices already on hand at
+/// the call sites were built BEFORE ComputeNodes were inserted — on cold eval
+/// the index is built at engine_eval.rs:4090 while `@optimized` nodes are
+/// inserted at :9964, and `edit_source` builds its index near the top while
+/// noting that "the new snapshot's compute_nodes map is empty until per-cell
+/// eval recreates them below". Reusing either would make
+/// `realization_dependents_of` return nothing, the cone come back EMPTY, and
+/// the whole propagation half compile, run, and silently do nothing — the
+/// same silent-no-op failure mode design §5.2 attributes to keying on
+/// `content_hash`. So the index is rebuilt from the CURRENT post-eval graph,
+/// which is what `edit_param`'s structural branch already does.
+///
+/// # Why invalidating the output VALUE cell is the load-bearing half
+///
+/// The cold-eval final gate (engine_eval.rs) serves an `@optimized` node's
+/// cached value only while
+/// `cache.freshness(&NodeId::Value(output_cell)) == Freshness::Final`.
+/// Dropping that entry is therefore both necessary and sufficient to force
+/// re-dispatch on the next `eval()` / `eval_cached()`.
+/// `ComputeNodeData::cached_result` / `result_content_hash` are write-only
+/// staged fields with zero production readers — the cutoff cannot be routed
+/// through them.
+///
+/// Takes the cache, graph and fields as separate parameters rather than
+/// `&mut self` so callers can pass disjoint `Engine` field borrows (the graph
+/// may live inside `self.eval_state`).
+fn invalidate_realization_dirty_cone(
+    cache: &mut CacheStore,
+    graph: &EvaluationGraph,
+    compiled_fields: &[reify_compiler::CompiledField],
+    changed_realizations: &HashSet<RealizationNodeId>,
+) {
+    if changed_realizations.is_empty() {
+        return;
+    }
+    let index = crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
+        graph,
+        compiled_fields,
+    );
+    // The ValueCell seed is EMPTY: the ValueCell-driven cone was already
+    // computed and applied upstream in both edit entries, so re-passing it
+    // would be a harmless superset but pure redundant BFS on the P0 edit
+    // latency path. The realization-driven cone is purely additive.
+    let dirty = crate::dirty::compute_dirty_cone_with_realizations(
+        &HashSet::new(),
+        changed_realizations,
+        &index,
+        graph,
+    );
+    for node in &dirty {
+        cache.invalidate(node);
+    }
+}
+
 /// Drop-guard for the `pending_warm_seeds` staging map used in `Engine::edit_source`
 /// between steps (4c) and (14b).
 ///
@@ -2728,6 +2795,17 @@ impl Engine {
             let graph = &self.eval_state.as_ref().unwrap().snapshot.graph;
             self.last_changed_realizations =
                 compute_changed_realizations(&graph.realizations, graph, &ctx);
+            // Propagate: mark the ComputeNodes consuming a moved realization
+            // (and their output cells' downstream cones) non-fresh, so the
+            // next eval re-dispatches them while unaffected consumers keep
+            // their cached result. `cache` and `compiled_fields` are disjoint
+            // `Engine` fields from `eval_state`, so these borrows coexist.
+            invalidate_realization_dirty_cone(
+                &mut self.cache,
+                graph,
+                &self.compiled_fields,
+                &self.last_changed_realizations,
+            );
         }
 
         // Task 4532: passive would-prune measurement, deferred to here so that
@@ -4433,6 +4511,17 @@ impl Engine {
             changed.extend(changed_realizations.iter().cloned());
             changed.extend(added_realizations.iter().cloned());
             self.last_changed_realizations = changed;
+            // Propagate over the NEW graph, which by this point has had its
+            // ComputeNodes recreated by the per-cell eval above — see the
+            // helper's doc for why the index must be rebuilt here rather than
+            // reusing `new_reverse_index` (built while compute_nodes was
+            // still empty).
+            invalidate_realization_dirty_cone(
+                &mut self.cache,
+                &new_snapshot.graph,
+                &self.compiled_fields,
+                &self.last_changed_realizations,
+            );
         }
 
         // (15) Install the new snapshot, dep structures, and demand; record

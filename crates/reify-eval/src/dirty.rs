@@ -81,17 +81,24 @@ pub fn compute_dirty_cone(
 /// pattern at the seed boundary instead of duplicating the comparison logic
 /// inside the walk.
 ///
-/// # Production wiring (staging note)
+/// # Production wiring
 ///
-/// This entry point has no production call site yet — it is staged for
-/// P3.4+, the upcoming ComputeNode-evaluation pipeline. P3.4 will compare
-/// each evaluated RealizationNode's new `content_hash` against its cached
-/// value (mirroring `record_evaluation_propagating_freshness`'s
-/// `EvalOutcome::Changed/Unchanged` discrimination at the seed boundary),
-/// route the truly-changed Realizations into `changed_realizations`, and
-/// hand the result to this walk. The function is `pub` (so it is exempt
-/// from `dead_code` lint) and is exercised by the tests below until the
-/// production call site lands.
+/// Called from `engine_edit::invalidate_realization_dirty_cone`, which both
+/// edit entries reach at their post-value-cone seams — `Engine::edit_param`
+/// just after its snapshot install, and `Engine::edit_source` just before
+/// step (15)'s. Every `NodeId` this walk returns has its cache entry dropped,
+/// which is what forces the consuming `@optimized` nodes to re-dispatch on
+/// the next eval while unaffected consumers keep their cached result.
+///
+/// The seed is `Engine::last_changed_realizations`, produced by
+/// `engine_edit::compute_changed_realizations`. That helper compares the
+/// recomputed GHR-β INPUT-cone hash against α's stored
+/// `RealizationNodeData::input_cone_hash` — deliberately NOT the static
+/// `RealizationNodeData::content_hash`, which is a Debug render of the op IR
+/// and so provably never moves on a value-driven change. Keying this walk on
+/// the static hash would return an empty cone and silently evict nothing.
+///
+/// See PRD `docs/prds/v0_6/selective-realization-eviction.md` task β (#4729).
 pub fn compute_dirty_cone_with_realizations(
     changed_vcs: &HashSet<ValueCellId>,
     changed_realizations: &HashSet<RealizationNodeId>,
