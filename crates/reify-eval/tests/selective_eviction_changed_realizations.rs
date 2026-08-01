@@ -211,3 +211,148 @@ fn edit_param_reports_only_the_realization_whose_input_cone_moved() {
     // rather than silently weakening the test.
     let _ = &rb;
 }
+
+/// V2 of [`TWO_BODY_SRC`] with ONLY `wa`'s declared default changed.
+/// `body_b`'s source and BOTH bodies' geometry-op IR are byte-identical.
+const TWO_BODY_SRC_V2: &str = r#"
+structure TwoBody {
+    param wa: Length = 40mm
+    param wb: Length = 20mm
+    param label_pad: Length = 3mm
+
+    let body_a = box(wa, 5mm, 5mm)
+    let body_b = box(wb, 5mm, 5mm)
+    let pad_display = label_pad * 2.0
+}
+"#;
+
+/// β `edit_source` compare site — and the design §5.2 gap it closes.
+///
+/// Recompiling with only `wa`'s default literal changed must report body_a's
+/// realization as changed and body_b's as not. The load-bearing half is the
+/// PREMISE LOCK: it shows that the static `RealizationNodeData::content_hash`
+/// — the key `diff_realizations` compares on — is BYTE-IDENTICAL across this
+/// recompile, so the pre-β machinery provably could not have seen the change.
+///
+/// Also pins the carry-forward: `edit_source` rebuilds the graph and
+/// `EvaluationGraph::from_templates` reseeds every `input_cone_hash` to
+/// `None`, so without an explicit copy every recompile would destroy the
+/// "as of the last execution" record and make every realization
+/// conservatively changed forever after.
+#[test]
+fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_see() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_see: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let v1 = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_SRC);
+    let v2 = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_SRC_V2);
+
+    let mut engine = make_occt_engine();
+    let _ = engine.eval(&v1);
+    let _ = engine.build(&v1, ExportFormat::Step);
+
+    let ra = realization_for_cell(&engine, "TwoBody", "body_a");
+    let rb = realization_for_cell(&engine, "TwoBody", "body_b");
+
+    // Capture the OLD graph's state before edit_source replaces it.
+    let (old_content_hash_a, old_input_cone_a, old_input_cone_b) = {
+        let graph = &engine.snapshot().unwrap().graph;
+        let a = graph.realizations.get(&ra).unwrap();
+        let b = graph.realizations.get(&rb).unwrap();
+
+        // PREMISE LOCK 1 (same as the edit_param test): α's write ran.
+        assert!(
+            a.input_cone_hash.is_some() && b.input_cone_hash.is_some(),
+            "premise: build() must populate BOTH input_cone_hash values before the \
+             recompile, else every realization is conservatively changed and neither \
+             the selectivity nor the carry-forward assertion below means anything"
+        );
+        (a.content_hash, a.input_cone_hash, b.input_cone_hash)
+    };
+
+    engine
+        .edit_source(&v2)
+        .expect("edit_source onto V2 must succeed");
+
+    let graph = &engine.snapshot().unwrap().graph;
+
+    // ── PREMISE LOCK 2: the design §5.2 gap, made explicit ─────────────
+    //
+    // `diff_realizations` classifies purely by `RealizationNodeData::content_hash`
+    // (engine_edit.rs:429 → `diff_nodes(.., |n| n.content_hash)`), which
+    // `from_templates` builds as `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))`
+    // (graph.rs:371-396) — a Debug render of the op IR. `Primitive{Box,
+    // args:[("width", ValueRef(wa))]}` renders identically no matter what
+    // `wa` evaluates to, so the static hash cannot move here.
+    //
+    // If this assertion ever FAILS, the fixture no longer demonstrates the
+    // gap and the test must be re-shaped (e.g. drive the value change through
+    // an upstream `let` instead of a param default). Do NOT weaken it into a
+    // tautology — it is the only thing standing between this test and a
+    // vacuous pass.
+    assert_eq!(
+        graph.realizations.get(&ra).unwrap().content_hash,
+        old_content_hash_a,
+        "premise (design §5.2): body_a's STATIC content_hash must be byte-identical \
+         across this recompile — that is exactly why keying eviction on it, as \
+         `diff_realizations` does, provably misses a value-driven change. A moved \
+         hash here means the fixture stopped demonstrating the gap."
+    );
+
+    // ── The real assertion ─────────────────────────────────────────────
+    assert!(
+        engine.last_changed_realizations().contains(&ra),
+        "edit_source must report body_a changed: its INPUT cone moved (wa 10mm → 40mm) \
+         even though its static content_hash did not. Got: {:?}",
+        engine.last_changed_realizations()
+    );
+    assert!(
+        !engine.last_changed_realizations().contains(&rb),
+        "edit_source must NOT report body_b: neither its ops nor its input cone moved. \
+         Got: {:?}",
+        engine.last_changed_realizations()
+    );
+
+    // ── Carry-forward ──────────────────────────────────────────────────
+    //
+    // `from_templates` seeds every new node's input_cone_hash to `None`
+    // (graph.rs:406). Without an explicit copy from the OLD graph, the
+    // "as of the last EXECUTION" record dies at every recompile and the very
+    // next edit_param conservatively marks EVERY realization changed —
+    // defeating γ/δ's "an unaffected body's cache entry survives" boundary
+    // case.
+    assert_eq!(
+        graph.realizations.get(&rb).unwrap().input_cone_hash,
+        old_input_cone_b,
+        "edit_source must carry the OLD graph's stored input_cone_hash forward onto \
+         body_b's persisting node, not leave the `None` that from_templates seeds"
+    );
+    assert_eq!(
+        graph.realizations.get(&ra).unwrap().input_cone_hash,
+        old_input_cone_a,
+        "the carry-forward applies to body_a too — carrying forward is safe even when \
+         the inputs moved, because the recomputed fold then DIFFERS from the carried \
+         hash and the realization is still classified changed (as asserted above)"
+    );
+
+    // A subsequent display-only edit must now be empty for body_b at least:
+    // the carry-forward is what makes that possible.
+    engine
+        .edit_param(
+            ValueCellId::new("TwoBody", "label_pad"),
+            Value::length(0.021),
+        )
+        .expect("edit_param after edit_source must succeed");
+    assert!(
+        !engine.last_changed_realizations().contains(&rb),
+        "after the carry-forward, an edit that touches no realization must leave \
+         body_b unreported — if the recompile had wiped its stored hash, the §11.2 \
+         `None` arm would mark it changed forever. Got: {:?}",
+        engine.last_changed_realizations()
+    );
+}
