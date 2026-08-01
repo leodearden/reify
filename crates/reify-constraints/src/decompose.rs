@@ -6,7 +6,7 @@
 use crate::classifier::ConstraintClassifier;
 use reify_core::{ConstraintNodeId, ValueCellId};
 use reify_ir::{AutoParam, CompiledExpr, CompiledExprKind, ConstraintDomain};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 /// An independent sub-problem extracted from a larger constraint problem.
 #[derive(Debug)]
