@@ -17,7 +17,119 @@ Declaration {
   TraitDeclaration |
   FunctionDefinition |
   EnumDeclaration |
+  FieldDefinition |
+  PurposeDeclaration |
+  UnitDeclaration |
+  TypeAliasDeclaration |
+  DefaultDeclaration |
+  Pragma |
+  Annotation |
   ImportDeclaration
+}
+
+// ── Field definition ────────────────────────────────────
+// grammar.js:308-364. The body is fixed: exactly one `source = <arm>`.
+FieldDefinition {
+  kw<"pub">? ekw<"field"> kw<"def"> Identifier ":" TypeExpr "->" TypeExpr
+  "{" ekw<"source"> "=" FieldSource "}"
+}
+
+// The analytical and composed arms hold an EXPRESSION — in every committed
+// case a lambda, which is why this slice depends on LambdaExpression. The
+// sampled and imported arms hold config entries that are NOT comma-separated
+// (`repeat($.field_config_entry)`, :339-342).
+FieldSource {
+  kw<"analytical"> "{" expression "}" |
+  kw<"sampled"> "{" FieldConfigEntry* "}" |
+  ekw<"composed"> "{" expression "}" |
+  ekw<"imported"> "{" FieldConfigEntry* "}"
+}
+
+FieldConfigEntry {
+  Identifier "=" expression
+}
+
+// ── Purpose ─────────────────────────────────────────────
+// grammar.js:366-398. The body is `purpose_member`, a subset of `Member` plus
+// `default_declaration` and nested structure definitions. `Block` is reused
+// for the same direction-of-error reason recorded on TraitDeclaration, with
+// `DefaultDeclaration` and `StructureDefinition` added — those two are NOT in
+// `Member` and would otherwise be rejected in a position the corpus uses.
+PurposeDeclaration {
+  kw<"pub">? kw<"purpose"> Identifier TypeParameters?
+  "(" (PurposeParam ("," PurposeParam)* ","?)? ")"
+  "{" (DefaultDeclaration | StructureDefinition | Member)* "}"
+}
+
+PurposeParam {
+  Identifier ":" Identifier
+}
+
+// ── Unit ────────────────────────────────────────────────
+// grammar.js:426-434. Both the conversion and the offset are optional.
+// `unit` is CONTEXTUAL: six committed files pass it as a named-argument
+// label (`unit: …`), which the ReservedWord listing it replaced was already
+// breaking.
+UnitDeclaration {
+  kw<"pub">? ekw<"unit"> Identifier ":" TypeExpr ("=" expression)? (ekw<"offset"> expression)?
+}
+
+// ── Type alias ──────────────────────────────────────────
+// grammar.js:436-447. Reuses the same `type` keyword as the member-level
+// AssociatedType; the two never compete, because one is only reachable at
+// `Declaration` and the other only at `Member`.
+TypeAliasDeclaration {
+  kw<"pub">? kw<"type"> Identifier TypeParameters? "=" DimensionalTypeExpr
+}
+
+// `Force / Area`, `Force * Length / Time`. Written flat rather than as a
+// recursive rule with a precedence level: the dimensional operators are
+// equal-precedence and left-associative, so the flat spelling is both simpler
+// and free of any conflict with the value-level `*`/`/`.
+DimensionalTypeExpr {
+  TypeExpr (("*" | "/") TypeExpr)*
+}
+
+// ── Default ─────────────────────────────────────────────
+// grammar.js:463-469. RHS is an expression, NOT a bindingValue — `auto` is
+// meaningless for a concrete default, and upstream says so explicitly.
+// `default` is contextual upstream (:449-461 documents the same treatment for
+// `unit`/`type`/`undef`), and is kept contextual here.
+DefaultDeclaration {
+  ekw<"default"> TypeExpr "=" expression
+}
+
+// ── Meta block ──────────────────────────────────────────
+// grammar.js:550-570 — comma-separated, unlike the field config entries.
+MetaBlock {
+  kw<"meta"> "{" (MetaEntry ("," MetaEntry)* ","?)? "}"
+}
+
+MetaEntry {
+  Identifier "=" expression
+}
+
+// ── Pragma and annotation ───────────────────────────────
+// grammar.js:1688-1716. Both are standalone items, not prefixes: an
+// annotated declaration is an `Annotation` followed by a `Declaration`, which
+// `Declaration*` already sequences.
+//
+// The `@` here is the SAME token the infix AdHocSelector uses, and no
+// precedence is declared for it. That is deliberate and rests on the same
+// argument the lambda `|` records: an annotation's `@` is only ever at a
+// declaration START and the selector's only ever after a COMPLETE expression,
+// so the two never share a parse state. `#` is a new character used nowhere
+// else.
+Pragma {
+  "#" Identifier ("(" (PragmaArg ("," PragmaArg)* ","?)? ")")?
+}
+
+PragmaArg {
+  Identifier "=" expression | expression
+}
+
+Annotation {
+  "@" Identifier ("(" (expression ("," expression)* ","?)? ")")?
 }
 
 // ── Enum ────────────────────────────────────────────────
@@ -153,7 +265,9 @@ Member {
   PortDeclaration |
   ConnectStatement |
   ChainStatement |
-  ForallStatement
+  ForallStatement |
+  MetaBlock |
+  Pragma
 }
 
 // ── Guarded block ─────────────────────────────────────
@@ -869,8 +983,6 @@ CompareOp<expr> { expr }
 // the receiver slot `ekw` still yields the `self` token, which KEYWORDS styles.
 ReservedWord {
   @specialize[@name=ReservedWord]<Identifier,
-    "purpose" | "field" |
-    "unit" | "meta" |
     "undef" | "some" | "none">
 }
 
@@ -986,7 +1098,7 @@ ReservedWord {
 
   // `;` terminates a fn-body let binding (FnLetBinding) and appears nowhere
   // else in the language.
-  "(" ")" "{" "}" "[" "]" "." "," ":" ";" "="
+  "(" ")" "{" "}" "[" "]" "." "," ":" ";" "=" "#"
   "||" "&&" "==" "+" "-" "*" "^" "|" "@"
   "::" "->" "<-" "<->" "=>" "<" ">" ".." "..<"
 }

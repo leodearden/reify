@@ -75,6 +75,21 @@ export const KEYWORDS = [
   // EnumDeclaration and MatchExpression.
   'enum',
   'match',
+  // The remaining declaration families. Half are `ekw<>` (contextual) because
+  // the corpus uses them as ordinary identifiers: `source` 37 times, `offset`
+  // 8, `field:`/`unit:` as argument labels, `composed`/`imported` as
+  // let/sub names.
+  'field',
+  'source',
+  'analytical',
+  'sampled',
+  'composed',
+  'imported',
+  'purpose',
+  'unit',
+  'offset',
+  'default',
+  'meta',
 ];
 
 export const reifyHighlighting = styleTags({
