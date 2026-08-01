@@ -172,8 +172,11 @@ ModulePath {
 // examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
 // `import x as y`), and no Rust code matches on the node name. The corpus test
 // deliberately does NOT pin either spelling — asserting one would cement an
-// unverified shape as an intentional GUI contract. Filed as a follow-up so the
-// canonical form is decided against the authoritative surface first.
+// unverified shape as an intentional GUI contract. Filed as #5931, which
+// decides the canonical form against the authoritative surface first; until it
+// lands, `ImportItems` is live grammar surface with no test coverage by
+// design, and that is the one thing here a reader should not mistake for an
+// intentional contract.
 ImportDeclaration {
   kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
 }
@@ -697,9 +700,10 @@ FieldBinding {
 // all four are `param … = Name { … }` or `let … = Name { … }`, one of them
 // nested (examples/m6_generic_enum.ri:36) — and removes the collision
 // structurally rather than papering over it, because a binding value is never
-// followed by `{`. The narrowing is recorded as a follow-up: a construction in
+// followed by `{`. The narrowing is tracked as #5941: a construction in
 // argument position (`f(Circle { radius: 5mm })`) is valid upstream and is not
-// accepted here.
+// accepted here — MEASURED at 3 error nodes. No committed `.ri` uses that
+// shape, so closing it cannot move the corpus ledger either way.
 VariantConstruction {
   Identifier "{" VariantConstructionField ("," VariantConstructionField)* ","? "}"
 }
@@ -878,6 +882,20 @@ MapEntry {
 // split is on the presence of a HOLE, not the presence of a brace. Upstream's
 // `"{{braces}}"` is an `interpolated_string` with one chunk and no holes; here
 // it is a `String` with one chunk. Both agree the doubled braces are content.
+//
+// A SECOND CONSEQUENCE, USER-VISIBLE. A string holding a LONE unescaped brace
+// is now an error node where it used to parse clean. MEASURED: `"use {} for
+// empty"`, `"a { b"` and `"}"` each yielded 0 error nodes under the old
+// whole-string token and yield 1 now. This is upstream-faithful, not a
+// regression of the port: grammar.js:1628-1643 deliberately narrows
+// `string_literal`'s char class from `/[^"\\]/` to `/[^"\\{}]/` so any
+// unescaped brace falls through to `interpolated_string`, and
+// grammar.js:1664-1666 records that an empty `{}` is then "a parse error for
+// free". Upstream's own note adds that a grep of every `.ri` file found ZERO
+// string literals containing a bare brace, which is why the narrowing costs
+// the corpus nothing. The escape hatch is `\{` / `\}` — `StringChunk`'s
+// `"\\" _` arm keeps `"a\{b\}"` clean, exactly as upstream's
+// `seq('\\', /./)` arm does. Both halves are pinned by assertions.
 //
 // WHY TWO @skip BLOCKS. The string body must NOT skip whitespace or comments —
 // otherwise the spaces between chunks would be dropped from the tree and a
@@ -1197,11 +1215,12 @@ ReservedWord {
   unitOp { "*" | "/" }
   unitAtom { unitName unitPow? | unitParen }
 
-  // Parenthesised denominator: `(m*K)`, `(kg*K)`, `(m*s)`. Deliberately ONE
-  // level deep and non-recursive — lezer token rules compile to a DFA, so the
-  // centre-embedded `"(" unitExpr ")"` that upstream can express is not a
-  // regular language and would not compile. Every parenthesised unit in the
-  // committed corpus is exactly this shape.
+  // Parenthesised denominator. The corpus attests exactly two shapes, both in
+  // examples/drivebelt_trait_bounds.ri:85-86 — `30.0W/(m*K)` and `880.0J/(kg*K)`.
+  // Deliberately ONE level deep and non-recursive — lezer token rules compile
+  // to a DFA, so the centre-embedded `"(" unitExpr ")"` that upstream can
+  // express is not a regular language and would not compile. Every
+  // parenthesised unit in the committed corpus is exactly this shape.
   unitParen { "(" unitName unitPow? (unitOp unitName unitPow?)* ")" }
 
   // Widened to upstream's full number_literal shape (separators + exponent).
@@ -1211,10 +1230,20 @@ ReservedWord {
   // `1.0` + unit `e6`), so those still lex as quantities — the widening is
   // inert for them. Lifting `Number` above `QuantityLiteral` is NOT the fix:
   // precedence beats length there too, so `80mm` would lex as `80` + a dangling
-  // `mm`. The companion-token trick used for radix and imaginary literals above
-  // would work, but its unit class would have to exclude `_`, which turns the
-  // attested `5_myunit` shape into an error node. Left as a divergence,
-  // deliberately, and pinned by a test so it stays visible.
+  // `mm` — and the ATTESTED `1_000mm` (examples/numeric_separators.ri:17) is
+  // the same trap with a separator, since a separator-aware `Number` ordered
+  // first takes `1_000` and strands `mm`. The companion-token trick used for
+  // radix and imaginary literals above would survive that, but only by
+  // excluding `_` from the start of its unit class — otherwise `1_000_000`
+  // splits back into `1_000` + unit `_000`. A unit class that cannot start
+  // with `_` turns a `5_myunit`-shaped quantity into an error node. That shape
+  // is HYPOTHETICAL, not attested: a sweep of all 330 committed `.ri` under
+  // examples/ and tests/prd-gate/fixtures/ for `[0-9]+(\.[0-9]+)?_[A-Za-z]`
+  // returns zero non-comment hits, and every `_`-in-number attestation
+  // (numeric_separators.ri:11,14,17) has digits after the `_`. So the trade is
+  // real but it is priced against `1_000mm`, which IS attested and IS pinned.
+  // Left as a divergence, deliberately; both halves — the separator form and
+  // the `1.0e6` exponent form — are pinned by tests so they stay visible.
   Number { numberRun }
 
   // The two string tokens. They are deliberately NON-OVERLAPPING — see the

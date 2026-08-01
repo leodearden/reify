@@ -260,7 +260,7 @@ describe('reify.grammar snippets — module and import', () => {
   // the node name. Asserting either spelling here would cement an unverified
   // shape as an intentional GUI contract, so the production stays (faithful to
   // the rule) and the test does not pin it. See the ImportDeclaration comment
-  // in reify.grammar; a follow-up resolves the canonical form.
+  // in reify.grammar; #5931 resolves the canonical form.
 
   /**
    * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
@@ -2267,6 +2267,37 @@ describe('reify.grammar snippets — radix, imaginary and interpolated literals'
     expect(nodeNames(src)).toContain('String');
   });
 
+  /**
+   * THE USER-VISIBLE COST of retiring the whole-string token, pinned rather
+   * than left to be rediscovered. A LONE unescaped brace inside a string is now
+   * an error node: measured 0 errors under the old token and 1 now, for
+   * `"use {} for empty"`, `"a { b"` and `"}"` alike.
+   *
+   * This is upstream-faithful, not a defect of the port. grammar.js:1628-1643
+   * narrows `string_literal`'s char class from `/[^"\\]/` to `/[^"\\{}]/`
+   * precisely so an unescaped brace falls through to `interpolated_string`, and
+   * grammar.js:1664-1666 records that the empty hole `{}` is then "a parse
+   * error for free". Upstream also grepped the corpus and found zero string
+   * literals with a bare brace, which is why nothing committed regresses.
+   */
+  it('rejects a lone unescaped brace inside a string (upstream-faithful)', () => {
+    expect(countErrorNodes('structure def F { let s = "use {} for empty" }')).toBeGreaterThan(0);
+    expect(countErrorNodes('structure def F { let s = "a { b" }')).toBeGreaterThan(0);
+  });
+
+  /**
+   * The escape hatch a user reaching for a literal brace actually needs, and
+   * the more valuable half of the pair: nothing else in this file guards it.
+   * `StringChunk`'s `"\\" _` arm mirrors upstream's `seq('\\', /./)`.
+   */
+  it('accepts escaped braces `"a\\{b\\}"` as ordinary string content', () => {
+    const src = 'structure def F { let s = "a\\{b\\}" }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('String');
+    expect(names).not.toContain('Interpolation');
+  });
+
   // ── Non-regression on the files that are clean BECAUSE of the catch-all ──
   /**
    * These four are pinned in EXPECTED_CLEAN today, and three of them are clean
@@ -2290,15 +2321,23 @@ describe('reify.grammar snippets — radix, imaginary and interpolated literals'
    * `1_000mm` (examples/numeric_separators.ri:17) still lexes as one quantity.
    * Splitting them off would need a separator-aware Number token ordered ABOVE
    * QuantityLiteral, and lezer token precedence beats longest-match — so that
-   * token would also win against `5_myunit`-shaped quantities and turn a clean
-   * form into an error node. Pinned so the divergence from upstream's
-   * `number_literal` is visible rather than assumed.
+   * token would take `1_000` out of the ATTESTED `1_000mm` and strand the
+   * `mm`, turning a committed line into an error node. The exponent form
+   * `1.0e6` rides along on the same catch-all (`1.0` + unit `e6`); it is
+   * asserted here too, because the divergence note in reify.grammar claims
+   * both halves are pinned and that claim should be true.
    */
   it('leaves `_`-separated decimals as quantity literals (documented divergence)', () => {
     const big = 'structure def F { let big = 1_000_000 }';
     expect(countErrorNodes(big)).toBe(0);
     expect(nodeNames(big)).toContain('QuantityLiteral');
     expect(countErrorNodes('structure def F { let len = 1_000mm }')).toBe(0);
+  });
+
+  it('leaves exponent-form decimals as quantity literals (same divergence)', () => {
+    const src = 'structure def F { let d = 1.0e6 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('QuantityLiteral');
   });
 });
 
@@ -2575,7 +2614,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // and is guarded by explicit non-regression assertions above rather than by
 // any movement here.
 //
-// WHAT THE NEXT CATCH-UP TASK INHERITS. The 28 files still not clean need:
+// WHAT THE NEXT CATCH-UP TASK INHERITS — all of it tracked as #5941. The 28
+// files still not clean need:
 //
 //   - `variant_construction` in ARGUMENT position (`f(Circle { radius: 5mm })`).
 //     Valid upstream; deliberately narrowed here — see the note on that
@@ -2587,10 +2627,12 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // Underscore-separated DECIMAL literals did not get their own node: `1_000_000`
 // still lexes as `QuantityLiteral` (`1` + unit `_000_000`). The companion-token
 // trick that made `0xDEAD_BEEF` one `RadixLiteral` cannot be reused, because
-// lezer token precedence beats longest match, so a separator-aware `Number`
-// ordered above `QuantityLiteral` would also win against `5_myunit`-shaped
-// quantities and turn a clean attested form into an error node. Zero ledger
-// impact either way; pinned by a shape test above so it stays visible.
+// lezer token precedence beats longest match: a separator-aware `Number`
+// ordered above `QuantityLiteral` takes `1_000` out of the ATTESTED `1_000mm`
+// (examples/numeric_separators.ri:17) and strands the `mm`, turning a
+// committed line into an error node. Zero ledger impact either way; pinned by
+// shape tests above so it stays visible. See the fuller accounting on the
+// `Number` token in reify.grammar, which prices the full trade.
 //
 // WHY A PINNED SET AND NOT A COUNT. An absolute floor (`clean.length >= 90`)
 // is coupled to corpus INVENTORY, not to grammar capability: deleting or
@@ -2602,7 +2644,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here — the ratchet a follow-up grammar task turns.
+// addition here — the ratchet #5941 turns next.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
