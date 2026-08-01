@@ -858,6 +858,45 @@ pub fn find_template<'a>(
     templates.iter().find(|t| t.name == name)
 }
 
+/// Resolve a **sub-target** template by name: module-local first, stdlib
+/// prelude second.
+///
+/// This is the compile-side single source of truth for the question "which
+/// template does `sub x = Foo(…)` / `sub x : Foo` point at?", mirroring
+/// `reify_eval::unfold::find_template_in_scope` on the eval side. Every
+/// sub-target lookup in `entity.rs` routes through here so no resolver on the
+/// path is left module-only — the asymmetry that caused esc-5360-9, where one
+/// resolver gained the prelude fallback and its sibling did not.
+///
+/// Three properties the callers depend on:
+///
+/// 1. **Module-local definitions shadow the prelude.** `find_template` is
+///    consulted first, so a user module that defines its own `DisplayStyle`
+///    wins over the stdlib one — matching Reify scoping and the "prelude first,
+///    then local (later shadows earlier)" composition used elsewhere in the
+///    compiler.
+/// 2. **The prelude fallback is load-bearing, not belt-and-braces.** Stdlib
+///    templates live in the prelude and are deliberately NOT merged into
+///    `CompiledModule::templates` (io-export δ / esc-4287-15), so a bare
+///    `find_template` never sees them. Task #5867: that miss left
+///    `sub_member_types` / `sub_realization_names` unpopulated while
+///    `sub_component_types` was populated — precisely the "forward-declared"
+///    shape that makes a relaying `let` lower to a `RealizationDecl` instead of
+///    a value cell, silently.
+/// 3. **`prelude_registry` must be UNFILTERED by `EntityKind`.** Do not pass
+///    `prelude_template_registry` here: that one is `EntityKind::Structure`-
+///    filtered on purpose, because it drives constructor lowering where
+///    occurrences are correctly excluded. Sub targets may be occurrences —
+///    `sub o = STLOutput(…)` is a shipped shape — and a Structure-filtered
+///    registry leaves exactly that case broken (MEASURED, task #5867).
+pub(crate) fn find_template_with_prelude<'a>(
+    templates: &'a [TopologyTemplate],
+    prelude_registry: &HashMap<String, &'a TopologyTemplate>,
+    name: &str,
+) -> Option<&'a TopologyTemplate> {
+    find_template(templates, name).or_else(|| prelude_registry.get(name).copied())
+}
+
 /// Return `true` iff synthesizing a monomorph named `mono` would collide with a
 /// pre-existing template that was **not** created by α's current monomorphization
 /// pass.

@@ -906,6 +906,11 @@ pub(crate) fn compile_entity(
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: prelude templates for SUB-TARGET resolution, UNFILTERED by
+    // `EntityKind` — distinct from `prelude_template_registry` above, which is
+    // Structure-filtered for ctor lowering. Consulted only via
+    // `find_template_with_prelude`; see that function for the full contract.
+    prelude_sub_target_registry: &HashMap<String, &TopologyTemplate>,
 ) -> TopologyTemplate {
     let entity_name = structure.name;
     // task 3540 (SIR-α): make `structure def` templates reachable at the
@@ -1750,10 +1755,19 @@ pub(crate) fn compile_entity(
                     .sub_component_types
                     .insert(sub.name.clone(), effective_structure_name.clone());
                 // Single lookup: handle deprecation, sub_structure_traits, and
-                // sub_member_types in one pass over compiled_templates.
-                if let Some(child_tmpl) =
-                    find_template(compiled_templates, &effective_structure_name)
-                {
+                // sub_member_types in one pass over the sub-target templates.
+                //
+                // task 5867: module-first, prelude-fallback. A bare
+                // `find_template` here is module-only, so for a prelude-typed
+                // sub (`sub tol = DimensionalTolerance(…)`) none of the maps
+                // below were populated while `sub_component_types` above always
+                // was — the "forward-declared" shape that makes a relaying
+                // `let` lower to a `RealizationDecl` instead of a value cell.
+                if let Some(child_tmpl) = find_template_with_prelude(
+                    compiled_templates,
+                    prelude_sub_target_registry,
+                    &effective_structure_name,
+                ) {
                     // Deprecation check: warn if the referenced structure is @deprecated.
                     if let Some(msg) = deprecation_message(&child_tmpl.annotations) {
                         emit_deprecation_warning(

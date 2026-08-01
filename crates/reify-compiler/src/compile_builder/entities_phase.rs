@@ -131,6 +131,25 @@ pub(crate) fn phase_entities(
         .map(|t| (t.name.clone(), t))
         .collect();
 
+    // task 5867: prelude templates keyed by name for SUB-TARGET resolution
+    // (`types::find_template_with_prelude`), which the `Sub` pre-passes in
+    // `entity.rs` consult to populate `sub_member_types` /
+    // `sub_realization_names` / `sub_structure_traits` / `sub_assoc_fn_keys`.
+    //
+    // Deliberately a SECOND registry rather than a reuse of
+    // `prelude_template_registry` above: this one carries NO `EntityKind`
+    // filter. Sub targets may be occurrences — `sub o = STLOutput(…)` is a
+    // shipped shape (reify-cli's `output_driver_*.ri` fixtures) — whereas the
+    // Structure filter above is correct for its own consumer, ctor lowering,
+    // where only `structure def`s are constructible. MEASURED: reusing the
+    // filtered registry here leaves `let res = self.o.resolution` typed
+    // `Type::Error` with a bogus `RealizationDecl`.
+    let prelude_sub_target_registry: HashMap<String, &TopologyTemplate> = prelude
+        .iter()
+        .flat_map(|m| m.templates.iter())
+        .map(|t| (t.name.clone(), t))
+        .collect();
+
     // ── Ambient-default file-scope pre-pass (ambient-default-material task B) ──
     // Build the file-level `AmbientDefaults` table BEFORE the entity-compile loop
     // (defaults apply file-wide and may appear lexically after the structures
@@ -175,6 +194,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
+                        &prelude_sub_target_registry,
                     );
                 }
             }
@@ -239,6 +259,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
                         &prelude_template_registry,
+                        &prelude_sub_target_registry,
                     );
                 }
             }
@@ -284,6 +305,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
                             &prelude_template_registry,
+                            &prelude_sub_target_registry,
                         );
                     }
                 }
@@ -769,6 +791,10 @@ fn compile_entity_decl(
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: UNFILTERED prelude registry for sub-target resolution — see
+    // its construction in `phase_entities` for why it is separate from
+    // `prelude_template_registry`.
+    prelude_sub_target_registry: &HashMap<String, &TopologyTemplate>,
 ) {
     let template = compile_entity(
         &entity_ref,
@@ -791,6 +817,7 @@ fn compile_entity_decl(
         diagnostics,
         templates,
         prelude_template_registry,
+        prelude_sub_target_registry,
     );
     templates.push(template);
 }
