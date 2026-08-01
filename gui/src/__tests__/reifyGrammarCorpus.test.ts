@@ -2009,6 +2009,215 @@ describe('reify.grammar snippets — remaining declaration families', () => {
 });
 
 /**
+ * Radix, imaginary and interpolated-string literals.
+ *
+ * WHY THESE ARE SHAPE ASSERTIONS AND NOT ERROR COUNTS. All four forms already
+ * parse with ZERO error nodes today, so an error-count assertion would be
+ * vacuously green and pin nothing:
+ *
+ *   `0xFF`      the `QuantityLiteral` token reads it as `0` + unit `xFF`
+ *   `4.1j`                     ""                     `4.1` + unit `j`
+ *   `1_000_000`                ""                     `1` + unit `_000_000`
+ *   `"a {b} c"` the `String` token has no brace exclusion, so it swallows the
+ *               interpolation holes as ordinary string bytes
+ *
+ * Every one of those is the WRONG node under the right span. So these tests
+ * assert the node SHAPE via `nodeNames`, and the corpus files that are clean
+ * *because of* the catch-all get explicit non-regression assertions at the
+ * bottom — a narrower purpose-built token that misses a shape would silently
+ * un-pin them, which is the one outcome this slice must not produce.
+ */
+describe('reify.grammar snippets — radix, imaginary and interpolated literals', () => {
+  // ── Radix literals ────────────────────────────────────
+  // Corpus-attested: examples/radix_literals.ri:11,14,17 and
+  // examples/numeric_and_range_literals.ri:19,22.
+  it('yields a RadixLiteral for hex `0xFF`', () => {
+    const names = nodeNames('structure def F { let mask = 0xFF }');
+    expect(names).toContain('RadixLiteral');
+    expect(names).not.toContain('QuantityLiteral');
+  });
+
+  it('yields a RadixLiteral for binary `0b1010`', () => {
+    const names = nodeNames('structure def F { let flags = 0b1010 }');
+    expect(names).toContain('RadixLiteral');
+    expect(names).not.toContain('QuantityLiteral');
+  });
+
+  // examples/radix_literals.ri:17 — `_` digit separators inside the radix run.
+  // The upstream scanner consumes them as part of the literal
+  // (tree-sitter-reify/src/scanner.c, RADIX_LITERAL digit loop), so the whole
+  // `0xDEAD_BEEF` is ONE node, not a literal followed by an identifier.
+  it('yields a single RadixLiteral for the separator-bearing `0xDEAD_BEEF`', () => {
+    const src = 'structure def F { let addr = 0xDEAD_BEEF }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('RadixLiteral');
+  });
+
+  it('accepts uppercase radix prefixes `0XFF` and `0B1010`', () => {
+    expect(nodeNames('structure def F { let a = 0XFF }')).toContain('RadixLiteral');
+    expect(nodeNames('structure def F { let a = 0B1010 }')).toContain('RadixLiteral');
+  });
+
+  /**
+   * DIVERGENCE FROM THE STEP TEXT, RECORDED DELIBERATELY. The plan step lists
+   * octal `0o17` alongside hex and binary, but reify has NO octal literal:
+   * tree-sitter-reify/src/scanner.c, RADIX_LITERAL block, admits exactly
+   * `x`/`X` (hex) and `b`/`B` (binary) as radix prefixes and returns false for
+   * anything else, which leaves `0o17` to the quantity path as
+   * `quantity_literal(0, unit "o17")`. Implementing `0o` would invent language
+   * surface the authoritative grammar does not have, so this pins the upstream
+   * reading instead.
+   */
+  it('leaves `0o17` as a QuantityLiteral — reify has no octal radix', () => {
+    const src = 'structure def F { let a = 0o17 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('QuantityLiteral');
+    expect(nodeNames(src)).not.toContain('RadixLiteral');
+  });
+
+  /**
+   * The unit-suffixed radix form. grammar.js:1484-1497 gives `quantity_literal`
+   * a dedicated RADIX ARM (`0xFFmm` → value `0xFF`, unit `mm`), so a narrower
+   * RadixLiteral token that wins here would turn a VALID form into an error
+   * node — a capability regression, not a shape fix. `0x`/`0b` with no digits
+   * is likewise a quantity (`quantity_literal(0, unit "x")`) per the
+   * "Prefix with no digits" branch of the scanner.
+   */
+  it('keeps the unit-suffixed radix `0xFFmm` a QuantityLiteral', () => {
+    const src = 'structure def F { let a = 0xFFmm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('QuantityLiteral');
+    expect(nodeNames(src)).not.toContain('RadixLiteral');
+  });
+
+  it('keeps the digitless `0x` a QuantityLiteral', () => {
+    const src = 'structure def F { let a = 0x }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('QuantityLiteral');
+  });
+
+  // ── Imaginary literals ────────────────────────────────
+  // Corpus-attested: examples/complex_literals.ri:14,21 (`4.1j`, `4j`),
+  // examples/complex_transcendental.ri (`0j`).
+  it('yields an ImaginaryLiteral for `4j` and `4.1j`', () => {
+    expect(nodeNames('structure def F { let w = 3 + 4j }')).toContain('ImaginaryLiteral');
+    expect(nodeNames('structure def F { let z = 3.2 + 4.1j }')).toContain('ImaginaryLiteral');
+  });
+
+  // grammar.js:1460 names `1.5e-3j` as a valid imaginary literal, so the
+  // numeric part carries an exponent (upstream `number_literal` is
+  // /\d(_?\d)*(\.\d(_?\d)*)?([eE][+-]?\d(_?\d)*)?/, grammar.js:1626).
+  it('yields an ImaginaryLiteral for the exponent-bearing `1.5e-3j`', () => {
+    const src = 'structure def F { let z = 1.5e-3j }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('ImaginaryLiteral');
+  });
+
+  /**
+   * THE `j`-UNIT CARVE-OUT. grammar.js:1459-1468 documents that the scanner
+   * refuses the imaginary reading when a word character follows the `j`, so
+   * multi-char j-units (`jk`, `joule`) and capital `J` (joule) stay quantity
+   * literals. A token that grabbed `2j` out of `2joule` would leave `oule`
+   * dangling as an identifier — an error node on a valid unit.
+   */
+  it('keeps `2joule` and `5J` quantity literals, not imaginary literals', () => {
+    for (const src of ['structure def F { let e = 2joule }', 'structure def F { let e = 5J }']) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(nodeNames(src)).toContain('QuantityLiteral');
+      expect(nodeNames(src)).not.toContain('ImaginaryLiteral');
+    }
+  });
+
+  // ── Interpolated strings ──────────────────────────────
+  /**
+   * SYNTAX CORRECTION, RECORDED DELIBERATELY. The plan step spells the hole
+   * `"a ${b} c"`, a JavaScript-ism. Reify's hole is a BARE brace — grammar.js
+   * :1645-1670 (`interpolated_string` / `interpolation`) and the committed
+   * examples/interpolation.ri:18 (`"thickness is {t}, doubled is {2 * t}"`)
+   * both spell it `{expr}`. The corpus is the arbiter, so these assertions use
+   * the attested form; `${b}` would be one chunk containing a literal `$`.
+   */
+  it('yields an InterpolatedString with an Interpolation hole', () => {
+    const src = 'structure def F { let s = "a {b} c" }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('InterpolatedString');
+    expect(names).toContain('Interpolation');
+  });
+
+  // examples/interpolation.ri:18 — two holes, one of them a full expression.
+  it('parses a multi-hole interpolation whose hole is a whole expression', () => {
+    const src = 'structure def F { let s = "thickness is {t}, doubled is {2 * t}" }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('BinaryExpression');
+  });
+
+  // examples/interpolation.ri:25 — `{{`/`}}` are CONTENT, not holes
+  // (scanner.c STRING_CONTENT: "doubled open/close brace → both chars
+  // consumed as content"). Zero holes, so no Interpolation node.
+  it('treats doubled braces `"{{braces}}"` as content, not a hole', () => {
+    const src = 'structure def F { let s = "{{braces}}" }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('InterpolatedString');
+    expect(names).not.toContain('Interpolation');
+  });
+
+  /**
+   * REGRESSION GUARD for the `String` token narrowing. Admitting
+   * `InterpolatedString` requires the plain-string token to STOP at a bare
+   * brace (grammar.js:1628-1635 narrows its char class for exactly this
+   * reason). Every brace-free string in the corpus must still take the
+   * single-token fast path, or 300-odd pinned files change shape at once.
+   */
+  it('still parses a brace-free string as one plain String node', () => {
+    const names = nodeNames('structure def F { let s = "steel" }');
+    expect(names).toContain('String');
+    expect(names).not.toContain('InterpolatedString');
+  });
+
+  it('still parses a string containing an escape and a comment marker', () => {
+    const src = 'structure def F { let s = "a \\" b // c" }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('String');
+  });
+
+  // ── Non-regression on the files that are clean BECAUSE of the catch-all ──
+  /**
+   * These four are pinned in EXPECTED_CLEAN today, and three of them are clean
+   * only because `QuantityLiteral` swallows their literals whole. A narrower
+   * token that misses one shape would un-pin them — the exact failure mode this
+   * slice is most likely to produce, so it gets a direct assertion rather than
+   * relying on the ledger to notice at the end of the run.
+   */
+  it.each([
+    'examples/radix_literals.ri',
+    'examples/complex_literals.ri',
+    'examples/numeric_separators.ri',
+    'examples/interpolation.ri',
+  ])('still parses %s with zero error nodes', (path) => {
+    expect(countErrorNodes(readFixture(path))).toBe(0);
+  });
+
+  /**
+   * The `_`-separated DECIMAL literal is deliberately NOT re-shaped here.
+   * `1_000_000` still lexes as `QuantityLiteral` (`1` + unit `_000_000`), and
+   * `1_000mm` (examples/numeric_separators.ri:17) still lexes as one quantity.
+   * Splitting them off would need a separator-aware Number token ordered ABOVE
+   * QuantityLiteral, and lezer token precedence beats longest-match — so that
+   * token would also win against `5_myunit`-shaped quantities and turn a clean
+   * form into an error node. Pinned so the divergence from upstream's
+   * `number_literal` is visible rather than assumed.
+   */
+  it('leaves `_`-separated decimals as quantity literals (documented divergence)', () => {
+    const big = 'structure def F { let big = 1_000_000 }';
+    expect(countErrorNodes(big)).toBe(0);
+    expect(nodeNames(big)).toContain('QuantityLiteral');
+    expect(countErrorNodes('structure def F { let len = 1_000mm }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
