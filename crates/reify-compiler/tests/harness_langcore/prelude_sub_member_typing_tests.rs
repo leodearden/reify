@@ -16,19 +16,19 @@
 //! module-only assumption on the eval side (`unfold::find_template_in_scope`).
 
 use reify_compiler::{TopologyTemplate, ValueCellKind};
-use reify_core::{DimensionVector, ModulePath, Severity, Type};
+use reify_core::{DimensionVector, Type};
 
-/// Fetch the named template from a compiled module, panicking with the full
-/// template list when absent.
+/// Fetch the named template from a compiled module.
+///
+/// Thin wrapper over the crate's own `reify_compiler::find_template` — kept only
+/// for the panic message, which lists every template actually compiled. Several
+/// of the fixtures below fail by producing no template at all, and the bare
+/// `.unwrap()` a caller would otherwise write says nothing about why.
 fn template<'a>(compiled: &'a reify_compiler::CompiledModule, name: &str) -> &'a TopologyTemplate {
-    compiled
-        .templates
-        .iter()
-        .find(|t| t.name == name)
-        .unwrap_or_else(|| {
-            let names: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
-            panic!("template {name} absent from compiled module; have: {names:?}")
-        })
+    reify_compiler::find_template(&compiled.templates, name).unwrap_or_else(|| {
+        let names: Vec<&str> = compiled.templates.iter().map(|t| t.name.as_str()).collect();
+        panic!("template {name} absent from compiled module; have: {names:?}")
+    })
 }
 
 /// Return the `cell_type` of the `Let` value cell `<entity>.<member>`, panicking
@@ -295,29 +295,17 @@ structure def Mid {
 /// accepted with ZERO diagnostics. Once the sub is properly typed from the
 /// prelude, `expr.rs`'s existing `make_poison_literal` path fires.
 ///
-/// Compiled through `compile_with_stdlib` directly rather than
-/// `parse_and_compile_with_stdlib`, which panics on any error diagnostic.
+/// Compiled through `compile_source_with_stdlib`, which panics on PARSE errors
+/// only — unlike `parse_and_compile_with_stdlib`, which also panics on any
+/// compile-error diagnostic, and this test's whole point is to assert one.
 ///
 /// MEASURED RED: zero diagnostics. MEASURED GREEN:
 /// `unknown member 'no_such_member' on sub 'tol'`.
 #[test]
 fn unknown_member_on_prelude_typed_sub_is_diagnosed() {
-    let parsed = reify_compiler::parse_with_stdlib(
-        SRC_PRELUDE_SUB_UNKNOWN_MEMBER,
-        ModulePath::single("test"),
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture must parse cleanly; got: {:?}",
-        parsed.errors,
-    );
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compiled = reify_test_support::compile_source_with_stdlib(SRC_PRELUDE_SUB_UNKNOWN_MEMBER);
 
-    let errors: Vec<&reify_core::Diagnostic> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = reify_test_support::errors_only(&compiled);
     assert!(
         errors
             .iter()
@@ -350,8 +338,7 @@ fn prelude_member_type(template_name: &str, member: &str) -> Type {
     let prelude = reify_compiler::stdlib_loader::load_stdlib();
     let tmpl = prelude
         .iter()
-        .flat_map(|m| m.templates.iter())
-        .find(|t| t.name == template_name)
+        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
         .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
     tmpl.value_cells
         .iter()
@@ -381,14 +368,7 @@ fn prelude_member_type(template_name: &str, member: &str) -> Type {
 /// same failure mode as esc-5360-9.
 #[test]
 fn prelude_typed_match_arm_sub_member_read_is_typed() {
-    let parsed =
-        reify_compiler::parse_with_stdlib(SRC_PRELUDE_MATCH_ARM_SUB, ModulePath::single("test"));
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture must parse cleanly; got: {:?}",
-        parsed.errors,
-    );
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
+    let compiled = reify_test_support::compile_source_with_stdlib(SRC_PRELUDE_MATCH_ARM_SUB);
     let styled = template(&compiled, "Styled");
 
     let op_type = let_cell_type(styled, "op");
@@ -411,16 +391,135 @@ fn prelude_typed_match_arm_sub_member_read_is_typed() {
 
     assert_no_realization_named(styled, "op");
 
-    let errors: Vec<&reify_core::Diagnostic> = compiled
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let errors = reify_test_support::errors_only(&compiled);
     assert!(
         !errors
             .iter()
             .any(|d| d.message.contains("not present in match-arm types")),
         "`opacity` IS present on every arm type — a prelude-typed arm sub must not \
          be reported as missing it; got: {errors:?}",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (f) match arms with two DIFFERENT prelude types — the per-arm INTERSECTION
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Both arms of (e) are `DisplayStyle`, so the per-arm member maps built at
+/// `entity.rs`'s cluster site and in `compile_match_arm_decl_group` are
+/// identical and the agreement/intersection logic over them is only exercised
+/// in the degenerate single-type case. These fixtures give the two arms
+/// DIFFERENT prelude structures.
+///
+/// `AsPrintedOptions` (`stdlib/fdm_as_printed.ri:37`) and `FDMSliceOptions`
+/// (`stdlib/fdm_slice.ri:96`) are the pair because (i) every param of each is
+/// defaulted, so the bare `sub s : T` arm form needs no constructor args;
+/// (ii) they SHARE `target_fidelity : Int = 0`, giving the positive half; and
+/// (iii) `line_width : Length` is on `AsPrintedOptions` ONLY, giving the
+/// negative half. Neither `FidSel` nor its variants collide with a prelude
+/// name (checked against all 131 stdlib entity defs).
+const SRC_TWO_PRELUDE_ARM_TYPES_COMMON: &str = r#"
+enum FidSel { AsPrinted, Slice }
+
+structure def Fid {
+    param sel : FidSel = FidSel.AsPrinted
+    match sel {
+        AsPrinted => sub s : AsPrintedOptions,
+        Slice => sub s : FDMSliceOptions
+    }
+    let fid = self.s.target_fidelity
+}
+"#;
+
+/// Positive half: a member present on BOTH distinct prelude arm types resolves,
+/// and carries the type both arms declare.
+///
+/// A bug where one arm's lookup resolves and the other's does not — the exact
+/// asymmetry class this task exists to close — passes (e) but fails here.
+#[test]
+fn two_distinct_prelude_arm_types_agree_on_common_member() {
+    // The fixture's premise, asserted rather than assumed: both prelude arm
+    // types really do declare `target_fidelity`, at the same type.
+    let as_printed = prelude_member_type("AsPrintedOptions", "target_fidelity");
+    let fdm_slice = prelude_member_type("FDMSliceOptions", "target_fidelity");
+    assert_eq!(
+        as_printed, fdm_slice,
+        "fixture premise: the two prelude arm types must declare `target_fidelity` \
+         at the SAME type, else the intersection is not expected to agree",
+    );
+
+    let compiled = reify_test_support::compile_source_with_stdlib(SRC_TWO_PRELUDE_ARM_TYPES_COMMON);
+    let fid = template(&compiled, "Fid");
+
+    let fid_type = let_cell_type(fid, "fid");
+    assert_ne!(fid_type, Type::Error, "Fid.fid must be typed, not poisoned");
+    assert_ne!(
+        fid_type,
+        Type::Geometry,
+        "Fid.fid reads a MEMBER VALUE and must not fall through to the \
+         cross-sub-geometry path",
+    );
+    assert_eq!(
+        fid_type, as_printed,
+        "Fid.fid must carry the type both prelude arm types declare for \
+         `target_fidelity`",
+    );
+    assert_no_realization_named(fid, "fid");
+
+    let errors = reify_test_support::errors_only(&compiled);
+    assert!(
+        !errors
+            .iter()
+            .any(|d| d.message.contains("not present in match-arm types")),
+        "`target_fidelity` IS present on both prelude arm types; got: {errors:?}",
+    );
+}
+
+const SRC_TWO_PRELUDE_ARM_TYPES_DISJOINT: &str = r#"
+enum FidSel { AsPrinted, Slice }
+
+structure def FidBad {
+    param sel : FidSel = FidSel.AsPrinted
+    match sel {
+        AsPrinted => sub s : AsPrintedOptions,
+        Slice => sub s : FDMSliceOptions
+    }
+    let lw = self.s.line_width
+}
+"#;
+
+/// Negative half: a member present on only ONE of the two prelude arm types
+/// must still draw the `not present in match-arm types` diagnostic.
+///
+/// Widening the arm-type lookup to consult the prelude must not turn the
+/// intersection into a union — pinning only the positive half would let a
+/// change that accepts any-arm members pass. `line_width` is on
+/// `AsPrintedOptions` and not on `FDMSliceOptions`.
+#[test]
+fn member_on_only_one_prelude_arm_type_is_still_diagnosed() {
+    // Fixture premise: `line_width` really is exclusive to the first arm type.
+    let _ = prelude_member_type("AsPrintedOptions", "line_width");
+    let fdm_slice = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .find_map(|m| reify_compiler::find_template(&m.templates, "FDMSliceOptions"))
+        .expect("prelude has no template FDMSliceOptions")
+        .value_cells
+        .iter()
+        .any(|c| c.id.member == "line_width");
+    assert!(
+        !fdm_slice,
+        "fixture premise: FDMSliceOptions must NOT declare `line_width`",
+    );
+
+    let compiled =
+        reify_test_support::compile_source_with_stdlib(SRC_TWO_PRELUDE_ARM_TYPES_DISJOINT);
+
+    let errors = reify_test_support::errors_only(&compiled);
+    assert!(
+        errors.iter().any(|d| {
+            d.message.contains("not present in match-arm types") && d.message.contains("line_width")
+        }),
+        "a member declared by only ONE prelude arm type must be rejected — the \
+         per-arm maps intersect, they do not union; got: {errors:?}",
     );
 }
