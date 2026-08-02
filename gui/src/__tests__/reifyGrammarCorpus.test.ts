@@ -3158,6 +3158,74 @@ describe('reify.grammar snippets — `chain` stays a legal ordinary identifier',
 });
 
 /**
+ * A `ReservedWord` in CALL position — catch-up round 4, family 2.
+ *
+ * `some`/`none`/`undef` are `@specialize`d to `ReservedWord`, which reaches
+ * `primaryExpression` — so bare `none` already parses. The gap is the CALLEE
+ * slot: `FunctionCall` was `Identifier !postfix ArgListExpr`, and a
+ * `ReservedWord` is no longer an `Identifier`. MEASURED before the fix:
+ * `let s = none` → 0 errors, `let s = some(u)` → 1 error, sitting on the `(`.
+ *
+ * THE FIX IS THE CALLEE, NOT THE RESERVATION. `some` and `none` appear NOWHERE
+ * in tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary
+ * call on an ordinary identifier. They exist here purely as a forward-compat
+ * STYLING reservation, and reify.grammar's own note prices removing them from
+ * the `@specialize` list: it "would not enable anything, it would only drop
+ * their `ReservedWord: t.keyword` styling". Un-reserving would trade a keyword
+ * colour for a parse; widening the callee buys the parse AND keeps the colour,
+ * which is what the styling pin below asserts.
+ */
+describe('reify.grammar snippets — a ReservedWord in call position', () => {
+  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:99.
+  it('parses `some(u)`', () => {
+    expect(countErrorNodes('structure def S { let s = some(u) }')).toBe(0);
+  });
+
+  // Corpus-attested VERBATIM: examples/option_map_or.ri:30 — also exercises a
+  // reserved-word call nested as the first argument of an ordinary call, and a
+  // lambda argument alongside it.
+  it('parses a reserved-word call nested in an argument list, beside a lambda', () => {
+    const src = 'structure def S { let m = map_or(some(5mm), 0mm, |x: Length| x * 2.0) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('LambdaExpression');
+  });
+
+  // Corpus-attested: tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31
+  // (`Steel_AISI_1045(yield_stress: some(310mm))`) — a reserved-word call nested
+  // inside a NamedArgument VALUE, a third distinct position.
+  it('parses a reserved-word call as a named-argument value', () => {
+    const src = 'structure def S { let w = Steel(yield_stress: some(310mm)) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('NamedArgument');
+  });
+
+  /**
+   * THE STYLING PIN — what the fix must NOT cost. The cheap alternative was to
+   * drop `some`/`none` from the `ReservedWord` @specialize list, which parses
+   * `some(u)` just as well but silently demotes the word to an ordinary
+   * `Identifier` and loses its `t.keyword` colour. Asserting the node NAME is
+   * the only thing that tells the two fixes apart: both are error-free.
+   */
+  it('keeps `some` a ReservedWord node when it is the callee', () => {
+    const names = nodeNames('structure def S { let s = some(u) }');
+    expect(names).toContain('ReservedWord');
+    expect(names).toContain('FunctionCall');
+  });
+
+  /**
+   * NON-REGRESSION. Bare reserved words in expression position already parse
+   * via `primaryExpression`; widening the callee must leave that untouched.
+   */
+  it('still parses a bare reserved word in expression position', () => {
+    for (const word of ['none', 'undef']) {
+      const src = `structure def S { let s = ${word} }`;
+      expect(countErrorNodes(src)).toBe(0);
+      expect(nodeNames(src)).toContain('ReservedWord');
+    }
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
