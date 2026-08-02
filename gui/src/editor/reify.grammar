@@ -949,19 +949,32 @@ MatchPattern {
 // DO NOT "FIX" `_` INSIDE AN OR-PATTERN SLOT (#5958). `WildcardPattern` is
 // deliberately a sibling of the WHOLE or-production above, not of one
 // `|`-separated slot inside it, so `A | _` and `_ | A` reduce `_` to a plain
-// `Identifier`. That mirrors the authoritative grammar exactly —
-// grammar.js:1289-1293 is
+// `Identifier`. This note is the single home for that reasoning; the corpus
+// tests pinning it point here rather than restating it. It mirrors the
+// authoritative grammar exactly — grammar.js:1289-1293 is
 // `choice(variant_binding_pattern, seq(identifier, repeat(seq('|',
 // identifier))), '_')`, where `'_'` is likewise a sibling of the whole
-// or-production — and it mirrors the lowering: ts_parser.rs:3468 decides
-// wildcard by WHOLE-pattern text (`if pattern_text == "_"`), so an or-slot `_`
-// falls to the else branch and becomes `MatchPattern::Variant("_")`, never
-// `Wildcard`. MEASURED with `reify eval`:
+// or-production — and it mirrors the lowering, which decides wildcard by
+// WHOLE-pattern text (`if pattern_text == "_"`) at BOTH of the two sites that
+// consume a `match_pattern`, so an or-slot `_` fails the test at either and
+// falls to the else branch that walks the pattern's `identifier` children:
+//   - ts_parser.rs:3482, `lower_match_arm` — the EXPRESSION form. The else
+//     branch pushes `MatchPattern::Variant("_")`; `MatchPattern::Wildcard` is
+//     reachable only from the whole-text test.
+//   - ts_parser.rs:3618, `lower_match_arm_decl_arm` — the DECLARATION form.
+//     Same whole-pattern-text test, but this site collects plain pattern
+//     `String`s rather than `MatchPattern` values, so `_` arrives downstream as
+//     the ordinary name `"_"`; the `Variant("_")` phrasing above is the
+//     expression form's only.
+// MEASURED with `reify eval`:
 //   `match k { A | _ => 1mm }`
 //     -> error: non-exhaustive match on 'Kind': missing variant(s) B, C
 //   `match kind { Hex | _ => sub head : DefaultHead }`
 //     -> error: match-arm pattern '_' is not a variant of enum 'Kind'
 //   `match k { _ | A => 1mm }` -> Parse error: syntax error
+//   CONTROL, bare `match k { _ => 1mm }` -> evaluates clean (`F.x = 0.001 m`),
+//     which is why the BARE-`_` corpus tests legitimately pin a
+//     `WildcardPattern` node and the or-slot ones pin zero of them.
 // #5958 restructured this rule into `matchPatternAtom ("|" matchPatternAtom)*`
 // to make an or-slot `_` reduce to `WildcardPattern`, and was REVERTED. Note
 // the reason carefully, because it is NOT the one the "three findings"
