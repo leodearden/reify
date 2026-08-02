@@ -3787,6 +3787,85 @@ describe('reify.grammar snippets — joint definitions', () => {
 });
 
 /**
+ * `·` (U+00B7) as unit multiplication — catch-up round 4, family 11.
+ *
+ * `unitOp` inside `QuantityLiteral` admitted only `*` and `/`, so the middot
+ * form of a composed unit had nowhere to go.
+ *
+ * MEASURED before the fix:
+ *   (a) `5N·m`               — 2 errors → RED
+ *   (b) `5N·m/rad`           — 3 errors → RED
+ *   (c) `5m^2·kg·s^-2`  — 5 errors → RED
+ *   (d) the two boundary pins     — 2 errors each → stay RED
+ *   (e) the separator divergence  — 0 errors → passes
+ *
+ * (d) IS THE POINT OF THE FAMILY, not an afterthought. `·` is admitted
+ * ONLY inside `unitOp`, so it must NOT become a general operator — the PRD's
+ * §9 row B7 and task #5784's measured K2 table both require that. Those two
+ * snippets must STAY errors after the widening, which no ledger movement would
+ * reveal.
+ */
+describe('reify.grammar snippets — `·` as unit multiplication', () => {
+  // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
+  it('parses a middot-composed unit', () => {
+    const src = 'structure def S { let torque_like = 5N·m }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('QuantityLiteral');
+  });
+
+  /**
+   * :26. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
+   * so the wrong tree — one quantity divided by an identifier — would also
+   * reach 0 errors and an error count alone would sail past it.
+   */
+  it('keeps a trailing `/unit` inside the same quantity', () => {
+    const src = 'structure def S { let with_div = 5N·m/rad }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
+  });
+
+  // :27 — `·` composed with `^` and a negative exponent, in one literal.
+  it('composes middots with unit exponents', () => {
+    const src = 'structure def S { let composed = 5m^2·kg·s^-2 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
+  });
+
+  /**
+   * THE BOUNDARY PINS, transcribed from the PRD's §9 row B7 and task #5784's
+   * measured K2 table. There is no general `·` operator in Reify, and the
+   * `·` must not be consumed as a mul-op when no unit atom follows it. Both
+   * are errors today and must STAY errors — the only assertions in this family
+   * that a ledger gain could not confirm.
+   */
+  it('does not admit `·` outside a quantity literal', () => {
+    for (const src of [
+      'structure def S { let x = 5 · 3 }',
+      'structure def S { let x = 5N· m }',
+    ]) {
+      expect(countErrorNodes(src)).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * THE STANDING DIVERGENCE, non-regression. Underscore-separated decimals lex
+   * as `QuantityLiteral` (`1_000_000` = `1` with unit `_000_000`; `1_000mm` is
+   * one quantity). This family touches `unitOp` INSIDE `QuantityLiteral`, so
+   * the existing separator pins are its regression net and are restated here at
+   * the point of risk.
+   */
+  it('leaves the underscore-separator reading untouched', () => {
+    for (const src of [
+      'structure def S { let n = 1_000mm }',
+      'structure def S { let n = 1_000_000 }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(countNodesNamed(src, 'QuantityLiteral')).toBe(1);
+    }
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
