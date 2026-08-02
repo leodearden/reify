@@ -2868,6 +2868,106 @@ describe('reify.grammar snippets — sub relate blocks', () => {
 });
 
 /**
+ * `match_arm_decl_block` — grammar.js:1322-1345. A MEMBER-position `match`
+ * whose arms declare a sub rather than evaluate to a value: the variant chosen
+ * decides which sub the structure gets.
+ *
+ * Zero committed files use it, so it moves the ledger by nothing and is taken
+ * for node shape; the assertions below are what guard it.
+ *
+ * IT NEVER COMPETES WITH `MatchExpression`, and no marker says so — position
+ * does. No `Member` can begin with a bare expression, so the expression form is
+ * simply unreachable here and the two never share a state. That is the same
+ * positional discriminator `ForallStatement` vs `QuantifierExpression` already
+ * relies on. The two pins below assert it in both directions.
+ */
+describe('reify.grammar snippets — match arm declaration blocks', () => {
+  // Normative, unattested — as is every case in this slice.
+  it('parses a two-arm declaration block (normative, unattested)', () => {
+    const src = 'structure def F { match kind { Hex => sub head : HexHead, Sq => sub head : SqHead } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MatchArmDeclBlock');
+    expect(names).toContain('MatchArmDeclArm');
+    expect(names).toContain('MatchArmSubDecl');
+  });
+
+  /**
+   * The arms reuse the existing `MatchPattern` production verbatim, so the
+   * or-pattern, the wildcard and the variant-binding form come free and cannot
+   * drift from the ones `MatchExpression` accepts. Each is asserted rather than
+   * assumed, since "comes free" is a claim about the grammar's shape.
+   */
+  it('accepts an or-pattern arm', () => {
+    const src = 'structure def F { match kind { Hex | Button => sub head : RecessedHead } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('MatchArmDeclBlock');
+  });
+
+  it('accepts a wildcard arm', () => {
+    const src = 'structure def F { match kind { _ => sub head : DefaultHead } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MatchArmDeclBlock');
+    expect(names).toContain('WildcardPattern');
+  });
+
+  it('accepts a variant-binding-pattern arm', () => {
+    const src = 'structure def F { match kind { Hex { size: s } => sub head : HexHead } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MatchArmDeclBlock');
+    expect(names).toContain('VariantBindingPattern');
+  });
+
+  it('accepts a single-arm block and a trailing comma', () => {
+    const single = 'structure def F { match kind { Hex => sub head : HexHead } }';
+    expect(countErrorNodes(single)).toBe(0);
+    expect(nodeNames(single)).toContain('MatchArmDeclBlock');
+
+    const trailing = 'structure def F { match kind { Hex => sub head : HexHead, } }';
+    expect(countErrorNodes(trailing)).toBe(0);
+    expect(nodeNames(trailing)).toContain('MatchArmDeclBlock');
+  });
+
+  /**
+   * ── The two discrimination pins ───────────────────────────────────────────
+   *
+   * Expression position is unaffected, and member position admits ONLY the
+   * declaration form. Asserted on node names in the first direction because
+   * the wrong reading there would be error-free.
+   */
+  it('leaves expression-position `match` a MatchExpression', () => {
+    const src = 'structure def F { let x = match outline { Round => 1mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MatchExpression');
+    expect(names).toContain('MatchArm');
+    expect(names).not.toContain('MatchArmDeclBlock');
+  });
+
+  it('rejects a member-position `match` whose arms are expressions', () => {
+    const src = 'structure def F { match k { A => 1mm } }';
+    expect(countErrorNodes(src)).toBeGreaterThan(0);
+  });
+
+  /**
+   * THE RESTRICTION PIN. The arm body is kept at upstream's narrow
+   * `sub name : StructName` — no body, no where clause — because the compiler
+   * rejects the wider form (audit M-006, entity.rs:2506-2521). This port's
+   * standing stance is that over-permissiveness is the safe direction of error,
+   * but that only holds where the cost is "no squiggle on a program the
+   * compiler will still reject"; here accepting it would invent a third
+   * dialect, so the restriction is deliberate and pinned.
+   */
+  it('rejects a body on a match-arm sub declaration (audit M-006)', () => {
+    const src =
+      'structure def F { match kind { Hex => sub head : HexHead { param d : Length = 1mm } } }';
+    expect(countErrorNodes(src)).toBeGreaterThan(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
