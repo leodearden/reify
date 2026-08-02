@@ -4254,25 +4254,77 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // integration_full_v01 14→5, m11_annotations 18→10, m9_combined 9→4), which is
 // real progress that this pinned set is deliberately unable to express.
 //
-// WHAT THE NEXT CATCH-UP TASK INHERITS — the twelve families below, all of them
-// enumerated with their measured first blocker in #5950. The 21 files still not
-// clean need:
+// MEASUREMENT (task 5950), catch-up round 4. Round 3 handed on twelve families,
+// derived from each not-clean file's FIRST blocker. Ten of them were real and
+// were ported; one is owned elsewhere; two did not exist. The pinned set moved
+// from 309 to 327 of 330:
 //
-//   - a `ReservedWord` (`some`/`none`/`undef`) in CALL position
-//   - `meta.<field>` field access on the meta block
-//   - a member-level `Annotation` (`@annotation` inside a body)
-//   - `keyed_member_block`
-//   - `joint_definition`
-//   - `::` in EXPRESSION position (it is admitted in type position only)
-//   - `pp.Pulley` binding-qualified references — OWNED BY TASK #5495, which
-//     covers all three grammar surfaces. Do not duplicate that work here.
-//   - the `%` operator
-//   - two stackup files
-//   - arrow (function) types in a param annotation
-//   - `·` unit multiplication
-//   - three remaining one-offs
+//   `chain` demoted to `ekw<>`                 +2
+//   a `ReservedWord` in CALL position          +3
+//   the `%` operator                           +1
+//   `priv param`                               +1
+//   `auto` as a NAMED-ARGUMENT value           +1
+//   a member-level `Annotation`                +1
+//   `meta` demoted to `ekw<>`                  +2
+//   `::` in EXPRESSION position                +3
+//   `keyed_member_block`                       +2
+//   `joint_definition`                         +1
+//   `·` unit multiplication                    +1
+//                                             ────
+//                                              +18
 //
-// `variant_construction` has left this list: argument position is now admitted.
+// TWO OF THOSE CREDITS ARE THE LAST OF TWO CHANGES, not the only one, and the
+// column would mislead without saying so: integration_corner_cases.ri needed
+// BOTH `chain` and the `ReservedWord` callee, and integration_full_v01.ri
+// needed BOTH the callee and `meta`. Each file is credited to the change that
+// FINISHED it. A per-family delta cannot be additive when a file has two
+// blockers; naming the two is cheaper than implying they were independent.
+//
+// WHERE ROUND 3'S FORECAST WAS WRONG — three of its twelve entries, all three
+// found by measuring rather than by trusting the list, and all three now pinned
+// by tests above so the next round does not re-litigate them:
+//
+//   - "two stackup files" was not a list-literal gap. It was `chain`, which
+//     round 2 had promoted to a hard `kw<>`; that is context-free in Lezer, so
+//     `chain` stopped being a legal identifier in three committed files. A
+//     self-inflicted regression, and the cheapest fix in the round.
+//   - "three remaining one-offs" was two. Chained comparison `a < b < c < d`
+//     already parsed with zero errors in both binding and constraint position;
+//     integration_corner_cases.ri:131 is `let chain = …`, so its errors were
+//     the keyword above and :133-135 were cascade.
+//   - "arrow (function) types in a param annotation" was already reachable —
+//     `FunctionType` has been in the grammar all along.
+//
+// WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
+// corpus" is not a finding and "which three, and whose" is:
+//
+//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references,
+//   - stdlib_ns_qualified_type.ri  ) OWNED BY TASK #5495 (pending; verified at
+//     the time of writing). Its own file list already covers this grammar, the
+//     dedicated reifyGrammarQualifiedRef test, and both of these fixtures. Left
+//     deliberately: duplicating it here would collide with that task.
+//   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
+//     and `param` is not a top-level declaration in tree-sitter's
+//     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
+//     (crates/reify-syntax/src/ts_parser.rs:299). Admitting it here would make
+//     the editor accept what neither of those does — a third dialect. The
+//     fixture's own header declares it a deliberate FAIL probe. Both halves are
+//     pinned above: the member-position arrow type IS clean, and the top-level
+//     `param` MUST error.
+//
+// So the only inheritable work left in this ledger is #5495's, and it is
+// already assigned. A future round adding a family should extend the arithmetic
+// above rather than start a fresh block.
+//
+// AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
+// reasoning for every change above — why `ekw<>` and not `kw<>`, why the
+// callee and not the `ReservedWord` list, why `·` cannot escape `unitOp` —
+// lives on the productions themselves in reify.grammar. #5941 was amended
+// TWICE to stop this file restating them (`eb2394f2cd`, `05e5c50eac`); read
+// the grammar, not a second copy that drifts.
+//
+// `variant_construction` left round 3's inherited list before round 4 began:
+// argument position is now admitted.
 // The narrowing that remains is `primaryExpression` only, it is deliberate, and
 // the note on that production in reify.grammar prices it — see also the pin
 // above asserting that expression-position `Name { … }` must STILL error.
@@ -4298,7 +4350,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here — the ratchet #5950 turns next.
+// addition here. #5950 turned that ratchet to 327 of 330; the 327 entries below
+// are now exactly the clean set, so the next gain is #5495's two fixtures.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
