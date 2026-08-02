@@ -3226,6 +3226,44 @@ describe('reify.grammar snippets — a ReservedWord in call position', () => {
 });
 
 /**
+ * The `%` (modulo) operator — catch-up round 4, family 3.
+ *
+ * grammar.js:1363-1365 gives `*`, `/` and `%` the SAME `prec.left(6)`, so `%`
+ * joins the existing `multiplicative` band rather than getting one of its own.
+ * That is the whole change; the interesting part is proving the band is right.
+ */
+describe('reify.grammar snippets — the `%` operator', () => {
+  // Corpus-attested VERBATIM: examples/modulo_index_wrap.ri:13 and :17.
+  it('parses `raw_index % count`', () => {
+    expect(countErrorNodes('structure def S { let w = raw_index % count }')).toBe(0);
+  });
+
+  it('parses `raw_index % 2`', () => {
+    expect(countErrorNodes('structure def S { let p = raw_index % 2 }')).toBe(0);
+  });
+
+  /**
+   * THE PRECEDENCE PIN — the load-bearing assertion in this slice, because both
+   * groupings of `a % b * c` parse with an IDENTICAL node multiset. Neither an
+   * error count nor a node-name check can tell them apart; only the left
+   * operand of the outermost operator node can.
+   *
+   * If a future edit gives `%` its own node type instead of reusing `ArithOp`,
+   * that type MUST be added to `OPERATOR_NODES` in the same change — its
+   * docstring records the measured failure mode, where a missing type made
+   * `leftOperandOf` walk past the real root and return a confidently wrong
+   * answer rather than throw.
+   */
+  it('binds `%` in the same band as `*` (left-associative)', () => {
+    expect(leftOperandOf('structure def F { let x = a % b * c }')).toBe('a % b');
+  });
+
+  it('binds `%` tighter than `+`', () => {
+    expect(leftOperandOf('structure def F { let x = a + b % c }')).toBe('a');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
