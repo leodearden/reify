@@ -334,7 +334,7 @@ dimension MomentOfInertia = Mass * Length^2
 dimension SectionModulus = Length^3
 dimension SecondMomentOfArea = Length^4
 dimension Stiffness = Force / Length
-dimension RotationalStiffness = Torque / Angle
+dimension RotationalStiffness = Torque / Angle  // = N·m/rad^2 (Torque is N·m/rad; dividing by Angle again yields rad^-2, per #5799 esc-5799-1)
 dimension Viscosity = Pressure * Time
 dimension KinematicViscosity = Area / Time
 dimension Voltage = Power / Current
