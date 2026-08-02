@@ -937,14 +937,40 @@ MatchArm {
   MatchPattern "=>" expression
 }
 
-// grammar.js:1289-1293. The three arms are separated by one token of
-// lookahead after the leading Identifier: `{` opens a binding pattern, `|`
-// continues an or-pattern, `=>` ends a bare one.
+// grammar.js:1289-1293. `VariantBindingPattern` is separated from the other
+// two by one token of lookahead after the leading Identifier: `{` opens a
+// binding pattern, anything else (`|` or `=>`) does not. Within that "anything
+// else" branch, every `|`-separated slot — including a bare pattern with no
+// `|` at all — reduces through `matchPatternAtom`, so `_` reduces to
+// `WildcardPattern` in ANY slot of an or-pattern arm, not only when it is the
+// pattern's sole element. #5958; see `matchPatternAtom` below for why this is
+// a separate rule from the original direct `Identifier ("|" Identifier)*`
+// alternative, and the `WildcardPattern` note further down for the
+// `[@dynamicPrecedence=1]` marker that makes `_` actually pick the wildcard
+// reading over the plain-Identifier one.
 MatchPattern {
   VariantBindingPattern |
-  Identifier ("|" Identifier)* |
-  WildcardPattern
+  matchPatternAtom ("|" matchPatternAtom)*
 }
+
+// Lowercase, hence INLINED: no `MatchPatternAtom` node appears in the tree,
+// so `A | B` keeps its original shape (`MatchPattern > Identifier,
+// Identifier`) — only the alternatives available at each `|`-separated slot
+// change. #5958 introduced this wrapper specifically because, under the
+// pre-#5958 shape (`MatchPattern`'s own three-way choice — see the removed
+// `Identifier ("|" Identifier)* | WildcardPattern` alternatives above),
+// `WildcardPattern` was a sibling of the WHOLE or-pattern production, not of
+// one Identifier slot inside it: only a BARE `_` (no `|`) could reduce to it,
+// while `A | _` and `_ | A` matched the `Identifier ("|" Identifier)*`
+// alternative and silently reduced `_` to a plain `Identifier` — a
+// PRE-EXISTING divergence from the compiler's wildcard semantics that #5957
+// did not touch (#5957's scope was only "stop the editor grammar rejecting
+// legal source", not this). MEASURED: this restructure combined with the
+// existing `WildcardPattern[@dynamicPrecedence=1]` marker yields a
+// `WildcardPattern` node for `_` in EITHER slot of an or-pattern, in both the
+// `MatchExpression` and `MatchArmDeclBlock` forms, with 0 ERROR nodes and
+// zero build conflicts.
+matchPatternAtom { WildcardPattern | Identifier }
 
 // `_` already lexes as an `Identifier` (the token rule admits a leading
 // underscore), and it is an `ekw`-family `@extend` for the reason every
@@ -959,12 +985,10 @@ MatchPattern {
 // `@extend` ALONE, however, never yields the node. It disambiguates only when
 // the two readings occupy DIFFERENT grammar positions (`at`, `self`, `frame`
 // each have a keyword slot that no plain-identifier production also occupies).
-// Here both readings sit at the SAME position: `MatchPattern`'s plain-
-// Identifier alternative (`Identifier ("|" Identifier)*`) and
-// `WildcardPattern` are two direct alternatives of the same rule, so `_` is
-// equally valid as either the whole `WildcardPattern` reduction or a
-// one-Identifier `Identifier ("|" Identifier)*` reduction, with nothing left
-// to look ahead at (`=>` follows either way) — a genuine ambiguity that
+// Here both readings sit at the SAME position: `WildcardPattern` and
+// `Identifier` are the two direct alternatives of `matchPatternAtom` (see
+// above), so `_` is equally valid as either reduction, with nothing left to
+// look ahead at (`|` or `=>` follows either way) — a genuine ambiguity that
 // `@extend` resolved by silently falling back to the unextended `Identifier`
 // reading every time (MEASURED, #5957).
 //
@@ -972,33 +996,36 @@ MatchPattern {
 // ambiguous COMPLETE parses, so it is what breaks that tie — and it breaks it
 // ONLY where both readings are live, leaving `_` an ordinary Identifier
 // everywhere else. MEASURED for this variant: zero build conflicts, the node
-// produced in both the `MatchExpression` and `MatchArmDeclBlock` forms, and
-// zero ERROR nodes across all six legal-identifier positions pinned in
+// produced in both the `MatchExpression` and `MatchArmDeclBlock` forms — in
+// EVERY slot of an or-pattern arm as of #5958, not only a bare `_` — and zero
+// ERROR nodes across all legal-identifier positions pinned in
 // reifyGrammarCorpus.test.ts.
 //
 // The `@extend` carries NO `@name`, unlike every `ekw<>` above, and that is
 // load-bearing rather than an omission. `@name=WildcardPattern` would name the
 // TOKEN what the enclosing rule is already named, and both are visible in the
-// tree, so every wildcard arm came out as `MatchPattern > WildcardPattern >
-// WildcardPattern` — one node duplicated (MEASURED; the doubling was invisible
-// to the suite because `nodeNames(...).toContain(…)` is satisfied by either).
-// Dropping `@name` leaves the token anonymous and the rule the sole bearer of
-// the public name, so exactly ONE `WildcardPattern` node spans the `_`
-// (MEASURED; pinned by an explicit count assertion in the corpus test, not
+// tree, so every wildcard arm came out as `matchPatternAtom > WildcardPattern >
+// WildcardPattern` — one node duplicated (MEASURED, #5957; the doubling was
+// invisible to the suite because `nodeNames(...).toContain(…)` is satisfied by
+// either). Dropping `@name` leaves the token anonymous and the rule the sole
+// bearer of the public name, so exactly ONE `WildcardPattern` node spans the
+// `_` (MEASURED; pinned by an explicit count assertion in the corpus test, not
 // just by a `toContain`). A distinct token `@name` was tried too and is worse:
 // it emits a second, differently-named node instead of removing one.
 //
-// Three findings worth not re-deriving. Restructuring `MatchPattern` into
-// `matchPatternAtom ("|" matchPatternAtom)*` was tried as a fix on its own and
-// does NOT work: rule shape does not change the token-level fallback, so it
-// parses clean but yields no `WildcardPattern` node anywhere. The precedence
-// cannot be moved onto the token to collapse rule and token into one
-// construct: `@extend[@name=WildcardPattern, @dynamicPrecedence=1]<…>` is a
-// hard generator error, "Dynamic precedence can only be specified on
+// The precedence cannot be moved onto the token to collapse rule and token
+// into one construct: `@extend[@name=WildcardPattern, @dynamicPrecedence=1]<…>`
+// is a hard generator error, "Dynamic precedence can only be specified on
 // nonterminals" — hence a wrapping rule is REQUIRED here, and the anonymous
 // token is what keeps it from costing a duplicate node. And the syntax trap —
 // `@dynamicPrecedence` is a RULE PROP only; a top-level
 // `@dynamicPrecedence { … }` block is a hard parse error in the generator.
+//
+// MEASURED (#5958): the `matchPatternAtom` restructure ALONE, without this
+// marker, produces no `WildcardPattern` node anywhere — the marker is what
+// breaks the tie between `WildcardPattern` and `Identifier` at each atom
+// slot, so the two must land together. They already do here: this marker
+// rule is #5957's, unmodified by #5958.
 WildcardPattern[@dynamicPrecedence=1] {
   @extend<Identifier, "_">
 }

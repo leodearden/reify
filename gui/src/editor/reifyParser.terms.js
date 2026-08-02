@@ -43,7 +43,7 @@ export const
   MatchPattern = 72,
   VariantBindingPattern = 73,
   FieldBinding = 74,
-  WildcardPattern = 77,
+  WildcardPattern = 76,
   RangeExpression = 79,
   IndexAccess = 83,
   AdHocSelector = 85,
