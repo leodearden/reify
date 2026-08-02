@@ -445,17 +445,52 @@ mod tests {
         );
     }
 
-    /// Covers the empty-stdout → `None` branch: `crates/reify-test-support/src` is in
-    /// `EXCLUDE_CRATES` so the script exits 0 with no output. A flat `is_none()` assertion
-    /// is environment-safe — all four `None`-yielding branches converge on the same outcome.
+    /// Covers the empty-stdout → excluded-scope branch:
+    /// `crates/reify-test-support/src` is in `EXCLUDE_CRATES` so the script
+    /// exits 0 with no output.
+    ///
+    /// Post-5698 the four `None`-yielding branches no longer all converge on
+    /// the same outcome: `ExcludedScope` and `EnvUnavailable` still both
+    /// collapse to `None` through [`run_orphan_audit`] (pinned by the second
+    /// assertion below, which is what all 9 existing call sites' `else {
+    /// return; }`/`let Some(..) else` shape depends on) — but a wrong-tree or
+    /// otherwise-empty result for a scope NOT in `EXCLUDE_CRATES` now panics
+    /// instead (see `wrong_tree_with_real_scope_panics`). This test pins that
+    /// the excluded-scope outcome specifically stays NAMED (`ExcludedScope`),
+    /// not merely absent, by going through [`run_orphan_audit_detailed`]
+    /// first.
+    ///
+    /// RED at task 5698 step 3: `run_orphan_audit_detailed` does not exist
+    /// yet, so this module does not compile.
     #[test]
-    fn run_orphan_audit_on_excluded_crate_returns_none() {
-        let result = run_orphan_audit("crates/reify-test-support/src");
+    fn run_orphan_audit_on_excluded_crate_is_named_not_erased() {
+        match run_orphan_audit_detailed("crates/reify-test-support/src") {
+            OrphanAudit::ExcludedScope => {}
+            // Graceful-skip convention: missing python3/git/script/repo-root
+            // is environmentally legitimate and indistinguishable here from
+            // the excluded-scope case once collapsed through
+            // `run_orphan_audit`; skip rather than fail.
+            OrphanAudit::EnvUnavailable(reason) => {
+                eprintln!(
+                    "orphan_audit: skipping run_orphan_audit_on_excluded_crate_is_named_not_erased — {reason}"
+                );
+                return;
+            }
+            other => panic!(
+                "expected ExcludedScope for EXCLUDE_CRATES scope \
+                 \"crates/reify-test-support/src\" (or EnvUnavailable on a \
+                 tooling-less image) — any other outcome, especially a panic \
+                 from the empty-stdout hard-failure branch, means the \
+                 excluded-crate case regressed into the hard-failure path; \
+                 got: {other:?}"
+            ),
+        }
+
         assert!(
-            result.is_none(),
-            "expected None for EXCLUDE_CRATES scope `crates/reify-test-support/src` \
-             (the script emits empty stdout for excluded crates); got Some(_): {:#?}",
-            result
+            run_orphan_audit("crates/reify-test-support/src").is_none(),
+            "run_orphan_audit must still return None for an EXCLUDE_CRATES scope \
+             — all 9 existing call sites' `else {{ return; }}`/`let Some(..) else` \
+             shape depends on this backward-compatible collapse"
         );
     }
 
