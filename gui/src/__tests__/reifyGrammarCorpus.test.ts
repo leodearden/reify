@@ -74,6 +74,31 @@ function countNodesNamed(src: string, name: string): number {
 }
 
 /**
+ * Node type names of every node whose span is EXACTLY the first occurrence of
+ * `text` in `src`, outermost first — the discriminator for "what did this token
+ * reduce TO?".
+ *
+ * `countNodesNamed(src, 'X') === 0` answers only what a token is NOT, and stays
+ * green for every misparse that drops the token from the tree, absorbs it into
+ * its parent with no child of its own, or brings it back under a third name.
+ * Naming what actually spans the token separates those from the intended tree.
+ * MEASURED: `A | _` gives `['Identifier']`; bare `_ => …` gives
+ * `['MatchPattern', 'WildcardPattern']`. Throws rather than returning `[]` when
+ * `text` is absent, so a typo'd needle fails loudly instead of vacuously.
+ */
+function nodeNamesSpanning(src: string, text: string): string[] {
+  const from = src.indexOf(text);
+  if (from < 0) throw new Error(`no ${JSON.stringify(text)} in: ${src}`);
+  const to = from + text.length;
+  const cursor = parser.parse(src).cursor();
+  const names: string[] = [];
+  do {
+    if (cursor.from === from && cursor.to === to) names.push(cursor.type.name);
+  } while (cursor.next());
+  return names;
+}
+
+/**
  * Source text SPANNED by the first node named `name` — the discriminator for
  * "was this token absorbed into that node, or left beside it?".
  *
@@ -2026,21 +2051,39 @@ describe('reify.grammar snippets — `_` stays a legal ordinary identifier', () 
   });
 
   /**
-   * The two or-pattern arms. `MatchPattern`'s or-pattern alternative is
-   * literally `Identifier ("|" Identifier)*`, so `_` has to remain readable as
-   * an `Identifier` for these to parse at all — they are the positions where
-   * the wildcard reading and the identifier reading sit closest together.
-   * Only zero-error parsing is pinned here; which node `_` reduces to inside
-   * an or-pattern is not asserted, because the or-pattern alternative admits
-   * only `Identifier` today and changing that is a separate change to
-   * `MatchPattern`'s shape.
+   * The two or-pattern arms. CONTRACT PINNED: `_` in an OR-SLOT reduces to an
+   * ordinary `Identifier`, never a `WildcardPattern` — the faithful reading of
+   * the authoritative grammar and lowering, not a gap. #5958 first tried to
+   * "fix" it into a `WildcardPattern` and had to be reverted; WHY, with the
+   * grammar.js / ts_parser.rs citations and the measured compiler behaviour,
+   * is in the `DO NOT "FIX" ...` note on `MatchPattern` in reify.grammar, next
+   * to the rule where the tempting change gets typed. Not restated here.
+   *
+   * MEASURED for THIS form (`reify eval`, this branch):
+   *   - `match k { A | _ => 1mm }`
+   *       -> `error: non-exhaustive match on 'Kind': missing variant(s) B, C`
+   *     `_` did NOT act as a catch-all.
+   *   - `match k { _ | A => 1mm }` -> `Parse error: syntax error`.
+   *     The compiler rejects this source outright, so the zero-ERROR pin below
+   *     is deliberate EDITOR LENIENCY, explicitly not compiler parity.
+   *
+   * Both halves are asserted: `WildcardPattern` count 0 (what `_` must NOT be)
+   * plus the node actually spanning `_` (what it must BE). The count alone
+   * would stay green if `_` left the tree entirely or came back under a third
+   * name — the same class of hole `countNodesNamed` was added (#5957) to close.
    */
   it('accepts `_` as the trailing element of an or-pattern', () => {
-    expect(countErrorNodes('structure def F { let a = match p { A | _ => 1mm } }')).toBe(0);
+    const src = 'structure def F { let a = match p { A | _ => 1mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'WildcardPattern')).toBe(0);
+    expect(nodeNamesSpanning(src, '_')).toEqual(['Identifier']);
   });
 
   it('accepts `_` as the leading element of an or-pattern', () => {
-    expect(countErrorNodes('structure def F { let a = match p { _ | A => 1mm } }')).toBe(0);
+    const src = 'structure def F { let a = match p { _ | A => 1mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'WildcardPattern')).toBe(0);
+    expect(nodeNamesSpanning(src, '_')).toEqual(['Identifier']);
   });
 });
 
@@ -3073,6 +3116,39 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
     const src = 'structure def F { match kind { Hex | Button => sub head : RecessedHead } }';
     expect(countErrorNodes(src)).toBe(0);
     expect(nodeNames(src)).toContain('MatchArmDeclBlock');
+  });
+
+  /**
+   * The or-pattern arm carrying `_`, in both slot positions. `match_arm_decl_arm`
+   * reuses `$.match_pattern` verbatim (grammar.js:1330-1334), exactly as the
+   * plain or-pattern case above does, so this form inherits the SAME contract —
+   * `_` in an or-slot is an ordinary `Identifier`, not a wildcard. Why that is
+   * the faithful reading, and why #5958's attempt to change it was reverted, is
+   * in the `DO NOT "FIX" ...` note on `MatchPattern` in reify.grammar; not
+   * restated here.
+   *
+   * MEASURED for THIS form (`reify eval`, this branch) — the diagnostics differ
+   * from the expression form's, which is why they are recorded separately:
+   *   - `match kind { Hex | _ => sub head : DefaultHead }`
+   *       -> `error: match-arm pattern '_' is not a variant of enum 'Kind'`
+   *   - `match kind { _ | Hex => sub head : DefaultHead }`
+   *       -> `Parse error: syntax error`
+   *
+   * As in the expression form, the `_ | Hex` zero-ERROR pin is deliberate
+   * EDITOR LENIENCY, not compiler parity, and both halves of the node contract
+   * are asserted — count 0 for what `_` must not be, plus the node spanning `_`
+   * for what it must be.
+   */
+  it('accepts an or-pattern arm carrying `_`, which stays an Identifier', () => {
+    const trailing = 'structure def F { match kind { Hex | _ => sub head : DefaultHead } }';
+    expect(countErrorNodes(trailing)).toBe(0);
+    expect(countNodesNamed(trailing, 'WildcardPattern')).toBe(0);
+    expect(nodeNamesSpanning(trailing, '_')).toEqual(['Identifier']);
+
+    const leading = 'structure def F { match kind { _ | Hex => sub head : DefaultHead } }';
+    expect(countErrorNodes(leading)).toBe(0);
+    expect(countNodesNamed(leading, 'WildcardPattern')).toBe(0);
+    expect(nodeNamesSpanning(leading, '_')).toEqual(['Identifier']);
   });
 
   /**
