@@ -957,12 +957,54 @@ impl<'a> GeometryConstraintSink<'a> {
     /// `ConstraintNodeId::new`), so a caller can build a label that is unique
     /// within the entity and stable for a given source without duplicating the
     /// index bookkeeping.
+    ///
+    /// **Idempotent per (span, predicate).** The lowering re-inlines a geometry
+    /// let's initializer at EVERY reference of its name in geometry-argument
+    /// position (`compile_geometry_call_inner`, reached from
+    /// `resolve_boolean_arg`), so one source-level call re-runs its arm — and
+    /// would re-push a byte-identical constraint — once per reuse. Deduplicating
+    /// here rather than at any individual arm means `push` is the single
+    /// chokepoint every synthesized geometry constraint passes through, so a
+    /// future geometry-lowering arm inherits the fix instead of re-discovering
+    /// the duplication.
+    ///
+    /// Both halves of the key are load-bearing, and each guards a different
+    /// failure:
+    ///
+    /// - **span** distinguishes two genuinely distinct source calls. Two
+    ///   `rounded_box` calls with character-for-character identical arguments
+    ///   produce structurally identical predicates — the SAME `content_hash` —
+    ///   so a content-only key would collapse them into one and silently drop a
+    ///   real check on the second call.
+    /// - **content_hash** keeps the key honest if a future change ever lets one
+    ///   span produce structurally different predicates.
+    ///
+    /// Deduplicating is the right shape rather than suppressing emission on the
+    /// re-inline path: a *guarded* geometry let emits no realization of its own
+    /// (entity.rs's third-pass `GuardedGroup` arm documents that as a separate,
+    /// unimplemented feature) while `collect_geometry_exprs` does recurse into
+    /// guarded groups when building the re-inline map — so for that shape the
+    /// re-inline is the ONLY emission path, and muting it would drop the
+    /// constraint entirely.
+    ///
+    /// On a skip `next_index` is NOT bumped, so indices stay contiguous and
+    /// labels stay stable for a given source.
+    ///
+    /// An `any` scan is enough: this is only reached on the synthesized-geometry
+    /// -constraint path, at a handful of constraints per entity.
     pub(crate) fn push(
         &mut self,
         label_for: impl FnOnce(u32) -> String,
         expr: CompiledExpr,
         span: reify_core::SourceSpan,
     ) {
+        if self
+            .constraints
+            .iter()
+            .any(|c| c.span == span && c.expr.content_hash == expr.content_hash)
+        {
+            return;
+        }
         let idx = *self.next_index;
         self.constraints.push(CompiledConstraint {
             id: ConstraintNodeId::new(self.entity_name, idx),
@@ -1001,6 +1043,14 @@ impl<'a> GeometryConstraintSink<'a> {
 /// build, it only flips the CLI exit code — so also emitting a runtime
 /// constraint there would add nothing but noise to `reify check` output and an
 /// extra term in the solver's objective.
+///
+/// One source-level call yields exactly one constraint, but that is NOT because
+/// this function runs once per call — it runs again for every reuse of the
+/// enclosing geometry let, since `compile_geometry_call_inner` re-inlines a
+/// let's initializer at each reference of its name in geometry-argument
+/// position. What makes it one is `GeometryConstraintSink::push` being
+/// idempotent per `(span, predicate content_hash)`; see its doc for why the
+/// dedup lives there and why both halves of that key are required.
 fn validate_rounded_corner_constraint(
     name: &str,
     width: &CompiledExpr,
