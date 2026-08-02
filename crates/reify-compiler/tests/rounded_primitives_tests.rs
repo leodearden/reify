@@ -1134,3 +1134,136 @@ fn multiple_param_driven_rounded_calls_get_distinct_self_identifying_labels() {
         "the rounded_box call must name its constructor, got: {labels:?}"
     );
 }
+
+/// The corner-radius labels of a compiled `structure def S`, in emission order.
+fn corner_labels(compiled: &reify_compiler::CompiledModule) -> Vec<String> {
+    template_s(compiled)
+        .constraints
+        .iter()
+        .map(|c| {
+            c.label
+                .as_deref()
+                .expect("a synthesized constraint must carry a label")
+                .to_string()
+        })
+        .collect()
+}
+
+/// ONE source-level rounded-corner call must synthesize exactly ONE constraint,
+/// however many times its geometry let is later reused.
+///
+/// `compile_geometry_call_inner` re-inlines a geometry let's initializer on
+/// EVERY reference of its name in geometry-argument position (reached from
+/// `resolve_boolean_arg`), threading the sink through with `reborrow()` — so
+/// without a guard each re-inline re-runs the rounded-corner arm and pushes
+/// another byte-identical copy, growing N+1 with the number of reuses.
+///
+/// Two designer-visible symptoms, both wrong: an oversized `corner_r` reports
+/// several Violated constraints carrying several different indices for a single
+/// offending call (so the label's index actively misleads about WHICH call is
+/// at fault), and the solver sees the same predicate's residual several times
+/// over, over-weighting that one piece of geometry.
+///
+/// RED before the dedup lands: 2 for one reuse, 4 for the deeper chain.
+#[test]
+fn geometry_let_reused_as_boolean_arg_emits_one_constraint() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let cut = difference(plate, box(10mm, 10mm, 10mm))
+}"#;
+    let compiled = compile_no_errors(source);
+    assert_eq!(
+        corner_labels(&compiled),
+        vec!["rounded_box_corner_r_valid_0"],
+        "one rounded_box call reused as a boolean arg must synthesize exactly \
+         one constraint, got: {:#?}",
+        template_s(&compiled).constraints
+    );
+
+    // A deeper reuse chain: `plate` is consumed twice more. A one-shot flag on
+    // the arm would not be enough — the growth is per-reuse, so this must pin
+    // 1 as well, not merely "fewer than before".
+    let source_chain = r#"structure def S {
+    param corner_r: Length = 5mm
+    let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let a = difference(plate, box(10mm, 10mm, 10mm))
+    let b = union(a, plate)
+}"#;
+    let compiled_chain = compile_no_errors(source_chain);
+    assert_eq!(
+        corner_labels(&compiled_chain),
+        vec!["rounded_box_corner_r_valid_0"],
+        "reusing the same geometry let three times must still synthesize one \
+         constraint, got: {:#?}",
+        template_s(&compiled_chain).constraints
+    );
+}
+
+/// NEGATIVE HALF — two genuinely DISTINCT source calls must keep their two
+/// constraints even when their argument text is character-for-character
+/// identical.
+///
+/// This guards against an over-broad dedup. The two calls below carry DIFFERENT
+/// spans but the SAME `expr.content_hash` — the predicates really are
+/// structurally identical — so a dedup keyed on content alone would silently
+/// collapse them into one and drop a real check on the second call.
+///
+/// Passes today; must keep passing.
+#[test]
+fn distinct_rounded_calls_with_identical_args_keep_separate_constraints() {
+    let source = r#"structure def S {
+    param corner_r: Length = 5mm
+    let a = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let b = rounded_box(40mm, 30mm, 20mm, corner_r)
+}"#;
+    let compiled = compile_no_errors(source);
+    let labels = corner_labels(&compiled);
+    assert_eq!(
+        labels.len(),
+        2,
+        "two distinct source calls each need their own constraint even with \
+         identical argument text, got: {:#?}",
+        template_s(&compiled).constraints
+    );
+    let unique: std::collections::HashSet<&str> =
+        labels.iter().map(String::as_str).collect();
+    assert_eq!(
+        unique.len(),
+        2,
+        "the two constraints must stay distinguishable by label, got: {labels:?}"
+    );
+}
+
+/// NEGATIVE HALF — a rounded-corner call inside a GUARDED geometry let must
+/// still get its constraint, which is why the re-inline path must be
+/// deduplicated rather than muted.
+///
+/// A guarded geometry let emits NO realization of its own (entity.rs's
+/// third-pass `GuardedGroup` arm documents that as a separate, unimplemented
+/// feature) while `collect_geometry_exprs` DOES recurse into guarded groups when
+/// building the re-inline map. So for this shape the re-inline is the ONLY
+/// emission path: suppressing it would drop the constraint entirely and
+/// reintroduce exactly the silent skip task #5665 exists to remove.
+///
+/// Passes today; must keep passing.
+#[test]
+fn guarded_geometry_let_reused_as_boolean_arg_still_emits_one_constraint() {
+    let source = r#"structure def S {
+    param active: Bool = true
+    param corner_r: Length = 5mm
+    where active {
+        let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    }
+    let cut = difference(plate, box(10mm, 10mm, 10mm))
+}"#;
+    let compiled = compile_no_errors(source);
+    assert_eq!(
+        corner_labels(&compiled),
+        vec!["rounded_box_corner_r_valid_0"],
+        "a guarded rounded_box let reaches the sink only via the re-inline \
+         path — it must emit exactly one constraint, not zero and not two, \
+         got: {:#?}",
+        template_s(&compiled).constraints
+    );
+}

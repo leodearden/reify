@@ -142,3 +142,32 @@ fn rounded_box_violation_message_names_the_constructor_and_arg() {
         result.diagnostics
     );
 }
+
+/// One offending call must report ONE violation, however many times its
+/// geometry let is reused.
+///
+/// The compiler re-inlines a geometry let's initializer at every reference of
+/// its name in geometry-argument position, so without a guard the same
+/// rounded-corner predicate is synthesized once per reuse. The designer then
+/// sees several Violated constraints, each carrying a DIFFERENT index, for a
+/// single wrong call — so the index, which exists precisely to say which call
+/// is at fault, actively misleads.
+///
+/// RED before the dedup lands: two Violated corner constraints, not one.
+#[test]
+fn reused_geometry_let_reports_a_single_violation() {
+    let source = r#"structure def S {
+    param corner_r: Length = 25mm
+    let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
+    let cut = difference(plate, box(10mm, 10mm, 10mm))
+}"#;
+    // `corner_constraint` itself asserts there is exactly ONE corner-radius
+    // constraint, which is the half under test here; the verdict confirms it is
+    // still the violation that 2*0.025 = 0.05 ≥ min(0.04, 0.03) demands.
+    assert_eq!(
+        corner_constraint(source),
+        Satisfaction::Violated,
+        "a reused geometry let must report exactly one Violated corner-radius \
+         constraint for its one offending call"
+    );
+}
