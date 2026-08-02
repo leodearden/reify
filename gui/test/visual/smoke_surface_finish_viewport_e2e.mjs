@@ -76,15 +76,9 @@ function fail(msg) {
 
 // The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
 // (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
-// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
-// in-band shape `{error: "<msg>"}`: frontend-mediated tools (viewport_state, ...
-// via query_frontend) already answer in-band that way, and Rust-dispatched
-// `isError: true` + plain-text `Error: <msg>` blocks are folded into it. The
-// `typeof vpState !== 'object'` guard below — this file's own idiom, and the
-// in-repo precedent the sibling drivers were hardened to — already handled the
-// bare-string case, so only the payload this driver prints changes. A top-level
-// envelope error is a TRANSPORT failure and still throws, so waitForServer keeps
-// polling.
+// can never run in CI. `rpc()` folds both failure dialects into one §2a shape —
+// see ./rpcEnvelope.mjs for the fold, and ./smokeDriverGuards.mjs
+// (describeRpcFailure) for what a driver does with the decoded payload.
 const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
@@ -141,9 +135,8 @@ async function main() {
 
   log('Collecting viewport_state for B9 material-state probes…');
   const vpState = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!vpState || typeof vpState !== 'object' || 'error' in vpState) {
-    fail(`viewport_state('design-main') failed: ${JSON.stringify(vpState)}`);
-  }
+  const vpStateFailure = describeRpcFailure(vpState, "viewport_state('design-main')");
+  if (vpStateFailure) fail(vpStateFailure);
 
   const meshInfo = vpState.meshInfo ?? [];
   console.log('  meshInfo count:', meshInfo.length);

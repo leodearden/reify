@@ -76,13 +76,9 @@ function fail(msg) {
 
 // The tools/call request shape and the envelope decode live in rpcEnvelope.mjs
 // (CI-covered by rpcEnvelope.test.ts) rather than inline here, because this file
-// can never run in CI. `rpc()` now reports BOTH failure dialects as the ONE
-// in-band shape `{error: "<msg>"}`: frontend-mediated tools (open_file,
-// viewport_state, ... via query_frontend) already answer in-band that way, and
-// Rust-dispatched `isError: true` + plain-text `Error: <msg>` blocks are folded
-// into it. Previously the latter surfaced as a bare string, so the `'error' in x`
-// guards below threw a TypeError instead of failing cleanly. A top-level envelope
-// error is a TRANSPORT failure and still throws, so waitForServer keeps polling.
+// can never run in CI. `rpc()` folds both failure dialects into one §2a shape —
+// see ./rpcEnvelope.mjs for the fold, and ./smokeDriverGuards.mjs
+// (describeRpcFailure) for what a driver does with the decoded payload.
 const rpc = makeDebugRpc(DEBUG_URL);
 
 function sleep(ms) {
@@ -139,9 +135,8 @@ async function main() {
 
   log('Collecting viewport_state for material-state probe…');
   const vpState = await rpc('viewport_state', { viewportId: 'design-main' });
-  if (!vpState || typeof vpState !== 'object' || 'error' in vpState) {
-    fail(`viewport_state('design-main') failed: ${JSON.stringify(vpState)}`);
-  }
+  const vpStateFailure = describeRpcFailure(vpState, "viewport_state('design-main')");
+  if (vpStateFailure) fail(vpStateFailure);
 
   const meshInfo = vpState.meshInfo ?? [];
   console.log('  meshInfo count:', meshInfo.length);
@@ -276,7 +271,8 @@ async function main() {
     const clearResult = await rpc('set_display_appearance', { overrides: {} });
     console.log('  set_display_appearance({}) result:', JSON.stringify(clearResult));
 
-    if (clearResult && typeof clearResult === 'object' && !('error' in clearResult)) {
+    const clearFailure = describeRpcFailure(clearResult, 'set_display_appearance');
+    if (!clearFailure) {
       // Short settle for reactive update.
       await sleep(200);
 
@@ -307,7 +303,7 @@ async function main() {
         console.log('  WARN B6: could not find steel mesh material probe after clear');
       }
     } else {
-      console.log('  SKIP B6: set_display_appearance returned error or null (command not available); covered by meshManager vitest');
+      console.log(`  SKIP B6: ${clearFailure} (best-effort; covered by meshManager vitest)`);
     }
   } catch (e) {
     console.log(`  SKIP B6: set_display_appearance threw (OK — best-effort only): ${e.message}`);
