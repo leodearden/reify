@@ -4149,6 +4149,8 @@ const EXPECTED_CLEAN = [
   'examples/kernel_queries/length_perimeter.ri',
   'examples/kernel_queries/moment_of_inertia_box.ri',
   'examples/kernel_queries/normal_smoke.ri',
+  'examples/keyed_forall.ri',
+  'examples/keyed_vents.ri',
   'examples/kinematic/counter_mass_balance.ri',
   'examples/kinematic/dock_pickup.ri',
   'examples/kinematic/four_bar_singular.ri',

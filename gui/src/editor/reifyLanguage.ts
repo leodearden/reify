@@ -10,7 +10,9 @@ import { parser } from './reifyParser.js';
  * `SpecializationBody` additionally admits `ParamAssignment` (:900-920);
  * `PortBody` admits a narrower member list plus the two settings (:970-980);
  * `ConnectBody` is comma-separated (:1006-1013); `ImportItems` is the
- * destructured import's `{A, B}`.
+ * destructured import's `{A, B}`; `KeyedMemberBlock` is the keyed sub's
+ * `{ "key" => { … } }` (:906-912), the sibling `SpecializationBody` parts from
+ * on the first token after the brace.
  */
 export const BRACE_FIRST_BODIES = [
   'Block',
@@ -19,6 +21,7 @@ export const BRACE_FIRST_BODIES = [
   'PortBody',
   'ConnectBody',
   'ImportItems',
+  'KeyedMemberBlock',
 ];
 
 /**

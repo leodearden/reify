@@ -650,7 +650,7 @@ RelationMember {
 SubDeclaration {
   kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
     "=" Identifier ("<" TypeArgList ">")? ArgList ~where WhereClause? |
-    ":" (ParameterizedType | Identifier) ~where WhereClause? SpecializationBody?
+    ":" (ParameterizedType | Identifier) ~where WhereClause? subBody?
   ) PoseClause?
 }
 
@@ -666,6 +666,52 @@ SpecializationBody {
 // from a bare `Identifier`.
 ParamAssignment {
   Identifier "=" bindingValue
+}
+
+// The `:` arm's body slot, as a NAMED rule rather than an inline
+// `(SpecializationBody | KeyedMemberBlock)?`. Both spellings generate the same
+// language, but MEASURED: the inline form pushed `SubDeclaration` to 128
+// expansions and tripped lezer-generator's "generating a lot of choices"
+// advisory, because the arm's optionals multiply out. Naming the choice keeps
+// the rule under the threshold. Lowercase, so it does not appear in the tree —
+// `SpecializationBody`/`KeyedMemberBlock` stay the nodes the corpus test pins.
+subBody {
+  SpecializationBody | KeyedMemberBlock
+}
+
+// ── Keyed sub-member block ──────────────────────────────
+// grammar.js:906-939 — `sub vents : Keyed<Vent> { "intake" => { area = 5mm } }`
+// (examples/keyed_vents.ri:27-30, examples/keyed_forall.ri:18-21).
+//
+// UPSTREAM'S DISAMBIGUATION IS TRANSLITERATED, NOT RE-DERIVED. Both block forms
+// open with `{`, and grammar.js:915-923 records exactly what parts them: this
+// production requires at least ONE entry (`+`, upstream's `repeat1`) while
+// `SpecializationBody` takes zero-or-more, so an empty `{}` is unambiguously a
+// specialization body; when non-empty, the first token after `{` decides — a
+// `String` selects this block, an identifier or member keyword the other. Both
+// readings are corpus-attested, so the corpus test pins BOTH rather than only
+// the new one.
+//
+// MEASURED: lezer-generator reports zero conflicts, so no `~` ambiguity marker
+// and no precedence level was needed — the one-token lookahead above is enough
+// for LR(1) as it stands. `=>` is already a token (`MapEntry`, `MatchArm`), so
+// no new token or `@precedence` entry was needed either.
+//
+// SCOPE, matching upstream's own note (grammar.js:925-929): the keyed block is
+// accepted after ANY `structure_name<…>`, not only after `Keyed<…>`. Confining
+// it to the Keyed collection kind is a resolution concern, and narrowing it
+// here would make the GUI reject what the compiler accepts-then-diagnoses.
+KeyedMemberBlock {
+  "{" KeyedMemberEntry+ "}"
+}
+
+// The overrides slot reuses `SpecializationBody` VERBATIM rather than cloning
+// it — upstream's stated contract (grammar.js:931-934): override blocks inside
+// a keyed sub "parse identically to a standalone specialization-scope body".
+// The corpus test asserts the reuse on a node COUNT, since a cloned production
+// would satisfy an error count and silently fork the two.
+KeyedMemberEntry {
+  String "=>" SpecializationBody
 }
 
 // Trailing pose: `at auto`, `at transform3(...)`. Last on every arm, matching
