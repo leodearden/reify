@@ -2958,14 +2958,24 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
    * existed. Asserted here in the shape the grammar actually delivers rather
    * than the shape its comment implies, so the divergence is recorded instead
    * of masked by a weaker test.
+   *
+   * THE NEGATIVE HALF IS A DATED PIN, NOT A CONTRACT. It records today's
+   * behaviour so the divergence cannot be reintroduced silently after being
+   * fixed elsewhere — but the fix is OWNED BY #5957, and when that lands `_`
+   * will yield a `WildcardPattern` here and this line is EXPECTED TO BE
+   * DELETED. Both the test name and the assertion message say so, so a red here
+   * reads as "the pin outlived its subject", not as a regression in this slice.
    */
-  it('accepts a wildcard arm (which reduces to Identifier, not WildcardPattern)', () => {
+  it('accepts a wildcard arm (which reduces to Identifier, not WildcardPattern — until #5957)', () => {
     const src = 'structure def F { match kind { _ => sub head : DefaultHead } }';
     expect(countErrorNodes(src)).toBe(0);
     const names = nodeNames(src);
     expect(names).toContain('MatchArmDeclBlock');
     expect(names).toContain('MatchPattern');
-    expect(names).not.toContain('WildcardPattern');
+    expect(
+      names,
+      'dated pin on the pre-existing MatchPattern divergence — #5957 owns the fix, and this assertion is expected to be deleted by it rather than worked around',
+    ).not.toContain('WildcardPattern');
   });
 
   it('accepts a variant-binding-pattern arm', () => {
