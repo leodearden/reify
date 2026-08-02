@@ -2469,6 +2469,178 @@ describe('reify.grammar snippets — relate blocks', () => {
 });
 
 /**
+ * `constraint def` — grammar.js:400-420, a top-level DECLARATION (not a member).
+ *
+ * Six committed files use it; only examples/m9_constraint_def.ri and
+ * examples/m9_integration.ri turn clean on this family alone. The other four
+ * each keep a second, out-of-scope blocker (`some(u)`, `meta.material`,
+ * `meta.project`, a member-level `@annotation`), so their error counts drop but
+ * they stay off EXPECTED_CLEAN — see the MEASUREMENT block above it.
+ *
+ * THE SHAPE THAT MAKES THIS FAMILY HARD. The body mixes items that carry an
+ * OPTIONAL TAIL (`ParamDeclaration`, `LetDeclaration`, `Pragma`) with a
+ * BARE-EXPRESSION `ConstraintDefPredicate`, and the tail's opening token is
+ * exactly the token the next predicate could open with:
+ *
+ *   - `Pragma -> "#" Identifier · "("`      vs a predicate starting `(a > b)`
+ *   - `ParameterizedType -> Identifier · "<"` vs a predicate starting `<10mm`
+ *   - `AutoKeyword -> auto · "("`           vs a predicate starting `(…)`
+ *
+ * All three are resolved by a single tightest precedence level, `itemStart`,
+ * accepting greedy shift. The five assertions at the bottom of this slice pin
+ * the readings that greedy shift PRESERVES; each is asserted on node NAMES
+ * rather than on an error count, because a precedence change reshapes a tree
+ * silently and both readings parse clean.
+ */
+describe('reify.grammar snippets — constraint def', () => {
+  // Corpus-attested verbatim: examples/m9_constraint_def.ri:18-21.
+  it('parses a single-predicate constraint def', () => {
+    const src = 'constraint def MinThickness {\n    param t: Length\n    t > 1mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ConstraintDefinition');
+    expect(names).toContain('ConstraintDefPredicate');
+  });
+
+  /**
+   * Corpus-attested verbatim: examples/m9_constraint_def.ri:25-31. The case a
+   * single-predicate body cannot cover — CONSECUTIVE bare predicates with no
+   * separator between them, and params preceding them in the same repeat.
+   */
+  it('parses a multi-param, multi-predicate constraint def with no separators', () => {
+    const src =
+      'constraint def Bounded {\n' +
+      '    param x: Length\n' +
+      '    param lo: Length\n' +
+      '    param hi: Length\n' +
+      '    x >= lo\n' +
+      '    x <= hi\n' +
+      '}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ConstraintDefinition');
+    expect(names).toContain('ConstraintDefPredicate');
+  });
+
+  /**
+   * Corpus-attested verbatim: examples/integration_corner_cases.ri:57-59. The
+   * predicate repeat is zero-or-more, so a body of params alone is legal —
+   * the case that would break if the body were written `params* predicates+`.
+   */
+  it('parses the vacuous form with zero predicates', () => {
+    const src = 'constraint def Vacuous {\n    param v : Length\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ConstraintDefinition');
+    expect(names).not.toContain('ConstraintDefPredicate');
+  });
+
+  // Corpus-attested verbatim: examples/m9_constraint_def.ri:44-47.
+  it('parses a `pub constraint def` header', () => {
+    const src = 'pub constraint def Positive {\n    param v: Length\n    v > 0mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('ConstraintDefinition');
+  });
+
+  /**
+   * Normative, unattested. Upstream admits `let` in the body alongside `param`
+   * (grammar.js:411-416); no committed file uses it, but the item is in the
+   * same repeat as the predicates, so it shares their conflict shape and is
+   * pinned rather than dropped.
+   */
+  it('parses a `let` body item beside a predicate (normative, unattested)', () => {
+    const src = 'constraint def Derived {\n    param t: Length\n    let m = t * 2\n    m > 1mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('LetDeclaration');
+    expect(names).toContain('ConstraintDefPredicate');
+  });
+
+  // Normative, unattested — the header reuses the same TypeParameters
+  // production the structure/trait/enum headers do, so it comes free.
+  it('parses type parameters on the header (normative, unattested)', () => {
+    const src = 'constraint def C<T> {\n    param v: T\n    v > 0mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ConstraintDefinition');
+    expect(names).toContain('TypeParameters');
+  });
+
+  /**
+   * THE DISCRIMINATION PIN. Member-level `constraint <expr>` and top-level
+   * `constraint def <Name>` share their first token, and the wrong reading of
+   * either would be error-free. Position settles it — `Member` is unreachable
+   * from the top level and `Declaration` from inside a body — but that is a
+   * property of the grammar's shape, not of a marker, so it is asserted.
+   */
+  it('still reads member-level `constraint` as a ConstraintDeclaration', () => {
+    const src = 'structure def F { param t : Length = 2mm  constraint t > 1mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ConstraintDeclaration');
+    expect(names).not.toContain('ConstraintDefinition');
+  });
+
+  /**
+   * ── The `itemStart` regression pins ───────────────────────────────────────
+   *
+   * Each of the five below is a reading greedy shift PRESERVES, asserted
+   * INSIDE a constraint-def body because that is the state where the conflict
+   * actually lives. All are attested at declaration or member level elsewhere
+   * in the corpus; what greedy shift sacrifices is only the mirror-image
+   * reading — a predicate whose first token is `<` or `(` on the line directly
+   * after a param/let/pragma item — which is attested in none of the 330
+   * committed files.
+   */
+  it('keeps `Box<T>` a ParameterizedType inside a constraint-def body', () => {
+    const src = 'constraint def C {\n    param b : Box<T>\n    b > 1mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('ParameterizedType');
+  });
+
+  it('keeps the multi-arg `Tensor<2, 3, Force>` a ParameterizedType there too', () => {
+    const src = 'constraint def C {\n    param t : Tensor<2, 3, Force>\n    t > 1mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('ParameterizedType');
+  });
+
+  it('keeps `auto(free)` and `auto(seed = 5mm)` AutoKeywords there', () => {
+    const free = 'constraint def C {\n    param x : Length = auto(free)\n    x > 1mm\n}';
+    expect(countErrorNodes(free)).toBe(0);
+    expect(nodeNames(free)).toContain('AutoKeyword');
+
+    const seeded = 'constraint def C {\n    param x : Length = auto(seed = 5mm)\n    x > 1mm\n}';
+    expect(countErrorNodes(seeded)).toBe(0);
+    const names = nodeNames(seeded);
+    expect(names).toContain('AutoKeyword');
+    expect(names).toContain('AutoParam');
+  });
+
+  it('keeps a parenthesised pragma arg list attached to its Pragma', () => {
+    const src = 'constraint def C {\n    #pragma_name(a = 1)\n    x > 1mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('Pragma');
+    expect(names).toContain('PragmaArg');
+  });
+
+  /**
+   * The other half of the pragma pin, and the one greedy shift could quietly
+   * swallow: a BARE `#pragma_name` whose following item does NOT open with
+   * `(`. The pragma must end at its identifier and the predicate must be its
+   * own node — two items, not one pragma with an argument list.
+   */
+  it('ends a bare pragma at its identifier when the next item is a predicate', () => {
+    const src = 'constraint def C {\n    #pragma_name\n    x > 1mm\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('Pragma');
+    expect(names).toContain('ConstraintDefPredicate');
+    expect(names).not.toContain('PragmaArg');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
