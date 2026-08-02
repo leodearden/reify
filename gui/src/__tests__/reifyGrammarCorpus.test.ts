@@ -3306,6 +3306,60 @@ describe('reify.grammar snippets — `priv` on a param declaration', () => {
 });
 
 /**
+ * `auto` as a NAMED-ARGUMENT value — catch-up round 4, family 5.
+ *
+ * grammar.js:1042-1046 makes `named_argument`'s value field `$._binding_value`,
+ * which this port already transliterates as `bindingValue`
+ * (`AutoKeyword | VariantConstruction | expression`). `NamedArgument` was
+ * spelling its own narrower `(VariantConstruction | expression)`, which reaches
+ * every arm EXCEPT `AutoKeyword`.
+ */
+describe('reify.grammar snippets — `auto` as a named-argument value', () => {
+  // Corpus-attested VERBATIM: examples/auto_binding_sites.ri:94.
+  it('parses `sub bolt = Bolt(length: auto)`', () => {
+    const src = 'structure def S { sub bolt = Bolt(length: auto) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('NamedArgument');
+    expect(names).toContain('AutoKeyword');
+  });
+
+  /**
+   * The parameterised arms come WITH it — `bindingValue` reaches all three
+   * `AutoKeyword` forms, not just the bare one, so both are pinned rather than
+   * assumed.
+   */
+  it('parses the parameterised `auto` arms in the same slot', () => {
+    for (const value of ['auto(free)', 'auto(seed = 5mm)']) {
+      const src = `structure def S { sub b = B(gap: ${value}) }`;
+      expect(countErrorNodes(src)).toBe(0);
+      expect(nodeNames(src)).toContain('AutoKeyword');
+    }
+  });
+
+  /**
+   * `NamedArgument` is SHARED between call-expression argument lists and
+   * `SubDeclaration`'s instantiation `ArgList` — the existing note on the
+   * production records that the two must move together. Pinned in the call
+   * position too, so a future narrowing cannot split them.
+   */
+  it('parses `auto` as a call-expression named argument', () => {
+    expect(countErrorNodes('structure def S { let x = f(length: auto) }')).toBe(0);
+  });
+
+  /**
+   * NON-REGRESSION for the arm `bindingValue` already carried. Widening the
+   * slot must not disturb the `VariantConstruction` reading, which is the only
+   * reason the narrower spelling existed.
+   */
+  it('still parses a VariantConstruction named-argument value', () => {
+    const src = 'structure def S { sub b = B(shape: Circle { radius: 5mm }) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('VariantConstruction');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
