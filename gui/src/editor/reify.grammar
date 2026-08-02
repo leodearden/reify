@@ -1169,6 +1169,11 @@ primaryExpression {
   Boolean |
   FunctionCall |
   MemberAccess |
+  // grammar.js:1587-1610 — the expression-position `::` family. Placed beside
+  // `MemberAccess`/`FunctionCall`, the postfix forms they mirror.
+  QualifiedAccess |
+  InstanceQualifiedAccess |
+  TraitMethodCall |
   ListLiteral |
   SetLiteral |
   MapLiteral |
@@ -1323,6 +1328,49 @@ argument {
 
 MemberAccess {
   expression !postfix "." Identifier
+}
+
+// ── Qualified access in EXPRESSION position ─────────────
+// grammar.js:1587-1610. `::` already reached TYPE position through
+// `QualifiedType`; these three are the expression-position counterparts, and
+// nothing here shares a production with the type form.
+//
+// Upstream's prec.left(9) for the two access forms and prec(11) for the call
+// map onto the existing `postfix` level, which is where `MemberAccess`,
+// `IndexAccess` and `FunctionCall` already sit — the same mapping `IndexAccess`
+// records for its own prec.left(9).
+//
+// TWO SEPARATIONS REST ON SHAPE ALONE, not on any marker, so the corpus test
+// asserts them rather than this note claiming them:
+//   • `QualifiedAccess` vs `QualifiedType` — both spell `::`, and only the
+//     position they are reached from tells them apart. A type annotation must
+//     still yield `QualifiedType`, including the applied-base arm
+//     (`Coupling<Prismatic>::MotionValue`).
+//   • `InstanceQualifiedAccess` vs `MemberAccess` — the two share the whole
+//     `expression "."` prefix and part on the ONE token after the dot: `(`
+//     shifts into the qualified form, an identifier reduces the plain one.
+// MEASURED: lezer-generator reports zero conflicts, so neither separation
+// needed a `~` ambiguity marker or a precedence level.
+QualifiedAccess {
+  expression !postfix "::" Identifier
+}
+
+// `obj.(Trait::method)`. Upstream widens the parenthesised slot to any
+// expression and validates in LOWERING, emitting a specific diagnostic when it
+// is not a qualified access (grammar.js:1602-1604 says so explicitly). That
+// widening is kept: narrowing it here would make the GUI reject a shape the
+// compiler accepts-then-diagnoses, which is the third-dialect failure the
+// `AutoTypeArg` note already forbids.
+InstanceQualifiedAccess {
+  expression !postfix "." "(" expression ")"
+}
+
+// The call tail is a SEPARATE node, exactly as upstream's `trait_method_call`
+// is separate from `qualified_access` — so the bare `Defaultable::make_default`
+// with no tail is still a plain `QualifiedAccess`. The callee stays a two-way
+// choice for the same reason `FunctionCall`'s does: see the note there.
+TraitMethodCall {
+  (QualifiedAccess | InstanceQualifiedAccess) !postfix ArgListExpr
 }
 
 ParenthesizedExpression {
