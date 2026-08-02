@@ -1221,6 +1221,23 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
     expect(names).not.toContain('LambdaExpression');
   });
 
+  /**
+   * The two spellings MEETING, which neither pin above reaches: a parameterized
+   * lambda whose body contains the OR operator. `|x|` opens and closes with the
+   * one-character token and `x || y` uses the two-character one, so this is the
+   * single snippet in which both members of the merged group must be lexed
+   * correctly in one parse — the shape most exposed to a future maximal-munch
+   * change in that group, since a change to either spelling now moves both.
+   */
+  it('lexes both spellings in one parse: `|x| x || y`', () => {
+    const src = 'structure def F { let f = |x| x || y }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('LambdaExpression');
+    expect(names).toContain('LambdaParam');
+    expect(names).toContain('BinaryExpression');
+  });
+
   // Corpus-attested verbatim: examples/fields/fn_field.ri:14.
   it('parses a lambda as a call argument `sample(fn_field(|p| 2.0 * p), 3.0)`', () => {
     expect(countErrorNodes('structure def F { let d = sample(fn_field(|p| 2.0 * p), 3.0) }')).toBe(
@@ -2637,6 +2654,28 @@ describe('reify.grammar snippets — constraint def', () => {
     expect(names).toContain('Pragma');
     expect(names).toContain('ConstraintDefPredicate');
     expect(names).not.toContain('PragmaArg');
+  });
+
+  /**
+   * THE SACRIFICE ITSELF, pinned rather than left to the prose — the mirror of
+   * the still-narrowed `primaryExpression` pin in the VariantConstruction slice.
+   * The five assertions above say what greedy shift KEEPS; without this one
+   * nothing says what it COSTS, so a later precedence edit could swap which side
+   * loses and the suite would stay green.
+   *
+   * MEASURED, both at 1 error node: after an `auto`-defaulted param a following
+   * `(x > 1mm)` is swallowed as the `AutoParamList` (so it never becomes a
+   * predicate at all), and after a plain `Name` type a following `<10mm` is
+   * swallowed as the opening `<` of a `ParameterizedType`. Neither shape occurs
+   * in any of the 330 committed `.ri`, which is what makes the trade payable.
+   */
+  it('does not admit a predicate opening with `(` or `<` after an item with an optional tail', () => {
+    const afterAuto = 'constraint def C {\n    param x : Length = auto\n    (x > 1mm)\n}';
+    expect(countErrorNodes(afterAuto)).toBeGreaterThan(0);
+    expect(nodeNames(afterAuto)).not.toContain('ConstraintDefPredicate');
+
+    const afterType = 'constraint def C {\n    param b : Name\n    <10mm\n}';
+    expect(countErrorNodes(afterType)).toBeGreaterThan(0);
   });
 });
 
