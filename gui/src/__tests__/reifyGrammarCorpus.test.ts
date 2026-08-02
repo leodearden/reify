@@ -3900,6 +3900,7 @@ const EXPECTED_CLEAN = [
   'examples/m10_connect_advanced.ri',
   'examples/m10_geometric_types.ri',
   'examples/m10_purpose_activation.ri',
+  'examples/m11_annotations.ri',
   'examples/m11_field_calculus.ri',
   'examples/m5_collection_ops.ri',
   'examples/m5_combined_all.ri',

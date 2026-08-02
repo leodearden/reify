@@ -121,6 +121,15 @@ MetaEntry {
 // declaration START and the selector's only ever after a COMPLETE expression,
 // so the two never share a parse state. `#` is a new character used nowhere
 // else.
+//
+// That separation now holds in a SECOND place: `Annotation` is also a `Member`
+// arm (grammar.js:44 `commonMembers()`), so an `@` can open an item at MEMBER
+// start as well as at declaration start. The argument carries over unchanged —
+// member start is still a position where no expression is in progress — and
+// lezer-generator reports zero conflicts for the added arm. But the claim is no
+// longer a single-site one, so it is ASSERTED rather than restated: the corpus
+// test pins that `let f = body @ faces_by_normal(zdir)` still reduces to
+// `AdHocSelector` with `body` as its left operand and yields no `Annotation`.
 // `!itemStart` on the arg list's `(`: inside a ConstraintDefinition body a
 // pragma is followed by items that may THEMSELVES open with `(`. See the
 // `itemStart` note in the @precedence block.
@@ -276,7 +285,14 @@ Member {
   RelateBlock |
   MatchArmDeclBlock |
   MetaBlock |
-  Pragma
+  Pragma |
+  // grammar.js:44 — `commonMembers()` lists `$.annotation`, so every body that
+  // admits a member admits it too: structure, occurrence, guarded and
+  // specialization alike. Corpus-attested: examples/m11_annotations.ri:115-118,
+  // where each `@solver_hint(...)` precedes the `param` it annotates. The
+  // annotation is a standalone member, NOT a prefix — `Member*` sequences the
+  // pair, exactly as `Declaration*` already does at top level.
+  Annotation
 }
 
 // ── Guarded block ─────────────────────────────────────
