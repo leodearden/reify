@@ -3696,6 +3696,97 @@ describe('reify.grammar snippets — keyed sub-member blocks', () => {
 });
 
 /**
+ * `joint_definition` — catch-up round 4, family 10.
+ *
+ * A top-level declaration upstream (grammar.js:147 lists `joint_definition` in
+ * `_declaration`; the family itself is :762-802). Nothing of it exists here.
+ *
+ * BOTH DOF FORMS ARE REQUIRED, which is why (a) and (b) are separate tests
+ * rather than one: examples/joint_dof_self_check.ri uses the bare form at L26
+ * and the braced-record form at L32, so either alone leaves the file
+ * not-clean and the ledger unmoved.
+ *
+ * MEASURED before the fix:
+ *   (a) the bare-DOF form with a range clause — 21 errors → RED
+ *   (b) the braced-record form, expr body     — 12 errors → RED
+ *   (c) a DOF field with no range clause      — 15 errors → RED
+ *   (d) the `pub` / type-parameter headers    — 9, 14   → RED
+ *   (e) the contextual-keyword pins           —  0 errors → passes
+ */
+describe('reify.grammar snippets — joint definitions', () => {
+  // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:26.
+  it('parses the bare-DOF form with a range clause', () => {
+    const src =
+      'joint revolute(a: Axis, b: Axis, p: Point3<Length>, stop: Plane) with angle: Angle in 0deg..120deg = { concentric(a, b)  on(p, stop) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('JointDefinition');
+    expect(names).toContain('JointDofField');
+    expect(names).toContain('JointBody');
+    // `RelationMember` is δ's node, reused rather than cloned — upstream says
+    // so explicitly (grammar.js:795-797), "so each body expression lowers via
+    // lower_relation_members (same as relate_block)".
+    expect(names).toContain('RelationMember');
+  });
+
+  // Corpus-attested VERBATIM: examples/joint_dof_self_check.ri:32. Exercises
+  // BOTH the braced-record DOF and the single-EXPRESSION body arm, the two
+  // halves the bare form above does not reach.
+  it('parses the braced-record DOF form with an expression body', () => {
+    const src =
+      'joint cylindrical(a: Axis, b: Axis) with { angle: Angle, travel: Length } = concentric(a, b)';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('JointDefinition');
+    // Two fields, not one collapsed node (#5957).
+    expect(countNodesNamed(src, 'JointDofField')).toBe(2);
+  });
+
+  // The `in <range>` clause is OPTIONAL upstream (grammar.js:791), so the
+  // range-less field must be admitted on its own.
+  it('parses a DOF field with no range clause', () => {
+    const src = 'joint prismatic(a: Axis, b: Axis) with travel: Length = concentric(a, b)';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('JointDofField');
+  });
+
+  /**
+   * NORMATIVE BUT UNATTESTED. Upstream's header carries `optional('pub')` and
+   * `optional($.type_parameters)`, neither of which any committed file uses.
+   * They come free from reusing the same `TypeParameters` the structure, trait
+   * and fn headers already share — which is exactly why they are pinned: a
+   * later round that clones a narrower header instead of reusing it would pass
+   * every corpus assertion and silently drop them.
+   */
+  it('parses the pub and type-parameter headers', () => {
+    for (const src of [
+      'pub joint j(a: Axis) with x: Length = f(a)',
+      'joint j<T>(a: T) with x: Length = f(a)',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(nodeNames(src)).toContain('JointDefinition');
+    }
+  });
+
+  /**
+   * THE CONTEXTUAL-KEYWORD PINS. `joint` and `with` are contextual upstream,
+   * which states the contract directly (grammar.js:757-762): "zero regression:
+   * `joint` and `with` continue to lex as identifiers at all other parse
+   * positions". A hard `kw<>` would buy the same parses and break exactly this
+   * — the failure family 1 (`chain`) and family 7 (`meta`) each had to undo.
+   * Passes on arrival, and pins the `ekw<>` spelling as load-bearing.
+   */
+  it('keeps `joint` and `with` legal ordinary identifiers', () => {
+    for (const src of [
+      'structure def S { let joint = 5mm }',
+      'structure def S { let with = 5mm }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(nodeNames(src)).toContain('LetDeclaration');
+    }
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
