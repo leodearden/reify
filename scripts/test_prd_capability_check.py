@@ -1042,6 +1042,83 @@ _TS_GRAMMAR_AVAILABLE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 5894 step-13 (RED): the skip-guard must never take the suite down with it
+# ---------------------------------------------------------------------------
+
+class TestGrammarAvailabilityGuard(unittest.TestCase):
+    """Pins _compute_ts_grammar_available() — the skip-guard's blast radius.
+
+    Before this task the guard was a pure os.path.isfile() and could not raise
+    at all.  Making it behavioural gave it a way to fail, and it is evaluated at
+    MODULE IMPORT time, so any exception escaping it converts a one-test skip
+    into losing the entire suite — strictly worse than the spurious
+    HARNESS_ERROR this task set out to remove.
+
+    The house rule is the one stated in tests/infra/test_prd_gate_corpus.sh:52-60
+    — a toolchain that cannot be interrogated is a clean SKIP, never a spurious
+    FAIL.  These tests hold the guard to it for ANY exception, not just the
+    PermissionError whose trigger is fixed at source in run_probe().
+    """
+
+    @staticmethod
+    def _patch_parser_c(exists: bool):
+        """Patch os.path.isfile so parser.c reports `exists`; other paths are real.
+
+        Keeps every case independent of whether this lane happened to generate
+        the grammar, without blinding unrelated isfile() calls.
+        """
+        real_isfile = os.path.isfile
+
+        def fake_isfile(path):
+            if path == _TS_GRAMMAR_PARSER:
+                return exists
+            return real_isfile(path)
+
+        return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
+
+    def test_substrate_probe_exception_degrades_to_unavailable(self):
+        """(a) ANY exception from the substrate probe → False, never propagated."""
+        with self._patch_parser_c(True), \
+             unittest.mock.patch.object(
+                 pcc, "grammar_substrate_usable",
+                 side_effect=RuntimeError("boom")):
+            available = _compute_ts_grammar_available()
+        self.assertFalse(
+            available,
+            "a substrate that cannot be interrogated must degrade to 'skip the "
+            "grammar e2e', not take the module down at import time",
+        )
+
+    def test_usable_substrate_with_parser_c_is_available(self):
+        """(b) parser.c present + substrate usable → True.
+
+        The hardening must not silently disable the e2e on a healthy lane; that
+        would be a coverage loss disguised as a fix.
+        """
+        with self._patch_parser_c(True), \
+             unittest.mock.patch.object(
+                 pcc, "grammar_substrate_usable", return_value=(True, "")):
+            self.assertTrue(_compute_ts_grammar_available())
+
+    def test_missing_parser_c_short_circuits_without_probing(self):
+        """(c) No parser.c → False, and the substrate is never probed.
+
+        Pins the existing cheap short-circuit: a lane that never generated the
+        grammar must pay no subprocess.  Asserted via call_count so a refactor
+        cannot quietly reorder the conjunction.
+        """
+        probe = unittest.mock.Mock(return_value=(True, ""))
+        with self._patch_parser_c(False), \
+             unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
+            available = _compute_ts_grammar_available()
+        self.assertFalse(available)
+        self.assertEqual(
+            probe.call_count, 0,
+            "isfile(parser.c) must short-circuit before any subprocess is spent",
+        )
+
+
 class TestMain(unittest.TestCase):
     """Tests for main(argv) integration — hermetic + skip-guarded real e2e.
 
