@@ -781,12 +781,60 @@ MatchPattern {
 }
 
 // `_` already lexes as an `Identifier` (the token rule admits a leading
-// underscore), so the wildcard is an @extend rather than a new token: it
-// names the node without reserving `_` globally. No committed `.ri` uses a
-// bare `_` as an identifier, but @extend costs nothing and keeps that door
-// open — the same contextual treatment `at`, `self` and `frame` get.
-WildcardPattern {
-  @extend[@name=WildcardPattern]<Identifier, "_">
+// underscore), and it is an `ekw`-family `@extend` for the reason every
+// contextual keyword here is one: the language admits `_` as an ORDINARY NAME,
+// so a context-free `@specialize` would make this grammar reject source the
+// compiler accepts. That is measured against the compiler, not inferred —
+// `reify eval` on `structure def F { let _ = 3mm }` prints `F._ = 0.003 m`,
+// and on `param _ : Length = 1mm` prints `F._ = 0.001 m`. `_` is BOUND, not
+// reserved. Same door `at`/`self`/`direction`/`frame`/`relate` are held open
+// by; see the note on `ekw` above.
+//
+// `@extend` ALONE, however, never yields the node. It disambiguates only when
+// the two readings occupy DIFFERENT grammar positions (`at`, `self`, `frame`
+// each have a keyword slot that no plain-identifier production also occupies).
+// Here both readings sit at the SAME position: `MatchPattern`'s plain-
+// Identifier alternative (`Identifier ("|" Identifier)*`) and
+// `WildcardPattern` are two direct alternatives of the same rule, so `_` is
+// equally valid as either the whole `WildcardPattern` reduction or a
+// one-Identifier `Identifier ("|" Identifier)*` reduction, with nothing left
+// to look ahead at (`=>` follows either way) — a genuine ambiguity that
+// `@extend` resolved by silently falling back to the unextended `Identifier`
+// reading every time (MEASURED, #5957).
+//
+// `@dynamicPrecedence` is lezer's designated mechanism for choosing between
+// ambiguous COMPLETE parses, so it is what breaks that tie — and it breaks it
+// ONLY where both readings are live, leaving `_` an ordinary Identifier
+// everywhere else. MEASURED for this variant: zero build conflicts, the node
+// produced in both the `MatchExpression` and `MatchArmDeclBlock` forms, and
+// zero ERROR nodes across all six legal-identifier positions pinned in
+// reifyGrammarCorpus.test.ts.
+//
+// The `@extend` carries NO `@name`, unlike every `ekw<>` above, and that is
+// load-bearing rather than an omission. `@name=WildcardPattern` would name the
+// TOKEN what the enclosing rule is already named, and both are visible in the
+// tree, so every wildcard arm came out as `MatchPattern > WildcardPattern >
+// WildcardPattern` — one node duplicated (MEASURED; the doubling was invisible
+// to the suite because `nodeNames(...).toContain(…)` is satisfied by either).
+// Dropping `@name` leaves the token anonymous and the rule the sole bearer of
+// the public name, so exactly ONE `WildcardPattern` node spans the `_`
+// (MEASURED; pinned by an explicit count assertion in the corpus test, not
+// just by a `toContain`). A distinct token `@name` was tried too and is worse:
+// it emits a second, differently-named node instead of removing one.
+//
+// Three findings worth not re-deriving. Restructuring `MatchPattern` into
+// `matchPatternAtom ("|" matchPatternAtom)*` was tried as a fix on its own and
+// does NOT work: rule shape does not change the token-level fallback, so it
+// parses clean but yields no `WildcardPattern` node anywhere. The precedence
+// cannot be moved onto the token to collapse rule and token into one
+// construct: `@extend[@name=WildcardPattern, @dynamicPrecedence=1]<…>` is a
+// hard generator error, "Dynamic precedence can only be specified on
+// nonterminals" — hence a wrapping rule is REQUIRED here, and the anonymous
+// token is what keeps it from costing a duplicate node. And the syntax trap —
+// `@dynamicPrecedence` is a RULE PROP only; a top-level
+// `@dynamicPrecedence { … }` block is a hard parse error in the generator.
+WildcardPattern[@dynamicPrecedence=1] {
+  @extend<Identifier, "_">
 }
 
 VariantBindingPattern {
