@@ -604,11 +604,42 @@ sandbox:
   enabled: true
   backend: landlock
 
-# Sandbox companion (task γ6a): toolchain-cache redirect for the three
-# sandboxed roles (implementer, debugger, simple_task — a hardcoded copy of
-# DF's roles.py sandboxed=True set; reify cannot observe a DF-side 4th
-# role addition, see the "SECOND, UNGUARDED COUPLING" note in
-# tests/infra/test_sandbox_cache_writability_seam.sh's header).
+# Sandbox companion (task γ6a): toolchain-cache redirect. Covers 6 of the 9
+# dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
+# debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
+# covered, deliberately: merger, steward, deep_reviewer. merger is excluded
+# on blast radius — redirecting the merge agent's CARGO_HOME to a cold /tmp
+# cache would diverge it from the verify subprocess cache path on the one
+# gate that lands everything (the same reasoning applied to verify_env
+# above).
+#   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
+#   sandboxed=True flip": workflow.py:_build_agent_env merges
+#   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or
+#   not. Per role, as of task 5858:
+#     implementer / debugger / simple_task — roles.py sandboxed=True TODAY;
+#       the redirect is what keeps them building at all.
+#     architect — NOT sandboxed yet, but has unrestricted Bash
+#       (roles.py:401), so this entry is LIVE from the next orchestrator
+#       restart: it moves the architect's ad-hoc cargo/npm off the warm
+#       ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp pair. Accepted
+#       because that /tmp cache is already warmed by the three sandboxed
+#       roles above (so the architect inherits a warm cache, not a cold
+#       one), and its exposure to the tmpfiles age-deletion gap below is
+#       exactly the one implementer already carries.
+#     reviewer_comprehensive / judge — read-only tool grants
+#       (_READ_ONLY_TOOLS, roles.py:106; Bash scoped to `git:*`), so neither
+#       can invoke cargo or npm at all. Genuinely inert today AND after a
+#       sandboxed=True flip; kept as defense-in-depth against a future
+#       tool-grant widening, NOT because either would otherwise die on a
+#       cargo write.
+#   The key is `reviewer_comprehensive`, NOT the collapsed `reviewer` (which
+#   validates silently against DF's KNOWN_ROLE_NAMES yet delivers nothing).
+#   The full coupling analysis — that trap, why `judge` is safe despite
+#   workflow.py:10358, and what this seam still cannot observe — lives in
+#   ONE place, the header of
+#   tests/infra/test_sandbox_cache_writability_seam.sh (the file whose
+#   assertions enforce it). Do not restate it here; the two copies drifted
+#   once already.
 #   WHY: compute_write_set (DF-owned, orchestrator/agents/write_set.py)
 #   grants worktree + <base>/.task-meta/<name> + main .git carve-outs +
 #   ~/.cache/uv + ~/.claude/fleet + /tmp + /dev, and NOTHING under
@@ -659,6 +690,9 @@ role_env_overrides:
     npm_config_cache: /tmp/reify-agent-npm-cache
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
+  architect: *sandbox_cache_env
+  reviewer_comprehensive: *sandbox_cache_env
+  judge: *sandbox_cache_env
 
 # Escalation
 escalation:
