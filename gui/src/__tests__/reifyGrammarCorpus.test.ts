@@ -1895,6 +1895,76 @@ describe('reify.grammar snippets — match, enum, variants', () => {
 });
 
 /**
+ * ── `_` is a WILDCARD IN PATTERN POSITION AND AN ORDINARY IDENTIFIER
+ *    EVERYWHERE ELSE ────────────────────────────────────────────────────────
+ *
+ * The house rule this slice enforces is the one the `ekw` note in
+ * reify.grammar states and that `direction`/`frame` (reify.grammar:470-478)
+ * and `relate` (:537-545) are each held open by: the editor grammar must not
+ * reject source the COMPILER accepts. A word that the language also admits as
+ * an ordinary name gets `@extend`, never a context-free `@specialize`.
+ *
+ * `_` is such a word, and that is MEASURED, not assumed. Running
+ * `target/release/reify eval` on case (1) below prints `F._ = 0.003 m`, and on
+ * case (2) prints `F._ = 0.001 m` — the compiler lexes a bare `_` as an
+ * identifier and BINDS it. Case (3)'s `fn f(_ : Length)` likewise parses and
+ * evaluates through to a call. So reserving `_` globally would make the editor
+ * flag as an error three declaration forms the compiler resolves, plus the
+ * argument and or-pattern positions below.
+ *
+ * Each assertion pins one position where `_` must keep lexing as a plain
+ * `Identifier`. They are DELIBERATELY separate `it` blocks: a global
+ * reservation regresses all six at once, and naming each one keeps the failure
+ * output pointing at the specific form that broke rather than at a single
+ * fused assertion.
+ *
+ * The two `WildcardPattern` assertions elsewhere in this file — the expression
+ * form's own wildcard test and the `MatchArmDeclBlock` one — are the other half
+ * of the contract and must stay green alongside these. Both directions have to
+ * hold simultaneously: `_` reduces to `WildcardPattern` at `MatchPattern`
+ * position, and to `Identifier` everywhere else.
+ */
+describe('reify.grammar snippets — `_` stays a legal ordinary identifier', () => {
+  it('accepts `_` as a `let` binding name', () => {
+    // Compiler evidence: `reify eval` prints `F._ = 0.003 m` for this source.
+    expect(countErrorNodes('structure def F { let _ = 3mm }')).toBe(0);
+  });
+
+  it('accepts `_` as a `param` name', () => {
+    // Compiler evidence: `reify eval` prints `F._ = 0.001 m` for this source.
+    expect(countErrorNodes('structure def F { param _ : Length = 1mm }')).toBe(0);
+  });
+
+  it('accepts `_` as an `fn` parameter name', () => {
+    expect(
+      countErrorNodes('structure def H { fn f(_ : Length) -> Length { 1mm } }'),
+    ).toBe(0);
+  });
+
+  it('accepts `_` in argument position', () => {
+    expect(countErrorNodes('structure def F { let a = f(_) }')).toBe(0);
+  });
+
+  /**
+   * The two or-pattern arms. `MatchPattern`'s or-pattern alternative is
+   * literally `Identifier ("|" Identifier)*`, so `_` has to remain readable as
+   * an `Identifier` for these to parse at all — they are the positions where
+   * the wildcard reading and the identifier reading sit closest together.
+   * Only zero-error parsing is pinned here; which node `_` reduces to inside
+   * an or-pattern is not asserted, because the or-pattern alternative admits
+   * only `Identifier` today and changing that is a separate change to
+   * `MatchPattern`'s shape.
+   */
+  it('accepts `_` as the trailing element of an or-pattern', () => {
+    expect(countErrorNodes('structure def F { let a = match p { A | _ => 1mm } }')).toBe(0);
+  });
+
+  it('accepts `_` as the leading element of an or-pattern', () => {
+    expect(countErrorNodes('structure def F { let a = match p { _ | A => 1mm } }')).toBe(0);
+  });
+});
+
+/**
  * The remaining declaration families: `field def`, `purpose`, `unit`, the
  * top-level `type` alias, `default`, the `meta` block, and the `#pragma` /
  * `@annotation` pair.
