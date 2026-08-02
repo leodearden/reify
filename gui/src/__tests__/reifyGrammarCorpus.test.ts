@@ -1172,34 +1172,22 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
   });
 
   /**
-   * The zero-parameter lambda is the collision case: `|| 1` and the OR
-   * operator are the same two characters. It is admitted upstream — the
-   * `commaSep` above makes the parameter list optional, and tree-sitter's
-   * lexer is parse-state-driven, so at an expression START (where `||` is not
-   * a valid token) it reads `|`, while after a complete expression (where `|`
-   * is not valid) it reads `||`.
+   * The zero-parameter lambda is the collision case: `|| 1` and the OR operator
+   * are the same two characters. Admitted upstream through `commaSep`'s empty
+   * case (grammar.js:1222-1232), and admitted here through a second
+   * `LambdaExpression` arm. Why an arm rather than a token precedence, and how
+   * `RelateBlock` merged the `"|"` and `"||"` token groups in the first place,
+   * are in the `||` collision note on `LambdaExpression` in reify.grammar.
    *
-   * THIS COMMENT USED TO PREDICT that lezer's per-state token groups would
-   * separate the two spellings the same way, and that if `"|"` and `"||"` ever
-   * came to share a group THIS assertion would be the one to yield, since it
-   * has no corpus occurrence whereas `a || b` has many. The first half of the
-   * prediction was wrong and the second half turned out to be unnecessary.
+   * WHAT BELONGS HERE is why the assertion exists at all: it is the detector.
+   * The merge compiled with ZERO conflicts and zero warnings and turned
+   * `let f = || 1` into an error node in silence — the whole 330-file corpus
+   * still passed, and this assertion plus the `a || b` guards below were the
+   * only things that noticed. Token-group merging is not a conflict, so nothing
+   * in the build reports one; there is no loud failure to fall back on.
    *
-   * `RelateBlock` made them share a group — `RelationMember*` is the grammar's
-   * first repeat of BARE expressions, so a state exists that admits a binary
-   * continuation (`"||"`) and a fresh lambda member (`"|"`) alike, and a group
-   * is a property of the TOKEN rather than the state, so maximal munch then
-   * applied everywhere. MEASURED: it compiled with zero conflicts and turned
-   * `let f = || 1` into an error node in silence. Nothing in the build reports
-   * a group merge — this assertion and the `map`/lambda regression guard below
-   * were the only things that caught it.
-   *
-   * It was resolved by admitting `"||"` as the zero-parameter opener (a second
-   * arm on LambdaExpression) rather than by narrowing the language: both
-   * readings survive, so neither assertion has to yield. They are pinned by
-   * NODE NAME here, not by error count — after the merge each spelling still
-   * produces an error-free parse under the wrong reading, so a count is blind
-   * to which one the parser chose.
+   * Pinned by NODE NAME, not by error count: each spelling still parses clean
+   * under the wrong reading, so a count is blind to which one was chosen.
    */
   it('parses a zero-parameter lambda `|| 1` (normative, unattested)', () => {
     const src = 'structure def F { let f = || 1 }';
@@ -2494,20 +2482,19 @@ describe('reify.grammar snippets — relate blocks', () => {
  * `meta.project`, a member-level `@annotation`), so their error counts drop but
  * they stay off EXPECTED_CLEAN — see the MEASUREMENT block above it.
  *
- * THE SHAPE THAT MAKES THIS FAMILY HARD. The body mixes items that carry an
- * OPTIONAL TAIL (`ParamDeclaration`, `LetDeclaration`, `Pragma`) with a
- * BARE-EXPRESSION `ConstraintDefPredicate`, and the tail's opening token is
- * exactly the token the next predicate could open with:
+ * THE SHAPE THAT MAKES THIS FAMILY HARD is a body whose repeat mixes items
+ * carrying an OPTIONAL TAIL (`ParamDeclaration`, `LetDeclaration`, `Pragma`)
+ * with a BARE-EXPRESSION `ConstraintDefPredicate`, so the tail's opening token
+ * is also a token the next predicate could open with. The three conflicts that
+ * produces, the three shifts marked to settle them, and the trade greedy shift
+ * accepts are in the `itemStart` note in reify.grammar's @precedence block.
  *
- *   - `Pragma -> "#" Identifier · "("`      vs a predicate starting `(a > b)`
- *   - `ParameterizedType -> Identifier · "<"` vs a predicate starting `<10mm`
- *   - `AutoKeyword -> auto · "("`           vs a predicate starting `(…)`
- *
- * All three are resolved by a single tightest precedence level, `itemStart`,
- * accepting greedy shift. The five assertions at the bottom of this slice pin
- * the readings that greedy shift PRESERVES; each is asserted on node NAMES
- * rather than on an error count, because a precedence change reshapes a tree
- * silently and both readings parse clean.
+ * WHAT THIS SLICE ADDS is both sides of that trade, pinned: five preserved
+ * readings and, at the bottom, the one sacrificed. The preserved five are
+ * asserted on node NAMES rather than error counts, because a precedence change
+ * reshapes a tree silently and both readings parse clean; the sacrificed one is
+ * the only place an error count is the right instrument, since there the losing
+ * reading does not parse at all.
  */
 describe('reify.grammar snippets — constraint def', () => {
   // Corpus-attested verbatim: examples/m9_constraint_def.ri:18-21.
@@ -2603,11 +2590,9 @@ describe('reify.grammar snippets — constraint def', () => {
    *
    * Each of the five below is a reading greedy shift PRESERVES, asserted
    * INSIDE a constraint-def body because that is the state where the conflict
-   * actually lives. All are attested at declaration or member level elsewhere
-   * in the corpus; what greedy shift sacrifices is only the mirror-image
-   * reading — a predicate whose first token is `<` or `(` on the line directly
-   * after a param/let/pragma item — which is attested in none of the 330
-   * committed files.
+   * actually lives — every one of them is attested at declaration or member
+   * level elsewhere in the corpus. The sixth pin, last in the slice, is the
+   * mirror image these cost.
    */
   it('keeps `Box<T>` a ParameterizedType inside a constraint-def body', () => {
     const src = 'constraint def C {\n    param b : Box<T>\n    b > 1mm\n}';
@@ -2684,22 +2669,17 @@ describe('reify.grammar snippets — constraint def', () => {
  * deliberately narrowed production, and a family that moves the ledger by zero
  * files. It is taken for node SHAPE, so every assertion here is what guards it.
  *
- * `VariantConstruction` is reachable only from `bindingValue` and from a
- * construction's own field values, because `Name {` collides with three
- * committed, load-bearing shapes — `match d { … }`, `where cond { … }`,
- * `connect a -> b { … }` — in states where `{` IS in the follow set of a
- * complete expression, and Lezer (being LR) cannot resolve those the way
- * upstream's declared GLR conflict does.
+ * THE CLAIM UNDER TEST is that argument position is structurally different from
+ * `primaryExpression` — a difference of FOLLOW SET, not of marker. Why that
+ * holds, and which three committed shapes the surviving narrowing protects, are
+ * on `VariantConstruction` in reify.grammar. This slice tests both halves: the
+ * widening works, and the narrowing it does not touch is still in force.
  *
- * ARGUMENT POSITION IS STRUCTURALLY DIFFERENT, and that is the whole claim
- * this slice tests. Inside an argument list the follow set of a value is `,`
- * or `)` — `{` is not in it — so the state after `Identifier` has a shift on
- * `{` and NO competing reduce.
- *
- * EVERY ASSERTION BELOW IS ON NODE NAMES, never on an error count. In each of
- * the three collision shapes the WRONG reading is error-free (a construction
- * would silently swallow the match/guard/connect body), so counting error
- * nodes is blind to which parse was taken.
+ * EVERY WIDENING AND COLLISION ASSERTION BELOW IS ON NODE NAMES, never on an
+ * error count, because in each collision shape the WRONG reading is error-free
+ * — a construction would silently swallow the match/guard/connect body, and a
+ * count is blind to that. The one exception is the final pin, where the
+ * still-rejected shape genuinely errors.
  */
 describe('reify.grammar snippets — variant construction in argument position', () => {
   /**
@@ -2804,21 +2784,18 @@ describe('reify.grammar snippets — variant construction in argument position',
  * is taken for node shape — but it carries the round's only real REGRESSION
  * risk, and the pins below are the whole point of the slice.
  *
- * THE CONFLICT. After `at <pose>` a following `where` could open a
- * SubRelateBlock (shift) or end the SubDeclaration so that `where` starts a
- * member-level GuardedBlock (reduce). What distinguishes them is the token
- * AFTER `where` — `{` versus an expression — which is two tokens of lookahead,
- * and LR(1) does not have it. Upstream gets the distinction free from GLR.
+ * A post-pose `where` is genuinely ambiguous to LR(1): it may open a
+ * SubRelateBlock or end the SubDeclaration so that `where` starts a member-level
+ * GuardedBlock. Why that is resolved with a `~poseWhere` ambiguity marker rather
+ * than with the `itemStart` precedence level one family earlier is on
+ * `PoseClause` in reify.grammar.
  *
- * BOTH READINGS ARE COMMITTED, which is why this cannot be resolved with the
- * `itemStart` precedence level one family earlier. Poses are committed at
- * examples/geometric_relations/construction_datum.ri:62 and
+ * WHAT THIS SLICE MUST SHOW is that BOTH readings survive, because both are
+ * committed: poses at examples/geometric_relations/construction_datum.ri:62 and
  * global_float.ri:28 (`sub bolt : Bolt at auto`), and member-level
  * `where determined(origin) { … }` GuardedBlocks at
- * examples/integration_full_v01.ri:224 and examples/m10_combined.ri:97 — six
- * committed files carry such a block. Greedy shift would make EVERY post-pose
- * `where` a SubRelateBlock, so it would regress those readings to admit a form
- * no committed file uses. Every assertion here is on node NAMES: both parses
+ * examples/integration_full_v01.ri:224 and examples/m10_combined.ri:97, in six
+ * committed files overall. Every assertion here is on node NAMES: both parses
  * are error-free, so a count cannot tell them apart.
  */
 describe('reify.grammar snippets — sub relate blocks', () => {
