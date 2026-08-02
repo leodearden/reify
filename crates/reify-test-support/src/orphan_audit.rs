@@ -1,5 +1,5 @@
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Git environment variables that redirect *which repository* a command
@@ -102,12 +102,99 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
         .is_some_and(|seg| EXCLUDE_CRATES.contains(&seg))
 }
 
+/// Resolve the git work tree that a child process spawned with
+/// `.current_dir(repo_root)` would itself compute via `git rev-parse
+/// --show-toplevel` — i.e. what `audit-orphan-producers.sh:66`'s own
+/// `REPO_ROOT="$(git rev-parse --show-toplevel)"` will resolve to for this
+/// child. Routed through the SAME [`sanitize`] the script spawn uses, so this
+/// probe faithfully reproduces the child's exact view.
+///
+/// This does NOT re-test that [`sanitize`] works — it tests the premise
+/// [`sanitize`] is supposed to establish: that the child resolves the SAME
+/// repository the caller asked it to scan. That is why the probe still has
+/// teeth despite reusing the spawn's own sanitizer: it independently catches
+/// an incomplete `REPO_REDIRECT_VARS` list (the drift risk
+/// `crates/reify-audit/src/git_env.rs`'s module doc names), a `.git` file
+/// pointing at another checkout, a symlinked or embedded checkout, or a
+/// `CARGO_MANIFEST_DIR` `.parent()` walk that lands on the wrong level — any
+/// of which would make the real script silently scan a different tree than
+/// the one the caller specified.
+///
+/// Returns `None` when `repo_root` is not inside a git work tree at all
+/// (non-zero exit, or stdout that doesn't parse as a path) — genuinely
+/// environmental (e.g. a source tarball with no `.git`), so callers should
+/// treat that as a graceful skip, not a hard failure.
+fn child_repo_root(repo_root: &Path) -> Option<PathBuf> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--show-toplevel"])
+        .current_dir(repo_root);
+    sanitize(&mut cmd);
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed))
+}
+
 /// Injectable seam behind [`run_orphan_audit`]: takes `script` and
 /// `repo_root` as parameters rather than resolving them internally, so tests
 /// can point it at a decoy tree, a subdirectory root, or a nonexistent script
 /// without touching the real repo or the real script location. Mirrors why
 /// [`build_audit_command`] was split out one layer down.
 fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAudit {
+    // Graceful skip: check the script itself exists. (Moved here from
+    // run_orphan_audit_detailed in task 5698 step 6 so this seam is
+    // self-contained when called directly with a script path that caller
+    // never probed — see missing_script_is_env_unavailable.)
+    if !script.exists() {
+        eprintln!(
+            "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
+            script
+        );
+        return OrphanAudit::EnvUnavailable("audit-orphan-producers.sh not found on disk");
+    }
+
+    // Repo-root premise probe (task 5698 step 6): assert that a child spawned
+    // in `repo_root` would itself resolve the SAME work tree, before spending
+    // a real spawn on it. This is a SECOND, more specific diagnosis than the
+    // empty-stdout panic below: that panic is the primary closure of "wrong
+    // tree" and fires no matter how the wrong tree was reached, but it stays
+    // silent when the scope is in EXCLUDE_CRATES (empty stdout is legitimate
+    // there). This probe additionally catches a wrong tree scanned under an
+    // EXCLUDE_CRATES scope, which the empty-stdout branch alone cannot.
+    match child_repo_root(repo_root) {
+        None => {
+            eprintln!(
+                "repo_root {repo_root:?} is not inside a git work tree; skipping orphan \
+                 audit for scope {scope:?}"
+            );
+            return OrphanAudit::EnvUnavailable("repo root is not a git work tree");
+        }
+        Some(resolved) => {
+            let resolved_canon = resolved.canonicalize().unwrap_or_else(|e| {
+                panic!("failed to canonicalize child-resolved repo root {resolved:?}: {e}")
+            });
+            let repo_root_canon = repo_root.canonicalize().unwrap_or_else(|e| {
+                panic!("failed to canonicalize repo_root argument {repo_root:?}: {e}")
+            });
+            if resolved_canon != repo_root_canon {
+                panic!(
+                    "audit-orphan-producers.sh would run against a DIFFERENT repository \
+                     than requested: repo_root argument was {repo_root:?} (canonicalized \
+                     {repo_root_canon:?}), but the child's own `git rev-parse \
+                     --show-toplevel` resolves to {resolved:?} (canonicalized \
+                     {resolved_canon:?}). The audit would have silently enumerated the \
+                     wrong checkout for scope {scope:?} — never a legitimate outcome."
+                );
+            }
+        }
+    }
+
     // Sanitize repo-redirect git env vars before spawning (via
     // build_audit_command -> sanitize): the script's first action is
     // `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an ambient
@@ -191,6 +278,9 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
 /// - `python3` is absent from `PATH`
 /// - `git` is absent from `PATH`
 /// - `scripts/audit-orphan-producers.sh` does not exist on disk
+/// - **As of task 5698**: the resolved `repo_root` is not inside a git work
+///   tree at all (e.g. a source tarball with no `.git`) — genuinely
+///   environmental, unlike the DIFFERENT-work-tree case below.
 ///
 /// In each of those cases an explanatory message is printed to `stderr` so CI
 /// logs remain informative, and the returned reason string names which one.
@@ -215,6 +305,13 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
 ///   while every caller kept reporting green. That is never a legitimate
 ///   outcome, so it is now a hard failure instead of a silent skip — see
 ///   [`run_orphan_audit_at`]'s empty-stdout branch.
+/// - **As of task 5698**: when `repo_root` IS inside a git work tree, but a
+///   DIFFERENT one than the child itself resolves via `git rev-parse
+///   --show-toplevel` from that directory. Tooling all present, but the
+///   audit would run to completion against the wrong sources — a green
+///   result that means nothing — so this is a hard failure rather than any
+///   flavour of skip. See [`run_orphan_audit_at`]'s repo-root premise probe
+///   (`child_repo_root`).
 ///
 /// # `scope` argument
 ///
@@ -267,18 +364,9 @@ pub fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
         Err(e) => panic!("unexpected error probing git: {e}"),
     }
 
-    // Graceful skip: check the script itself exists. (Task 5698 step 6 moves
-    // this check into run_orphan_audit_at itself, once that seam also needs
-    // it to make missing_script_is_env_unavailable hold when the seam is
-    // called directly.)
-    if !script.exists() {
-        eprintln!(
-            "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
-            script
-        );
-        return OrphanAudit::EnvUnavailable("audit-orphan-producers.sh not found on disk");
-    }
-
+    // The script-existence check now lives in run_orphan_audit_at itself
+    // (task 5698 step 6), so that seam is self-contained when called
+    // directly — see missing_script_is_env_unavailable.
     run_orphan_audit_at(&script, repo_root, scope)
 }
 
