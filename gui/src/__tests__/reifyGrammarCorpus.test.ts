@@ -3360,6 +3360,77 @@ describe('reify.grammar snippets — `auto` as a named-argument value', () => {
 });
 
 /**
+ * An `Annotation` as a MEMBER — catch-up round 4, family 6.
+ *
+ * grammar.js:44 lists `$.annotation` in `commonMembers()`, so upstream admits
+ * an annotation in every body that admits a member — structure, occurrence,
+ * guarded and specialization alike. This port only reached `Annotation` from
+ * the TOP-LEVEL `Declaration` alternation, so an annotated member inside a
+ * structure body had nowhere to go.
+ *
+ * MEASURED before the fix: examples/m11_annotations.ri errors at L115, L116,
+ * L118 and L119, but `structure def S { param b: Length = auto }` on its own
+ * parses with 0 errors — so L116/118/119 are cascade from the two annotation
+ * lines, and this one change is what the file's gain is attributable to. Test
+ * (d) pins that attribution.
+ */
+describe('reify.grammar snippets — an Annotation as a member', () => {
+  // Corpus-attested VERBATIM: examples/m11_annotations.ri:115-116.
+  it('parses an annotated param member', () => {
+    const src =
+      'structure def S { @solver_hint("discrete_set", standard_bolt_lengths)  param bolt_length: Length = auto }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('Annotation');
+    expect(names).toContain('ParamDeclaration');
+  });
+
+  /**
+   * The arg list is optional upstream, so the bare form must come with it —
+   * asserted rather than assumed, since `Annotation`'s `(` is the only thing
+   * that distinguishes the two arms.
+   */
+  it('parses a bare annotation member with no argument list', () => {
+    const src = 'structure def S { @tag  param t : Length }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('Annotation');
+  });
+
+  /**
+   * THE DISCRIMINATION PIN, and the load-bearing assertion of this family: the
+   * WRONG reading would also parse clean. `Annotation`'s `@` is the SAME token
+   * the infix `AdHocSelector` uses, and no precedence separates them. The
+   * production's own note argues they "never share a parse state" because an
+   * annotation's `@` is only ever at a declaration START and the selector's
+   * only ever after a COMPLETE expression. Admitting `Annotation` at MEMBER
+   * start makes that claim load-bearing in a SECOND place, so it is asserted
+   * here rather than restated: the selector must still reduce to `AdHocSelector`
+   * — not to an `Annotation` sitting beside a truncated expression — and its
+   * left operand must still be the whole receiver.
+   */
+  it('does not steal the infix ad-hoc selector', () => {
+    const src = 'structure def S { let f = body @ faces_by_normal(zdir) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('AdHocSelector');
+    expect(names).not.toContain('Annotation');
+    expect(leftOperandOf(src)).toBe('body');
+  });
+
+  /**
+   * CASCADE ATTRIBUTION. The member an annotation precedes in
+   * examples/m11_annotations.ri already parses standalone TODAY, so the file's
+   * gain is attributable to the annotation arm alone and not to a second,
+   * unnoticed change riding along in the same commit. Passes on arrival.
+   */
+  it('already parses the annotated member on its own', () => {
+    const src = 'structure def S { param b: Length = auto }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(countNodesNamed(src, 'ParamDeclaration')).toBe(1);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
