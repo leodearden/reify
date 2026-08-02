@@ -378,6 +378,103 @@ mod tests {
         );
     }
 
+    /// RED premise (task 5698 step 5): `run_orphan_audit_at` does not yet
+    /// verify that the child actually resolves the SAME repo root it was
+    /// asked to scan. Pointing it at `<repo_root>/crates` (a real
+    /// subdirectory, not `repo_root` itself) currently still produces a
+    /// valid envelope: the script's own `REPO_ROOT="$(git rev-parse
+    /// --show-toplevel)"` resolves past the subdirectory to the TRUE repo
+    /// root and `cd`s there before scanning — silently auditing a different
+    /// tree than the caller specified, with no error.
+    ///
+    /// Deliberately NOT environment poisoning (`GIT_DIR`/`GIT_WORK_TREE`):
+    /// task 5605's `sanitize()` already strips those from the spawned child,
+    /// so poisoning them would be vacuous — the same defect that made task
+    /// 5656's original one-line design unreachable. Passing a real
+    /// subdirectory as `repo_root` creates a genuine expected-vs-resolved
+    /// disagreement with no environment manipulation at all, and models a
+    /// real bug class: a `CARGO_MANIFEST_DIR` `.parent()` walk landing on the
+    /// wrong level.
+    #[test]
+    fn child_repo_root_mismatch_panics() {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!(
+                "orphan_audit: skipping child_repo_root_mismatch_panics — git not available"
+            );
+            return;
+        }
+
+        let (script, repo_root) = resolve_real_script_and_root();
+        let wrong_root = repo_root.join("crates");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_orphan_audit_at(&script, &wrong_root, "crates/reify-audit/src")
+        }));
+
+        let payload = match result {
+            Ok(audit) => panic!(
+                "expected run_orphan_audit_at to panic when repo_root ({wrong_root:?}) \
+                 does not match what the child itself resolves via `git rev-parse \
+                 --show-toplevel` — got: {audit:?}"
+            ),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains("DIFFERENT repository than requested"),
+            "panicked, but not with the expected repo-root-mismatch wording; \
+             got: {message}"
+        );
+    }
+
+    /// Regression guard against [`child_repo_root_mismatch_panics`]'s probe
+    /// becoming a false positive under this project's warm-lane topology.
+    ///
+    /// Measured at this branch base: sanitized `git rev-parse
+    /// --show-toplevel` from the manifest-derived root returns EXACTLY that
+    /// root, even inside a linked git worktree whose `.git` is a gitdir FILE
+    /// (this project's normal topology, `worktrees/_lane-NN`) — so the probe
+    /// agrees with the `CARGO_MANIFEST_DIR` two-`.parent()` walk and this
+    /// call must NOT panic.
+    #[test]
+    fn child_repo_root_agrees_with_manifest_walk() {
+        match run_orphan_audit_detailed("crates/reify-audit/src") {
+            OrphanAudit::Envelope(_) => {}
+            OrphanAudit::EnvUnavailable(reason) => {
+                eprintln!(
+                    "orphan_audit: skipping child_repo_root_agrees_with_manifest_walk \
+                     — {reason}"
+                );
+            }
+            OrphanAudit::ExcludedScope => panic!(
+                "crates/reify-audit/src is not in EXCLUDE_CRATES; getting ExcludedScope \
+                 here would mean EXCLUDE_CRATES or scope_is_excluded_crate regressed"
+            ),
+        }
+    }
+
+    /// RED premise (task 5698 step 5): `run_orphan_audit_at` does not yet
+    /// check that `script` exists before spawning it — that check currently
+    /// lives only in [`run_orphan_audit_detailed`], one layer up. Calling the
+    /// seam directly with a nonexistent script hits the spawn's
+    /// `unwrap_or_else` panic ("failed to invoke") instead of gracefully
+    /// returning `EnvUnavailable`, so this test pins that the documented
+    /// graceful-skip protocol survives the move of that check down into the
+    /// seam (task 5698 step 6).
+    #[test]
+    fn missing_script_is_env_unavailable() {
+        let (_script, repo_root) = resolve_real_script_and_root();
+        let result = run_orphan_audit_at(
+            Path::new("/nonexistent/audit-orphan-producers.sh"),
+            &repo_root,
+            "crates/reify-audit/src",
+        );
+        assert!(
+            matches!(result, OrphanAudit::EnvUnavailable(_)),
+            "expected EnvUnavailable for a nonexistent script path, got: {result:?}"
+        );
+    }
+
     /// Hand-rolled parse of an `EXCLUDE_CRATES = {"a", "b"}`-shaped Python
     /// set-literal declaration. No `regex` dependency exists anywhere in this
     /// workspace (checked before writing this test), so a small manual scan
