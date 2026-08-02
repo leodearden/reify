@@ -1037,9 +1037,31 @@ _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 # Order matters.  isfile() runs first and short-circuits, so a lane that never
 # generated the grammar pays no subprocess; only when parser.c exists do we spend
 # one probe asking whether it can be loaded.
-_TS_GRAMMAR_AVAILABLE = (
-    os.path.isfile(_TS_GRAMMAR_PARSER) and pcc.grammar_substrate_usable()[0]
-)
+def _compute_ts_grammar_available() -> bool:
+    """Return whether the grammar e2e can run here.  Never raises.
+
+    The bare `except Exception` is deliberate, and is the one place in this
+    change where a broad catch is correct: this runs at import time in a test
+    harness whose only sane failure mode is "cannot confirm the substrate → skip
+    the one test that needs it".  The alternative, measured on this branch, is
+    losing every test in the module plus the infra script's
+    `scripts/test_prd_capability_check.py exits 0` assert.
+
+    This is defence-in-depth and explicitly NOT a substitute for fixing the
+    trigger.  Swallowing an exception here would hide a genuinely broken
+    run_probe() from the CLI path too, which is why an unlaunchable binary is
+    represented as a harness error at source in run_probe() and this guard only
+    bounds the blast radius of whatever else may one day escape.
+    """
+    if not os.path.isfile(_TS_GRAMMAR_PARSER):
+        return False
+    try:
+        return bool(pcc.grammar_substrate_usable()[0])
+    except Exception:
+        return False
+
+
+_TS_GRAMMAR_AVAILABLE = _compute_ts_grammar_available()
 
 
 # ---------------------------------------------------------------------------
