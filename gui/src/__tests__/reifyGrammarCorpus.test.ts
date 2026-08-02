@@ -3866,6 +3866,95 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
 });
 
 /**
+ * THE TWO FAMILIES ROUND 4 SET OUT TO FIX AND THEN MEASURED AS NON-GAPS.
+ *
+ * The round-3 note below forecast twelve families from each not-clean file's
+ * FIRST blocker. Two of those twelve turned out not to exist as described. This
+ * block asserts their absence so it stays visible: nothing else in this file
+ * would fail if someone "fixed" either one, and both fixes would be actively
+ * harmful.
+ *
+ * Every assertion here PASSED ON ARRIVAL — that is the point. They are
+ * regression pins for a measurement, not RED tests waiting on a change.
+ */
+describe('reify.grammar — measured non-gaps, pinned so they stay measured', () => {
+  /**
+   * FAMILY 10, "arrow type in a param annotation". Already reachable. Measured:
+   * `structure def S { param f : (Length) -> Length }` → 0 errors, and the
+   * parse contains a `FunctionType` node. `FunctionType` has been in the
+   * grammar all along; nothing about the ARROW was ever the blocker.
+   */
+  it('admits an arrow type wherever the language admits a param', () => {
+    for (const src of [
+      'structure def S { param f : (Length) -> Length }',
+      'structure def S { param g : (Length, Angle) -> Real }',
+      'structure def S { param h : () -> Length }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      expect(nodeNames(src)).toContain('FunctionType');
+    }
+  });
+
+  /**
+   * THE COMPLEMENTARY PIN, and the one that actually matters — it is what keeps
+   * tests/prd-gate/fixtures/arrow_type.ri off EXPECTED_CLEAN.
+   *
+   * That fixture is a single TOP-LEVEL `param f : (Length) -> Length`, and its
+   * own header (:1-10) declares it a deliberate FAIL probe. The blocker is not
+   * the arrow type; it is that `param` IS NOT A TOP-LEVEL DECLARATION. Measured
+   * here: the arrow form errors (5 nodes), and so do the plain `param f :
+   * Length` (4) and `let x = 1` (4) — none of the three is about arrows.
+   *
+   * DO NOT "FIX" THIS BY ADMITTING TOP-LEVEL `param`. Two independent sources
+   * agree that it is not part of the language, and both were read, not
+   * assumed:
+   *
+   *   - tree-sitter-reify/grammar.js:134 — `_declaration` lists sixteen
+   *     alternatives and `param_declaration` is not among them.
+   *   - crates/reify-syntax/src/ts_parser.rs:299 — `lower_source_file` has no
+   *     `param_declaration` arm; an unexpected named child hits the catch-all
+   *     and emits a diagnostic.
+   *
+   * Admitting it HERE would make the GUI accept what neither the authoritative
+   * grammar nor the compiler does — a third dialect, which is exactly what the
+   * `AutoTypeArg` note in reify.grammar already forbids. The file stays off the
+   * ledger deliberately; see the MEASUREMENT block below.
+   */
+  it('still refuses a top-level param, which is why arrow_type.ri is not clean', () => {
+    for (const src of [
+      'param f : (Length) -> Length',
+      'param f : Length',
+      'let x = 1',
+    ]) {
+      expect(countErrorNodes(src)).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * FAMILY 12's third one-off, "chained comparison `a < b < c < d`". Does not
+   * exist either. Measured: 0 errors in both binding and constraint position.
+   *
+   * examples/integration_corner_cases.ri:131 is `let chain = a < b < c < d`,
+   * and every error on that line came from `chain` — which round 2 had promoted
+   * to a hard `kw<>` — not from the comparison. Lines 133-135 were cascade.
+   * Round 4's family 1 (`chain` back to `ekw<>`) is the whole fix.
+   *
+   * The `leftOperandOf` assertion pins the GROUPING, not just the absence of
+   * errors: a precedence change could re-associate the chain to the right and
+   * leave the error count at 0, so the clean parse alone would not notice.
+   */
+  it('already parses a chained comparison, left-associatively', () => {
+    for (const src of [
+      'structure def S { let x = a < b < c < d }',
+      'structure def S { constraint a < b < c < d }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+    }
+    expect(leftOperandOf('structure def F { let x = a < b < c }')).toBe('a < b');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
