@@ -65,6 +65,10 @@
 #   When REIFY_AUDIT_NO_COLD_BUILD is unset/0, falls through to the rebuild path.
 #   Exit 75 is the codebase's established transient/backpressure sentinel (psi_gate,
 #   test_semaphore_acquire) so the orchestrator already understands this signal.
+# - rc 125 is presence-ambiguous in the same way, and for the same reason: see
+#   the `return 125` site at the bottom of reify_audit_guard.  A caller that
+#   treats it as "no usable detector" without checking `-x $bin` will hard-fail
+#   on binaries that run perfectly well (#5962 review).
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_AUDIT_FRESHNESS_SH_SOURCED:-}" = "1" ]; then
@@ -189,6 +193,15 @@ reify_audit_guard() {
         # Still stale after rebuild — fall through to the refuse message.
     fi
 
+    # rc 125 means "still judged stale", NOT "no usable binary" (#5962 review).
+    # Two very different worlds reach here: a failed `cargo build -p reify-audit`
+    # (nothing on disk to run), and a build that was a legitimate no-op — cargo's
+    # fingerprint says up-to-date — while the on-disk mtime still predates the
+    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
+    # stamped mtimes, where $bin is fully executable.  Callers that refuse on 125
+    # must split on `[ -x "$bin" ]` first, exactly as they must for rc 75 above;
+    # tests/infra/test_reify_audit_ptodo.sh does (absent → exit 1, present →
+    # degrade to RATCHET_SKIP=1 and keep running the staleness-tolerant gates).
     echo "reify-audit binary '$bin' is stale (mtime $btime predates last crates/reify-audit commit $epoch); reinstall with: cargo install --path crates/reify-audit --root ~/.cargo --force" >&2
     return 125
 }
