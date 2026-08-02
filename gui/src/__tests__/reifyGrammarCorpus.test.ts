@@ -3431,6 +3431,82 @@ describe('reify.grammar snippets — an Annotation as a member', () => {
 });
 
 /**
+ * `meta.<field>` member access — catch-up round 4, family 7.
+ *
+ * `meta` opens `MetaBlock` as a HARD `kw<"meta">`, and a hard keyword in Lezer
+ * is context-FREE: the word stops being an `Identifier` everywhere, including
+ * as the receiver of an ordinary member access. Upstream has no such problem —
+ * tree-sitter's parse-state-driven lexer keeps `meta` an identifier wherever a
+ * meta block cannot start — so `ekw<"meta">` is the upstream-faithful reading,
+ * exactly as `relate`, `at`, `self`, `default` and (round 4, family 1) `chain`
+ * are already spelled here.
+ *
+ * MEASURED before the fix:
+ *   (a) the corpus-verbatim `meta.<field>` lets — 4 errors → RED
+ *   (b) the `MetaBlock` reading                 — 0 errors → passes
+ *   (c) `meta` as an ordinary binding name      — 2 errors → RED
+ *
+ * (b) is the trade this demotion is priced against, and it is VERIFIED rather
+ * than assumed: it is the reading a careless `ekw` swap would silently cost.
+ */
+describe('reify.grammar snippets — `meta` stays a legal ordinary identifier', () => {
+  // Corpus-attested VERBATIM: examples/m9_combined.ri:67-68
+  // (`let label = meta.material` / `let rev   = meta.revision`); the same shape
+  // sits at examples/integration_full_v01.ri:140-141 (`meta.project`,
+  // `meta.version`).
+  it('accepts `meta` as the receiver of a member access', () => {
+    const src = 'structure def S { let label = meta.material  let rev = meta.revision }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('LetDeclaration');
+    expect(names).toContain('MemberAccess');
+  });
+
+  /**
+   * THE READING THAT MUST NOT BE LOST — the trade the demotion is priced
+   * against, asserted on NODE NAMES and a COUNT rather than an error count
+   * alone. A demotion that re-opened an ambiguity at member start could still
+   * reach 0 errors while producing a doubled or nested `MetaBlock` — the
+   * `WildcardPattern > WildcardPattern` failure #5957 hit, and the same trap
+   * family 1's `ChainStatement` pin guards.
+   */
+  it('still yields exactly one MetaBlock for the block form', () => {
+    const src = 'structure def S { meta { material = "steel", revision = "r2" } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MetaBlock');
+    expect(names).toContain('MetaEntry');
+    expect(countNodesNamed(src, 'MetaBlock')).toBe(1);
+  });
+
+  /**
+   * The third position a demotion opens up: `meta` as an ordinary BINDING name,
+   * not just as an expression operand. Nothing in the committed corpus needs it
+   * today, but it is what "ordinary identifier" means, and it is the position
+   * that would silently regress if a later round re-hardened the keyword to buy
+   * a disambiguation.
+   */
+  it('accepts `meta` as an ordinary binding name', () => {
+    const src = 'structure def S { let meta = 5mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('LetDeclaration');
+  });
+
+  /**
+   * CASCADE ATTRIBUTION for the SECOND file this family lands.
+   * examples/integration_full_v01.ri has a `some(100.0)` at L183 that family 2
+   * (a `ReservedWord` in call position) already fixed, so the file turns clean
+   * only once BOTH have landed. Pinned here so the ledger's +2 is attributable
+   * and a future bisect cannot mis-credit it to the `meta` demotion alone.
+   */
+  it('already parses the other blocker in integration_full_v01.ri', () => {
+    const src = 'structure def S { let maybe_load = some(100.0) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('FunctionCall');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
