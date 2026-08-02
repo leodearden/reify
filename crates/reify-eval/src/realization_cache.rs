@@ -119,10 +119,12 @@ impl<V> RealizationCache<V> {
     /// - **Monotonic.** Incremented only by an *accepted* [`insert_terminal`](Self::insert_terminal)
     ///   (one that returns `true`, i.e. genuinely realized and cached new geometry).
     ///   Never decremented — not by [`remove`](Self::remove), not by
-    ///   [`clear_entity`](Self::clear_entity), and not across a
-    ///   `clear_realization_cache()` reseat (which `edit_param`/`edit_source` perform
-    ///   on every edit, so a reset-on-flush counter would be useless for cross-edit
-    ///   measurement).
+    ///   [`clear_entity`](Self::clear_entity), and not by the whole-cache
+    ///   [`clear`](Self::clear) behind `clear_realization_cache()` (which
+    ///   `edit_param`/`edit_source` perform on every edit, so a reset-on-flush
+    ///   counter would be useless for cross-edit measurement). No method on this
+    ///   type can lower the count — the monotonicity is structural, not a
+    ///   convention imposed on call sites.
     /// - **Terminal only.** Plain [`insert`](Self::insert) — the intermediate
     ///   cross-kernel conversion path — is deliberately NOT counted. Conversion
     ///   intermediates are steps *within* one realization, not realizations.
@@ -136,18 +138,21 @@ impl<V> RealizationCache<V> {
         self.terminal_entries
     }
 
-    /// Restores the monotonic [`realization_entries`](Self::realization_entries)
-    /// count onto a freshly-reseated cache.
+    /// Drops every cached entry, leaving the cache empty.
     ///
-    /// **Invalidation-only.** This exists solely so a cache *flush* — reseating
-    /// to [`RealizationCache::new`], as `Engine::clear_realization_cache` does —
-    /// can carry the lifetime counter across the reseat without exposing a
-    /// general-purpose mutator. Nothing on a normal insert/lookup path should
-    /// call it, and it must never be used to lower the count: doing so would
-    /// break the monotonicity that
-    /// [`realization_entries`](Self::realization_entries) documents.
-    pub fn restore_realization_entries(&mut self, n: usize) {
-        self.terminal_entries = n;
+    /// This is the whole-cache flush behind
+    /// [`Engine::clear_realization_cache`](crate::Engine::clear_realization_cache)
+    /// (and therefore behind every `edit_param` / `edit_source`).
+    ///
+    /// **Monotonicity holds by construction.** The flush clears `buckets`
+    /// in place and structurally cannot reach `terminal_entries`, so the
+    /// lifetime counter documented by
+    /// [`realization_entries`](Self::realization_entries) survives it without
+    /// any save/restore dance at the call site. Reseating the whole struct to
+    /// [`RealizationCache::new`] instead would zero the counter — that is
+    /// exactly what this method exists to make impossible.
+    pub fn clear(&mut self) {
+        self.buckets.clear();
     }
 
     /// Inserts a **terminal realization** at `(entity, repr_kind, options_hash, tol)`,
@@ -1015,6 +1020,47 @@ mod tests {
             "`clear_entity` must NOT decrement the monotonic lifetime counter"
         );
         assert!(cache.is_empty(), "both entries should now be gone");
+    }
+
+    /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`
+    /// empties the cache without touching the lifetime counter.
+    ///
+    /// This is the structural half of the monotonicity invariant: `clear` can
+    /// only reach `buckets`, so there is no save/restore dance at the call site
+    /// that a later edit could reorder or forget. Reseating to
+    /// `RealizationCache::new()` — the shape this replaced — would zero the
+    /// counter on every `edit_param`/`edit_source`.
+    #[test]
+    fn clear_empties_the_cache_but_preserves_realization_entries() {
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1));
+        assert!(cache.insert_terminal("Other", ReprKind::BRep, 0.02, ContentHash(0), 2));
+        assert_eq!(cache.realization_entries(), 2);
+        assert_eq!(cache.len(), 2);
+
+        cache.clear();
+
+        assert!(cache.is_empty(), "`clear` must drop every cached entry");
+        assert_eq!(cache.len(), 0, "`clear` must leave a zero live size");
+        assert_eq!(
+            cache.lookup("Body", ReprKind::Mesh, 0.01, ContentHash(0)),
+            None,
+            "a flushed entry must no longer be servable"
+        );
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "`clear` must NOT reset the monotonic lifetime counter — \
+             edit_param/edit_source flush on every edit"
+        );
+
+        // A post-flush realization is genuinely new, so it still counts.
+        assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 3));
+        assert_eq!(
+            cache.realization_entries(),
+            3,
+            "re-realizing after a flush must increment, not restore"
+        );
     }
 
     /// (f) Monotonicity survives `SOFT_CAPACITY` eviction — this is precisely

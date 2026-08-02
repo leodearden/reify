@@ -957,13 +957,14 @@ pub struct Engine {
     /// Running totals of the per-call eval-cache counters, folded in at the end
     /// of every [`Engine::eval_cached`] call (task 4152).
     ///
-    /// Only `cache_hits` / `cache_misses` / `early_cutoffs` are accumulated
-    /// here. The `realization_entries` slot of this field is unused and stays
-    /// 0: that counter is a lifetime count already owned by
-    /// [`Engine::realization_cache`], so accumulating it too would double-count.
-    /// [`Engine::cache_stats`] grafts the live cache counter over this field's
-    /// zero when it assembles the public [`CacheStats`].
-    cumulative_eval_cache_stats: CacheStats,
+    /// Deliberately NOT a [`CacheStats`]: the public struct's fourth field,
+    /// `realization_entries`, has no meaning here (it is a lifetime count
+    /// already owned by [`Engine::realization_cache`], so accumulating it too
+    /// would double-count). Storing only the three fields this actually
+    /// accumulates makes that a compile error rather than a silently-discarded
+    /// write. [`Engine::cache_stats`] assembles the public [`CacheStats`]
+    /// field-by-field from this plus the live realization counter.
+    cumulative_eval_cache_totals: EvalCacheTotals,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
@@ -1113,6 +1114,24 @@ pub struct Engine {
     /// call (or engine construction). Incremented on a lookup miss for a
     /// persistable target (step-8).
     persistent_miss_count: u64,
+}
+
+/// Engine-lifetime running totals of the three eval-cache counters (task 4152).
+///
+/// Private accumulator behind `Engine::cumulative_eval_cache_totals`, folded
+/// in at the end of every [`Engine::eval_cached`] call and read back out by
+/// [`Engine::cache_stats`].
+///
+/// This exists so the accumulator can hold ONLY the counters that are genuinely
+/// accumulable. The public [`CacheStats`] additionally carries
+/// `realization_entries`, which is a lifetime count owned by the
+/// [`RealizationCache`] and read live — accumulating it here would double-count,
+/// so there is deliberately no field for it to be written into.
+#[derive(Debug, Clone, Default)]
+struct EvalCacheTotals {
+    hits: usize,
+    misses: usize,
+    early_cutoffs: usize,
 }
 
 /// Statistics about cache behavior during a cached evaluation.

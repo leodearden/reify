@@ -356,7 +356,7 @@ impl Engine {
             // Task 4152: zeroed eval-cache accumulator. Folded forward by
             // `eval_cached` and surfaced (alongside the live realization
             // counter) by `Engine::cache_stats`.
-            cumulative_eval_cache_stats: crate::CacheStats::default(),
+            cumulative_eval_cache_totals: crate::EvalCacheTotals::default(),
             // Only initialised in test / `test-instrumentation` builds; the
             // field is absent in production (see lib.rs and engine_eval.rs
             // for the matching cfg gates on the declaration and read site).
@@ -678,9 +678,15 @@ impl Engine {
     /// Only the `build()` family can move `realization_entries`: `eval_cached`
     /// dispatches no compute nodes, so it realizes no geometry.
     pub fn cache_stats(&self) -> crate::CacheStats {
+        // Assembled field-by-field, deliberately not by functional update from
+        // the accumulator: the accumulator holds only the three eval-cache
+        // counters, so `realization_entries` has exactly one source (the live
+        // cache) and cannot be shadowed by a stale accumulated copy.
         crate::CacheStats {
+            cache_hits: self.cumulative_eval_cache_totals.hits,
+            cache_misses: self.cumulative_eval_cache_totals.misses,
+            early_cutoffs: self.cumulative_eval_cache_totals.early_cutoffs,
             realization_entries: self.realization_cache.realization_entries(),
-            ..self.cumulative_eval_cache_stats.clone()
         }
     }
 
@@ -722,30 +728,35 @@ impl Engine {
     /// **What this method does NOT touch**: `eval_state`, `snapshot`,
     /// `cache`, `journal`, `feature_tag_table`, `topology_attribute_table`,
     /// `param_overrides`, registered solvers/kernels, or any other engine
-    /// state. The reset is single-purpose: only `realization_cache` is
-    /// reseat to a fresh [`RealizationCache::new()`](crate::realization_cache::RealizationCache::new).
+    /// state. The reset is single-purpose: only `realization_cache`'s entries
+    /// are dropped, via
+    /// [`RealizationCache::clear`](crate::realization_cache::RealizationCache::clear).
     ///
     /// **What this method does NOT reset**: the cache's
     /// [`realization_entries`](crate::realization_cache::RealizationCache::realization_entries)
     /// counter, surfaced as [`CacheStats::realization_entries`](crate::CacheStats::realization_entries).
     /// It is a monotonic count of realizations PERFORMED over the engine's
-    /// lifetime, not of entries currently resident, so it is deliberately
-    /// carried across the reseat (task 4152). Since `edit_param` and
-    /// `edit_source` both flush here, resetting it would zero the metric on
-    /// every edit. Pinned by `realization_entries_survives_clear_realization_cache`
-    /// in `tests/tolerance_wiring_e2e.rs`.
+    /// lifetime, not of entries currently resident, so it deliberately survives
+    /// the flush (task 4152) — `clear` empties the buckets in place and cannot
+    /// reach the counter, so this holds by construction rather than by a
+    /// save/restore convention here. Since `edit_param` and `edit_source` both
+    /// flush here, resetting it would zero the metric on every edit. Pinned by
+    /// `realization_entries_survives_clear_realization_cache` in
+    /// `tests/tolerance_wiring_e2e.rs` and by
+    /// `clear_empties_the_cache_but_preserves_realization_entries` in
+    /// `src/realization_cache.rs`.
     ///
     /// Pinned by `clear_realization_cache_public_api_resets_cache_for_production_callers`
     /// in `tests/tolerance_wiring_e2e.rs`.
     pub fn clear_realization_cache(&mut self) {
-        // Task 4152: carry the monotonic lifetime counter across the reseat.
-        // `realization_entries` measures realizations PERFORMED over the
-        // engine's life, not entries currently resident, so a flush must not
-        // zero it — `edit_param`/`edit_source` flush on every edit, and a
-        // reset here would make the metric unusable across edits.
-        let realized = self.realization_cache.realization_entries();
-        self.realization_cache = crate::realization_cache::RealizationCache::new();
-        self.realization_cache.restore_realization_entries(realized);
+        // Task 4152: `RealizationCache::clear` drops every entry in place and
+        // structurally cannot reach the monotonic `realization_entries`
+        // counter, so the lifetime metric survives the flush by construction.
+        // Do NOT "simplify" this back to a reseat
+        // (`self.realization_cache = RealizationCache::new()`): that zeroes the
+        // counter, and `edit_param`/`edit_source` flush on every edit, so the
+        // metric would be unusable across edits.
+        self.realization_cache.clear();
     }
 
     /// Construct an Engine with the embedded stdlib as its prelude.
@@ -3105,35 +3116,10 @@ mod tests {
 
     // ── `Engine::cache_stats()` public surface (task 4152, step-03) ──
 
-    /// `CacheStats` carries a `realization_entries` field that starts at 0 and
-    /// is publicly readable, and remains constructible via functional-update
-    /// syntax from `Default` (the workspace's only construction idiom — there
-    /// are no `CacheStats { .. }` literals, which is what makes this additive
-    /// field non-breaking).
-    #[test]
-    fn cache_stats_default_carries_zeroed_realization_entries() {
-        let stats = crate::CacheStats::default();
-        assert_eq!(
-            stats.realization_entries, 0,
-            "a default CacheStats must report zero realizations"
-        );
-
-        // Functional update from Default must keep compiling and preserve the
-        // untouched fields — this is exactly the shape `Engine::cache_stats`
-        // uses to graft the live counter onto the cumulative eval counters.
-        let grafted = crate::CacheStats {
-            realization_entries: 7,
-            ..Default::default()
-        };
-        assert_eq!(grafted.realization_entries, 7);
-        assert_eq!(grafted.cache_hits, 0);
-        assert_eq!(grafted.cache_misses, 0);
-        assert_eq!(grafted.early_cutoffs, 0);
-    }
-
     /// `Engine::cache_stats()` is an UNGATED public method returning
     /// `CacheStats` by value, and a freshly-constructed engine reports zeros
-    /// across the board.
+    /// across the board — including the additive `realization_entries` field,
+    /// which is publicly readable and starts at 0.
     ///
     /// Ungated (unlike [`Engine::realization_cache`], which is
     /// `#[cfg(any(test, feature = "test-instrumentation"))]`) because it
@@ -3142,6 +3128,17 @@ mod tests {
     #[test]
     fn fresh_engine_cache_stats_reports_all_zero() {
         use reify_test_support::mocks::MockConstraintChecker;
+
+        // `CacheStats::default()` zeroes the additive field too — the
+        // workspace's only `CacheStats` construction idiom is `Default` (there
+        // are no `CacheStats { .. }` literals outside `cache_stats()` itself),
+        // which is what makes the added field non-breaking.
+        assert_eq!(
+            crate::CacheStats::default().realization_entries,
+            0,
+            "a default CacheStats must report zero realizations"
+        );
+
         let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
         // Returned by value: bind it and let the engine borrow end.

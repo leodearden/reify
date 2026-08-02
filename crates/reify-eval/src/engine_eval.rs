@@ -8024,9 +8024,9 @@ impl Engine {
         // `cache_stats()` reports. `realization_entries` is deliberately NOT
         // accumulated: it is already a lifetime count owned by the
         // RealizationCache, so adding it here would double-count.
-        self.cumulative_eval_cache_stats.cache_hits += stats.cache_hits;
-        self.cumulative_eval_cache_stats.cache_misses += stats.cache_misses;
-        self.cumulative_eval_cache_stats.early_cutoffs += stats.early_cutoffs;
+        self.cumulative_eval_cache_totals.hits += stats.cache_hits;
+        self.cumulative_eval_cache_totals.misses += stats.cache_misses;
+        self.cumulative_eval_cache_totals.early_cutoffs += stats.early_cutoffs;
 
         CachedEvalResult {
             eval_result: EvalResult {
