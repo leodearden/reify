@@ -810,14 +810,31 @@ MatchPattern {
 // zero ERROR nodes across all six legal-identifier positions pinned in
 // reifyGrammarCorpus.test.ts.
 //
-// Two findings worth not re-deriving. Restructuring `MatchPattern` into
+// The `@extend` carries NO `@name`, unlike every `ekw<>` above, and that is
+// load-bearing rather than an omission. `@name=WildcardPattern` would name the
+// TOKEN what the enclosing rule is already named, and both are visible in the
+// tree, so every wildcard arm came out as `MatchPattern > WildcardPattern >
+// WildcardPattern` — one node duplicated (MEASURED; the doubling was invisible
+// to the suite because `nodeNames(...).toContain(…)` is satisfied by either).
+// Dropping `@name` leaves the token anonymous and the rule the sole bearer of
+// the public name, so exactly ONE `WildcardPattern` node spans the `_`
+// (MEASURED; pinned by an explicit count assertion in the corpus test, not
+// just by a `toContain`). A distinct token `@name` was tried too and is worse:
+// it emits a second, differently-named node instead of removing one.
+//
+// Three findings worth not re-deriving. Restructuring `MatchPattern` into
 // `matchPatternAtom ("|" matchPatternAtom)*` was tried as a fix on its own and
 // does NOT work: rule shape does not change the token-level fallback, so it
-// parses clean but yields no `WildcardPattern` node anywhere. And the syntax
-// trap — `@dynamicPrecedence` is a RULE PROP only; a top-level
+// parses clean but yields no `WildcardPattern` node anywhere. The precedence
+// cannot be moved onto the token to collapse rule and token into one
+// construct: `@extend[@name=WildcardPattern, @dynamicPrecedence=1]<…>` is a
+// hard generator error, "Dynamic precedence can only be specified on
+// nonterminals" — hence a wrapping rule is REQUIRED here, and the anonymous
+// token is what keeps it from costing a duplicate node. And the syntax trap —
+// `@dynamicPrecedence` is a RULE PROP only; a top-level
 // `@dynamicPrecedence { … }` block is a hard parse error in the generator.
 WildcardPattern[@dynamicPrecedence=1] {
-  @extend[@name=WildcardPattern]<Identifier, "_">
+  @extend<Identifier, "_">
 }
 
 VariantBindingPattern {

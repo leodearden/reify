@@ -54,6 +54,26 @@ function nodeNames(src: string): Set<string> {
 }
 
 /**
+ * Parse `src` and count the nodes named `name`.
+ *
+ * `nodeNames` collapses to a set, so a production that emits the SAME node
+ * type nested inside itself reads as one hit and the redundancy is invisible.
+ * That is not hypothetical: naming a rule and the token it wraps identically
+ * made every wildcard arm come out as `WildcardPattern > WildcardPattern`
+ * while `toContain('WildcardPattern')` stayed green (#5957). Use this wherever
+ * the tree SHAPE, not just the presence of a name, is the contract.
+ */
+function countNodesNamed(src: string, name: string): number {
+  const tree = parser.parse(src);
+  const cursor = tree.cursor();
+  let count = 0;
+  do {
+    if (cursor.type.name === name) count++;
+  } while (cursor.next());
+  return count;
+}
+
+/**
  * Node types that group two operands under an infix operator.
  *
  * Kept EXHAUSTIVE on purpose — the reason is spelled out on `leftOperandOf`
@@ -1791,7 +1811,9 @@ describe('reify.grammar snippets — match, enum, variants', () => {
   it('parses a wildcard arm `match s { _ => 0mm }` and yields a WildcardPattern node (normative, unattested)', () => {
     const src = 'structure def F { let a = match s { _ => 0mm } }';
     expect(countErrorNodes(src)).toBe(0);
-    expect(nodeNames(src)).toContain('WildcardPattern');
+    // Count, not `toContain`: exactly ONE node spans the `_`. See
+    // `countNodesNamed` for the doubling this pins against.
+    expect(countNodesNamed(src, 'WildcardPattern')).toBe(1);
   });
 
   it('parses an or-pattern arm `match s { A | B => 1mm }` (normative, unattested)', () => {
@@ -1898,51 +1920,51 @@ describe('reify.grammar snippets — match, enum, variants', () => {
  * ── `_` is a WILDCARD IN PATTERN POSITION AND AN ORDINARY IDENTIFIER
  *    EVERYWHERE ELSE ────────────────────────────────────────────────────────
  *
- * The house rule this slice enforces is the one the `ekw` note in
- * reify.grammar states and that `direction`/`frame` (reify.grammar:470-478)
- * and `relate` (:537-545) are each held open by: the editor grammar must not
- * reject source the COMPILER accepts. A word that the language also admits as
- * an ordinary name gets `@extend`, never a context-free `@specialize`.
+ * Why `_` is declared the way it is — the `@extend` + `@dynamicPrecedence`
+ * mechanism, the compiler evidence that `_` is a bound name rather than a
+ * reserved word, and the variants that were tried and rejected — lives in the
+ * `WildcardPattern` note in reify.grammar. It is not restated here.
  *
- * `_` is such a word, and that is MEASURED, not assumed. Running
- * `target/release/reify eval` on case (1) below prints `F._ = 0.003 m`, and on
- * case (2) prints `F._ = 0.001 m` — the compiler lexes a bare `_` as an
- * identifier and BINDS it. Case (3)'s `fn f(_ : Length)` likewise parses and
- * evaluates through to a call. So reserving `_` globally would make the editor
- * flag as an error three declaration forms the compiler resolves, plus the
- * argument and or-pattern positions below.
+ * What these tests pin is the IDENTIFIER half of the contract, in the four
+ * positions where nothing else in this file would notice it breaking: `_` must
+ * parse clean AND must not reduce to `WildcardPattern`. Error-freedom alone is
+ * too weak — a widening of the precedence that made `_` a wildcard in a `let`
+ * or argument position would still parse clean and leave every one of these
+ * green while the contract was gone.
  *
- * Each assertion pins one position where `_` must keep lexing as a plain
- * `Identifier`. They are DELIBERATELY separate `it` blocks: a global
- * reservation regresses all six at once, and naming each one keeps the failure
- * output pointing at the specific form that broke rather than at a single
- * fused assertion.
- *
- * The two `WildcardPattern` assertions elsewhere in this file — the expression
- * form's own wildcard test and the `MatchArmDeclBlock` one — are the other half
- * of the contract and must stay green alongside these. Both directions have to
- * hold simultaneously: `_` reduces to `WildcardPattern` at `MatchPattern`
- * position, and to `Identifier` everywhere else.
+ * They are DELIBERATELY separate `it` blocks: a bad declaration regresses all
+ * six at once, so naming each keeps the failure output pointing at the form
+ * that actually broke. The `WildcardPattern` half of the contract is pinned by
+ * the expression form's own wildcard test and the `MatchArmDeclBlock` one;
+ * both directions have to hold simultaneously.
  */
 describe('reify.grammar snippets — `_` stays a legal ordinary identifier', () => {
   it('accepts `_` as a `let` binding name', () => {
-    // Compiler evidence: `reify eval` prints `F._ = 0.003 m` for this source.
-    expect(countErrorNodes('structure def F { let _ = 3mm }')).toBe(0);
+    const src = 'structure def F { let _ = 3mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('Identifier');
+    expect(nodeNames(src)).not.toContain('WildcardPattern');
   });
 
   it('accepts `_` as a `param` name', () => {
-    // Compiler evidence: `reify eval` prints `F._ = 0.001 m` for this source.
-    expect(countErrorNodes('structure def F { param _ : Length = 1mm }')).toBe(0);
+    const src = 'structure def F { param _ : Length = 1mm }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('Identifier');
+    expect(nodeNames(src)).not.toContain('WildcardPattern');
   });
 
   it('accepts `_` as an `fn` parameter name', () => {
-    expect(
-      countErrorNodes('structure def H { fn f(_ : Length) -> Length { 1mm } }'),
-    ).toBe(0);
+    const src = 'structure def H { fn f(_ : Length) -> Length { 1mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('Identifier');
+    expect(nodeNames(src)).not.toContain('WildcardPattern');
   });
 
   it('accepts `_` in argument position', () => {
-    expect(countErrorNodes('structure def F { let a = f(_) }')).toBe(0);
+    const src = 'structure def F { let a = f(_) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('Identifier');
+    expect(nodeNames(src)).not.toContain('WildcardPattern');
   });
 
   /**
@@ -2996,24 +3018,17 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
   });
 
   /**
-   * #5957 fixed the divergence recorded here previously: `WildcardPattern`
-   * was declared via `@extend` alone, which only disambiguates across
-   * DIFFERENT grammar positions (see the `ekw` note in reify.grammar), so at
-   * `MatchPattern`'s single shared position `_` always fell back to the
-   * unextended `Identifier` reading and no tree ever carried a
-   * `WildcardPattern` node. The fix keeps `@extend` — `_` is a compiler-bound
-   * identifier, not a reserved word, as the legal-identifier slice above pins
-   * — and adds a `@dynamicPrecedence` rule prop to break the tie at the one
-   * position where both readings are live. So `_` yields `WildcardPattern`
-   * here exactly as it does in the expression form's own wildcard test above,
-   * without being reserved anywhere else.
+   * The declaration form must produce the SAME wildcard tree the expression
+   * form does — same node, same count — since both go through `MatchPattern`.
+   * #5957 fixed a divergence here where neither produced the node at all; how
+   * that was diagnosed and fixed is in the `WildcardPattern` note in
+   * reify.grammar.
    */
   it('accepts a wildcard arm and yields a WildcardPattern node', () => {
     const src = 'structure def F { match kind { _ => sub head : DefaultHead } }';
     expect(countErrorNodes(src)).toBe(0);
-    const names = nodeNames(src);
-    expect(names).toContain('MatchArmDeclBlock');
-    expect(names).toContain('WildcardPattern');
+    expect(nodeNames(src)).toContain('MatchArmDeclBlock');
+    expect(countNodesNamed(src, 'WildcardPattern')).toBe(1);
   });
 
   it('accepts a variant-binding-pattern arm', () => {
