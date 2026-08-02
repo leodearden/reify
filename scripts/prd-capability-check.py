@@ -521,16 +521,27 @@ def run_probe(probe: Probe) -> ProbeRun:
     generated first).  build_command() uses the same repo_root so the
     recorded fixture path and the executed path are identical.
 
-    FileNotFoundError (missing binary) is caught and represented as a ProbeRun
-    with _BINARY_NOT_FOUND_SENTINEL in stderr and exit_code=127.  observe()
-    detects this sentinel and returns _HARNESS_ERROR for any probe kind.
+    Any OSError raised by the launch itself — the binary is missing (ENOENT),
+    present but not executable (EACCES), or reached through a bad path component
+    (ENOTDIR) — is caught and represented as a ProbeRun with
+    _BINARY_NOT_FOUND_SENTINEL in stderr and exit_code=127.  observe() detects
+    this sentinel and returns _HARNESS_ERROR for any probe kind.  One
+    representation covers the whole family deliberately: they all mean "the
+    probe could not be launched", which is a harness error regardless of which
+    errno produced it, and a caller that must distinguish them can read the
+    errno text appended after the sentinel.
+
+    The catch is narrow in practice despite naming the base class: subprocess.run
+    is called with capture_output=True and neither check=True nor timeout, so
+    CalledProcessError and TimeoutExpired cannot arise here and an OSError from
+    this call site is specifically the _execute_child launch path.
 
     Args:
         probe: The Probe to run.
 
     Returns:
         A ProbeRun with exit_code, stdout, and stderr from the subprocess.
-        On FileNotFoundError, the sentinel is embedded in stderr so that
+        On a launch failure, the sentinel is embedded in stderr so that
         observe() can classify it as a harness error.
     """
     repo_root = _find_repo_root()
@@ -555,8 +566,12 @@ def run_probe(probe: Probe) -> ProbeRun:
             stdout=proc.stdout,
             stderr=proc.stderr,
         )
-    except FileNotFoundError as exc:
-        # Binary not found: signal to observe() via the sentinel in stderr.
+    except OSError as exc:
+        # The probe could not be launched — missing binary (ENOENT), present but
+        # not executable (EACCES), bad path component (ENOTDIR).  Signal to
+        # observe() via the sentinel in stderr rather than propagating: callers
+        # such as grammar_substrate_usable() run at import time in the test
+        # harness, where a raise costs the whole suite instead of one skip.
         return ProbeRun(
             exit_code=127,
             stdout="",
