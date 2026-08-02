@@ -701,8 +701,9 @@ fn documented_geometry_op_names_all_exist_in_the_compiler() {
 ///
 /// This is the doc → fixture direction at NAME granularity: a row added to the
 /// chunk and never mirrored into the fixture is RED. (Form granularity — a
-/// second overload of an already-documented name — remains a review-time
-/// responsibility; see the module doc.)
+/// second overload of an already-documented name — is covered by its sibling
+/// `every_documented_geometry_op_form_is_exercised_by_the_fixture`; see the
+/// module doc.)
 #[test]
 fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
     let markdown = read_chunk(CHUNK_PATH);
