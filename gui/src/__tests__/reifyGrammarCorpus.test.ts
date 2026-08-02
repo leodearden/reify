@@ -74,13 +74,43 @@ function countNodesNamed(src: string, name: string): number {
 }
 
 /**
+ * Source text SPANNED by the first node named `name` — the discriminator for
+ * "was this token absorbed into that node, or left beside it?".
+ *
+ * A count cannot answer that. An optional leading keyword parsed as a stray
+ * SIBLING leaves the count of the node it should have joined at exactly 1, so
+ * `countNodesNamed(..., 'ParamDeclaration') === 1` passes on both the right
+ * tree and the wrong one; only the node's `from` offset separates them. Throws
+ * rather than returning `''` when the node is absent, so a typo'd name fails
+ * loudly instead of vacuously.
+ */
+function sourceOfNodeNamed(src: string, name: string): string {
+  const cursor = parser.parse(src).cursor();
+  do {
+    if (cursor.type.name === name) return src.slice(cursor.from, cursor.to);
+  } while (cursor.next());
+  throw new Error(`no ${name} node in parse of: ${src}`);
+}
+
+/**
  * Node types that group two operands under an infix operator.
  *
  * Kept EXHAUSTIVE on purpose — the reason is spelled out on `leftOperandOf`
- * below. Beyond the two arithmetic/comparison shapes, three postfix-or-infix
- * forms qualify because their FIRST child is a left operand a precedence
+ * below. Beyond the two arithmetic/comparison shapes, the qualifying forms are
+ * postfix-or-infix ones whose FIRST child is a left operand a precedence
  * assertion may need to name: `AdHocSelector` (`expr @ sel(args)`),
- * `IndexAccess` (`expr [ expr ]`) and `MapEntry` (`expr => expr`).
+ * `IndexAccess` (`expr [ expr ]`), `MapEntry` (`expr => expr`),
+ * `MemberAccess` (`expr . Identifier`) and round 4's three `::` forms —
+ * `QualifiedAccess` (`Base :: name`), `InstanceQualifiedAccess`
+ * (`expr . ( Base :: name )`) and `TraitMethodCall` (either of those plus a
+ * call tail).
+ *
+ * The `::` three are listed here because they NEST — `TraitMethodCall` wraps an
+ * `InstanceQualifiedAccess` which wraps a `QualifiedAccess` — so omitting them
+ * armed exactly the trap `leftOperandOf`'s docstring records. MEASURED with all
+ * three absent: `leftOperandOf('structure def F { let x = f.(A::b)(i + 1) }')`
+ * descended past all three roots into the ARGUMENT's `BinaryExpression` and
+ * returned `'i'`. The anti-vacuity block below covers one case per shape.
  */
 const OPERATOR_NODES = new Set([
   'BinaryExpression',
@@ -88,6 +118,10 @@ const OPERATOR_NODES = new Set([
   'AdHocSelector',
   'IndexAccess',
   'MapEntry',
+  'MemberAccess',
+  'QualifiedAccess',
+  'InstanceQualifiedAccess',
+  'TraitMethodCall',
 ]);
 
 /**
@@ -189,6 +223,30 @@ describe('reify.grammar — leftOperandOf helper', () => {
 
   it('reports the key of a map entry', () => {
     expect(leftOperandOf('structure def F { let m = map { k + 1 => v } }')).toBe('k + 1');
+  });
+
+  it('reports the receiver of a dotted member access', () => {
+    expect(leftOperandOf('structure def F { let m = self.b.bore }')).toBe('self.b');
+  });
+
+  /**
+   * The `::` three, added in catch-up round 4. They nest, so one snippet per
+   * shape is not enough — the DEEPEST one has to be reached through the other
+   * two, which is the case that measured `'i'` while all three were missing
+   * from the set. Each also pins a real grouping claim: the callee of a trait
+   * method call is the whole qualified access, not its base.
+   */
+  it('reports the whole qualified callee of a trait method call', () => {
+    expect(leftOperandOf('structure def F { let x = f.(A::b)(i + 1) }')).toBe('f.(A::b)');
+    expect(leftOperandOf('structure def F { let x = A::b(i + 1) }')).toBe('A::b');
+  });
+
+  it('reports the receiver of a bare instance-qualified access', () => {
+    expect(leftOperandOf('structure def F { let x = f.(A::b) }')).toBe('f');
+  });
+
+  it('reports the base of a bare qualified access', () => {
+    expect(leftOperandOf('structure def F { let x = A::b }')).toBe('A');
   });
 });
 
@@ -3089,26 +3147,16 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
 /**
  * `chain` STAYS A LEGAL ORDINARY IDENTIFIER — catch-up round 4, family 1.
  *
- * THE DIAGNOSIS, MEASURED NOT INHERITED. The round-3 ledger handed this family
- * on as "two stackup files", and #5950's description read it as a list literal
- * in a `let`. It is neither. MEASURED on the unmodified round-3 grammar:
+ * WHY `ekw<"chain">` AND NOT `kw<"chain">`, the round-2 regression it corrects
+ * and the measurement behind it all live on the `ChainStatement` production in
+ * reify.grammar. Read it there.
  *
- *   structure def S { let y = [x] }          → 0 error nodes  (ListLiteral is fine)
- *   structure def S { let chain = a }        → 3 error nodes, the FIRST one
- *                                              sitting ON the word `chain`
- *
- * Round 2 (#5927) promoted `chain` to `kw<"chain">` for `ChainStatement`, and
- * lezer's `@specialize` is context-FREE — so the word stopped being a legal
- * identifier EVERYWHERE, not just in the statement slot. Three committed files
- * use it as an ordinary name: examples/tolerance-stackup-3part.ri:45,
- * examples/tolerance-stackup-rss.ri:35 and examples/integration_corner_cases.ri:131.
- * Upstream spells the statement keyword as a plain `'chain'` string whose
- * parse-state-driven lexer keeps it an identifier off that slot, so `ekw` is the
- * upstream-faithful reading — the same door `at`, `self`, `relate`, `direction`
- * and `frame` are already held open by.
- *
- * The ListLiteral assertion below is deliberate: it pins that the list was never
- * the blocker, so the round-3 note's framing cannot be re-inherited.
+ * What these assertions uniquely carry is their FORM, because the demotion's
+ * risk is one-sided: every gain it buys shows up as ledger movement, but the
+ * thing it could BREAK — the statement reading — would not. So that half is
+ * pinned on the node NAME, not an error count. The `ListLiteral` assertion is
+ * the other deliberate one: it pins that the list literal the round-3 ledger
+ * blamed was never the blocker, so that framing cannot be re-inherited.
  */
 describe('reify.grammar snippets — `chain` stays a legal ordinary identifier', () => {
   // Corpus-attested VERBATIM: examples/tolerance-stackup-3part.ri:45
@@ -3160,20 +3208,16 @@ describe('reify.grammar snippets — `chain` stays a legal ordinary identifier',
 /**
  * A `ReservedWord` in CALL position — catch-up round 4, family 2.
  *
- * `some`/`none`/`undef` are `@specialize`d to `ReservedWord`, which reaches
- * `primaryExpression` — so bare `none` already parses. The gap is the CALLEE
- * slot: `FunctionCall` was `Identifier !postfix ArgListExpr`, and a
- * `ReservedWord` is no longer an `Identifier`. MEASURED before the fix:
- * `let s = none` → 0 errors, `let s = some(u)` → 1 error, sitting on the `(`.
+ * WHY THE CALLEE AND NOT THE RESERVATION, and the measurement that localised
+ * the gap to the callee slot, live on the `FunctionCall` production in
+ * reify.grammar. Read it there.
  *
- * THE FIX IS THE CALLEE, NOT THE RESERVATION. `some` and `none` appear NOWHERE
- * in tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary
- * call on an ordinary identifier. They exist here purely as a forward-compat
- * STYLING reservation, and reify.grammar's own note prices removing them from
- * the `@specialize` list: it "would not enable anything, it would only drop
- * their `ReservedWord: t.keyword` styling". Un-reserving would trade a keyword
- * colour for a parse; widening the callee buys the parse AND keeps the colour,
- * which is what the styling pin below asserts.
+ * What these assertions uniquely carry: the two candidate fixes are
+ * INDISTINGUISHABLE by error count. Un-reserving `some`/`none` — dropping them
+ * from the `@specialize` list — parses all three corpus files exactly as well,
+ * so every `countErrorNodes(...) === 0` assertion in this block passes under
+ * either fix. Only the styling pin below, asserted on the node NAME, tells them
+ * apart; that is the reason it exists.
  */
 describe('reify.grammar snippets — a ReservedWord in call position', () => {
   // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:99.
@@ -3284,10 +3328,21 @@ describe('reify.grammar snippets — `priv` on a param declaration', () => {
    * stray sibling member alongside it — a reading that could parse error-free
    * (a bare `priv` reaching `primaryExpression`) while producing two nodes
    * where the compiler expects one.
+   *
+   * The `ParamDeclaration` count alone does NOT discriminate that: under the
+   * stray-sibling reading there is still exactly one `ParamDeclaration` (it
+   * simply starts at `param`), so a count-only pin passes on the broken tree —
+   * the #5957 failure class again. The SPAN is what separates them, so it is
+   * asserted directly; the `Member` count rules out the extra sibling the
+   * broken reading would need somewhere to put.
    */
   it('yields exactly one ParamDeclaration, with `priv` absorbed into it', () => {
     const src = 'structure def S { priv param rated_torque : Real = 5 }';
     expect(countNodesNamed(src, 'ParamDeclaration')).toBe(1);
+    expect(countNodesNamed(src, 'Member')).toBe(1);
+    expect(sourceOfNodeNamed(src, 'ParamDeclaration')).toBe(
+      'priv param rated_torque : Real = 5',
+    );
   });
 
   /**
@@ -3784,26 +3839,41 @@ describe('reify.grammar snippets — joint definitions', () => {
       expect(nodeNames(src)).toContain('LetDeclaration');
     }
   });
+
+  /**
+   * THE PLACEMENT PIN — must STILL ERROR. `joint_definition` is listed in
+   * `_declaration` (grammar.js:147) and nowhere in `commonMembers()`, so it is
+   * top-level only. Every other assertion in this family would pass just as
+   * well with `JointDefinition` also reachable from `Member`, and no ledger
+   * movement would reveal the difference — so a later round reaching for
+   * `Member` to fix some unrelated body would silently admit what neither
+   * tree-sitter nor the compiler does. Same third-dialect divergence the
+   * top-level-`param` pin guards on the other side. MEASURED: 2 error nodes.
+   */
+  it('does not admit a joint definition as a structure member', () => {
+    expect(
+      countErrorNodes('structure def S { joint j(a: Axis) with x: Length = f(a) }'),
+    ).toBeGreaterThan(0);
+  });
 });
 
 /**
  * `·` (U+00B7) as unit multiplication — catch-up round 4, family 11.
  *
- * `unitOp` inside `QuantityLiteral` admitted only `*` and `/`, so the middot
- * form of a composed unit had nowhere to go.
+ * WHY `·` CANNOT ESCAPE `unitOp` — the structural safety argument, the PRD §9
+ * row B7 and task #5784 boundary cites, and κ's `lexer->lookahead == 0xB7`
+ * contract — lives on the `unitOp` token rule in reify.grammar. Read it there.
  *
  * MEASURED before the fix:
- *   (a) `5N·m`               — 2 errors → RED
- *   (b) `5N·m/rad`           — 3 errors → RED
- *   (c) `5m^2·kg·s^-2`  — 5 errors → RED
+ *   (a) `5N·m`                    — 2 errors → RED
+ *   (b) `5N·m/rad`                — 3 errors → RED
+ *   (c) `5m^2·kg·s^-2`            — 5 errors → RED
  *   (d) the two boundary pins     — 2 errors each → stay RED
  *   (e) the separator divergence  — 0 errors → passes
  *
- * (d) IS THE POINT OF THE FAMILY, not an afterthought. `·` is admitted
- * ONLY inside `unitOp`, so it must NOT become a general operator — the PRD's
- * §9 row B7 and task #5784's measured K2 table both require that. Those two
- * snippets must STAY errors after the widening, which no ledger movement would
- * reveal.
+ * (d) IS THE POINT OF THE FAMILY, not an afterthought: those two snippets must
+ * STAY errors after the widening, and unlike every other assertion here, no
+ * ledger movement would ever reveal it if they did not.
  */
 describe('reify.grammar snippets — `·` as unit multiplication', () => {
   // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
