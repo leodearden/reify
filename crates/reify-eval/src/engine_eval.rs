@@ -8018,7 +8018,6 @@ impl Engine {
         // what a prior `build()` left behind. Surfacing it here keeps the
         // per-call stats block coherent with `Engine::cache_stats()`.
         let realized = self.realization_cache.realization_entries();
-        let mut stats = stats;
         stats.realization_entries = realized;
 
         // Fold this call's eval-cache counters into the engine-level totals that
