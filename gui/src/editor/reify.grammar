@@ -1208,8 +1208,29 @@ IndexAccess {
   expression !postfix "[" expression "]"
 }
 
+// The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
+// (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
+// (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
+// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31) all call one.
+//
+// WHY THE CALLEE AND NOT THE RESERVATION. `some` and `none` appear NOWHERE in
+// tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary call
+// on an ordinary identifier, so there is no upstream node to match. They exist
+// here purely as the forward-compat STYLING reservation the `ReservedWord` note
+// below prices: dropping them from the `@specialize` list would parse these
+// three files just as well, but it "would not enable anything, it would only
+// drop their `ReservedWord: t.keyword` styling". Widening this one slot buys
+// the parse and keeps the colour. MEASURED before the change: bare
+// `let s = none` was already 0 errors — the gap was localised to the callee.
+//
+// The callee stays a two-way CHOICE rather than becoming a general
+// `expression`. A general callee would make every juxtaposed `expr (` a call
+// candidate and put this rule into competition with `ParenthesizedExpression`,
+// `FunctionType` and `AutoKeyword`'s parenthesised arms — a large ambiguity
+// surface bought for a handful of shapes. Callee forms beyond these two get
+// their own named node instead, which also keeps them addressable for styling.
 FunctionCall {
-  Identifier !postfix ArgListExpr
+  (Identifier | ReservedWord) !postfix ArgListExpr
 }
 
 ArgListExpr {
