@@ -3139,6 +3139,167 @@ mod tests {
         assert!(!is_image_tool(""));
     }
 
+    // --- #5891 step-16 RED → step-17 GREEN: the MCP `tools/call` response envelope ---
+    //
+    // `element_screenshot`'s pane-guess diagnostics (`viewportId`/`matchCount`) are
+    // the entire point of #5891 for that tool, yet the image branch of `tools/call`
+    // returned EARLY with a content array holding only the image block — so they were
+    // discarded at the transport boundary. The frontend test
+    // (debugFixtureInjection.test.ts:653-658) asserts at the BRIDGE level and stays
+    // green while end-to-end is broken, and `handle_mcp` takes `State(DebugServerState)`
+    // — an Arc-of-Mutex bundle impractical to build here — which is why the envelope
+    // had ZERO coverage. The pure Value→Value mapping is therefore extracted as
+    // `mcp_content_blocks`, the same move step-14 made for
+    // `canonical_wait_for_selector_params`.
+
+    #[test]
+    fn mcp_content_blocks_appends_pane_diagnostics_beside_the_image() {
+        let out = mcp_content_blocks(
+            "element_screenshot",
+            &json!({
+                "data": "data:image/png;base64,AAA=",
+                "viewportId": "design-main",
+                "matchCount": 2,
+            }),
+        );
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            2,
+            "an unscoped multi-match crop must yield the image block PLUS a diagnostics block; got {out}"
+        );
+
+        // The image block stays at index 0. `gui/test/visual/rpc.ts:33` branch 3 is
+        // POSITIONAL — `content[0].type === "image"` — and `run.ts:202-211` feeds
+        // `value.data` straight into `Buffer.from(…, "base64")`, so prepending the
+        // text block would decode pretty-printed JSON as PNG bytes and corrupt the
+        // visual-regression harness.
+        assert_eq!(
+            content[0]["type"].as_str(),
+            Some("image"),
+            "the image block must stay at content[0] (rpc.ts:33 branch 3 is positional); got {out}"
+        );
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "AAA=", "mimeType": "image/png"}),
+            "content[0] must be exactly today's image block, data-URL prefix stripped"
+        );
+
+        // The residual EXCLUDES `data`, so the base64 blob is not duplicated into
+        // the text block.
+        assert_eq!(
+            content[1]["type"].as_str(),
+            Some("text"),
+            "the diagnostics block must be a text block; got {out}"
+        );
+        let residual: Value = serde_json::from_str(
+            content[1]["text"]
+                .as_str()
+                .expect("the diagnostics block must carry a `text` string"),
+        )
+        .expect("the diagnostics block must carry valid JSON");
+        assert_eq!(
+            residual,
+            json!({"viewportId": "design-main", "matchCount": 2}),
+            "the residual must be the result MINUS `data` — never re-embedding the base64 blob"
+        );
+    }
+
+    #[test]
+    fn mcp_content_blocks_leaves_data_only_image_results_byte_identical() {
+        // element_screenshot: every SCOPED or single-match call returns `{data}` and
+        // nothing else, so its envelope must stay bit-for-bit today's single block.
+        // screenshot/screenshot_window: neither ever carries a non-`data` success key
+        // (bridge.ts:689,702), so the new gate must never perturb them — that is what
+        // keeps gui/test/visual/rpcEnvelope.test.ts:320-326's image-only stub accurate.
+        for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
+            let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
+            let content = out["content"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool}: the envelope must carry a `content` array"));
+            assert_eq!(
+                content.len(),
+                1,
+                "{tool}: a `data`-only result must yield exactly one block; got {out}"
+            );
+            assert_eq!(
+                content[0],
+                json!({"type": "image", "data": "BBB=", "mimeType": "image/png"}),
+                "{tool}: the lone block must be exactly today's image block"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_content_blocks_falls_through_to_one_full_text_block_without_image_data() {
+        // A non-image tool: unchanged single pretty-printed text block over the FULL
+        // result — click_element's own pane diagnostics ride inside it, not beside it.
+        let result = json!({"ok": true, "viewportId": "pane-1", "matchCount": 2});
+        let out = mcp_content_blocks("click_element", &result);
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(content.len(), 1, "a non-image tool must yield one block; got {out}");
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        let parsed: Value = serde_json::from_str(
+            content[0]["text"].as_str().expect("the block must carry a `text` string"),
+        )
+        .expect("the text block must carry valid JSON");
+        assert_eq!(parsed, result, "the text block must carry the FULL result");
+
+        // An image tool whose result has NO string `data` — i.e. every
+        // element_screenshot ERROR shape. The error must reach the caller intact
+        // rather than be swallowed by an image branch with nothing to encode.
+        let err = json!({"error": "element has zero area"});
+        let out = mcp_content_blocks("element_screenshot", &err);
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "an image tool with no string `data` must fall through to one text block; got {out}"
+        );
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        let parsed: Value = serde_json::from_str(
+            content[0]["text"].as_str().expect("the block must carry a `text` string"),
+        )
+        .expect("the text block must carry valid JSON");
+        assert_eq!(parsed, err, "the error shape must survive the transport verbatim");
+    }
+
+    #[test]
+    fn mcp_content_blocks_suppresses_a_residual_carrying_an_in_band_error() {
+        // CROSS-LANGUAGE INVARIANT (gui/test/visual/rpcEnvelope.mjs:54-58): no success
+        // payload may carry a top-level string `error`, because `isInBandError` (:81-83)
+        // reads one as a tool FAILURE. Emitting such a residual beside a successful
+        // image would make every driver report a working screenshot as broken —
+        // strictly worse than omitting a key no handler produces today.
+        let out = mcp_content_blocks(
+            "element_screenshot",
+            &json!({
+                "data": "data:image/png;base64,CCC=",
+                "error": "stale frame",
+                "matchCount": 2,
+            }),
+        );
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "a residual carrying a string `error` must NOT be emitted beside the image; got {out}"
+        );
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "CCC=", "mimeType": "image/png"}),
+            "the image block must still ship, alone"
+        );
+    }
+
     // --- F1: inject_diagnostics + reset_app_state ---
 
     #[test]
