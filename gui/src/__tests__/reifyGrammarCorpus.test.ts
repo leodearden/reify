@@ -3718,6 +3718,8 @@ const EXPECTED_CLEAN = [
   'examples/tensegrity_membrane_patch.ri',
   'examples/tensegrity_pavilion.ri',
   'examples/tensegrity_t_prism.ri',
+  'examples/tolerance-stackup-3part.ri',
+  'examples/tolerance-stackup-rss.ri',
   'examples/tolerancing/gdt_illegal_modifier.ri',
   'examples/tolerancing/gdt_legality_rfs.ri',
   'examples/tolerancing/gdt_oracle_inside.ri',

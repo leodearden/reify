@@ -514,8 +514,27 @@ PortMapping {
 
 // ── Chain ───────────────────────────────────────────────
 // grammar.js:1030-1034 — `repeat1`, so a chain has at least two links.
+//
+// `ekw` NOT `kw`, and this one is a CORRECTION rather than a fresh choice.
+// Round 2 (#5927) promoted the word with `kw<"chain">`, which is context-FREE,
+// so `chain` stopped being a legal identifier everywhere. Three committed files
+// use it as an ordinary name and were left unparseable by that:
+// examples/tolerance-stackup-3part.ri:45 and examples/tolerance-stackup-rss.ri:35
+// (`let chain = [...]`, then `stackup_worst_case(chain)` / `stackup_rss(chain)`
+// at rss:40,44), and examples/integration_corner_cases.ri:131. MEASURED before
+// the change: `structure def S { let chain = a }` → 3 error nodes, the first ON
+// the word itself, while `structure def S { let y = [x] }` was already clean —
+// so the list literal the round-3 ledger blamed was never involved.
+//
+// Upstream spells the statement keyword as a plain `'chain'` string
+// (grammar.js chain_statement) whose parse-state-driven lexer keeps it an
+// identifier off this slot, so the contextual reading is the upstream-faithful
+// one. `ekw` is unambiguous exactly where it is needed, since no `Member`
+// alternative begins with a bare identifier — the same argument `RelateBlock`
+// records for `ekw<"relate">`. `chain` STAYS in KEYWORDS: the styling guard
+// scans for the literal `kw<"chain">` substring, which `ekw<"chain">` contains.
 ChainStatement {
-  kw<"chain"> expression ("->" expression)+
+  ekw<"chain"> expression ("->" expression)+
 }
 
 // ── Forall statement ────────────────────────────────────
