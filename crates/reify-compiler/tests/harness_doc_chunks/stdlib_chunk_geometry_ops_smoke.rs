@@ -1132,12 +1132,12 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
 // ── Doc form scan: (name, arity) ─────────────────────────────────────────────
 //
 // `documented_geometry_op_names` (above) collapses every overload of a name
-// into one entry, so a second arity for an already-documented name can go
-// unmirrored into the fixture without failing anything — see the module doc's
-// "Doc → fixture coverage at FORM granularity" gap (task 5583).
-// `documented_geometry_op_forms` is the same span scan widened to also record
-// each span's argument count as an `Arity`, so overloads are tracked as
-// distinct forms rather than collapsed to a name.
+// into one entry, so it alone cannot see a second arity for an
+// already-documented name. `documented_geometry_op_forms` is the same span
+// scan widened to also record each span's argument count as an `Arity`, so
+// overloads are tracked as distinct forms rather than collapsed to a name —
+// feeding `unmirrored_documented_forms`, so an unmirrored overload is RED via
+// `every_documented_geometry_op_form_is_exercised_by_the_fixture` (task #5583).
 //
 // The tests below pin the extraction rule directly (inline markdown, no
 // fixture/chunk involved) before anything consumes it. The ellipsis rule is
