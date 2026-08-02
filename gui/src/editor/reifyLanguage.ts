@@ -44,6 +44,8 @@ export const KEYWORD_LED_BODIES = [
   'PurposeDeclaration',
   // `relate { … }` — the `{` follows the `relate` keyword, so it is keyword-led.
   'RelateBlock',
+  // `constraint def Name<T> { … }` — the `{` trails a header, never opens the node.
+  'ConstraintDefinition',
 ];
 
 /**

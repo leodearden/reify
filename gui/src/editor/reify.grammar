@@ -22,6 +22,7 @@ Declaration {
   UnitDeclaration |
   TypeAliasDeclaration |
   DefaultDeclaration |
+  ConstraintDefinition |
   Pragma |
   Annotation |
   ImportDeclaration
@@ -120,8 +121,11 @@ MetaEntry {
 // declaration START and the selector's only ever after a COMPLETE expression,
 // so the two never share a parse state. `#` is a new character used nowhere
 // else.
+// `!itemStart` on the arg list's `(`: inside a ConstraintDefinition body a
+// pragma is followed by items that may THEMSELVES open with `(`. See the
+// `itemStart` note in the @precedence block.
 Pragma {
-  "#" Identifier ("(" (PragmaArg ("," PragmaArg)* ","?)? ")")?
+  "#" Identifier (!itemStart "(" (PragmaArg ("," PragmaArg)* ","?)? ")")?
 }
 
 PragmaArg {
@@ -305,9 +309,14 @@ FunctionType {
   "(" (TypeExpr ("," TypeExpr)* ","?)? ")" "->" TypeExpr
 }
 
-// A type with type arguments: `Box<T>`, `Tensor<2, 3, Force>`
+// A type with type arguments: `Box<T>`, `Tensor<2, 3, Force>`.
+//
+// `!itemStart` on the `<`: a `param x : Name` inside a ConstraintDefinition
+// body may be followed by a predicate opening with `<` (the one-sided
+// RangeExpression arm), which competes with reducing `Name` to a plain
+// `TypeExpr`. See the `itemStart` note in the @precedence block.
 ParameterizedType {
-  Identifier "<" TypeArgList ">"
+  Identifier !itemStart "<" TypeArgList ">"
 }
 
 // Qualified type-expr: `Beam::Material`, `Beam::(HasMaterial::Material)`.
@@ -349,9 +358,15 @@ DefaultValue {
 // and `AutoParam` requires an `=` — so no marker is needed, and none is added:
 // an unnecessary ambiguity marker suppresses a genuine future conflict rather
 // than surfacing it (the same reasoning ArgumentList records).
+//
+// The `!itemStart` markers are a SEPARATE matter and are not that: they settle
+// the bare `auto` arm against a following item that opens with `(`, which only
+// arises inside a ConstraintDefinition body. See the `itemStart` note in the
+// @precedence block. Both parenthesised arms need one — a marker on just the
+// first leaves the second's conflict unresolved.
 AutoKeyword {
-  kw<"auto"> "(" kw<"free"> ")" |
-  kw<"auto"> "(" AutoParamList ")" |
+  kw<"auto"> !itemStart "(" kw<"free"> ")" |
+  kw<"auto"> !itemStart "(" AutoParamList ")" |
   kw<"auto">
 }
 
@@ -379,6 +394,35 @@ LetDeclaration {
 // ── Constraint ──────────────────────────────────────────
 ConstraintDeclaration {
   kw<"constraint"> expression ~where WhereClause?
+}
+
+// ── Constraint definition ───────────────────────────────
+// grammar.js:400-420. A top-level DECLARATION, not a member — it names a
+// reusable predicate set that structures then invoke as
+// `constraint MinThickness(t: wall)`.
+//
+// `ConstraintDeclaration` above never competes with it, and no marker is
+// needed to say so. At `Declaration` the `constraint` keyword is always
+// followed by `def`, and `Member` is unreachable from the top level, so the
+// two live in disjoint states — the same positional discriminator
+// `ForallStatement` vs `QuantifierExpression` relies on. The discrimination is
+// pinned by a node-name assertion in reifyGrammarCorpus.test.ts because the
+// wrong reading of either would be error-free.
+//
+// THE BODY IS THE HARD PART, and `itemStart` in the @precedence block is what
+// settles it — see the note there for the shape, the three shifts it marks and
+// the trade it accepts.
+ConstraintDefinition {
+  kw<"pub">? kw<"constraint"> kw<"def"> Identifier TypeParameters?
+  "{" (ParamDeclaration | LetDeclaration | Pragma | ConstraintDefPredicate)* "}"
+}
+
+// A bare expression, and deliberately its own node type rather than an inlined
+// `expression`: the tree is what tells an editor feature (and the corpus test)
+// that a given expression is a PREDICATE of the enclosing definition rather
+// than, say, the RHS of a `let` beside it.
+ConstraintDefPredicate {
+  expression
 }
 
 // ── Minimize ───────────────────────────────────────────
@@ -1125,6 +1169,35 @@ ReservedWord {
 // `not` is spec §16 level 12 and therefore LOOSER than every symbolic
 // operator, which is why `kwNot` is here rather than beside `unary`.
 @precedence {
+  // TIGHTEST, and not an operator level at all. It resolves ONE recurring
+  // shape: a body whose repeat mixes items that carry an OPTIONAL TAIL with
+  // items that are BARE EXPRESSIONS. The tail's opening token is then also a
+  // token the next item could open with, and LR(1) cannot see far enough to
+  // tell "still finishing the previous item" from "already starting the next".
+  //
+  // `ConstraintDefinition`'s body is the first such repeat in this grammar
+  // (`param`/`let`/`#pragma` items beside a bare `ConstraintDefPredicate`), and
+  // MEASURED it produces exactly three shift/reduce conflicts, all of that one
+  // shape. `!itemStart` marks the three shifts — `Pragma`'s `(`,
+  // `ParameterizedType`'s `<`, and the `(` in both parenthesised `AutoKeyword`
+  // arms — and with all three the grammar compiles clean; with any of them
+  // missing lezer-generator reports the corresponding conflict.
+  //
+  // THE TRADE, stated rather than left to be rediscovered: being tightest,
+  // greedy SHIFT always wins. That preserves `Box<T>`, `Tensor<2, 3, Force>`,
+  // `auto(free)`, `auto(seed = 5mm)` and `#pragma(a = 1)`, every one of them
+  // attested in a pinned file. It sacrifices only the mirror image — a
+  // predicate whose FIRST token is `<` (the one-sided RangeExpression arm) or
+  // `(` on the line directly after a param/let/pragma item — a shape attested
+  // in none of the 330 committed `.ri`. All five preserved readings are pinned
+  // by node-name assertions in reifyGrammarCorpus.test.ts, not by error counts,
+  // because a precedence edit reshapes a tree in silence.
+  //
+  // Note this is the OPPOSITE instrument to the one `~poseWhere` uses on a
+  // conflict that looks similar. Precedence is right here only because the
+  // losing reading is unattested; where both readings are committed, collapsing
+  // to one parse would be a regression and an ambiguity marker is the tool.
+  itemStart @left,
   postfix @left,
   // `@` ad-hoc selector — tree-sitter prec.left(10), between member access
   // (11, folded into `postfix` here) and index access (9).

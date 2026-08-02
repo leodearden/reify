@@ -168,8 +168,10 @@ export const
   offset = 213,
   TypeAliasDeclaration = 214,
   DimensionalTypeExpr = 215,
-  Annotation = 216,
-  ImportDeclaration = 217,
-  _import = 218,
-  ImportItems = 219,
-  as = 220
+  ConstraintDefinition = 216,
+  ConstraintDefPredicate = 217,
+  Annotation = 218,
+  ImportDeclaration = 219,
+  _import = 220,
+  ImportItems = 221,
+  as = 222
