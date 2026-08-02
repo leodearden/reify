@@ -46,6 +46,8 @@ export const KEYWORD_LED_BODIES = [
   'RelateBlock',
   // `constraint def Name<T> { … }` — the `{` trails a header, never opens the node.
   'ConstraintDefinition',
+  // `where { … }` trailing a sub's pose — keyword-led like `RelateBlock`.
+  'SubRelateBlock',
 ];
 
 /**

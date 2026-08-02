@@ -279,8 +279,12 @@ Member {
 }
 
 // ── Guarded block ─────────────────────────────────────
+// The `~poseWhere` marker at the head is the other half of the pair on
+// `PoseClause` — see the long note there. It is what keeps a CONDITIONED
+// post-pose `where` reading as this node rather than being swallowed by
+// `SubRelateBlock`.
 GuardedBlock {
-  kw<"where"> expression Block (kw<"else"> Block)?
+  ~poseWhere kw<"where"> expression Block (kw<"else"> Block)?
 }
 
 // ── Param ───────────────────────────────────────────────
@@ -600,12 +604,48 @@ ParamAssignment {
 }
 
 // Trailing pose: `at auto`, `at transform3(...)`. Last on every arm, matching
-// grammar.js. The `sub_relate_block` that may follow the pose upstream is not
-// modelled here — no committed fixture uses it.
+// grammar.js.
 // `at` is CONTEXTUAL (see `ekw` above): five committed files pass it as a
 // named-argument label, so it must keep lexing as an Identifier off this slot.
+//
+// ── THE `~poseWhere` MARKER, and why it is NOT a precedence level ──────────
+//
+// After the pose a following `where` is genuinely ambiguous to LR(1): it may
+// open the `SubRelateBlock` below (shift), or end this SubDeclaration so that
+// `where` starts a member-level `GuardedBlock` (reduce). What separates them is
+// the token AFTER `where` — `{` versus an expression — i.e. two tokens of
+// lookahead, which LR(1) does not have and which upstream gets free from GLR.
+// grammar.js:736-744 records the same reasoning: a CONDITIONLESS `where {`
+// after a pose can only be a sub_relate_block.
+//
+// MEASURED: without a marker lezer-generator reports
+// `shift/reduce conflict between SubRelateBlock -> · where "{" and
+// PoseClause -> at expression`.
+//
+// A precedence marker would be the WRONG instrument here, and this is the one
+// place in the grammar where that must be said out loud, because the conflict
+// looks just like the one `itemStart` resolves one family away. Precedence
+// makes greedy shift win unconditionally, which would turn EVERY post-pose
+// `where` into a SubRelateBlock — and `where determined(origin) { … }` is
+// committed at examples/integration_full_v01.ri:224 and
+// examples/m10_combined.ri:97, in six files overall, several already pinned in
+// EXPECTED_CLEAN. Collapsing to one parse is free for `itemStart` because the
+// losing reading is unattested; here it would regress committed files to admit
+// a form NO committed file uses. `~` is the tool that keeps BOTH parses alive,
+// and the `~where` markers elsewhere in this grammar are the existing
+// precedent, not an invention. Both readings are pinned by node-name
+// assertions in reifyGrammarCorpus.test.ts.
 PoseClause {
-  ekw<"at"> (AutoKeyword | expression)
+  ekw<"at"> (AutoKeyword | expression) ~poseWhere SubRelateBlock?
+}
+
+// grammar.js:745-750 — the sub-local sibling of `relate`, reusing its
+// `RelationMember` exactly as upstream does at :748. Conditionless by
+// construction: the absent guard expression is what distinguishes it from the
+// `GuardedBlock` that shares its keyword. No committed `.ri` uses this form, so
+// it moves the corpus ledger by zero files and is taken for node shape.
+SubRelateBlock {
+  kw<"where"> "{" RelationMember* "}"
 }
 
 ArgList {
