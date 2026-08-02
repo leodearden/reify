@@ -1788,8 +1788,10 @@ describe('reify.grammar snippets — match, enum, variants', () => {
    * The or-pattern is the reason `|` needs to keep working in TWO roles, so
    * it is pinned here alongside the lambda regression assertion below.
    */
-  it('parses a wildcard arm `match s { _ => 0mm }` (normative, unattested)', () => {
-    expect(countErrorNodes('structure def F { let a = match s { _ => 0mm } }')).toBe(0);
+  it('parses a wildcard arm `match s { _ => 0mm }` and yields a WildcardPattern node (normative, unattested)', () => {
+    const src = 'structure def F { let a = match s { _ => 0mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('WildcardPattern');
   });
 
   it('parses an or-pattern arm `match s { A | B => 1mm }` (normative, unattested)', () => {
@@ -2912,9 +2914,10 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
    * The arms reuse the existing `MatchPattern` production verbatim, so the
    * or-pattern, the wildcard and the variant-binding form come free and cannot
    * drift from the ones `MatchExpression` accepts. Each is asserted rather than
-   * assumed, since "comes free" is a claim about the grammar's shape — and the
-   * wildcard case below shows why that is worth checking: it comes free
-   * including its pre-existing divergence.
+   * assumed, since "comes free" is a claim about the grammar's shape — the
+   * wildcard case below used to show why that was worth checking (it came free
+   * including a pre-existing divergence, fixed by #5957) and stays as a direct
+   * assertion now that the divergence is gone.
    */
   it('accepts an or-pattern arm', () => {
     const src = 'structure def F { match kind { Hex | Button => sub head : RecessedHead } }';
@@ -2923,36 +2926,22 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
   });
 
   /**
-   * MEASURED, and NOT what the `@extend` on `WildcardPattern` suggests: a bare
-   * `_` arm reduces through `MatchPattern`'s plain-Identifier alternative, so
-   * the tree carries `MatchPattern > Identifier` and NO `WildcardPattern` node.
-   * Both readings are viable in that state — the extended token is not the only
-   * way to shift a `_` — and lezer takes the unextended one.
-   *
-   * This is PRE-EXISTING and belongs to `MatchPattern`, not to this block: the
-   * expression form behaves identically (its own wildcard test above likewise
-   * asserts only that the arm parses), and it was so before this production
-   * existed. Asserted here in the shape the grammar actually delivers rather
-   * than the shape its comment implies, so the divergence is recorded instead
-   * of masked by a weaker test.
-   *
-   * THE NEGATIVE HALF IS A DATED PIN, NOT A CONTRACT. It records today's
-   * behaviour so the divergence cannot be reintroduced silently after being
-   * fixed elsewhere — but the fix is OWNED BY #5957, and when that lands `_`
-   * will yield a `WildcardPattern` here and this line is EXPECTED TO BE
-   * DELETED. Both the test name and the assertion message say so, so a red here
-   * reads as "the pin outlived its subject", not as a regression in this slice.
+   * #5957 fixed the divergence recorded here previously: `WildcardPattern`
+   * was declared via `@extend`, which only disambiguates across DIFFERENT
+   * grammar positions (see the `ekw` note in reify.grammar), so at
+   * `MatchPattern`'s single shared position `_` always fell back to the
+   * unextended `Identifier` reading and no tree ever carried a
+   * `WildcardPattern` node. It is now a `@specialize`, reserving `_` globally
+   * (verified safe — no committed `.ri` uses a bare `_` as an identifier), so
+   * `_` yields `WildcardPattern` here exactly as it does in the expression
+   * form's own wildcard test above.
    */
-  it('accepts a wildcard arm (which reduces to Identifier, not WildcardPattern — until #5957)', () => {
+  it('accepts a wildcard arm and yields a WildcardPattern node', () => {
     const src = 'structure def F { match kind { _ => sub head : DefaultHead } }';
     expect(countErrorNodes(src)).toBe(0);
     const names = nodeNames(src);
     expect(names).toContain('MatchArmDeclBlock');
-    expect(names).toContain('MatchPattern');
-    expect(
-      names,
-      'dated pin on the pre-existing MatchPattern divergence — #5957 owns the fix, and this assertion is expected to be deleted by it rather than worked around',
-    ).not.toContain('WildcardPattern');
+    expect(names).toContain('WildcardPattern');
   });
 
   it('accepts a variant-binding-pattern arm', () => {

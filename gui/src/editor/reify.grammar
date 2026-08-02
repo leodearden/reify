@@ -781,12 +781,23 @@ MatchPattern {
 }
 
 // `_` already lexes as an `Identifier` (the token rule admits a leading
-// underscore), so the wildcard is an @extend rather than a new token: it
-// names the node without reserving `_` globally. No committed `.ri` uses a
-// bare `_` as an identifier, but @extend costs nothing and keeps that door
-// open — the same contextual treatment `at`, `self` and `frame` get.
+// underscore). It is a `@specialize`, not an `ekw`/`@extend`, because
+// `@extend` only disambiguates when the two readings occupy DIFFERENT
+// grammar positions (`at`, `self`, `frame` each have a keyword slot that no
+// plain-identifier production also occupies) — see the note on `ekw` above.
+// Here both readings sit at the SAME position: `MatchPattern`'s plain-
+// Identifier alternative (`Identifier ("|" Identifier)*`) and
+// `WildcardPattern` are two direct alternatives of the same rule, so `_` is
+// equally valid as either the whole `WildcardPattern` reduction or a
+// one-Identifier `Identifier ("|" Identifier)*` reduction, with nothing left
+// to look ahead at (`=>` follows either way) — a genuine ambiguity that
+// `@extend` resolved by silently falling back to the unextended `Identifier`
+// reading every time (MEASURED, #5957). `@specialize` reserves `_` globally
+// as `WildcardPattern` instead, which is safe here exactly as it was for
+// `in`/`out` above: no committed `.ri` uses a bare `_` as an identifier
+// (verified across the corpus), so nothing is un-pinned by the reservation.
 WildcardPattern {
-  @extend[@name=WildcardPattern]<Identifier, "_">
+  @specialize[@name=WildcardPattern]<Identifier, "_">
 }
 
 VariantBindingPattern {
