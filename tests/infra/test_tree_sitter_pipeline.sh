@@ -315,6 +315,27 @@ ts_offset_of() {
     printf '%s' "${#pre}"
 }
 
+# ts_last_offset_of <haystack> <needle>
+#
+# Byte offset of <needle>'s LAST occurrence in <haystack>, or -1 when absent.
+# Same fork-free rationale as ts_offset_of; `%` (shortest suffix removal) leaves
+# the prefix ending at the final occurrence, where `%%` would leave the first.
+#
+# Needed because the freshness POST-CONDITION must follow the LAST cargo leaf that
+# can compile the parser, not the first: ordering against the first cargo leaf is
+# satisfied by a `check` sitting immediately after clippy, which attests a
+# different fingerprint dir than the one the later nextest builds link (#5629
+# review round 3).
+ts_last_offset_of() {
+    local hay="$1" needle="$2" pre
+    if [[ "$hay" != *"$needle"* ]]; then
+        printf '%s' -1
+        return 0
+    fi
+    pre="${hay%"$needle"*}"
+    printf '%s' "${#pre}"
+}
+
 # mk_verify_fixture
 #
 # A throwaway git repo holding a copy of scripts/ and .config/, enough for
@@ -1575,14 +1596,32 @@ test_freshness_detects_and_repairs_stale_archive() {
     # Because parser.c is IN the fingerprint but deliberately NOT watched, mutating it
     # reproduces exactly the reported shape: fresh sources on disk, stale archive linked.
     local parser="$TS_DIR/src/parser.c"
-    local backup="$TS_DIR/src/parser.c.5629.bak"
-
     assert_file_exists "$parser" || return 1
-    cp "$parser" "$backup"
-    # Plain cp on restore (NOT -p): the restored mtime must be now, matching the
+
+    # The backup lives OUTSIDE the tracked source tree. tree-sitter-reify/.gitignore
+    # covers src/parser.c but NOT src/*.bak (`git check-ignore` exits 1 on one), so an
+    # in-tree backup leaves `git status --short` reporting an untracked file for this
+    # test's whole duration — up to 900 s across three serial cargo checks. The lane
+    # cleanliness guards, the lane audit and scripts/land.sh all read that as a dirty
+    # worktree: a worse, and far more confusing, failure than the bug under test.
+    local bakdir backup
+    bakdir=$(mktemp -d) || return 1
+    backup="$bakdir/parser.c.orig"
+    # Registered BEFORE the copy, so an interrupt in the gap leaks nothing. `mv -f` is
+    # atomic and self-consuming — unlike a cp+rm pair, a failed restore cannot go on to
+    # destroy the only copy (the CLEANUP_ACTIONS string is `;`-separated under
+    # `eval ... || true`, so every segment runs regardless of the previous one's rc).
+    # The restore is registered AHEAD of the `rm -rf`: cleanup replays in insertion
+    # order, so the backup dir must not be removable before it has been restored from.
+    # `mv` (not `cp -p`) also gives the restored file an mtime of now, matching the
     # test_auto_generation_rebuilds_parser precedent. The trailing ensure leaves the
     # lane's target/ consistent with the tree whichever way this test exits.
-    CLEANUP_ACTIONS+=("cp '$backup' '$parser'; rm -f '$backup'; touch '$parser'; bash '$FRESHNESS_SCRIPT' ensure >/dev/null 2>&1 || true")
+    CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'; touch '$parser'; bash '$FRESHNESS_SCRIPT' ensure >/dev/null 2>&1 || true")
+    CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
+    # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them as
+    # `if "$t"; then`), so an unchecked cp would fail silently and the probe append
+    # below would then mutate parser.c with no usable copy to restore from.
+    cp "$parser" "$backup" || return 1
 
     local tmp cargo_out
     tmp=$(mktemp -d);      CLEANUP_ACTIONS+=("rm -rf '$tmp'")
@@ -1750,15 +1789,32 @@ test_verify_plan_includes_freshness_after_generation() {
         # there — pre-build — would hard-fail a repairable condition, converting
         # the false GREEN into a spurious RED. So the presence arm is conditional
         # but the ORDERING arm is absolute: wherever the leaf exists it must come
-        # after a cargo leaf, never before one.
-        local off_check
+        # after EVERY cargo leaf, never before one.
+        local off_check off_last_cargo
         off_check=$(ts_offset_of "$cmds" "tree-sitter-freshness.sh check")
+        off_last_cargo=$(ts_last_offset_of "$cmds" "cargo ")
         if [[ "$action" == all* || "$action" == lint* || "$action" == typecheck* ]]; then
             if [ "$off_check" -lt 0 ]; then
                 echo ""
                 echo "  ASSERTION FAILED: verify.sh '$action' has no post-cargo"
                 echo "  './scripts/tree-sitter-freshness.sh check' leaf — the plan only ATTEMPTS"
                 echo "  the repair and never asserts the archive cargo linked is fresh."
+                return 1
+            fi
+            # Against the LAST cargo leaf, not the first (#5629 review round 3).
+            # The first-cargo form passes for a `check` emitted right after the
+            # clippy wave — but clippy compiles into a different fingerprint dir
+            # than the debug/release nextest builds that follow, so such a leaf
+            # attests an archive no test binary ever links while the archives that
+            # ARE linked go unexamined. That is the same false GREEN one level up.
+            if [ "$off_check" -le "$off_last_cargo" ]; then
+                echo ""
+                echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
+                echo "  offset $off_check, before/at the LAST cargo leaf ($off_last_cargo)."
+                echo "  A cargo leaf that compiles the parser runs after the assertion, so the"
+                echo "  archive actually linked is never attested — and an assertion placed"
+                echo "  before the build would also hard-fail the very staleness 'ensure' had"
+                echo "  just queued a repair for."
                 return 1
             fi
             if [ "$off_check" -le "$off_cargo" ]; then

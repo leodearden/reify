@@ -2781,33 +2781,11 @@ build_plan() {
         add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_CLIPPY_TIMEOUT} ${CARGO_PRIO}cargo check -p reify-gui --features gui --tests; fi"  # ld-ok: cargo — MIXED shell+cargo (gui sidecar compile check); needs OCCT
     fi
 
-    # tree-sitter freshness POST-CONDITION (task #5629, review round 2).
-    # The `ensure` leaf above runs BEFORE the cargo wave and only ATTEMPTS the
-    # repair — it bumps mtimes and trusts cargo to act on them, and by design it
-    # never fails for a condition it believes it repaired. So without this line
-    # the gate carried no evidence the rebuild actually happened: if the mtime
-    # force failed to trigger one, the run went green having linked an archive it
-    # never compiled — the same false-GREEN class the task exists to close, one
-    # level up. `check` closes it by ASSERTING, after the fact, that the archive
-    # cargo just built matches the sources on disk.
-    #
-    # Guarded identically to the compile-gate line above (RUN_RUST && (lint ||
-    # typecheck)) — deliberately, because that is exactly the condition under
-    # which a `cargo check --tests` / `cargo clippy` leaf has already been
-    # emitted ABOVE this point. The assertion is only meaningful once something
-    # has actually compiled; emitting it unconditionally would hard-fail
-    # action=test plans on a repairable pre-build condition, converting the false
-    # GREEN into a spurious RED. action=all — every merge path — satisfies both.
-    #
-    # `check` scopes its failing verdict to the LIVE fingerprint dir (the one
-    # cargo most recently ran the build script for) and demotes dormant dirs to
-    # informational lines; a checkout carries 7-9 dormant dirs that are stale
-    # forever, so a whole-tree assertion here would be permanently RED.
-    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
-    # test_verify_plan_includes_freshness_after_generation.
-    if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
-        add "./scripts/tree-sitter-freshness.sh check"
-    fi
+    # The tree-sitter freshness POST-CONDITION leaf does NOT belong here, after
+    # the clippy/gui-check wave — it must follow the LAST cargo leaf that can
+    # compile the parser (add_test_passes), or it attests a fingerprint dir that
+    # no test binary links. It is emitted at the end of build_plan; see the
+    # `check` block there before moving it back up.
 
     # Overlap join: wait for the background node lane before infra checks / pole.
     # Maximises the concurrency window (join as late as possible while still
@@ -3088,6 +3066,44 @@ build_plan() {
     # (task #4448 fail-fast reorder)
     if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add_test_passes
+    fi
+
+    # tree-sitter freshness POST-CONDITION (task #5629, review rounds 2-3).
+    # The `ensure` leaf near the top of the plan runs BEFORE the cargo wave and
+    # only ATTEMPTS the repair — it bumps mtimes and trusts cargo to act on them,
+    # and by design it never fails for a condition it believes it repaired. So
+    # without this line the gate carried no evidence the rebuild actually
+    # happened: if the mtime force failed to trigger one, the run went green
+    # having linked an archive it never compiled — the same false-GREEN class the
+    # task exists to close, one level up. `check` closes it by ASSERTING, after
+    # the fact, that the archives cargo built match the sources on disk.
+    #
+    # EMITTED LAST — after add_test_passes — and that position is load-bearing
+    # (review round 3). Round 2 placed it right after the clippy / `cargo check -p
+    # reify-gui` wave, which attested the WRONG archive: clippy compiles into a
+    # different fingerprint dir than the test-profile build, and under
+    # `--profile both` the debug and release nextest passes each compile the
+    # parser again, all of them AFTER that point. The assertion has to follow the
+    # last cargo leaf that can compile the parser, or it attests an archive no
+    # test binary ever linked.
+    #
+    # Guard: RUN_RUST && (lint || typecheck) — deliberately NOT `|| test`, because
+    # that is exactly the condition under which a `cargo check --tests` / `cargo
+    # clippy` leaf has already been emitted. The assertion is only meaningful once
+    # something has actually compiled; emitting it on an action=test plan would
+    # hard-fail a repairable PRE-build condition, converting the false GREEN into a
+    # spurious RED. action=all — every merge path — satisfies both, so the merge
+    # gate always carries the assertion after its full compile wave.
+    #
+    # `check` hard-asserts over every fingerprint dir whose build-script run marker
+    # advanced during THIS run (the epoch `ensure` stamped), so the multi-dir
+    # debug+release case is covered rather than just the single newest dir. Dirs
+    # untouched by this run stay dormant `note:` lines — a checkout carries 7-9 of
+    # them, stale forever, so a whole-tree assertion would be permanently RED.
+    # Pinned by tests/infra/test_tree_sitter_pipeline.sh's
+    # test_verify_plan_includes_freshness_after_generation.
+    if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
+        add "./scripts/tree-sitter-freshness.sh check"
     fi
 
     # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only

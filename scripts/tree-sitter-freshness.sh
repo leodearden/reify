@@ -59,14 +59,15 @@
 #                   Print the per-file sha256 manifest for that input set —
 #                   '<hash>  <relpath>' lines, sorted by relpath.  Exactly what
 #                   build.rs writes to $OUT_DIR/tree_sitter_inputs.stamp.
-#   check           Hard assertion, scoped to the LIVE fingerprint dir (below).
-#                   Exit 1 if the live archive's sibling stamp is missing or
-#                   disagrees with the current fingerprint, naming the offending
-#                   dir and the first differing input.  Stale DORMANT dirs are
-#                   reported as informational `note:` lines and do NOT fail.
-#                   verify.sh runs this AFTER the cargo compile wave, to prove the
-#                   archive cargo just linked is fresh; also the mode to run at a
-#                   human/agent checkpoint.
+#   check           Hard assertion, scoped to the LIVE SET (below): every dir
+#                   rebuilt inside this run's window, plus the newest-marker dir.
+#                   Exit 1 if any of their sibling stamps is missing or disagrees
+#                   with the current fingerprint, naming the offending dir and the
+#                   first differing input.  Stale DORMANT dirs are reported as
+#                   informational `note:` lines and do NOT fail.  verify.sh runs
+#                   this after the LAST cargo leaf that can compile the parser, to
+#                   prove every archive cargo just linked is fresh; also the mode
+#                   to run at a human/agent checkpoint.
 #   ensure          REPAIR, scoped to the WHOLE tree.  On any stale archive — live
 #                   or dormant — bump the mtime of the watched inputs (grammar.js,
 #                   src/scanner.c, src/tree_sitter/*.h) so cargo is guaranteed to
@@ -86,15 +87,40 @@
 # That is why `check` cannot simply assert over every dir: it would be
 # guaranteed RED in any long-lived checkout, which makes it useless as an
 # assertion — a permanently-red gate is one nobody can act on.  So `check`
-# hard-asserts on the LIVE dir and demotes the rest to `note:` lines.
+# hard-asserts on the LIVE SET and demotes the rest to `note:` lines.
 #
-# The LIVE dir is the one whose build script cargo ran most recently, read from
-# cargo's OWN per-run markers inside the run dir — `output` (its verbatim
-# capture of build-script stdout), falling back to `invoked.timestamp`.  Measured
-# on this host rather than assumed: a `cargo check` that re-ran the build script
-# bumped both markers together, and the next one — which cargo resolved as fresh
-# and did not re-run — bumped neither.  So "newest marker" names the dir cargo
-# last executed the build script for.
+# The LIVE SET is the union of two things:
+#
+#   1. The RUN WINDOW — every run dir whose marker advanced during this verify
+#      run.  `ensure` stamps an epoch file ($TARGET_DIR/.tree-sitter-freshness.epoch)
+#      before the cargo wave starts; any dir whose marker is >= that epoch is one
+#      cargo actually (re-)ran the build script for during this run, so it is an
+#      archive this run's binaries can have linked, and it must be attested.
+#
+#      This is what makes the multi-archive case safe (task #5629, review round
+#      3).  A single `--profile both --scope all` plan compiles the parser into
+#      SEVERAL fingerprint dirs — clippy's, the debug nextest build's, the release
+#      nextest build's.  Asserting on one dir attests an archive that no test
+#      binary necessarily linked, while the archives that WERE linked pass
+#      unexamined: exactly the false GREEN this script exists to close, one level
+#      up.  The window covers all of them.
+#
+#   2. The NEWEST-MARKER dir, always, as a floor.  It keeps a standalone `check`
+#      (no epoch on disk — a human/agent checkpoint, or a mirrored fixture in the
+#      tests) behaving exactly as it did before the window existed, and it means a
+#      missing/unwritable epoch degrades to the old scope rather than to no scope.
+#
+# A dir's marker is read from cargo's OWN per-run files inside the run dir —
+# `output` (its verbatim capture of build-script stdout), falling back to
+# `invoked.timestamp`.  Measured on this host rather than assumed: a `cargo check`
+# that re-ran the build script bumped both markers together, and the next one —
+# which cargo resolved as fresh and did not re-run — bumped neither.  So a marker
+# at or after the epoch means "cargo ran this build script inside the window", and
+# "newest marker" names the dir cargo last executed the build script for.
+#
+# Dirs cargo did NOT touch this run keep their marker below the epoch and stay
+# dormant, so the 7-9 forever-stale dirs a real checkout carries still cannot turn
+# the gate red.
 #
 # `ensure` deliberately keeps the WHOLE-tree scope.  A dormant dir is only
 # dormant until someone flips RUSTFLAGS or profile back, at which point cargo
@@ -193,6 +219,13 @@ STAMP_NAME="tree_sitter_inputs.stamp"
 # warm base alongside the archives it describes).
 LEDGER_NAME=".tree-sitter-freshness.ledger"
 
+# Stamped by `ensure` at the START of a verify run, before any cargo leaf.  Its
+# MTIME (the file's content is irrelevant) opens the RUN WINDOW: any build-script
+# run dir whose marker is >= this is one cargo re-ran during this run, so `check`
+# must attest it.  See "LIVE vs DORMANT" in the header.  Lives under target/
+# beside the ledger, for the same gitignored/per-lane reasons.
+EPOCH_NAME=".tree-sitter-freshness.epoch"
+
 # Distinct return code meaning "no hasher on this host" — callers map it to a
 # labelled SKIP rather than to a failure or to a repair attempt.
 TS_RC_UNAVAILABLE=3
@@ -207,11 +240,13 @@ Modes:
   --print-fingerprint  Print the per-file sha256 manifest for that input set
                        ('<hash>  <relpath>' lines, sorted by relpath) — exactly
                        what build.rs writes to $OUT_DIR/tree_sitter_inputs.stamp.
-  check                Assert the LIVE libtree_sitter_reify.a — the one cargo
-                       most recently ran the build script for — was compiled
-                       from the sources currently on disk. Exit 1 on a mismatch
-                       or missing attestation. Stale dormant fingerprint dirs
-                       are reported as 'note:' lines and do not fail.
+  check                Assert the LIVE libtree_sitter_reify.a archives — every
+                       one cargo re-ran the build script for since 'ensure'
+                       stamped this run's epoch, plus the newest-marker dir —
+                       were compiled from the sources currently on disk. Exit 1
+                       on a mismatch or missing attestation. Stale dormant
+                       fingerprint dirs are reported as 'note:' lines and do not
+                       fail.
   ensure               REPAIR, over the WHOLE tree: on any stale archive, live or
                        dormant, bump the mtime of the watched inputs so cargo
                        re-runs the build script (and thus recompiles) next
@@ -361,6 +396,54 @@ ts_live_run_dir() {
     printf '%s' "$best"
 }
 
+# ts_epoch_mtime
+#
+# Print the RUN WINDOW epoch as an integer mtime, or nothing when no epoch file
+# exists (or its mtime cannot be read).  Empty means "no window": callers fall
+# back to newest-marker-only scope, which is the pre-window behaviour.
+ts_epoch_mtime() {
+    local f="$TARGET_DIR/$EPOCH_NAME" m
+    [ -f "$f" ] || return 0
+    m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo '')
+    case "$m" in
+        '' | *[!0-9]*) return 0 ;;
+        *) printf '%s' "$m" ;;
+    esac
+}
+
+# ts_write_epoch
+#
+# Open a fresh RUN WINDOW.  Best-effort by design: on a read-only tree this fails
+# and `check` degrades to newest-marker-only scope — the pre-window behaviour,
+# i.e. a NARROWER assertion, never a wider or a silently-skipped one.  It is not
+# worth failing `ensure` (and so the whole gate) over, but it is worth saying out
+# loud, because it silently shrinks what the later `check` will attest.
+ts_write_epoch() {
+    local f="$TARGET_DIR/$EPOCH_NAME"
+    mkdir -p "$TARGET_DIR" 2>/dev/null || true
+    if ! : > "$f" 2>/dev/null; then
+        echo "tree-sitter-freshness: note: could not stamp the run-window epoch ($f);"
+        echo "    a later 'check' will attest only the newest fingerprint dir, not every"
+        echo "    dir rebuilt during this run."
+        return 0
+    fi
+}
+
+# ts_in_run_window <run-dir> <epoch>
+#
+# True when cargo (re-)ran this dir's build script at or after <epoch> — i.e. the
+# archive in it is one THIS run produced and could have linked.  False when there
+# is no epoch, or the dir carries no readable marker at all (absence of evidence
+# never promotes a dir into the failing set here; the newest-marker floor in
+# ts_scan is what covers the no-marker-anywhere case).
+ts_in_run_window() {
+    local run_dir="$1" epoch="$2" m
+    [ -n "$epoch" ] || return 1
+    m=$(ts_run_dir_marker "$run_dir")
+    [ "$m" -gt 0 ] || return 1
+    [ "$m" -ge "$epoch" ]
+}
+
 # ts_first_differing_input <stamp-file>
 #
 # Name the first input whose attested hash differs from the current one, so a
@@ -434,6 +517,11 @@ ts_scan() {
     TS_DORMANT_COUNT=0
     TS_UNATTESTABLE_REPORT=""
     TS_UNATTESTABLE_COUNT=0
+    # How many archives this scan ASSERTED on (the live set: in-window dirs plus
+    # the newest-marker dir). Reset here with the rest, and initialized before any
+    # use — the script runs under `set -u`, so an unset counter would abort the
+    # scan on the very first archive.
+    TS_RUN_WINDOW_COUNT=0
 
     local rc=0
     CURRENT_FP=$(ts_fingerprint) || rc=$?
@@ -458,7 +546,14 @@ ts_scan() {
     live_dir=$(ts_live_run_dir)
     [ -n "$live_dir" ] && TS_LIVE_DIR="$(basename "$live_dir")"
 
-    local a run_dir dir stamp attested detail
+    # The RUN WINDOW opened by `ensure` earlier in this verify run. Empty when no
+    # epoch is on disk (standalone `check`, mirrored test fixture, unwritable
+    # tree), in which case the live set collapses to the newest-marker dir alone —
+    # the pre-window scope.
+    local epoch
+    epoch=$(ts_epoch_mtime)
+
+    local a run_dir dir stamp attested detail is_live
     local -a stale=()
     local -a dormant=()
     local -a unattestable=()
@@ -468,6 +563,23 @@ ts_scan() {
         run_dir="$(dirname "$(dirname "$a")")"
         dir="$(basename "$run_dir")"
         stamp="$(dirname "$a")/$STAMP_NAME"
+
+        # Live when cargo re-ran this dir's build script inside THIS run's window,
+        # or when it IS the newest-marker dir, or when liveness could not be
+        # determined at all (then nothing may be demoted). The window arm is what
+        # makes a multi-archive plan — clippy's dir, the debug nextest dir, the
+        # release nextest dir — assert over every archive this run actually built,
+        # rather than over whichever one happens to be newest when `check` runs.
+        #
+        # Decided BEFORE freshness, and counted here rather than at the
+        # stale/dormant split below, so the reported count is "dirs this run
+        # asserted on" — not "dirs that happened to fail".
+        is_live=0
+        if [ -z "$live_dir" ] || [ "$run_dir" = "$live_dir" ] \
+            || ts_in_run_window "$run_dir" "$epoch"; then
+            is_live=1
+            TS_RUN_WINDOW_COUNT=$(( TS_RUN_WINDOW_COUNT + 1 ))
+        fi
 
         detail=""
         if [ ! -f "$stamp" ]; then
@@ -487,9 +599,10 @@ ts_scan() {
         fi
         [ -n "$detail" ] || continue
 
-        # Live when it IS the newest-marker dir, or when liveness could not be
-        # determined at all (then nothing may be demoted).
-        if [ -z "$live_dir" ] || [ "$run_dir" = "$live_dir" ]; then
+        # Reuses the is_live decision made above rather than re-deriving it: the
+        # membership test and the count must never be able to disagree, and
+        # ts_in_run_window stats the run dir, so recomputing also re-pays that.
+        if [ "$is_live" -eq 1 ]; then
             stale+=("$detail")
         else
             dormant+=("$detail")
@@ -547,10 +660,19 @@ ts_dormant_lines() {
 
 # ts_live_label — how the live dir is named in output, for both modes.
 ts_live_label() {
-    if [ -n "$TS_LIVE_DIR" ]; then
-        printf 'live fingerprint dir: %s' "$TS_LIVE_DIR"
-    else
+    if [ -z "$TS_LIVE_DIR" ]; then
         printf 'liveness undeterminable (no cargo run marker) — asserting on EVERY archive'
+        return 0
+    fi
+    # Name the run window when one is open, not just the newest dir. Without this
+    # a verdict that fails on an IN-WINDOW dir still printed only "live
+    # fingerprint dir: <newest>" — pointing the reader at a dir that is not the
+    # one that failed, and hiding why a non-newest dir was asserted on at all.
+    if [ "$TS_RUN_WINDOW_COUNT" -gt 1 ]; then
+        printf 'newest fingerprint dir: %s; asserting on %s dir(s) rebuilt during this run' \
+            "$TS_LIVE_DIR" "$TS_RUN_WINDOW_COUNT"
+    else
+        printf 'live fingerprint dir: %s' "$TS_LIVE_DIR"
     fi
 }
 
@@ -665,6 +787,22 @@ ts_mode_check() {
 
 ts_mode_ensure() {
     echo "tree-sitter-freshness: ensure — attesting libtree_sitter_reify.a against $TS_DIR"
+
+    # Open the RUN WINDOW first, before anything else can touch target/. verify.sh
+    # runs `ensure` after tree-sitter-generate.sh and before every cargo leaf, so
+    # stamping here means every build-script run the upcoming cargo wave performs
+    # lands at or after the epoch — and the `check` leaf at the end of the plan
+    # therefore attests EVERY archive this run built, not just the newest one.
+    #
+    # Stamped unconditionally, ahead of ts_scan and ahead of every early return:
+    # a window that exists only on the repair path would leave the common
+    # already-fresh run asserting at the old newest-marker-only scope.
+    #
+    # It cannot widen ensure's OWN scan below: every marker already on disk
+    # predates a file created a moment ago, so the window is empty for this scan
+    # and the live/dormant split ensure reasons about is unchanged.
+    ts_write_epoch
+
     ts_scan
 
     local ledger="$TARGET_DIR/$LEDGER_NAME"
