@@ -48,6 +48,9 @@ export const KEYWORD_LED_BODIES = [
   'ConstraintDefinition',
   // `where { … }` trailing a sub's pose — keyword-led like `RelateBlock`.
   'SubRelateBlock',
+  // `match k { Hex => sub … }` — the declaration-position sibling of
+  // `MatchExpression`, and keyword-led for the same reason it is.
+  'MatchArmDeclBlock',
 ];
 
 /**

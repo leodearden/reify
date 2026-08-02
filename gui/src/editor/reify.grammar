@@ -274,6 +274,7 @@ Member {
   ChainStatement |
   ForallStatement |
   RelateBlock |
+  MatchArmDeclBlock |
   MetaBlock |
   Pragma
 }
@@ -795,6 +796,48 @@ VariantBindingPattern {
 // grammar.js:1310-1315 — the binder is an IDENTIFIER, not a nested pattern.
 FieldBinding {
   Identifier ":" Identifier
+}
+
+// ── Match arm declaration block ─────────────────────────
+// grammar.js:1322-1345. A MEMBER-position `match` whose arms DECLARE a sub
+// rather than evaluate to a value: the variant chosen decides which sub the
+// structure gets.
+//
+// NO MARKER, and none is needed, against the `MatchExpression` it shares its
+// keyword and its whole `match <expr> {` prefix with. Position is the
+// discriminator: no `Member` can begin with a bare expression, so the
+// expression form is simply unreachable here and the two never share a state.
+// That is the same argument already recorded for `ForallStatement` vs
+// `QuantifierExpression`. MEASURED: zero conflicts. Both directions are pinned
+// by assertions in reifyGrammarCorpus.test.ts — expression-position `match`
+// still yields MatchExpression, and a member-position `match` whose arms are
+// expressions ERRORS.
+//
+// The patterns reuse `MatchPattern` verbatim, so or-patterns, wildcards and
+// variant-binding patterns come free and cannot drift from the expression form.
+//
+// No committed `.ri` uses this block, so it moves the corpus ledger by zero
+// files and is taken for node shape.
+MatchArmDeclBlock {
+  kw<"match"> expression "{" MatchArmDeclArm ("," MatchArmDeclArm)* ","? "}"
+}
+
+MatchArmDeclArm {
+  MatchPattern "=>" MatchArmSubDecl
+}
+
+// DELIBERATELY NARROWER than `SubDeclaration`: no body, no where clause, no
+// pose. This port's standing stance is that over-permissiveness is the safe
+// direction of error (recorded on TraitDeclaration and SpecializationBody), but
+// that argument holds only where the cost is "no squiggle on a program the
+// compiler will still reject". Here upstream restricts the arm precisely
+// because the compiler rejects bodies and where clauses in this position
+// (audit M-006, entity.rs:2506-2521), so accepting them would invent a third
+// dialect rather than degrade gracefully — the editor's reading would diverge
+// from the compiler's exactly where over-permissiveness misleads instead of
+// helping. `PortBody` records the same exception for the same reason.
+MatchArmSubDecl {
+  kw<"sub"> Identifier ":" Identifier
 }
 
 // ── Variant construction ────────────────────────────────

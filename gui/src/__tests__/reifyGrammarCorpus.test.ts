@@ -2896,7 +2896,9 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
    * The arms reuse the existing `MatchPattern` production verbatim, so the
    * or-pattern, the wildcard and the variant-binding form come free and cannot
    * drift from the ones `MatchExpression` accepts. Each is asserted rather than
-   * assumed, since "comes free" is a claim about the grammar's shape.
+   * assumed, since "comes free" is a claim about the grammar's shape — and the
+   * wildcard case below shows why that is worth checking: it comes free
+   * including its pre-existing divergence.
    */
   it('accepts an or-pattern arm', () => {
     const src = 'structure def F { match kind { Hex | Button => sub head : RecessedHead } }';
@@ -2904,12 +2906,27 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
     expect(nodeNames(src)).toContain('MatchArmDeclBlock');
   });
 
-  it('accepts a wildcard arm', () => {
+  /**
+   * MEASURED, and NOT what the `@extend` on `WildcardPattern` suggests: a bare
+   * `_` arm reduces through `MatchPattern`'s plain-Identifier alternative, so
+   * the tree carries `MatchPattern > Identifier` and NO `WildcardPattern` node.
+   * Both readings are viable in that state — the extended token is not the only
+   * way to shift a `_` — and lezer takes the unextended one.
+   *
+   * This is PRE-EXISTING and belongs to `MatchPattern`, not to this block: the
+   * expression form behaves identically (its own wildcard test above likewise
+   * asserts only that the arm parses), and it was so before this production
+   * existed. Asserted here in the shape the grammar actually delivers rather
+   * than the shape its comment implies, so the divergence is recorded instead
+   * of masked by a weaker test.
+   */
+  it('accepts a wildcard arm (which reduces to Identifier, not WildcardPattern)', () => {
     const src = 'structure def F { match kind { _ => sub head : DefaultHead } }';
     expect(countErrorNodes(src)).toBe(0);
     const names = nodeNames(src);
     expect(names).toContain('MatchArmDeclBlock');
-    expect(names).toContain('WildcardPattern');
+    expect(names).toContain('MatchPattern');
+    expect(names).not.toContain('WildcardPattern');
   });
 
   it('accepts a variant-binding-pattern arm', () => {
