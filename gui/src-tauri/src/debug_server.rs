@@ -271,7 +271,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "element_screenshot",
-            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for. Frontend-mediated (no Rust dispatch arm).",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. Frontend-mediated (no Rust dispatch arm).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1076,6 +1076,82 @@ fn is_image_tool(name: &str) -> bool {
     matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
 }
 
+/// Map a successful tool result onto the MCP `tools/call` `{"content": [...]}`
+/// envelope.
+///
+/// Pure (no `DebugServerState`) so the transport is unit-testable: `handle_mcp`
+/// is an axum handler taking `State(DebugServerState)` — an Arc-of-Mutex bundle
+/// of EngineSession, SelectionInfo, DebugBridge and GuiState — which is
+/// impractical to build in `mod tests`, and is why this envelope had no coverage
+/// at all before #5891.
+///
+/// Two properties are load-bearing and neither is arbitrary:
+///
+/// 1. ORDER — the image block stays at `content[0]`, diagnostics are APPENDED.
+///    `parseRpcResponse` (gui/test/visual/rpc.ts, branch table :33) is POSITIONAL
+///    (`content[0].type === "image"`) and gui/test/visual/run.ts:202-211 feeds
+///    `value.data` straight into `Buffer.from(…, "base64")`, so a prepended text
+///    block would be decoded as PNG bytes and corrupt the visual-regression
+///    harness. `normalizeRpcEnvelope` (rpcEnvelope.mjs) instead SEARCHES for the
+///    text block, so appending is invisible to it.
+///
+/// 2. GATING — the diagnostics block is emitted only when the residual (every
+///    top-level key except `data`) is a non-empty object with no top-level string
+///    `error`. Non-empty keeps `screenshot`/`screenshot_window` — which return
+///    `{data}` and nothing else (bridge.ts:689,702) — and every scoped or
+///    single-match `element_screenshot` bit-for-bit unchanged, mirroring the
+///    bridge-side `paneDiagnostics` gate one layer down rather than inventing a
+///    second condition that can drift. The `error` exclusion upholds the
+///    CROSS-LANGUAGE INVARIANT documented at gui/test/visual/rpcEnvelope.mjs:54-58:
+///    `isInBandError` reads any top-level string `error` as a tool FAILURE, so
+///    emitting one beside a successful image would make every driver report a
+///    working screenshot as broken.
+///
+/// Anything else — a non-image tool, or an image tool whose result carries no
+/// string `data` (every `element_screenshot` error shape) — falls through to
+/// today's single pretty-printed text block over the FULL result.
+fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
+    if is_image_tool(tool_name)
+        && let Some(data) = result.get("data").and_then(|d| d.as_str())
+    {
+        // Strip data URL prefix if present
+        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
+        let mut content = vec![json!({
+            "type": "image",
+            "data": base64,
+            "mimeType": "image/png"
+        })];
+
+        // Property 2 above: append the pane-guess diagnostics only when there is
+        // something to say and saying it cannot be misread as a failure.
+        if let Some(obj) = result.as_object() {
+            let residual: serde_json::Map<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| k.as_str() != "data")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let carries_in_band_error = residual.get("error").is_some_and(|v| v.is_string());
+            if !residual.is_empty() && !carries_in_band_error {
+                let residual = Value::Object(residual);
+                let text = serde_json::to_string_pretty(&residual)
+                    .unwrap_or_else(|_| residual.to_string());
+                content.push(json!({"type": "text", "text": text}));
+            }
+        }
+
+        return json!({"content": content});
+    }
+
+    // Standard text content block
+    let text = serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }]
+    })
+}
+
 // --- Tool dispatch ---
 
 // Handles state-free tool arms so they can be tested without a DebugServerState.
@@ -1572,38 +1648,10 @@ async fn handle_mcp(
             let tool_args = req.params.get("arguments").cloned().unwrap_or(json!({}));
 
             match dispatch_tool(&state, tool_name, tool_args).await {
-                Ok(result) => {
-                    // Check if this is an image tool (contains base64 image data)
-                    if is_image_tool(tool_name)
-                        && let Some(data) = result.get("data").and_then(|d| d.as_str())
-                    {
-                        // Strip data URL prefix if present
-                        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
-                        return Json(JsonRpcResponse::ok(
-                            id,
-                            json!({
-                                "content": [{
-                                    "type": "image",
-                                    "data": base64,
-                                    "mimeType": "image/png"
-                                }]
-                            }),
-                        ));
-                    }
-
-                    // Standard text content block
-                    let text = serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|_| result.to_string());
-                    JsonRpcResponse::ok(
-                        id,
-                        json!({
-                            "content": [{
-                                "type": "text",
-                                "text": text
-                            }]
-                        }),
-                    )
-                }
+                // Image and text envelopes share ONE call site: the whole
+                // result→content mapping lives in the pure `mcp_content_blocks`
+                // so it is unit-testable without a DebugServerState (#5891).
+                Ok(result) => JsonRpcResponse::ok(id, mcp_content_blocks(tool_name, &result)),
                 Err(e) => JsonRpcResponse::ok(
                     id,
                     json!({
@@ -3241,10 +3289,16 @@ mod tests {
         let content = out["content"]
             .as_array()
             .expect("the envelope must carry a `content` array");
-        assert_eq!(content.len(), 1, "a non-image tool must yield one block; got {out}");
+        assert_eq!(
+            content.len(),
+            1,
+            "a non-image tool must yield one block; got {out}"
+        );
         assert_eq!(content[0]["type"].as_str(), Some("text"));
         let parsed: Value = serde_json::from_str(
-            content[0]["text"].as_str().expect("the block must carry a `text` string"),
+            content[0]["text"]
+                .as_str()
+                .expect("the block must carry a `text` string"),
         )
         .expect("the text block must carry valid JSON");
         assert_eq!(parsed, result, "the text block must carry the FULL result");
@@ -3264,10 +3318,15 @@ mod tests {
         );
         assert_eq!(content[0]["type"].as_str(), Some("text"));
         let parsed: Value = serde_json::from_str(
-            content[0]["text"].as_str().expect("the block must carry a `text` string"),
+            content[0]["text"]
+                .as_str()
+                .expect("the block must carry a `text` string"),
         )
         .expect("the text block must carry valid JSON");
-        assert_eq!(parsed, err, "the error shape must survive the transport verbatim");
+        assert_eq!(
+            parsed, err,
+            "the error shape must survive the transport verbatim"
+        );
     }
 
     #[test]
