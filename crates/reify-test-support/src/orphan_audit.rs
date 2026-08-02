@@ -108,6 +108,15 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 /// without touching the real repo or the real script location. Mirrors why
 /// [`build_audit_command`] was split out one layer down.
 fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAudit {
+    // Sanitize repo-redirect git env vars before spawning (via
+    // build_audit_command -> sanitize): the script's first action is
+    // `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an ambient
+    // GIT_DIR/GIT_WORK_TREE (exported into a hook's entire process tree)
+    // overrides BOTH cwd and an explicit `-C`. Full rationale and failure
+    // mode, and why this crate keeps its own REPO_REDIRECT_VARS/sanitize
+    // copy rather than calling reify_audit::git_env::sanitize (the
+    // dependency edge runs the other way): crates/reify-audit/src/git_env.rs
+    // module doc, "Resolved non-central case".
     let output = build_audit_command(script, scope, repo_root)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
@@ -154,20 +163,58 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
 /// Run `scripts/audit-orphan-producers.sh` against a specific crate scope and
 /// return the parsed JSON envelope.
 ///
+/// A thin `Option`-collapsing wrapper over [`run_orphan_audit_detailed`], kept
+/// with this exact signature so every existing call site's `else { return; }`/
+/// `let Some(..) else` shape keeps compiling and behaving identically. See
+/// [`run_orphan_audit_detailed`]'s doc for the full three-outcome contract;
+/// callers that need to tell "excluded scope" apart from "environment
+/// unavailable" should call it directly instead of this wrapper.
+///
+/// Returns `None` for both [`OrphanAudit::ExcludedScope`] and
+/// [`OrphanAudit::EnvUnavailable`]. Returns `Some(json)` for
+/// [`OrphanAudit::Envelope`]. Panics exactly when
+/// [`run_orphan_audit_detailed`] would panic.
+pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
+    match run_orphan_audit_detailed(scope) {
+        OrphanAudit::Envelope(v) => Some(v),
+        OrphanAudit::ExcludedScope | OrphanAudit::EnvUnavailable(_) => None,
+    }
+}
+
+/// Like [`run_orphan_audit`], but returns the full three-way [`OrphanAudit`]
+/// outcome instead of collapsing two of them to `None`.
+///
 /// # Graceful-skip protocol
 ///
-/// Returns `None` (without panicking) when the environment cannot satisfy the
-/// script's prerequisites:
+/// Returns [`OrphanAudit::EnvUnavailable`] (without panicking) when the
+/// environment cannot satisfy the script's prerequisites:
 /// - `python3` is absent from `PATH`
 /// - `git` is absent from `PATH`
 /// - `scripts/audit-orphan-producers.sh` does not exist on disk
 ///
 /// In each of those cases an explanatory message is printed to `stderr` so CI
-/// logs remain informative.
+/// logs remain informative, and the returned reason string names which one.
 ///
-/// Returns `Some(json)` on success.  Panics on hard failures: spawn errors or
-/// malformed JSON output (which always indicates a bug in the audit script or
-/// its invocation).
+/// Returns [`OrphanAudit::ExcludedScope`] when `scope`'s crate segment is a
+/// literal member of `EXCLUDE_CRATES`. Also non-failing, but distinct from
+/// the above: the tooling ran fine — the scope is just deliberately excluded
+/// from the audit.
+///
+/// Returns [`OrphanAudit::Envelope`] on success.
+///
+/// # Panics
+///
+/// - On a spawn error, or malformed JSON output — both always indicate a bug
+///   in the audit script or its invocation, never an environmental
+///   condition.
+/// - **As of task 5698**: on empty output for a scope that is NOT in
+///   `EXCLUDE_CRATES`. Before task 5698 this returned `None` exactly like the
+///   excluded-crate case, which meant a wrong-tree redirect, an
+///   `EXCLUDE_CRATES` edit, a crate rename, or a `discover_sources` script
+///   refactor could silently disable the orphan-producer pin for a real scope
+///   while every caller kept reporting green. That is never a legitimate
+///   outcome, so it is now a hard failure instead of a silent skip — see
+///   [`run_orphan_audit_at`]'s empty-stdout branch.
 ///
 /// # `scope` argument
 ///
@@ -181,7 +228,7 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
 /// evaluated inside **this** crate (`reify-test-support`), which always sits at
 /// `<repo>/crates/reify-test-support/`.  Two `.parent()` walks reach the repo
 /// root regardless of which downstream crate calls this function.
-pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
+pub fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     // Resolve script path: CARGO_MANIFEST_DIR = crates/reify-test-support
     // Go up two parents → repo root → scripts/audit-orphan-producers.sh
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -203,7 +250,7 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
             eprintln!("python3 not on PATH; skipping orphan audit for scope {scope:?}");
-            return None;
+            return OrphanAudit::EnvUnavailable("python3 not on PATH");
         }
         Err(e) => panic!("unexpected error probing python3: {e}"),
     }
@@ -215,57 +262,24 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {
             eprintln!("git not on PATH; skipping orphan audit for scope {scope:?}");
-            return None;
+            return OrphanAudit::EnvUnavailable("git not on PATH");
         }
         Err(e) => panic!("unexpected error probing git: {e}"),
     }
 
-    // Graceful skip: check the script itself exists
+    // Graceful skip: check the script itself exists. (Task 5698 step 6 moves
+    // this check into run_orphan_audit_at itself, once that seam also needs
+    // it to make missing_script_is_env_unavailable hold when the seam is
+    // called directly.)
     if !script.exists() {
         eprintln!(
             "scripts/audit-orphan-producers.sh not found at {:?}; skipping",
             script
         );
-        return None;
+        return OrphanAudit::EnvUnavailable("audit-orphan-producers.sh not found on disk");
     }
 
-    // Sanitize repo-redirect git env vars before spawning: the script's first
-    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an
-    // ambient GIT_DIR/GIT_WORK_TREE (exported into a hook's entire process
-    // tree) overrides BOTH cwd and an explicit `-C`. Full rationale and
-    // failure mode, and why this crate keeps its own REPO_REDIRECT_VARS/
-    // sanitize copy rather than calling reify_audit::git_env::sanitize (the
-    // dependency edge runs the other way): crates/reify-audit/src/git_env.rs
-    // module doc, "Resolved non-central case".
-    let output = build_audit_command(&script, scope, repo_root)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // Guard: empty stdout means the scope is in EXCLUDE_CRATES or the script
-    // produced no envelope.  `serde_json::from_str("")` would panic with a
-    // "not valid JSON" error whose accompanying "status: ExitStatus(0)" would
-    // be misleading.  Surface a clear skip-style message instead.
-    if stdout.trim().is_empty() {
-        eprintln!(
-            "audit-orphan-producers.sh produced empty output for scope {scope:?} \
-             — scope may be in EXCLUDE_CRATES (exit status: {:?})",
-            output.status
-        );
-        return None;
-    }
-
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!(
-            "audit-orphan-producers.sh output was not valid JSON: {e}\n\
-             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
-            output.status
-        )
-    });
-
-    Some(parsed)
+    run_orphan_audit_at(&script, repo_root, scope)
 }
 
 #[cfg(test)]
