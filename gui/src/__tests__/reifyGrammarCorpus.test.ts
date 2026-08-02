@@ -3606,6 +3606,96 @@ describe('reify.grammar snippets — `::` in expression position', () => {
 });
 
 /**
+ * `keyed_member_block` — catch-up round 4, family 9.
+ *
+ * `sub name : Keyed<T> { "key" => { overrides } }` (grammar.js:890, 906-939).
+ * `SubDeclaration`'s `:` arm admits only a `SpecializationBody` here, so the
+ * string key had nowhere to go. MEASURED before the fix: the corpus-verbatim
+ * block is 10 errors, and the tree shows the failure mode — the `{` opens a
+ * `SpecializationBody`, the first key lexes as an `InterpolatedString` and the
+ * rest of the block is swept into a `PoseClause`.
+ *
+ * UPSTREAM'S OWN DISAMBIGUATOR is what makes the widening safe, and (c) is the
+ * pin for it: `keyed_member_block` uses `repeat1` while `specialization_body`
+ * uses `repeat`, so an empty `{}` is unambiguously a specialization body; when
+ * non-empty, the first token after `{` decides — a string selects keyed, an
+ * identifier or member keyword the specialization body. That argument is a
+ * property of the two productions' SHAPE, so a widening that broke it would
+ * still parse clean and differ only in the node produced.
+ */
+describe('reify.grammar snippets — keyed sub-member blocks', () => {
+  // Corpus-attested VERBATIM: examples/keyed_vents.ri:27-30, and the same shape
+  // at examples/keyed_forall.ri:18-21.
+  it('parses a keyed member block as a sub body', () => {
+    const src =
+      'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('KeyedMemberBlock');
+    expect(names).toContain('KeyedMemberEntry');
+    // Exactly two — one per key. A block that collapsed both entries into one,
+    // or nested them, would still reach 0 errors (#5957).
+    expect(countNodesNamed(src, 'KeyedMemberEntry')).toBe(2);
+  });
+
+  /**
+   * The overrides are THE SAME NODE a standalone specialization body produces —
+   * upstream's stated contract at grammar.js:931-934, "so override blocks
+   * inside a keyed sub parse identically to a standalone specialization-scope
+   * body". A cloned-but-separate override production would satisfy the error
+   * count above and silently fork the two, so the reuse is asserted directly.
+   *
+   * Asserted on a COUNT, not on membership. MEASURED: the broken tree ALSO
+   * contains a `SpecializationBody` and a `ParamAssignment` — it opens one
+   * outer body and recovers a param assignment inside it — so a `toContain`
+   * pair passes on arrival and pins nothing. The count is 2 (one per keyed
+   * entry, with the outer block now a `KeyedMemberBlock`) against 1 today.
+   */
+  it('reuses SpecializationBody for the overrides', () => {
+    const src =
+      'structure def S { sub vents : Keyed<Vent> { "intake" => { area = 5mm }  "exhaust" => { area = 8mm } } }';
+    expect(countNodesNamed(src, 'SpecializationBody')).toBe(2);
+    expect(countNodesNamed(src, 'ParamAssignment')).toBe(2);
+  });
+
+  /**
+   * UPSTREAM'S DISAMBIGUATOR, pinned. Both block forms open with `{`, so only
+   * `repeat1`-vs-`repeat` and the first token after the brace part them. Both
+   * readings are attested in the corpus, so both are asserted: the empty body
+   * and the identifier-led body must STAY `SpecializationBody`. Passes on
+   * arrival; it is the reading the widening could quietly capture.
+   */
+  it('does not steal the specialization body', () => {
+    for (const src of [
+      'structure def S { sub x : Foo<T> { } }',
+      'structure def S { sub x : Foo<T> { bore = 5mm } }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      const names = nodeNames(src);
+      expect(names).toContain('SpecializationBody');
+      expect(names).not.toContain('KeyedMemberBlock');
+    }
+  });
+
+  /**
+   * CASCADE ATTRIBUTION. Everything else the two keyed_* files contain already
+   * parses standalone TODAY — the `forall` loop, the key-addressed index chain
+   * and the empty port body that follows the block. So the files' whole gain is
+   * attributable to the keyed block alone, and their remaining error lines are
+   * cascade from it rather than a second gap riding along.
+   */
+  it('already parses the rest of the keyed files', () => {
+    for (const src of [
+      'structure def S { forall v in vents: constraint v.area > 1mm }',
+      'structure def S { let a = vents["intake"].area }',
+      'structure def S { port src : out Flow {} }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+    }
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
