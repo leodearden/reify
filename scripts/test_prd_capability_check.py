@@ -790,6 +790,41 @@ class TestRunProbe(unittest.TestCase):
             "missing binary must produce harness-error verdict, not PASS/FAIL/UNPROVABLE",
         )
 
+    def test_non_executable_tree_sitter_binary_produces_harness_error(self):
+        """A tree-sitter CLI that EXISTS but cannot be LAUNCHED → sentinel, not a raise.
+
+        Sibling to the missing-binary case above, and distinct from it: the file
+        is on disk, so every isfile()/exists() guard passes and only the exec
+        fails (EACCES → PermissionError, which `except FileNotFoundError` does
+        not catch).  run_probe() must represent it the same way it represents
+        ENOENT — "the probe could not be launched" — because an escaping
+        exception propagates out of grammar_substrate_usable(), which this test
+        module evaluates at IMPORT time, turning a one-test skip into a
+        whole-suite loss.
+
+        Merely calling run_probe() is the assertion: an escaping exception errors
+        the test before any assert runs.
+        """
+        stub = _ts_stub_not_executable(self._tmpdir)
+        self.assertTrue(
+            os.path.isfile(stub),
+            "precondition: the stub must EXIST, else this degenerates into the "
+            "already-covered missing-CLI case",
+        )
+        self.assertFalse(
+            os.access(stub, os.X_OK),
+            "precondition: the stub must not be executable",
+        )
+        probe = self._make_probe("grammar", "tests/prd-gate/fixtures/arrow_type.ri")
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
+        self.assertIn(
+            pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr,
+            "an unlaunchable binary must reach observe() through the same "
+            "sentinel channel as a missing one",
+        )
+        self.assertEqual(run.exit_code, 127)
+
     def test_grammar_load_failure_produces_harness_error(self):
         """Grammar 'Failed to load language' → harness-error verdict from evaluate()."""
         stub = self._make_stub(
@@ -1173,6 +1208,28 @@ class TestMain(unittest.TestCase):
             rc, _, _ = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
         self.assertEqual(rc, 0)
         sentinel.assert_not_called()
+
+    def test_grammar_substrate_status_non_executable_cli_returns_75(self):
+        """A present-but-unlaunchable tree-sitter CLI → exit 75, reason on stdout.
+
+        Same contract as the cache-denial case above: the mode's whole job is to
+        answer "can a grammar probe run here?" so that a shell caller can print a
+        SKIP.  A CLI it cannot launch is the clearest possible "no", and must not
+        arrive as a traceback and exit 1 — that is indistinguishable from the
+        harness itself being broken.
+        """
+        stub = _ts_stub_not_executable(self._stub_dir())
+        self.assertTrue(
+            os.path.isfile(stub),
+            "precondition: the stub must EXIST, else this is the missing-CLI case",
+        )
+        rc, out, _ = self._run_status_with_stub(stub)
+        self.assertEqual(
+            rc, 75,
+            "an unlaunchable tree-sitter CLI must exit 75 (EX_TEMPFAIL), like "
+            "every other unusable-substrate cause",
+        )
+        self.assertIn("tree-sitter", out.lower(), "the reason must name the subsystem")
 
     # ── (d) regression guards for the argparse change ─────────────────────────
 
@@ -1616,6 +1673,20 @@ def _ts_stub_clean(tmpdir: str, name: str = "ts_stub_clean") -> str:
     return _write_ts_stub(tmpdir, name, "exit 0\n")
 
 
+def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
+    """Stub that EXISTS on disk but carries no execute bit.
+
+    Launching it raises PermissionError (EACCES) out of subprocess.run().  This
+    is deliberately NOT the missing-CLI case: the file is present, so every
+    isfile()/exists() guard upstream passes and only the exec itself fails.
+    Callers assert os.path.isfile() on the returned path so the case can never
+    silently degenerate into the already-covered missing-CLI case.
+    """
+    path = _write_ts_stub(tmpdir, name, "exit 0\n")
+    os.chmod(path, 0o644)
+    return path
+
+
 class TestGrammarCacheDenied(unittest.TestCase):
     """Pins pcc.grammar_cache_denied(run) -> bool.
 
@@ -1726,6 +1797,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def _clean_stub(self):
         return _ts_stub_clean(self._tmpdir)
 
+    def _not_executable_stub(self):
+        return _ts_stub_not_executable(self._tmpdir)
+
     @staticmethod
     def _call(stub):
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
@@ -1776,6 +1850,32 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         self.assertFalse(os.path.exists(missing), "precondition: stub must not exist")
         usable, reason = self._call(missing)
         self.assertFalse(usable, "a missing tree-sitter CLI is an unusable substrate")
+        self.assertTrue(reason, "an unusable substrate must explain itself")
+        self.assertIn("tree-sitter", reason.lower())
+
+    # ── (e) present-but-unlaunchable CLI → unusable, never a raise ────────────
+
+    def test_non_executable_cli_is_unusable_with_reason(self):
+        """A CLI that exists but cannot be launched → (False, reason), not a raise.
+
+        The reason string this function already emits for the missing-CLI case
+        advertises "is not executable or not on PATH" — but until run_probe()
+        represents an EACCES launch the same way it represents ENOENT, the
+        "not executable" half cannot be delivered: the PermissionError escapes
+        instead.  Returning normally is as load-bearing as the boolean, because
+        this function is called at module-import time by the skip-guard below.
+        """
+        stub = self._not_executable_stub()
+        self.assertTrue(
+            os.path.isfile(stub),
+            "precondition: the stub must EXIST, else this degenerates into "
+            "test_missing_cli_is_unusable_with_reason",
+        )
+        usable, reason = self._call(stub)
+        self.assertFalse(
+            usable,
+            "a tree-sitter CLI that cannot be launched is an unusable substrate",
+        )
         self.assertTrue(reason, "an unusable substrate must explain itself")
         self.assertIn("tree-sitter", reason.lower())
 
