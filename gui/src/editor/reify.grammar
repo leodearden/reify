@@ -616,8 +616,13 @@ NamedArgumentList {
   NamedArgument ("," NamedArgument)* ","?
 }
 
+// The value slot is widened with `VariantConstruction` for the same reason
+// `argument` is, and it must be widened TOGETHER with it: this one production
+// is shared by call-expression named arguments and by `SubDeclaration`'s
+// instantiation `ArgList`, so leaving it out would still reject
+// `Foo(shape: Circle { radius: 5mm })`.
 NamedArgument {
-  Identifier ":" expression
+  Identifier ":" (VariantConstruction | expression)
 }
 
 // ── Function ────────────────────────────────────────────
@@ -753,8 +758,10 @@ FieldBinding {
 }
 
 // ── Variant construction ────────────────────────────────
-// grammar.js:1443-1451, and the one production in this port that is
-// DELIBERATELY NARROWER than upstream.
+// grammar.js:1443-1451, and the one production in this port that is still
+// DELIBERATELY NARROWER than upstream — but narrower in `primaryExpression`
+// ONLY. Argument position is now admitted; the two differ, and the reason they
+// differ is a FOLLOW SET, not a marker.
 //
 // Upstream spells it as an ordinary `_primary_expression` alternative and pays
 // for it with an explicitly declared GLR conflict,
@@ -769,17 +776,33 @@ FieldBinding {
 // — and Lezer, being LR, cannot resolve them the way GLR does. Critically the
 // wrong reading is ERROR-FREE: variant construction would silently swallow the
 // match body, so the corpus test could not see the damage by counting error
-// nodes, which is why the three regression assertions check nodeNames instead.
+// nodes, which is why every regression assertion for this production checks
+// nodeNames instead. That warning applies to the widening below just as much.
 //
-// So the production is reachable only from `bindingValue` and from a
-// construction's own field values. That covers every committed call site —
-// all four are `param … = Name { … }` or `let … = Name { … }`, one of them
-// nested (examples/m6_generic_enum.ri:36) — and removes the collision
-// structurally rather than papering over it, because a binding value is never
-// followed by `{`. The narrowing is tracked as #5941: a construction in
-// argument position (`f(Circle { radius: 5mm })`) is valid upstream and is not
-// accepted here — MEASURED at 3 error nodes. No committed `.ri` uses that
-// shape, so closing it cannot move the corpus ledger either way.
+// WHERE IT IS REACHABLE, and why each position is safe:
+//
+//   - `bindingValue` and a construction's own field values. Every committed
+//     call site is one of these — all four are `param … = Name { … }` or
+//     `let … = Name { … }`, one of them nested
+//     (examples/m6_generic_enum.ri:36) — and a binding value is never followed
+//     by `{`, so the collision is removed structurally rather than papered over.
+//
+//   - `argument` and the `NamedArgument` value slot. Inside an argument list
+//     the follow set of a value is `,` or `)`; `{` is NOT in it, so the state
+//     after `Identifier` has a shift on `{` and no competing reduce. MEASURED:
+//     zero conflicts, no marker needed, and all three collision shapes above
+//     still read correctly. Both argument slots are widened together because
+//     `NamedArgument` is the value slot of the same call syntax and is shared
+//     with `SubDeclaration`'s instantiation `ArgList` — widening only the
+//     positional arm would still reject `Foo(shape: Circle { radius: 5mm })`.
+//
+// `primaryExpression` stays narrowed: nothing measured has changed about the
+// three collisions, and `{` is in the follow set there. NO COMMITTED `.ri`
+// USES THE ARGUMENT FORM, so admitting it moved the corpus ledger by zero
+// files — it is taken for node shape, and the assertions in
+// reifyGrammarCorpus.test.ts are the only thing guarding it, including one that
+// pins that expression-position `Name { … }` must STILL error. The residual
+// `primaryExpression` narrowing is tracked as #5950.
 VariantConstruction {
   Identifier "{" VariantConstructionField ("," VariantConstructionField)* ","? "}"
 }
@@ -1058,8 +1081,10 @@ ArgumentList {
   argument ("," argument)* ","?
 }
 
+// `VariantConstruction` is admitted here, and NOT in `primaryExpression` — see
+// the long note on that production for why the two positions differ.
 argument {
-  NamedArgument | expression
+  NamedArgument | VariantConstruction | expression
 }
 
 MemberAccess {
