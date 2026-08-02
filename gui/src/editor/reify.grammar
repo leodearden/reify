@@ -102,8 +102,29 @@ DefaultDeclaration {
 
 // ── Meta block ──────────────────────────────────────────
 // grammar.js:550-570 — comma-separated, unlike the field config entries.
+//
+// `meta` is CONTEXTUAL. A hard `kw<"meta">` is context-FREE in Lezer, so the
+// word stopped being an `Identifier` everywhere — including as the receiver of
+// an ordinary member access, which examples/m9_combined.ri:67-68 and
+// examples/integration_full_v01.ri:140-141 both use (`let label = meta.material`,
+// `let proj_name = meta.project`). Upstream has no such problem: its
+// parse-state-driven lexer keeps `meta` an identifier wherever a meta block
+// cannot start, so `ekw` is the upstream-faithful reading.
+//
+// MEASURED: lezer-generator reports ZERO conflicts for the demotion — the
+// ambiguity at member start that a contextual keyword could re-open does not
+// exist here, because no `Member` alternative begins with a bare identifier.
+// That is the same argument `RelateBlock` records for `ekw<"relate">` and
+// `ChainStatement` for `ekw<"chain">`, and it is stated explicitly so the next
+// round does not re-litigate it: no `~` ambiguity marker and no precedence
+// level was needed. The corpus test pins the surviving reading directly, with
+// `countNodesNamed(…, 'MetaBlock') === 1` rather than an error count, since a
+// re-opened ambiguity can reach 0 errors while doubling the node.
+//
+// `meta` STAYS in KEYWORDS: the styling guard scans for the literal
+// `kw<"meta">` substring, which `ekw<"meta">` contains.
 MetaBlock {
-  kw<"meta"> "{" (MetaEntry ("," MetaEntry)* ","?)? "}"
+  ekw<"meta"> "{" (MetaEntry ("," MetaEntry)* ","?)? "}"
 }
 
 MetaEntry {
