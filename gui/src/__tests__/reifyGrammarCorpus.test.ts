@@ -2641,6 +2641,122 @@ describe('reify.grammar snippets — constraint def', () => {
 });
 
 /**
+ * Argument-position `VariantConstruction` — a WIDENING of the port's one
+ * deliberately narrowed production, and a family that moves the ledger by zero
+ * files. It is taken for node SHAPE, so every assertion here is what guards it.
+ *
+ * `VariantConstruction` is reachable only from `bindingValue` and from a
+ * construction's own field values, because `Name {` collides with three
+ * committed, load-bearing shapes — `match d { … }`, `where cond { … }`,
+ * `connect a -> b { … }` — in states where `{` IS in the follow set of a
+ * complete expression, and Lezer (being LR) cannot resolve those the way
+ * upstream's declared GLR conflict does.
+ *
+ * ARGUMENT POSITION IS STRUCTURALLY DIFFERENT, and that is the whole claim
+ * this slice tests. Inside an argument list the follow set of a value is `,`
+ * or `)` — `{` is not in it — so the state after `Identifier` has a shift on
+ * `{` and NO competing reduce.
+ *
+ * EVERY ASSERTION BELOW IS ON NODE NAMES, never on an error count. In each of
+ * the three collision shapes the WRONG reading is error-free (a construction
+ * would silently swallow the match/guard/connect body), so counting error
+ * nodes is blind to which parse was taken.
+ */
+describe('reify.grammar snippets — variant construction in argument position', () => {
+  /**
+   * The shape the grammar note has recorded as rejected since the narrowing
+   * was introduced — MEASURED then at 3 error nodes. Normative: no committed
+   * `.ri` uses it, which is why this family cannot move EXPECTED_CLEAN.
+   */
+  it('parses a construction as a positional argument (normative, unattested)', () => {
+    const src = 'structure def F { let x = f(Circle { radius: 5mm }) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('VariantConstruction');
+    expect(names).toContain('VariantConstructionField');
+  });
+
+  /**
+   * The named-argument slot, and the reason widening only the positional arm
+   * would leave the gap half-closed: `NamedArgument` is the value slot of the
+   * same call syntax, and is SHARED with `SubDeclaration`'s instantiation
+   * `ArgList` — so this is the form a user is most likely to write.
+   */
+  it('parses a construction as a named argument on a sub instantiation', () => {
+    const src = 'structure def F { sub s = Foo(shape: Circle { radius: 5mm }) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('VariantConstruction');
+    expect(names).toContain('NamedArgument');
+  });
+
+  // A construction whose own field value is another construction, reached
+  // through an argument list — the two widened slots composing.
+  it('parses a nested construction inside an argument', () => {
+    const src = 'structure def F { let x = f(Outer { inner: Circle { radius: 5mm } }) }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('VariantConstruction');
+  });
+
+  // Positional and named arguments mix freely (grammar.js:1542-1546), so a
+  // construction must survive beside both without disturbing the list.
+  it('parses a construction in a mixed positional/named argument list', () => {
+    const src = 'structure def F { let x = f(1mm, Circle { radius: 5mm }, other: 2mm) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('VariantConstruction');
+    expect(names).toContain('NamedArgument');
+  });
+
+  /**
+   * ── The three collision pins ──────────────────────────────────────────────
+   *
+   * The shapes the narrowing exists to protect. Each is committed and
+   * load-bearing, and in each the construction reading would parse CLEAN while
+   * swallowing the body — so these are the assertions that would catch an
+   * over-eager future widening into `primaryExpression`.
+   */
+  it('still reads `match d { … }` as a MatchExpression, not a construction', () => {
+    const src = 'structure def F { let x = match outline { Round => 1mm, Square => 2mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MatchExpression');
+    expect(names).toContain('MatchArm');
+    expect(names).not.toContain('VariantConstruction');
+  });
+
+  it('still reads `where cond { … }` as a GuardedBlock, not a construction', () => {
+    const src = 'structure def F { where shape == Shape.Round { param d : Length = 1mm } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('GuardedBlock');
+    expect(names).not.toContain('VariantConstruction');
+  });
+
+  it('still reads `connect a -> b { … }` as a ConnectBody, not a construction', () => {
+    const src = 'structure def F { connect outlet -> inlet { a -> b } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ConnectBody');
+    expect(names).toContain('PortMapping');
+    expect(names).not.toContain('VariantConstruction');
+  });
+
+  /**
+   * THE FOURTH PIN, and the one that keeps the narrowing honest. Widening the
+   * two argument slots must NOT quietly widen `primaryExpression` as well: a
+   * bare `Name { … }` in ordinary expression position still has `{` in its
+   * follow set, nothing measured has changed about that, and it must still be
+   * an error. Without this, a later reader cannot tell the deliberate
+   * narrowing from an accidental one.
+   */
+  it('still rejects a bare construction in ordinary expression position', () => {
+    const src = 'structure def F { constraint Circle { radius: 5mm } == x }';
+    expect(countErrorNodes(src)).toBeGreaterThan(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
