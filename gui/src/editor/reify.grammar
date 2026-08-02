@@ -1744,7 +1744,37 @@ ReservedWord {
 
   unitName { $[a-zA-Z_] $[a-zA-Z0-9_]* }
   unitPow { "^" "-"? @digit+ }
-  unitOp { "*" | "/" }
+
+  // `·` IS U+00B7 MIDDLE DOT, and it is admitted HERE AND NOWHERE ELSE.
+  //
+  // That placement is the whole safety argument, not a stylistic choice. There
+  // is no general `·` operator in Reify, and this widening cannot invent one:
+  // `unitOp` is reachable only from inside `QuantityLiteral` (and its radix and
+  // imaginary companions), whose shape demands a `unitAtom` after every
+  // `unitOp`, and `unitAtom` must begin with `[a-zA-Z_(]`. So `5 · 3` and
+  // `5N· m` remain error nodes for free — which is exactly the guard κ spells
+  // out in C as `is_unit_start` (tree-sitter-reify/src/scanner.c:101), reached
+  // structurally here instead of procedurally. Both boundary rows are pinned by
+  // tests rather than left to that argument.
+  //
+  // THE OTHER HALF IS SOMEONE ELSE'S, AND IT IS STILL OUTSTANDING. The
+  // tree-sitter + compiler side is leaf κ of
+  // docs/prds/v0_6/angle-units-surface-convergence.md, task #5784 (pending),
+  // whose scope is `scanner.c` and the compiler and does NOT include this file.
+  // This is therefore not duplicated work but the GUI half landing first,
+  // deliberately: PRD decision 7a is ratified, so the SURFACE is settled and
+  // only the upstream implementation is outstanding.
+  //
+  // κ's measured contract is `lexer->lookahead == 0xB7` — a DECODED CODEPOINT,
+  // not the UTF-8 byte pair `0xC2 0xB7` that the PRD prose describes. Cited
+  // here so the two halves cannot drift apart on what "accepts U+00B7" means:
+  // this rule matches the same single codepoint.
+  //
+  // Why it matters at all: `Display for DimensionVector`
+  // (crates/reify-core/src/dimension.rs) joins base-unit parts with U+00B7, so
+  // `reify eval` prints `7850 kg·m^-3` — a string the language could not read
+  // back. Round-tripping that output is the point.
+  unitOp { "*" | "/" | "\u{b7}" }
   unitAtom { unitName unitPow? | unitParen }
 
   // Parenthesised denominator. The corpus attests exactly two shapes, both in

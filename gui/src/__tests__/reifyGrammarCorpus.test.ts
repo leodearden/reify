@@ -4536,6 +4536,7 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/typeparam_member_access.ri',
   'tests/prd-gate/fixtures/uncons_box_no_error.ri',
   'tests/prd-gate/fixtures/unit_curated_labels_ascii.ri',
+  'tests/prd-gate/fixtures/unit_middot_mul.ri',
   'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
 ];
 
