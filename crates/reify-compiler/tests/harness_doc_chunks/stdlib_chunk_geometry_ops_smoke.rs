@@ -1143,8 +1143,8 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
 // fixture/chunk involved) before anything consumes it. The ellipsis rule is
 // the one genuine hazard: an arg equal to `…` or ENDING IN `…` (e.g.
 // `weights…`) contributes 0 to the minimum and marks the form variadic —
-// `documented_geometry_op_forms_suffixed_ellipsis_is_at_least` is the case
-// that decides whether this task is GREENable at all (see the module doc).
+// `documented_geometry_op_forms_suffixed_ellipsis_is_at_least` pins exactly
+// that case — the one real chunk rows like `shell(..., faces…)` rely on.
 
 #[test]
 fn documented_geometry_op_forms_extracts_exact_arity() {
