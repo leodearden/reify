@@ -150,6 +150,89 @@ fn user_module_sub_member_read_control_unchanged() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (b2) module-local definitions SHADOW the prelude — both declaration orders
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SRC_LOCAL_SHADOWS_PRELUDE_BACKWARD: &str = r#"
+structure def DisplayStyle {
+    param opacity : Length = 3mm
+}
+
+structure def Styler {
+    sub d = DisplayStyle()
+    let op = self.d.opacity
+}
+"#;
+
+/// Property 1 of `types::find_template_with_prelude` — module-local shadows
+/// prelude — pinned with a name that ACTUALLY collides.
+///
+/// Test (b) above uses `Kid`, which has no prelude counterpart, so it only
+/// exercises "module lookup still works". This one redefines the real stdlib
+/// `DisplayStyle` (whose `opacity` is `Real`) with a `Length`-typed `opacity`,
+/// so the two candidates are distinguishable by type alone: flipping the
+/// `.or_else` order to prelude-first would type `op` as the prelude's `Real`
+/// and fail here, while leaving every other test in this module green.
+#[test]
+fn module_local_definition_shadows_same_named_prelude_template() {
+    let compiled =
+        reify_test_support::compile_source_with_stdlib(SRC_LOCAL_SHADOWS_PRELUDE_BACKWARD);
+    let styler = template(&compiled, "Styler");
+
+    assert_eq!(
+        let_cell_type(styler, "op"),
+        scalar_length(),
+        "`self.d.opacity` must resolve against the MODULE-LOCAL DisplayStyle \
+         (opacity : Length), not the stdlib one (opacity : Real)",
+    );
+    assert_no_realization_named(styler, "op");
+}
+
+const SRC_LOCAL_SHADOWS_PRELUDE_FORWARD: &str = r#"
+structure def User {
+    sub c = Color(alpha: 0.5mm)
+    let a = self.c.alpha
+}
+
+structure def Color {
+    param alpha : Length = 1mm
+}
+"#;
+
+/// The FORWARD-reference half of the same property, and the reason
+/// `find_template_with_prelude` takes a `local_entity_names` set rather than
+/// relying on `find_template` losing the race.
+///
+/// `compiled_templates` holds only the templates compiled EARLIER in the
+/// module, so for a local definition that appears AFTER its first use the
+/// module-first arm misses and — without the local-name guard — the prelude arm
+/// would bind `Color` to the stdlib `Color` (`materials_appearance.ri:17`,
+/// which has no `alpha`). Generic stdlib names (`Color`, `Layer`, `Datum`,
+/// `Fit`, `Coating`, `Frame3`, …) make that collision realistic.
+///
+/// MEASURED: at base commit 30d90a097a this source compiles with ZERO error
+/// diagnostics; with the unguarded prelude fallback it emitted a hard
+/// `unknown member 'alpha' on sub 'c'` — a NEW build failure on source the user
+/// considers valid. The local-name guard restores the pre-existing
+/// forward-declared/optimistic path for exactly this case, leaving the
+/// genuinely-prelude-typed cases (a)/(c)/(e) fixed.
+#[test]
+fn forward_referenced_local_definition_does_not_bind_to_prelude() {
+    let compiled =
+        reify_test_support::compile_source_with_stdlib(SRC_LOCAL_SHADOWS_PRELUDE_FORWARD);
+
+    let errors = reify_test_support::errors_only(&compiled);
+    assert!(
+        !errors
+            .iter()
+            .any(|d| d.message.contains("alpha") || d.message.contains("unknown member")),
+        "a name the module defines itself must never bind to the same-named PRELUDE \
+         template, even when the local definition appears after its first use; got: \
+         {errors:?}",
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (c) plain sub whose target is a prelude OCCURRENCE
 // ─────────────────────────────────────────────────────────────────────────────
 
