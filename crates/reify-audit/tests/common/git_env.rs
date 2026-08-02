@@ -13,6 +13,9 @@
 //!   environment to a command.
 //! - [`replay_self_under_hook_git_env`] — the outer harness that proves the
 //!   fix under a real *ambient* environment rather than a per-child one.
+//! - [`audit_script_stdout_poisoned_and_sanitized`] — spawn the orphan-audit
+//!   script twice, poisoned and then stripped, so the hazard's potency stays
+//!   demonstrable independently of any production call site.
 //!
 //! # Why a replay harness
 //!
@@ -43,6 +46,7 @@
 //! declared floor, and then requires the poisoned run to actually account for
 //! every listed test.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
@@ -162,6 +166,115 @@ pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> 
         cmd.env(name, value);
     }
     cmd
+}
+
+/// Run `scripts/audit-orphan-producers.sh --scope <scope> --quiet --format
+/// json` TWICE against one shared [`decoy_repo`]: once with the hook poison
+/// ambient in the child, once with exactly those vars `env_remove`d. Returns
+/// `(poisoned_stdout, sanitized_stdout)`.
+///
+/// The claim a caller pins with this is a DELTA — "the same command, differing
+/// only in whether those variables are stripped" — so both commands are built
+/// from one closure against one decoy. That makes the identity structural
+/// rather than a comment two call sites could drift apart on. For the same
+/// reason the sanitized half derives its `env_remove` names by iterating
+/// [`hook_git_env`] instead of re-typing `GIT_DIR`/`GIT_WORK_TREE`/
+/// `GIT_INDEX_FILE`: "poisoned set == stripped set" is then a fact about the
+/// code, and it inherits `hook_git_env`'s assertion that every member is one
+/// [`reify_audit::git_env::REPO_REDIRECT_VARS`] strips.
+///
+/// # Graceful-skip protocol
+///
+/// Returns `None` with an explanatory `stderr` note when `python3` or `git` is
+/// absent from `PATH`, or the script is not on disk — the same three
+/// conditions, probed the same way, as
+/// `reify_test_support::run_orphan_audit`, so a reader meets one protocol
+/// rather than two. (Both probes are a bare `--version`, which the
+/// `reify_audit::git_env` module doc explicitly exempts from the sanitizing
+/// rule: neither one targets a repository.)
+///
+/// The skip is load-bearing here, not merely conventional. Without `python3`
+/// the script exits 3 with empty stdout on BOTH halves, so a caller's
+/// "poisoned output is empty" assertion would pass while its "sanitized output
+/// is non-empty" assertion failed — a spurious RED that says nothing about the
+/// hazard.
+///
+/// Spawn failures are hard failures, matching `run_orphan_audit`. Exit status
+/// is deliberately ignored: all three runs exit 0 (measured), so the signal is
+/// entirely in stdout and belongs in the caller's assertions.
+#[allow(dead_code)]
+pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(String, String)> {
+    // CARGO_MANIFEST_DIR is evaluated in THIS crate, which always sits at
+    // <repo>/crates/reify-audit; two `.parent()` walks reach the repo root.
+    // Same shape and depth as `reify_test_support::run_orphan_audit`.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let script = Path::new(manifest_dir)
+        .parent()
+        .expect("crates/reify-audit has a parent (crates/)")
+        .parent()
+        .expect("crates/ has a parent (repo root)")
+        .join("scripts/audit-orphan-producers.sh");
+
+    let repo_root = script
+        .parent()
+        .expect("scripts/ dir exists")
+        .parent()
+        .expect("repo root exists");
+
+    match Command::new("python3").arg("--version").output() {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            eprintln!("python3 not on PATH; skipping hook-git-env audit probe for scope {scope:?}");
+            return None;
+        }
+        Err(e) => panic!("unexpected error probing python3: {e}"),
+    }
+
+    match Command::new("git").arg("--version").output() {
+        Ok(_) => {}
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            eprintln!("git not on PATH; skipping hook-git-env audit probe for scope {scope:?}");
+            return None;
+        }
+        Err(e) => panic!("unexpected error probing git: {e}"),
+    }
+
+    if !script.exists() {
+        eprintln!("scripts/audit-orphan-producers.sh not found at {script:?}; skipping");
+        return None;
+    }
+
+    let decoy = decoy_repo();
+
+    // One closure, so the two spawns are provably identical apart from the
+    // environment delta below.
+    let build = || {
+        let mut cmd = Command::new(&script);
+        cmd.args(["--scope", scope, "--quiet", "--format", "json"])
+            .current_dir(repo_root);
+        cmd
+    };
+
+    let mut poisoned_cmd = build();
+    poison_with_hook_git_env(&mut poisoned_cmd, &decoy);
+
+    let mut sanitized_cmd = build();
+    poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
+    for (name, _) in hook_git_env(&decoy) {
+        sanitized_cmd.env_remove(name);
+    }
+
+    let run = |mut cmd: Command, label: &str| -> String {
+        let out = cmd.output().unwrap_or_else(|e| {
+            panic!("failed to invoke audit-orphan-producers.sh ({label}): {e}")
+        });
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+
+    let poisoned = run(poisoned_cmd, "poisoned");
+    let sanitized = run(sanitized_cmd, "sanitized");
+
+    Some((poisoned, sanitized))
 }
 
 /// Re-run this test binary's `filters`-matching tests under a poisoned
