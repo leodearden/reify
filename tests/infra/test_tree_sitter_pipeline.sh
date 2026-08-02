@@ -391,7 +391,6 @@ test_auto_generation_rebuilds_parser() {
     # Validates that build.rs auto-regenerates parser.c when it is missing.
     # This exercises the needs_generate -> run_tree_sitter_generate path.
     local parser="$TS_DIR/src/parser.c"
-    local backup="$TS_DIR/src/parser.c.bak"
 
     # This test deletes parser.c below and relies on `cargo check` to
     # regenerate it; build.rs's run_tree_sitter_generate() spawns the
@@ -424,9 +423,26 @@ test_auto_generation_rebuilds_parser() {
         fi
     fi
 
-    # Backup original parser.c
-    cp "$parser" "$backup"
+    # The backup lives OUTSIDE the tracked source tree, for the same reason as
+    # test_freshness_detects_and_repairs_stale_archive. tree-sitter-reify/.gitignore
+    # covers src/parser.c but NOT src/*.bak (`git check-ignore -v
+    # tree-sitter-reify/src/parser.c.bak` exits 1), so an in-tree backup leaves
+    # `git status --short` reporting an untracked file for this test's whole
+    # duration. The lane cleanliness guards, the lane audit and scripts/land.sh all
+    # read that as a dirty worktree.
+    local bakdir backup
+    bakdir=$(mktemp -d) || return 1
+    backup="$bakdir/parser.c.orig"
+    # Registered BEFORE the copy so an interrupt in the gap leaks nothing, and
+    # AHEAD of the `rm -rf` since cleanup replays in insertion order. `mv -f` is
+    # atomic and self-consuming: a failed restore cannot go on to destroy the only
+    # copy (CLEANUP_ACTIONS entries run under `eval ... || true`).
     CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'")
+    CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
+    # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them
+    # as `if "$t"; then`), so an unchecked cp would fail silently and the `rm -f`
+    # below would then delete parser.c with no usable copy to restore from.
+    cp "$parser" "$backup" || return 1
 
     # Delete parser.c to trigger auto-regeneration
     rm -f "$parser"
