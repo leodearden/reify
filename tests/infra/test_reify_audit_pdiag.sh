@@ -42,6 +42,17 @@
 # skip must never take the whole file down — that is precisely the bug that let
 # the PTODO hard gate be silently bypassed.
 #
+# NO-SILENT-GREEN FLOOR (esc-5405-7).  The rc-75 partition above is only sound
+# while the binary is PRESENT-but-stale.  The same guard also returns 75 for an
+# ABSENT binary, and returns 125 when a rebuild was attempted and the binary is
+# still unusable — in BOTH of those the `[ -x "$REIFY_AUDIT_BIN" ]` guards below
+# are false, EVERY scenario is skipped, and an unguarded `test_summary` would
+# print "0 passed, 0 failed" and exit 0.  run_all.sh grades on exit code alone,
+# so that is a hard gate reporting green having asserted nothing — the exact
+# failure mode this file's partition was written to prevent.  Two floors close
+# it: any guard rc outside {0,75} aborts LOUD immediately, and the $RAN tracker
+# refuses to exit 0 unless at least one scenario actually executed.
+#
 # SELF-MATCH SAFETY: this file must not contain a literal `Diagnostic::error(`
 # anchor or a literal opt-out token.  Both are assembled from shell variables at
 # runtime, so the written fixture carries the real tokens while this .sh source
@@ -146,6 +157,10 @@ source "$REPO_ROOT/scripts/reify-audit-freshness.sh"
 # Map 75 → RATCHET_SKIP=1, NOT exit 0 — (b)+(c) must still run.
 RATCHET_SKIP=0
 
+# Did ANY scenario actually execute?  Consulted after test_summary; a run that
+# asserted nothing must not exit 0.  See NO-SILENT-GREEN FLOOR in the header.
+RAN=0
+
 set +e
 reify_audit_guard "$REIFY_AUDIT_BIN" rebuild-budget-safe "$REPO_ROOT" 2>&1
 _guard_rc=$?
@@ -154,6 +169,15 @@ set -e
 if [ "$_guard_rc" -eq 75 ]; then
     echo "test_reify_audit_pdiag.sh: reify-audit binary absent/stale and REIFY_AUDIT_NO_COLD_BUILD=1 — (a) SKIP (budget-safe)" >&2
     RATCHET_SKIP=1
+elif [ "$_guard_rc" -ne 0 ]; then
+    # Any other nonzero rc — 125 from reify_audit_guard means the binary is
+    # STILL stale/absent after the rebuild path ran (typically a failed
+    # `cargo build -p reify-audit`).  Leaving RATCHET_SKIP=0 here would look
+    # like "ratchet enabled" while the `-x` guards below silently skip every
+    # scenario.  That is not a budget-safe skip; it is a broken toolchain, and
+    # it must be loud.
+    echo "test_reify_audit_pdiag.sh: reify-audit freshness guard failed (rc=$_guard_rc) — the detector could not be made usable and no budget-safe skip was requested; refusing to report green" >&2
+    exit 1
 fi
 
 # -----------------------------------------------------------------------
@@ -289,6 +313,7 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$REIFY_AUDIT_BIN" ]; then
     echo ""
     echo "--- (a) Ratchet: live tree within committed pdiag-baseline.txt ---"
 
+    RAN=1
     _fail_before_a=$FAIL
 
     # Precondition: an ABSENT manifest would still exit non-zero (empty
@@ -325,6 +350,7 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     echo ""
     echo "--- (b) Hard gate: code-less diagnostic at a swept path → High → non-zero exit ---"
 
+    RAN=1
     FIX_B="$(mktemp -d)"
     _make_pdiag_fixture "$FIX_B" ""
 
@@ -384,10 +410,19 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     [ "$FAIL" -eq "$_fail_before_c" ] && echo "@@PDIAG_HARDGATE_C_PASSED@@"
 else
     echo ""
-    echo "test_reify_audit_pdiag.sh: reify-audit binary absent — (b)+(c) hard gate skipped (graceful)" >&2
+    echo "test_reify_audit_pdiag.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (b)+(c) hard gate could not run" >&2
 fi
 
 # -----------------------------------------------------------------------
 # Summary
+#
+# test_summary exits 1 when FAIL > 0, so control only reaches the $RAN floor
+# on the otherwise-all-green path — which is exactly where a zero-assertion
+# run would have been laundered into a passing hard gate.
 # -----------------------------------------------------------------------
 test_summary
+
+if [ "$RAN" -eq 0 ]; then
+    echo "test_reify_audit_pdiag.sh: NO scenario executed (REIFY_AUDIT_BIN='$REIFY_AUDIT_BIN' not executable; RATCHET_SKIP=$RATCHET_SKIP, guard rc=$_guard_rc) — refusing to report green for a hard gate that asserted nothing" >&2
+    exit 1
+fi
