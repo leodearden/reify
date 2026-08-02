@@ -884,10 +884,15 @@ assert "G3: conf paths == seeder destinations, exactly (no drift, no extras)" \
 # outside this task's locked modules; extracting it into test_helpers.sh is the
 # right cleanup and is left as a follow-up rather than done from here.
 G_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
-# Hardcoded copy of DF's roles.py sandboxed=True set, matching the sibling
-# suite's SANDBOXED_ROLES — not reify-observable, so a DF-side role addition
-# needs a manual update in both places.
-G_SANDBOXED_ROLES="implementer debugger simple_task"
+# Hardcoded copy of the sibling suite's CACHE_REDIRECT_ROLES
+# (tests/infra/test_sandbox_cache_writability_seam.sh) — since task 5858 that
+# set is no longer "roles DF sandboxes today" (roles.py sandboxed=True), it is
+# "roles reify's yaml redirects ahead of DF sandboxing them": implementer,
+# debugger and simple_task are sandboxed today; architect,
+# reviewer_comprehensive and judge are redirected pre-emptively per the
+# sibling suite's header. Not reify-observable, so a change to either side's
+# copy needs a manual update in both places.
+G_CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge"
 
 # REIFY_AGENT_CACHE_ROOT is UNSET here, unlike in run_redirect: observing the
 # `/tmp` default is the entire point of these assertions.
@@ -954,8 +959,8 @@ PYEOF
     # would make this suite red for a decision taken elsewhere.  With it on,
     # the coupling is live and these are hard assertions.
     if python3 "$_G_PARSE_PY" "$G_YAML" sandbox_enabled; then
-        echo "sandbox.enabled == true; cross-checking the seeder's defaults against role_env_overrides ($G_SANDBOXED_ROLES)"
-        for _g_role in $G_SANDBOXED_ROLES; do
+        echo "sandbox.enabled == true; cross-checking the seeder's defaults against role_env_overrides ($G_CACHE_REDIRECT_ROLES)"
+        for _g_role in $G_CACHE_REDIRECT_ROLES; do
             _g_yaml_cargo="$(python3 "$_G_PARSE_PY" "$G_YAML" role_key "$_g_role" CARGO_HOME)" || _g_yaml_cargo=""
             _g_yaml_npm="$(python3 "$_G_PARSE_PY" "$G_YAML" role_key "$_g_role" npm_config_cache)" || _g_yaml_npm=""
 
