@@ -2997,14 +2997,16 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
 
   /**
    * #5957 fixed the divergence recorded here previously: `WildcardPattern`
-   * was declared via `@extend`, which only disambiguates across DIFFERENT
-   * grammar positions (see the `ekw` note in reify.grammar), so at
+   * was declared via `@extend` alone, which only disambiguates across
+   * DIFFERENT grammar positions (see the `ekw` note in reify.grammar), so at
    * `MatchPattern`'s single shared position `_` always fell back to the
    * unextended `Identifier` reading and no tree ever carried a
-   * `WildcardPattern` node. It is now a `@specialize`, reserving `_` globally
-   * (verified safe — no committed `.ri` uses a bare `_` as an identifier), so
-   * `_` yields `WildcardPattern` here exactly as it does in the expression
-   * form's own wildcard test above.
+   * `WildcardPattern` node. The fix keeps `@extend` — `_` is a compiler-bound
+   * identifier, not a reserved word, as the legal-identifier slice above pins
+   * — and adds a `@dynamicPrecedence` rule prop to break the tie at the one
+   * position where both readings are live. So `_` yields `WildcardPattern`
+   * here exactly as it does in the expression form's own wildcard test above,
+   * without being reserved anywhere else.
    */
   it('accepts a wildcard arm and yields a WildcardPattern node', () => {
     const src = 'structure def F { match kind { _ => sub head : DefaultHead } }';

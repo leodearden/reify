@@ -781,10 +781,18 @@ MatchPattern {
 }
 
 // `_` already lexes as an `Identifier` (the token rule admits a leading
-// underscore). It is a `@specialize`, not an `ekw`/`@extend`, because
-// `@extend` only disambiguates when the two readings occupy DIFFERENT
-// grammar positions (`at`, `self`, `frame` each have a keyword slot that no
-// plain-identifier production also occupies) — see the note on `ekw` above.
+// underscore), and it is an `ekw`-family `@extend` for the reason every
+// contextual keyword here is one: the language admits `_` as an ORDINARY NAME,
+// so a context-free `@specialize` would make this grammar reject source the
+// compiler accepts. That is measured against the compiler, not inferred —
+// `reify eval` on `structure def F { let _ = 3mm }` prints `F._ = 0.003 m`,
+// and on `param _ : Length = 1mm` prints `F._ = 0.001 m`. `_` is BOUND, not
+// reserved. Same door `at`/`self`/`direction`/`frame`/`relate` are held open
+// by; see the note on `ekw` above.
+//
+// `@extend` ALONE, however, never yields the node. It disambiguates only when
+// the two readings occupy DIFFERENT grammar positions (`at`, `self`, `frame`
+// each have a keyword slot that no plain-identifier production also occupies).
 // Here both readings sit at the SAME position: `MatchPattern`'s plain-
 // Identifier alternative (`Identifier ("|" Identifier)*`) and
 // `WildcardPattern` are two direct alternatives of the same rule, so `_` is
@@ -792,12 +800,24 @@ MatchPattern {
 // one-Identifier `Identifier ("|" Identifier)*` reduction, with nothing left
 // to look ahead at (`=>` follows either way) — a genuine ambiguity that
 // `@extend` resolved by silently falling back to the unextended `Identifier`
-// reading every time (MEASURED, #5957). `@specialize` reserves `_` globally
-// as `WildcardPattern` instead, which is safe here exactly as it was for
-// `in`/`out` above: no committed `.ri` uses a bare `_` as an identifier
-// (verified across the corpus), so nothing is un-pinned by the reservation.
-WildcardPattern {
-  @specialize[@name=WildcardPattern]<Identifier, "_">
+// reading every time (MEASURED, #5957).
+//
+// `@dynamicPrecedence` is lezer's designated mechanism for choosing between
+// ambiguous COMPLETE parses, so it is what breaks that tie — and it breaks it
+// ONLY where both readings are live, leaving `_` an ordinary Identifier
+// everywhere else. MEASURED for this variant: zero build conflicts, the node
+// produced in both the `MatchExpression` and `MatchArmDeclBlock` forms, and
+// zero ERROR nodes across all six legal-identifier positions pinned in
+// reifyGrammarCorpus.test.ts.
+//
+// Two findings worth not re-deriving. Restructuring `MatchPattern` into
+// `matchPatternAtom ("|" matchPatternAtom)*` was tried as a fix on its own and
+// does NOT work: rule shape does not change the token-level fallback, so it
+// parses clean but yields no `WildcardPattern` node anywhere. And the syntax
+// trap — `@dynamicPrecedence` is a RULE PROP only; a top-level
+// `@dynamicPrecedence { … }` block is a hard parse error in the generator.
+WildcardPattern[@dynamicPrecedence=1] {
+  @extend[@name=WildcardPattern]<Identifier, "_">
 }
 
 VariantBindingPattern {
