@@ -3264,6 +3264,48 @@ describe('reify.grammar snippets — the `%` operator', () => {
 });
 
 /**
+ * `priv` on a param declaration — catch-up round 4, family 4.
+ *
+ * grammar.js:615-621 opens `param_declaration` with `optional('priv')`. This
+ * port already carried `priv` on `SubDeclaration` and `PortDeclaration`, so
+ * the keyword and its KEYWORDS entry both exist; only the third member arm was
+ * missing.
+ */
+describe('reify.grammar snippets — `priv` on a param declaration', () => {
+  // Corpus-attested VERBATIM: examples/module_visibility/producer.ri:4.
+  it('parses `priv param rated_torque : Real = 5`', () => {
+    const src = 'structure def S { priv param rated_torque : Real = 5 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('ParamDeclaration');
+  });
+
+  /**
+   * THE SHAPE PIN. `priv` must be ABSORBED into the declaration, not left as a
+   * stray sibling member alongside it — a reading that could parse error-free
+   * (a bare `priv` reaching `primaryExpression`) while producing two nodes
+   * where the compiler expects one.
+   */
+  it('yields exactly one ParamDeclaration, with `priv` absorbed into it', () => {
+    const src = 'structure def S { priv param rated_torque : Real = 5 }';
+    expect(countNodesNamed(src, 'ParamDeclaration')).toBe(1);
+  });
+
+  /**
+   * NON-REGRESSION. `Member` now has THREE arms that can open with `priv`
+   * (param, sub, port). All three must still parse, since they now share a
+   * parse state through that token.
+   */
+  it('leaves the plain and the other two `priv` member forms intact', () => {
+    const plain = 'structure def S { param t : Length = 2mm }';
+    expect(countErrorNodes(plain)).toBe(0);
+    expect(countNodesNamed(plain, 'ParamDeclaration')).toBe(1);
+
+    expect(countErrorNodes('structure def S { priv sub a = B() }')).toBe(0);
+    expect(countErrorNodes('structure def S { priv port p : in Flow }')).toBe(0);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
