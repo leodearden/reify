@@ -3769,6 +3769,7 @@ const EXPECTED_CLEAN = [
   'examples/modal/transient_step_response.ri',
   'examples/module_visibility/consumer.ri',
   'examples/module_visibility/mismatch_variant.ri',
+  'examples/modulo_index_wrap.ri',
   'examples/multi_aspect_objective.ri',
   'examples/multi_aspect_objective_mixed.ri',
   'examples/multi_kernel/attribute_selectors.ri',

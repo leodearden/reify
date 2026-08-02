@@ -746,7 +746,7 @@ WhereClause {
 //   3: ==, != (equality)
 //   4: <, >, <=, >= (comparison)
 //   5: +, - (additive)
-//   6: *, / (multiplicative)
+//   6: *, /, % (multiplicative)
 //   7: unary -, ! (unary)
 //   8: postfix (member access, function call)
 
@@ -1075,6 +1075,15 @@ BinaryExpression {
   expression !additive ArithOp<"-"> expression |
   expression !multiplicative ArithOp<"*"> expression |
   expression !multiplicative ArithOp<"/"> expression |
+  // `%` shares the multiplicative band, VERIFIED not assumed: grammar.js:1363,
+  // 1364 and 1365 give `*`, `/` and `%` an identical `prec.left(6)`. Reusing
+  // `ArithOp` rather than naming a new node keeps `OPERATOR_NODES` in the
+  // corpus test unchanged — a new node type there would have to be added in
+  // the same commit or `leftOperandOf` silently returns the wrong operand.
+  // `%` is a character used nowhere else in this grammar, so it needs no
+  // `@precedence` token-ordering entry; lezer-generator reports zero conflicts.
+  // Corpus-attested: examples/modulo_index_wrap.ri:13,17.
+  expression !multiplicative ArithOp<"%"> expression |
   // Value-level exponent. Only ever reached with whitespace around the `^`
   // (`(5mm ^ 2) / (1mm ^ 2)`, examples/unit_expressions.ri:23) — the
   // contiguous form is a unit exponent and is lexed inside QuantityLiteral.
