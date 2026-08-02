@@ -574,7 +574,7 @@ stress-check diagnostics; Phase 6 dogfood + bookmarks.
     kinematic-completion ζ).
   - Observable signal (intermediate): existing kinematic tests still
     pass (None default = no behaviour change); new test confirms
-    `Revolute(... spring_rate: 1 N·m/rad^2, ...)` ctor accepts the field.
+    `Revolute(... spring_rate: some(1N*m/rad^2), ...)` ctor accepts the field.
   - Prereqs: kinematic-completion ζ (first-class types) + SIR-α 3540.
 
 - **β — `FlexureCompliance` structure_def + accessor stdlib fn.**
