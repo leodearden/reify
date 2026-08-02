@@ -13,14 +13,15 @@
 //!
 //! The bounding-box half ([`BBox`], [`parse_bbox`]) consolidates seven
 //! hand-rolled `GeometryQuery::BoundingBox` JSON parsers that had accumulated
-//! across `tests/harness_occt/` in two mutually-inconsistent families — a
-//! duplication finding filed during task 5377's reviewer-amendment pass and
-//! resolved by task 5893.
+//! across `tests/harness_occt/` — a duplication finding filed during task
+//! 5377's reviewer-amendment pass and resolved by task 5893. The wire-format
+//! contract, and why the parser is deliberately not `serde_json`-based, are
+//! stated ONCE on [`parse_bbox`]; do not restate either here.
 
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{
-    DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle,
+    DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OCCT_AVAILABLE, OcctKernelHandle,
 };
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
@@ -511,29 +512,33 @@ pub struct BBox {
 /// `{"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}`
 ///
 /// Keys parse with or without surrounding quotes, whitespace around `:` and `,`
-/// is trimmed, and unrecognised keys are ignored.
+/// is trimmed, and unrecognised keys are ignored. A repeated key takes
+/// last-wins; empty or whitespace-only input recognises no key at all and so
+/// takes the missing-field panic below.
 ///
 /// **Deliberately NOT `serde_json`-based**, even though `serde_json` is already
-/// a dev-dependency of this crate. The producer
-/// (`crates/reify-kernel-occt/src/lib.rs:3673-3677`) builds this string with a
-/// single `format!` that passes each component through `f64` **Display**, which
-/// is not a JSON number encoder: a non-finite extent is emitted as the bare
-/// token `inf` / `-inf` / `NaN`, which strict JSON forbids and
-/// `serde_json::from_str` rejects outright, while `<f64 as FromStr>` accepts
-/// exactly those tokens. Unbounded extents are live in this harness —
-/// `extrude_infinite_integration.rs` asserts `is_finite()` precisely because
-/// the op under test is unbounded before clipping — so a JSON-strict parser
-/// would degrade that assertion's failure mode from "x/y bbox extents should
-/// all be finite" into an opaque "failed to parse as JSON".
+/// a dev-dependency of this crate. This is the canonical statement of that
+/// decision — every other mention in this module points here. The producer (the
+/// `GeometryQuery::BoundingBox` arm of `OcctKernel::query` in `src/lib.rs`)
+/// builds this string with a single `format!` that passes each component
+/// through `f64` **Display**, which is not a JSON number encoder: a non-finite
+/// extent is emitted as the bare token `inf` / `-inf` / `NaN`, which strict JSON
+/// forbids and `serde_json::from_str` rejects outright, while
+/// `<f64 as FromStr>` accepts exactly those tokens. Unbounded extents are live
+/// in this harness — `extrude_infinite_integration.rs` asserts `is_finite()`
+/// precisely because the op under test is unbounded before clipping — so a
+/// JSON-strict parser would degrade that assertion's failure mode from "x/y
+/// bbox extents should all be finite" into an opaque "failed to parse as JSON".
 ///
 /// # Panics
 ///
 /// - naming the absent field, if any of the six keys is missing. This is the
-///   stricter of the two behaviours found among the seven parsers this
-///   consolidates: silently yielding `f64::NAN` would make a downstream
-///   `(zmax - zmin).abs() < tol` quietly evaluate false, surfacing a malformed
-///   kernel response as a confusing geometry assertion rather than a parse
-///   failure.
+///   canonical statement of the strictness decision — every other mention in
+///   this module points here. It is the stricter of the two behaviours found
+///   among the seven parsers this consolidates: silently yielding `f64::NAN`
+///   would make a downstream `(zmax - zmin).abs() < tol` quietly evaluate
+///   false, surfacing a malformed kernel response as a confusing geometry
+///   assertion rather than a parse failure.
 /// - quoting the offending pair and the full input, if a value does not parse
 ///   as `f64` or a pair carries no `:` separator.
 #[allow(dead_code)] // only called from has_occt integration-test binaries
