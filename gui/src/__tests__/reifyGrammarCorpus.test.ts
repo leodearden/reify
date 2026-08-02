@@ -4225,6 +4225,7 @@ const EXPECTED_CLEAN = [
   'examples/interpolation.ri',
   'examples/io_export.ri',
   'examples/io_formats.ri',
+  'examples/joint_dof_self_check.ri',
   'examples/kernel_queries/adjacent_faces.ri',
   'examples/kernel_queries/all_queries_walk.ri',
   'examples/kernel_queries/angle_smoke.ri',

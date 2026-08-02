@@ -22,6 +22,12 @@ export const BRACE_FIRST_BODIES = [
   'ConnectBody',
   'ImportItems',
   'KeyedMemberBlock',
+  // The joint family (:781-802). `JointBody`'s block arm and `JointDof`'s
+  // record arm both OPEN with the brace; each also has a brace-less arm
+  // (a single expression, a bare DOF field), which `foldBody` already handles
+  // by returning null — the same path `FnBody`'s `= expression` arm takes.
+  'JointDof',
+  'JointBody',
 ];
 
 /**

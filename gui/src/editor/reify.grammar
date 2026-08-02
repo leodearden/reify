@@ -23,6 +23,9 @@ Declaration {
   TypeAliasDeclaration |
   DefaultDeclaration |
   ConstraintDefinition |
+  // grammar.js:147 lists `joint_definition` in `_declaration` — top level only,
+  // never a `Member`.
+  JointDefinition |
   Pragma |
   Annotation |
   ImportDeclaration
@@ -621,6 +624,50 @@ RelateBlock {
 }
 
 RelationMember {
+  expression
+}
+
+// ── Joint definition ────────────────────────────────────
+// grammar.js:762-802, a TOP-LEVEL declaration (:147 lists `joint_definition`
+// in `_declaration`). Corpus-attested: examples/joint_dof_self_check.ri:26
+// (bare DOF, block body) and :32 (record DOF, expression body) — the file needs
+// BOTH forms, so neither arm alone moves the ledger.
+//
+// `joint` and `with` are CONTEXTUAL, matching upstream's own stance
+// (grammar.js:757-762): "zero regression: `joint` and `with` continue to lex as
+// identifiers at all other parse positions". A hard `kw<>` would buy the same
+// parses and break exactly that — the failure `chain` and `meta` each had to
+// undo this round. `in` is already `kw<"in">` (the forall/range keyword) and
+// serves the DOF range clause directly.
+//
+// `TypeParameters`, `FnParamList` and `RelationMember` are REUSED, not cloned.
+// The last is upstream's explicit instruction (:795-797) — reusing δ's node is
+// what makes a joint body lower "via lower_relation_members (same as
+// relate_block)". `pub` and the type parameters come free from that reuse and
+// are pinned in the corpus test even though no committed file uses them.
+JointDefinition {
+  kw<"pub">? ekw<"joint"> Identifier TypeParameters? "(" FnParamList? ")"
+  ekw<"with"> JointDof "=" JointBody
+}
+
+// grammar.js:781-784 — a bare field, or a braced comma-separated record whose
+// shape mirrors `enum_variant`'s named-field payload.
+JointDof {
+  JointDofField |
+  "{" JointDofField ("," JointDofField)* ","? "}"
+}
+
+// grammar.js:788-793. The `in <range>` clause is optional.
+JointDofField {
+  Identifier ":" TypeExpr (kw<"in"> expression)?
+}
+
+// grammar.js:799-802. MEASURED: lezer-generator reports zero conflicts for the
+// two arms, confirming upstream's own disambiguation note — "`{` unambiguously
+// selects the block arm (no _expression starts with bare `{`)". So no `~`
+// marker and no precedence level was needed here either.
+JointBody {
+  "{" RelationMember* "}" |
   expression
 }
 

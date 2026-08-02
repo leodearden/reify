@@ -180,7 +180,13 @@ export const
   DimensionalTypeExpr = 225,
   ConstraintDefinition = 226,
   ConstraintDefPredicate = 227,
-  ImportDeclaration = 228,
-  _import = 229,
-  ImportItems = 230,
-  as = 231
+  JointDefinition = 228,
+  joint = 229,
+  _with = 230,
+  JointDof = 231,
+  JointDofField = 232,
+  JointBody = 233,
+  ImportDeclaration = 234,
+  _import = 235,
+  ImportItems = 236,
+  as = 237
