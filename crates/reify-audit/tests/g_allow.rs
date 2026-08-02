@@ -89,6 +89,13 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// - Sanitized spawn -> the real repo root -> a JSON envelope ->
 ///   `orphan_count == 0` -> the child is green -> GREEN.
 ///
+/// Both branches were walked at the commit that introduced this test, by
+/// temporarily rewriting `reify_test_support`'s `sanitize()` body to drop its
+/// `cmd.env_remove(var)`: the child then printed the panic above, exited 101,
+/// and this test failed with the harness's status assertion. Restoring the
+/// line restored GREEN. That is the check to repeat if this test is ever
+/// suspected of having gone vacuous — it takes one line and one `cargo test`.
+///
 /// That `panic!` is the entire reason this test has teeth. Without it `None`
 /// takes the graceful-skip `return`, which libtest counts as PASSED — and both
 /// of the replay harness's non-vacuity guards count a self-skip in `passed`,
@@ -98,7 +105,7 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// three crates covering environments where `python3`, `git` or the script is
 /// genuinely absent.
 ///
-/// # The RED observation, recorded because it is no longer reproducible
+/// # The RED observation, recorded because a clean checkout no longer shows it
 ///
 /// Measured during the esc-5656-1 / esc-5656-2 `/unblock` triage, at the
 /// then-main tip 7a21980c883d9147e4126d5ace1b99df6beb0c18 (quoted here as a
@@ -110,11 +117,14 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// stderr `audit-orphan-producers.sh: no source files matched`.
 ///
 /// So: this test would have been RED on that commit. It is GREEN today only
-/// because task 5605's `.env_remove()` calls landed. From a clean checkout
-/// there is now no way to watch it fail without deleting one of those lines,
-/// which is why `hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat`
-/// exists — it pins the same hazard's potency synthetically, so this test's
-/// teeth stay demonstrable even though its RED no longer is.
+/// because task 5605's `.env_remove()` calls landed — and, as recorded above,
+/// deleting one of them locally still turns it RED. What no longer happens is
+/// a checkout that shows it RED on its own, and CI will never delete such a
+/// line, which is why
+/// `hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat`
+/// exists: it pins the same hazard's potency synthetically, on every run, with
+/// no dependency on this production call site at all. Deleting either test
+/// leaves the other unable to notice.
 ///
 /// # Why a test NAME rather than the empty filter
 ///

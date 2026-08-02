@@ -13,6 +13,8 @@
 //!   environment to a command.
 //! - [`replay_self_under_hook_git_env`] — the outer harness that proves the
 //!   fix under a real *ambient* environment rather than a per-child one.
+//! - [`in_replay_child`] — the predicate a replayed test uses to tighten an
+//!   otherwise-graceful skip into a hard failure for the replay run only.
 //! - [`audit_script_stdout_poisoned_and_sanitized`] — spawn the orphan-audit
 //!   script twice, poisoned and then stripped, so the hazard's potency stays
 //!   demonstrable independently of any production call site.
@@ -54,6 +56,24 @@ use tempfile::TempDir;
 /// Environment variable marking the replayed child process, so the replay
 /// test does not recurse when the child re-runs it.
 const REPLAY_GUARD: &str = "REIFY_AUDIT_HOOK_ENV_REPLAY";
+
+/// True when this process is the poisoned replay child spawned by
+/// [`replay_self_under_hook_git_env`]. Lets a test tighten an
+/// otherwise-graceful skip into a hard failure for the replay run only —
+/// inside the child, "the tool was missing" is not a plausible explanation for
+/// a skip, because the parent just ran the same test successfully before
+/// spawning it.
+///
+/// The predicate is exposed rather than [`REPLAY_GUARD`] itself, and this
+/// accessor plus `replay_self_under_hook_git_env`'s own re-entrancy check are
+/// its only two readers. A caller only ever needs to ask "am I the child?";
+/// publishing the const would additionally let a future call site re-read or
+/// re-set the variable under its own name, splitting the single source of
+/// truth this module is built around.
+#[allow(dead_code)]
+pub fn in_replay_child() -> bool {
+    std::env::var_os(REPLAY_GUARD).is_some()
+}
 
 /// A pre-sanitized `git -C <dir>` command for fixture-repo setup.
 ///
