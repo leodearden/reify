@@ -94,6 +94,12 @@ export const KEYWORDS = [
   // upstream (grammar.js:714-719), even though the corpus uses `relate` as an
   // identifier nowhere — see the note on RelateBlock in reify.grammar.
   'relate',
+  // `joint name(…) with <dof> = <body>` (grammar.js:762-802). Both words are
+  // contextual, which upstream states as a contract rather than an accident:
+  // "zero regression: `joint` and `with` continue to lex as identifiers at all
+  // other parse positions" (:757-762).
+  'joint',
+  'with',
 ];
 
 export const reifyHighlighting = styleTags({

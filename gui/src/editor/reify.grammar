@@ -23,6 +23,9 @@ Declaration {
   TypeAliasDeclaration |
   DefaultDeclaration |
   ConstraintDefinition |
+  // grammar.js:147 lists `joint_definition` in `_declaration` — top level only,
+  // never a `Member`.
+  JointDefinition |
   Pragma |
   Annotation |
   ImportDeclaration
@@ -102,8 +105,29 @@ DefaultDeclaration {
 
 // ── Meta block ──────────────────────────────────────────
 // grammar.js:550-570 — comma-separated, unlike the field config entries.
+//
+// `meta` is CONTEXTUAL. A hard `kw<"meta">` is context-FREE in Lezer, so the
+// word stopped being an `Identifier` everywhere — including as the receiver of
+// an ordinary member access, which examples/m9_combined.ri:67-68 and
+// examples/integration_full_v01.ri:140-141 both use (`let label = meta.material`,
+// `let proj_name = meta.project`). Upstream has no such problem: its
+// parse-state-driven lexer keeps `meta` an identifier wherever a meta block
+// cannot start, so `ekw` is the upstream-faithful reading.
+//
+// MEASURED: lezer-generator reports ZERO conflicts for the demotion — the
+// ambiguity at member start that a contextual keyword could re-open does not
+// exist here, because no `Member` alternative begins with a bare identifier.
+// That is the same argument `RelateBlock` records for `ekw<"relate">` and
+// `ChainStatement` for `ekw<"chain">`, and it is stated explicitly so the next
+// round does not re-litigate it: no `~` ambiguity marker and no precedence
+// level was needed. The corpus test pins the surviving reading directly, with
+// `countNodesNamed(…, 'MetaBlock') === 1` rather than an error count, since a
+// re-opened ambiguity can reach 0 errors while doubling the node.
+//
+// `meta` STAYS in KEYWORDS: the styling guard scans for the literal
+// `kw<"meta">` substring, which `ekw<"meta">` contains.
 MetaBlock {
-  kw<"meta"> "{" (MetaEntry ("," MetaEntry)* ","?)? "}"
+  ekw<"meta"> "{" (MetaEntry ("," MetaEntry)* ","?)? "}"
 }
 
 MetaEntry {
@@ -121,6 +145,15 @@ MetaEntry {
 // declaration START and the selector's only ever after a COMPLETE expression,
 // so the two never share a parse state. `#` is a new character used nowhere
 // else.
+//
+// That separation now holds in a SECOND place: `Annotation` is also a `Member`
+// arm (grammar.js:44 `commonMembers()`), so an `@` can open an item at MEMBER
+// start as well as at declaration start. The argument carries over unchanged —
+// member start is still a position where no expression is in progress — and
+// lezer-generator reports zero conflicts for the added arm. But the claim is no
+// longer a single-site one, so it is ASSERTED rather than restated: the corpus
+// test pins that `let f = body @ faces_by_normal(zdir)` still reduces to
+// `AdHocSelector` with `body` as its left operand and yields no `Annotation`.
 // `!itemStart` on the arg list's `(`: inside a ConstraintDefinition body a
 // pragma is followed by items that may THEMSELVES open with `(`. See the
 // `itemStart` note in the @precedence block.
@@ -276,7 +309,14 @@ Member {
   RelateBlock |
   MatchArmDeclBlock |
   MetaBlock |
-  Pragma
+  Pragma |
+  // grammar.js:44 — `commonMembers()` lists `$.annotation`, so every body that
+  // admits a member admits it too: structure, occurrence, guarded and
+  // specialization alike. Corpus-attested: examples/m11_annotations.ri:115-118,
+  // where each `@solver_hint(...)` precedes the `param` it annotates. The
+  // annotation is a standalone member, NOT a prefix — `Member*` sequences the
+  // pair, exactly as `Declaration*` already does at top level.
+  Annotation
 }
 
 // ── Guarded block ─────────────────────────────────────
@@ -289,8 +329,16 @@ GuardedBlock {
 }
 
 // ── Param ───────────────────────────────────────────────
+// grammar.js:615-621 — `param_declaration` opens with `optional('priv')`.
+// Corpus-attested: examples/module_visibility/producer.ri:4.
+//
+// `priv` is already a `kw<>` and already in KEYWORDS (SubDeclaration and
+// PortDeclaration both carry it), so neither list changes. `Member` now has
+// THREE arms that can open with `priv` — param, sub, port — and they diverge
+// on the very next token (`param` / `aux`|`sub` / `port`), well inside LR(1)
+// lookahead; lezer-generator reports zero conflicts.
 ParamDeclaration {
-  kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
+  kw<"priv">? kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
 }
 
 TypeAnnotation {
@@ -514,8 +562,27 @@ PortMapping {
 
 // ── Chain ───────────────────────────────────────────────
 // grammar.js:1030-1034 — `repeat1`, so a chain has at least two links.
+//
+// `ekw` NOT `kw`, and this one is a CORRECTION rather than a fresh choice.
+// Round 2 (#5927) promoted the word with `kw<"chain">`, which is context-FREE,
+// so `chain` stopped being a legal identifier everywhere. Three committed files
+// use it as an ordinary name and were left unparseable by that:
+// examples/tolerance-stackup-3part.ri:45 and examples/tolerance-stackup-rss.ri:35
+// (`let chain = [...]`, then `stackup_worst_case(chain)` / `stackup_rss(chain)`
+// at rss:40,44), and examples/integration_corner_cases.ri:131. MEASURED before
+// the change: `structure def S { let chain = a }` → 3 error nodes, the first ON
+// the word itself, while `structure def S { let y = [x] }` was already clean —
+// so the list literal the round-3 ledger blamed was never involved.
+//
+// Upstream spells the statement keyword as a plain `'chain'` string
+// (grammar.js chain_statement) whose parse-state-driven lexer keeps it an
+// identifier off this slot, so the contextual reading is the upstream-faithful
+// one. `ekw` is unambiguous exactly where it is needed, since no `Member`
+// alternative begins with a bare identifier — the same argument `RelateBlock`
+// records for `ekw<"relate">`. `chain` STAYS in KEYWORDS: the styling guard
+// scans for the literal `kw<"chain">` substring, which `ekw<"chain">` contains.
 ChainStatement {
-  kw<"chain"> expression ("->" expression)+
+  ekw<"chain"> expression ("->" expression)+
 }
 
 // ── Forall statement ────────────────────────────────────
@@ -560,6 +627,50 @@ RelationMember {
   expression
 }
 
+// ── Joint definition ────────────────────────────────────
+// grammar.js:762-802, a TOP-LEVEL declaration (:147 lists `joint_definition`
+// in `_declaration`). Corpus-attested: examples/joint_dof_self_check.ri:26
+// (bare DOF, block body) and :32 (record DOF, expression body) — the file needs
+// BOTH forms, so neither arm alone moves the ledger.
+//
+// `joint` and `with` are CONTEXTUAL, matching upstream's own stance
+// (grammar.js:757-762): "zero regression: `joint` and `with` continue to lex as
+// identifiers at all other parse positions". A hard `kw<>` would buy the same
+// parses and break exactly that — the failure `chain` and `meta` each had to
+// undo this round. `in` is already `kw<"in">` (the forall/range keyword) and
+// serves the DOF range clause directly.
+//
+// `TypeParameters`, `FnParamList` and `RelationMember` are REUSED, not cloned.
+// The last is upstream's explicit instruction (:795-797) — reusing δ's node is
+// what makes a joint body lower "via lower_relation_members (same as
+// relate_block)". `pub` and the type parameters come free from that reuse and
+// are pinned in the corpus test even though no committed file uses them.
+JointDefinition {
+  kw<"pub">? ekw<"joint"> Identifier TypeParameters? "(" FnParamList? ")"
+  ekw<"with"> JointDof "=" JointBody
+}
+
+// grammar.js:781-784 — a bare field, or a braced comma-separated record whose
+// shape mirrors `enum_variant`'s named-field payload.
+JointDof {
+  JointDofField |
+  "{" JointDofField ("," JointDofField)* ","? "}"
+}
+
+// grammar.js:788-793. The `in <range>` clause is optional.
+JointDofField {
+  Identifier ":" TypeExpr (kw<"in"> expression)?
+}
+
+// grammar.js:799-802. MEASURED: lezer-generator reports zero conflicts for the
+// two arms, confirming upstream's own disambiguation note — "`{` unambiguously
+// selects the block arm (no _expression starts with bare `{`)". So no `~`
+// marker and no precedence level was needed here either.
+JointBody {
+  "{" RelationMember* "}" |
+  expression
+}
+
 // ── Sub ─────────────────────────────────────────────────
 // grammar.js:805-899 defines three arms. They share the whole
 // `priv? aux? sub Identifier` prefix and diverge only on the `=` vs `:` that
@@ -586,7 +697,7 @@ RelationMember {
 SubDeclaration {
   kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
     "=" Identifier ("<" TypeArgList ">")? ArgList ~where WhereClause? |
-    ":" (ParameterizedType | Identifier) ~where WhereClause? SpecializationBody?
+    ":" (ParameterizedType | Identifier) ~where WhereClause? subBody?
   ) PoseClause?
 }
 
@@ -602,6 +713,52 @@ SpecializationBody {
 // from a bare `Identifier`.
 ParamAssignment {
   Identifier "=" bindingValue
+}
+
+// The `:` arm's body slot, as a NAMED rule rather than an inline
+// `(SpecializationBody | KeyedMemberBlock)?`. Both spellings generate the same
+// language, but MEASURED: the inline form pushed `SubDeclaration` to 128
+// expansions and tripped lezer-generator's "generating a lot of choices"
+// advisory, because the arm's optionals multiply out. Naming the choice keeps
+// the rule under the threshold. Lowercase, so it does not appear in the tree —
+// `SpecializationBody`/`KeyedMemberBlock` stay the nodes the corpus test pins.
+subBody {
+  SpecializationBody | KeyedMemberBlock
+}
+
+// ── Keyed sub-member block ──────────────────────────────
+// grammar.js:906-939 — `sub vents : Keyed<Vent> { "intake" => { area = 5mm } }`
+// (examples/keyed_vents.ri:27-30, examples/keyed_forall.ri:18-21).
+//
+// UPSTREAM'S DISAMBIGUATION IS TRANSLITERATED, NOT RE-DERIVED. Both block forms
+// open with `{`, and grammar.js:915-923 records exactly what parts them: this
+// production requires at least ONE entry (`+`, upstream's `repeat1`) while
+// `SpecializationBody` takes zero-or-more, so an empty `{}` is unambiguously a
+// specialization body; when non-empty, the first token after `{` decides — a
+// `String` selects this block, an identifier or member keyword the other. Both
+// readings are corpus-attested, so the corpus test pins BOTH rather than only
+// the new one.
+//
+// MEASURED: lezer-generator reports zero conflicts, so no `~` ambiguity marker
+// and no precedence level was needed — the one-token lookahead above is enough
+// for LR(1) as it stands. `=>` is already a token (`MapEntry`, `MatchArm`), so
+// no new token or `@precedence` entry was needed either.
+//
+// SCOPE, matching upstream's own note (grammar.js:925-929): the keyed block is
+// accepted after ANY `structure_name<…>`, not only after `Keyed<…>`. Confining
+// it to the Keyed collection kind is a resolution concern, and narrowing it
+// here would make the GUI reject what the compiler accepts-then-diagnoses.
+KeyedMemberBlock {
+  "{" KeyedMemberEntry+ "}"
+}
+
+// The overrides slot reuses `SpecializationBody` VERBATIM rather than cloning
+// it — upstream's stated contract (grammar.js:931-934): override blocks inside
+// a keyed sub "parse identically to a standalone specialization-scope body".
+// The corpus test asserts the reuse on a node COUNT, since a cloned production
+// would satisfy an error count and silently fork the two.
+KeyedMemberEntry {
+  String "=>" SpecializationBody
 }
 
 // Trailing pose: `at auto`, `at transform3(...)`. Last on every arm, matching
@@ -657,13 +814,22 @@ NamedArgumentList {
   NamedArgument ("," NamedArgument)* ","?
 }
 
-// The value slot is widened with `VariantConstruction` for the same reason
-// `argument` is, and it must be widened TOGETHER with it: this one production
-// is shared by call-expression named arguments and by `SubDeclaration`'s
-// instantiation `ArgList`, so leaving it out would still reject
-// `Foo(shape: Circle { radius: 5mm })`.
+// The value slot IS `bindingValue` — the exact transliteration of upstream's
+// `named_argument.value = $._binding_value` (grammar.js:1042-1046). Spelling it
+// that way rather than enumerating arms is what admits `AutoKeyword`
+// (`Bolt(length: auto)`, examples/auto_binding_sites.ri:94) alongside the
+// `VariantConstruction` arm this slot already needed, and it keeps the two
+// slots that share `_binding_value` upstream from drifting apart here.
+//
+// This one production is shared by call-expression named arguments AND by
+// `SubDeclaration`'s instantiation `ArgList`, so anything admitted here is
+// admitted in both — which is exactly upstream's arrangement.
+//
+// `AutoKeyword`'s parenthesised arms carry `!itemStart` markers and are now
+// reachable from a comma-separated argument list, a new parse state. MEASURED:
+// lezer-generator reports zero conflicts, so `itemStart` needed no extension.
 NamedArgument {
-  Identifier ":" (VariantConstruction | expression)
+  Identifier ":" bindingValue
 }
 
 // ── Function ────────────────────────────────────────────
@@ -727,7 +893,7 @@ WhereClause {
 //   3: ==, != (equality)
 //   4: <, >, <=, >= (comparison)
 //   5: +, - (additive)
-//   6: *, / (multiplicative)
+//   6: *, /, % (multiplicative)
 //   7: unary -, ! (unary)
 //   8: postfix (member access, function call)
 
@@ -1056,6 +1222,15 @@ BinaryExpression {
   expression !additive ArithOp<"-"> expression |
   expression !multiplicative ArithOp<"*"> expression |
   expression !multiplicative ArithOp<"/"> expression |
+  // `%` shares the multiplicative band, VERIFIED not assumed: grammar.js:1363,
+  // 1364 and 1365 give `*`, `/` and `%` an identical `prec.left(6)`. Reusing
+  // `ArithOp` rather than naming a new node keeps `OPERATOR_NODES` in the
+  // corpus test unchanged — a new node type there would have to be added in
+  // the same commit or `leftOperandOf` silently returns the wrong operand.
+  // `%` is a character used nowhere else in this grammar, so it needs no
+  // `@precedence` token-ordering entry; lezer-generator reports zero conflicts.
+  // Corpus-attested: examples/modulo_index_wrap.ri:13,17.
+  expression !multiplicative ArithOp<"%"> expression |
   // Value-level exponent. Only ever reached with whitespace around the `^`
   // (`(5mm ^ 2) / (1mm ^ 2)`, examples/unit_expressions.ri:23) — the
   // contiguous form is a unit exponent and is lexed inside QuantityLiteral.
@@ -1087,6 +1262,11 @@ primaryExpression {
   Boolean |
   FunctionCall |
   MemberAccess |
+  // grammar.js:1587-1610 — the expression-position `::` family. Placed beside
+  // `MemberAccess`/`FunctionCall`, the postfix forms they mirror.
+  QualifiedAccess |
+  InstanceQualifiedAccess |
+  TraitMethodCall |
   ListLiteral |
   SetLiteral |
   MapLiteral |
@@ -1189,8 +1369,29 @@ IndexAccess {
   expression !postfix "[" expression "]"
 }
 
+// The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
+// (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
+// (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
+// (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri:31) all call one.
+//
+// WHY THE CALLEE AND NOT THE RESERVATION. `some` and `none` appear NOWHERE in
+// tree-sitter-reify/grammar.js — upstream parses `some(u)` as an ordinary call
+// on an ordinary identifier, so there is no upstream node to match. They exist
+// here purely as the forward-compat STYLING reservation the `ReservedWord` note
+// below prices: dropping them from the `@specialize` list would parse these
+// three files just as well, but it "would not enable anything, it would only
+// drop their `ReservedWord: t.keyword` styling". Widening this one slot buys
+// the parse and keeps the colour. MEASURED before the change: bare
+// `let s = none` was already 0 errors — the gap was localised to the callee.
+//
+// The callee stays a two-way CHOICE rather than becoming a general
+// `expression`. A general callee would make every juxtaposed `expr (` a call
+// candidate and put this rule into competition with `ParenthesizedExpression`,
+// `FunctionType` and `AutoKeyword`'s parenthesised arms — a large ambiguity
+// surface bought for a handful of shapes. Callee forms beyond these two get
+// their own named node instead, which also keeps them addressable for styling.
 FunctionCall {
-  Identifier !postfix ArgListExpr
+  (Identifier | ReservedWord) !postfix ArgListExpr
 }
 
 ArgListExpr {
@@ -1220,6 +1421,49 @@ argument {
 
 MemberAccess {
   expression !postfix "." Identifier
+}
+
+// ── Qualified access in EXPRESSION position ─────────────
+// grammar.js:1587-1610. `::` already reached TYPE position through
+// `QualifiedType`; these three are the expression-position counterparts, and
+// nothing here shares a production with the type form.
+//
+// Upstream's prec.left(9) for the two access forms and prec(11) for the call
+// map onto the existing `postfix` level, which is where `MemberAccess`,
+// `IndexAccess` and `FunctionCall` already sit — the same mapping `IndexAccess`
+// records for its own prec.left(9).
+//
+// TWO SEPARATIONS REST ON SHAPE ALONE, not on any marker, so the corpus test
+// asserts them rather than this note claiming them:
+//   • `QualifiedAccess` vs `QualifiedType` — both spell `::`, and only the
+//     position they are reached from tells them apart. A type annotation must
+//     still yield `QualifiedType`, including the applied-base arm
+//     (`Coupling<Prismatic>::MotionValue`).
+//   • `InstanceQualifiedAccess` vs `MemberAccess` — the two share the whole
+//     `expression "."` prefix and part on the ONE token after the dot: `(`
+//     shifts into the qualified form, an identifier reduces the plain one.
+// MEASURED: lezer-generator reports zero conflicts, so neither separation
+// needed a `~` ambiguity marker or a precedence level.
+QualifiedAccess {
+  expression !postfix "::" Identifier
+}
+
+// `obj.(Trait::method)`. Upstream widens the parenthesised slot to any
+// expression and validates in LOWERING, emitting a specific diagnostic when it
+// is not a qualified access (grammar.js:1602-1604 says so explicitly). That
+// widening is kept: narrowing it here would make the GUI reject a shape the
+// compiler accepts-then-diagnoses, which is the third-dialect failure the
+// `AutoTypeArg` note already forbids.
+InstanceQualifiedAccess {
+  expression !postfix "." "(" expression ")"
+}
+
+// The call tail is a SEPARATE node, exactly as upstream's `trait_method_call`
+// is separate from `qualified_access` — so the bare `Defaultable::make_default`
+// with no tail is still a plain `QualifiedAccess`. The callee stays a two-way
+// choice for the same reason `FunctionCall`'s does: see the note there.
+TraitMethodCall {
+  (QualifiedAccess | InstanceQualifiedAccess) !postfix ArgListExpr
 }
 
 ParenthesizedExpression {
@@ -1500,7 +1744,37 @@ ReservedWord {
 
   unitName { $[a-zA-Z_] $[a-zA-Z0-9_]* }
   unitPow { "^" "-"? @digit+ }
-  unitOp { "*" | "/" }
+
+  // `·` IS U+00B7 MIDDLE DOT, and it is admitted HERE AND NOWHERE ELSE.
+  //
+  // That placement is the whole safety argument, not a stylistic choice. There
+  // is no general `·` operator in Reify, and this widening cannot invent one:
+  // `unitOp` is reachable only from inside `QuantityLiteral` (and its radix and
+  // imaginary companions), whose shape demands a `unitAtom` after every
+  // `unitOp`, and `unitAtom` must begin with `[a-zA-Z_(]`. So `5 · 3` and
+  // `5N· m` remain error nodes for free — which is exactly the guard κ spells
+  // out in C as `is_unit_start` (tree-sitter-reify/src/scanner.c:101), reached
+  // structurally here instead of procedurally. Both boundary rows are pinned by
+  // tests rather than left to that argument.
+  //
+  // THE OTHER HALF IS SOMEONE ELSE'S, AND IT IS STILL OUTSTANDING. The
+  // tree-sitter + compiler side is leaf κ of
+  // docs/prds/v0_6/angle-units-surface-convergence.md, task #5784 (pending),
+  // whose scope is `scanner.c` and the compiler and does NOT include this file.
+  // This is therefore not duplicated work but the GUI half landing first,
+  // deliberately: PRD decision 7a is ratified, so the SURFACE is settled and
+  // only the upstream implementation is outstanding.
+  //
+  // κ's measured contract is `lexer->lookahead == 0xB7` — a DECODED CODEPOINT,
+  // not the UTF-8 byte pair `0xC2 0xB7` that the PRD prose describes. Cited
+  // here so the two halves cannot drift apart on what "accepts U+00B7" means:
+  // this rule matches the same single codepoint.
+  //
+  // Why it matters at all: `Display for DimensionVector`
+  // (crates/reify-core/src/dimension.rs) joins base-unit parts with U+00B7, so
+  // `reify eval` prints `7850 kg·m^-3` — a string the language could not read
+  // back. Round-tripping that output is the point.
+  unitOp { "*" | "/" | "\u{b7}" }
   unitAtom { unitName unitPow? | unitParen }
 
   // Parenthesised denominator. The corpus attests exactly two shapes, both in
