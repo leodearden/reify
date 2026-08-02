@@ -289,8 +289,16 @@ GuardedBlock {
 }
 
 // ── Param ───────────────────────────────────────────────
+// grammar.js:615-621 — `param_declaration` opens with `optional('priv')`.
+// Corpus-attested: examples/module_visibility/producer.ri:4.
+//
+// `priv` is already a `kw<>` and already in KEYWORDS (SubDeclaration and
+// PortDeclaration both carry it), so neither list changes. `Member` now has
+// THREE arms that can open with `priv` — param, sub, port — and they diverge
+// on the very next token (`param` / `aux`|`sub` / `port`), well inside LR(1)
+// lookahead; lezer-generator reports zero conflicts.
 ParamDeclaration {
-  kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
+  kw<"priv">? kw<"param"> Identifier TypeAnnotation? DefaultValue? ~where WhereClause?
 }
 
 TypeAnnotation {
