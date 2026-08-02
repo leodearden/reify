@@ -1188,6 +1188,71 @@ test_freshness_check_verdicts() {
         echo "$TS_FRESHNESS_OUT"
         return 1
     fi
+
+    # ---- (13) the RUN WINDOW: every dir rebuilt this run is asserted on ----
+    # Scoping the failing verdict to the single NEWEST-marker dir is not enough
+    # under `--profile both`: the parser compiles into clippy's fingerprint dir,
+    # the debug nextest dir AND the release nextest dir, so exactly one of them is
+    # newest and the others go unexamined — the same false GREEN one level up
+    # (#5629 review round 3). `ensure` stamps TARGET_DIR/.tree-sitter-freshness.epoch
+    # before the cargo wave; every dir whose build-script run marker lands at or
+    # after that epoch is in the window and is hard-asserted on.
+    #
+    # The stale dir here is deliberately the OLDER of the two, i.e. NOT the newest —
+    # under the pre-fix newest-marker scope it was invisible.
+    mk_ts_fixture "$tmp/t_window" "tree-sitter-reify-1111111111111111" "$altered" "2024-01-01 00:00:00"
+    mk_ts_fixture "$tmp/t_window" "tree-sitter-reify-ffffffffffffffff" "$fp"      "2024-01-02 00:00:00"
+
+    # (13a) epoch BEFORE both markers -> both in the window -> the stale NON-newest
+    # dir must fail. This is the assertion that the widening exists for.
+    touch -d "2023-12-31 00:00:00" "$tmp/t_window/.tree-sitter-freshness.epoch"
+    run_ts_freshness check "$tmp/t_window"
+    if [ "$TS_FRESHNESS_RC" -ne 1 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check exited $TS_FRESHNESS_RC (expected 1) with a STALE"
+        echo "  non-newest dir inside this run's window. Under --profile both the parser"
+        echo "  compiles into several fingerprint dirs; asserting only on the newest one"
+        echo "  lets a stale archive that a test binary DOES link pass unexamined."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [[ "$TS_FRESHNESS_OUT" != *"tree-sitter-reify-1111111111111111"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: the stale in-window dir (1111...) is not named."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # (13b) CONTROL — no epoch on disk degrades to the old newest-marker scope, so
+    # the very same tree goes green. Without this the case above could pass for a
+    # reason unrelated to the window (e.g. a whole-tree assertion), and a revert to
+    # newest-marker-only would still look tested. Narrower is the documented
+    # degradation for a missing/unwritable epoch: never wider, never skipped.
+    rm -f "$tmp/t_window/.tree-sitter-freshness.epoch"
+    run_ts_freshness check "$tmp/t_window"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check exited $TS_FRESHNESS_RC (expected 0) with NO epoch"
+        echo "  on disk. A standalone check outside a verify run must fall back to the"
+        echo "  newest-marker scope, not hard-fail on forever-stale dormant dirs."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    # (13c) epoch AFTER both markers -> nothing was rebuilt this run -> dormant,
+    # not RED. This is what stops the 7-9 forever-stale dirs a real checkout
+    # carries from making the gate permanently red.
+    touch -d "2024-01-03 00:00:00" "$tmp/t_window/.tree-sitter-freshness.epoch"
+    run_ts_freshness check "$tmp/t_window"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: check exited $TS_FRESHNESS_RC (expected 0) when the epoch"
+        echo "  postdates every marker — cargo rebuilt nothing this run, so every dir is"
+        echo "  dormant. Failing here would make the window a permanent RED instead of a"
+        echo "  statement about what THIS run built."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
 }
 
 test_freshness_ensure_forces_and_is_idempotent() {
