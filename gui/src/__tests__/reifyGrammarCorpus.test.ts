@@ -3247,24 +3247,65 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //   match/enum/variant construction · field def/purpose/unit/type alias/
 //   default/meta/pragma/annotation · radix/imaginary/interpolated literals
 //
-// The set below holds 302 paths, not 301, and the extra one is NOT a grammar
-// gain: the corpus itself grew to 330 files while this task was in flight
-// (`examples/whole_model_cost_min.ri`), and the new file parses clean. Final
-// measurement is therefore 302 / 330. The fifteenth family is likewise worth
+// That round left the set at 302 paths, not 301, and the extra one was NOT a
+// grammar gain: the corpus itself grew to 330 files while that task was in
+// flight (`examples/whole_model_cost_min.ri`), and the new file parses clean.
+// Its final measurement is therefore 302 / 330. The fifteenth family is worth
 // zero files — radix, imaginary and interpolated literals already parsed with
 // zero error nodes under the `QuantityLiteral` / `String` catch-alls, so that
 // slice was taken for node SHAPE (an editor cannot style what it cannot name)
 // and is guarded by explicit non-regression assertions above rather than by
 // any movement here.
 //
-// WHAT THE NEXT CATCH-UP TASK INHERITS — all of it tracked as #5941. The 28
-// files still not clean need:
+// MEASUREMENT (task 5941), catch-up round 3. Five families were ported, taking
+// the pinned set from 302 to 309 of 330 — and the arithmetic is worth stating
+// plainly, because only TWO of the five moved it at all:
 //
-//   - `variant_construction` in ARGUMENT position (`f(Circle { radius: 5mm })`).
-//     Valid upstream; deliberately narrowed here — see the note on that
-//     production in reify.grammar for the LR conflict that forced it.
-//   - `constraint def`, `relate` blocks, `match_arm_decl_block`, and the
-//     `sub_relate_block` that may follow a pose clause.
+//   relate blocks              +5   the whole ledger movement, less two
+//   constraint def             +2
+//   variant construction in argument position   0
+//   sub_relate_block                            0
+//   match_arm_decl_block                        0
+//
+// The three zero-movement families are taken for node SHAPE, the same
+// justification 5927 recorded for the literal families, and are guarded by the
+// node-name assertions in their slices above rather than by any movement here.
+// For two of them that guarding is the ONLY guarding there is, because the
+// wrong reading parses clean: an argument-position construction could have been
+// widened into `primaryExpression` and silently swallowed a `match`/`where`/
+// `connect` body, and a `sub_relate_block` resolved with precedence instead of
+// the `~poseWhere` marker would silently have stolen every post-pose `where`
+// from `GuardedBlock`. Neither would have shown up as an error node.
+//
+// FOUR OF THE SIX `constraint def` FILES DID NOT TURN CLEAN, and their absence
+// below is not a regression. Each keeps a second, out-of-scope blocker — in
+// order: `some(u)`, `meta.material`, `meta.project`, and a member-level
+// `@annotation`. Their error counts did drop (integration_corner_cases 9→7,
+// integration_full_v01 14→5, m11_annotations 18→10, m9_combined 9→4), which is
+// real progress that this pinned set is deliberately unable to express.
+//
+// WHAT THE NEXT CATCH-UP TASK INHERITS — the twelve families below, all of them
+// enumerated with their measured first blocker in #5950. The 21 files still not
+// clean need:
+//
+//   - a `ReservedWord` (`some`/`none`/`undef`) in CALL position
+//   - `meta.<field>` field access on the meta block
+//   - a member-level `Annotation` (`@annotation` inside a body)
+//   - `keyed_member_block`
+//   - `joint_definition`
+//   - `::` in EXPRESSION position (it is admitted in type position only)
+//   - `pp.Pulley` binding-qualified references — OWNED BY TASK #5495, which
+//     covers all three grammar surfaces. Do not duplicate that work here.
+//   - the `%` operator
+//   - two stackup files
+//   - arrow (function) types in a param annotation
+//   - `·` unit multiplication
+//   - three remaining one-offs
+//
+// `variant_construction` has left this list: argument position is now admitted.
+// The narrowing that remains is `primaryExpression` only, it is deliberate, and
+// the note on that production in reify.grammar prices it — see also the pin
+// above asserting that expression-position `Name { … }` must STILL error.
 //
 // AND ONE KNOWN DIVERGENCE, which is not a gap and must not be "fixed" blindly.
 // Underscore-separated DECIMAL literals did not get their own node: `1_000_000`
@@ -3287,7 +3328,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here — the ratchet #5941 turns next.
+// addition here — the ratchet #5950 turns next.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
