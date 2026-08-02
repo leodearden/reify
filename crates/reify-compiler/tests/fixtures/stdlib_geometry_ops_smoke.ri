@@ -4,8 +4,9 @@
 //
 // SYNC CONTRACT: every call form below mirrors a signature documented in that
 // chunk's "Key Geometry Operations" / "Curves" section. The companion test
-// crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs asserts FOUR
-// things, none of which alone is sufficient:
+// crates/reify-compiler/tests/harness_doc_chunks/stdlib_chunk_geometry_ops_smoke.rs
+// (run via `cargo test -p reify-compiler --test harness_doc_chunks`) asserts
+// FOUR things, none of which alone is sufficient:
 //   1. this file compiles with ZERO Error-severity diagnostics — every
 //      documented form is accepted AT THE ARITY WRITTEN, FOR THE NAMES THE
 //      COMPILER RESOLVES;
