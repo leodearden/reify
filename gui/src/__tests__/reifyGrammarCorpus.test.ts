@@ -3087,6 +3087,77 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
 });
 
 /**
+ * `chain` STAYS A LEGAL ORDINARY IDENTIFIER — catch-up round 4, family 1.
+ *
+ * THE DIAGNOSIS, MEASURED NOT INHERITED. The round-3 ledger handed this family
+ * on as "two stackup files", and #5950's description read it as a list literal
+ * in a `let`. It is neither. MEASURED on the unmodified round-3 grammar:
+ *
+ *   structure def S { let y = [x] }          → 0 error nodes  (ListLiteral is fine)
+ *   structure def S { let chain = a }        → 3 error nodes, the FIRST one
+ *                                              sitting ON the word `chain`
+ *
+ * Round 2 (#5927) promoted `chain` to `kw<"chain">` for `ChainStatement`, and
+ * lezer's `@specialize` is context-FREE — so the word stopped being a legal
+ * identifier EVERYWHERE, not just in the statement slot. Three committed files
+ * use it as an ordinary name: examples/tolerance-stackup-3part.ri:45,
+ * examples/tolerance-stackup-rss.ri:35 and examples/integration_corner_cases.ri:131.
+ * Upstream spells the statement keyword as a plain `'chain'` string whose
+ * parse-state-driven lexer keeps it an identifier off that slot, so `ekw` is the
+ * upstream-faithful reading — the same door `at`, `self`, `relate`, `direction`
+ * and `frame` are already held open by.
+ *
+ * The ListLiteral assertion below is deliberate: it pins that the list was never
+ * the blocker, so the round-3 note's framing cannot be re-inherited.
+ */
+describe('reify.grammar snippets — `chain` stays a legal ordinary identifier', () => {
+  // Corpus-attested VERBATIM: examples/tolerance-stackup-3part.ri:45
+  // (`let chain = [c_bore, c_shaft, c_space, c_ring]`) and the same shape at
+  // examples/tolerance-stackup-rss.ri:35 (`let chain = [c1, c2, c3]`).
+  it('accepts `chain` as a let-binding name', () => {
+    const src = 'structure def S { let chain = [c_bore, c_shaft, c_space, c_ring] }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('LetDeclaration');
+    // The list literal was NEVER the blocker — it already parsed under the
+    // round-3 grammar, error nodes and all. Pinned so the mis-diagnosis the
+    // round-3 ledger recorded cannot be inherited a second time.
+    expect(names).toContain('ListLiteral');
+  });
+
+  // Corpus-attested: examples/tolerance-stackup-rss.ri:40,44 —
+  // `let worst = stackup_worst_case(chain)` / `let rss = stackup_rss(chain)`.
+  // The identifier has to reach EXPRESSION position too, not just the binding
+  // name, so both are pinned in one snippet.
+  it('accepts `chain` as an ordinary expression operand', () => {
+    const src = 'structure def S { let chain = a  let worst = f(chain) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('LetDeclaration');
+    expect(names).toContain('FunctionCall');
+  });
+
+  /**
+   * THE READING THAT MUST NOT BE LOST, asserted on the NODE NAME rather than an
+   * error count. A demotion that broke the statement reading would still parse
+   * `chain x -> y -> z` in some positions — as a bare expression with `->`
+   * lambdas or a connect-ish tail — and an error-count assertion would sail
+   * straight past it. `ChainStatement` is the contract.
+   */
+  it('still yields a ChainStatement for the statement form', () => {
+    const src = 'structure def S { connect a.p -> b.q  chain x -> y -> z }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('ChainStatement');
+    expect(names).toContain('ConnectStatement');
+    // Exactly one — a contextual keyword that re-opened an ambiguity could
+    // yield a doubled or nested node while the error count stays 0, the
+    // `WildcardPattern > WildcardPattern` failure #5957 hit.
+    expect(countNodesNamed(src, 'ChainStatement')).toBe(1);
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
