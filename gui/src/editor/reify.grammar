@@ -684,13 +684,22 @@ NamedArgumentList {
   NamedArgument ("," NamedArgument)* ","?
 }
 
-// The value slot is widened with `VariantConstruction` for the same reason
-// `argument` is, and it must be widened TOGETHER with it: this one production
-// is shared by call-expression named arguments and by `SubDeclaration`'s
-// instantiation `ArgList`, so leaving it out would still reject
-// `Foo(shape: Circle { radius: 5mm })`.
+// The value slot IS `bindingValue` — the exact transliteration of upstream's
+// `named_argument.value = $._binding_value` (grammar.js:1042-1046). Spelling it
+// that way rather than enumerating arms is what admits `AutoKeyword`
+// (`Bolt(length: auto)`, examples/auto_binding_sites.ri:94) alongside the
+// `VariantConstruction` arm this slot already needed, and it keeps the two
+// slots that share `_binding_value` upstream from drifting apart here.
+//
+// This one production is shared by call-expression named arguments AND by
+// `SubDeclaration`'s instantiation `ArgList`, so anything admitted here is
+// admitted in both — which is exactly upstream's arrangement.
+//
+// `AutoKeyword`'s parenthesised arms carry `!itemStart` markers and are now
+// reachable from a comma-separated argument list, a new parse state. MEASURED:
+// lezer-generator reports zero conflicts, so `itemStart` needed no extension.
 NamedArgument {
-  Identifier ":" (VariantConstruction | expression)
+  Identifier ":" bindingValue
 }
 
 // ── Function ────────────────────────────────────────────

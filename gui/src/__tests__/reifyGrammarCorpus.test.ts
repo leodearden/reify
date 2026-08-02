@@ -3717,6 +3717,7 @@ const EXPECTED_CLEAN = [
   'examples/auto/bearing_resolved_value.ri',
   'examples/auto/bearing_unsat.ri',
   'examples/auto/bounded_fallback_unsound.ri',
+  'examples/auto_binding_sites.ri',
   'examples/bearing_auto_seal.ri',
   'examples/best_practices/bolt_circle.ri',
   'examples/best_practices/clearance_oracle.ri',
