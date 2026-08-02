@@ -3507,6 +3507,105 @@ describe('reify.grammar snippets — `meta` stays a legal ordinary identifier', 
 });
 
 /**
+ * `::` in EXPRESSION position — catch-up round 4, family 8.
+ *
+ * `::` already reaches TYPE position through `QualifiedType`
+ * (`param p : Beam::Material`). It has never reached EXPRESSION position, so
+ * upstream's three productions at grammar.js:1587-1610 have no counterpart
+ * here: `qualified_access` (`Foo::bar`, prec.left 9),
+ * `instance_qualified_access` (`obj.(Foo::bar)`, prec.left 9) and
+ * `trait_method_call` (either of those plus a call tail, prec 11).
+ *
+ * MEASURED before the fix:
+ *   (a) the static  form, corpus-verbatim  — 6 errors  → RED
+ *   (b) the instance form, corpus-verbatim — 11 errors → RED
+ *   (c) the type-position separation pin    — 0 errors → passes
+ *   (d) the plain member-access pin         — 0 errors → passes
+ *   (e) the bare qualified access, no tail  — 2 errors → RED
+ *
+ * (c) and (d) are the load-bearing pins. Only POSITION separates the new
+ * expression-position `::` from the existing type-position one, and only the
+ * following `(` separates `obj.(Trait::m)` from a plain `obj.m` — both are
+ * properties of the grammar's SHAPE rather than of a precedence marker, so
+ * neither can be read off the productions and both must be asserted. They pass
+ * on arrival and are pinned so the widening cannot quietly capture them.
+ */
+describe('reify.grammar snippets — `::` in expression position', () => {
+  // Corpus-attested VERBATIM: examples/trait_assoc_fn_static.ri:38,42.
+  it('parses the static trait-method call form', () => {
+    const src =
+      'structure def S { let gap : Length = Defaultable::make_default()  let wide : Length = Defaultable::scaled(3.0) }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('QualifiedAccess');
+    expect(names).toContain('TraitMethodCall');
+  });
+
+  // Corpus-attested VERBATIM: examples/trait_assoc_fn_overload.ri:38,62; the
+  // same shape at examples/trait_assoc_fn_cylinder.ri:60
+  // (`let wetted = pin.(Cylindrical::lateral_area)()`).
+  it('parses the trait-disambiguated receiver form', () => {
+    const src =
+      'structure def S { let a = w.(Measurable::f)(5mm)  let spin = c.(Spinning::rate)() }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('InstanceQualifiedAccess');
+    expect(names).toContain('TraitMethodCall');
+  });
+
+  /**
+   * THE TYPE/EXPRESSION SEPARATION PIN. `QualifiedType` and the new
+   * `QualifiedAccess` share the `::` token and differ only in the position they
+   * are reached from. Nothing in either production says so, so a widening that
+   * let the expression-position reading leak into a type annotation would still
+   * parse clean and only show up as the WRONG node. Both the bare base and the
+   * applied base (`Coupling<Prismatic>::MotionValue`) are pinned, since the
+   * latter reaches `::` through `ParameterizedType` and is the arm most likely
+   * to be captured.
+   */
+  it('does not steal the type-position `::`', () => {
+    for (const src of [
+      'structure def S { param p : Beam::Material }',
+      'structure def S { param p : Coupling<Prismatic>::MotionValue }',
+    ]) {
+      expect(countErrorNodes(src)).toBe(0);
+      const names = nodeNames(src);
+      expect(names).toContain('QualifiedType');
+      expect(names).not.toContain('QualifiedAccess');
+    }
+  });
+
+  /**
+   * THE MEMBER-ACCESS DISCRIMINATION PIN. `InstanceQualifiedAccess` opens
+   * `expression "." "("`, which shares its whole prefix with `MemberAccess`'s
+   * `expression "." Identifier`. Only the token after the `.` separates them,
+   * so a plain dotted chain must still reduce to `MemberAccess` alone.
+   */
+  it('does not steal a plain member access', () => {
+    const src = 'structure def S { let m = self.b.bore }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('MemberAccess');
+    expect(names).not.toContain('InstanceQualifiedAccess');
+  });
+
+  /**
+   * Upstream's `qualified_access` stands alone at prec.left(9) — the call tail
+   * belongs to `trait_method_call` at prec(11), a SEPARATE production. So the
+   * bare form with no tail has to be admitted on its own; folding the tail into
+   * `QualifiedAccess` would parse the whole corpus just as well while diverging
+   * from upstream's node shape.
+   */
+  it('admits a bare qualified access with no call tail', () => {
+    const src = 'structure def S { let g = Defaultable::make_default }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('QualifiedAccess');
+    expect(names).not.toContain('TraitMethodCall');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
