@@ -70,18 +70,43 @@ pub enum OrphanAudit {
     EnvUnavailable(&'static str),
 }
 
+/// Crate names excluded from the orphan-producer audit — a Rust copy of
+/// `scripts/audit-orphan-producers.sh:92`'s `EXCLUDE_CRATES = {...}` set
+/// literal (the source of truth; this copy exists because the script cannot
+/// be consulted at Rust compile/run time without a python round-trip).
+///
+/// Pinned against the script by
+/// `exclude_crates_const_matches_audit_script_declaration`: a divergence
+/// between the two fails `cargo test` rather than resting on a "keep in
+/// sync" comment — the same duplication-pinning pattern
+/// `crates/reify-audit/src/git_env.rs`'s
+/// `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` uses one
+/// layer out.
+const EXCLUDE_CRATES: &[&str] = &["reify-test-support"];
+
+/// True when `scope`'s crate segment (the path component immediately after
+/// `crates`) is a LITERAL member of [`EXCLUDE_CRATES`].
+///
+/// Deliberately literal-only, not glob-aware — and needs no special-casing to
+/// be so: a segment containing a glob metacharacter (e.g. the `reify-*` in
+/// the default `crates/reify-*/src` scope) is never literally equal to a
+/// single crate name, so plain set membership already returns `false` for
+/// it. That is exactly right for the five call sites in this workspace that
+/// pass a glob scope: their expansion always includes non-excluded crates,
+/// so treating the glob itself as "excluded" would be wrong.
+fn scope_is_excluded_crate(scope: &str) -> bool {
+    scope
+        .split('/')
+        .skip_while(|&seg| seg != "crates")
+        .nth(1)
+        .is_some_and(|seg| EXCLUDE_CRATES.contains(&seg))
+}
+
 /// Injectable seam behind [`run_orphan_audit`]: takes `script` and
 /// `repo_root` as parameters rather than resolving them internally, so tests
 /// can point it at a decoy tree, a subdirectory root, or a nonexistent script
 /// without touching the real repo or the real script location. Mirrors why
 /// [`build_audit_command`] was split out one layer down.
-///
-/// STUB (task 5698 step 1): this body is lifted verbatim from
-/// `run_orphan_audit`'s current spawn-and-parse tail. The empty-stdout branch
-/// does not yet discriminate an excluded scope from a wrong-tree/no-sources
-/// scope — both collapse to `ExcludedScope` here, matching
-/// `run_orphan_audit`'s current (pre-5698) behavior exactly. Task 5698 step 2
-/// splits that branch.
 fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAudit {
     let output = build_audit_command(script, scope, repo_root)
         .output()
@@ -91,12 +116,28 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if stdout.trim().is_empty() {
-        eprintln!(
-            "audit-orphan-producers.sh produced empty output for scope {scope:?} \
-             — scope may be in EXCLUDE_CRATES (exit status: {:?})",
+        if scope_is_excluded_crate(scope) {
+            eprintln!(
+                "audit-orphan-producers.sh produced empty output for scope {scope:?} \
+                 — scope is in EXCLUDE_CRATES (exit status: {:?})",
+                output.status
+            );
+            return OrphanAudit::ExcludedScope;
+        }
+        // Empty stdout for a scope that is NOT in EXCLUDE_CRATES is never a
+        // legitimate outcome: it means the orphan-producer pin for this
+        // scope has been silently disabled. Known causes: a wrong-tree
+        // redirect (repo_root resolves to a checkout with no matching
+        // sources), an EXCLUDE_CRATES edit, a crate rename, or a
+        // discover_sources refactor in the script itself. A silent `None`
+        // here is exactly the bug task 5698 closes — every caller would keep
+        // reporting green while the pin does nothing.
+        panic!(
+            "audit-orphan-producers.sh produced empty output for scope {scope:?}, which \
+             is NOT in EXCLUDE_CRATES — this is never a legitimate outcome for a real \
+             scope. repo_root: {repo_root:?}; exit status: {:?}; stderr: {stderr:?}",
             output.status
         );
-        return OrphanAudit::ExcludedScope;
     }
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
