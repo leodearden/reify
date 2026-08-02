@@ -1991,14 +1991,10 @@ describe('reify.grammar snippets — match, enum, variants', () => {
  * green while the contract was gone.
  *
  * They are DELIBERATELY separate `it` blocks: a bad declaration regresses all
- * four at once, so naming each keeps the failure output pointing at the form
- * that actually broke. The two or-pattern cases below this block are kept
- * here for contrast but, as of #5958, pin the OPPOSITE half of the contract:
- * `_` inside an or-pattern arm now reduces to `WildcardPattern`, not
- * `Identifier` — see the comment on those two `it` blocks. The rest of the
- * `WildcardPattern` half is pinned by the expression form's own wildcard
- * tests and the `MatchArmDeclBlock` ones; all of it has to hold
- * simultaneously.
+ * six at once, so naming each keeps the failure output pointing at the form
+ * that actually broke. The `WildcardPattern` half of the contract is pinned by
+ * the expression form's own wildcard test and the `MatchArmDeclBlock` one;
+ * both directions have to hold simultaneously.
  */
 describe('reify.grammar snippets — `_` stays a legal ordinary identifier', () => {
   it('accepts `_` as a `let` binding name', () => {
@@ -2030,29 +2026,57 @@ describe('reify.grammar snippets — `_` stays a legal ordinary identifier', () 
   });
 
   /**
-   * The two or-pattern arms — NOT an ordinary-identifier position, despite
-   * living in this describe block (kept here for the contrast with the four
-   * above). Before #5958, `MatchPattern`'s or-pattern alternative was
-   * literally `Identifier ("|" Identifier)*`, so `_` here could only ever
-   * reduce to `Identifier`, and only zero-error parsing was pinned — a
-   * PRE-EXISTING divergence from the compiler's wildcard semantics that
-   * #5957 did not touch. #5958 restructured `MatchPattern` through a new
-   * `matchPatternAtom { WildcardPattern | Identifier }` wrapper (see
-   * reify.grammar) so `_` in EITHER slot of an or-pattern now reduces to
-   * `WildcardPattern` instead, matching the compiler. Pinned below by node
-   * count, the same discipline `countNodesNamed` is used for elsewhere in
-   * this file, since a doubled node would satisfy a weaker `toContain` check.
+   * The two or-pattern arms. `_` in an OR-SLOT is an ordinary `Identifier` —
+   * not a wildcard — and that is the faithful reading, not a gap. #5958 first
+   * tried to "fix" it into a `WildcardPattern` and had to be reverted; the
+   * measurements below are why, recorded so the next reader does not re-attempt
+   * the same wrong change.
+   *
+   * AUTHORITATIVE SOURCES:
+   *   - `tree-sitter-reify/grammar.js:1289-1293` —
+   *     `match_pattern: choice($.variant_binding_pattern,
+   *                            seq($.identifier, repeat(seq('|', $.identifier))),
+   *                            '_')`.
+   *     `'_'` is a sibling of the WHOLE or-production, so it is reachable only
+   *     as an entire pattern, never as one `|`-separated slot inside one.
+   *   - `crates/reify-syntax/src/ts_parser.rs:3468` — `if pattern_text == "_"`
+   *     is a WHOLE-pattern-text test. An or-slot `_` fails it and falls to the
+   *     else branch, lowering to `MatchPattern::Variant("_")`, never
+   *     `MatchPattern::Wildcard`.
+   *
+   * MEASURED (`reify eval`, this branch):
+   *   - `match k { A | _ => 1mm }`
+   *       -> `error: non-exhaustive match on 'Kind': missing variant(s) B, C`
+   *     `_` did NOT act as a catch-all.
+   *   - `match k { _ | A => 1mm }` -> `Parse error: syntax error`.
+   *     The compiler rejects this source outright.
+   *   - CONTROL, bare `match k { _ => 1mm }` -> evaluates clean
+   *     (`F.x = 0.001 m`), which is why the bare-`_` tests elsewhere in this
+   *     file legitimately pin a `WildcardPattern` node and these do not.
+   *
+   * So `_` here reduces to `Identifier` BECAUSE the compiler lowers it to
+   * `Variant("_")`. `WildcardPattern` count is pinned at 0 — the same
+   * `countNodesNamed` discipline used elsewhere in this file — to make that an
+   * active contract rather than an unasserted accident.
+   *
+   * The `_ | A` zero-ERROR pin is DELIBERATE EDITOR LENIENCY, explicitly NOT
+   * compiler parity: Lezer accepts it (`_` matches the `Identifier` token
+   * rule) while the compiler parse-errors on it, as measured above. That
+   * divergence is PRE-EXISTING and unchanged by #5958 in either direction. It
+   * is pinned in the safe direction — a spurious ERROR node would break
+   * highlighting for source the editor should tolerate, whereas a missing one
+   * merely defers the diagnostic to the compiler, which is the real gate.
    */
-  it('reduces `_` to WildcardPattern as the trailing element of an or-pattern (#5958)', () => {
+  it('accepts `_` as the trailing element of an or-pattern', () => {
     const src = 'structure def F { let a = match p { A | _ => 1mm } }';
     expect(countErrorNodes(src)).toBe(0);
-    expect(countNodesNamed(src, 'WildcardPattern')).toBe(1);
+    expect(countNodesNamed(src, 'WildcardPattern')).toBe(0);
   });
 
-  it('reduces `_` to WildcardPattern as the leading element of an or-pattern (#5958)', () => {
+  it('accepts `_` as the leading element of an or-pattern', () => {
     const src = 'structure def F { let a = match p { _ | A => 1mm } }';
     expect(countErrorNodes(src)).toBe(0);
-    expect(countNodesNamed(src, 'WildcardPattern')).toBe(1);
+    expect(countNodesNamed(src, 'WildcardPattern')).toBe(0);
   });
 });
 
@@ -3088,21 +3112,30 @@ describe('reify.grammar snippets — match arm declaration blocks', () => {
   });
 
   /**
-   * The or-pattern arm carrying `_`, in both slot positions. This reuses
-   * `MatchPattern` verbatim just like the plain or-pattern case above, so it
-   * inherits #5958's fix directly: pre-#5958, this parsed clean but reduced
-   * `_` to a plain `Identifier` (the same PRE-EXISTING gap the
-   * `MatchExpression` or-pattern tests pin, not a `MatchArmDeclBlock`-specific
-   * one) — see the `WildcardPattern` note in reify.grammar.
+   * The or-pattern arm carrying `_`, in both slot positions. `match_arm_decl_arm`
+   * reuses `$.match_pattern` verbatim (grammar.js:1330-1334), exactly as the
+   * plain or-pattern case above does, so this form inherits the SAME contract —
+   * `_` in an or-slot is an ordinary `Identifier`, not a wildcard. The full
+   * reasoning and the authoritative-source citations are on the two
+   * `MatchExpression` or-pattern `it` blocks; not restated here.
+   *
+   * MEASURED for THIS form (`reify eval`, this branch):
+   *   - `match kind { Hex | _ => sub head : DefaultHead }`
+   *       -> `error: match-arm pattern '_' is not a variant of enum 'Kind'`
+   *   - `match kind { _ | Hex => sub head : DefaultHead }`
+   *       -> `Parse error: syntax error`
+   *
+   * As in the expression form, the `_ | Hex` zero-ERROR pin is deliberate
+   * EDITOR LENIENCY, not compiler parity.
    */
-  it('accepts an or-pattern arm with a wildcard and yields a WildcardPattern node (#5958)', () => {
+  it('accepts an or-pattern arm carrying `_`, which stays an Identifier', () => {
     const trailing = 'structure def F { match kind { Hex | _ => sub head : DefaultHead } }';
     expect(countErrorNodes(trailing)).toBe(0);
-    expect(countNodesNamed(trailing, 'WildcardPattern')).toBe(1);
+    expect(countNodesNamed(trailing, 'WildcardPattern')).toBe(0);
 
     const leading = 'structure def F { match kind { _ | Hex => sub head : DefaultHead } }';
     expect(countErrorNodes(leading)).toBe(0);
-    expect(countNodesNamed(leading, 'WildcardPattern')).toBe(1);
+    expect(countNodesNamed(leading, 'WildcardPattern')).toBe(0);
   });
 
   /**
