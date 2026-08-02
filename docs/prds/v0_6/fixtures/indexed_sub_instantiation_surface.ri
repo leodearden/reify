@@ -17,13 +17,10 @@
 /// deriving the collection count cell are task β's (#5482) — so *semantic*
 /// diagnostics on this fixture are still expected until β lands.
 ///
-/// STILL REJECTED, DELIBERATELY. "0 ERROR nodes" is a CST-level statement. At
-/// the CST→AST lowering layer this file is rejected by α's interim `#5482`
-/// diagnostic: the indexer clause lowers, but no compiler pass reads it yet, so
-/// accepting the file would silently declare ONE `idlers` rather than one per
-/// index — with the binder `i` in `od: 30mm + i * 2mm` resolving against
-/// nothing. β removes that rejection when it scopes the binder and derives the
-/// count cell. Until then, `reify` refuses this file by design.
+/// STILL REJECTED, DELIBERATELY. "0 ERROR nodes" is a CST-level statement; one
+/// layer down, `reify` refuses this file via the interim α→β rejection — see
+/// the `TODO(#5482)` site in `lower_sub` (crates/reify-syntax/src/ts_parser.rs)
+/// for why.
 module indexed_sub_instantiation_surface
 
 structure def Pulley {

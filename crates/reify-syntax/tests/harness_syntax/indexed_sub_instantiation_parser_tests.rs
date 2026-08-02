@@ -6,24 +6,11 @@
 //! this file pins that the new `binder`/`domain` CST fields actually reach
 //! `SubDecl.index_binder` / `SubDecl.index_domain`.
 //!
-//! # Scope: α is syntax only
-//!
-//! α stores the binder and domain **syntactically**. Binder scoping, typing the
-//! domain as `Range<Int>`, and the derived count cell are all β's job — so
-//! downstream *semantic* diagnostics on the target-surface fixture are expected
-//! and legitimate until β lands. See
-//! [`surface_fixture_no_longer_emits_invalid_sub_parse_error`] for why that
-//! test asserts the absence of one specific message rather than an empty
-//! diagnostic list.
-//!
-//! # α rejects what it cannot yet elaborate
-//!
-//! Storing the clause syntactically is not the same as supporting it. Until β
-//! (#5482) scopes the binder and derives the count cell, an indexed sub would
-//! elaborate to exactly ONE instance with the binder unresolved — so α also
-//! emits an interim rejection over the parse-error channel. See
-//! [`indexed_sub_emits_interim_unelaborated_diagnostic`] for the contract and
-//! [`non_indexed_subs_emit_no_interim_diagnostic`] for the over-firing guard.
+//! Interim α→β rejection: rationale lives at the `TODO(#5482)` site in
+//! `lower_sub` (`crates/reify-syntax/src/ts_parser.rs`) — the single home for
+//! that narrative. [`indexed_sub_emits_interim_unelaborated_diagnostic`] pins
+//! the contract; [`non_indexed_subs_emit_no_interim_diagnostic`] is the
+//! over-firing guard.
 
 use reify_ast::ast::ExprKind;
 use reify_ast::decl::{Declaration, MemberDecl, SubDecl};
@@ -36,6 +23,33 @@ const SURFACE_FIXTURE: &str =
 
 /// Canonical indexed-sub source shared by the lowering assertions.
 const INDEXED_SUB_SOURCE: &str = "structure S { sub idlers[i in 0..4] = Pulley(od: 30mm + i * 2mm) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }";
+
+/// An indexer clause whose domain parses but does NOT lower.
+///
+/// `a.(b)` is an `instance_qualified_access`, whose grammar accepts ANY
+/// `$._expression` inside the parentheses; `lower_instance_qualified_access`
+/// then rejects a non-`qualified_access` inner node and returns `None`
+/// (`ts_parser.rs`, "instance qualified access requires a qualified_access").
+/// So this is a well-formed CST — no ERROR node, no `invalid sub` — whose
+/// `lower_expr(domain)` genuinely returns `None`, which is the only way to
+/// reach `lower_sub`'s drop-both arm. `a.(B::c)` would lower fine; the missing
+/// `::` is the whole point.
+const MALFORMED_DOMAIN_SOURCE: &str = "structure S { sub xs[i in a.(b)] = Foo(a: 1) }";
+
+/// The three pre-existing `sub` arms — the α regression floor.
+///
+/// Hoisted to module scope because three separate tests assert over exactly
+/// this set (no interim diagnostic, both indexer fields `None`, and the pairing
+/// invariant); a fourth arm added to `sub_declaration` must be remembered once,
+/// here, not in three places.
+const NON_INDEXED_ARMS: &[(&str, &str)] = &[
+    (
+        "bare instantiation with pose",
+        "structure S { sub a = Foo() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }",
+    ),
+    ("collection arm", "structure S { sub xs : List<Foo> }"),
+    ("specialization arm", "structure S { sub m : Foo { } }"),
+];
 
 /// Parse `source` and return the members of its first structure declaration.
 fn parse_first_structure_members(source: &str) -> Vec<MemberDecl> {
@@ -219,16 +233,7 @@ fn indexed_sub_emits_interim_unelaborated_diagnostic() {
 /// arms genuinely parse clean today and must continue to.
 #[test]
 fn non_indexed_subs_emit_no_interim_diagnostic() {
-    let cases: &[(&str, &str)] = &[
-        (
-            "bare instantiation with pose",
-            "structure S { sub a = Foo() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }",
-        ),
-        ("collection arm", "structure S { sub xs : List<Foo> }"),
-        ("specialization arm", "structure S { sub m : Foo { } }"),
-    ];
-
-    for (label, source) in cases {
+    for (label, source) in NON_INDEXED_ARMS {
         let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -392,22 +397,27 @@ fn indexed_sub_preserves_existing_instantiation_lowering() {
 /// `SubDecl`'s two flat `Option`s cannot encode "both or neither" in the type,
 /// so the invariant is enforced at the single producer (`lower_sub` lowers the
 /// halves jointly and drops both if the domain fails to lower). This test is the
-/// executable half of that contract: across the indexed form, the three
-/// pre-existing arms, and the `List`-named adversarial spellings, the two fields
-/// must always agree on presence. β types the domain and may rely on the pair.
+/// executable half of that contract, and it covers BOTH sides of it: the
+/// populate-both path (the indexed form, the `List`-named adversarial
+/// spellings, the surface fixture), the never-populate path (the three
+/// pre-existing arms), and — via [`MALFORMED_DOMAIN_SOURCE`] — the drop-both
+/// path, the only branch where a naive independent `.and_then(…)` would
+/// actually produce a half-populated pair. β types the domain and may rely on
+/// the pair.
 #[test]
 fn index_binder_and_domain_are_always_both_some_or_both_none() {
-    let cases: &[&str] = &[
+    let cases: Vec<&str> = [
         INDEXED_SUB_SOURCE,
         "structure S { sub legs[k in 0..3] = Leg() }",
         "structure S { sub xs[List in 0..4] = Foo(a: 1) }",
         "structure S { sub xs[i in List] = Foo(a: 1) }",
-        "structure S { sub a = Foo() }",
-        "structure S { sub xs : List<Foo> }",
-        "structure S { sub m : Foo { } }",
+        MALFORMED_DOMAIN_SOURCE,
         SURFACE_FIXTURE,
-    ];
-    for source in cases {
+    ]
+    .into_iter()
+    .chain(NON_INDEXED_ARMS.iter().map(|(_, source)| *source))
+    .collect();
+    for source in &cases {
         for sub in all_subs(source) {
             assert_eq!(
                 sub.index_binder.is_some(),
@@ -423,19 +433,62 @@ fn index_binder_and_domain_are_always_both_some_or_both_none() {
     }
 }
 
+/// A domain that parses but does not lower is REPORTED, and drops both halves.
+///
+/// This is the drop-both arm of `lower_sub`'s joint lowering — the one branch
+/// that keeps `SubDecl`'s two flat `Option`s from ever going half-populated, and
+/// the reason the pairing invariant is enforced in code rather than merely
+/// asserted. It is reachable on well-formed input, not only on ERROR recovery:
+/// see [`MALFORMED_DOMAIN_SOURCE`] for why `a.(b)` is the reproducer.
+///
+/// The absence of `invalid sub` is asserted deliberately — that message is
+/// minted by `check_and_lower!` whenever the `sub_declaration` CST node
+/// `is_error()`/`has_error()`, so its absence is the in-crate proof that this
+/// case is a genuine lowering failure over a clean CST rather than a
+/// parse-error artifact.
+#[test]
+fn malformed_indexer_domain_is_reported_and_drops_both_halves() {
+    let parsed = reify_syntax::parse(MALFORMED_DOMAIN_SOURCE, ModulePath::single("test"));
+    let messages: Vec<&str> = parsed.errors.iter().map(|e| e.message.as_str()).collect();
+
+    assert!(
+        !messages.iter().any(|m| m.contains("invalid sub")),
+        "the reproducer must be a clean CST — a lowering failure, not tree-sitter \
+         error recovery; got {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("invalid indexer domain") && m.contains("xs[i in")),
+        "a domain that fails to lower must be reported, naming the offending sub \
+         and its binder; got {messages:?}"
+    );
+
+    let sub = first_sub(&parse_first_structure_members(MALFORMED_DOMAIN_SOURCE));
+    assert!(
+        sub.index_binder.is_none() && sub.index_domain.is_none(),
+        "a failed domain lowering must drop BOTH halves — a `Some(binder)` with a \
+         `None` domain is the half-populated pair β would panic on; got \
+         binder={:?} domain_is_some={}",
+        sub.index_binder,
+        sub.index_domain.is_some()
+    );
+    assert!(
+        interim_diagnostics(MALFORMED_DOMAIN_SOURCE).is_empty(),
+        "the interim `#5482` rejection guards a POPULATED pair; with both halves \
+         dropped there is nothing unelaborated left to reject, and firing both \
+         diagnostics would double-report one clause; got {:?}",
+        interim_diagnostics(MALFORMED_DOMAIN_SOURCE)
+            .iter()
+            .map(|e| &e.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// The three pre-existing `sub` arms lower with both indexer fields `None`.
 #[test]
 fn non_indexed_subs_lower_to_none_binder_and_domain() {
-    let cases: &[(&str, &str)] = &[
-        (
-            "bare instantiation with pose",
-            "structure S { sub a = Foo() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm)) }",
-        ),
-        ("collection arm", "structure S { sub xs : List<Foo> }"),
-        ("specialization arm", "structure S { sub m : Foo { } }"),
-    ];
-
-    for (label, source) in cases {
+    for (label, source) in NON_INDEXED_ARMS {
         let members = parse_first_structure_members(source);
         let sub = first_sub(&members);
         assert!(

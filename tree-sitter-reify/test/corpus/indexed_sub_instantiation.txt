@@ -13,11 +13,18 @@
 ; never a second source of truth. It also pins the case count (3), so dropping a
 ; case below is itself a failure.
 ;
-; SCOPE: this file pins the CST shape ONLY. The same sources are still rejected
-; one layer down, at CST→AST lowering, by α's interim `#5482` diagnostic (see
-; `lower_sub` in crates/reify-syntax/src/ts_parser.rs) — the clause parses but
-; no compiler pass reads it until β. A green case below therefore means "the
-; grammar shape is right", never "this source compiles".
+; SCOPE: this file pins the CST shape ONLY — a green case means "the grammar
+; shape is right", never "this source compiles". These sources are still
+; rejected one layer down by the interim α→β rejection; rationale lives at the
+; `TODO(#5482)` site in `lower_sub` (crates/reify-syntax/src/ts_parser.rs).
+;
+; Sources are kept MINIMAL on purpose: because the guard compares whole-root
+; S-expressions, any node shape a case drags in becomes pinned here too, and an
+; unrelated grammar change to (say) named arguments or `transform3(…)` would
+; then fail an indexed-sub test. So no case carries constructor arguments or a
+; compound pose — that the indexer coexists with those is pinned by
+; `indexed_sub_cst_exposes_binder_and_domain_fields`, in hand-written field
+; assertions that are indifferent to their internal shape.
 ;
 ; Heads-up for future readers: `tree-sitter test` is 218/219 on main because of
 ; the pre-existing and unrelated test/corpus/imaginary_literal.txt failure
@@ -25,11 +32,11 @@
 ; `tree-sitter test -f 'indexed sub'` rather than reading a bare full-suite red.
 
 ================================================================================
-indexed sub — indexer clause + named ctor args + at pose
+indexed sub — indexer clause + at pose
 ================================================================================
 
 structure S {
-  sub idlers[i in 0..4] = Pulley(od: 30mm + i * 2mm) at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+  sub idlers[i in 0..4] = Pulley() at origin
 }
 
 --------------------------------------------------------------------------------
@@ -44,40 +51,7 @@ structure S {
         lower: (number_literal)
         upper: (number_literal))
       structure_name: (identifier)
-      (named_argument_list
-        (named_argument
-          name: (identifier)
-          value: (binary_expression
-            left: (quantity_literal
-              value: (number_literal)
-              unit: (unit_expr
-                (unit_name)))
-            right: (binary_expression
-              left: (identifier)
-              right: (quantity_literal
-                value: (number_literal)
-                unit: (unit_expr
-                  (unit_name)))))))
-      pose: (function_call
-        name: (identifier)
-        (argument_list
-          (function_call
-            name: (identifier))
-          (function_call
-            name: (identifier)
-            (argument_list
-              (quantity_literal
-                value: (number_literal)
-                unit: (unit_expr
-                  (unit_name)))
-              (quantity_literal
-                value: (number_literal)
-                unit: (unit_expr
-                  (unit_name)))
-              (quantity_literal
-                value: (number_literal)
-                unit: (unit_expr
-                  (unit_name))))))))))
+      pose: (identifier))))
 
 ================================================================================
 indexed sub — indexer clause + bare ctor, no pose

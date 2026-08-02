@@ -447,33 +447,19 @@ fn match_arm_sub_pose_is_lowered() {
 
 // ── Interim α→β behaviour of the indexed-sub instantiation form ──────────────
 
-/// The α→β window is CLOSED by a rejection, and this pins both halves of it.
+/// What an indexed sub does DOWNSTREAM of reify-syntax, in the α→β window.
 ///
-/// `sub legs[k in 0..3] = Leg()` — the indexer clause added by task α of
-/// `docs/prds/v0_6/indexed-sub-instantiation.md` — parses and lowers into
-/// `SubDecl::index_binder` / `index_domain`, but **nothing in reify-compiler
-/// reads those fields yet**. Left unguarded that would be a silent miscompile:
-/// the source elaborating to exactly ONE `legs` instance instead of four, with
-/// no error and no warning.
+/// The rejection itself — why it exists, what it says, where it is spanned — is
+/// pinned once, in reify-syntax
+/// (`harness_syntax::indexed_sub_instantiation_parser_tests`), with the
+/// rationale at the `TODO(#5482)` site in `lower_sub`. This test deliberately
+/// asserts only what that crate cannot see: that the rejection survives the
+/// compile pipeline, and the elaboration shape it is guarding against.
 ///
-/// α closes that window inside its own crate: `reify_syntax::lower_sub` emits
-/// an interim `#5482` rejection over the parse-error channel on every indexer
-/// clause it lowers, so the declaration no longer compiles for any user. The
-/// single-instance shape asserted below is therefore UNREACHABLE in practice —
-/// it is pinned only to document what the fields currently do downstream, and
-/// to make β's elaboration a visible, deliberate change rather than a silent
-/// one.
-///
-/// The `AtOnCollectionSub` T2 check (`crates/reify-compiler/src/entity.rs`,
-/// ~line 2656) is cited only as the SHAPE β may later promote this to — a
-/// compile-layer `DiagnosticCode` with a code of its own. That promotion is
-/// β's call; the parse layer is where α can reject without widening its module
-/// set, and it is strictly louder (the CLI, MCP, and `parse_or_panic` paths all
-/// hard-abort on a non-empty `parsed.errors`, which no compile-layer diagnostic
-/// achieves).
-///
-/// β (#5482) turns this into a real N-instance assertion when it deletes the
-/// rejection and derives the count cell.
+/// That shape is UNREACHABLE in practice — α rejects at parse time, so no user
+/// reaches it. It is pinned to make β's elaboration a visible, deliberate change
+/// rather than a silent one, and β (#5482) turns it into a real N-instance
+/// assertion when it deletes the rejection and derives the count cell.
 #[test]
 fn indexed_sub_is_rejected_with_interim_diagnostic_and_elaborates_to_one_instance() {
     let source = r#"structure Leg {
@@ -490,38 +476,37 @@ structure Rig {
     // elaboration shape can both be asserted in one test.
     let compiled = reify_test_support::compile_source_with_stdlib_allow_parse_errors(source);
 
-    // Filter to Severity::Error deliberately — do NOT assert on
-    // `diagnostics.len()`. The same parse error appears TWICE by design:
-    // `compile_source_with_stdlib_allow_parse_errors` prepends it as
+    // Filter on the `#5482` cite, not on `Severity::Error` alone — an unrelated
+    // future compile error on this snippet must not fail a test whose message
+    // blames β. Filtering on the cite rather than the full wording also keeps
+    // the wording contract in ONE crate (reify-syntax), where it is pinned.
+    //
+    // Severity is still required, because the same parse error appears TWICE by
+    // design: `compile_source_with_stdlib_allow_parse_errors` prepends it as
     // `Diagnostic::error` (reify-test-support helpers.rs), while
     // `compile_builder::pre_pass::forward_parse_errors` independently pushes it
     // as `Diagnostic::warning("parse error: …")`. That duplication is the
     // helper's contract, not a bug to "fix".
-    let errors: Vec<String> = compiled
+    let rejections: Vec<String> = compiled
         .diagnostics
         .iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
+        .filter(|d| d.message.contains("#5482"))
         .map(|d| d.message.clone())
         .collect();
     assert_eq!(
-        errors.len(),
+        rejections.len(),
         1,
-        "INTERIM PIN (α→β window): an indexed sub must be rejected by exactly \
-         one error diagnostic. If this failed because β started elaborating, \
-         that is progress — replace this pin with a real N-instance assertion \
-         instead of deleting it. Got: {errors:?}"
-    );
-    assert!(
-        errors[0].contains("#5482"),
-        "the rejection must carry the `#5482` cite so β's removal of it is \
-         greppable; got {:?}",
-        errors[0]
-    );
-    assert!(
-        errors[0].contains("legs[k in"),
-        "the rejection must echo the sub and its binder as written, so the user \
-         can see which clause to remove; got {:?}",
-        errors[0]
+        "INTERIM PIN (α→β window): reify-syntax's `#5482` rejection must survive \
+         the compile pipeline as exactly one error diagnostic. If this failed \
+         because β started elaborating, that is progress — replace this pin with \
+         a real N-instance assertion instead of deleting it. Got: {rejections:?} \
+         (all diagnostics: {:?})",
+        compiled
+            .diagnostics
+            .iter()
+            .map(|d| (d.severity, &d.message))
+            .collect::<Vec<_>>()
     );
 
     let rig = compiled

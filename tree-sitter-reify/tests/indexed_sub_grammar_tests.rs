@@ -391,6 +391,19 @@ fn normalize_sexp(s: &str) -> String {
 /// remains uninvoked by CI (and 218/219 on `main`, task #5492) — this test
 /// deliberately reimplements the corpus reader rather than depending on that CLI.
 ///
+/// # Whole-root equality, deliberately narrow sources
+///
+/// The comparison is whole-root because that is the only form `tree-sitter
+/// test` itself accepts, so the corpus stays runnable under the CLI. The
+/// brittleness that would otherwise imply is bounded at the SOURCE end instead:
+/// every case is kept minimal — no constructor arguments, no compound pose — so
+/// the only shapes pinned here are `structure_definition`, `sub_declaration`,
+/// and the indexer's own `binder`/`domain`. An unrelated grammar change to
+/// expression or argument nodes therefore cannot fail an indexed-sub test. That
+/// the indexer coexists with named args and a `transform3(…)` pose is pinned by
+/// [`indexed_sub_cst_exposes_binder_and_domain_fields`], whose hand-written
+/// field assertions are indifferent to those nodes' internal shape.
+///
 /// The case count is asserted so silently dropping a case is also a failure.
 #[test]
 fn corpus_cases_match_the_live_parser() {
@@ -400,7 +413,7 @@ fn corpus_cases_match_the_live_parser() {
         cases.len(),
         3,
         "expected 3 corpus cases in test/corpus/indexed_sub_instantiation.txt \
-         (indexer+args+pose, indexer+bare ctor, bare instantiation unchanged), \
+         (indexer+pose, indexer+bare ctor, bare instantiation unchanged), \
          got {}: {:?}",
         cases.len(),
         cases.iter().map(|c| &c.name).collect::<Vec<_>>()

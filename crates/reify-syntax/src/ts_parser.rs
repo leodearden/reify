@@ -2787,6 +2787,15 @@ impl<'a> Lowering<'a> {
                 // Distinct from the rejection above, and deliberately so: this
                 // arm reports a MALFORMED domain and drops the pair; that one
                 // reports a well-formed but unelaborated clause and KEEPS it.
+                //
+                // Reachable on a clean CST, not only on ERROR recovery: the
+                // domain `a.(b)` is an `instance_qualified_access`, which the
+                // grammar admits with ANY `$._expression` inside the parens and
+                // `lower_instance_qualified_access` then rejects for the missing
+                // `::`, returning None. Pinned by
+                // `malformed_indexer_domain_is_reported_and_drops_both_halves`
+                // in reify-syntax's harness_syntax::indexed_sub_instantiation
+                // parser tests.
                 None => {
                     self.push_error(
                         format!(
