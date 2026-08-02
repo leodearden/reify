@@ -832,81 +832,46 @@ fn build_multi_case_and_count_realizations(
     (after - before, build_result)
 }
 
-/// `cfg(has_gmsh)`: **B9** — a two-case `solve_load_cases` over a shared
-/// non-prismatic body realizes and caches the volume mesh EXACTLY ONCE
+/// `cfg(has_gmsh)`: **B9, re-mesh-avoidance half** — a two-case
+/// `solve_load_cases` over a shared non-prismatic body realizes and caches the
+/// volume mesh EXACTLY ONCE, and adding the second load case adds ZERO entries
 /// (PRD `docs/prds/v0_4/fea-result-model.md` boundary-test B9, re-homed from
 /// task 4088 to task 4152).
 ///
-/// This is the first reader of `CacheStats::realization_entries` on a real FEA
-/// solve, and the re-mesh-avoidance claim the counter exists to express: two
-/// load cases sharing `(body, material, element_order, mesh_size)` — they share
-/// the single `body`/`material` args and the one inline `ElasticOptions()`, and
-/// differ ONLY in tip force (1000 N vs 2000 N) — must mesh the body ONCE.
+/// This is the half of B9 that PASSES today, split out of
+/// [`multi_case_non_prismatic_body_caches_one_realization_for_both_cases`]
+/// (which stays `#[ignore]`d on #5951 for its `cases`-map/Sampled-field half)
+/// so that the counter has GREEN coverage on a real OCCT+gmsh FEA path. Without
+/// this split the only executing `realization_entries` assertions in CI are the
+/// `MockGeometryKernel` ones in `tests/tolerance_wiring_e2e.rs`, and a
+/// regression on the real path — the conversion-intermediate insert in
+/// `engine_build.rs` switched to `insert_terminal`, or a second realization edge
+/// appearing for the shared body — would make the delta 2 with nothing green to
+/// catch it.
 ///
-/// **Read the `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` doc before changing this
-/// fixture.** The counter can only move because that fixture declares a
-/// `RepresentationWithin` bound; with no tolerance contract the terminal
-/// cache insert is gated off and the delta is 0 for every body shape. That is a
+/// Asserts, over the SAME body:
+///   (1) the two-case build's `realization_entries` delta is exactly 1;
+///   (2) the shape-robust control — the ONE-case variant yields the SAME delta,
+///       so a second load case adds ZERO new realization entries.
+///
+/// Both builds also assert no `Severity::Error` diagnostics, and the helper
+/// cross-checks the counter against `realization_kernel_provenance()` so a
+/// counter/provenance divergence is diagnosable rather than a bare mismatch.
+///
+/// **Read the `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` doc before changing the
+/// fixtures.** The counter can only move because they declare a
+/// `RepresentationWithin` bound; with no tolerance contract the terminal cache
+/// insert is gated off and the delta is 0 for every body shape. That is a
 /// deliberate production semantic ("no tolerance contract → no caching"), NOT a
 /// bug in the counter.
-///
-/// Asserts:
-///   (1) the two-case build's `realization_entries` delta is exactly 1;
-///   (2) the shape-robust control — the ONE-case variant of the same body
-///       yields the SAME delta, so adding a second case adds ZERO entries;
-///   (3) `result["cases"]` is a 2-entry `Value::Map` keyed "operating"/
-///       "overload", neither `Undef`;
-///   (4) each case carries REAL Sampled fields — `displacement` a 3-axis
-///       Regular grid of all-finite data, `stress` present — and converged;
-///   (5) per-case independence still holds
-///       (`overload.max_von_mises > operating.max_von_mises`).
-///
-/// # Why this is `#[ignore]`d — assertions (1)/(2) PASS, (3)/(4)/(5) cannot
-///
-/// The assertion is deliberately preserved VERBATIM rather than weakened. Its
-/// two halves are currently satisfiable only by mutually exclusive fixtures, and
-/// that is a production defect (#5951), not a defect in this test or in the
-/// counter.
-///
-/// Measured 2×2 on this harness — a fresh engine per build, manual trampolines,
-/// `build(&compiled, ExportFormat::Step)`:
-///
-/// | fixture                       | `realization_entries` delta | `cases`   |
-/// |-------------------------------|-----------------------------|-----------|
-/// | cylinder, no bound            | 0                           | populated |
-/// | cylinder + 100 µm bound       | 1                           | **empty** |
-/// | box + 100 µm bound            | 1                           | **empty** |
-/// | box, no bound                 | 0                           | populated |
-///
-/// (the last row is today's green `multi_case_body_solve_shares_one_realization_
-/// across_cases`). So it is the tolerance contract, not the body shape —
-/// consistent with the single-case
-/// `non_prismatic_body_solve_runs_on_realized_volume_mesh` above, which is green
-/// and carries no bound.
-///
-/// Assertions (1) and (2) were OBSERVED PASSING before (3) panicked: the delta is
-/// exactly 1 for the two-case build, the one-case control matches it, and the
-/// provenance cross-check finds exactly one `(VolumeMesh, Gmsh)` realization. So
-/// the re-mesh-avoidance half of B9 is real and measurable. What fails is that
-/// the same bound which makes the counter observable also makes the solve return
-/// the stdlib's inline `MultiCaseResult()` fallback with an empty `cases` map —
-/// SILENTLY: the only diagnostic in the whole build is an unrelated
-/// `Severity::Warning` for the Indeterminate `RepresentationWithin` itself.
-///
-/// Fixing that is out of scope here (it is FEA-solve / demand-pass territory,
-/// tasks 4870/4092), so it is filed as its own task with the full measurement
-/// set. This test goes green unchanged once #5951 lands — do not adjust the
-/// assertions to make it pass sooner.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5951 — a demanded-tolerance bound is required for realization_entries to move, but that same bound silently empties the multi-case solve's `cases` map; assertions (1)/(2) pass, (3)+ cannot"]
-fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
-    use reify_core::{Severity, ValueCellId};
-    use reify_ir::Value;
+fn non_prismatic_two_case_build_realizes_body_exactly_once() {
+    use reify_core::Severity;
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
-            "skipping multi_case_non_prismatic_body_caches_one_realization_for_both_cases: \
+            "skipping non_prismatic_two_case_build_realizes_body_exactly_once: \
              OCCT not available (no BRep kernel to build the cylinder body)"
         );
         return;
@@ -951,6 +916,111 @@ fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
          realization entries: one-case delta = {one_case_delta}, two-case delta \
          = {two_case_delta}. This is the shape-robust half of B9 — it holds \
          regardless of how many realizations the module contains for other reasons."
+    );
+}
+
+/// `cfg(has_gmsh)`: **B9, result-shape half** — each of the two cases carries
+/// real per-case Sampled fields off the single shared realization
+/// (PRD `docs/prds/v0_4/fea-result-model.md` boundary-test B9, re-homed from
+/// task 4088 to task 4152).
+///
+/// Two load cases sharing `(body, material, element_order, mesh_size)` — they
+/// share the single `body`/`material` args and the one inline
+/// `ElasticOptions()`, and differ ONLY in tip force (1000 N vs 2000 N) — must
+/// each come back with their own populated result off the ONE shared mesh.
+///
+/// **The re-mesh-avoidance assertions of B9 are NOT here.** They pass today and
+/// live, un-ignored, in the green sibling
+/// [`non_prismatic_two_case_build_realizes_body_exactly_once`] above: the
+/// two-case `realization_entries` delta == 1, and the one-case control proving a
+/// second load case adds ZERO entries. Only the `cases`-map / Sampled-field half
+/// below is blocked, so only that half is `#[ignore]`d — the counter keeps green
+/// coverage on a real OCCT+gmsh path either way.
+///
+/// **Read the `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` doc before changing this
+/// fixture.** The counter can only move because that fixture declares a
+/// `RepresentationWithin` bound; with no tolerance contract the terminal
+/// cache insert is gated off and the delta is 0 for every body shape. That is a
+/// deliberate production semantic ("no tolerance contract → no caching"), NOT a
+/// bug in the counter.
+///
+/// Asserts:
+///   (3) `result["cases"]` is a 2-entry `Value::Map` keyed "operating"/
+///       "overload", neither `Undef`;
+///   (4) each case carries REAL Sampled fields — `displacement` a 3-axis
+///       Regular grid of all-finite data, `stress` present — and converged;
+///   (5) per-case independence still holds
+///       (`overload.max_von_mises > operating.max_von_mises`).
+///
+/// (numbering kept from the original single B9 test, whose (1)/(2) are now the
+/// green sibling's)
+///
+/// # Why this is `#[ignore]`d — (1)/(2) PASS in the sibling, (3)/(4)/(5) cannot
+///
+/// The assertions below are deliberately preserved VERBATIM rather than
+/// weakened. B9's two halves are currently satisfiable only by mutually
+/// exclusive fixtures, and that is a production defect (#5951), not a defect in
+/// this test or in the counter.
+///
+/// Measured 2×2 on this harness — a fresh engine per build, manual trampolines,
+/// `build(&compiled, ExportFormat::Step)`:
+///
+/// | fixture                       | `realization_entries` delta | `cases`   |
+/// |-------------------------------|-----------------------------|-----------|
+/// | cylinder, no bound            | 0                           | populated |
+/// | cylinder + 100 µm bound       | 1                           | **empty** |
+/// | box + 100 µm bound            | 1                           | **empty** |
+/// | box, no bound                 | 0                           | populated |
+///
+/// (the last row is today's green `multi_case_body_solve_shares_one_realization_
+/// across_cases`). So it is the tolerance contract, not the body shape —
+/// consistent with the single-case
+/// `non_prismatic_body_solve_runs_on_realized_volume_mesh` above, which is green
+/// and carries no bound.
+///
+/// Assertions (1) and (2) were OBSERVED PASSING before (3) panicked: the delta is
+/// exactly 1 for the two-case build, the one-case control matches it, and the
+/// provenance cross-check finds exactly one `(VolumeMesh, Gmsh)` realization —
+/// which is why they now run un-ignored in the sibling above. What fails is that
+/// the same bound which makes the counter observable also makes the solve return
+/// the stdlib's inline `MultiCaseResult()` fallback with an empty `cases` map —
+/// SILENTLY: the only diagnostic in the whole build is an unrelated
+/// `Severity::Warning` for the Indeterminate `RepresentationWithin` itself.
+///
+/// Fixing that is out of scope here (it is FEA-solve / demand-pass territory,
+/// tasks 4870/4092), so it is filed as its own task with the full measurement
+/// set. This test goes green unchanged once #5951 lands — do not adjust the
+/// assertions to make it pass sooner.
+#[cfg(has_gmsh)]
+#[test]
+#[ignore = "blocked on #5951 — a demanded-tolerance bound is required for realization_entries to move, but that same bound silently empties the multi-case solve's `cases` map; B9's (1)/(2) run green in non_prismatic_two_case_build_realizes_body_exactly_once, (3)+ cannot"]
+fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
+    use reify_core::{Severity, ValueCellId};
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping multi_case_non_prismatic_body_caches_one_realization_for_both_cases: \
+             OCCT not available (no BRep kernel to build the cylinder body)"
+        );
+        return;
+    }
+
+    // The same two-case build as the green sibling — taken through the shared
+    // helper so the realization count is still cross-checked against provenance
+    // — but here only for its `build_result`. The delta assertions (1)/(2) live
+    // in `non_prismatic_two_case_build_realizes_body_exactly_once`.
+    let (_two_case_delta, build_result) =
+        build_multi_case_and_count_realizations(NON_PRISMATIC_MULTI_CASE_BODY_SOURCE);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the two-case non-prismatic build, got: {errors:?}"
     );
 
     // ── (3) both cases present and populated ─────────────────────────────────

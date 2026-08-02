@@ -982,12 +982,13 @@ fn get_two_case_shared_value<'a>(values: &'a ValueMap, name: &str) -> &'a Value 
 ///
 /// That precondition is satisfiable on the FEA `.ri` path: a `RepresentationWithin`
 /// bound declared in the structure that OWNS the realization does make the counter
-/// move there — measured at exactly 1 across a 2-case body solve. It is just not
-/// usable end-to-end yet, because that same bound silently empties the solve's
-/// `cases` map (#5951). The assertion is parked verbatim as the `#[ignore]`d
-/// `multi_case_non_prismatic_body_caches_one_realization_for_both_cases` in
-/// `crates/reify-eval/tests/solve_elastic_static_body_e2e.rs`, whose doc carries
-/// the full 2×2 measurement.
+/// move there — asserted green (delta exactly 1 across a 2-case body solve, with a
+/// one-case control) by `non_prismatic_two_case_build_realizes_body_exactly_once`
+/// in `crates/reify-eval/tests/solve_elastic_static_body_e2e.rs`. What is not
+/// usable end-to-end yet is the per-case RESULT half, because that same bound
+/// silently empties the solve's `cases` map (#5951); it is parked verbatim as the
+/// `#[ignore]`d `multi_case_non_prismatic_body_caches_one_realization_for_both_cases`
+/// in the same file, whose doc carries the full 2×2 measurement.
 #[test]
 fn solve_load_cases_one_vs_two_cases_entry_count() {
     // ── 1-case baseline ───────────────────────────────────────────────────────
