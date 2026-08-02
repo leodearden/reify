@@ -539,7 +539,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // `resolve_enum_variant_payloads` reads `ctx.resolution_structure_names` /
     // `ctx.resolution_trait_names`. `build_resolution_names` has no dependency
     // on `resolution_enums`, so running it ahead of the enum clone is
-    // order-safe (its consumers — phase_functions/phase_traits — run later).
+    // order-safe (its consumers — phase_fn_signatures/phase_traits — run later).
     compile_builder::names_phase::build_resolution_names(
         &mut compile_ctx,
         prelude_refs,

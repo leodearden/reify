@@ -51,14 +51,20 @@ pub(crate) fn build_trait_registry<'a>(
 /// downstream phases for `Type::TraitObject` resolution.
 ///
 /// The `trait_names` and `structure_names` sets are pre-computed by
-/// `names_phase::build_resolution_names` (which runs before `phase_functions`)
-/// and stored on `ctx`. This phase reads them from `ctx` rather than
-/// rebuilding, so both `phase_functions` and `phase_traits` consume the same
-/// shared sets.
+/// `names_phase::build_resolution_names` (which runs before
+/// `phase_fn_signatures`) and stored on `ctx`. This phase reads them from
+/// `ctx` rather than rebuilding, so both `phase_fn_signatures` and
+/// `phase_traits` consume the same shared sets.
+///
+/// Since task 5494's reorder this phase also precedes user fn-BODY
+/// compilation (bodies are compiled by the unified source-order pass in
+/// `entities_phase::phase_entities`) — which is why it buffers trait static
+/// fns into `ctx.trait_static_fns` rather than assuming any body has been
+/// compiled yet.
 ///
 /// Steps, in order:
 /// 1. Read `trait_names` and `structure_names` from `ctx` (pre-computed by
-///    `names_phase::build_resolution_names` before `phase_functions`).
+///    `names_phase::build_resolution_names` before `phase_fn_signatures`).
 /// 2. Compile each local trait via [`compile_trait`] and push into
 ///    `ctx.trait_defs`.
 /// 3. Build a phase-local `trait_registry` (prelude first, then local
@@ -70,7 +76,7 @@ pub(crate) fn phase_traits(
     trait_refs: &[&TraitDecl],
 ) -> HashSet<String> {
     // 1. The trait_names and structure_names sets were pre-computed by
-    //    names_phase::build_resolution_names (which ran before phase_functions).
+    //    names_phase::build_resolution_names (which ran before phase_fn_signatures).
     //    Move trait_names out of ctx (no other phase reads resolution_trait_names
     //    after phase_traits, so cloning would be wasteful); borrow structure_names
     //    in place.

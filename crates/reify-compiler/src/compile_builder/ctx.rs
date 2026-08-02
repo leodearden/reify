@@ -103,21 +103,24 @@ pub(crate) struct CompilationCtx {
     /// module-local `enum_defs`. Populated by `enums_phase::build_resolution_enums_from_cache`.
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
-    /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
-    /// `functions_phase::phase_functions`.
+    /// prelude functions via [`crate::merge_prelude_functions`]. Seeded with
+    /// signature-only stubs by `functions_phase::phase_fn_signatures`, then
+    /// rewritten with the fully-compiled functions (param defaults and bodies)
+    /// by the unified source-order pass in `entities_phase::phase_entities`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
     /// Trait names known at compile time: local trait declarations + prelude
     /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE
-    /// `phase_functions` so fn-signature type resolution can resolve trait names
-    /// to `Type::TraitObject`. Consumed by both `phase_functions` (via
-    /// `compile_function`) and `phase_traits` (replacing its previously-local
-    /// construction).
+    /// `phase_fn_signatures` so fn-signature type resolution can resolve trait
+    /// names to `Type::TraitObject`. Consumed by `phase_fn_signatures` (via
+    /// `resolve_fn_signature`) and `phase_traits` (replacing its
+    /// previously-local construction).
     pub(crate) resolution_trait_names: HashSet<String>,
     /// Structure/occurrence names known at compile time: local structure and
     /// occurrence declarations + prelude templates. Populated by
-    /// `names_phase::build_resolution_names` BEFORE `phase_functions` so
+    /// `names_phase::build_resolution_names` BEFORE `phase_fn_signatures` so
     /// fn-signature type resolution can resolve structure names to
-    /// `Type::StructureRef`. Consumed by both `phase_functions` and `phase_traits`.
+    /// `Type::StructureRef`. Consumed by `phase_fn_signatures`, `phase_traits`,
+    /// and (as `local_structure_names`) the unified pass in `phase_entities`.
     pub(crate) resolution_structure_names: HashSet<String>,
 }
 
