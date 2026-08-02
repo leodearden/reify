@@ -27,7 +27,32 @@ mod common;
 
 #[test]
 fn reify_audit_pub_fns_are_g_allow_marked() {
-    let Some(result) = run_orphan_audit("crates/reify-audit/src") else {
+    let audit = run_orphan_audit("crates/reify-audit/src");
+
+    // Inside the poisoned replay child ONLY, `None` is a hard failure rather
+    // than a skip. Outside it, `run_orphan_audit`'s documented graceful-skip
+    // protocol is untouched — see `orphan_audit_survives_ambient_hook_git_env`
+    // for why the scoping is the whole point.
+    if audit.is_none() && common::git_env::in_replay_child() {
+        panic!(
+            "run_orphan_audit returned None inside the poisoned replay child. \
+             The audit script resolves its repo root with `git rev-parse \
+             --show-toplevel` (audit-orphan-producers.sh line 66), so the \
+             ambient GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE this child was \
+             spawned with redirected the entire scan into the harness's empty \
+             decoy tree; it matched no source files, emitted empty stdout, and \
+             run_orphan_audit turned that into None. This is exactly the \
+             regression the `.env_remove()` calls in \
+             crates/reify-test-support/src/orphan_audit.rs (task 5605) exist \
+             to prevent — check that `sanitize()` is still called on the \
+             command `build_audit_command` returns. Note that `python3 / git / \
+             script absent` is NOT a plausible explanation here: the parent \
+             process just ran this same test successfully before spawning this \
+             child."
+        );
+    }
+
+    let Some(result) = audit else {
         return;
     };
 
@@ -43,6 +68,75 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
          above the `pub fn` declaration.\nOrphans:\n{:#}",
         result["orphans"]
     );
+}
+
+/// `reify_audit_pub_fns_are_g_allow_marked` must survive a real *ambient* hook
+/// git environment, not just a per-child one.
+///
+/// It spawns `scripts/audit-orphan-producers.sh`, and under
+/// `hooks/pre-commit` -> `hooks/project-checks` -> `scripts/verify.sh` the
+/// whole process tree carries `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`. So
+/// re-run it in a child that has that poison ambient, which is the real hook
+/// condition rather than a simulation of it.
+///
+/// # The discrimination this test buys
+///
+/// - Unsanitized spawn -> the script's `git rev-parse --show-toplevel` resolves
+///   into the harness's empty decoy tree -> no source files matched -> empty
+///   stdout -> `run_orphan_audit` returns `None` -> the replay-child-only
+///   `panic!` fires -> the child exits non-zero ->
+///   `replay_self_under_hook_git_env`'s status assertion fails -> RED.
+/// - Sanitized spawn -> the real repo root -> a JSON envelope ->
+///   `orphan_count == 0` -> the child is green -> GREEN.
+///
+/// That `panic!` is the entire reason this test has teeth. Without it `None`
+/// takes the graceful-skip `return`, which libtest counts as PASSED — and both
+/// of the replay harness's non-vacuity guards count a self-skip in `passed`,
+/// so NO value of `expected_min` could make the broken case RED. The skip
+/// stays the behaviour everywhere except inside the replay child, because
+/// `run_orphan_audit`'s skip protocol is a contract with eight callers across
+/// three crates covering environments where `python3`, `git` or the script is
+/// genuinely absent.
+///
+/// # The RED observation, recorded because it is no longer reproducible
+///
+/// Measured during the esc-5656-1 / esc-5656-2 `/unblock` triage, at the
+/// then-main tip 7a21980c883d9147e4126d5ace1b99df6beb0c18 (quoted here as a
+/// prior measurement, not re-derived at this commit): `git grep env_remove --
+/// crates/reify-test-support/src/orphan_audit.rs` returned NO match, and the
+/// spawn was a bare
+/// `Command::new(&script).args(...).current_dir(repo_root).output()`. Under
+/// the ambient poison that script produced exit 0, 0 bytes of stdout, and
+/// stderr `audit-orphan-producers.sh: no source files matched`.
+///
+/// So: this test would have been RED on that commit. It is GREEN today only
+/// because task 5605's `.env_remove()` calls landed. From a clean checkout
+/// there is now no way to watch it fail without deleting one of those lines,
+/// which is why `hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat`
+/// exists — it pins the same hazard's potency synthetically, so this test's
+/// teeth stay demonstrable even though its RED no longer is.
+///
+/// # Why a test NAME rather than the empty filter
+///
+/// Only one test in this binary is exposed to the hazard. An empty filter
+/// would also drag the synthetic witness into the child, where it poisons and
+/// strips its OWN children's environments — the ambient poison is irrelevant
+/// to it, so it would ride along as pure cost and dilute the floor's meaning.
+/// Naming the target keeps the selection exact: neither other test name in
+/// this binary contains the substring `reify_audit_pub_fns_are_g_allow_marked`
+/// (measured: `--list` with this filter names exactly that one test), so the
+/// replay cannot select itself. The helper's `REIFY_AUDIT_HOOK_ENV_REPLAY`
+/// guard is the second line of defence.
+///
+/// The floor of 1 is therefore exact rather than a lower bound. It exists
+/// because libtest exits 0 on a zero-match filter: without it, renaming the
+/// target test or moving it to another binary would silently downgrade this
+/// harness to a vacuous pass. Raising the floor would be a claim that MORE
+/// than one test here is hazard-exposed — do that only alongside widening the
+/// filter to actually select them.
+#[test]
+fn orphan_audit_survives_ambient_hook_git_env() {
+    common::git_env::replay_self_under_hook_git_env(&["reify_audit_pub_fns_are_g_allow_marked"], 1);
 }
 
 /// An ambient hook git environment really does defeat
