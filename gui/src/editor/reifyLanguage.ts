@@ -42,6 +42,8 @@ export const KEYWORD_LED_BODIES = [
   'FieldDefinition',
   'FieldSource',
   'PurposeDeclaration',
+  // `relate { … }` — the `{` follows the `relate` keyword, so it is keyword-led.
+  'RelateBlock',
 ];
 
 /**

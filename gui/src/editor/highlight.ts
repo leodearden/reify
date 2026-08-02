@@ -90,6 +90,10 @@ export const KEYWORDS = [
   'offset',
   'default',
   'meta',
+  // The `relate { … }` member block. Contextual (`ekw<"relate">`) to match
+  // upstream (grammar.js:714-719), even though the corpus uses `relate` as an
+  // identifier nowhere — see the note on RelateBlock in reify.grammar.
+  'relate',
 ];
 
 export const reifyHighlighting = styleTags({

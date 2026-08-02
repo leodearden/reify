@@ -269,6 +269,7 @@ Member {
   ConnectStatement |
   ChainStatement |
   ForallStatement |
+  RelateBlock |
   MetaBlock |
   Pragma
 }
@@ -477,6 +478,37 @@ ChainStatement {
 // reachable in this position and the two never compete for a state.
 ForallStatement {
   kw<"forall"> Identifier kw<"in"> expression ":" (ConnectStatement | ChainStatement | ConstraintDeclaration)
+}
+
+// ── Relate block ────────────────────────────────────────
+// grammar.js:724-734. The body is a bare-expression repeat, so relations are
+// newline-separated with NO comma — `concentric(…)` then `flush(…)`
+// (examples/kinematic/relate_mounted_revolute.ri:77-80).
+//
+// `ekw` NOT `kw`. `relate` has ZERO uses as an identifier in the 330 committed
+// `.ri`, so a context-free `kw<"relate">` would pass today — but upstream
+// treats it as a contextual keyword (grammar.js:714-719) and the contextual
+// reading is unambiguous exactly where it is needed here, since no `Member`
+// alternative begins with a bare identifier. `ekw` costs nothing and keeps
+// `relate` usable as a variable name, the same door `at`, `self`, `direction`
+// and `frame` are held open by. The `kw<"…">` substring inside `ekw<"…">` is
+// what the data-driven KEYWORDS guard scans for, so it still cannot silently
+// go unstyled.
+//
+// NO PRECEDENCE OR AMBIGUITY MARKER, and that is MEASURED rather than assumed:
+// this compiles with zero conflicts on its own. The body holds only bare
+// expressions, so the "a preceding item's optional tail could equally open the
+// next item" conflicts that ConstraintDefinition hits never arise — there is
+// no optional tail to compete with — and the existing `!postfix`/`!additive`
+// markers on the expression grammar already settle continuation-vs-new-item.
+// An unneeded marker suppresses a genuine future conflict rather than
+// surfacing it, the stance already recorded on `ArgumentList` and `AutoKeyword`.
+RelateBlock {
+  ekw<"relate"> "{" RelationMember* "}"
+}
+
+RelationMember {
+  expression
 }
 
 // ── Sub ─────────────────────────────────────────────────
@@ -731,19 +763,46 @@ QuantifierExpression {
 // grammar.js:1222-1232, `prec.right(0)` — the body extends as far right as it
 // can, which is why `lambda` is the LOOSEST level in the @precedence block.
 //
-// THE `||` COLLISION. A zero-parameter lambda opens with the same two
-// characters as the symbolic OR operator. No `@precedence { "||", "|" }` is
-// declared, and that is deliberate: lezer-generator partitions tokens into
-// per-state groups, and `"|"` (only ever at an expression START or closing a
-// parameter list) and `"||"` (only ever after a COMPLETE expression) never
-// share a state, so they never compete. Declaring a precedence would force
-// `"||"` to win unconditionally and silently break `|| 1`. If a future edit
-// does make them share a state, lezer-generator raises an overlapping-token
-// error at build time rather than picking one silently — the loud failure is
-// the reason for leaving the declaration out. Both readings are pinned by
-// assertions in reifyGrammarCorpus.test.ts.
+// THE `||` COLLISION, and the SECOND ARM that now settles it. A zero-parameter
+// lambda opens with the same two characters as the symbolic OR operator. No
+// `@precedence { "||", "|" }` is declared, and that is still deliberate:
+// declaring one would force `"||"` to win unconditionally and there would be no
+// way back to `|| 1`.
+//
+// The original reading of this hazard was that `"|"` (only ever at an
+// expression START or closing a parameter list) and `"||"` (only ever after a
+// COMPLETE expression) never share a state, so lezer's per-state token groups
+// keep them apart for free. `RelateBlock` ended that: `RelationMember*` is the
+// grammar's first repeat of BARE expressions, so after a complete relation the
+// parser may both continue a binary expression (`"||"` valid) and start a new
+// member with a lambda (`"|"` valid). One state admitting both is enough to
+// merge the two tokens into ONE group, and a group is a property of the TOKEN,
+// not of the state — so maximal munch then applies everywhere, including at
+// `let f = ` where only `"|"` is grammatical.
+//
+// THE NOTE HERE PREVIOUSLY CLAIMED lezer-generator would raise an
+// overlapping-token error at build time if that ever happened, and that the
+// loud failure was why no precedence was declared. That claim is FALSE and was
+// falsified by exactly the edit it was written to catch: adding `RelateBlock`
+// compiled with ZERO conflicts and zero warnings, and silently turned
+// `let f = || 1` into an error node. The whole corpus still passed; only the
+// two snippet assertions in reifyGrammarCorpus.test.ts noticed. Token-group
+// merging is not a conflict, so nothing in the build reports it — there is no
+// loud failure to rely on, only those assertions.
+//
+// So the zero-parameter form is spelled out as its own arm instead. This is not
+// a new language form: `|| 1` is the same source text upstream accepts through
+// `commaSep`'s empty case (grammar.js:1222-1232), reached here by a different
+// token path, and it still yields one `LambdaExpression` node. The arm is
+// reachable only where an expression may START, so `a || b` is unaffected —
+// after a complete operand the `!or` shift beats the looser `!lambda` reduce,
+// which is also what makes `relate { a || b }` one binary relation rather than
+// a relation followed by a lambda. All of that is pinned by node-name
+// assertions in reifyGrammarCorpus.test.ts, not by error counts, because the
+// losing reading in each case is error-free.
 LambdaExpression {
-  !lambda "|" (LambdaParam ("," LambdaParam)* ","?)? "|" expression
+  !lambda "|" (LambdaParam ("," LambdaParam)* ","?)? "|" expression |
+  !lambda "||" expression
 }
 
 LambdaParam {

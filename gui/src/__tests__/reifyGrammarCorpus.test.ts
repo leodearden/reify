@@ -1177,14 +1177,48 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
    * `commaSep` above makes the parameter list optional, and tree-sitter's
    * lexer is parse-state-driven, so at an expression START (where `||` is not
    * a valid token) it reads `|`, while after a complete expression (where `|`
-   * is not valid) it reads `||`. Lezer partitions tokens into per-state groups
-   * for the same reason, so the two spellings are expected to separate the
-   * same way — but only if `"||"` and `"|"` never share a group. If they do,
-   * this assertion is the one that yields (it has no corpus occurrence,
-   * whereas `a || b` has many) and the narrowing is recorded here.
+   * is not valid) it reads `||`.
+   *
+   * THIS COMMENT USED TO PREDICT that lezer's per-state token groups would
+   * separate the two spellings the same way, and that if `"|"` and `"||"` ever
+   * came to share a group THIS assertion would be the one to yield, since it
+   * has no corpus occurrence whereas `a || b` has many. The first half of the
+   * prediction was wrong and the second half turned out to be unnecessary.
+   *
+   * `RelateBlock` made them share a group — `RelationMember*` is the grammar's
+   * first repeat of BARE expressions, so a state exists that admits a binary
+   * continuation (`"||"`) and a fresh lambda member (`"|"`) alike, and a group
+   * is a property of the TOKEN rather than the state, so maximal munch then
+   * applied everywhere. MEASURED: it compiled with zero conflicts and turned
+   * `let f = || 1` into an error node in silence. Nothing in the build reports
+   * a group merge — this assertion and the `map`/lambda regression guard below
+   * were the only things that caught it.
+   *
+   * It was resolved by admitting `"||"` as the zero-parameter opener (a second
+   * arm on LambdaExpression) rather than by narrowing the language: both
+   * readings survive, so neither assertion has to yield. They are pinned by
+   * NODE NAME here, not by error count — after the merge each spelling still
+   * produces an error-free parse under the wrong reading, so a count is blind
+   * to which one the parser chose.
    */
   it('parses a zero-parameter lambda `|| 1` (normative, unattested)', () => {
-    expect(countErrorNodes('structure def F { let f = || 1 }')).toBe(0);
+    const src = 'structure def F { let f = || 1 }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('LambdaExpression');
+  });
+
+  /**
+   * The other side of the merge, and the one with 40-odd corpus occurrences:
+   * `||` after a COMPLETE operand must still be the OR operator, never the
+   * opener of a fresh lambda. Reachability does the work — the new arm is only
+   * reachable where an expression may start — so this reads as a BinaryExpression.
+   */
+  it('still reads `a || b` as the OR operator, not a lambda opener', () => {
+    const src = 'structure def F { constraint a || b }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('BinaryExpression');
+    expect(names).not.toContain('LambdaExpression');
   });
 
   // Corpus-attested verbatim: examples/fields/fn_field.ri:14.
@@ -2395,6 +2429,26 @@ describe('reify.grammar snippets — relate blocks', () => {
     expect(nodeNames(src)).toContain('RelateBlock');
   });
 
+  /**
+   * THE TOKEN-GROUP CONSEQUENCE, pinned where it was caused. `RelationMember*`
+   * is the grammar's first repeat of BARE expressions, which is what merged the
+   * `"|"` and `"||"` token groups — see the note on LambdaExpression in
+   * reify.grammar and the two `||` assertions above.
+   *
+   * Inside a relate body the merge leaves a genuine choice at `||`: continue
+   * the current relation as a binary expression, or end it and open a new
+   * relation with a zero-parameter lambda. Greedy shift wins (the `!or` level
+   * is tighter than `!lambda`), so a relate body containing `a || b` is ONE
+   * relation. Both readings are error-free, so this is asserted on node names.
+   */
+  it('reads `||` inside a relate body as one binary relation', () => {
+    const src = 'structure def F { relate { a || b } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('BinaryExpression');
+    expect(names).not.toContain('LambdaExpression');
+  });
+
   it('styles `relate` as a keyword in the block slot', () => {
     expect(keywordSpans('structure def F { relate { fasten(a, b) } }')).toContain('relate');
   });
@@ -2800,7 +2854,10 @@ const EXPECTED_CLEAN = [
   'examples/generics/dim_param.ri',
   'examples/generics/identity.ri',
   'examples/generics/unbound_param.ri',
+  'examples/geometric_relations/bolt_plate.ri',
+  'examples/geometric_relations/construction_datum.ri',
   'examples/geometric_relations/feature_datum_axis.ri',
+  'examples/geometric_relations/global_float.ri',
   'examples/half_space.ri',
   'examples/imported_field/openvdb_stress.ri',
   'examples/interpolation.ri',
@@ -2824,6 +2881,8 @@ const EXPECTED_CLEAN = [
   'examples/kinematic/counter_mass_balance.ri',
   'examples/kinematic/dock_pickup.ri',
   'examples/kinematic/four_bar_singular.ri',
+  'examples/kinematic/relate_mounted_fourbar.ri',
+  'examples/kinematic/relate_mounted_revolute.ri',
   'examples/kinematic/revolute_pivot_offset.ri',
   'examples/kinematic/spatial_linkage_oriented.ri',
   'examples/kleene_e2e.ri',
