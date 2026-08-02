@@ -68,13 +68,30 @@ pub(crate) fn cwd_lock() -> &'static Mutex<()> {
 /// The seeded density `7850.0` must stay bits-exact: `with_inertia_tensor_result`
 /// keys on it, and the fixture declares `density: 7850kg/m^3`.
 pub(crate) fn rigid_mass_props_session() -> crate::engine::EngineSession {
+    rigid_mass_props_session_seeded(1..=16)
+}
+
+/// [`rigid_mass_props_session`] with an explicit `GeometryHandleId` seed range.
+///
+/// Seeding a NARROW range is how a test drives the negative case: the mock's
+/// `next_id` is monotonic and never reset, so a rebuild that re-executes the box
+/// allocates an id past the range, its volume / centroid / inertia queries go
+/// unanswered, and the mass-prop cells resolve to `Undef` — a stand-in for the
+/// production "geometry went degenerate / the kernel query failed" case, which
+/// the delta encodes identically (an explicit `Undef` entry). Used by
+/// `degenerate_geometry_after_rebuild_clears_the_retained_mass_props`
+/// (commands_tests.rs) to prove the retention cache does NOT replay a stale value
+/// as `determined` once the realization has actually re-run.
+pub(crate) fn rigid_mass_props_session_seeded(
+    ids: std::ops::RangeInclusive<u64>,
+) -> crate::engine::EngineSession {
     use reify_constraints::SimpleConstraintChecker;
     use reify_ir::{GeometryHandleId, Value};
     use reify_test_support::MockGeometryKernel;
 
     let checker = SimpleConstraintChecker;
     let mut kernel = MockGeometryKernel::new();
-    for id in 1..=16u64 {
+    for id in ids {
         let h = GeometryHandleId(id);
         kernel = kernel
             .with_volume_result(h, Value::Real(0.003))
@@ -185,6 +202,90 @@ pub(crate) fn assert_rigid_mass_props_determined(state: &crate::types::GuiState,
          moi_principal resolves; got status={:?}",
         pd.status
     );
+}
+
+/// The entity-scoped positive twin of [`assert_rigid_mass_props_not_final`]:
+/// every one of [`RIGID_MASS_PROP_CELLS`] on `entity` is present, `determined`,
+/// `freshness = "final"` and carries no undef-cause `reason`.
+///
+/// [`assert_rigid_mass_props_determined`] matches on cell NAME alone, which is
+/// unambiguous for the single-body `rigid_mass_props_smoke.ri` fixture but not
+/// for the multi-body sources the #5338 prune-safety tests use — hence this
+/// entity-qualified form.
+pub(crate) fn assert_rigid_mass_props_final(
+    state: &crate::types::GuiState,
+    entity: &str,
+    ctx: &str,
+) {
+    for name in RIGID_MASS_PROP_CELLS {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.entity_path == entity && v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[{ctx}] expected a `{entity}.{name}` value cell; have: {:?}",
+                    state
+                        .values
+                        .iter()
+                        .map(|v| (v.entity_path.as_str(), v.name.as_str()))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "[{ctx}] `{entity}.{name}` must be `determined`; got determinacy={:?}, \
+             reason={:?}, freshness={:?}",
+            cell.determinacy, cell.reason, cell.freshness
+        );
+        assert_eq!(
+            cell.freshness, "final",
+            "[{ctx}] `{entity}.{name}` must read `final` once surfaced; got {:?}",
+            cell.freshness
+        );
+        assert!(
+            cell.reason.is_none(),
+            "[{ctx}] `{entity}.{name}` must carry no undef-cause `reason`; got {:?}",
+            cell.reason
+        );
+    }
+}
+
+/// Assert that `entity`'s geometry-derived mass-prop cells are NOT being served
+/// as a Final answer — the arch §8 post-condition ("a pruned realization's cached
+/// result is never served as Final") and the task-#5338 staleness post-condition
+/// ("a value whose realization re-ran and resolved to nothing is not replayed").
+///
+/// A cell passes when it is either absent, not `determined`, or determined but
+/// still flagged non-`final` — i.e. anything except the
+/// `determined` + `freshness = "final"` + `reason = None` triple that means
+/// "this is a fresh, authoritative value". Deliberately the exact NEGATION of
+/// [`assert_rigid_mass_props_determined`]'s per-cell half, so the two cannot
+/// both hold and a regression that made retention unconditional fails here.
+pub(crate) fn assert_rigid_mass_props_not_final(
+    state: &crate::types::GuiState,
+    entity: &str,
+    ctx: &str,
+) {
+    for name in RIGID_MASS_PROP_CELLS {
+        let Some(cell) = state
+            .values
+            .iter()
+            .find(|v| v.entity_path == entity && v.name == name)
+        else {
+            // Absent entirely — trivially not served as Final.
+            continue;
+        };
+        assert!(
+            !(cell.determinacy == "determined" && cell.freshness == "final"),
+            "[{ctx}] `{entity}.{name}` must NOT be served as a fresh Final value; got \
+             determinacy={:?}, freshness={:?}, reason={:?}, value={:?}",
+            cell.determinacy,
+            cell.freshness,
+            cell.reason,
+            cell.value
+        );
+    }
 }
 
 /// The exact `Entity#realization[N]` key list the frontend feeds to

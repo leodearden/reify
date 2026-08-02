@@ -613,9 +613,18 @@ pub struct EngineSession {
     /// served as Final") is enforced at `sync_demand`, the single point at which
     /// visibility can change: entries for entities the frontend no longer
     /// declares visible are DROPPED there, so every surviving entry belongs to a
-    /// demanded realization and is safe to serve as Final. A hidden body's cell
+    /// demanded ENTITY and is safe to serve as Final. A hidden body's cell
     /// therefore has no entry at all and keeps whatever `build_values` derived
     /// for it (`freshness = "pending"` plus its own `last_substantive_value`).
+    /// See `sync_demand`'s docs for the entity-vs-realization granularity
+    /// limitation that qualifies this — the prune is exact for whole-entity
+    /// hides (which is what mass-prop cells are) and over-retains for a partial
+    /// hide of one realization of a multi-realization entity.
+    ///
+    /// A `Value::Undef` in the delta is NOT unconditionally treated as a gap:
+    /// `surface_geometry_derived_cells` retains only when the cell's realization
+    /// did not run this pass, so a genuine post-edit degeneration clears the
+    /// entry instead of replaying a stale value as Final.
     ///
     /// NOTE the discriminator deliberately is NOT the cell's own
     /// `freshness == "pending"` flag: measured on this branch, a HASH-EXEMPT
@@ -2227,29 +2236,47 @@ impl EngineSession {
     /// This is the ONLY place a realization's visibility can change, so it is
     /// also where the geometry-derived value retention cache is prune-filtered:
     /// entries whose entity has no realization in the incoming visible set are
-    /// DROPPED. That discharges arch §8 ("a pruned realization's cached result is
-    /// never served as Final") once and for all — every entry that survives
-    /// belongs to a demanded realization, so `surface_geometry_derived_cells` can
-    /// re-surface it as Final on a delta gap without re-deriving the
+    /// DROPPED, so `surface_geometry_derived_cells` can re-surface a surviving
+    /// entry as Final on a delta gap without re-deriving the
     /// HIDDEN-vs-HASH-EXEMPT distinction per cell.
+    ///
+    /// ### Known limitation: the prune is ENTITY-granular, visibility is
+    /// REALIZATION-granular
+    ///
+    /// A `ValueCellId` is `(entity, member)` — it carries no realization index —
+    /// so the prune can only join on the entity half of the incoming
+    /// `Entity#realization[N]` keys. Two consequences, both deliberate and both
+    /// pinned by tests in `commands_tests.rs`:
+    ///
+    /// * **Partial hide is not pruned.** An entity with several realizations
+    ///   (e.g. the `SelectiveMultiBody` fixture's `#realization[0]` and
+    ///   `#realization[1]`) stays in the visible set while ANY of them is
+    ///   visible, so ALL of its cached cells survive a hide of just one. This is
+    ///   an over-retention: arch §8 is discharged only at ENTITY granularity, not
+    ///   per realization. Whole-entity hides — the case the mass-prop cells
+    ///   actually care about, since a `: Rigid` body's `mass` / `centroid` /
+    ///   `moment_of_inertia` / `moi_principal` are entity-level cells — ARE
+    ///   pruned exactly.
+    /// * **Ancestor-only entities are pruned every sync.** A cell whose entity
+    ///   never appears as a realization key on its own (an assembly-level
+    ///   aggregate, say) matches nothing in `visible_entities` and is therefore
+    ///   dropped on every `sync_demand`, re-opening the delta gap for that cell.
+    ///   Under-retention degrades to the pre-#5338 behaviour (the cell reads
+    ///   `Undef`), never to a stale value served as Final, so it fails safe.
+    ///
+    /// Closing either would need an explicit `ValueCellId` → realization
+    /// association rather than a string join, which is a reify-eval-side change
+    /// out of this task's scope.
     pub fn sync_demand(&mut self, visible_realizations: &[String]) {
-        // Prune BEFORE the engine borrow: retain only cells whose entity still has
-        // a visible realization. `ValueCellId`'s entity half is the same entity
-        // string `parse_realization_key` extracts from `Entity#realization[N]`
-        // (e.g. `RigidMassSmoke`, `Asm.part`), so the two sides join directly.
-        let visible_entities: HashSet<&str> = visible_realizations
-            .iter()
-            .filter_map(|key| key.split_once("#realization[").map(|(entity, _)| entity))
-            .filter(|entity| !entity.is_empty())
-            .collect();
-        self.geometry_derived_cache
-            .retain(|id, _| visible_entities.contains(id.entity.as_str()));
-
-        let engine = self.core.engine_mut();
-        let roots: Vec<NodeId> = visible_realizations
+        // Parse ONCE, with `parse_realization_key` as the single definition of a
+        // valid key: a key that is malformed for the demand roots must also be
+        // malformed for the prune, or the prune would keep cache entries alive for
+        // an entity that is then NOT demanded — servable as Final, i.e. the exact
+        // failure the prune exists to prevent.
+        let visible: Vec<RealizationNodeId> = visible_realizations
             .iter()
             .filter_map(|key| match parse_realization_key(key) {
-                Some(rid) => Some(NodeId::Realization(rid)),
+                Some(rid) => Some(rid),
                 None => {
                     warn!(
                         realization_key = %key,
@@ -2259,7 +2286,18 @@ impl EngineSession {
                 }
             })
             .collect();
-        engine.set_demand_selective(roots);
+
+        // Prune BEFORE the engine borrow: retain only cells whose entity still has
+        // a visible realization. `ValueCellId`'s entity half is the same entity
+        // string `parse_realization_key` extracts from `Entity#realization[N]`
+        // (e.g. `RigidMassSmoke`, `Asm.part`), so the two sides join directly.
+        let visible_entities: HashSet<&str> =
+            visible.iter().map(|rid| rid.entity.as_str()).collect();
+        self.geometry_derived_cache
+            .retain(|id, _| visible_entities.contains(id.entity.as_str()));
+
+        let roots: Vec<NodeId> = visible.into_iter().map(NodeId::Realization).collect();
+        self.core.engine_mut().set_demand_selective(roots);
     }
 
     /// Load a .ri file from disk.
@@ -3245,11 +3283,28 @@ impl EngineSession {
     /// from the cold build). On the rare panic-inside-`build_gui_state` path the
     /// leaked `full_scope = true` is perf-only (not a correctness bug) and self-heals
     /// on the next `sync_demand` (`DemandRegistry::new` resets it).
+    ///
+    /// ## Task #5338: `geometry_derived_cache` is bracketed too
+    ///
+    /// Forcing full scope makes `tessellate_snapshot` dispatch EVERY realization,
+    /// including HIDDEN ones, so the inner `build_gui_state` would write a hidden
+    /// entity's freshly-resolved mass-prop cells into the retention cache. Those
+    /// writes bypass the [`Self::sync_demand`] prune chokepoint entirely and would
+    /// outlive this read: the very next SELECTIVE `build_gui_state` finds the
+    /// hidden entity's cell `Undef` in the delta, hits the leaked entry, and paints
+    /// it `determined` / `freshness = "final"` — precisely the arch §8 violation
+    /// ("a pruned realization's cached result is never served as Final") the prune
+    /// discharges. Snapshotting and restoring the cache around the override keeps
+    /// this debug projection READ-ONLY with respect to the production posture, in
+    /// exactly the way the `full_scope` flag already is. The cache holds a handful
+    /// of entries (four per `: Rigid` body), and this path is REIFY_DEBUG-only.
     pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
         let prev = self.core.engine().demand_is_full_scope();
+        let prev_cache = self.geometry_derived_cache.clone();
         self.core.engine_mut().set_demand_full_scope(true);
         let result = self.build_gui_state();
         self.core.engine_mut().set_demand_full_scope(prev);
+        self.geometry_derived_cache = prev_cache;
         result
     }
 
@@ -4126,9 +4181,17 @@ pub(crate) fn build_constraints(
 /// the cell. A fresh non-`Undef` delta entry ALWAYS wins over the retained one, so a
 /// genuine recompute is never masked by a stale replay.
 ///
+/// Retention is NOT applied blindly to every `Undef`. A hash-exempt gap and a
+/// genuine degeneration (degenerate geometry, a failing kernel query) both write
+/// `Undef`, and replaying a stale value for the latter would paint a pre-edit mass
+/// as `determined`/`final`. `dispatched_entities` (built at the top of the body
+/// from `result.meshes`) separates them: retention applies only when the cell's own
+/// realization did NOT run this pass. See that binding for the measurement.
+///
 /// Prune safety (arch §8) is discharged upstream, at `EngineSession::sync_demand`,
 /// which drops entries for entities the frontend no longer declares visible — so
-/// every entry reaching this function belongs to a demanded realization and is safe
+/// every entry reaching this function belongs to a demanded ENTITY (see that
+/// method's docs for the entity-vs-realization granularity limitation) and is safe
 /// to serve as Final. See the `geometry_derived_cache` field doc for why the cell's
 /// own `freshness == "pending"` flag is NOT a usable HIDDEN-vs-HASH-EXEMPT
 /// discriminator.
@@ -4152,6 +4215,39 @@ fn surface_geometry_derived_cells(
     // leave the `moi_principal[0] > 0` PD constraint Indeterminate while the panel
     // shows the very value that satisfies it.
     let mut cache_sourced: Vec<ValueCellId> = Vec::new();
+    // Task #5338: the entities whose realizations ACTUALLY RAN in this pass, read
+    // off the delta's own mesh side (`result.meshes` carries one `MeshSurface` per
+    // dispatched realization; `entity_path` is the `RealizationNodeId` Display
+    // form, or the composed `parent.sub#realization[i]` form for descendants — the
+    // same join key `sync_demand` uses).
+    //
+    // This is what separates the two states an `Undef` delta entry can encode.
+    // MEASURED on this branch (probe over all five `rigid_mass_props*` tests, every
+    // rebuild): the correlation is total —
+    //   * `values[cell]` holds a real value  ⟺ the cell's realization IS in
+    //     `result.meshes` (it was dispatched);
+    //   * `values[cell]` holds an explicit `Value::Undef` ⟺ its realization is
+    //     ABSENT from `result.meshes` (HASH-EXEMPT — skipped, value unchanged).
+    // Note that a hash-exempt cell arrives as an EXPLICIT `Undef` ENTRY, never as
+    // an absent key, so "absent vs present" alone cannot discriminate; the mesh
+    // side can, and it is exactly the signal the DELTA CONTRACT already uses for
+    // meshes ("an absent mesh means retain the previously rendered mesh").
+    //
+    // So: `Undef` + realization NOT dispatched = the hash-exempt delta gap this
+    // cache exists to bridge → retain. `Undef` + realization DID dispatch = the
+    // geometry query genuinely resolved to nothing this pass (degenerate geometry,
+    // a failing kernel query) → the retained value is now STALE, and replaying it
+    // as `determined`/`final` would present a pre-edit mass as fresh and
+    // authoritative. Drop it and leave the cell undetermined.
+    // Parsed with the SAME `parse_realization_key` the demand roots use, so "what
+    // counts as a valid realization key" has one definition. An unparseable key is
+    // simply not counted as dispatched, which fails toward RETAIN (keep the value)
+    // rather than toward dropping a still-correct one.
+    let dispatched_entities: HashSet<String> = result
+        .meshes
+        .iter()
+        .filter_map(|m| parse_realization_key(&m.entity_path).map(|rid| rid.entity))
+        .collect();
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -4168,6 +4264,13 @@ fn surface_geometry_derived_cells(
             Some(fresh) if !matches!(fresh, Value::Undef) => {
                 cache.insert(id.clone(), fresh.clone());
                 fresh.clone()
+            }
+            // The cell resolved to nothing while its OWN realization ran this
+            // pass: a genuine degeneration, not a delta gap. Drop the retained
+            // value and leave the cell undetermined (see `dispatched_entities`).
+            Some(Value::Undef) if dispatched_entities.contains(id.entity.as_str()) => {
+                cache.remove(&id);
+                continue;
             }
             _ => match cache.get(&id) {
                 Some(retained) => {

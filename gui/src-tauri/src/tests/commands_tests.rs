@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::tests::test_helpers::{
-    assert_rigid_mass_props_determined, cwd_lock, rigid_mass_props_fixture_path,
-    rigid_mass_props_session, visible_realization_keys,
+    assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
+    assert_rigid_mass_props_not_final, cwd_lock, rigid_mass_props_fixture_path,
+    rigid_mass_props_session, rigid_mass_props_session_seeded, visible_realization_keys,
 };
 
 use reify_constraints::SimpleConstraintChecker;
@@ -2776,5 +2777,264 @@ fn rigid_mass_props_determined_across_all_gui_load_paths() {
         .and_then(std::convert::identity)
         .unwrap_or_else(|e| panic!("[{row}] build_gui_state_full_scene: {e}"));
         assert_rigid_mass_props_determined(&full_scene, &format!("{row}: full-scene debug read"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment — the OTHER half of the retention mechanism.
+//
+// The tests above all call `sync_demand` with the COMPLETE visible key set, so
+// they exercise only RETENTION. These four exercise the two ways retention must
+// NOT fire: the `sync_demand` prune (a hidden entity's cached cells are dropped,
+// arch §8) and the dispatch discriminator (a realization that re-ran and
+// resolved to nothing must not replay its previous value). Without them a
+// regression that deleted the `retain` line, inverted its predicate, or made
+// retention unconditional on `Undef` would leave the whole suite green.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Two INDEPENDENT `: Rigid` bodies — two entities, one realization each — so a
+/// `sync_demand` that names only `RigidBodyA`'s key hides `RigidBodyB` WHOLE.
+/// That is the granularity the prune is exact at (see `EngineSession::sync_demand`
+/// docs), and the granularity a `: Rigid` body's entity-level mass-prop cells
+/// actually live at.
+const RIGID_TWO_BODY_SRC: &str = r#"structure def RigidBodyA : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+
+structure def RigidBodyB : Rigid {
+    param geometry : Solid = box(50mm, 50mm, 150mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}"#;
+
+/// ONE `: Rigid` entity carrying TWO realizations (the `Rigid`-flavoured twin of
+/// `SELECTIVE_MULTIBODY_SRC`): `geometry` realizes as `#realization[0]`, the
+/// extra `let` box as `#realization[1]`. Hiding just `[1]` is the PARTIAL hide
+/// the entity-granular prune deliberately does not catch.
+const RIGID_TWO_REALIZATION_SRC: &str = r#"structure def RigidTwoRealizations : Rigid {
+    param geometry : Solid = box(100mm, 100mm, 300mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+    let aux = box(50mm, 50mm, 50mm)
+}"#;
+
+/// The subset of `visible_realization_keys` belonging to `entity` — what the
+/// frontend sends after the user hides everything else.
+fn realization_keys_for(state: &crate::types::GuiState, entity: &str) -> Vec<String> {
+    let prefix = format!("{entity}#realization[");
+    let keys: Vec<String> = visible_realization_keys(state)
+        .into_iter()
+        .filter(|k| k.starts_with(&prefix))
+        .collect();
+    assert!(
+        !keys.is_empty(),
+        "expected at least one `{prefix}N]` mesh key; a vacuous key list would make \
+         sync_demand a no-op and the calling test meaningless. Have: {:?}",
+        visible_realization_keys(state)
+    );
+    keys
+}
+
+/// Task #5338 amendment (reviewer suggestion 3) — pins the `sync_demand` PRUNE
+/// predicate, not just the retention it guards.
+///
+/// Sequence: load both bodies, `sync_demand` with BOTH keys and rebuild so BOTH
+/// bodies' mass-prop cells land in `geometry_derived_cache`, then `sync_demand`
+/// with ONLY body A's key and rebuild. Body B is now hidden, so its realization
+/// is neither dispatched nor demanded — arch §8 ("a pruned realization's cached
+/// result is never served as Final") requires its cached cells be dropped rather
+/// than re-surfaced as `determined` / `final`.
+///
+/// Body A must stay Final throughout: the prune must drop the hidden entity's
+/// entries WITHOUT collaterally dropping the visible one's, which is what
+/// distinguishes a correct predicate from `retain(|_, _| false)`.
+#[test]
+fn hidden_rigid_body_mass_props_are_not_served_as_final() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_BODY_SRC, "two_body")
+        .expect("load_from_source should succeed for the two-Rigid-body source");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "cold load");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "cold load");
+
+    // (1) BOTH visible: both bodies' cells are cached.
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session.build_gui_state().expect("rebuild, both visible");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "both visible");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "both visible");
+
+    // (2) Hide body B. The prune must drop ITS entries and keep body A's.
+    let a_keys = realization_keys_for(&state, "RigidBodyA");
+    session.sync_demand(&a_keys);
+    let state = session.build_gui_state().expect("rebuild, body B hidden");
+    assert_rigid_mass_props_not_final(&state, "RigidBodyB", "body B hidden");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "body B hidden");
+}
+
+/// Task #5338 amendment (reviewer suggestion 1) — `build_gui_state_full_scene`
+/// must not leak a HIDDEN entity's freshly-resolved cells into the retention
+/// cache.
+///
+/// The debug-MCP `engine_state` / `mesh_stats` projection forces `full_scope` for
+/// one build, so `tessellate_snapshot` dispatches EVERY realization — including
+/// hidden ones. Those values bypass the `sync_demand` prune chokepoint entirely.
+/// If they persisted past the read, the very next SELECTIVE rebuild would find
+/// the hidden body's cell `Undef` in the delta, hit the leaked entry, and paint
+/// it `determined` / `final` — the arch §8 violation the prune exists to prevent.
+///
+/// The final assertion is deliberately AFTER the debug read, which is exactly
+/// where `rigid_mass_props_determined_across_all_gui_load_paths` stops and
+/// therefore cannot observe the after-effect.
+#[test]
+fn full_scene_debug_read_does_not_leak_hidden_cells_into_the_retention_cache() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_BODY_SRC, "two_body")
+        .expect("load_from_source should succeed for the two-Rigid-body source");
+
+    // Hide body B from the start, so nothing legitimately caches its cells.
+    let a_keys = realization_keys_for(&state, "RigidBodyA");
+    session.sync_demand(&a_keys);
+    let state = session.build_gui_state().expect("selective rebuild");
+    assert_rigid_mass_props_not_final(&state, "RigidBodyB", "before the debug read");
+
+    // The debug read DOES see body B — that is its whole purpose, and asserting
+    // it here proves the full-scope override really did dispatch the hidden
+    // realization (i.e. the leak this test guards against is genuinely reachable).
+    let full_scene = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene");
+    assert_rigid_mass_props_final(&full_scene, "RigidBodyB", "full-scene debug read");
+
+    // …but it must leave no trace in the production posture.
+    let state = session
+        .build_gui_state()
+        .expect("rebuild after the debug read");
+    assert_rigid_mass_props_not_final(&state, "RigidBodyB", "after the debug read");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "after the debug read");
+}
+
+/// Task #5338 amendment (reviewer suggestion 2) — pins the DOCUMENTED
+/// entity-granular approximation in `EngineSession::sync_demand`.
+///
+/// `ValueCellId` is `(entity, member)` and carries no realization index, so the
+/// prune joins on the entity half only: an entity keeps its cached cells while
+/// ANY of its realizations is visible. Here `RigidTwoRealizations#realization[1]`
+/// (the `aux` box) is hidden while `[0]` stays visible, so the entity's mass-prop
+/// cells are retained.
+///
+/// That is CORRECT for this shape — the mass props derive from `geometry`, i.e.
+/// realization `[0]`, which is still visible and demanded — but it is retention
+/// by entity-level approximation, not by proof that the owning realization is
+/// live. This test exists so the approximation is executable rather than prose:
+/// a future change to realization-granular association should make it fail and
+/// force a conscious update, and `sync_demand`'s "Known limitation" section
+/// should be revised with it.
+#[test]
+fn multi_realization_partial_hide_retains_at_entity_granularity() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_REALIZATION_SRC, "two_realizations")
+        .expect("load_from_source should succeed for the two-realization source");
+
+    let keys = visible_realization_keys(&state);
+    assert!(
+        keys.len() >= 2,
+        "the fixture must render at least TWO realizations of the one entity, else \
+         this test does not exercise a PARTIAL hide at all; got {keys:?}"
+    );
+    session.sync_demand(&keys);
+    let state = session.build_gui_state().expect("rebuild, all visible");
+    assert_rigid_mass_props_final(&state, "RigidTwoRealizations", "all realizations visible");
+
+    // Hide exactly one realization of the entity; the entity itself stays visible.
+    let kept: Vec<String> = keys.iter().take(1).cloned().collect();
+    session.sync_demand(&kept);
+    let state = session
+        .build_gui_state()
+        .expect("rebuild, one realization hidden");
+    assert_rigid_mass_props_final(
+        &state,
+        "RigidTwoRealizations",
+        "one realization hidden (entity still visible)",
+    );
+}
+
+/// Task #5338 amendment (reviewer suggestion 5) — a realization that RE-RAN and
+/// resolved to nothing must not have its previous value replayed as Final.
+///
+/// MEASURED on this branch: the delta encodes a hash-exempt gap and a genuine
+/// degeneration IDENTICALLY, as an explicit `Value::Undef` entry (never an absent
+/// key), so `Undef` alone cannot discriminate. `surface_geometry_derived_cells`
+/// therefore keys on `result.meshes` — the delta's own dispatch record — and
+/// retains only when the cell's realization did NOT run this pass.
+///
+/// The degeneration is induced without OCCT by NARROWING the
+/// `MockGeometryKernel` seed. The mock's `next_id` is monotonic and never reset,
+/// and each dispatch of the box allocates the next id; MEASURED on this branch
+/// the fixture consumes id 1 on the cold load and id 2 on the first selective
+/// rebuild, so seeding `1..=2` leaves the warm `set_parameter` dispatch (id 3)
+/// UNANSWERED. Its geometry queries then fail with an `OpContractViolation` —
+/// exactly the shape of a failing kernel query or degenerate geometry in
+/// production, and encoded in the delta exactly as a hash-exempt gap is.
+///
+/// Pre-amendment this test FAILS: the edited rebuild's `Undef` was read as a
+/// delta gap and the pre-edit mass was re-surfaced `determined` / `final` /
+/// `reason = None`, i.e. a stale value presented as fresh and authoritative.
+#[test]
+fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (path, _text) = rigid_mass_props_tempfile(dir.path());
+    let engine = Arc::new(Mutex::new(rigid_mass_props_session_seeded(1..=2)));
+
+    // (1) Cold load: the box realizes to seeded handle 1, so the mass props
+    //     resolve and enter the retention cache.
+    let state = crate::commands::open_file_engine_impl(&engine, &path)
+        .expect("open_file_engine_impl should succeed");
+    assert_rigid_mass_props_final(&state, "RigidMassSmoke", "cold load (handle 1)");
+
+    // (2) Selective re-renders with NO edit: the first re-dispatches to seeded
+    //     handle 2, the rest are hash-exempt and served from retention. This half
+    //     must keep working — the amendment NARROWS retention, it does not remove
+    //     it — and it is what makes step (3) a real change of verdict rather than
+    //     a cell that was never Final to begin with.
+    let keys = visible_realization_keys(&state);
+    crate::commands::sync_demand_impl(&engine, &keys).expect("sync_demand_impl");
+    for i in 1..=3 {
+        let state = crate::commands::get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("re-render #{i}, no edit: {e}"));
+        assert_rigid_mass_props_final(
+            &state,
+            "RigidMassSmoke",
+            &format!("re-render {i}, no edit (retention still live)"),
+        );
+    }
+
+    // (3) Warm edit: the realization's input-cone hash CHANGES, so it is
+    //     dispatched — and its geometry queries now hit an unseeded handle.
+    let state = crate::commands::set_parameter_impl(&engine, "RigidMassSmoke.depth", "250mm")
+        .expect("set_parameter_impl");
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` cell after the edit");
+    assert_eq!(
+        depth.value, "250",
+        "the edit must have taken effect, else this test proves nothing about the \
+         post-dispatch path; got {:?}",
+        depth.value
+    );
+    assert_rigid_mass_props_not_final(&state, "RigidMassSmoke", "after the degenerating edit");
+
+    // (4) …and it must STAY cleared on subsequent re-renders, rather than the
+    //     stale pre-edit value creeping back in on the next hash-exempt pass.
+    for i in 1..=2 {
+        let state = crate::commands::get_initial_state_impl(&engine)
+            .unwrap_or_else(|e| panic!("re-render #{i} after the degenerating edit: {e}"));
+        assert_rigid_mass_props_not_final(
+            &state,
+            "RigidMassSmoke",
+            &format!("re-render {i} after the degenerating edit"),
+        );
     }
 }
