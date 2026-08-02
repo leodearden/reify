@@ -2757,6 +2757,117 @@ describe('reify.grammar snippets — variant construction in argument position',
 });
 
 /**
+ * `sub_relate_block` — grammar.js:745-750, the sub-local sibling of `relate`:
+ * a conditionless `where { … }` trailing a sub's pose, holding relations
+ * scoped to that sub rather than to the enclosing structure.
+ *
+ * Zero committed files use it, so this family moves the ledger by nothing and
+ * is taken for node shape — but it carries the round's only real REGRESSION
+ * risk, and the pins below are the whole point of the slice.
+ *
+ * THE CONFLICT. After `at <pose>` a following `where` could open a
+ * SubRelateBlock (shift) or end the SubDeclaration so that `where` starts a
+ * member-level GuardedBlock (reduce). What distinguishes them is the token
+ * AFTER `where` — `{` versus an expression — which is two tokens of lookahead,
+ * and LR(1) does not have it. Upstream gets the distinction free from GLR.
+ *
+ * BOTH READINGS ARE COMMITTED, which is why this cannot be resolved with the
+ * `itemStart` precedence level one family earlier. Poses are committed at
+ * examples/geometric_relations/construction_datum.ri:62 and
+ * global_float.ri:28 (`sub bolt : Bolt at auto`), and member-level
+ * `where determined(origin) { … }` GuardedBlocks at
+ * examples/integration_full_v01.ri:224 and examples/m10_combined.ri:97 — six
+ * committed files carry such a block. Greedy shift would make EVERY post-pose
+ * `where` a SubRelateBlock, so it would regress those readings to admit a form
+ * no committed file uses. Every assertion here is on node NAMES: both parses
+ * are error-free, so a count cannot tell them apart.
+ */
+describe('reify.grammar snippets — sub relate blocks', () => {
+  // Normative, unattested. The specialization-form sub, whose pose is `at auto`
+  // exactly as construction_datum.ri:62 and global_float.ri:28 write it.
+  it('parses a conditionless `where { … }` after a pose (normative, unattested)', () => {
+    const src = 'structure def F { sub s : T at auto where { concentric(a, b) } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('PoseClause');
+    expect(names).toContain('SubRelateBlock');
+    expect(names).toContain('RelationMember');
+  });
+
+  // The instantiation-form sub reaches `PoseClause` through the other arm, so
+  // the block must attach there too.
+  it('parses a sub relate block on an instantiation-form sub', () => {
+    const src = 'structure def F { sub s = T() at transform3(x, y, z) where { fasten(a, b) } }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('PoseClause');
+    expect(names).toContain('SubRelateBlock');
+  });
+
+  /**
+   * The body reuses `RelationMember` — the same production `RelateBlock` uses,
+   * exactly as upstream does at grammar.js:748 — so relations are
+   * newline-separated with NO comma here as well.
+   */
+  it('parses a multi-relation sub relate block with no separator', () => {
+    const src =
+      'structure def F {\n  sub s : T at auto where {\n    concentric(s.axis, base.axis)\n    flush(s.face, base.face)\n  }\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('SubRelateBlock');
+  });
+
+  // The repeat is zero-or-more, as in `RelateBlock`.
+  it('parses an empty sub relate block', () => {
+    const src = 'structure def F { sub s : T at auto where { } }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNames(src)).toContain('SubRelateBlock');
+  });
+
+  /**
+   * ── THE REGRESSION PIN ────────────────────────────────────────────────────
+   *
+   * A member-level guarded block immediately after a pose. This is the shape
+   * greedy shift would steal, and it must stay a GuardedBlock. The guard
+   * expression is `determined(origin)` verbatim from
+   * examples/integration_full_v01.ri:224 and examples/m10_combined.ri:97.
+   */
+  it('still reads a conditioned post-pose `where` as a GuardedBlock', () => {
+    const src =
+      'structure def F {\n  sub s : T at auto\n  where determined(origin) { param d : Length = 1mm }\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('GuardedBlock');
+    expect(names).not.toContain('SubRelateBlock');
+  });
+
+  // `GuardedBlock` carries an optional `else` arm; a SubRelateBlock has none,
+  // so this is the half of the pin that would fail loudest if shift won.
+  it('still reads a post-pose `where … { … } else { … }` as a GuardedBlock', () => {
+    const src =
+      'structure def F {\n  sub s : T at auto\n  where determined(origin) { param d : Length = 1mm } else { param d : Length = 2mm }\n}';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('GuardedBlock');
+    expect(names).not.toContain('SubRelateBlock');
+  });
+
+  /**
+   * The THIRD role `where` plays on a sub, and the one that sits positionally
+   * BEFORE the pose: a guard on the declaration itself
+   * (`sub child = RecursiveBeam(…) where depth > 0`,
+   * examples/integration_full_v01.ri:108). All three must stay distinguishable.
+   */
+  it('still reads a pre-pose `where <expr>` guard as a WhereClause', () => {
+    const src = 'structure def F { sub s : T where enabled at auto }';
+    expect(countErrorNodes(src)).toBe(0);
+    const names = nodeNames(src);
+    expect(names).toContain('WhereClause');
+    expect(names).toContain('PoseClause');
+    expect(names).not.toContain('SubRelateBlock');
+  });
+});
+
+/**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
  * source text of every span that received `t.keyword`.
