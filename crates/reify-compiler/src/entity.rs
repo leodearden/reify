@@ -905,12 +905,13 @@ pub(crate) fn compile_entity(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     compiled_templates: &[TopologyTemplate],
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
-    // task 5867: prelude templates for SUB-TARGET resolution, UNFILTERED by
-    // `EntityKind` — distinct from `prelude_template_registry` above, which is
-    // Structure-filtered for ctor lowering. Consulted only via
-    // `find_template_with_prelude`; see that function for the full contract.
-    prelude_sub_target_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables. `prelude.ctor` is
+    // Structure-filtered and drives constructor lowering; `prelude.sub_target`
+    // is unfiltered and is read ONLY via `find_template_with_prelude`, which
+    // also applies the `prelude.local_entity_names` shadowing guard. They
+    // travel bundled so the two same-typed maps cannot be transposed here; see
+    // `types::PreludeRegistries` for the full contract.
+    prelude: &PreludeRegistries<'_, '_>,
 ) -> TopologyTemplate {
     let entity_name = structure.name;
     // task 3540 (SIR-α): make `structure def` templates reachable at the
@@ -920,7 +921,8 @@ pub(crate) fn compile_entity(
     // (later entries shadow earlier — local definitions shadow prelude,
     // matching Reify scoping). Declared BEFORE `scope` so it outlives the
     // scope's borrow (drop order is reverse-declaration).
-    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude_template_registry
+    let entity_template_registry: HashMap<String, &TopologyTemplate> = prelude
+        .ctor
         .iter()
         .map(|(k, v)| (k.clone(), *v))
         .chain(
@@ -1626,7 +1628,7 @@ pub(crate) fn compile_entity(
                             // DisplayStyle`) left every map below unpopulated.
                             if let Some(child_tmpl) = find_template_with_prelude(
                                 compiled_templates,
-                                prelude_sub_target_registry,
+                                prelude,
                                 &sub.structure_name,
                             ) {
                                 scope.sub_structure_traits.insert(
@@ -1772,7 +1774,7 @@ pub(crate) fn compile_entity(
                 // `let` lower to a `RealizationDecl` instead of a value cell.
                 if let Some(child_tmpl) = find_template_with_prelude(
                     compiled_templates,
-                    prelude_sub_target_registry,
+                    prelude,
                     &effective_structure_name,
                 ) {
                     // Deprecation check: warn if the referenced structure is @deprecated.
@@ -1832,7 +1834,7 @@ pub(crate) fn compile_entity(
                                     let arm_members: BTreeMap<String, Type> =
                                         find_template_with_prelude(
                                             compiled_templates,
-                                            prelude_sub_target_registry,
+                                            prelude,
                                             arm_struct,
                                         )
                                         .map(|t| {
@@ -3728,7 +3730,7 @@ pub(crate) fn compile_entity(
                     &type_param_names,
                     &clusters_with_outside_collision,
                     compiled_templates,
-                    prelude_sub_target_registry,
+                    prelude,
                 );
             }
         }
@@ -4491,9 +4493,9 @@ fn compile_match_arm_decl_group(
     type_param_names: &HashSet<String>,
     clusters_with_outside_collision: &HashSet<String>,
     compiled_templates: &[TopologyTemplate],
-    // task 5867: UNFILTERED prelude registry for sub-target resolution; paired
-    // with `compiled_templates` in every `find_template_with_prelude` call.
-    prelude_sub_target_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables; paired with
+    // `compiled_templates` in every `find_template_with_prelude` call.
+    prelude: &PreludeRegistries<'_, '_>,
 ) {
     // Resolve the discriminant's enum type.  Only simple `Ident` discriminants
     // are supported in this task; complex expressions are deferred to task 2373.
@@ -4884,13 +4886,10 @@ fn compile_match_arm_decl_group(
             //
             // task 5867 widened the LOOKUP to module-first/prelude-fallback; the
             // always-push discipline above is unchanged.
-            let arm_member_types = find_template_with_prelude(
-                compiled_templates,
-                prelude_sub_target_registry,
-                &sub.structure_name,
-            )
-            .map(member_type_map_from_template)
-            .unwrap_or_default();
+            let arm_member_types =
+                find_template_with_prelude(compiled_templates, prelude, &sub.structure_name)
+                    .map(member_type_map_from_template)
+                    .unwrap_or_default();
             per_arm_member_maps.push((sub.structure_name.clone(), arm_member_types));
         }
 

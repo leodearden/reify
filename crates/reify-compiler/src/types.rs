@@ -858,6 +858,33 @@ pub fn find_template<'a>(
     templates.iter().find(|t| t.name == name)
 }
 
+/// The prelude-derived lookup tables `compile_entity` threads through the
+/// entity-compile recursion, bundled into one named-field value.
+///
+/// The two maps have the SAME type and different meanings, so as adjacent
+/// positional parameters in an already 20+-argument signature a future call
+/// site could transpose them and the compiler could not catch it — and the
+/// resulting bug (the Structure-filtered map used for sub targets) is exactly
+/// the one task #5867 fixed. Field names make that transposition unspellable.
+///
+/// `'r` is the borrow of the tables themselves; `'t` is the lifetime of the
+/// prelude templates they point at. They are separate because the tables are
+/// phase-locals in `phase_entities` while the templates outlive it.
+pub(crate) struct PreludeRegistries<'r, 't> {
+    /// Prelude templates for CONSTRUCTOR lowering — `EntityKind::Structure`-
+    /// FILTERED, because only `structure def`s are constructible via `Foo()`
+    /// (task 3540 / esc-3540-177 RULING 1).
+    pub(crate) ctor: &'r HashMap<String, &'t TopologyTemplate>,
+    /// Prelude templates for SUB-TARGET resolution — UNFILTERED by
+    /// `EntityKind`, because a sub target may be an occurrence
+    /// (`sub o = STLOutput(…)`). Read only via [`find_template_with_prelude`].
+    pub(crate) sub_target: &'r HashMap<String, &'t TopologyTemplate>,
+    /// Entity names THIS module declares itself (local only — never seeded
+    /// from the prelude). Suppresses the prelude fallback for a name the
+    /// module owns; see property 1 of [`find_template_with_prelude`].
+    pub(crate) local_entity_names: &'r HashSet<String>,
+}
+
 /// Resolve a **sub-target** template by name: module-local first, stdlib
 /// prelude second.
 ///
@@ -870,11 +897,24 @@ pub fn find_template<'a>(
 ///
 /// Three properties the callers depend on:
 ///
-/// 1. **Module-local definitions shadow the prelude.** `find_template` is
-///    consulted first, so a user module that defines its own `DisplayStyle`
-///    wins over the stdlib one — matching Reify scoping and the "prelude first,
-///    then local (later shadows earlier)" composition used elsewhere in the
-///    compiler.
+/// 1. **Module-local definitions shadow the prelude — in BOTH declaration
+///    orders.** `find_template` is consulted first, so a user module that
+///    defines its own `DisplayStyle` wins over the stdlib one. That arm alone
+///    is not enough, though: `templates` holds only the templates compiled
+///    EARLIER in the module, so a local definition appearing AFTER its first
+///    use would miss it and bind to the prelude instead. The
+///    `local_entity_names` guard closes that hole by suppressing the prelude
+///    arm for any name the module declares, restoring the pre-existing
+///    forward-declared/optimistic path for that case. MEASURED without the
+///    guard: `structure def User { sub c = Color(alpha: 0.5mm) … }` followed by
+///    a local `structure def Color` bound to stdlib `Color`
+///    (`materials_appearance.ri:17`) and hard-errored `unknown member 'alpha'
+///    on sub 'c'` — a new build failure on source that compiled clean before.
+///    Scope limit: `local_entity_names` comes from `ctx.seen_entity_names`,
+///    which `pre_pass::collect_decl_refs` fills from top-level declarations
+///    only, so a purpose-NESTED structure shadowing a prelude name is not
+///    covered by the guard (it still shadows via the module-first arm once
+///    compiled).
 /// 2. **The prelude fallback is load-bearing, not belt-and-braces.** Stdlib
 ///    templates live in the prelude and are deliberately NOT merged into
 ///    `CompiledModule::templates` (io-export δ / esc-4287-15), so a bare
@@ -883,18 +923,27 @@ pub fn find_template<'a>(
 ///    `sub_component_types` was populated — precisely the "forward-declared"
 ///    shape that makes a relaying `let` lower to a `RealizationDecl` instead of
 ///    a value cell, silently.
-/// 3. **`prelude_registry` must be UNFILTERED by `EntityKind`.** Do not pass
-///    `prelude_template_registry` here: that one is `EntityKind::Structure`-
-///    filtered on purpose, because it drives constructor lowering where
-///    occurrences are correctly excluded. Sub targets may be occurrences —
-///    `sub o = STLOutput(…)` is a shipped shape — and a Structure-filtered
-///    registry leaves exactly that case broken (MEASURED, task #5867).
+/// 3. **The registry consulted must be UNFILTERED by `EntityKind`.** This
+///    reads [`PreludeRegistries::sub_target`], never `ctor`: the latter is
+///    `EntityKind::Structure`-filtered on purpose, because it drives
+///    constructor lowering where occurrences are correctly excluded. Sub
+///    targets may be occurrences — `sub o = STLOutput(…)` is a shipped shape —
+///    and a Structure-filtered registry leaves exactly that case broken
+///    (MEASURED, task #5867).
 pub(crate) fn find_template_with_prelude<'a>(
     templates: &'a [TopologyTemplate],
-    prelude_registry: &HashMap<String, &'a TopologyTemplate>,
+    prelude: &PreludeRegistries<'_, 'a>,
     name: &str,
 ) -> Option<&'a TopologyTemplate> {
-    find_template(templates, name).or_else(|| prelude_registry.get(name).copied())
+    find_template(templates, name).or_else(|| {
+        // Property 1, forward-reference half: a name the module declares is
+        // the module's, whether or not it has been compiled yet.
+        if prelude.local_entity_names.contains(name) {
+            None
+        } else {
+            prelude.sub_target.get(name).copied()
+        }
+    })
 }
 
 /// Return `true` iff synthesizing a monomorph named `mono` would collide with a

@@ -55,7 +55,8 @@ use crate::type_resolution::{
 };
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
-    CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
+    CompiledTrait, EntityKind, PreludeRegistries, TopologyTemplate, ValueCellDecl, ValueCellKind,
+    Visibility,
 };
 use crate::units::UnitRegistry;
 use reify_core::ValueCellId;
@@ -98,11 +99,20 @@ pub(crate) fn phase_entities(
     // because `phase_functions`/`phase_traits` run earlier and must agree with this
     // phase on what the name means (esc-5429-1). See
     // `enums_phase::build_local_enum_shadow_set`.
-    let structure_names: HashSet<String> = ctx
+    //
+    // task 5867: split out the LOCAL half first. `structure_names` is the union
+    // (local ∪ prelude) its own consumers want, but sub-target resolution needs
+    // to know which names the module OWNS — see `PreludeRegistries::
+    // local_entity_names` and property 1 of `find_template_with_prelude`.
+    let local_entity_names: HashSet<String> = ctx
         .seen_entity_names
         .iter()
         .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
         .map(|(name, _)| name.clone())
+        .collect();
+    let structure_names: HashSet<String> = local_entity_names
+        .iter()
+        .cloned()
         .chain(
             prelude
                 .iter()
@@ -118,37 +128,49 @@ pub(crate) fn phase_entities(
     // matches ImportDecl.path (see task 2226).
     let mut resolved_import_paths: Option<HashSet<String>> = None;
 
-    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
-    // the expression-lowering site can recognise `Foo()` as a structure
-    // constructor (esc-3540-177 RULING 1). Built once here (immutable borrow
-    // of `prelude` for the loop); `compile_entity` merges in local
-    // already-compiled structure-defs. Occurrences are excluded — only
-    // structure-defs are constructible via the ctor path.
-    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t| (t.name.clone(), t))
-        .collect();
-
     // task 5867: prelude templates keyed by name for SUB-TARGET resolution
     // (`types::find_template_with_prelude`), which the `Sub` pre-passes in
     // `entity.rs` consult to populate `sub_member_types` /
     // `sub_realization_names` / `sub_structure_traits` / `sub_assoc_fn_keys`.
     //
-    // Deliberately a SECOND registry rather than a reuse of
-    // `prelude_template_registry` above: this one carries NO `EntityKind`
-    // filter. Sub targets may be occurrences — `sub o = STLOutput(…)` is a
-    // shipped shape (reify-cli's `output_driver_*.ri` fixtures) — whereas the
-    // Structure filter above is correct for its own consumer, ctor lowering,
-    // where only `structure def`s are constructible. MEASURED: reusing the
-    // filtered registry here leaves `let res = self.o.resolution` typed
-    // `Type::Error` with a bogus `RealizationDecl`.
+    // This one carries NO `EntityKind` filter, and must not: sub targets may be
+    // occurrences — `sub o = STLOutput(…)` is a shipped shape (reify-cli's
+    // `output_driver_*.ri` fixtures). MEASURED: resolving sub targets against
+    // the Structure-filtered map below leaves `let res = self.o.resolution`
+    // typed `Type::Error` with a bogus `RealizationDecl`.
     let prelude_sub_target_registry: HashMap<String, &TopologyTemplate> = prelude
         .iter()
         .flat_map(|m| m.templates.iter())
         .map(|t| (t.name.clone(), t))
         .collect();
+
+    // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
+    // the expression-lowering site can recognise `Foo()` as a structure
+    // constructor (esc-3540-177 RULING 1). `compile_entity` merges in local
+    // already-compiled structure-defs. Occurrences are excluded — only
+    // structure-defs are constructible via the ctor path.
+    //
+    // DERIVED from the unfiltered map above rather than re-walking `prelude`,
+    // so the subset relationship is structural instead of conventional (and one
+    // pass over the prelude plus one set of name clones is saved). The two
+    // differ only if the prelude ever held a `structure def X` AND an
+    // `occurrence def X`: filter-then-collect would keep the structure, whereas
+    // this derivation inherits the unfiltered map's last-wins dedup. The entity
+    // namespace is unified (spec §4.2.1) and the stdlib has zero duplicate
+    // entity-def names across its 131 defs, so the two are identical today.
+    let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
+        .iter()
+        .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+
+    // One bundle for the entity-compile recursion, so the two same-typed maps
+    // cannot be transposed at a call site (they are read by field name).
+    let prelude_registries = PreludeRegistries {
+        ctor: &prelude_template_registry,
+        sub_target: &prelude_sub_target_registry,
+        local_entity_names: &local_entity_names,
+    };
 
     // ── Ambient-default file-scope pre-pass (ambient-default-material task B) ──
     // Build the file-level `AmbientDefaults` table BEFORE the entity-compile loop
@@ -193,8 +215,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
-                        &prelude_template_registry,
-                        &prelude_sub_target_registry,
+                        &prelude_registries,
                     );
                 }
             }
@@ -258,8 +279,7 @@ pub(crate) fn phase_entities(
                         &mut ctx.pending_connect_auto_params,
                         &mut ctx.diagnostics,
                         &mut ctx.templates,
-                        &prelude_template_registry,
-                        &prelude_sub_target_registry,
+                        &prelude_registries,
                     );
                 }
             }
@@ -304,8 +324,7 @@ pub(crate) fn phase_entities(
                             &mut ctx.pending_connect_auto_params,
                             &mut ctx.diagnostics,
                             &mut ctx.templates,
-                            &prelude_template_registry,
-                            &prelude_sub_target_registry,
+                            &prelude_registries,
                         );
                     }
                 }
@@ -790,11 +809,10 @@ fn compile_entity_decl(
     pending_connect_auto_params: &mut Vec<PendingConnectAutoParam>,
     diagnostics: &mut Vec<Diagnostic>,
     templates: &mut Vec<TopologyTemplate>,
-    prelude_template_registry: &HashMap<String, &TopologyTemplate>,
-    // task 5867: UNFILTERED prelude registry for sub-target resolution — see
-    // its construction in `phase_entities` for why it is separate from
-    // `prelude_template_registry`.
-    prelude_sub_target_registry: &HashMap<String, &TopologyTemplate>,
+    // task 5867: the prelude-derived lookup tables, bundled — see
+    // `types::PreludeRegistries` for why they travel as one named-field value
+    // rather than as adjacent same-typed positional parameters.
+    prelude_registries: &PreludeRegistries<'_, '_>,
 ) {
     let template = compile_entity(
         &entity_ref,
@@ -816,8 +834,7 @@ fn compile_entity_decl(
         pending_connect_auto_params,
         diagnostics,
         templates,
-        prelude_template_registry,
-        prelude_sub_target_registry,
+        prelude_registries,
     );
     templates.push(template);
 }
