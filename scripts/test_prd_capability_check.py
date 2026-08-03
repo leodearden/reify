@@ -1864,6 +1864,41 @@ class TestGrammarCacheDenied(unittest.TestCase):
         stderr = "Error: Permission denied (os error 13) (x.ri)\n"
         self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
 
+    # ── one definition of the load-failure signature ──────────────────────────
+
+    def test_load_failure_marker_is_shared_with_observe(self):
+        """observe() must key on _GRAMMAR_LOAD_FAILURE_MARKER, not its own copy.
+
+        Two independent spellings of the same tree-sitter signature drift, and
+        the drift is silent in exactly the dangerous direction: were only the
+        constant updated for a reworded tree-sitter, this predicate would keep
+        recognising the denial while observe() reclassified the load failure as
+        ABSENT — promoting a harness error into a real PASS/FAIL verdict, the
+        very mis-attribution this task exists to remove.
+
+        Patching the constant is what makes this a real pin: a literal left
+        behind in observe() is equal to the constant today, so only a
+        substituted marker can tell the two apart.
+        """
+        reworded = "Could not load grammar"
+        run = self._run(
+            1,
+            f"Error: {reworded} in current directory:\n"
+            "Permission denied (os error 13) (~/.cache/tree-sitter/lock/x.lock)\n",
+        )
+        with unittest.mock.patch.object(
+            pcc, "_GRAMMAR_LOAD_FAILURE_MARKER", reworded
+        ):
+            self.assertTrue(
+                pcc.grammar_cache_denied(run),
+                "precondition: the predicate follows the constant",
+            )
+            self.assertEqual(
+                pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
+                "observe() still holds its own copy of the load-failure literal; "
+                "a reworded tree-sitter would silently become ABSENT there",
+            )
+
 
 # ---------------------------------------------------------------------------
 # 5894 step-3 (RED): grammar_substrate_usable() — behavioural substrate probe

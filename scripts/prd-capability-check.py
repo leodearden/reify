@@ -48,7 +48,8 @@ Harness exit codes:
     70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict
     75  grammar substrate unavailable — callers should SKIP, not FAIL
         (sysexits EX_TEMPFAIL; only ever returned by --grammar-substrate-status,
-        which runs no probes and so can never affect a verdict)
+        which runs one substrate probe but evaluates no probe set, and so can
+        never affect a verdict)
 """
 
 from __future__ import annotations
@@ -83,9 +84,11 @@ UNPROVABLE = "UNPROVABLE"
 _VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir"})
 _VALID_OBSERVATIONS = frozenset({"present", "absent"})
 
-# Sentinel injected into stderr by run_probe() when the probe binary is not found
-# (FileNotFoundError).  observe() checks for this sentinel before kind-specific
-# logic so all probe kinds classify missing-binary as _HARNESS_ERROR.
+# Sentinel injected into stderr by run_probe() when the probe could not be
+# launched at all — any launch failure (ENOENT missing, EACCES not executable,
+# ENOTDIR bad path component), i.e. the whole OSError family, not FileNotFoundError
+# alone.  observe() checks for this sentinel before kind-specific logic so all
+# probe kinds classify an unlaunchable binary as _HARNESS_ERROR.
 _BINARY_NOT_FOUND_SENTINEL = "[HARNESS ERROR: binary not found]"
 
 
@@ -395,7 +398,13 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
     if probe_kind == "grammar":
         if run.exit_code == 0:
             return PRESENT
-        if "Failed to load language" in run.stderr:
+        # Shares _GRAMMAR_LOAD_FAILURE_MARKER with grammar_cache_denied() on
+        # purpose: two independent spellings of the same tree-sitter signature
+        # would drift, and the drift is silent-and-dangerous in exactly one
+        # direction — if only the constant tracked a reworded tree-sitter, this
+        # branch would reclassify a load failure as ABSENT, i.e. promote a
+        # harness error to a real PASS/FAIL verdict.
+        if _GRAMMAR_LOAD_FAILURE_MARKER in run.stderr:
             return _HARNESS_ERROR
         if run.exit_code == 1:
             # Parse error (the grammar produced ERROR nodes).  tree-sitter with
@@ -778,10 +787,14 @@ def main(argv: List[str]) -> int:
     probe with the real runner, prints per-probe evidence (or --json), and
     returns harness_exit_code(results).
 
-    --grammar-substrate-status is a separate, probe-free mode: it reports
-    whether a grammar probe could run here at all, so a shell caller can print
-    a clean SKIP instead of reporting an unrunnable probe as a gate FAIL.  It
-    evaluates nothing, so it cannot affect any verdict.
+    --grammar-substrate-status is a separate mode: it runs ONE substrate probe
+    (a real `tree-sitter parse` subprocess, bounded by
+    _SUBSTRATE_PROBE_TIMEOUT_S) to report whether a grammar probe could run here
+    at all, so a shell caller can print a clean SKIP instead of reporting an
+    unrunnable probe as a gate FAIL.  It evaluates no probe set, so it cannot
+    affect any verdict.  --json does not apply to it: the finding is carried by
+    the exit code (0 / 75), with a one-line human reason on stdout.  A
+    PROBE_SET_JSON passed alongside it is ignored for the same reason.
 
     Exit codes:
         0   all PASS  (or: grammar substrate usable)
@@ -814,7 +827,9 @@ def main(argv: List[str]) -> int:
         dest="grammar_substrate_status",
         help=(
             "Report whether tree-sitter can run a grammar probe here; "
-            "exit 0 if usable, 75 if not.  Runs no probes."
+            "exit 0 if usable, 75 if not.  Runs one substrate probe (a real "
+            "tree-sitter subprocess, time-bounded); evaluates no probe set and "
+            "affects no verdict.  Ignores --json and any PROBE_SET_JSON."
         ),
     )
     try:
