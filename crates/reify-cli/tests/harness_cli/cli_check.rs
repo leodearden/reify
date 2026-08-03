@@ -635,3 +635,154 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
          longer report undefined inputs.\nstderr: {stderr}"
     );
 }
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2.
+///
+/// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
+/// side effect and used to throw the `BuildResult` away (`let _ = …`).  That
+/// silently swallowed every realization-only diagnostic — `compile_geometry_op`
+/// gating errors and kernel-dispatch failures that `check()` alone never
+/// produces — so a module whose geometry cannot compile AT ALL still reported
+/// "All constraints satisfied." under `check`.
+///
+/// Measured pre-change baseline for `fixtures/mirror_bare_origin.ri`:
+///     stdout: "  OK MirrorBareOrigin#constraint[0]" / "All constraints satisfied."
+///     stderr: EMPTY
+///     exit 0
+/// …while `reify eval` on the same file reports, on stderr:
+///     warning: mirror: ox argument expects Length, got Int; …   [TWICE]
+///     error: failed to compile geometry operation: missing or
+///            non-Length argument 'ox' for mirror                [TWICE]
+///     error: failed to compile geometry operation: unresolvable GeomRef::Step(1) …
+///     exit 1
+///
+/// The `matches(...).count() == 1` assertion is the load-bearing one: it pins
+/// D2's ACCUMULATING dedup. `build()` emits that error twice for a single call
+/// site, so a merge that deduped only against `check()`'s original list (which
+/// is empty here) would print it twice on `check`'s stderr.
+#[test]
+fn check_surfaces_geometry_compile_error_from_discarded_build() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("mirror_bare_origin.ri"));
+
+    // Mode-independent: this leaf fixes diagnostic COLLECTION, not the exit
+    // gate — that is the PRD's β/γ split.  Task 5403 (γ) lands the general
+    // `Severity::Error` exit gate and is the leaf that flips this assertion to
+    // `!status.success()`; γ's implementer finds it by grepping #5403 in the
+    // test tree.
+    assert!(
+        status.success(),
+        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
+         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // The `compile_geometry_op` argument validation that produces these
+        // diagnostics is itself kernel-independent (reify-eval
+        // geometry_ops.rs:349 — no `OCCT_AVAILABLE` guard), but whether the
+        // realization loop is reached at all under a stub build is NOT measured
+        // here, so follow the C1 convention used by
+        // `cli_dfm_overhang.rs::check_dfm_plus_repr_within_combined_arm` and
+        // skip the content assertions rather than guess.
+        eprintln!(
+            "skipping build-diagnostic merge assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let needle = "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror";
+    assert!(
+        stderr.contains(needle),
+        "the geometry-compile error `build()` produces must reach `check`'s stderr \
+         (D2: every build()-only diagnostic appears at least once).\nstderr: {stderr}"
+    );
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences,
+        1,
+        "D2's dedup accumulates: `build()` emits this error TWICE for one call site, \
+         so it must collapse to exactly one line on `check`'s stderr — got {occurrences}.\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("mirror: ox argument expects Length, got Int"),
+        "the companion argument-type warning `build()` produces must reach `check`'s \
+         stderr too.\nstderr: {stderr}"
+    );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D2 — regression LOCK.
+///
+/// Green before AND after the D2 wiring.  D2 merges `build()`'s DIAGNOSTICS
+/// into the reported set; it must never let `build()`'s stale
+/// `constraint_results` reach the verdict lines.  `build_with_geometry_output`
+/// calls `self.check(module)` internally as its first step, BEFORE
+/// `realization_handles` / `achieved_repr_tol` are populated, so substituting
+/// its copy would silently degrade RepresentationWithin / DFM verdicts.
+///
+/// `fixtures/dfm_with_repr_within.ri` is the right lock because it carries BOTH
+/// a DFMRule and a RepresentationWithin, so it already exercises the full
+/// `build()` → `tessellate_realizations()` → authoritative `check()` sequence
+/// that D2 threads a second value through.
+///
+/// Measured pre-change baseline:
+///     stdout: "  OK SphereCheck#constraint[0]" / "All constraints satisfied."
+///     stderr: "warning: constraint expression has type Sphere, expected Bool"
+///             "warning: W_MODULE_DECL_MISSING: …"
+///             "warning: W_DFM_OVERHANG: face dips below the build plane — …"
+///     exit 0
+#[test]
+fn check_constraint_results_come_from_authoritative_check_not_build() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("dfm_with_repr_within.ri"));
+
+    assert!(
+        status.success(),
+        "DFM Warning + Satisfied RepresentationWithin stays exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("VIOLATED"),
+        "RepresentationWithin must stay Satisfied — a stale build() verdict would \
+         degrade it.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE"),
+        "the verdict must stay definite — build()'s copy is computed before \
+         achieved_repr_tol is populated and would read Indeterminate.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("OK SphereCheck#constraint[0]"),
+        "the authoritative check() verdict line must be unchanged from the \
+         pre-change baseline.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "the summary line must be unchanged from the pre-change baseline.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping DFM double-print assertion: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // The other half of D2: "no diagnostic that would appear in check()'s own
+    // diagnostics today is ever printed twice".  W_DFM_OVERHANG is produced by
+    // `measure_dfm_rules`, which runs inside the authoritative check() AND
+    // inside build()'s own internal check() — so it is present in BOTH lists
+    // and is exactly the entry a naive concatenation would double.
+    let dfm_count = stderr.matches("W_DFM_OVERHANG").count();
+    assert_eq!(
+        dfm_count,
+        1,
+        "W_DFM_OVERHANG appears in both check()'s and build()'s diagnostics; the \
+         structural-equality merge must collapse it to one line — got {dfm_count}.\n\
+         stderr: {stderr}"
+    );
+}
