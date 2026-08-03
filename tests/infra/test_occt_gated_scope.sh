@@ -624,4 +624,62 @@ assert "nextest.toml: [profile.default] test-threads is a non-empty positive int
         [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ]
     "
 
+# ---------------------------------------------------------------------------
+# Tests 17c-17e (task 5984): host-relative derivation of the global pool cap.
+#
+# Derivation: tt = min(HARD_CAP=16, nproc)   [nproc term skipped if unavailable]
+#   REIFY_NEXTEST_TEST_THREADS — explicit override, wins verbatim.
+#   nproc — REIFY_OCCT_NPROC if valid, else system nproc/getconf.  That knob is
+#     deliberately REUSED rather than aliased: the value is the host's logical
+#     CPU count, nothing about it is OCCT-specific (the prefix is historical,
+#     from task 4621's occt-only derivation).
+#
+# NO RAM term here, unlike the occt cap — deliberate, see the rationale block in
+# .config/nextest.toml: this cap's justification is CPU-share symmetry and
+# runqueue depth, not RSS.
+#
+# Why host-relative at all (the task 4621 lesson): a bare literal 16 equals
+# nproc on a 16t laptop (no reduction whatsoever — the status quo this task
+# exists to fix) and OVERSUBSCRIBES an 8-core host or CPU-quota'd container 2x,
+# making the "cap" actively harmful.  REIFY_OCCT_NPROC is injected in every case
+# below so each expectation is an exact integer on ANY host (Tests 13a-15b form).
+# Compile-free: no cargo, no nextest, no workspace compile (task 4613).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17c-17e (task 5984): host-relative derivation of the global test-threads cap ---"
+
+# Test 17c: explicit REIFY_NEXTEST_TEST_THREADS=5 wins verbatim.
+# RED against step-2: the generated config keeps the in-file literal 16.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=5: [profile.default] test-threads resolves to 5 (explicit override wins verbatim)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS=5 bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"5\" ]
+    "
+
+# Test 17d: REIFY_OCCT_NPROC=8 -> 8 (nproc binds, below HARD_CAP=16).
+# This is the assertion a bare in-file literal cannot satisfy: on an 8-core host
+# a fixed 16 would oversubscribe 2x.
+# RED against step-2: stays 16.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads resolves to 8 (nproc binds, no 2x oversubscription)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=8 env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"8\" ]
+    "
+
+# Test 17e: REIFY_OCCT_NPROC=32 -> 16 (HARD_CAP binds; workstation profile).
+# GREEN-by-coincidence before step-4 (the literal 16 is simply passed through
+# unrewritten) — kept deliberately: it is the host-independent workstation
+# anchor that pins the ceiling once 17d forces a real derivation.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profile.default] test-threads resolves to 16 (HARD_CAP binds)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=32 env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"16\" ]
+    "
+
 test_summary
