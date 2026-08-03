@@ -161,12 +161,19 @@ const HALF_ROUND_REL_TOL: f64 = 0.03;
 /// magnitude tighter than every failure these assertions exist to catch — a
 /// seat that never breaks through reads the land radius instead of the groove
 /// bottom (3 mm out, 100 % of `groove_r`), and a land put back above the rope
-/// centreline reads high against `pitch_r` by however far it was raised (the
-/// pre-#5580 submerged channel sat at `pitch_r + groove_r - groove_mouth`,
-/// i.e. 2.7 mm = 90 % of `groove_r` out). Both assertions compare the mesh
-/// against `pitch_r`-derived references rather than against `land_r`, so those
-/// residuals are the ones actually computed. There is no regression this band
-/// could swallow that a tighter one would catch.
+/// centreline reads high against `pitch_r` by however far it was raised.
+///
+/// That second figure is a **measured negative control**, not a derivation:
+/// reinstating the pre-#5580 submerged channel (`land_r = pitch_r + groove_r −
+/// 0.3mm`) and re-running this test makes the mesh read `land_max` =
+/// 26.700209 mm against `pitch_r` = 24 mm — 2.700 mm out, 90 % of `groove_r`,
+/// 9x this band, caught. The same run is also why both assertions reference
+/// `pitch_r` and not `land_r`: against `land_r` that submerged drum reads
+/// 0.2 µm out and sails through, and its `seat_min` is unchanged at
+/// 20.979 mm (the swept tube bottoms at `pitch_r − groove_r` whatever the land
+/// does), so neither of the other two mesh comparisons would have noticed it
+/// either. There is no regression this band could swallow that a tighter one
+/// would catch.
 const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 
 // ── Shared prologue ──────────────────────────────────────────────────────────
