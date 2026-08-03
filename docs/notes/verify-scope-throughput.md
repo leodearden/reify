@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 17 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 17 | 17 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 17 | 17 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 17 | 3 |
+| (a) docs-only | `docs/note.md` | — | 18 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 18 | 18 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 18 | 18 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 18 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 17 |  0 |
-| reify-doc  | 17 | 17 |
-| reify-eval | 17 | 17 |
-| gui-only   | 17 |  3 |
+| docs-only  | 18 |  0 |
+| reify-doc  | 18 | 18 |
+| reify-eval | 18 | 18 |
+| gui-only   | 18 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -123,6 +123,24 @@ those cells. The human-readable "Plan-Step Counts" table had drifted stale at
 re-synced to 17 here, restoring the table↔sentinel lockstep that task 5125
 established as the standing convention._
 
+_Counts bumped again 2026-08-03 (task 5076, second of two): `add_test_passes()`
+now emits a gui-feature TEST-EXECUTION pass (`-p reify-gui --features gui`) at
+the tail of the profile loop, inside the `@@SEMAPHORE_ACQUIRE@@` /
+`@@SEMAPHORE_RELEASE@@` bracket. This is the execution half of the same
+INV-FEA-1 gap the lint-side grep gate above closes statically: reify-gui's
+`#[cfg(feature = "gui")]` code was reached by NO workspace pass (all run without
+`--features gui`) and was only COMPILE-checked, so a change flipping
+`engine.rs`'s gui arm to `MorphRegistration::Unavailable` compiled clean and
+passed every pass silently. Net change: +1 non-comment plan line wherever
+`add_test_passes()` emits — every `scope=all` plan, and `scope=branch` for the
+`RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
+gui-only branch stays 3 (`RUN_RUST=0` there). The sentinel and the table move
+17 → 18 in lockstep for those cells. It is emitted ONCE per plan rather than
+per profile — `--features` is a feature axis, not a profile axis — so
+`--profile both` does not double it; and it is skipped for
+`DF_VERIFY_ROLE=offline`, whose plan runs the heavy `#[ignore]` partition only,
+so neither of those shapes sees the +1._
+
 ## Heavy-Work Narrowed Markers
 
 `scope=all` always produces: `cargo clippy --workspace` and
@@ -145,7 +163,7 @@ For shape (c), the scope=branch plan equals scope=all minus: replacing
 `--workspace` with `-p reify-eval` in clippy/nextest (narrowing). Task 4451:
 the gated pass is gone; reify-eval runs in the single nextest pool.
 
-For shape (d), 14 of the 17 scope=all steps are Rust; branch scope drops
+For shape (d), 15 of the 18 scope=all steps are Rust; branch scope drops
 all of them and retains only the 3 GUI npm steps.
 
 ## Wall-Clock Measurements
@@ -161,7 +179,7 @@ real  0.233 s
 
 The branch scope detects that only docs were changed, produces an empty plan
 (0 steps), and exits immediately.  The equivalent scope=all run would proceed
-to execute all 17 steps including `cargo clippy --workspace` (≈ 20 s warm)
+to execute all 18 steps including `cargo clippy --workspace` (≈ 20 s warm)
 and `cargo nextest run --workspace` (≈ 10+ min warm; task 4451: OCCT crates
 are now in the pool, bounded by the nextest occt group max-threads=4).
 
@@ -175,15 +193,15 @@ Scripting overhead only — plan is printed but no steps execute.
 
 ## Delta as Evidence
 
-- **docs-only branch:** saves all 17 steps. Verify exits in < 0.3 s.
+- **docs-only branch:** saves all 18 steps. Verify exits in < 0.3 s.
 - **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
-  nextest to `-p reify-doc`.  17 vs 17 plan steps (same count; savings are
+  nextest to `-p reify-doc`.  18 vs 18 plan steps (same count; savings are
   wall-clock from skipping unaffected crate compilation).
 - **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
   to `-p reify-eval` (task 4451: gated pass folded into the nextest pool).
-  17 vs 17 plan steps.
+  18 vs 18 plan steps.
 - **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
-  3 vs 17 plan steps.
+  3 vs 18 plan steps.
 
 No numeric improvement threshold is asserted here.  The step counts and the
 absent/narrowed heavy-work markers are the evidence.
