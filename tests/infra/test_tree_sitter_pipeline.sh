@@ -550,11 +550,31 @@ test_generate_script_fails_without_grammar() {
     # Negative test: tree-sitter-generate.sh must exit non-zero when
     # grammar.js is missing, with a clear error message.
     local grammar="$TS_DIR/grammar.js"
-    local backup="$TS_DIR/grammar.js.bak"
 
-    # Move grammar.js away
-    mv "$grammar" "$backup"
+    # The backup lives OUTSIDE the tracked source tree, for the same reason as
+    # test_auto_generation_rebuilds_parser and
+    # test_freshness_detects_and_repairs_stale_archive. This site is the WORST of
+    # the three: grammar.js is TRACKED (unlike the gitignored src/parser.c), so
+    # while this test runs `git status --short` reported BOTH ` D
+    # tree-sitter-reify/grammar.js` — a tracked-file deletion — and an untracked
+    # tree-sitter-reify/grammar.js.bak (`git check-ignore` exits 1 on it; the
+    # .gitignore covers src/parser.c and *.o, not *.bak). The lane cleanliness
+    # guards, the lane audit and scripts/land.sh all read that as a dirty worktree.
+    local bakdir backup
+    bakdir=$(mktemp -d) || return 1
+    backup="$bakdir/grammar.js.orig"
+    # Registered BEFORE the move, so an interrupt in the gap cannot leave the tree
+    # with grammar.js gone and no registered restore — the previous order (move
+    # first, register second) had exactly that window, and here the file at risk
+    # is tracked. Restore is registered AHEAD of the `rm -rf` since cleanup
+    # replays in insertion order. `mv -f` is atomic and self-consuming.
     CLEANUP_ACTIONS+=("mv -f '$backup' '$grammar'")
+    CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
+    # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them
+    # as `if "$t"; then`), so an unchecked mv would fail silently and the assertion
+    # below would then be checking the script against a grammar.js that is still
+    # present — passing or failing for the wrong reason.
+    mv "$grammar" "$backup" || return 1
 
     # The script should fail
     assert_cmd_fails "generate script fails without grammar.js" \
