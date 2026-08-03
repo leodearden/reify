@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::tests::test_helpers::{
     assert_rigid_mass_props_determined, assert_rigid_mass_props_final,
-    assert_rigid_mass_props_not_final, cwd_lock, rigid_mass_props_fixture_path,
-    rigid_mass_props_session, rigid_mass_props_session_seeded, visible_realization_keys,
+    assert_rigid_mass_props_not_final, cwd_lock, find_moi_principal_constraint,
+    rigid_mass_props_fixture_path, rigid_mass_props_session, rigid_mass_props_session_seeded,
+    visible_realization_keys,
 };
 
 use reify_constraints::SimpleConstraintChecker;
@@ -3037,4 +3038,209 @@ fn degenerate_geometry_after_rebuild_clears_the_retained_mass_props() {
             &format!("re-render {i} after the degenerating edit"),
         );
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task #5338 amendment round 2 — the WARM-EDIT half of retention invalidation.
+//
+// `degenerate_geometry_after_rebuild_clears_the_retained_mass_props` above covers
+// the warm edit that DOES re-dispatch (an op-arg edit whose realization then
+// resolves to nothing). The pair below covers the warm edit that does NOT: an
+// edit to a mass input that never reaches a geometry op's scalar args, so the
+// realization stays HASH-EXEMPT, is never dispatched, and the delta can carry no
+// fresh value at all. There the "a fresh delta always wins" half of the retention
+// contract is structurally unavailable, and only an explicit invalidation can stop
+// the pre-edit value being replayed as `determined` / `final`.
+//
+// The second test pins the SCOPE of that invalidation: it must be entity-scoped,
+// never a blunt full clear.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A `: Rigid` body whose `material.density` — and therefore its auto-derived
+/// `mass` (`volume(geometry) * material.density`) and `moment_of_inertia`
+/// (`moment_of_inertia(geometry, body_density)`) — is driven by a param that is
+/// NOT a scalar argument of any geometry op.
+///
+/// `density_scale : Real` rather than a `Density`-typed param is deliberate:
+/// `parse_value_string` (engine.rs) only knows `UNIT_TABLE`'s deg/rad/mm/cm/m, so
+/// a `Density`-typed param is not editable through `set_parameter` at all. A plain
+/// `Real` multiplier is the reachable spelling of the same defect, and the shape a
+/// user actually authors (a `param body_density` folded into `Material(...)`).
+///
+/// At load `density_scale = 1.0`, so the density is bits-exact `7850.0` — which is
+/// what `with_inertia_tensor_result` keys on (test_helpers.rs) — and the cold load
+/// resolves normally.
+const RIGID_DENSITY_SCALE_SRC: &str = r#"structure def RigidDensityScale : Rigid {
+    param depth : Length = 300mm
+    param density_scale : Real = 1.0
+    param geometry : Solid = box(100mm, 100mm, depth)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3 * density_scale, youngs_modulus: 200GPa)
+    constraint depth > 0mm
+}"#;
+
+/// [`RIGID_TWO_BODY_SRC`] with an EDITABLE op arg on body A (`depth`, feeding its
+/// box), so a warm `set_parameter` can re-dispatch body A while body B stays
+/// hash-exempt.
+///
+/// A separate const rather than an edit to `RIGID_TWO_BODY_SRC`: that one is
+/// consumed by `hidden_rigid_body_mass_props_are_not_served_as_final` and
+/// `full_scene_debug_read_does_not_leak_hidden_cells_into_the_retention_cache`,
+/// whose premises rest on both bodies having a CONSTANT input cone.
+const RIGID_TWO_BODY_EDITABLE_SRC: &str = r#"structure def RigidBodyA : Rigid {
+    param depth : Length = 300mm
+    param geometry : Solid = box(100mm, 100mm, depth)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}
+
+structure def RigidBodyB : Rigid {
+    param geometry : Solid = box(50mm, 50mm, 150mm)
+    param material : Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
+}"#;
+
+/// Task #5338 amendment round 2 (reviewer blocking issue) — a warm edit of a
+/// mass input that is not a geometry-op arg must not replay the PRE-EDIT mass as
+/// a fresh, authoritative value.
+///
+/// RED before the accompanying `engine.rs` change, and the chain is entirely
+/// measurable on this branch:
+///
+///  * `set_parameter` (engine.rs) commits through `core.commit_check`, which
+///    touches only `last_check`. The `geometry_derived_cache.clear()` lives in
+///    `commit_state`, which a warm edit NEVER reaches — so retention survives the
+///    edit untouched.
+///  * `edit_param` mutates the EXISTING snapshot graph in place rather than
+///    rebuilding it, so `RealizationNodeData.input_cone_hash` survives too; and
+///    that hash is a fold over the realization's own geometry-op scalar args ONLY
+///    (`compute_realization_upstream_values_hash_from_ops`, engine_build.rs).
+///    `density_scale` reaches `material.density`, never an op arg.
+///  * Unchanged hash ⇒ HASH-EXEMPT ⇒ dropped from the scheduled seed ⇒ kernel ops
+///    skipped ⇒ no mesh in `result.meshes`, and an explicit `Value::Undef` in
+///    `result.values`.
+///  * In `surface_geometry_derived_cells` the
+///    `Some(Value::Undef) if dispatched_entities.contains(..)` degeneration guard
+///    therefore does NOT fire (the entity was not dispatched), and the
+///    `_ => cache.get(&id)` arm replays the pre-edit mass as `determined` /
+///    `freshness = "final"` / `reason = None`.
+///
+/// That is strictly worse than the pre-#5338 behaviour, where the cell read
+/// `Undef`. Degrading to `Undef` is the fail-safe direction and is what this test
+/// requires.
+///
+/// The PD-constraint assertion is not redundant with the cell assertion: a
+/// re-check driven off a retained pre-edit `moi_principal` is the same stale value
+/// wearing a constraint badge, and `surface_geometry_derived_cells` explicitly
+/// overlays cache-sourced cells into the re-check input.
+#[test]
+fn warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_DENSITY_SCALE_SRC, "rigid_density_scale")
+        .expect("load_from_source should succeed for the density-scale source");
+    assert_rigid_mass_props_final(&state, "RigidDensityScale", "cold load");
+
+    // (1) The first SELECTIVE rebuild — the pass that stores the realization's
+    //     `input_cone_hash` AND populates the retention cache. Both halves of the
+    //     defect's precondition are established here; without it the edit below
+    //     would simply re-dispatch under full scope and prove nothing.
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session
+        .build_gui_state()
+        .expect("first selective rebuild should succeed");
+    assert_rigid_mass_props_final(&state, "RigidDensityScale", "first selective rebuild");
+
+    // (2) The warm edit. `density_scale` doubles the body's density, so every
+    //     mass prop is now wrong by construction — but no geometry op arg moved.
+    let state = session
+        .set_parameter("RigidDensityScale.density_scale", "2.0")
+        .expect("set_parameter should succeed for the Real density multiplier");
+    let scale = state
+        .values
+        .iter()
+        .find(|v| v.entity_path == "RigidDensityScale" && v.name == "density_scale")
+        .expect("expected a `density_scale` value cell after the edit");
+    let scale_value: f64 = scale.value.parse().unwrap_or_else(|_| {
+        panic!(
+            "expected a numeric `density_scale` cell after the edit; got {:?}",
+            scale.value
+        )
+    });
+    assert_eq!(
+        scale_value, 2.0,
+        "the edit must have taken effect, else this test proves nothing about the \
+         post-edit path; got {:?}",
+        scale.value
+    );
+    assert_rigid_mass_props_not_final(
+        &state,
+        "RigidDensityScale",
+        "after the non-op-arg density edit",
+    );
+    assert_ne!(
+        find_moi_principal_constraint(&state).status,
+        "Satisfied",
+        "the `moi_principal[0] > 0` PD constraint must not be re-checked to \
+         Satisfied off a RETAINED pre-edit `moi_principal` — that is the same stale \
+         value wearing a constraint badge"
+    );
+
+    // (3) …and the dropped value must not creep back on the next hash-exempt pass.
+    let state = session
+        .build_gui_state()
+        .expect("rebuild after the density edit should succeed");
+    assert_rigid_mass_props_not_final(&state, "RigidDensityScale", "rebuild after the density edit");
+}
+
+/// Task #5338 amendment round 2 — pins the SCOPE of the warm-edit invalidation.
+///
+/// Expected GREEN both before and after the accompanying `engine.rs` change: it
+/// exists to forbid the obvious over-correction. A blunt
+/// `geometry_derived_cache.clear()` on every `set_parameter` would drop every
+/// UNAFFECTED entity's retention too, and those entities stay hash-exempt until
+/// the next recompile — so their mass-prop cells would read `Undef` indefinitely,
+/// which is #5338 itself, re-opened for every body the user did not touch. This
+/// test fails at step (3)'s `RigidBodyB` if that shortcut is ever taken.
+///
+/// Body A's `depth` IS an op arg, so its input-cone hash changes, it dispatches,
+/// and the delta carries fresh values for it — the assertion there is that a
+/// correct invalidation does not break the ordinary re-dispatch path either.
+#[test]
+fn warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props() {
+    let mut session = rigid_mass_props_session();
+    let state = session
+        .load_from_source(RIGID_TWO_BODY_EDITABLE_SRC, "two_body_editable")
+        .expect("load_from_source should succeed for the editable two-body source");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "cold load");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "cold load");
+
+    // (1) Both bodies visible and demanded: both land in the retention cache.
+    session.sync_demand(&visible_realization_keys(&state));
+    let state = session
+        .build_gui_state()
+        .expect("first selective rebuild should succeed");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "first selective rebuild");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "first selective rebuild");
+
+    // (2) Edit ONE body's op arg.
+    let state = session
+        .set_parameter("RigidBodyA.depth", "250mm")
+        .expect("set_parameter should succeed for body A's depth");
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.entity_path == "RigidBodyA" && v.name == "depth")
+        .expect("expected a `RigidBodyA.depth` value cell after the edit");
+    assert_eq!(
+        depth.value, "250",
+        "the edit must have taken effect; got {:?}",
+        depth.value
+    );
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "edited body (re-dispatched)");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "untouched body (hash-exempt)");
+
+    // (3) …and both must survive the following hash-exempt rebuild.
+    let state = session
+        .build_gui_state()
+        .expect("rebuild after the depth edit should succeed");
+    assert_rigid_mass_props_final(&state, "RigidBodyA", "edited body, next rebuild");
+    assert_rigid_mass_props_final(&state, "RigidBodyB", "untouched body, next rebuild");
 }
