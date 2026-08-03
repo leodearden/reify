@@ -182,6 +182,79 @@ pub fn compile_source_with_stdlib(source: &str) -> reify_compiler::CompiledModul
     reify_compiler::compile_with_stdlib(&parsed)
 }
 
+/// Build the function table an `EvalContext` needs in order to evaluate a module
+/// compiled by [`compile_source_with_stdlib`] the way PRODUCTION does.
+///
+/// # Why this exists
+///
+/// [`compile_source_with_stdlib`] returns a [`reify_compiler::CompiledModule`]
+/// whose `.functions` is **user-source-only**. The compile pipeline pushes only
+/// the module's own AST fns into `ctx.functions`
+/// (`compile_builder/functions_phase.rs:79-92`); prelude fns arrive through a
+/// *different* parameter and are flat-mapped into `ctx.resolution_functions`
+/// only (`functions_phase.rs:101-105`, re-run at `traits_phase.rs:194-200`), and
+/// `ctx.rs:201` (`functions: self.functions`) then drops that prelude table when
+/// the `CompiledModule` is built.
+///
+/// So `EvalContext::new(&values, &module.functions)` evaluates against a table
+/// in which **no stdlib `.ri` body is registered at all**. Every stdlib call
+/// misses [`reify_expr::find_matching_compiled_function`] and falls to the
+/// lookup-miss arm (`reify-expr/src/lib.rs:1625`), which returns `Value::Undef`.
+/// A test written against that table can never observe a stdlib placeholder
+/// body, so it cannot distinguish "the intercept fired" from "the intercept is
+/// missing and the call simply evaluated to nothing".
+///
+/// Passing the slice this function returns instead restores the missing
+/// competitor: the stdlib `.ri` bodies are registered and genuinely compete with
+/// the reify-expr intercepts.
+///
+/// # Why the append is UNFILTERED
+///
+/// This mirrors [`reify_eval::merge_functions`] (`reify-eval/src/lib.rs:1425-1432`,
+/// `pub(crate)` so it cannot be called directly) — the table PRODUCTION
+/// evaluation actually uses — and deliberately NOT
+/// [`reify_compiler::merge_prelude_functions`] (`reify-compiler/src/lib.rs:332`).
+///
+/// The two differ on collisions. `merge_prelude_functions` FILTERS out any
+/// prelude entry whose `(name, arity, param_types)` triple matches a user fn,
+/// because it builds the COMPILE-TIME overload-resolution table where a
+/// duplicate triple is an ambiguous-overload error. reify-eval omits that filter
+/// (its own doc, `lib.rs:1412-1419`) because dispatch is a first-match-wins
+/// linear scan, so a shadowed prelude entry is permanently unreachable anyway.
+///
+/// The two are therefore dispatch-EQUIVALENT; this is a fidelity choice, not a
+/// behaviour fix. But a harness whose entire purpose is "evaluate the way
+/// production does" should not quietly diverge from production in how it builds
+/// its table, so the runtime shape is what gets copied. User functions stay
+/// FIRST so they still shadow prelude functions, exactly as at runtime.
+///
+/// # Example
+///
+/// ```ignore
+/// let module = compile_source_with_stdlib("structure S { let v = through(5mm) }");
+/// let expr = get_let_expr(&module, "v");
+/// let values = ValueMap::new();
+/// let functions = prelude_backed_functions(&module);
+/// let ctx = EvalContext::new(&values, &functions);
+/// ```
+pub fn prelude_backed_functions(
+    module: &reify_compiler::CompiledModule,
+) -> Vec<reify_ir::CompiledFunction> {
+    // Flatten the prelude exactly as `reify_eval::Engine::with_prelude_and_kernels`
+    // does (reify-eval/src/engine_admin.rs:255-258) when populating its
+    // `prelude_functions` field.
+    let prelude = reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .flat_map(|m| m.functions.iter().cloned());
+
+    // ...then merge with the same two lines as `reify_eval::merge_functions`
+    // (reify-eval/src/lib.rs:1429-1431): user fns first, prelude appended
+    // unconditionally.
+    let mut merged = module.functions.clone();
+    merged.extend(prelude);
+    merged
+}
+
 /// Convert parse-layer [`reify_ast::ParseError`]s into `Severity::Error`
 /// [`Diagnostic`]s so they can be surfaced through a `CompiledModule`'s
 /// `diagnostics` list. Each parse error's span is attached as a label.

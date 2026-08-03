@@ -17,8 +17,8 @@
 //! is covered separately by the step-5/6 tests appended to this file later.
 //!
 //! The `e2e_*_with_stdlib` section at the end of this file instead compiles the
-//! real stdlib and evaluates under
-//! `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! real stdlib and evaluates under a prelude-backed function table built by
+//! `reify_test_support::prelude_backed_functions` — tasks 5410 and 5593, PRD
 //! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
 //! What those tests do and do not guard is explained ONCE, in the CANONICAL
 //! MECHANISM NOTE above `e2e_or_default_some_with_stdlib` in
@@ -588,15 +588,28 @@ fn map_err_undef_subject_returns_undef() {
 //
 // MECHANISM: see the CANONICAL MECHANISM NOTE above
 // `e2e_or_default_some_with_stdlib` in `option_recovery_eval_tests.rs` — the
-// single copy for all three combinator eval-test files. In short: these
-// guard that THE INTERCEPT FIRES, measured; they never observe the `.ri`
-// placeholder bodies, because `module.functions` is user-source-only and the
-// intercept-removed fallthrough to `eval_user_function_call` yields
-// `Value::Undef`. Reproducing the PRD's silent-WRONG-VALUE mode needs a
-// prelude-backed function table, deferred to #5593.
+// single copy for all three combinator eval-test files. In short: these guard
+// that THE INTERCEPT BEATS THE PLACEHOLDER, measured. They evaluate under
+// `reify_test_support::prelude_backed_functions(&module)` (task 5593), so the
+// stdlib `.ri` bodies are registered and genuinely compete.
 //
-// MEASURED (task 5410 step-11, three intercept gates disabled): all seven
-// guards below fail with `left: Undef`.  Never a placeholder value.
+// MEASURED (task 5593, three intercept gates disabled): all seven guards below
+// fail with the `.ri` placeholder's value, never `Undef` — `0mm` from
+// `{ dflt }` (unwrap_or, and see the overload note below), `true`/`false` from
+// `{ true }`/`{ false }` (is_ok, is_err), the `Err` subject from `{ r }`
+// (or_else, map_err), and a naked `String("e")` from `{ err }` (both ok_or
+// guards). Per-guard table: prelude_backed_harness_tests.rs.
+//
+// OVERLOAD NOTE, measured and benign: these fixtures' `arg[0].result_type` is
+// `Enum("Result")`, which can never exact-equal
+// `Applied{name:"Result", args:[T,E]}`, so pass 1 of
+// `find_matching_compiled_function` misses BOTH candidates and pass 2's
+// wildcard takes the first in table order — the `Option<T>` overload, since
+// `std.option_recovery` loads before `std.result`. Observable value is
+// unaffected because each overload pair returns the same positional argument
+// (`{ dflt }` / `{ r }` vs `{ dflt }` / `{ o }`). Pre-existing reify-expr
+// resolution behaviour, out of scope here; recorded so it is not relied on
+// silently.
 //
 // Deliberate REGRESSION LOCKS, not RED-first tests — the same framing
 // `result_fallback_eval_tests.rs` already documents for itself.
@@ -604,12 +617,12 @@ fn map_err_undef_subject_returns_undef() {
 /// End-to-end: `unwrap_or(Ok { value: 5mm }, 0mm)` compiled with the real
 /// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: 0mm` — `unwrap_or`'s `.ri` placeholder `{ dflt }`
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, so under
-/// #5593's prelude-backed harness the `Ok` subject is what makes this
+/// the prelude-backed harness the `Ok` subject is what makes this
 /// discriminate: an `Err` subject makes `0mm` the correct answer, agreeing with
 /// the placeholder's `dflt`.
 #[test]
@@ -619,25 +632,27 @@ fn e2e_result_unwrap_or_ok_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_5mm(),
         "e2e: unwrap_or(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, the stdlib `{{ dflt }}` placeholder wins and this \
+         yields 0mm (matched candidate is option_recovery.ri's Option overload; see the \
+         OVERLOAD NOTE in the section banner above)"
     );
 }
 
 /// End-to-end: `or_else(Err { error: "e" }, Ok { value: 7mm })` compiled with
 /// the real stdlib must evaluate to the ALTERNATIVE, `Ok{value:7mm}`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: Err { error: "e" }` — `or_else`'s `.ri` placeholder `{ r }` returns the subject
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E> { r }`
-/// (returns the SUBJECT), so under #5593's prelude-backed harness the `Err`
+/// (returns the SUBJECT), so under the prelude-backed harness the `Err`
 /// subject is MANDATORY. The Ok-subject form
 /// `or_else(Ok{value:5mm}, Ok{value:7mm})` compiles and returns `Ok{value:5mm}`,
 /// but the placeholder returns that same subject, so the two would agree. Only
@@ -649,7 +664,8 @@ fn e2e_result_or_else_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     let val_7mm = Value::Scalar {
         si_value: 0.007,
         dimension: DimensionVector::LENGTH,
@@ -658,20 +674,22 @@ fn e2e_result_or_else_err_with_stdlib() {
         eval_expr(expr, &ctx),
         val_ok(val_7mm),
         "e2e: or_else(Err{{error:\"e\"}}, Ok{{value:7mm}}) compiled via stdlib must evaluate to \
-         the alternative Ok{{value:7mm}} — if the intercept stops firing this falls through \
-         to eval_user_function_call and yields Undef"
+         the alternative Ok{{value:7mm}} — if the intercept stops firing, the stdlib \
+         subject-returning placeholder wins and this yields the Err{{error:\"e\"}} subject \
+         (matched candidate is option_recovery.ri's `{{ o }}` Option overload; see the \
+         OVERLOAD NOTE in the section banner above)"
     );
 }
 
 /// End-to-end: `is_ok(Err { error: "e" })` compiled with the real stdlib must
 /// evaluate to `false`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: Bool(true)` — `is_ok`'s `.ri` placeholder `{ true }`
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
-/// `pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }`, so under #5593's
-/// prelude-backed harness the `Err` subject is what makes this discriminate: an
+/// `pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }`, so under the prelude-backed
+/// harness the `Err` subject is what makes this discriminate: an
 /// `Ok` subject coincides with the placeholder's hardcoded `true`.
 #[test]
 fn e2e_result_is_ok_err_with_stdlib() {
@@ -680,26 +698,27 @@ fn e2e_result_is_ok_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         Value::Bool(false),
         "e2e: is_ok(Err{{error:\"e\"}}) compiled via stdlib must evaluate to false — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, result.ri's `{{ true }}` placeholder wins and \
+         this yields true"
     );
 }
 
 /// End-to-end: `is_err(Err { error: "e" })` compiled with the real stdlib must
 /// evaluate to `true`.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above).
+/// MEASURED under intercept removal: fails with `left: Bool(false)` — `is_err`'s `.ri` placeholder `{ false }`
+/// (see the section banner above).
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn is_err<T, E>(r: Result<T, E>) -> Bool { false }`. Shares the
 /// `Err { error: "e" }` fixture with `e2e_result_is_ok_err_with_stdlib` above,
-/// because under #5593's prelude-backed harness one subject discriminates BOTH
+/// because under the prelude-backed harness one subject discriminates BOTH
 /// predicates: the two placeholder constants are the exact inverses of the
 /// correct answers for an `Err`, whereas an `Ok` subject would coincide with
 /// both.
@@ -710,24 +729,25 @@ fn e2e_result_is_err_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         Value::Bool(true),
         "e2e: is_err(Err{{error:\"e\"}}) compiled via stdlib must evaluate to true — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, result.ri's `{{ false }}` placeholder wins and \
+         this yields false"
     );
 }
 
 /// End-to-end: `ok_or(some(5mm), "e")` compiled with the real stdlib must
 /// evaluate to `Ok{value:5mm}` — the Option→Result bridge's some-path.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` (see the section
-/// banner above). `result.ri` ships the typecheck-only
+/// MEASURED under intercept removal: fails with `left: String("e")` — `ok_or`'s `.ri` placeholder `{ err }` returns the naked error, not an `Err`
+/// (see the section banner above). `result.ri` ships the typecheck-only
 /// `pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }`, which
 /// returns the bare `Value::String("e")` and never constructs a `Result` enum
-/// at all — that is what #5593's prelude-backed harness would observe here.
+/// at all — that is what this harness observes.
 ///
 /// Beyond guarding the intercept, the some-path pins the Ok-WRAPPING direction
 /// of the bridge: the intercept must not merely unbox `o`, it must re-wrap the
@@ -739,23 +759,26 @@ fn e2e_ok_or_some_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_ok(val_5mm()),
         "e2e: ok_or(some(5mm), \"e\") compiled via stdlib must evaluate to Ok{{value:5mm}} — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ err }}` placeholder wins \
+         and this yields the naked String(\"e\"), unwrapped by no Result at all"
     );
 }
 
 /// End-to-end: `ok_or(none, "e")` compiled with the real stdlib must evaluate
 /// to `Err{error:"e"}` — the Option→Result bridge's none-path.
 ///
-/// MEASURED under intercept removal: fails with `left: Undef` — same mechanism
+/// MEASURED under intercept removal: fails with `left: String("e")` — `ok_or`'s
+/// `.ri` placeholder body `{ err }` returns the naked error, not an `Err`.
+/// Same mechanism
 /// as `e2e_ok_or_some_with_stdlib` above (see the section banner).
 ///
-/// FIXTURE RATIONALE — under #5593's prelude-backed harness the none-path is
+/// FIXTURE RATIONALE — under the prelude-backed harness the none-path is
 /// NOT redundant even though its error payload is "the same string" the
 /// placeholder returns, because the two differ in SHAPE —
 /// `Enum{Result::Err{error:String("e")}}` from the intercept vs a naked
@@ -770,13 +793,14 @@ fn e2e_ok_or_none_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_err("e"),
         "e2e: ok_or(none, \"e\") compiled via stdlib must evaluate to Err{{error:\"e\"}} — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, option_recovery.ri's `{{ err }}` placeholder wins \
+         and this yields the naked String(\"e\") rather than an Err wrapping it"
     );
 }
 
@@ -789,12 +813,14 @@ fn e2e_ok_or_none_with_stdlib() {
 /// arm rather than in `option_recovery::is_combinator` (that gate stays pure,
 /// INV-1, and cannot apply a lambda).
 ///
-/// MEASURED under intercept removal: fails with `left: Undef`. This one covers
+/// MEASURED under intercept removal: fails with `left: Err { error: 3mm }` —
+/// `map_err`'s `.ri` placeholder body `{ r }` returns the subject unchanged,
+/// with `f` never applied. This one covers
 /// the THIRD gate — the bare `map_err`/2 branch (see the section banner above).
 /// `result.ri` ships the typecheck-only
 /// `pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }`,
 /// which returns the undoubled `Err{error:3mm}` with `f` never applied — that
-/// is what #5593's prelude-backed harness would observe here.
+/// is what this harness observes.
 ///
 /// Unique value of this guard, and it holds IN THIS HARNESS: it is the only
 /// Result-side test in task 5410 that proves the compiled LAMBDA argument
@@ -817,7 +843,8 @@ fn e2e_map_err_err_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     let val_6mm = Value::Scalar {
         si_value: 0.006,
         dimension: DimensionVector::LENGTH,
@@ -830,7 +857,7 @@ fn e2e_map_err_err_with_stdlib() {
             payload: vec![("error".to_string(), val_6mm)],
         },
         "e2e: map_err(Err{{error:3mm}}, |e| e * 2) compiled via stdlib must evaluate to \
-         Err{{error:6mm}} — if the map_err/2 gate stops firing this falls through to \
-         eval_user_function_call and yields Undef"
+         Err{{error:6mm}} — if the map_err/2 gate stops firing, result.ri's `{{ r }}` \
+         placeholder wins and this yields the UNMAPPED subject Err{{error:3mm}}"
     );
 }

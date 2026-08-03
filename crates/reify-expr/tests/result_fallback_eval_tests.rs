@@ -25,17 +25,14 @@
 //! (ignoring `Ok`) — silently wrong, and this test would catch it.
 //!
 //! The `e2e_*_with_stdlib` test at the end of this file instead compiles the
-//! real stdlib and evaluates under
-//! `EvalContext::new(&values, &module.functions)` — task 5410, PRD
+//! real stdlib and evaluates under a prelude-backed function table built by
+//! `reify_test_support::prelude_backed_functions` — tasks 5410 and 5593, PRD
 //! docs/prds/v0_6/placeholder-type-eradication-ratchet.md §8 task ζ / BT10.
-//!
-//! IMPORTANT CORRECTION to the "would fall through to the placeholder `.ri`
-//! body" sentence in the paragraph above: that is true of a real compiled
-//! program, but NOT of this test harness even with the stdlib compiled in. The
-//! stdlib-compiled test guards "THE INTERCEPT FIRES" (measured), not "the
-//! placeholder does not silently win". Why, in full, exactly once: the
-//! CANONICAL MECHANISM NOTE above `e2e_or_default_some_with_stdlib` in
-//! `option_recovery_eval_tests.rs`.
+//! Under that table the "would fall through to the placeholder `.ri` body"
+//! sentence above holds of the harness too, and is measured: with the intercept
+//! removed the guard observes `0mm` from `{ dflt }`, the silent-wrong-value mode
+//! itself. Why, in full, exactly once: the CANONICAL MECHANISM NOTE above
+//! `e2e_or_default_some_with_stdlib` in `option_recovery_eval_tests.rs`.
 
 use reify_core::{DimensionVector, Type};
 use reify_expr::{EvalContext, eval_expr};
@@ -191,14 +188,13 @@ fn fallback_option_subject_regression_guard() {
 // MECHANISM: see the CANONICAL MECHANISM NOTE above
 // `e2e_or_default_some_with_stdlib` in `option_recovery_eval_tests.rs` — the
 // single copy for all three combinator eval-test files. In short: this guards
-// that THE INTERCEPT FIRES, measured; it never observes the `.ri` placeholder
-// body, because `module.functions` is user-source-only and the
-// intercept-removed fallthrough to `eval_user_function_call` yields
-// `Value::Undef`. Reproducing the PRD's silent-WRONG-VALUE mode needs a
-// prelude-backed function table, deferred to #5593.
+// that THE INTERCEPT BEATS THE PLACEHOLDER, measured. It evaluates under
+// `reify_test_support::prelude_backed_functions(&module)` (task 5593), so the
+// stdlib `.ri` body is registered and genuinely competes.
 //
-// MEASURED (task 5410 step-11, three intercept gates disabled): the guard
-// below fails with `left: Undef`.  Never a placeholder value.
+// MEASURED (task 5593, three intercept gates disabled): the guard below fails
+// with `left: 0mm` — `fallback`'s `.ri` placeholder body `{ dflt }` — not
+// `Undef`. Per-guard table: prelude_backed_harness_tests.rs.
 //
 // Like the rest of this file this is a deliberate REGRESSION LOCK, not a
 // RED-first test: the intercept is already live, so it is GREEN the moment it
@@ -208,7 +204,8 @@ fn fallback_option_subject_regression_guard() {
 /// stdlib must evaluate to 5mm — the unboxed inner `Ok` payload.
 ///
 /// MEASURED under intercept removal (equivalently: with just `"fallback"`
-/// dropped from `option_recovery::is_combinator`): fails with `left: Undef`
+/// dropped from `option_recovery::is_combinator`): fails with `left: 0mm`,
+/// the `{ dflt }` placeholder
 /// (see the section banner above).
 ///
 /// What this adds over the `eval_simple` tests above: those prove the shared
@@ -219,7 +216,7 @@ fn fallback_option_subject_regression_guard() {
 ///
 /// FIXTURE RATIONALE — `result.ri` ships the typecheck-only
 /// `pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }`, so under
-/// #5593's prelude-backed harness the `Ok` subject is what makes this
+/// the prelude-backed harness the `Ok` subject is what makes this
 /// discriminate: an `Err` subject recovers to `0mm`, exactly what the
 /// placeholder returns.
 #[test]
@@ -229,12 +226,14 @@ fn e2e_result_fallback_ok_with_stdlib() {
     );
     let expr = reify_test_support::get_let_expr(&module, "v");
     let values = ValueMap::new();
-    let ctx = EvalContext::new(&values, &module.functions);
+    let functions = reify_test_support::prelude_backed_functions(&module);
+    let ctx = EvalContext::new(&values, &functions);
     assert_eq!(
         eval_expr(expr, &ctx),
         val_5mm(),
         "e2e: fallback(Ok{{value:5mm}}, 0mm) compiled via stdlib must evaluate to 5mm — \
-         if the intercept stops firing this falls through to eval_user_function_call \
-         and yields Undef"
+         if the intercept stops firing, the stdlib `{{ dflt }}` placeholder wins and this \
+         yields 0mm (matched candidate is option_recovery.ri's Option overload; see the \
+         OVERLOAD NOTE in result_combinator_eval_tests.rs)"
     );
 }
