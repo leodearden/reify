@@ -714,8 +714,10 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
 
 - **μ — Round-trip property test (Invariant R). Integration gate for cluster C.**
   *Modules:* `crates/reify-compiler/tests/unit_label_round_trip.rs` (new; §11 Q3).
-  *Change:* for every dimension in NAMED_DIMENSIONS (51 entries, `dimension.rs:514-595` —
-  **[drift]**, its own doc comment still says 34) and every label from S1–S4, assert Invariant R.
+  *Change:* for every dimension in NAMED_DIMENSIONS (52 rows / 51 distinct `DimensionVector`s —
+  re-measured 2026-08-03 at `dimension.rs:576-663`, superseding the earlier `:514-595`/51-entries
+  **[drift]** note; its own doc comment still says 34) and every label from S1–S4, assert
+  Invariant R.
   Seed one anti-vacuity self-test: a deliberately non-ASCII label injected into the harness's
   input makes it fail.
   *Signal:* the test is red on pre-κ/pre-λ main (for `·` and for `L`) and green after; a new

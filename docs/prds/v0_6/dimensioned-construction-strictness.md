@@ -508,6 +508,16 @@ aliases the registry does not name** — `Torque` (`stdlib/ports_mechanical.ri:2
 `VolumetricFlowRate` (`stdlib/ports_fluid.ri:34`), `Jerk`, `Permittivity`, … A sweep driven
 by the registry alone **under-counts**; α must reproduce the alias extension.
 
+> **Partially superseded by η (task 5785, merge `61300d09`).** This measurement predates η.
+> `NAMED_DIMENSIONS` has since moved — re-measured 2026-08-03 at `dimension.rs:576-663` — and
+> now holds **52 rows** (51 distinct `DimensionVector`s; `IMPULSE` is registered twice, as
+> `"Impulse"` and its alias `"Momentum"`), up from the 51 rows cited above, because η added
+> `Torque` as a new registry row. `Torque` is therefore no longer one of the "aliases the
+> registry does not name": the `pub type Torque` alias this paragraph cites at
+> `ports_mechanical.ri:29` was deleted by η (that line is now a pointer comment), so the
+> alias-extension count drops from 16 to **15** — `Stress` and the other exemplars are
+> unaffected. The underlying claim (a registry-only sweep under-counts) still holds.
+
 | Category | Count |
 |---|---|
 | **A.** `.ri` `param <n> : <DIMENSIONED> = <bare literal>` | **2** |
