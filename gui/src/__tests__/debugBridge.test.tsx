@@ -40,6 +40,37 @@ import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
 
+/**
+ * Build a describe-block's `dispatchCmd`: invoke the captured debug-request
+ * handler and return the parsed `debug_response` payload.
+ *
+ * Every block in this file had its own byte-identical copy of this nine-line
+ * body (17 of them), so a change to the response envelope meant 17 edits and any
+ * missed one drifted silently. Takes a THUNK rather than the handler itself
+ * because each block's `capturedHandler` is reassigned by its `beforeEach` —
+ * capturing the value here would freeze it at `undefined`.
+ *
+ * The per-block `beforeEach`/`afterEach` pairs are deliberately NOT folded in:
+ * they genuinely differ (some call `initDebugBridge` up front, others per test;
+ * some `cleanup()`, others `vi.restoreAllMocks()`), so a shared one would have
+ * to be parameterised into something longer than the four lines it replaced.
+ */
+function makeCmdDispatcher(getHandler: () => DebugRequestHandler | undefined) {
+  return async function dispatchCmd(
+    id: number,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    vi.mocked(invoke).mockClear();
+    await getHandler()!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  };
+}
+
 // jsdom 25 does not implement document.elementFromPoint — the method is simply
 // absent from the document prototype. vi.spyOn requires the property to exist
 // before it can be overridden per test. Define a stub that returns null (matching
@@ -1185,19 +1216,7 @@ describe('debug bridge pickViewport selection', () => {
   }
 
   /** Dispatch any named command via the debug bridge and return parsed result. */
-  async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   /**
    * Generate the standard four pickViewport scenarios for a viewport-mediated tool.
@@ -1412,19 +1431,7 @@ describe('debug bridge dual-viewport binding regression', () => {
     };
   }
 
-  async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('viewport_state with no viewportId returns meshCount from the populated design-main viewport, not 0 from def-preview', async () => {
     const stores = makeStores();
@@ -1732,15 +1739,7 @@ describe('debug bridge exposes layout on ctx', () => {
 describe('debug bridge R1 inspection tools', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -1999,15 +1998,7 @@ describe('debug bridge open_menu', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) open_menu({name:"file"}) returns {ok:true, open:"file"} and openMenu()==="file"', async () => {
     const stores = makeStores();
@@ -2079,15 +2070,7 @@ describe('debug bridge menu_state', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) with no menu open, menu_state returns {open:null, items:[]}', async () => {
     const stores = makeStores();
@@ -2167,15 +2150,7 @@ describe('debug bridge press_tab', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) from body (no focus), press_tab focuses first tabbable and returns its descriptor', async () => {
     const stores = makeStores();
@@ -2277,15 +2252,7 @@ describe('debug bridge tab_order', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) returns order array matching document order for a/b/c buttons', async () => {
     const stores = makeStores();
@@ -3050,15 +3017,7 @@ describe('debug bridge click_at', () => {
   // step-3 RED → step-4 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3117,15 +3076,7 @@ describe('debug bridge hover', () => {
   // step-5 RED → step-6 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3181,15 +3132,7 @@ describe('debug bridge drag', () => {
   // step-7 RED → step-8 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3278,15 +3221,7 @@ describe('debug bridge focus_element', () => {
   // step-9 RED → step-10 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3392,15 +3327,7 @@ describe('debug bridge scroll', () => {
   // step-11 RED → step-12 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3587,15 +3514,7 @@ describe('debug bridge scroll', () => {
 describe('debug bridge dom_query viewport scoping', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3861,15 +3780,7 @@ describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
     return s;
   }
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   // (a) resize_panes({problemsHeight:240}) must call setProblemsHeight(240) and return
   //     a layout echo that includes problemsHeight:240.
@@ -3982,15 +3893,7 @@ describe('debug bridge store_state includes viewports', () => {
     return stub;
   }
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('store_state exposes viewports map with meshCount per registered viewport', async () => {
     const stores = makeStores();
@@ -4238,15 +4141,7 @@ describe('debug bridge set_fea_channel', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   /**
    * Render the toolbar enabled, with errorIndicator among the available channels.
@@ -4692,15 +4587,7 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   /**
    * Mount one pane's REAL FeaModeToolbar under `viewportId`, enabled.
