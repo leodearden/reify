@@ -892,11 +892,30 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // lightweight arm, and the kernel-backed sub-case that takes only the
         // `tessellate_realizations` side effect) yields an empty slice, so those
         // paths stay byte-identical (C2) with no redundant clone.
-        let build_diagnostics: &[reify_core::Diagnostic] = build_result
-            .as_ref()
-            .map(|b| b.diagnostics.as_slice())
-            .unwrap_or(&[]);
-        let merged_diagnostics = merge_build_diagnostics(&result.diagnostics, build_diagnostics);
+        //
+        // The merge is one-directional by construction — it only ever ADDS
+        // build entries — so it needs a return leg, and
+        // `drop_falsified_indeterminate_diagnostics` is it: build()'s internal
+        // task-4229 retain (engine_build.rs:5000-5004) drops only the warnings
+        // BUILD upgraded, and `merge_post_build_verdicts` only those IT
+        // upgraded; neither knows about the authoritative `check()` above, so
+        // without this filter build's stale "indeterminate" claim about a
+        // constraint check() resolved on its own reaches stderr and contradicts
+        // check's own stdout verdict.
+        //
+        // ORDERING IS LOAD-BEARING: this runs AFTER `merge_post_build_verdicts`
+        // so it reads the POST-upgrade `result.constraint_results` — an entry
+        // that pass just upgraded to a definite verdict must also falsify
+        // build's copy of the matching warning.
+        let build_diagnostics: Vec<reify_core::Diagnostic> =
+            drop_falsified_indeterminate_diagnostics(
+                build_result
+                    .as_ref()
+                    .map(|b| b.diagnostics.as_slice())
+                    .unwrap_or(&[]),
+                &result.constraint_results,
+            );
+        let merged_diagnostics = merge_build_diagnostics(&result.diagnostics, &build_diagnostics);
 
         let outcome = report_eval_output(
             &result.constraint_results,
@@ -1083,6 +1102,21 @@ fn cmd_check(args: &[String]) -> ExitCode {
             // accumulating dedup: the build entries seed the list in
             // chronological order, the check entries merge in behind them, and
             // an entry produced by both passes is reported exactly once.
+            //
+            // First the same return leg sub-path (b) applies (see the D2 block
+            // there): the merge only ever ADDS build entries, so build's stale
+            // `ConstraintIndeterminate` claims are filtered against the
+            // AUTHORITATIVE `constraint_results` from
+            // `check_constraints_with_values` before they can be merged in.
+            // Applied symmetrically here so the two sub-paths cannot drift.
+            // The known divergence path on this branch is the `UnifiedDag`
+            // `declined` set (engine_build.rs:4952-4966), whose constraints
+            // keep build's Indeterminate warning while the CLI-side check can
+            // still reach a definite verdict for them.
+            let front_end_diagnostics = drop_falsified_indeterminate_diagnostics(
+                &front_end_diagnostics,
+                &constraint_results,
+            );
             let deduped_build = merge_build_diagnostics(&[], &front_end_diagnostics);
             merge_build_diagnostics(&deduped_build, &check_diags)
         } else {
