@@ -13,8 +13,8 @@
 //   2. `has_representation_within = true` → `set_capture_repr_tol(true)` +
 //      `tessellate_realizations()` fire to populate `achieved_repr_tol`.
 //      Expected: RepresentationWithin(Sphere, 1mm) → Satisfied (1m-radius sphere
-//      tessellated at #precision(0.1mm) has sampled chord deviation ≪ 1mm →
-//      no VIOLATED on stdout).
+//      tessellated at #precision(0.3mm) has sampled chord deviation 6.202e-4 m
+//      against the 1.000e-3 m bound → no VIOLATED on stdout).
 //
 // Both side effects populate DISJOINT engine maps:
 //   - `build()` clears+repopulates `realization_handles` but never touches
@@ -28,9 +28,22 @@
 //
 // Under stub (no OCCT): exit 0, no W_DFM_OVERHANG, no VIOLATED (C1 degradation).
 //
-// #precision(0.1mm) is needed for the RepresentationWithin test: at fine
-// deflection, the sampled facet-chord deviation on a 1m-radius sphere is far
-// below the 1mm (1e-3 m) bound, giving Satisfied.
+// #precision(0.3mm) sizes the RepresentationWithin test: the sampled facet-chord
+// deviation on the 1m-radius sphere measures 6.202e-4 m against the 1mm (1e-3 m)
+// bound — a 1.61x margin — giving Satisfied.  Adequate, but NOT "far below":
+// do not spend this headroom casually.  Coarsened from 0.1mm for #5976 (the
+// fixture dominated the reify-cli suite's critical path).
+//
+// DO NOT INTERPOLATE when changing this value.  #precision is threaded bit-exact
+// into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and OCCT meshes
+// each edge into an INTEGER segment count — so the achieved deviation is a SAWTOOTH
+// in #precision and neighbouring values swing ~3x.  0.49mm and 0.51mm both VIOLATE
+// the 1mm bound while 0.50mm passes.  0.3mm is chosen because its NEIGHBOURS are
+// also safe (0.25mm → 5.198e-4, 0.35mm → 7.271e-4), not because it is a smooth
+// optimum.  To coarsen further you must MEASURE the specific value and both its
+// neighbours: hold #precision at the candidate on a bare `sphere(1000mm)`, tighten
+// the RepresentationWithin bound to 0.01mm to force a violation, and read the
+// achieved deviation off the resulting `sampled facet deviation <X> m` message.
 
 import std.process
 
@@ -63,9 +76,10 @@ structure def OverhangRule : DFMRule {
 
 // ── RepresentationWithin kind ─────────────────────────────────────────────────
 
-/// 1 m-radius sphere realized at fine precision (#precision(0.1mm)).
-/// At 0.1mm (1e-4 m) deflection the sampled facet-chord deviation is far
-/// below the 1mm (1e-3 m) assertion bound.
+/// 1 m-radius sphere realized at the module's #precision(0.3mm).
+/// At 0.3mm (3e-4 m) deflection the sampled facet-chord deviation measures
+/// 6.202e-4 m against the 1mm (1e-3 m) assertion bound — a 1.61x margin.
+/// See the header note before changing #precision: the response is a sawtooth.
 structure Sphere {
     let r = sphere(1000mm)
 }
