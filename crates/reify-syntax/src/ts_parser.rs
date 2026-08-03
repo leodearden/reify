@@ -3420,6 +3420,7 @@ impl<'a> Lowering<'a> {
             }),
             "identifier" => self.lower_identifier(node),
             "function_call" => self.lower_function_call(node),
+            "namespaced_call" => self.lower_namespaced_call(node),
             "list_literal" => self.lower_list_literal(node),
             "set_literal" => self.lower_set_literal(node),
             "map_literal" => self.lower_map_literal(node),
@@ -4279,6 +4280,26 @@ impl<'a> Lowering<'a> {
         let name_node = node.child_by_field_name("name")?;
         let name = self.node_text(name_node).to_string();
 
+        let (args, arg_names) = self.lower_call_arguments(node);
+
+        Some(Expr {
+            kind: ExprKind::FunctionCall { name, args, arg_names },
+            span: self.span(node),
+        })
+    }
+
+    /// Walk a call node's `argument_list` child and lower every argument,
+    /// returning `(args, arg_names)` as two parallel vectors (`arg_names[i]` is
+    /// `None` for a positional argument).
+    ///
+    /// Both call nodes built from `callTail($)` in the grammar share this walk —
+    /// `function_call` (`plain(1)`) and `namespaced_call` (`pp.compute(1,
+    /// scale: 2)`, task 5495 μ). Having ONE walk is what keeps the qualified and
+    /// unqualified paths at exact parity: a change to named/positional handling
+    /// cannot land on one and miss the other. Pinned by
+    /// `qualified_call_named_and_positional_args_at_parity` in
+    /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
+    fn lower_call_arguments(&self, node: tree_sitter::Node) -> (Vec<Expr>, Vec<Option<String>>) {
         let mut args = Vec::new();
         let mut arg_names = Vec::new();
         let mut cursor = node.walk();
@@ -4293,6 +4314,60 @@ impl<'a> Lowering<'a> {
                 }
             }
         }
+        (args, arg_names)
+    }
+
+    /// Lower a `namespaced_call` — a call through an import binding,
+    /// `pp.Pulley()` / `pp.compute(1, scale: 2)` (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` §3.3 NS-Q2, D-7).
+    ///
+    /// Emits the ORDINARY `ExprKind::FunctionCall` — the same variant the
+    /// unqualified path uses — with the qualifier carried DOT-JOINED in the
+    /// existing `name` slot and the arguments produced by the shared
+    /// `lower_call_arguments` walk. No new `ExprKind` variant: see
+    /// `namespaced_name_text` for the full encoding contract handed to the
+    /// resolution phase (task ν), of which this is the expression-position half.
+    ///
+    /// The qualifier is joined from the callee's `object`/`member` CST FIELDS
+    /// rather than read as source text, so `pp . Pulley()` normalises to exactly
+    /// `"pp.Pulley"` — identical to `namespaced_name_text`'s treatment of the
+    /// type-position form.
+    ///
+    /// **Out-of-scope guard (D-7 / PRD §9).** The grammar's callee is a full
+    /// `member_access` (grammar.js:1609 — an inline `identifier '.' identifier`
+    /// would collide with `member_access` as a reduce-reduce ambiguity), so a
+    /// 3+-segment callee such as `a.b.c()` is syntactically ACCEPTED and reaches
+    /// here. Bare full-path qualification is out of scope for μ, so it is
+    /// rejected at lowering with a specific diagnostic — a better message than
+    /// the anonymous ERROR node it produced before μ, and unchanged in kind
+    /// (`a.b.c()` was an error before μ and still is). The rejection lowers
+    /// nothing, so no fabricated 3-segment name ever reaches the AST.
+    ///
+    /// The call-LESS forms (`pp.Pulley`, `pp.FitClass.Clearance`) are NOT routed
+    /// here: they stay `member_access`, indistinguishable from `self.width` at
+    /// parse time, and their disambiguation is deferred to ν exactly as
+    /// resolution-unification D-9 defers `MemberAccess`→`EnumAccess`.
+    fn lower_namespaced_call(&self, node: tree_sitter::Node) -> Option<Expr> {
+        let callee = node.child_by_field_name("callee")?;
+        let object = callee.child_by_field_name("object")?;
+        let member = callee.child_by_field_name("member")?;
+
+        if object.kind() != "identifier" {
+            self.push_error(
+                format!(
+                    "unsupported qualified call `{}(...)`: only a two-segment \
+                     `binding.Name(...)` call through an `import ... as binding` alias is \
+                     supported; bare full-path qualification is out of scope \
+                     (docs/prds/v0_6/stdlib-namespace.md §9)",
+                    self.node_text(callee)
+                ),
+                self.span(callee),
+            );
+            return None;
+        }
+
+        let name = format!("{}.{}", self.node_text(object), self.node_text(member));
+        let (args, arg_names) = self.lower_call_arguments(node);
 
         Some(Expr {
             kind: ExprKind::FunctionCall { name, args, arg_names },
