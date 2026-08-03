@@ -273,4 +273,222 @@ assert "h6: an unknown flag exits 2" \
 assert "h6: --repo-root pointing at a non-git dir exits 2" \
     _exits_with 2 bash "$GATE" --repo-root "$NONGIT"
 
+# ===========================================================================
+# Part B — verify.sh's TEST plan EXECUTES the gui-feature-gated suite.
+#
+# The static gate above (Part A) pins gui/src-tauri/src/engine.rs's
+# MorphRegistration::Enabled arm by grep.  Part B is the dynamic half: verify.sh
+# must actually RUN the #[cfg(feature = "gui")] tests, which today it only
+# COMPILE-checks (`cargo check -p reify-gui --features gui --tests`, the sole
+# `--features` usage in the file).
+#
+# HOST-INDEPENDENCE.  Every match below uses `cargo (test|nextest run)`, never
+# the bare literal `cargo nextest run`.  verify.sh falls back to `cargo test`
+# when cargo-nextest is absent from PATH and both arms of emit_nextest_pass's
+# if/else are shape-identical; tests/infra/test_verify_nextest_absent_suites.sh
+# holds the canonical statement of that idiom.  A literal-only grep here would
+# match nothing — and therefore pass vacuously — on a nextest-less host.
+# ===========================================================================
+echo ""
+echo "=== Part B: the gui-feature suite is EXECUTED by verify.sh's test plan ==="
+
+# Un-stripped capture: (b7) needs the semaphore ACQUIRE/RELEASE marker lines,
+# which are comments and are removed by TEST_PLAN_SEGS's `grep -v '^#'`.
+TEST_PLAN_FULL="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan)"
+OFFLINE_PLAN_SEGS="$(DF_VERIFY_ROLE=offline bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan | grep -v '^#')"
+export TEST_PLAN_FULL OFFLINE_PLAN_SEGS
+
+# _gui_feature_pass_lines <plan> — the gui-feature TEST-EXECUTION lines of
+# <plan>: a `cargo test` / `cargo nextest run` line carrying BOTH `-p reify-gui`
+# AND `--features gui`.  The COMBINATION is the discriminator: the pre-existing
+# lint-side `cargo check -p reify-gui --features gui --tests` at verify.sh:2223
+# carries `--features gui` too, so `--features gui` alone would be satisfied by
+# a compile-check that executes nothing.
+_gui_feature_pass_lines() {
+    printf '%s\n' "$1" \
+        | grep -E 'cargo (test|nextest run)' \
+        | grep -F -- '-p reify-gui' \
+        | grep -F -- '--features gui' || true
+}
+GUI_PASS="$(_gui_feature_pass_lines "$TEST_PLAN_SEGS")"
+export GUI_PASS
+
+# -- (b1): a gui-feature TEST-EXECUTION pass exists in the test plan ------------
+echo ""
+echo "--- (b1): the test plan runs the gui-feature suite (not merely compile-checks it) ---"
+assert "test plan has a 'cargo (test|nextest run)' line with BOTH -p reify-gui and --features gui" \
+    bash -c '[ -n "$GUI_PASS" ]'
+assert "the matched gui-feature pass is NOT a 'cargo check' compile-check" \
+    bash -c '! printf "%s\n" "$GUI_PASS" | grep -q "cargo check"'
+
+# -- (b6): emitted EXACTLY ONCE under --profile both ---------------------------
+# Emitting from inside the per-profile loop would yield two passes for the same
+# feature-gated suite (debug + release) at ~20m cold build each, for no added
+# coverage: `--features gui` is a feature axis, not a profile axis.
+echo ""
+echo "--- (b6): exactly one gui-feature pass under --profile both ---"
+assert "gui-feature pass appears exactly once in the --profile both test plan" \
+    bash -c '[ "$(printf "%s\n" "$GUI_PASS" | grep -c .)" -eq 1 ]'
+
+# -- (b2): sidecar-placeholder prefix and the Cargo.toml existence guard --------
+# ensure-gui-sidecar-placeholder.sh is empirically required, not defensive:
+# gui/src-tauri/build.rs's tauri_build::build() validates bundle.externalBin and
+# panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
+echo ""
+echo "--- (b2): guarded by 'if test -f gui/src-tauri/Cargo.toml' and prefixed by the sidecar placeholder ---"
+assert "gui-feature pass is guarded by 'if test -f gui/src-tauri/Cargo.toml'" \
+    bash -c 'printf "%s\n" "$GUI_PASS" | grep -qF "if test -f gui/src-tauri/Cargo.toml"'
+assert "gui-feature pass runs ./scripts/ensure-gui-sidecar-placeholder.sh BEFORE the cargo invocation" \
+    bash -c 'printf "%s\n" "$GUI_PASS" | grep -qE "ensure-gui-sidecar-placeholder\.sh.*cargo (test|nextest run)"'
+
+# -- (b3): the invocation carries its OWN scoped timeout -----------------------
+echo ""
+echo "--- (b3): timeout --kill-after=60 <dur> wraps the gui-feature invocation ---"
+# Exact-shape pattern.  The only wildcard is [^&|;]* — a CARGO_PRIO nice/ionice
+# prefix contains none of those three characters, so the pattern physically
+# cannot span an &&/||/; clause boundary the way a greedy '.*' would.
+GUI_TIMEOUT_PATTERN='timeout --kill-after=60 [0-9]+[smhd]? [^&|;]*cargo (test|nextest run) -p reify-gui --features gui'
+assert "gui-feature pass is wrapped by its own 'timeout --kill-after=60 <dur>'" \
+    bash -c 'printf "%s\n" "$GUI_PASS" | grep -qE "$0"' "$GUI_TIMEOUT_PATTERN"
+
+# Synthetic-negatives (the two-negative idiom at
+# test_nan_safe_ordering_guard_wired.sh:51-58): the pattern must reject a
+# timeout sitting on a DIFFERENT &&-clause than the cargo invocation, and an
+# untimed invocation carrying no timeout at all.
+assert "GUI_TIMEOUT_PATTERN rejects: timeout on a different &&-clause than the gui-feature pass" \
+    bash -c '! echo "if test -f gui/src-tauri/Cargo.toml; then timeout --kill-after=60 45m cargo clippy --workspace && cargo nextest run -p reify-gui --features gui; fi" | grep -qE "$0"' \
+    "$GUI_TIMEOUT_PATTERN"
+assert "GUI_TIMEOUT_PATTERN rejects: an untimed gui-feature invocation" \
+    bash -c '! echo "./scripts/ensure-gui-sidecar-placeholder.sh && cargo nextest run -p reify-gui --features gui" | grep -qE "$0"' \
+    "$GUI_TIMEOUT_PATTERN"
+
+# -- (b4): FD-close ' 9<&-' -----------------------------------------------------
+# FD 9 is the held semaphore slot.  tests/infra/test_verify_semaphore_wiring.sh
+# (1k) fails when ANY `cargo (test|nextest run)` plan line lacks the trailing
+# token, on both the task plan and the --profile both plan.  verify.sh appends
+# it at exactly ONE site (`add "$cmd 9<&-"` inside emit_nextest_pass), so a pass
+# emitted by a direct `add` does NOT inherit it and must carry it explicitly.
+# Asserted here so this task owns the requirement instead of discovering it as
+# a foreign RED in semaphore_wiring.
+echo ""
+echo "--- (b4): the gui-feature pass carries the trailing FD-close ' 9<&-' ---"
+assert "gui-feature pass carries trailing ' 9<&-' (FD-close for children)" \
+    bash -c 'printf "%s\n" "$GUI_PASS" | grep -qF " 9<&-"'
+
+# -- (b5): concurrency-cap config on the nextest arm ---------------------------
+# scripts/gen-nextest-config.sh emits a full copy of .config/nextest.toml
+# carrying the occt test-group cap, the global [profile.default] test-threads
+# pool cap and the per-binary priority overrides; its header records that plain
+# `--config` is a NO-OP for test-groups on nextest 0.9.136, so --config-file is
+# the only mechanism that applies them.  A gui-feature pass without it runs
+# UNCAPPED, and a --features gui build links tauri + webkit2gtk + OCCT inside
+# the held semaphore slot — exactly the RSS wave the slot exists to bound.
+#
+# Genuinely runner-specific (cargo test has no --config-file), so it is guarded
+# in the skip-OUTSIDE-assert form documented at test_occt_gated_scope.sh:246-254
+# — an in-body `exit 0` would increment PASS while checking nothing.
+echo ""
+echo "--- (b5): the nextest arm carries --config-file with a non-empty path ---"
+PLAN_HAS_NEXTEST="$(printf '%s\n' "$TEST_PLAN_SEGS" | grep -c 'cargo nextest run' || true)"
+if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then
+    assert "gui-feature nextest pass carries '--config-file'" \
+        bash -c 'printf "%s\n" "$GUI_PASS" | grep -qF -- "--config-file"'
+    # Non-empty ARGUMENT, not merely the flag: an unpopulated ${_cfg_path}
+    # renders as a bare `--config-file ` and would satisfy a flag-only grep
+    # while silently degrading the pass to an uncapped run.
+    assert "gui-feature nextest pass's --config-file argument is non-empty" \
+        bash -c 'printf "%s\n" "$GUI_PASS" | grep -qE -- "--config-file [^[:space:];&|]+"'
+else
+    echo "  SKIP: (b5) --config-file — the plan has no 'cargo nextest run' line on"
+    echo "        this host (nextest=0) and the cargo-test fallback has no"
+    echo "        --config-file, so the property is genuinely runner-specific."
+fi
+
+# -- (b7): emitted INSIDE the semaphore bracket --------------------------------
+# verify.sh:1853-1862 records that MEMORY is the binding constraint on this host
+# and the held slot's whole-block serialization is the only implicit bound on
+# concurrent RSS-heavy link waves.  Independently re-asserted by
+# test_verify_semaphore_wiring.sh (1o).
+echo ""
+echo "--- (b7): the gui-feature pass falls BETWEEN the ACQUIRE and RELEASE markers ---"
+assert "gui-feature pass index is between the semaphore ACQUIRE and RELEASE markers" \
+    bash -c '
+        ACQ_IDX=$(printf "%s\n" "$TEST_PLAN_FULL" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
+        REL_IDX=$(printf "%s\n" "$TEST_PLAN_FULL" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
+        GUI_IDX=$(printf "%s\n" "$TEST_PLAN_FULL" | grep -nE "cargo (test|nextest run)" | grep -F -- "-p reify-gui" | grep -F -- "--features gui" | head -1 | cut -d: -f1)
+        [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$GUI_IDX" ]
+        [ "$GUI_IDX" -gt "$ACQ_IDX" ] && [ "$GUI_IDX" -lt "$REL_IDX" ]
+    '
+
+# -- (b8): no -E filterset narrowing the suite ---------------------------------
+# Running the whole `-p reify-gui --features gui` suite is what makes ALL
+# gui-gated code execute (gui_feature_tests, gui_tests, the gui-gated #[test]
+# fns in event_bus_tests.rs / claude_bridge.rs, and the wholly gui-gated
+# debug_server / event_bus modules).  An enumerated name filter would silently
+# drift away from that set.
+echo ""
+echo "--- (b8): the gui-feature pass carries no -E filterset ---"
+assert "gui-feature pass carries no ' -E ' filterset" \
+    bash -c '! printf "%s\n" "$GUI_PASS" | grep -qF -- " -E "'
+
+# -- (b9): placement — test-side only, and never on the offline lane -----------
+# DF_VERIFY_ROLE=offline runs the heavy #[ignore] partition only.
+echo ""
+echo "--- (b9): absent from the lint-only plan and from the offline role's plan ---"
+assert "lint plan has no 'cargo (test|nextest run)' line with -p reify-gui and --features gui" \
+    bash -c '! printf "%s\n" "$LINT_PLAN_SEGS" | grep -E "cargo (test|nextest run)" | grep -F -- "-p reify-gui" | grep -qF -- "--features gui"'
+assert "DF_VERIFY_ROLE=offline plan has no gui-feature TEST-EXECUTION pass" \
+    bash -c '! printf "%s\n" "$OFFLINE_PLAN_SEGS" | grep -E "cargo (test|nextest run)" | grep -F -- "-p reify-gui" | grep -qF -- "--features gui"'
+
+# -- (b10): survives --scope branch for a gui/src-tauri change -----------------
+# decide_scope classifies gui/src-tauri/* as rust=1, so RUN_RUST=1 and the test
+# passes are emitted.  Narrowing the gui-feature pass out of exactly the diffs
+# most likely to break it would make the guard useless where it matters most.
+# Hermetic throwaway-repo fixture (the plan_capture_lib.sh idiom from
+# test_verify_throughput.sh:98-113) — never runs real cargo.
+echo ""
+echo "--- (b10): still emitted for --scope branch when the change is under gui/src-tauri/ ---"
+
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+[ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
+
+BR_FIX="$DET_TMP/branch-fixture"
+mkdir -p "$BR_FIX/scripts" "$BR_FIX/.config"
+for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
+          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
+          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+          gen-nextest-config.sh heavy-test-filter-lib.sh; do
+    cp "$REPO_ROOT/scripts/$_f" "$BR_FIX/scripts/$_f"
+done
+cp "$REPO_ROOT/.config/nextest.toml" "$BR_FIX/.config/nextest.toml"
+chmod +x "$BR_FIX/scripts/verify.sh"
+# Preflight: fail loudly if verify.sh's TRANSITIVE source closure gained a lib
+# that this copy list misses — otherwise the 2>/dev/null below swallows it and
+# the branch assertion fails opaquely (task #5154).
+assert_source_closure_copied "$REPO_ROOT/scripts" "$BR_FIX/scripts" verify.sh || exit 1
+git -C "$BR_FIX" init -q
+git -C "$BR_FIX" config user.email test@invalid.local
+git -C "$BR_FIX" config user.name test
+git -C "$BR_FIX" add scripts .config
+git -C "$BR_FIX" commit -q -m base
+git -C "$BR_FIX" branch -M main
+git -C "$BR_FIX" checkout -q -b task-branch
+mkdir -p "$BR_FIX/gui/src-tauri/src"
+printf 'fn main() {}\n' > "$BR_FIX/gui/src-tauri/src/engine.rs"
+git -C "$BR_FIX" add gui
+git -C "$BR_FIX" commit -q -m "touch gui/src-tauri"
+
+BR_PLAN_OUT=""
+capture_print_plan BR_PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && exec bash scripts/verify.sh test --profile debug --scope branch --include-infra --print-plan 2>/dev/null' \
+    _ "$BR_FIX" || true
+export BR_PLAN_OUT
+
+assert "b10: branch-scope plan capture is complete (structural markers present)" \
+    plan_capture_complete "$BR_PLAN_OUT"
+assert "b10: gui/src-tauri branch-scope plan STILL emits the gui-feature test pass" \
+    bash -c 'printf "%s\n" "$BR_PLAN_OUT" | grep -E "cargo (test|nextest run)" | grep -F -- "-p reify-gui" | grep -qF -- "--features gui"'
+
 test_summary
