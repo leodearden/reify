@@ -1458,8 +1458,10 @@ _row4_share_inconclusive() {
 
     # FAIL-SAFE on an unusable cpu.stat delta (pinned by
     # ROW4-1-QUIET-VACUITY-6/7): "unavailable" is what cgroup-usage emits when
-    # a slice read fails, and ROW4's bracket arithmetic can propagate it. This
-    # MUST come before any python3/float() conversion — a raw string reaching
+    # a slice read fails, and ROW4's bracket arithmetic propagates it verbatim
+    # rather than coercing it to 0 — see the sentinel note at that bracket for
+    # why the distinction matters. This MUST come before any python3/float()
+    # conversion — a raw string reaching
     # float() raises ValueError, and a non-zero python exit is
     # byte-indistinguishable from an honest below-floor verdict, so the
     # predicate would wrongly conclude "sub-floor AND hot" and SKIP away a
@@ -1874,10 +1876,15 @@ else
 
     # (6)/(7) FAIL-SAFE on an unusable cpu.stat delta. "unavailable" is the
     # exact shape `cpu_gov_instrument.py cgroup-usage` emits when a slice read
-    # fails, and the ROW4 bracket arithmetic above can propagate it. A delta
-    # that cannot be read is NOT evidence of dilution, so even on a HOT box it
-    # must be NOT inconclusive — otherwise an unreadable measurement silently
-    # becomes a SKIP that hides a regression. Mirrors _row1_stall_contended's
+    # fails, and the ROW4 bracket below propagates it verbatim (it used to
+    # collapse it to 0, which made a read failure indistinguishable from a
+    # starved slice; the sentinel note at that bracket has the argument, and
+    # CORRIDOR-VACUITY-2 pins the starved shape it is now distinct from). A
+    # delta that cannot be read is NOT evidence of dilution, so even on a HOT
+    # box it must be NOT inconclusive — otherwise an unreadable measurement
+    # silently becomes a SKIP that hides a regression. The bracket's own
+    # guard chain SKIPs the sentinel before the predicate ever sees it; this
+    # is the second line of defence. Mirrors _row1_stall_contended's
     # numeric-validity guard, which returns rc 1 on non-integer input WITHOUT
     # invoking python3 (a raw string reaching float() raises ValueError, which
     # is indistinguishable from an honest below-floor verdict).
@@ -1923,15 +1930,16 @@ else
         test "$_row4_corridor_vacuity1_rc" -ne 0
 
     # (2) A STARVED merge slice (share 0.00) on a hot box is the other end of
-    # the same argument — and it is also the shape the WIRED path produces
-    # when a cpu.stat read fails, because the bracket arithmetic below
-    # initializes each delta to 0 and only overwrites it when both endpoint
-    # samples are numeric. VACUITY-6/7 pin the predicate's own string guard;
-    # this pins the shape ROW4 can actually hand it.
+    # the same argument, and it is a shape the WIRED path really produces: the
+    # merge slice reads fine, its usage_usec simply never advances. That is a
+    # governance break of the most total kind and must reach the hard assert.
+    # It is deliberately NOT the same as an unreadable slice — the bracket
+    # below propagates "unavailable" for that and SKIPs it — which is the
+    # whole point of keeping the two apart (VACUITY-6/7 guard the sentinel).
     _row4_corridor_vacuity2_rc=0
     _row4_share_inconclusive 0 5945387 300 100 0.10 64.92 20 \
         || _row4_corridor_vacuity2_rc=$?
-    assert "ROW4-1-CORRIDOR-VACUITY-2: starved merge slice (Δmerge=0 => share 0.00, hot box) => NOT inconclusive (also the wired shape of an unreadable slice read, which collapses to delta 0)" \
+    assert "ROW4-1-CORRIDOR-VACUITY-2: starved merge slice (Δmerge=0 => share 0.00, hot box) => NOT inconclusive (a slice that reads fine but never advances is a total governance break, not dilution)" \
         test "$_row4_corridor_vacuity2_rc" -ne 0
 
     # (3) NON-VACUITY for the bound itself: the lower bound must be STRICT, or
@@ -2121,8 +2129,18 @@ else
     wait "$_ROW4_TASK_BG" 2>/dev/null || true
     wait "$_ROW4_MERGE_BG" 2>/dev/null || true
 
-    _ROW4_TASK_DELTA=0
-    _ROW4_MERGE_DELTA=0
+    # An unreadable endpoint stays OUT of the numeric coercion (task 5998
+    # amendment).  Initializing the deltas to 0 instead made a FAILED cpu.stat
+    # read byte-indistinguishable from a genuinely STARVED merge slice: both
+    # arrive as Δmerge=0, but the first is a measurement failure that must SKIP
+    # and the second is a real governance break that must go RED.  Propagating
+    # the sentinel — the same shape _row2_usage_fraction adopted for the same
+    # reason — lets the guard chain below tell them apart, and makes
+    # _row4_share_inconclusive's string guard (ROW4-1-QUIET-VACUITY-6/7) a real
+    # second line of defence on the wired path rather than a contract on an
+    # input this bracket could never actually produce.
+    _ROW4_TASK_DELTA="unavailable"
+    _ROW4_MERGE_DELTA="unavailable"
     if [ "$_ROW4_TASK_BEFORE" != "unavailable" ] && \
        [ "$_ROW4_TASK_AFTER" != "unavailable" ]; then
         _ROW4_TASK_DELTA=$(( _ROW4_TASK_AFTER - _ROW4_TASK_BEFORE ))
@@ -2166,6 +2184,14 @@ else
     # These are measurement-integrity guards (not load-based) and are retained.
     if [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
+    elif [ "$_ROW4_TASK_DELTA" = "unavailable" ] || \
+         [ "$_ROW4_MERGE_DELTA" = "unavailable" ]; then
+        # A cpu.stat endpoint could not be read, so there is no measurement to
+        # judge.  Deliberately distinct from the starved-slice case below: a
+        # starved merge slice READS fine and simply does not advance, which
+        # still reaches ROW4-1's hard assert and goes RED.  Only an actual read
+        # failure lands here.  Measurement-integrity guard, not load-based.
+        echo "  SKIP ROW4-1: cpu.stat read failed (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA}) — no measurement to judge"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
     elif _row4_share_inconclusive "$_ROW4_MERGE_DELTA" "$_ROW4_TASK_DELTA" \
