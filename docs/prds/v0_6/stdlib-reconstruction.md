@@ -69,7 +69,7 @@ Follow the `materials_*` flat-file convention: `ports_mechanical.ri` → module 
 - `ports_thermal.ri` → `std.ports.thermal`: `ThermalPort : Port` (heat-transfer interface params).
 - `ports_fluid.ri` → `std.ports.fluid`: `FluidPort : Port` (pressure, flow-rate, fluid medium).
 
-Property dimensions use the existing 35 named dimension aliases (`Torque`, `AngularVelocity`, `Voltage`, `Current`, `Length`, `Pressure`, …). Where the spec reference asks for a dimension that does not exist (e.g. a flow-rate `Volume/Time`), express it as a type expression (`Volume / Time`) — valid per spec line 875 (`pub let torque_constant : Torque/Current`). Document any such deviation in a header comment per the `io.ri` precedent.
+Property dimensions use the existing named dimensions registered in `NAMED_DIMENSIONS` (`Torque`, `AngularVelocity`, `Voltage`, `Current`, `Length`, `Pressure`, …; 52 rows as of task η/5785, up from the 35 in scope when this slice was authored). Where the spec reference asks for a dimension that does not exist (e.g. a flow-rate `Volume/Time`), express it as a type expression (`Volume / Time`) — valid per spec line 875 (`pub let torque_constant : Torque/Current`). Document any such deviation in a header comment per the `io.ri` precedent.
 
 **Prelude re-export of `Port`/`Directionality` is OUT OF SCOPE for the authoring tasks** and split into a separate slice (task ε) — see §6 design decision 3. The authoring tasks require an explicit `import std.ports` in the consumer example; that is the observable signal.
 

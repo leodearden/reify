@@ -335,7 +335,9 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         ),
         // `std.ports.mechanical` refines Port from std.ports and adds
         // mechanical port traits (MechanicalPort, Bore, Shaft, RotaryPort,
-        // ThreadedPort, StructurePort) plus the Torque type alias.
+        // ThreadedPort, StructurePort). (Formerly also defined a `Torque`
+        // type alias; that alias was deleted by task η/5785 in favor of the
+        // NAMED_DIMENSIONS registry entry in reify-core's dimension.rs.)
         // Must follow std.ports in the growing prelude sequence so Port is
         // resolved when MechanicalPort : Port is compiled.
         // Reconstruction of lost work per PRD task α.
