@@ -1419,6 +1419,12 @@ _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 #   Returns 0 (inconclusive -> caller SKIPs); 1 (NOT inconclusive -> ROW4-1's
 #   hard assert stays reachable and can still go RED).
 #
+#   The hot/quiet decision is DELEGATED to quiet_box_met (load_tolerance_lib.sh)
+#   — never re-implemented here and never given a second ceiling constant. That
+#   helper is the one #4656 landed for exactly this gate, its fail-open
+#   semantics are already unit-tested (test_load_tolerance_lib.sh:168-194), and
+#   reusing it is what makes its own ROW4-naming docstring true again.
+#
 #   Pure (no I/O, no globals read) so it stays hermetically testable with
 #   synthetic literals, matching _row2_band_inconclusive and
 #   _row1_measurement_inactive above.
@@ -1427,8 +1433,16 @@ _row4_share_inconclusive() {
     local w_merge="$3" w_task="$4" tol="$5"
     local host_avg10="$6" ceiling="$7"
 
-    # Skeleton (task 5998 step-2): the share and box-temperature branches are
-    # driven out by ROW4-1-QUIET-VACUITY-2/3 in the steps that follow.
+    # Box temperature: quiet_box_met returns 0 = quiet/proceed, 1 = hot.
+    # Inconclusive requires HOT, so a quiet box falls through to NOT
+    # inconclusive and ROW4-1's hard assert stays reachable.
+    if quiet_box_met "$host_avg10" "$ceiling"; then
+        return 1
+    fi
+
+    # Share branch (task 5998 step-6) still pending: driven out by
+    # ROW4-1-QUIET-VACUITY-3, which proves a SATURATING share must PASS even
+    # on a hot box.
     return 0
 }
 
