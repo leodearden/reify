@@ -53,12 +53,15 @@ const EXAMPLE_PATH: &str = concat!(
 /// Mirrors `EXAMPLES_DIR` in `crates/reify-compiler/tests/examples_smoke.rs`.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
 
-/// Conservative absolute floor, set well below current corpus size so
-/// healthy growth/shrinkage doesn't flake this guard while still catching
-/// a partial-discovery regression (e.g. most files silently skipped) that
-/// a bare non-empty check would miss. If the corpus is ever intentionally
-/// trimmed below this floor, lower the constant to match — the assertion
-/// has no way to distinguish an intended shrink from a regression.
+/// Conservative absolute floor, chosen below current corpus size to leave
+/// headroom for ordinary SKIP_SET churn without flaking this guard — not
+/// deep headroom: an intentional pruning of dozens of examples would still
+/// require raising this constant (examples_smoke.rs's sibling floor is now
+/// derived from its own `MIN_EXERCISED_RI_FILES`, so only two independent
+/// constants — this one and that one — need editing, not three). If the
+/// corpus is ever intentionally trimmed below this floor, lower the
+/// constant to match — the assertion has no way to distinguish an intended
+/// shrink from a regression.
 ///
 /// Deliberately NOT relative to paths.len() (e.g. `paths.len() -
 /// skip.len()`, or a fraction like `paths.len() / 2`): a
@@ -71,13 +74,12 @@ const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples"
 /// floor to share, and hoisting corpus discovery into a common crate is a
 /// cross-crate change outside this single-file task's scope.
 ///
-/// In short: this is a discovery-regression TRIPWIRE, not a corpus-size
-/// target — the same framing as its sibling floors in `examples_smoke.rs`.
-/// [`discovery_floor_tracks_the_live_corpus`] is the freshness ratchet that
-/// keeps this constant itself from drifting stale again the way it did at
-/// its previous value of 100, which only caught a >60% discovery loss; its
-/// assertion message reports the current live count on failure, so that
-/// number isn't pinned here where it would go stale silently.
+/// Discovery-regression TRIPWIRE, not a corpus-size target: see
+/// examples_smoke.rs's `MIN_EXERCISED_RI_FILES` doc comment for the shared
+/// tripwire-vs-target and one-directionality argument.
+/// [`discovery_floor_tracks_the_live_corpus`] is this file's own freshness
+/// ratchet, replacing this constant's previous value of 100 (which only
+/// caught a >60% discovery loss).
 const EXPECTED_MIN_FILES: usize = 200;
 
 /// Classifies *why* a [`SKIP_SET`] entry is excluded from the v0.1
@@ -942,44 +944,40 @@ fn v0_1_corpus_includes_bearing_auto_seal_fixture() {
 
 // ─── step-13 ratchet: EXPECTED_MIN_FILES tracks the live corpus ───────────────
 
-/// Freshness ratchet for [`EXPECTED_MIN_FILES`]: that floor is a
-/// discovery-regression TRIPWIRE, not a corpus-size target, so it is only
-/// useful while it stays reasonably close to the live corpus size.
+/// Freshness ratchet for [`EXPECTED_MIN_FILES`]: same tripwire-vs-target and
+/// one-directional argument as examples_smoke.rs's
+/// `discovery_floors_track_the_live_corpus` (see its doc comment for the
+/// full argument) — this is a second-order check on the constant's own
+/// value and never gates
+/// [`v0_1_example_corpus_compile_and_check_time_is_bounded`] itself.
 ///
-/// This does NOT contradict `EXPECTED_MIN_FILES`'s own rationale
-/// ("Deliberately NOT relative to paths.len()", above): the GATE inside
-/// [`v0_1_example_corpus_compile_and_check_time_is_bounded`] remains an
-/// absolute constant compared against `candidates.len()`, so a discovery
-/// regression can never shrink that bar in lockstep with the thing it
-/// measures. This test is a separate, second-order check on the
-/// CONSTANT'S OWN VALUE, and it never gates the perf walk itself.
-///
-/// It is one-directional, for the same reason as examples_smoke.rs's
-/// sibling ratchet (`discovery_floors_track_the_live_corpus` there, see its
-/// doc comment for the full argument): a real discovery regression can only
-/// make this assertion easier to satisfy, never harder, so it cannot mask
-/// the regression the absolute gate above exists to catch.
-///
-/// Unlike that sibling, this compares against the RAW [`discover_ri_files`]
-/// count, not `candidates.len()` (the SKIP_SET-filtered list the perf walk
-/// uses): the raw count is the stable quantity this floor is meant to
-/// track, and using it keeps this guard independent of ordinary SKIP_SET
-/// churn. It calls `discover_ri_files()` only — no `check_source_with_stdlib`
-/// — so it adds no measurable time to this binary.
+/// Measures the same SKIP_SET-filtered `candidates` quantity as that gate
+/// (not the raw [`discover_ri_files`] count), so this ratchet can never
+/// disagree with the gate it tracks. Directory walk only — no
+/// `check_source_with_stdlib` — so it adds no measurable time to this
+/// binary.
 #[test]
 fn discovery_floor_tracks_the_live_corpus() {
-    let total = discover_ri_files().len();
+    use std::collections::HashSet;
+
+    let paths = discover_ri_files();
+    let total = paths.len();
+    let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _, _)| *name).collect();
+    let candidates = paths
+        .iter()
+        .filter(|p| !skip.contains(relative_to_examples_dir(p).as_str()))
+        .count();
 
     assert!(
-        EXPECTED_MIN_FILES * 2 >= total,
+        EXPECTED_MIN_FILES * 2 >= candidates,
         "EXPECTED_MIN_FILES ({}) has drifted stale: the live examples/ corpus \
-         now has {} .ri files, more than 2x the floor. Raise \
-         EXPECTED_MIN_FILES to ~{} — headroom above the bare {}/2 boundary, \
-         which would re-flake on the very next file added — and re-review \
-         its tripwire doc comment.",
+         now yields {} candidate .ri files ({} discovered, {} in SKIP_SET), \
+         more than 2x the floor. Raise EXPECTED_MIN_FILES to ~{} and \
+         re-review its tripwire doc comment.",
         EXPECTED_MIN_FILES,
+        candidates,
         total,
-        total * 4 / 5,
-        total
+        skip.len(),
+        candidates * 4 / 5
     );
 }
