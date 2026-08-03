@@ -294,49 +294,50 @@ _PERMISSION_DENIAL_MARKERS = ("Permission denied", "os error 13")
 # Substring marking a grammar *load* failure, as opposed to a parse failure.
 _GRAMMAR_LOAD_FAILURE_MARKER = "Failed to load language"
 
+# Single operator-facing wording for the cache-denial condition, shared by
+# grammar_substrate_usable()'s reason and main()'s renderer hint.  Both are
+# user-visible text asserted by tests, so two hand-maintained copies could drift
+# apart while describing the same condition.
+_CACHE_DENIAL_EXPLANATION = (
+    "tree-sitter cannot write its grammar cache/lock directory (typically "
+    "~/.cache/tree-sitter/), so it cannot load the reify grammar; this is "
+    "typical of a sandboxed agent role whose landlock write set does not grant "
+    "that directory, and the mode bits may still allow the write because the "
+    "denial is an LSM hook"
+)
+
+# Appended to the explanation where the reader already has a failing probe in
+# hand and needs the next action rather than only the cause.
+_CACHE_DENIAL_NEXT_STEP = (
+    "Run `prd-capability-check.py --grammar-substrate-status` to confirm, and "
+    "treat it as a SKIP rather than a gate FAIL."
+)
+
 
 def grammar_cache_denied(run: ProbeRun) -> bool:
     """Return True iff `run` shows tree-sitter denied write access to its cache.
 
-    Recognises the condition where the tree-sitter CLI and the generated grammar
-    are both present, but tree-sitter cannot write the on-disk lock/cache
-    directory it needs in order to *load* the grammar — the signature a
-    sandboxed agent role produces when its landlock write set does not grant
-    ``~/.cache/tree-sitter/``::
+    The signature a sandboxed role produces when its landlock write set does not
+    grant ``~/.cache/tree-sitter/`` — CLI and grammar both present, but the lock
+    directory needed to *load* the grammar is unwritable::
 
         Error: Failed to load language for path "…"
         Caused by: Failed to load language in current directory:
         Permission denied (os error 13) (~/.cache/tree-sitter/lock/reify-….lock)
 
-    NARROWNESS CONTRACT — this predicate requires BOTH a grammar *load* failure
-    AND a permission denial, and neither half alone is sufficient:
+    NARROWNESS CONTRACT — BOTH a grammar *load* failure AND a permission denial
+    are required, because neither half alone is safe to skip on: a genuine
+    grammar regression is a *parse* error (exit 1, no load failure), and a load
+    failure with no permission indicator is a missing or corrupt grammar.  Both
+    keep reaching _HARNESS_ERROR / exit 70.
 
-    * A genuine grammar regression surfaces as a *parse* error (exit 1, no load
-      failure) and is therefore never matched, so this can never mask a real
-      capability gap by turning its FAIL into an environmental skip.
-    * A load failure with no permission indicator (a missing or corrupt grammar)
-      is likewise never matched, and keeps reaching _HARNESS_ERROR / exit 70.
+    Keys on stderr rather than ``os.access(dir, os.W_OK)``, which consults DAC
+    only and reports the directory writable under a landlock hook (measured: the
+    lock dir is ``drwxrwxr-x`` owned by the invoking user, yet ``touch`` fails).
 
-    Detection keys on the observed stderr rather than on a filesystem
-    writability query.  ``os.access(path, os.W_OK)`` consults DAC only, so under
-    a landlock LSM hook it reports the directory writable while the write
-    returns EACCES — measured directly: the lock dir is ``drwxrwxr-x`` owned by
-    the invoking user, yet ``touch`` there fails.  Keying on stderr is also
-    robust to tree-sitter relocating its cache via XDG_CACHE_HOME /
-    TREE_SITTER_LIBDIR / TREE_SITTER_DIR, which would defeat any hardcoded path.
-
-    This function is a pure observation over captured output.  It does NOT
-    influence observe(), verdict() or harness_exit_code() — a denied probe still
-    yields HARNESS_ERROR / exit 70, because "I could not run, do not trust me"
-    is the semantically correct verdict and capability manifests cite it as
-    binding evidence.  Callers use this to decide whether to SKIP.
-
-    Args:
-        run: Captured probe output (exit_code, stdout, stderr).
-
-    Returns:
-        True iff stderr shows a grammar load failure accompanied by a
-        permission denial.
+    A pure observation over captured output: it does NOT influence observe(),
+    verdict() or harness_exit_code(), so a denied probe still yields
+    HARNESS_ERROR / exit 70.  Callers use it to decide whether to SKIP.
     """
     stderr = run.stderr
     if _GRAMMAR_LOAD_FAILURE_MARKER not in stderr:
@@ -540,30 +541,19 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     generated first).  build_command() uses the same repo_root so the
     recorded fixture path and the executed path are identical.
 
-    Any OSError raised by the launch itself — the binary is missing (ENOENT),
-    present but not executable (EACCES), or reached through a bad path component
-    (ENOTDIR) — is caught and represented as a ProbeRun with
-    _BINARY_NOT_FOUND_SENTINEL in stderr and exit_code=127.  observe() detects
-    this sentinel and returns _HARNESS_ERROR for any probe kind.  One
-    representation covers the whole family deliberately: they all mean "the
-    probe could not be launched", which is a harness error regardless of which
-    errno produced it, and a caller that must distinguish them can read the
-    errno text appended after the sentinel.
+    Any OSError from the launch — missing binary (ENOENT), not executable
+    (EACCES), bad path component in the command or the cwd (ENOENT/ENOTDIR) — is
+    represented as a ProbeRun carrying _BINARY_NOT_FOUND_SENTINEL and
+    exit_code=127 rather than raised, so observe() can classify it
+    _HARNESS_ERROR.  One representation covers the family because they all mean
+    "the probe could not be launched"; the errno text is appended after the
+    sentinel so a caller that must distinguish them can.
 
-    The catch is narrow in practice despite naming the base class: subprocess.run
-    is called with capture_output=True and without check=True, so
-    CalledProcessError cannot arise here and an OSError from this call site is
-    specifically the _execute_child launch path.
-
-    `timeout` defaults to None — an unbounded wait, which is what a gate probe
-    wants: `reify eval` on a heavy fixture may legitimately run long, and a
-    timeout there would manufacture a HARNESS_ERROR out of a slow machine.
-    Callers that cannot afford to block (the substrate probe runs at test-module
-    IMPORT time, where a wedged tree-sitter would hang the whole suite rather
-    than skip one test) pass a bound.  An elapsed timeout is represented like a
-    launch failure — _PROBE_TIMEOUT_SENTINEL in stderr, exit_code 124 (the
-    conventional timeout(1) code) — because subprocess.TimeoutExpired derives
-    from SubprocessError, NOT from OSError, so the catch above cannot cover it.
+    `timeout` defaults to None — unbounded, which is what a gate probe wants:
+    `reify eval` on a heavy fixture may legitimately run long, and a bound there
+    would manufacture a HARNESS_ERROR out of a slow machine.  An elapsed timeout
+    needs its own catch and sentinel because subprocess.TimeoutExpired derives
+    from SubprocessError, NOT from OSError.
 
     Args:
         probe:   The Probe to run.
@@ -599,22 +589,17 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
             stderr=proc.stderr,
         )
     except subprocess.TimeoutExpired as exc:
-        # The probe ran but never finished within the caller's bound.  Same
-        # reasoning as the launch-failure branch below — represent it, do not
-        # raise — but a separate sentinel, because "the tool is wedged" and "the
-        # tool is missing" are different operator problems.  subprocess.run has
-        # already killed the child and reaped it by the time this is raised.
+        # A separate sentinel from the launch failure below: "the tool is wedged"
+        # and "the tool is missing" are different operator problems.
+        # subprocess.run has already killed and reaped the child by now.
         return ProbeRun(
             exit_code=124,  # conventional timeout(1) exit code
             stdout="",
             stderr=f"{_PROBE_TIMEOUT_SENTINEL}: {exc}",
         )
     except OSError as exc:
-        # The probe could not be launched — missing binary (ENOENT), present but
-        # not executable (EACCES), bad path component (ENOTDIR).  Signal to
-        # observe() via the sentinel in stderr rather than propagating: callers
-        # such as grammar_substrate_usable() run at import time in the test
-        # harness, where a raise costs the whole suite instead of one skip.
+        # Represent rather than propagate: callers run this at import time in the
+        # test harness, where a raise costs the whole suite instead of one skip.
         return ProbeRun(
             exit_code=127,
             stdout="",
@@ -632,14 +617,10 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
 _SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 
 # Wall-clock bound on the substrate probe.  Generous by design: on a COLD cache
-# tree-sitter compiles the grammar with cc before it can parse, so a few seconds
-# is normal and a tight bound would report a healthy substrate as unusable.  The
-# bound exists for the pathological case only — tree-sitter serialises grammar
-# loading through ~/.cache/tree-sitter/lock/<grammar>.lock, the very resource
-# this function exists to interrogate, so a stuck lock must not be able to hang
-# the caller.  That matters because the test module calls this at IMPORT time:
-# unbounded, a wedged tree-sitter would hang the entire suite instead of
-# skipping the one test that needs the grammar.
+# tree-sitter compiles the grammar with cc before it can parse, so a tight bound
+# would report a healthy substrate as unusable.  The bound exists only so that a
+# stuck ~/.cache/tree-sitter/lock/<grammar>.lock — the very resource this
+# function interrogates — cannot hang the caller.
 _SUBSTRATE_PROBE_TIMEOUT_S = 30.0
 
 
@@ -647,33 +628,23 @@ def grammar_substrate_usable() -> tuple:
     """Return (usable, reason) for the tree-sitter grammar toolchain.
 
     Runs one real grammar probe through the normal build_command()/run_probe()
-    path — so fixture-path resolution and the CWD=<repo_root>/tree-sitter-reify
-    requirement are honoured without being duplicated here — and reports the
-    substrate unusable when the probe could not run *as a probe*:
+    path — so fixture resolution and the CWD=<repo_root>/tree-sitter-reify
+    requirement are honoured without being duplicated — and reports the substrate
+    unusable when the probe could not run *as a probe*: the cache/lock directory
+    is unwritable, the probe could not be launched, or it did not finish within
+    _SUBSTRATE_PROBE_TIMEOUT_S.
 
-        * the grammar cache/lock directory is unwritable (grammar_cache_denied)
-        * the tree-sitter CLI is not on PATH (_BINARY_NOT_FOUND_SENTINEL)
-        * tree-sitter did not finish within _SUBSTRATE_PROBE_TIMEOUT_S
-
-    Anything else — including a clean parse and an ordinary parse rejection — is
-    reported usable.  This is a BEHAVIOURAL check, deliberately not a
-    path-existence one: ``os.path.isfile(tree-sitter-reify/src/parser.c)`` says
-    the grammar was generated, but says nothing about whether tree-sitter can
-    load it, which is the capability a grammar probe actually needs.
-
-    Note what is NOT unusable: a parse failure.  The distinction matters because
-    an unparseable fixture is the *expected* result for several committed
-    probes; treating it as a broken substrate would suppress the grammar e2e
-    exactly when the grammar is healthy.
+    A BEHAVIOURAL check, deliberately not a path-existence one:
+    ``isfile(tree-sitter-reify/src/parser.c)`` says the grammar was generated but
+    nothing about whether tree-sitter can load it.  Note what is NOT unusable: a
+    parse failure.  An unparseable fixture is the *expected* result for several
+    committed probes, so treating it as a broken substrate would suppress the
+    grammar e2e exactly when the grammar is healthy.
 
     Callers use the result to SKIP rather than to alter a verdict — a probe that
-    could not run still reports HARNESS_ERROR / exit 70 (see
-    grammar_cache_denied's contract note).
+    could not run still reports HARNESS_ERROR / exit 70.
 
     Cost: one subprocess, bounded by _SUBSTRATE_PROBE_TIMEOUT_S, no side effects.
-    Takes no arguments deliberately — the fixture is fixed because the probe
-    interrogates the toolchain, never this fixture, so a caller-chosen one would
-    be a seam with no meaning.
 
     Returns:
         (True, "") when a grammar probe can run; (False, reason) otherwise,
@@ -698,21 +669,23 @@ def grammar_substrate_usable() -> tuple:
         )
 
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
+        # Deliberately hedged.  run_probe() represents EVERY launch OSError with
+        # this one sentinel, and a missing cwd (<repo_root>/tree-sitter-reify was
+        # never generated) raises the same FileNotFoundError as a missing CLI —
+        # so naming the CLI here would confidently print the wrong subsystem.
+        # The errno text run_probe() appends names the offending path, which is
+        # what actually distinguishes the two.
+        detail = run.stderr.split(_BINARY_NOT_FOUND_SENTINEL, 1)[1].strip(": \n")
         return (
             False,
-            f"the tree-sitter CLI ({_resolve_tree_sitter_bin()!r}) is not "
-            "executable or not on PATH, so grammar probes cannot run",
+            "the tree-sitter grammar probe could not be launched "
+            f"({detail or 'no further detail'}); either the tree-sitter CLI "
+            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, or "
+            "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
         )
 
     if grammar_cache_denied(run):
-        return (
-            False,
-            "tree-sitter cannot write its grammar cache/lock directory "
-            "(typically ~/.cache/tree-sitter/), so it cannot load the reify "
-            "grammar; a sandboxed agent role whose landlock write set does not "
-            "grant that directory sees this as a permission denial even though "
-            "the directory's mode bits allow the write",
-        )
+        return (False, _CACHE_DENIAL_EXPLANATION)
 
     return (True, "")
 
@@ -831,12 +804,9 @@ def verdict(observation: str, expected_observation: str) -> str:
 
 
 # Byte budget for a HARNESS_ERROR's stderr in the text renderer.  Sized ~16x the
-# measured cache-denial signature (253 chars) so every realistic tool message
-# arrives whole, while still capping the pathological case — a `reify eval` or
-# `reify check` harness error can carry a large backtrace, and flooding the gate
-# log verbatim would defeat the diagnosability this rendering exists for.  Other
-# verdicts keep the tight 200-char preview.  --json is unaffected: it has always
-# emitted stderr in full, for machine consumers that can afford it.
+# measured cache-denial signature (253 chars) so realistic tool messages arrive
+# whole, while still capping a `reify eval` backtrace that would bury the gate
+# log.  Other verdicts keep the tight 200-char preview; --json is unaffected.
 _HARNESS_ERROR_STDERR_CAP = 4000
 
 
@@ -965,16 +935,9 @@ def main(argv: List[str]) -> int:
         for r in results:
             cmd_str = " ".join(r.command)
             stdout_preview = r.stdout[:200] if r.stdout else "(empty)"
-            # A HARNESS_ERROR means the probe could not run, so the operator's
-            # only lead is the tool's own message — truncating it at 200 chars
-            # discards exactly the part that identifies the cause (the measured
-            # cache denial is 253 chars and is cut mid-path, naming no file at
-            # all).  It gets a far larger budget, but still a bounded one: this
-            # is the path whose whole purpose is making a failure easy to
-            # attribute, and a `reify eval` harness error dumping a large
-            # backtrace would bury the signal in the gate log it is meant to
-            # clarify.  PASS/FAIL keep the tight preview so an ordinary run is
-            # not buried in probe stderr.
+            # A HARNESS_ERROR means the probe could not run, so the tool's own
+            # message is the operator's only lead — and the 200-char preview cuts
+            # the measured 253-char cache denial mid-path, naming no file at all.
             if r.stderr and r.verdict == _HARNESS_ERROR:
                 stderr_text = r.stderr[:_HARNESS_ERROR_STDERR_CAP]
             else:
@@ -990,14 +953,8 @@ def main(argv: List[str]) -> int:
                 ProbeRun(exit_code=r.exit_code, stdout=r.stdout, stderr=r.stderr)
             ):
                 sys.stdout.write(
-                    "  hint:      tree-sitter could not write its grammar "
-                    "cache/lock directory (typically ~/.cache/tree-sitter/), so "
-                    "it could not load the reify grammar.  This is typical of a "
-                    "sandboxed agent role whose landlock write set does not "
-                    "grant that directory — note the mode bits may still allow "
-                    "the write, because the denial is an LSM hook.  Run "
-                    "`prd-capability-check.py --grammar-substrate-status` to "
-                    "confirm, and treat it as a SKIP rather than a gate FAIL.\n"
+                    f"  hint:      {_CACHE_DENIAL_EXPLANATION}.  "
+                    f"{_CACHE_DENIAL_NEXT_STEP}\n"
                 )
             sys.stdout.write("\n")
 
