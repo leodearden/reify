@@ -1345,3 +1345,184 @@ fn wrap_codomain(v: f64, codomain_type: &Type) -> Value {
         _ => Value::Real(v),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_core::DimensionVector; // same import path the integration suite uses
+
+    // --- wrap_scalar_coord: new Option<Value> contract (task 5996) ---
+
+    /// `Type::Int` is not a supported per-axis scalar quantity — the exact
+    /// defect the old doc-comment-only contract described. Must be `None`,
+    /// not a silently-wrong `Value::Real`.
+    #[test]
+    fn wrap_scalar_coord_rejects_int_quantity() {
+        assert!(wrap_scalar_coord(1.5, &Type::Int).is_none());
+    }
+
+    /// A second verified non-`Scalar` variant (`Type::Point`) is also
+    /// rejected — the gate is "is this a `Type::Scalar`", not "is this
+    /// specifically `Type::Int`".
+    #[test]
+    fn wrap_scalar_coord_rejects_non_scalar_quantity() {
+        let point_quantity = Type::Point {
+            n: 2,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        assert!(wrap_scalar_coord(1.5, &point_quantity).is_none());
+    }
+
+    /// A non-dimensionless `Type::Scalar` wraps to `Value::Scalar`,
+    /// preserving the dimension.
+    #[test]
+    fn wrap_scalar_coord_wraps_dimensional_scalar() {
+        assert_eq!(
+            wrap_scalar_coord(
+                2.5,
+                &Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                },
+            ),
+            Some(Value::Scalar {
+                si_value: 2.5,
+                dimension: DimensionVector::LENGTH,
+            })
+        );
+    }
+
+    /// `Type::dimensionless_scalar()` (still a `Type::Scalar`, just with a
+    /// dimensionless dimension) wraps to `Value::Real`.
+    #[test]
+    fn wrap_scalar_coord_wraps_dimensionless_scalar_as_real() {
+        assert_eq!(
+            wrap_scalar_coord(2.5, &Type::dimensionless_scalar()),
+            Some(Value::Real(2.5))
+        );
+    }
+
+    /// DRIFT GUARD: `wrap_scalar_coord` must return `Some` iff
+    /// `is_supported_scalar_quantity` says the quantity is supported, for
+    /// every quantity kind this module recognizes. Locks the predicate and
+    /// the wrapper together so they cannot diverge again the way the
+    /// original comment-only contract did.
+    #[test]
+    fn wrap_scalar_coord_some_iff_is_supported_scalar_quantity() {
+        let quantities = [
+            Type::Int,
+            Type::dimensionless_scalar(),
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
+            Type::Point {
+                n: 2,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            },
+        ];
+        for ty in &quantities {
+            assert_eq!(
+                wrap_scalar_coord(1.0, ty).is_some(),
+                is_supported_scalar_quantity(ty),
+                "wrap_scalar_coord/is_supported_scalar_quantity diverged for {ty:?}"
+            );
+        }
+    }
+
+    // --- wrap_coord_for_domain: call-site behaviour pins (must be
+    // --- byte-for-byte unchanged by the wrap_scalar_coord refactor) ---
+
+    /// `Type::Point` domain with a dimensioned `Scalar` quantity wraps each
+    /// coord to a dimensioned `Value::Scalar`.
+    #[test]
+    fn wrap_coord_for_domain_point2_length_wraps_each_axis() {
+        let domain = Type::Point {
+            n: 2,
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
+        };
+        assert_eq!(
+            wrap_coord_for_domain(&[1.0, 2.0], &domain),
+            Value::Point(vec![
+                Value::Scalar {
+                    si_value: 1.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Value::Scalar {
+                    si_value: 2.0,
+                    dimension: DimensionVector::LENGTH,
+                },
+            ])
+        );
+    }
+
+    /// `Type::Point` domain with an unsupported (`Int`) quantity returns
+    /// `Value::Undef` rather than a `Point` of silently-coerced `Real`s.
+    #[test]
+    fn wrap_coord_for_domain_point2_int_quantity_returns_undef() {
+        let domain = Type::Point {
+            n: 2,
+            quantity: Box::new(Type::Int),
+        };
+        assert_eq!(wrap_coord_for_domain(&[1.0, 2.0], &domain), Value::Undef);
+    }
+
+    /// `Type::Point { n: 0, quantity: Int }` with empty `coords_si` must
+    /// still be `Value::Undef`, not `Value::Point([])`. This is the case
+    /// that requires the Point arm's early `is_supported_scalar_quantity`
+    /// return to survive the refactor: `collect::<Option<Vec<Value>>>()`
+    /// over an empty iterator yields `Some(vec![])`, which would otherwise
+    /// flip this to `Value::Point([])`.
+    #[test]
+    fn wrap_coord_for_domain_point_zero_int_quantity_empty_coords_returns_undef() {
+        let domain = Type::Point {
+            n: 0,
+            quantity: Box::new(Type::Int),
+        };
+        assert_eq!(wrap_coord_for_domain(&[], &domain), Value::Undef);
+    }
+
+    /// 1-D `Type::Scalar` domain (dimensioned) wraps to a dimensioned
+    /// `Value::Scalar`.
+    #[test]
+    fn wrap_coord_for_domain_scalar_length_wraps_dimensioned() {
+        let domain = Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            wrap_coord_for_domain(&[3.0], &domain),
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+    }
+
+    /// 1-D dimensionless `Type::Scalar` domain wraps to `Value::Real`.
+    #[test]
+    fn wrap_coord_for_domain_dimensionless_scalar_wraps_as_real() {
+        assert_eq!(
+            wrap_coord_for_domain(&[3.0], &Type::dimensionless_scalar()),
+            Value::Real(3.0)
+        );
+    }
+
+    /// `Type::Int` domain (not `Point`, not `Scalar`) hits the outer
+    /// catch-all and returns `Value::Undef`.
+    #[test]
+    fn wrap_coord_for_domain_int_returns_undef() {
+        assert_eq!(wrap_coord_for_domain(&[3.0], &Type::Int), Value::Undef);
+    }
+
+    /// Arity mismatch (`coords_si.len() != n`) on an otherwise-supported
+    /// `Type::Point` domain returns `Value::Undef` via the guard clause on
+    /// the `Point` match arm, not via the quantity gate.
+    #[test]
+    fn wrap_coord_for_domain_point_arity_mismatch_returns_undef() {
+        let domain = Type::Point {
+            n: 3,
+            quantity: Box::new(Type::dimensionless_scalar()),
+        };
+        assert_eq!(wrap_coord_for_domain(&[1.0, 2.0], &domain), Value::Undef);
+    }
+}
