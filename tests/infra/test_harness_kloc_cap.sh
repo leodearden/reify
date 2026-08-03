@@ -1906,4 +1906,54 @@ assert "9: an all-comment baseline (zero data rows) PASSes — the ratchet's des
 assert "9: zero-data-row baseline reports rows=0, not a phantom row from the herestring's empty line" \
     grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=0$' "$_s9_norows_out"
 
+# --- graceful degradation: a MISSING baseline is an explicit FAIL, never a
+#     silent pass (the posture Section 8 pins for its own orphan-row detector).
+#     "I read it and it has no rows" (PASS, above) and "I could not read it /
+#     it is not there" (FAIL, here) must never collapse into the same verdict,
+#     or the guard reports clean at the exact moment it can see nothing. ---
+_s9_missing_base="$(mktemp -d)"; _TMPDIRS+=("$_s9_missing_base")
+_s9_missing_baseline="$_s9_missing_base/does-not-exist.manifest"   # never created
+
+_s9_missing_out="$(mktemp)"; _TMPDIRS+=("$_s9_missing_out")
+_s9_missing_rc=0
+harness_layout_malformed_rows "$_s9_missing_baseline" \
+    > "$_s9_missing_out" 2>/dev/null || _s9_missing_rc=$?
+
+assert "9: a missing baseline fires rather than vacuously passing (returns 1)" \
+    test "$_s9_missing_rc" -eq 1
+assert "9: missing baseline surfaces an explicit FAIL (missing-baseline)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL baseline=.*does-not-exist.* reason=missing-baseline$' \
+        "$_s9_missing_out"
+
+# --- UNREADABLE baseline: an explicit FAIL with its own reason= token, never a
+#     vacuous `rows=0` PASS. This cannot be inferred from the row count — it is
+#     read off harness_layout_baseline_rows's EXIT STATUS, which is exactly why
+#     that lib function narrowly propagates grep's error exit (>= 2) instead of
+#     swallowing it alongside the no-lines-matched exit 1
+#     (tests/infra/harness-layout-lib.sh:252-260). ---
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  (skipped: running as uid 0 — chmod 000 does not deny root reads)"
+else
+    _s9_unread_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_unread_baseline")
+    printf 'crates/reify-eval/tests/present.rs\n' > "$_s9_unread_baseline"
+    chmod 000 "$_s9_unread_baseline"
+
+    _s9_unread_out="$(mktemp)"; _TMPDIRS+=("$_s9_unread_out")
+    _s9_unread_rc=0
+    harness_layout_malformed_rows "$_s9_unread_baseline" \
+        > "$_s9_unread_out" 2>/dev/null || _s9_unread_rc=$?
+
+    assert "9: an unreadable baseline fires rather than vacuously passing (returns 1)" \
+        test "$_s9_unread_rc" -eq 1
+    assert "9: unreadable baseline surfaces its own FAIL token (unreadable-baseline)" \
+        grep -Eq '^HARNESS_KLOC_CAP FAIL baseline=.* reason=unreadable-baseline$' \
+            "$_s9_unread_out"
+    assert "9: unreadable baseline emits NO rows=0 PASS line (the vacuous-pass regression)" \
+        bash -c '! grep -qE "^HARNESS_KLOC_CAP PASS scan=baseline-row-shape" "$1"' \
+            _ "$_s9_unread_out"
+
+    # Restore so the EXIT trap's `rm -rf` is never fighting permissions.
+    chmod 644 "$_s9_unread_baseline"
+fi
+
 test_summary
