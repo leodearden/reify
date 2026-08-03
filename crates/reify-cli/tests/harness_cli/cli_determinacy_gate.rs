@@ -19,7 +19,8 @@
 //! and asserting `exit 0` + `no "VIOLATED"` in stdout.
 //!
 //! The assertion is dual-mode-robust:
-//! - Under OCCT: `#precision(0.1mm)` sphere deviation ≪ `1mm` bound → Satisfied → exit 0.
+//! - Under OCCT: `#precision(0.3mm)` sphere deviation 6.202e-4 m, below the `1mm`
+//!   bound → Satisfied → exit 0.
 //! - Without OCCT: realization cannot run → `achieved_repr_tol` map stays empty →
 //!   Indeterminate (C1 graceful degradation) → exit 0.
 //!
@@ -32,10 +33,11 @@ use crate::common;
 /// must not print "VIOLATED" in stdout.
 ///
 /// This is the missing consumer-boundary half of the Satisfied branch:
-/// - Under OCCT: `#precision(0.1mm)` sphere → sampled deviation ≪ 1 mm → Satisfied → exit 0.
+/// - Under OCCT: `#precision(0.3mm)` sphere → sampled deviation 6.202e-4 m, below the
+///   1 mm bound → Satisfied → exit 0.
 /// - Under stub (no OCCT): realization cannot run → Indeterminate (C1) → exit 0.
 ///
-/// Numbers (`1 m` sphere, `0.1mm` deflection, `1mm` bound) mirror the shipped,
+/// Numbers (`1 m` sphere, `0.3mm` deflection, `1mm` bound) mirror the shipped,
 /// passing engine test `bt7_fine_sphere_tight_bound_yields_satisfied` in
 /// `crates/reify-eval/tests/representation_within_assertion.rs`, so the numeric
 /// premise is grounded in a validated reference result, not a guessed threshold.
@@ -50,7 +52,7 @@ fn check_representation_within_satisfied_exits_zero() {
     assert!(
         status.success(),
         "BT7: reify check representation_within_satisfied.ri should exit 0.\n\
-         Under OCCT: fine precision → deviation ≪ 1mm → Satisfied → exit 0.\n\
+         Under OCCT: fine precision → deviation below 1mm → Satisfied → exit 0.\n\
          Under stub: no realization → Indeterminate (C1) → exit 0.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
@@ -70,7 +72,7 @@ fn check_representation_within_satisfied_exits_zero() {
     // fixture, there would be no Indeterminate entry and "INDETERMINATE" would
     // not appear — so this assertion catches that regression.
     //
-    // Under OCCT: fine-precision sphere deviation ≪ 1 mm → Satisfied.
+    // Under OCCT: fine-precision sphere deviation 6.202e-4 m, below 1 mm → Satisfied.
     // `reify check` prints "All constraints satisfied." in the summary line.
     if reify_kernel_occt::OCCT_AVAILABLE {
         assert!(
