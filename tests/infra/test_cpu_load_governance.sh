@@ -1811,6 +1811,43 @@ else
         || _row4_quiet_vacuity7_rc=$?
     assert "ROW4-1-QUIET-VACUITY-7: FAIL-SAFE -- task delta unreadable (Δtask=unavailable, hot box) => NOT inconclusive (symmetric with -6)" \
         test "$_row4_quiet_vacuity7_rc" -ne 0
+
+    # ── ROW4-1-SAMPLE-VACUITY: the host-PSI sampler feeding the guard ───────
+    # _row4_sample_host_avg10 <proc_path> echoes the `some` line's avg10 field,
+    # or the literal "unavailable" when the path is missing/unreadable/
+    # malformed — the sentinel VACUITY-4 above already proves composes to a
+    # fail-safe verdict. Exercised against a synthetic fixture written in the
+    # _MEM_PSI_QUIET / _SELF_PSI_QUIET / ROW4-BYPASS style, so the sampler is
+    # hermetic and needs no particular host PSI state.
+    #
+    # Capture idiom: "$(... || true)" — MUST NOT be `|| echo unavailable`,
+    # which would make case (b) pass even while the sampler is undefined and
+    # destroy the RED signal (:867-869).
+    _row4_psi_hot_fixture="$(mktemp -p "$WORK" row4-psi-hot.XXXXXX)"
+    printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
+        > "$_row4_psi_hot_fixture"
+
+    # (a) Parses the `some` line's avg10 out of a synthetic HOT fixture.
+    # Compared numerically (locale-proof), mirroring
+    # ROW2-1-USAGE-FRACTION-VACUITY-3 rather than a string equality.
+    _row4_sampled_hot="$(_row4_sample_host_avg10 "$_row4_psi_hot_fixture" 2>/dev/null || true)"
+    assert "ROW4-1-SAMPLE-VACUITY-1: synthetic HOT fixture (some avg10=99.00) => 99 (got '${_row4_sampled_hot}')" \
+        awk -v a="$_row4_sampled_hot" 'BEGIN{ exit !(a+0 == 99) }'
+
+    # (b) A missing path yields the literal sentinel, never an empty string or
+    # a bare 0 — a 0 would read as a maximally QUIET box and flip the guard
+    # from fail-safe to fail-masking.
+    _row4_sampled_missing="$(_row4_sample_host_avg10 "$WORK/row4-psi-does-not-exist" 2>/dev/null || true)"
+    assert "ROW4-1-SAMPLE-VACUITY-2: nonexistent PSI path => 'unavailable' (never '' or 0, which would read as a maximally QUIET box) (got '${_row4_sampled_missing}')" \
+        test "$_row4_sampled_missing" = "unavailable"
+
+    # (c) END-TO-END: drive the sampled-from-fixture value straight into the
+    # predicate with the real measured false-RED deltas, proving sampler and
+    # predicate compose through the REIFY_CPU_GOV_TEST_PROC_PATH seam that
+    # step-12 wires into the live ROW4-1 branch. Mirrors
+    # ROW2-1-USAGE-FRACTION-VACUITY-5's END-TO-END idiom.
+    assert "ROW4-1-QUIET-VACUITY-8: END-TO-END -- avg10 sampled from a HOT fixture ('${_row4_sampled_hot}' >= ceiling=20) + the measured false-RED deltas => inconclusive (sampler and predicate compose)" \
+        _row4_share_inconclusive 10367459 5945387 300 100 0.10 "$_row4_sampled_hot" 20
 fi
 
 if ! host_supports_governance; then
