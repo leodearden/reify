@@ -20,8 +20,11 @@
 #
 # WHAT IS TESTED (built up across the task's TDD steps):
 #   - the shared lib tests/infra/harness-layout-lib.sh: the 5 consolidatable
-#     crates, 7 override stems, the in-scope-standalone predicate, and the
-#     baseline-membership predicate (this file, step-1);
+#     crates, 7 override stems, the in-scope-standalone predicate, the
+#     baseline-membership predicate (this file, step-1), and
+#     _harness_layout_row_crate, the shared `crate=<c>` path derivation behind
+#     BOTH this gate's FAIL line and test_harness_kloc_cap.sh's baseline-row
+#     detectors (task #5990);
 #   - the gate scripts/check-harness-baseline-registration.sh in args/stdin
 #     input mode (step-3) and --from-git self-derivation mode (step-5);
 #   - verify.sh plan-shape: the gate is emitted early under RUN_RUST=1 (step-7);
@@ -164,6 +167,59 @@ assert "E: a full comment line (including its leading #) is NOT a member — pro
 # member — the '#'-prefixed line is stripped before the exact-line match.
 assert "E: a commented-out registration row does NOT make its path a member" \
     bash -c '! { source "$1"; harness_layout_baseline_contains "crates/reify-eval/tests/commented.rs" "$2"; }' _ "$LIB" "$_E_BASELINE"
+
+# ===========================================================================
+# Section E2: _harness_layout_row_crate — the shared `crate=` derivation.
+#
+# The `crate=<c>` field on this gate's FAIL line and on
+# test_harness_kloc_cap.sh's baseline-row FAIL lines is ONE derivation, and it
+# belongs in the lib for the same reason the predicates above do: two guards
+# that disagree about what `crate=` means for an odd-shaped row emit
+# contradictory verdicts about the same file. These asserts pin the derivation
+# AS LIB SURFACE — every one sources ONLY harness-layout-lib.sh in a child
+# shell, never test_harness_kloc_cap.sh, so a definition that lives solely in
+# that test file cannot satisfy them.
+#
+# The contract: `crates/<c>/<rest>` -> <c>; EVERY other shape -> the `-`
+# sentinel (the same non-crate-scoped field harness_stale_selector_violations
+# already emits). The function returns via the global _HL_ROW_CRATE, matching
+# _harness_layout_norm_path/_HL_NORM_OUT, so each assert reads that global
+# inside the same child shell that made the call.
+# ===========================================================================
+echo ""
+echo "--- Section E2: _harness_layout_row_crate (shared crate= derivation) ---"
+
+# The assertion that is RED for the RIGHT reason before the move: absent from
+# the lib, independent of any particular input shape.
+assert "E2: the lib DEFINES _harness_layout_row_crate" \
+    bash -c 'source "$1"; declare -F _harness_layout_row_crate >/dev/null' _ "$LIB"
+
+assert "E2: crates/reify-eval/tests/x.rs derives crate=reify-eval" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/reify-eval/tests/x.rs" "reify-eval"
+# A NON-consolidatable crate still derives its own name: this is a path-shape
+# derivation, NOT a membership test against the 5 (the kLOC-cap detectors scan
+# every baseline row, not just the consolidatable ones).
+assert "E2: crates/reify-solver-elastic/tests/x.rs derives crate=reify-solver-elastic (not a membership test)" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/reify-solver-elastic/tests/x.rs" "reify-solver-elastic"
+# Independent of the `tests/` segment — the second segment is not consulted.
+assert "E2: crates/reify-eval/src/foo.rs derives crate=reify-eval (independent of the tests/ segment)" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/reify-eval/src/foo.rs" "reify-eval"
+assert "E2: a non-crates/-rooted path derives the '-' sentinel" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "not/a/crate/path.rs" "-"
+# The guard is the TWO-segment `crates/*/*`, not merely `crates/*`: a bare
+# `crates/<seg>` has no crate-plus-remainder shape, so it must fall back to the
+# sentinel rather than manufacture `<seg>` as a phantom crate. This is exactly
+# where the sentinel and a naive `${p#crates/}` strip diverge.
+assert "E2: a bare crates/<seg> (single segment) derives the '-' sentinel, not a phantom crate" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/loneseg" "-"
+assert "E2: the empty string derives the '-' sentinel (a blank row cannot manufacture a crate)" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "" "-"
 
 # ===========================================================================
 # Section F: the gate script exists and is executable.
