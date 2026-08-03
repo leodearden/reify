@@ -472,6 +472,95 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
 /// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
 /// separate engine-side concern (deferred, out of scope for this CLI task).
+/// Adopt post-realization constraint verdicts from a captured [`BuildResult`]
+/// onto the authoritative [`CheckResult`], for entries `check()` left
+/// `Indeterminate`.
+///
+/// # Why this exists (task 5748, esc-5748-1 ruling)
+///
+/// `cmd_check`'s kernel-backed arm calls `build()` and then, separately,
+/// `check()` as the constraint source of record.  Routing a geometry-bearing
+/// module through `build()` (D1) resolves geometry-query value cells
+/// (`centroid`, `moment_of_inertia`, …) via
+/// `run_post_processes`/`post_process_geometry_queries` — but ONLY into
+/// build()'s own `values` map.  `Engine::check()` then opens with a fresh
+/// `self.eval(module)` and checks constraints against that pure-eval map, so
+/// those cells are `Undef` again at verdict time and every constraint reading
+/// one degrades to `Indeterminate`.  Routing alone is therefore observably
+/// inert on the verdict axis; this merge is what makes D1 user-visible.
+///
+/// `build_with_geometry_output` carries a dedicated task-4229 pass
+/// (engine_build.rs:4908-4990) that re-checks geometry-derived constraints
+/// against the post-realization value map; `Engine::check()` has no equivalent.
+/// This function is the CLI-side mirror of that pass's merge loop.
+///
+/// # Contract
+///
+/// * **Upgrade-only.**  Only entries whose `check()` verdict is
+///   `Indeterminate` are touched.  A definite `Satisfied`/`Violated` from
+///   `check()` is never regressed, and an `Indeterminate` build verdict never
+///   overwrites anything.  This is what keeps build()'s copy safe to consult
+///   despite being computed before `tessellate_realizations`: a
+///   `RepresentationWithin` / GD&T `Conforms` entry that check() resolved
+///   definitively is untouched, and one that check() left `Indeterminate` is
+///   also `Indeterminate` in build()'s copy (build()'s internal `check()` runs
+///   with an empty `achieved_repr_tol` and freshly-cleared
+///   `realization_handles`), so no stale tessellate-dependent verdict can leak
+///   through.  Only the geometry-query axis — where build() has strictly MORE
+///   information than check() — actually moves.
+/// * **Entries are matched by `id`**, never by position: the two calls build
+///   their result vectors independently.
+/// * **The stale warning is dropped.**  When an entry upgrades, the
+///   `ConstraintIndeterminate` diagnostic `check()` emitted for it (e.g.
+///   "indeterminate: undefined inputs: BoltFlange.moi_principal") is no longer
+///   true, so it is removed — matched by the same needle the checker embeds
+///   (the constraint label when present, else the raw id), mirroring
+///   engine_build.rs's own retain.
+/// * **Diagnostics are otherwise untouched** here; D2's separate
+///   `merge_build_diagnostics` owns appending build()-only entries.
+///
+/// `None` build result (lightweight arm, or a kernel-backed module that took
+/// only the `tessellate_realizations` side effect) → total no-op, so every
+/// pre-5748 input stays byte-identical.
+fn merge_post_build_verdicts(
+    result: &mut reify_eval::CheckResult,
+    build_result: Option<&reify_eval::BuildResult>,
+) {
+    let Some(build_result) = build_result else {
+        return;
+    };
+    // Needles of the entries that upgraded, collected during the walk and
+    // applied to `diagnostics` afterwards (one `&mut result` borrow at a time).
+    let mut upgraded_needles: Vec<String> = Vec::new();
+    for entry in result.constraint_results.iter_mut() {
+        if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
+            continue;
+        }
+        let Some(new_sat) = build_result
+            .constraint_results
+            .iter()
+            .find(|r| r.id == entry.id)
+            .map(|r| r.satisfaction)
+        else {
+            continue;
+        };
+        if new_sat == reify_ir::Satisfaction::Indeterminate {
+            continue;
+        }
+        entry.satisfaction = new_sat;
+        upgraded_needles.push(entry.label.clone().unwrap_or_else(|| entry.id.to_string()));
+    }
+    if upgraded_needles.is_empty() {
+        return;
+    }
+    // The "indeterminate: undefined inputs: …" warnings check() emitted for the
+    // upgraded constraints are now false — drop them.
+    result.diagnostics.retain(|d| {
+        !(d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
+            && upgraded_needles.iter().any(|n| d.message.contains(n)))
+    });
+}
+
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
@@ -622,6 +711,11 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // `build()`, so `run_post_processes`/`post_process_geometry_queries`
         // would never fire and the geometry-query cells would stay `undef` —
         // the routing change would be observably inert.
+        // Captured by the kernel-backed arm's `build()` call below (None on the
+        // lightweight arm, and on a kernel-backed module that takes only the
+        // `tessellate_realizations` side effect). Consumed by
+        // `merge_post_build_verdicts` after the authoritative `check()`.
+        let mut build_result: Option<reify_eval::BuildResult> = None;
         let result = if has_geometric_conforms
             || has_representation_within
             || has_dfm_rule
@@ -648,10 +742,23 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // has_geometry (task 5748): `build()` additionally runs
                 // `run_post_processes`/`post_process_geometry_queries`, which
                 // is the ONLY thing that resolves geometry-query value cells
-                // (`centroid`, `moment_of_inertia`, …). This gate — not just
-                // the outer routing one — is what flips those cells from
-                // `undef` to a real value for the check() call below.
-                let _ = engine.build(&compiled, ExportFormat::Step);
+                // (`centroid`, `moment_of_inertia`, …).
+                //
+                // The `BuildResult` is CAPTURED, not discarded (task 5748,
+                // esc-5748-1 ruling). Routing through `build()` is necessary
+                // but NOT sufficient to make those cells reach a verdict:
+                // `Engine::check()` (engine_constraints.rs:1841) opens with a
+                // fresh `self.eval(module)` and checks constraints against
+                // THAT pure-eval value map, so build()'s post-processed values
+                // are thrown away and the constraint stays `Indeterminate`.
+                // Only `build_with_geometry_output` carries the task-4229
+                // "re-check geometry-derived constraints after the realization
+                // loop" pass (engine_build.rs:4908-4990); `check()` has no
+                // equivalent. So build()'s `constraint_results` are the ONLY
+                // post-realization verdicts available on this path, and the
+                // merge below adopts them where — and only where — check() had
+                // nothing better. See `merge_post_build_verdicts`.
+                build_result = Some(engine.build(&compiled, ExportFormat::Step));
             }
             if has_representation_within {
                 // Populate `achieved_repr_tol`. Does not touch
@@ -682,6 +789,9 @@ fn cmd_check(args: &[String]) -> ExitCode {
             let mut engine = reify_eval::Engine::new(Box::new(checker), None);
             engine.check(&compiled)
         };
+
+        let mut result = result;
+        merge_post_build_verdicts(&mut result, build_result.as_ref());
 
         let outcome = report_eval_output(
             &result.constraint_results,
