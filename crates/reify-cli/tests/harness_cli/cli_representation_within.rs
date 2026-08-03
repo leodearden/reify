@@ -123,14 +123,27 @@ fn check_representation_within_violated_under_occt() {
 /// C2 guard: a module with no `RepresentationWithin` constraints must not be
 /// affected by the new routing in `cmd_check`.
 ///
-/// Uses `crates/reify-cli/tests/fixtures/bracket.ri` — a plain numeric module
-/// with satisfied constraints and no geometry.  The no-purpose path must still
-/// route through `Engine::new(None)+check()` (unchanged) and exit 0.
+/// Uses `crates/reify-cli/tests/fixtures/bracket.ri` — a module with satisfied
+/// constraints and NO `RepresentationWithin` constraint, which is what this
+/// test actually gates: the RepresentationWithin side effects
+/// (`set_capture_repr_tol` + `tessellate_realizations`) must not fire for it,
+/// and it must exit 0 with every constraint satisfied.
+///
+/// Corrected for task #5748: the original rationale called bracket.ri "a plain
+/// numeric module … with no geometry" that stays on `Engine::new(None)+check()`.
+/// That was never quite true — bracket.ri declares `let body = box(width,
+/// height, thickness)` — and #5748's D1 made the distinction observable: `check`
+/// now routes ANY geometry-bearing module through
+/// `Engine::with_registered_kernel` + `build()`, so this fixture takes the
+/// kernel-backed arm.  The assertions below are unchanged and still hold; only
+/// the stated reason was wrong.
 ///
 /// This test is GREEN immediately and must remain GREEN after step-10.
 #[test]
 fn check_non_representation_within_module_is_unaffected() {
-    // bracket.ri has no RepresentationWithin constraints → existing path.
+    // bracket.ri declares no RepresentationWithin constraint → the repr-tol
+    // capture/tessellate side effects stay off (it is kernel-routed by #5748's
+    // has_geometry gate, but that is a different axis).
     let path = common::fixture_path("bracket.ri");
     let (status, stdout, stderr) = common::run_subcommand("check", &path);
 
