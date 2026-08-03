@@ -905,15 +905,6 @@ fn scalar_si(result: &EvalResult, id: &ValueCellId, what: &str) -> f64 {
     }
 }
 
-/// `Some(si)` iff `id` resolved to a `Scalar` — used to pick BT-5's cost cell
-/// without asserting on which one materialises.
-fn scalar_si_opt(result: &EvalResult, id: &ValueCellId) -> Option<f64> {
-    match result.values.get(id) {
-        Some(Value::Scalar { si_value, .. }) => Some(*si_value),
-        _ => None,
-    }
-}
-
 /// Derive the FROZEN-CASCADE variant from the shipped source by removing the
 /// parent's inlined `minimize` line.
 ///
@@ -948,9 +939,26 @@ fn strip_inlined_minimize(src: &str) -> String {
     kept.join("\n")
 }
 
-/// Read the shipped example from disk and eval BOTH the merged (inlined
-/// `minimize` present) and frozen-cascade (`minimize` stripped) halves
-/// through the real solver.
+/// Read the `.ri` source at `path` from disk and eval BOTH the merged
+/// (inlined `minimize` present) and frozen-cascade (`minimize` stripped)
+/// halves through the real solver.
+///
+/// Shared by every merged/frozen fixture pair in this file —
+/// [`joint_drive_halves`] below and `mwhole_halves()` further down both wrap
+/// this — so the read+strip+eval mechanics are a single source of truth
+/// instead of drifting apart across the two example fixtures.
+fn halves(path: &str) -> (EvalResult, EvalResult) {
+    let merged_src =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("could not read {path}: {e}"));
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    (merged, frozen)
+}
+
+/// The joint-drive example's merged/frozen-cascade pair — a thin wrapper over
+/// [`halves`] for [`JOINT_DRIVE_EXAMPLE_PATH`].
 ///
 /// Shared by BT-5 and its companion known-limitation pin
 /// (`parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`)
@@ -958,14 +966,8 @@ fn strip_inlined_minimize(src: &str) -> String {
 /// independently in each test would let them silently drift apart, exactly
 /// the failure mode `strip_inlined_minimize`'s own doc comment warns about
 /// for "derived, never transcribed" baselines.
-fn eval_merged_and_frozen() -> (EvalResult, EvalResult) {
-    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
-    (merged, frozen)
+fn joint_drive_halves() -> (EvalResult, EvalResult) {
+    halves(JOINT_DRIVE_EXAMPLE_PATH)
 }
 
 /// BT-5 — THE LEAF. The parent's cost objective reaches the CHILD's auto in one
@@ -1022,7 +1024,7 @@ fn eval_merged_and_frozen() -> (EvalResult, EvalResult) {
 /// `dependent_cells` → β folds them per trial → α writes them back.
 #[test]
 fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
-    let (merged, frozen) = eval_merged_and_frozen();
+    let (merged, frozen) = joint_drive_halves();
 
     // ---- (i) the child auto resolves STRICTLY DIFFERENT from its freeze. ----
 
@@ -1137,86 +1139,62 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 /// assertion or to #5835's status.
 #[test]
 fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
-    let (merged, frozen) = eval_merged_and_frozen();
+    let (merged, frozen) = joint_drive_halves();
 
     let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
+    let line_cost = ValueCellId::new("Rivet", "line_cost");
 
-    // ---- MERGED half. ----
+    // Looped, not duplicated: the MERGED and FROZEN-CASCADE halves pin the
+    // identical three claims, and a verbatim copy is exactly the shape that
+    // drifts — a future edit to one message or one `matches!` arm could
+    // silently not be applied to the other. Precedent:
+    // `mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value`
+    // below loops over its cases the same way.
+    for (what, result) in [("merged", &merged), ("frozen-cascade", &frozen)] {
+        // PRESENCE — the anti-vacuity guard. A misspelled `ValueCellId`, or a
+        // future edit that deletes `let total_cost` from the shipped
+        // example, must fail HERE rather than sail through the permissive
+        // UNRESOLVED check below.
+        let cell = result.values.get(&total_cost);
+        assert!(
+            cell.is_some(),
+            "fixture integrity: `RivetedPanel.total_cost` must be PRESENT in \
+             the {what} eval's value map (the shipped example's `let \
+             total_cost` binding, or this cell's id spelling, has changed) \
+             — got no entry",
+        );
+        // UNRESOLVED — the actual claim. Assert the negative shape (not a
+        // resolved `Scalar`, `Real`, or `Int` — every numeric `Value`
+        // variant) rather than pinning today's exact `Value::Undef`
+        // spelling, so this pins "not a usable number", not one particular
+        // non-Scalar variant.
+        assert!(
+            !matches!(
+                cell,
+                Some(Value::Scalar { .. } | Value::Real(_) | Value::Int(_))
+            ),
+            "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
+             resolved to a usable number in the {what} eval — got {cell:?}. \
+             The engine gap #5835 tracks has apparently closed: a \
+             parent-level consumer `let` over a cluster-solved cross-sub \
+             cell now materialises post-solve. That needs a reviewed design \
+             change (re-enable the parent aggregate as BT-5(ii)'s preferred \
+             cost cell, update the example header's \"Reading the result\" \
+             section), not a silent edit to this assertion.",
+        );
 
-    let merged_cell = merged.values.get(&total_cost);
-    // PRESENCE — the anti-vacuity guard. A misspelled `ValueCellId`, or a
-    // future edit that deletes `let total_cost` from the shipped example,
-    // must fail HERE rather than sail through the permissive UNRESOLVED
-    // check below.
-    assert!(
-        merged_cell.is_some(),
-        "fixture integrity: `RivetedPanel.total_cost` must be PRESENT in the \
-         merged eval's value map (the shipped example's `let total_cost` \
-         binding, or this cell's id spelling, has changed) — got no entry",
-    );
-    // UNRESOLVED — the actual claim. Assert the negative shape (not a
-    // resolved `Scalar`, `Real`, or `Int` — every numeric `Value` variant)
-    // rather than pinning today's exact `Value::Undef` spelling, so this
-    // pins "not a usable number", not one particular non-Scalar variant.
-    assert!(
-        !matches!(
-            merged_cell,
-            Some(Value::Scalar { .. } | Value::Real(_) | Value::Int(_))
-        ),
-        "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
-         resolved to a usable number in the merged eval — got \
-         {merged_cell:?}. The engine gap #5835 tracks has apparently \
-         closed: a parent-level consumer `let` over a cluster-solved \
-         cross-sub cell now materialises post-solve. That needs a \
-         reviewed design change (re-enable the parent aggregate as \
-         BT-5(ii)'s preferred cost cell, update the example header's \
-         \"Reading the result\" section), not a silent edit to this \
-         assertion.",
-    );
-
-    // ---- FROZEN-CASCADE half — same two claims, independently. ----
-
-    let frozen_cell = frozen.values.get(&total_cost);
-    assert!(
-        frozen_cell.is_some(),
-        "fixture integrity: `RivetedPanel.total_cost` must be PRESENT in the \
-         frozen-cascade eval's value map (the shipped example's `let \
-         total_cost` binding, or this cell's id spelling, has changed) — got \
-         no entry",
-    );
-    assert!(
-        !matches!(
-            frozen_cell,
-            Some(Value::Scalar { .. } | Value::Real(_) | Value::Int(_))
-        ),
-        "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
-         resolved to a usable number in the frozen-cascade eval — got \
-         {frozen_cell:?}. The engine gap #5835 tracks has apparently \
-         closed: a parent-level consumer `let` over a cluster-solved \
-         cross-sub cell now materialises post-solve. That needs a \
-         reviewed design change (re-enable the parent aggregate as \
-         BT-5(ii)'s preferred cost cell, update the example header's \
-         \"Reading the result\" section), not a silent edit to this \
-         assertion.",
-    );
-
-    // ---- LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
-    // above are not silently reading a dead or empty map. This is also what
-    // keeps `scalar_si_opt` alive now that BT-5(ii) no longer calls it at
-    // all. ----
-    assert!(
-        scalar_si_opt(&merged, &ValueCellId::new("Rivet", "line_cost")).is_some(),
-        "fixture integrity: `Rivet.line_cost` must resolve in the merged eval \
-         — if it does not, the eval produced no usable values at all and the \
-         PRESENCE/UNRESOLVED assertions above are vacuous",
-    );
-    assert!(
-        scalar_si_opt(&frozen, &ValueCellId::new("Rivet", "line_cost")).is_some(),
-        "fixture integrity: `Rivet.line_cost` must resolve in the \
-         frozen-cascade eval — if it does not, the eval produced no usable \
-         values at all and the PRESENCE/UNRESOLVED assertions above are \
-         vacuous",
-    );
+        // LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
+        // above are not silently reading a dead or empty map. Stands on its
+        // own anti-vacuity rationale, independent of BT-5: a test-filter run
+        // that isolates just this test must not silently pass against an
+        // empty `values` map.
+        assert!(
+            matches!(result.values.get(&line_cost), Some(Value::Scalar { .. })),
+            "fixture integrity: `Rivet.line_cost` must resolve in the {what} \
+             eval — if it does not, the eval produced no usable values at \
+             all and the PRESENCE/UNRESOLVED assertions above are vacuous",
+        );
+    }
 }
 
 /// BT-6(a) — an INTRA-TEMPLATE let cycle in a model that ALSO carries an auto
@@ -1591,26 +1569,14 @@ const WHOLE_MODEL_COST_MIN_EXAMPLE_PATH: &str = concat!(
     "/../../examples/whole_model_cost_min.ri"
 );
 
-/// Shared preamble for every `mwhole_*` test below: read the shipped M-WHOLE ε
-/// example from disk, derive its frozen-cascade counterpart via
-/// `strip_inlined_minimize`, and evaluate BOTH halves through the REAL
-/// `DimensionalSolver`. All three `mwhole_*` tests need exactly this pair, so
-/// centralising it keeps the read+strip+eval mechanics — and the "run the
-/// next impl step" panic message — a single source of truth instead of three
-/// literal copies.
+/// Shared preamble for every `mwhole_*` test below: the M-WHOLE ε example's
+/// merged/frozen-cascade pair, via [`halves`]. All three `mwhole_*` tests
+/// need exactly this pair, so centralising it keeps the mechanics a single
+/// source of truth instead of three literal copies — and, since
+/// [`joint_drive_halves`] wraps the same [`halves`], across both example
+/// fixtures in this file.
 fn mwhole_halves() -> (EvalResult, EvalResult) {
-    let merged_src =
-        std::fs::read_to_string(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH).unwrap_or_else(|e| {
-            panic!(
-                "Could not read {WHOLE_MODEL_COST_MIN_EXAMPLE_PATH}: {e} — run the next impl \
-                 step to create the example file",
-            )
-        });
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
-    (merged, frozen)
+    halves(WHOLE_MODEL_COST_MIN_EXAMPLE_PATH)
 }
 
 /// BT4(i) — the joint-drive signal generalised to TWO coupled children under
