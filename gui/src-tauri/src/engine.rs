@@ -623,8 +623,17 @@ pub struct EngineSession {
     ///
     /// A `Value::Undef` in the delta is NOT unconditionally treated as a gap:
     /// `surface_geometry_derived_cells` retains only when the cell's realization
-    /// did not run this pass, so a genuine post-edit degeneration clears the
-    /// entry instead of replaying a stale value as Final.
+    /// did not run this pass, so a post-edit degeneration whose realization DID
+    /// run clears the entry instead of replaying a stale value as Final.
+    ///
+    /// That covers only the DISPATCHED degeneration. A warm edit whose realization
+    /// stays hash-exempt — an edit to a mass input that is not a geometry-op
+    /// scalar arg — produces no delta entry to compare against at all, so the
+    /// staleness cannot be detected from the delta. `set_parameter` invalidates
+    /// the edited entity's entries directly for that case; see
+    /// `EngineSession::invalidate_geometry_derived_cache_for_entity`, which is the
+    /// third invalidation trigger alongside the `sync_demand` prune and the
+    /// `commit_state` clear.
     ///
     /// NOTE the discriminator deliberately is NOT the cell's own
     /// `freshness == "pending"` flag: measured on this branch, a HASH-EXEMPT
@@ -2113,6 +2122,12 @@ impl EngineSession {
             return Err(format!("Unknown parameter '{}'", cell_id_str));
         }
 
+        // Task #5338: captured BEFORE `edit_check` consumes `cell_id`. Only the
+        // entity half is needed, and the invalidation must happen after the commit
+        // below, so the alternative would be cloning the whole `ValueCellId` into
+        // the solve closure on every edit.
+        let edited_entity = cell_id.entity.clone();
+
         // with_solve_slot fires the SolveCancellationSink lifecycle around
         // edit_check (task γ/4086): solve_started before, solve_finished after.
         // SolveFinishedGuard inside with_solve_slot ensures solve_finished fires
@@ -2127,8 +2142,70 @@ impl EngineSession {
         // Commit state first; emit_auto_resolve_if_any reads back via last_check()
         // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
         self.core.commit_check(check_result);
+        // Task #5338: the warm-edit invalidation trigger. Placement is load-bearing
+        // on BOTH sides — after the commit, so a FAILED edit (the `?` on
+        // `with_solve_slot` above short-circuits) leaves retention intact; before
+        // the rebuild, so the very pass that would otherwise replay the pre-edit
+        // value already finds no entry to replay.
+        self.invalidate_geometry_derived_cache_for_entity(&edited_entity);
         self.post_engine_call_telemetry();
         self.build_gui_state()
+    }
+
+    /// Task #5338: drop the geometry-derived value retention for one ENTITY —
+    /// the WARM-EDIT sibling of the `sync_demand` visibility prune and of the
+    /// `commit_state` full clear. Those three are the only invalidation triggers
+    /// for `geometry_derived_cache`; each is documented at its own site.
+    ///
+    /// ## Why a warm edit needs its own trigger
+    ///
+    /// The retention contract's other half — "a fresh non-`Undef` delta entry
+    /// always wins over the retained one" — is structurally UNAVAILABLE here. A
+    /// warm `set_parameter` can change an input that reaches a mass-prop cell
+    /// without changing any geometry-op scalar argument: `mass` is
+    /// `volume(geometry) * material.density` and `moment_of_inertia` is
+    /// `moment_of_inertia(geometry, body_density)`, so editing a density (or any
+    /// param folded into `Material(...)`) moves the answer while leaving every op
+    /// arg alone. `RealizationNodeData.input_cone_hash` folds ONLY the
+    /// realization's own geometry-op scalar args
+    /// (`compute_realization_upstream_values_hash_from_ops`, reify-eval
+    /// engine_build.rs), so such a realization stays HASH-EXEMPT: it is dropped
+    /// from the scheduled seed, its kernel ops never run, and the delta can carry
+    /// NO fresh value to overwrite the retained one. Without this call the panel
+    /// would serve the PRE-EDIT mass as `determined` / `freshness = "final"`,
+    /// which is strictly worse than the pre-#5338 behaviour.
+    ///
+    /// Dropping the entry is therefore the only available answer. The cell
+    /// degrades to `Undef` — exactly the pre-#5338 reading, i.e. the fail-safe
+    /// direction — until the next dispatch resolves it for real. Pinned by
+    /// `warm_edit_of_a_non_op_arg_mass_input_does_not_replay_a_stale_mass`.
+    ///
+    /// ## Why entity-scoped and NOT a blunt `clear()`
+    ///
+    /// A full clear would drop every UNAFFECTED entity's retention too, and those
+    /// entities stay hash-exempt until the next recompile — so their mass-prop
+    /// cells would read `Undef` indefinitely after any unrelated edit. That is
+    /// #5338 itself, re-opened for every body the user did not touch. Pinned by
+    /// `warm_edit_does_not_collaterally_drop_another_bodys_retained_mass_props`,
+    /// which fails at its untouched second body if the shortcut is ever taken.
+    ///
+    /// ## Residual: cross-entity inputs are still not invalidated
+    ///
+    /// The join is on the EDITED cell's own entity, so an input reached only
+    /// through ANOTHER entity — a module-level `body_density` consumed by
+    /// `Body.material`, say — leaves `Body`'s entry in place, and `Body` is itself
+    /// hash-exempt across that edit, so it can still replay stale. Closing that
+    /// exactly needs an eval-side signal this crate does not have: either an
+    /// `input_cone_hash` (or sibling hash) that also covers post-process inputs
+    /// such as `material.density`, or a forward-dependency query exposed on
+    /// `Engine` (`DependencyMap::forward_reachable`, reify-eval deps.rs, exists
+    /// but is not reachable through `Engine`'s public surface). Filed as a
+    /// follow-up under ticket `tkt_0RS0ZAKJPSH78DVB56QJ5E5V13`; deliberately not
+    /// written as a tracked-pattern comment, since the curator assigns the task id
+    /// asynchronously and a cite must resolve to a live task to be valid.
+    fn invalidate_geometry_derived_cache_for_entity(&mut self, entity: &str) {
+        self.geometry_derived_cache
+            .retain(|id, _| id.entity != entity);
     }
 
     /// Return a shared reference to the underlying [`Engine`] for
@@ -4178,8 +4255,17 @@ pub(crate) fn build_constraints(
 /// one stores the hash; the next finds it exempt) — reproducing on argv-launch,
 /// watcher-reload and warm-edit alike. `cache` closes that: a delta-resolved value
 /// is retained per `ValueCellId` and re-surfaced whenever the current delta omits
-/// the cell. A fresh non-`Undef` delta entry ALWAYS wins over the retained one, so a
-/// genuine recompute is never masked by a stale replay.
+/// the cell. A fresh non-`Undef` delta entry wins over the retained one, so a
+/// recompute that REACHES this function is never masked by a stale replay.
+///
+/// That guarantee is only half of the story, and only holds when the realization
+/// actually runs. A warm edit of an input that is not a geometry-op scalar arg
+/// (a density folded into `Material(...)`, say) leaves the realization hash-exempt,
+/// so it is never dispatched and the delta carries no fresh value at all — there is
+/// nothing for "the fresh one wins" to act on. `EngineSession::set_parameter` closes
+/// that half by explicitly invalidating the edited entity's entries before the
+/// rebuild; see `EngineSession::invalidate_geometry_derived_cache_for_entity`, which
+/// is the second half of the guarantee, not an optional extra.
 ///
 /// Retention is NOT applied blindly to every `Undef`. A hash-exempt gap and a
 /// genuine degeneration (degenerate geometry, a failing kernel query) both write
@@ -4256,8 +4342,10 @@ fn surface_geometry_derived_cells(
         }
         let id = ValueCellId::new(&cell.entity_path, &cell.name);
         // Task #5338: the delta is authoritative when it carries a real value —
-        // adopt it and REFRESH the retention entry (a fresh delta always wins, so
-        // a recompute is never masked by a stale replay). When the delta omits the
+        // adopt it and REFRESH the retention entry (a fresh delta wins, so a
+        // recompute that reaches here is never masked by a stale replay; the case
+        // where no fresh delta entry can exist at all is handled upstream by
+        // `invalidate_geometry_derived_cache_for_entity`). When the delta omits the
         // cell or holds `Undef`, fall back to the retained value: that is the
         // HASH-EXEMPT "no geometry change occurred, keep the previous value" case.
         let val: Value = match result.values.get(&id) {
