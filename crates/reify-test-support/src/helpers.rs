@@ -827,6 +827,25 @@ pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str
     })
 }
 
+/// Sorted `member` list of every cell `result` produced for `entity` — used to
+/// make a missing-cell panic read as "mirror reintroduced" rather than
+/// "cell renamed".
+///
+/// Canonical replacement for the verbatim-duplicated `members_of` helper in
+/// `m8_3_stdlib_integration.rs` and `m8_4_stdlib_integration.rs` (task #5653;
+/// surfaced by task #5582 code review).
+#[cfg(feature = "eval-helpers")]
+pub fn members_of(result: &reify_eval::EvalResult, entity: &str) -> Vec<String> {
+    let mut members: Vec<String> = result
+        .values
+        .iter()
+        .filter(|(id, _)| id.entity == entity)
+        .map(|(id, _)| id.member.clone())
+        .collect();
+    members.sort();
+    members
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
