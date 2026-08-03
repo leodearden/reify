@@ -1481,8 +1481,13 @@ class TestMain(unittest.TestCase):
             "ir":      (0, "a = 0.01 m", ""),
         })
 
-    def test_harness_error_stderr_is_not_truncated(self):
-        """A HARNESS_ERROR's stderr is emitted in FULL, so the denied path is visible."""
+    def test_harness_error_stderr_shows_the_denied_path(self):
+        """The HARNESS_ERROR budget is wide enough to carry the denied lock path.
+
+        Not "full" — the sibling test_harness_error_stderr_is_capped_not_unbounded
+        pins that a cap exists.  What matters is that the cap sits far above the
+        signature the operator needs, which the 200-char preview did not.
+        """
         rc, out, _ = self._run_main_capturing(
             [str(_EXAMPLE_PROBE_SET)], runner=self._cache_denial_runner()
         )
@@ -1505,6 +1510,51 @@ class TestMain(unittest.TestCase):
             "--grammar-substrate-status", out,
             "the hint must point at the mode that turns this into a clean SKIP",
         )
+
+    def _assert_no_cache_denial_hint(self, out):
+        """Assert the renderer printed no cache-denial hint for this result."""
+        self.assertNotIn(
+            "--grammar-substrate-status", out,
+            "the hint must not be offered for a HARNESS_ERROR that is not a "
+            "cache denial — pointing an operator at the substrate mode "
+            "mis-attributes the failure this change exists to attribute",
+        )
+        self.assertNotIn("cache/lock", out)
+
+    def test_missing_binary_harness_error_emits_no_cache_denial_hint(self):
+        """A missing-binary HARNESS_ERROR is still 70, but carries no cache hint.
+
+        The positive hint test alone would pass with the
+        `if grammar_cache_denied(...)` guard widened, inverted, or dropped
+        entirely — leaving the renderer telling an operator that a missing
+        tree-sitter CLI is a landlock cache denial.
+        """
+        runner = self._make_runner({
+            "grammar": (127, "", pcc._BINARY_NOT_FOUND_SENTINEL +
+                        ": [Errno 2] No such file or directory: 'tree-sitter'"),
+            "check":   (1, "", "rejection: bad arg"),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
+        self._assert_no_cache_denial_hint(out)
+
+    def test_non_permission_load_failure_emits_no_cache_denial_hint(self):
+        """A load failure with no permission indicator gets no cache hint either.
+
+        The other half of the predicate's narrowness, asserted through the
+        renderer: a missing or corrupt grammar is a real harness error the
+        operator must not be told to write off as an environmental skip.
+        """
+        runner = self._make_runner({
+            "grammar": (1, "", "Error: Failed to load language for path \"x.ri\"\n"
+                               "Caused by: No language found for path\n"),
+            "check":   (1, "", "rejection: bad arg"),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
+        self._assert_no_cache_denial_hint(out)
 
     def test_harness_error_stderr_is_capped_not_unbounded(self):
         """The HARNESS_ERROR budget is large, but it is still a budget.
@@ -1985,40 +2035,34 @@ class TestGrammarCacheDenied(unittest.TestCase):
         stderr = "Error: Permission denied (os error 13) (x.ri)\n"
         self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
 
-    # ── one definition of the load-failure signature ──────────────────────────
+    # ── the two classifiers must agree about a load failure ───────────────────
 
-    def test_load_failure_marker_is_shared_with_observe(self):
-        """observe() must key on _GRAMMAR_LOAD_FAILURE_MARKER, not its own copy.
+    def test_denied_run_is_also_a_harness_error_to_observe(self):
+        """Anything this predicate calls a denial must also be HARNESS_ERROR.
 
-        Two independent spellings of the same tree-sitter signature drift, and
-        the drift is silent in exactly the dangerous direction: were only the
-        constant updated for a reworded tree-sitter, this predicate would keep
-        recognising the denial while observe() reclassified the load failure as
-        ABSENT — promoting a harness error into a real PASS/FAIL verdict, the
-        very mis-attribution this task exists to remove.
-
-        Patching the constant is what makes this a real pin: a literal left
-        behind in observe() is equal to the constant today, so only a
-        substituted marker can tell the two apart.
+        The consistency that matters, stated over behaviour rather than over
+        which constant a branch dereferences.  If the two classifiers ever
+        disagreed — grammar_cache_denied() still recognising a reworded
+        tree-sitter signature while observe() reclassified the load failure as
+        ABSENT — a harness error would be promoted into a real PASS/FAIL
+        verdict, the mis-attribution this task exists to remove.
         """
-        reworded = "Could not load grammar"
-        run = self._run(
-            1,
-            f"Error: {reworded} in current directory:\n"
+        for stderr in (
+            _CACHE_DENIED_STDERR,
+            "Error: Failed to load language in current directory:\n"
             "Permission denied (os error 13) (~/.cache/tree-sitter/lock/x.lock)\n",
-        )
-        with unittest.mock.patch.object(
-            pcc, "_GRAMMAR_LOAD_FAILURE_MARKER", reworded
         ):
-            self.assertTrue(
-                pcc.grammar_cache_denied(run),
-                "precondition: the predicate follows the constant",
-            )
-            self.assertEqual(
-                pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
-                "observe() still holds its own copy of the load-failure literal; "
-                "a reworded tree-sitter would silently become ABSENT there",
-            )
+            with self.subTest(stderr=stderr[:40]):
+                run = self._run(1, stderr)
+                self.assertTrue(
+                    pcc.grammar_cache_denied(run),
+                    "precondition: this is a recognised cache denial",
+                )
+                self.assertEqual(
+                    pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
+                    "a run classified as a cache denial must never reach a "
+                    "PRESENT/ABSENT observation",
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -2107,6 +2151,35 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         self.assertFalse(usable, "a missing tree-sitter CLI is an unusable substrate")
         self.assertTrue(reason, "an unusable substrate must explain itself")
         self.assertIn("tree-sitter", reason.lower())
+
+    def test_launch_failure_reason_carries_the_offending_path(self):
+        """The launch-failure reason must name WHAT could not be launched.
+
+        run_probe() represents every launch OSError with one sentinel, so a
+        missing grammar cwd (<repo_root>/tree-sitter-reify never generated)
+        raises the same FileNotFoundError as a missing CLI.  The reason text
+        therefore cannot assert which one it was — only the errno detail
+        run_probe() appends distinguishes them, and it must survive into the
+        operator-facing string that the shell preflight prints as its SKIP line.
+        """
+        missing = os.path.join(self._tmpdir, "definitely-not-here")
+        _, cli_reason = self._call(missing)
+        self.assertIn(
+            missing, cli_reason,
+            "the errno detail naming the missing CLI must reach the reason",
+        )
+
+        # Same sentinel, different subsystem: an absent grammar directory.
+        with unittest.mock.patch.object(
+            pcc, "_find_repo_root", return_value=os.path.join(self._tmpdir, "no-repo")
+        ):
+            usable, cwd_reason = self._call(self._clean_stub())
+        self.assertFalse(usable, "an absent grammar directory is an unusable substrate")
+        self.assertIn(
+            "tree-sitter-reify", cwd_reason,
+            "an absent grammar directory must be attributable from the reason, "
+            "not silently reported as a missing CLI",
+        )
 
     # ── (e) present-but-unlaunchable CLI → unusable, never a raise ────────────
 
@@ -2197,10 +2270,10 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         of a slow machine — `reify eval` on a heavy fixture may legitimately run
         long.  The bound is opt-in, for callers that cannot afford to block.
         """
-        captured = {}
+        calls = []
 
         def fake_run(*args, **kwargs):
-            captured.update(kwargs)
+            calls.append(kwargs)
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
         probe = pcc.Probe(
@@ -2211,8 +2284,19 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         )
         with unittest.mock.patch.object(subprocess, "run", side_effect=fake_run):
             pcc.run_probe(probe)
+        # Assert the launch HAPPENED before asserting what it was passed: read
+        # through .get() with a None default, this passes vacuously if
+        # subprocess.run is never reached at all (build_command raising, or a
+        # future short-circuit), silently stopping guarding the thing it exists for.
+        self.assertEqual(len(calls), 1, "run_probe() must have launched exactly once")
+        captured = calls[0]
+        self.assertIn(
+            "timeout", captured,
+            "run_probe() must pass `timeout` explicitly, so the default is "
+            "visible at the call site rather than inherited from subprocess",
+        )
         self.assertIsNone(
-            captured.get("timeout", None),
+            captured["timeout"],
             "run_probe() must stay unbounded by default; only callers that ask "
             "for a bound get one",
         )
