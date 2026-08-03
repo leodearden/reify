@@ -29,6 +29,32 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // Drop stdin by closing it
     drop(child.stdin.take());
 
+    // Drain stdout and stderr CONCURRENTLY with the wait loop.
+    //
+    // This is load-bearing, not tidiness. The child writes its JSON-RPC
+    // responses to a pipe whose capacity the kernel picks at creation time:
+    // 64KiB normally, but only 8KiB once this user is over
+    // `fs.pipe-user-pages-soft` -- which a parallel `cargo nextest` run
+    // routinely is. If nobody reads the pipe while the child runs, a response
+    // larger than that capacity blocks the child forever in `pipe_write`, it
+    // never exits, and the wait loop below reports the deadlock as a bogus
+    // "timeout". That mis-diagnosis has already cost one spurious ceiling
+    // raise (10s->30s, task 4503): no ceiling can fix a deadlock.
+    //
+    // Reading on separate threads keeps the pipes empty, so the child always
+    // makes progress and the ceiling stays what its name says -- a pure
+    // liveness guard.
+    let mut child_stdout = child.stdout.take().expect("failed to open stdout");
+    let mut child_stderr = child.stderr.take().expect("failed to open stderr");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut child_stdout, &mut buf).map(|_| buf)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut child_stderr, &mut buf).map(|_| buf)
+    });
+
     // Wait with timeout to prevent CI deadlocks.
     // 30s headroom: task 4503 raised the OCCT nextest max-threads cap 4->24
     // (commit 9ea8cdd4b8), so under peak concurrent load the child's stdlib
@@ -51,11 +77,19 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
         }
     }
 
-    let output = child
-        .wait_with_output()
-        .expect("failed to collect output from reify mcp-server");
+    // The child has exited, so both pipes are at EOF and these joins are
+    // bounded. (On the timeout path above we already killed the child, which
+    // closes its ends of the pipes, so the readers finish there too.)
+    let stdout_bytes = stdout_reader
+        .join()
+        .expect("stdout reader thread panicked")
+        .expect("failed to read stdout from reify mcp-server");
+    let _stderr_bytes = stderr_reader
+        .join()
+        .expect("stderr reader thread panicked")
+        .expect("failed to read stderr from reify mcp-server");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
 
     // Parse each non-empty line as JSON
     stdout
