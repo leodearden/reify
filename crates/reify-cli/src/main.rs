@@ -1267,24 +1267,26 @@ fn cmd_build(args: &[String]) -> ExitCode {
     }
 }
 
-/// Register all FEA/buckling/modal and shell-extract compute trampolines on `engine`.
+/// CLI-local alias for
+/// [`Engine::register_production_compute_fns`][reify_eval::Engine::register_production_compute_fns]
+/// (task 5072 / PRD `compute-fea-hardening.md` A1 — see there for the bundle
+/// membership, ordering, and the INV-FEA-1 single-source-of-truth rationale;
+/// this wrapper does not restate them).
 ///
-/// This is the single source of truth for the trampoline set shared between
-/// `cmd_build` (solver-free, calls this directly) and [`configured_eval_engine`]
-/// (full solver).  Adding a new trampoline here automatically covers both paths and
-/// prevents silent drift between them.
+/// Exists to name the `MorphRegistration::Enabled` choice once and keep both
+/// call sites — `cmd_build` (solver-free, calls this directly) and
+/// [`configured_eval_engine`] (full solver) — one-line, with no drift between
+/// them.
+///
+/// The morph producer is dormant-safe (task 4744 β): the dispatch only
+/// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
+/// which today requires an explicit boundary demand — a plain `reify build`
+/// never triggers the (#4876-crashing) attributed path. Every non-success
+/// morph honestly falls back to a remesh.
 fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
-    reify_eval::compute_targets::register_compute_fns(engine);
-    reify_eval::register_shell_extract_compute_fns(engine);
-    // Task 4744 β (step-22): install the mesh-morph producer so a warm
-    // VolumeMesh rebuild can deform the prior mesh in place instead of remeshing
-    // from scratch. Dormant-safe: the dispatch only attempts a morph when a
-    // prior source mesh carries a `BoundaryAssociation`, which today requires an
-    // explicit boundary demand — a plain `reify build` never triggers the
-    // (#4876-crashing) attributed path. Every non-success morph honestly falls
-    // back to a remesh. Registered here (the shared trampoline hook) so both the
-    // `cmd_build` geometry path and `configured_eval_engine` get it.
-    reify_mesh_morph::register_morph_producer(engine);
+    engine.register_production_compute_fns(reify_eval::MorphRegistration::Enabled(
+        reify_mesh_morph::register_morph_producer,
+    ));
 }
 
 /// Configure a freshly-constructed [`reify_eval::Engine`] for use in `cmd_eval`:
@@ -4351,6 +4353,42 @@ mod persistent_cache_cli_wiring_tests {
             Some(tmp.path()),
             "--cache-dir override must make persistent_cache_dir() return the \
              specified tmp path, not the env/default-resolved path"
+        );
+    }
+}
+
+// ── Task 5073 (PRD compute-fea-hardening.md task A2): characterization safety
+// net for `register_compute_trampolines` ────────────────────────────────────
+
+/// Characterization test for `register_compute_trampolines` (task 5073 / PRD
+/// `compute-fea-hardening.md` task A2): pins that the CLI wrapper delegates
+/// to the full production compute-trampoline bundle with the morph producer
+/// enabled. Refactor safety net — GREEN both before and after this task's
+/// migration step, since that migration is behavior-preserving.
+#[cfg(test)]
+mod compute_trampoline_registration_tests {
+    use super::*;
+
+    /// `register_compute_trampolines` must run the production bundle (smoke-
+    /// checked via the `register_compute_fns` leg's `solver::elastic_static`
+    /// target) and must pass `MorphRegistration::Enabled` — the only
+    /// CLI-specific decision — so `morph_producer()` ends up installed. Full
+    /// leg-by-leg bundle coverage is `Engine::register_production_compute_fns`'s
+    /// own suite's job (`compute_targets/mod.rs`).
+    #[test]
+    fn cli_trampolines_install_full_production_bundle() {
+        let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+        register_compute_trampolines(&mut engine);
+
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "register_compute_trampolines must run the production bundle \
+             (register_compute_fns leg)"
+        );
+        assert!(
+            engine.morph_producer().is_some(),
+            "register_compute_trampolines must pass MorphRegistration::Enabled, \
+             installing the mesh-morph producer"
         );
     }
 }
