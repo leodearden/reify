@@ -382,9 +382,17 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
         .achieved_repr_tol("Sphere#realization[0]")
         .expect("BT7: fine sphere must have Some achieved_repr_tol after tessellate_realizations");
     assert!(
-        achieved < 1e-3,
-        "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must be below \
-         the 1mm (1e-3 m) bound so the assertion passes"
+        (4e-4..8e-4).contains(&achieved),
+        "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must sit in the \
+         measured [4e-4, 8e-4] m band for #precision(0.3mm) on a 1 m sphere \
+         (measured 6.202e-4 m). Deviation is a SAWTOOTH in #precision — OCCT meshes \
+         each edge into an INTEGER segment count, so adjacent precision values swing \
+         ~3x. A value outside this band means the OCCT build's sawtooth moved: \
+         re-measure before widening (hold #precision, tighten the assertion bound to \
+         0.01mm to force the violation, then read the achieved value off the \
+         `sampled facet deviation <X> m exceeds bound` message). The band's upper \
+         edge (8e-4) is strictly below the 1e-3 assertion bound, so staying in band \
+         implies Satisfied."
     );
 
     let result = engine.check(&compiled);
