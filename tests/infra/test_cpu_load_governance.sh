@@ -1440,9 +1440,25 @@ _row4_share_inconclusive() {
         return 1
     fi
 
-    # Share branch (task 5998 step-6) still pending: driven out by
-    # ROW4-1-QUIET-VACUITY-3, which proves a SATURATING share must PASS even
-    # on a hot box.
+    # Share: computed by share_ge_proportional — the SAME function the live
+    # ROW4-1 assertion below calls, with the same weights and the same tol
+    # threaded through, so the guard's floor can never drift from the
+    # assertion's floor.  rc 0 (share at/above floor) means the measurement
+    # PASSES, so it is NOT inconclusive no matter how hot the box was: a green
+    # is never suppressed.
+    if python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+from cpu_gov_instrument import share_ge_proportional
+ok = share_ge_proportional(float('${merge_delta}'), float('${task_delta}'),
+                           float('${w_merge}'), float('${w_task}'),
+                           float('${tol}'))
+sys.exit(0 if ok else 1)
+" 2>/dev/null; then
+        return 1
+    fi
+
+    # Sub-floor share AND a hot box — the only inconclusive quadrant.
     return 0
 }
 
