@@ -912,6 +912,105 @@ mod tests {
         let _ = super::cell_value(&result, "Nope", "missing");
     }
 
+    /// members_of: the returned member list is sorted ascending, independent of
+    /// the order the cells were inserted into the `ValueMap` (pins the explicit
+    /// `members.sort()`, so the helper never leaks `ValueMap` iteration order
+    /// into a panic message).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_returns_sorted_members() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let mut values = ValueMap::new();
+        // Inserted in deliberately NON-ascending member order.
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "zone_shape"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "nominal_zone"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "feature"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = reify_eval::EvalResult {
+            values,
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        let members = super::members_of(&result, "Flange.pos");
+        assert_eq!(
+            members,
+            vec!["feature", "nominal_zone", "zone_shape"],
+            "members must come back sorted ascending; got {members:?}",
+        );
+    }
+
+    /// members_of: only cells belonging to the queried entity are reported —
+    /// a same-named member on a *different* entity must not leak in (pins the
+    /// `id.entity == entity` filter).
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_filters_other_entities() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let mut values = ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "a"),
+            reify_ir::Value::Bool(true),
+        );
+        values.insert(
+            reify_core::ValueCellId::new("Flange.flat", "b"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = reify_eval::EvalResult {
+            values,
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        let members = super::members_of(&result, "Flange.pos");
+        assert_eq!(
+            members,
+            vec!["a"],
+            "only Flange.pos's own members may be reported; got {members:?}",
+        );
+    }
+
+    /// members_of: an entity with no cells yields an empty `Vec` rather than
+    /// panicking — the contract difference from its neighbour `cell_value`,
+    /// which panics on a missing cell. Every call site invokes `members_of`
+    /// *inside* a panic-message formatter, so a panic here would mask the
+    /// caller's own diagnostic.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn members_of_returns_empty_for_unknown_entity() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let mut values = ValueMap::new();
+        values.insert(
+            reify_core::ValueCellId::new("Flange.pos", "a"),
+            reify_ir::Value::Bool(true),
+        );
+        let result = reify_eval::EvalResult {
+            values,
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        let members = super::members_of(&result, "NoSuchEntity");
+        assert!(
+            members.is_empty(),
+            "an unknown entity must yield an empty list, not panic; got {members:?}",
+        );
+    }
+
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
     #[test]
