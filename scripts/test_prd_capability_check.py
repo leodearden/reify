@@ -13,9 +13,11 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 import unittest.mock
 from typing import Any
@@ -1772,6 +1774,17 @@ def _ts_stub_clean(tmpdir: str, name: str = "ts_stub_clean") -> str:
     return _write_ts_stub(tmpdir, name, "exit 0\n")
 
 
+def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -> str:
+    """Stub that never answers within the test's patched timeout.
+
+    Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock — the
+    exact resource this task is about, and one tree-sitter serialises grammar
+    loading through.  Tests pair it with a sub-second _SUBSTRATE_PROBE_TIMEOUT_S
+    so the case costs milliseconds; the sleep only has to outlast that bound.
+    """
+    return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
+
+
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     """Stub that EXISTS on disk but carries no execute bit.
 
@@ -2012,6 +2025,89 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         )
         self.assertTrue(reason, "an unusable substrate must explain itself")
         self.assertIn("tree-sitter", reason.lower())
+
+    # ── (f) a wedged CLI → unusable, and BOUNDED ──────────────────────────────
+
+    def test_hanging_cli_is_unusable_within_the_timeout(self):
+        """A tree-sitter that never answers → (False, reason), and it returns.
+
+        This is the failure mode the behavioural guard introduced: the old
+        skip-guard was os.path.isfile() and structurally could not block, whereas
+        this function now runs a real subprocess at test-module IMPORT time.
+        Unbounded, a tree-sitter wedged on its own grammar lock — the very
+        resource this task is about, and one it serialises grammar loading
+        through — would hang the entire suite rather than skip one test, and the
+        exception-swallowing guard cannot help because a hang raises nothing.
+
+        Bounded here to 0.4s so the case is cheap; the production bound is
+        _SUBSTRATE_PROBE_TIMEOUT_S, deliberately generous for cold-cache compiles.
+        """
+        stub = _ts_stub_hangs(self._tmpdir)
+        with unittest.mock.patch.object(pcc, "_SUBSTRATE_PROBE_TIMEOUT_S", 0.4):
+            started = time.monotonic()
+            usable, reason = self._call(stub)
+            elapsed = time.monotonic() - started
+        self.assertFalse(usable, "a tree-sitter that will not answer is unusable")
+        self.assertLess(
+            elapsed, 10.0,
+            "the substrate probe must be time-bounded; unbounded, a wedged "
+            "tree-sitter hangs the suite at import instead of skipping one test",
+        )
+        self.assertTrue(reason, "an unusable substrate must explain itself")
+        self.assertIn("tree-sitter", reason.lower())
+
+    def test_timeout_is_a_harness_error_not_an_absent_observation(self):
+        """A timed-out probe must never read as a real observation.
+
+        subprocess.TimeoutExpired derives from SubprocessError, not OSError, so
+        run_probe()'s launch-failure catch cannot cover it; if the sentinel it
+        substitutes were not classified, an exit 124 would fall through
+        observe()'s grammar branch as an ordinary non-zero exit.
+        """
+        with unittest.mock.patch.dict(
+            os.environ, {"TREE_SITTER_BIN": _ts_stub_hangs(self._tmpdir)}
+        ):
+            run = pcc.run_probe(
+                pcc.Probe(
+                    capability="wedged",
+                    probe_kind="grammar",
+                    fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+                    expected={"observation": "present", "match": {}},
+                ),
+                timeout=0.4,
+            )
+        self.assertIn(pcc._PROBE_TIMEOUT_SENTINEL, run.stderr)
+        self.assertEqual(
+            pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
+            "a probe that never finished cannot be trusted as PRESENT/ABSENT",
+        )
+
+    def test_probe_set_runs_stay_unbounded(self):
+        """run_probe() defaults to no timeout, so gate verdicts are unchanged.
+
+        A bound on the ordinary probe path would manufacture a HARNESS_ERROR out
+        of a slow machine — `reify eval` on a heavy fixture may legitimately run
+        long.  The bound is opt-in, for callers that cannot afford to block.
+        """
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        probe = pcc.Probe(
+            capability="unbounded",
+            probe_kind="grammar",
+            fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+            expected={"observation": "present", "match": {}},
+        )
+        with unittest.mock.patch.object(subprocess, "run", side_effect=fake_run):
+            pcc.run_probe(probe)
+        self.assertIsNone(
+            captured.get("timeout", None),
+            "run_probe() must stay unbounded by default; only callers that ask "
+            "for a bound get one",
+        )
 
     # ── shape ─────────────────────────────────────────────────────────────────
 

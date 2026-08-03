@@ -91,6 +91,13 @@ _VALID_OBSERVATIONS = frozenset({"present", "absent"})
 # probe kinds classify an unlaunchable binary as _HARNESS_ERROR.
 _BINARY_NOT_FOUND_SENTINEL = "[HARNESS ERROR: binary not found]"
 
+# Sentinel injected into stderr by run_probe() when a probe was given a timeout
+# and exceeded it.  Kept distinct from the not-found sentinel because the two
+# call for opposite operator responses ("install/expose the tool" vs "the tool is
+# wedged"), and only callers that pass a timeout can ever see it — a probe-set
+# run passes none, so its verdicts are untouched.
+_PROBE_TIMEOUT_SENTINEL = "[HARNESS ERROR: probe timed out]"
+
 
 # ---------------------------------------------------------------------------
 # Binary resolution helpers
@@ -389,10 +396,13 @@ def observe(probe_kind: str, run: ProbeRun, match: Dict[str, Any]) -> str:
     Returns:
         PRESENT, ABSENT, INDETERMINATE, or _HARNESS_ERROR.
     """
-    # Universal harness-error check: binary not found (any probe kind).
-    # run_probe() injects _BINARY_NOT_FOUND_SENTINEL into stderr on FileNotFoundError
-    # so all kinds surface missing binaries as _HARNESS_ERROR, not as ABSENT/FAIL.
+    # Universal harness-error checks: the probe never ran to completion (any probe
+    # kind).  run_probe() injects _BINARY_NOT_FOUND_SENTINEL on a launch failure
+    # and _PROBE_TIMEOUT_SENTINEL when a caller-supplied timeout elapsed, so all
+    # kinds surface "could not run" as _HARNESS_ERROR, not as ABSENT/FAIL.
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
+        return _HARNESS_ERROR
+    if _PROBE_TIMEOUT_SENTINEL in run.stderr:
         return _HARNESS_ERROR
 
     if probe_kind == "grammar":
@@ -520,7 +530,7 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
 # run_probe() — the real subprocess runner
 # ---------------------------------------------------------------------------
 
-def run_probe(probe: Probe) -> ProbeRun:
+def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     """Run a probe command in a subprocess and return captured output.
 
     Delegates command construction to build_command(), which resolves
@@ -541,17 +551,29 @@ def run_probe(probe: Probe) -> ProbeRun:
     errno text appended after the sentinel.
 
     The catch is narrow in practice despite naming the base class: subprocess.run
-    is called with capture_output=True and neither check=True nor timeout, so
-    CalledProcessError and TimeoutExpired cannot arise here and an OSError from
-    this call site is specifically the _execute_child launch path.
+    is called with capture_output=True and without check=True, so
+    CalledProcessError cannot arise here and an OSError from this call site is
+    specifically the _execute_child launch path.
+
+    `timeout` defaults to None — an unbounded wait, which is what a gate probe
+    wants: `reify eval` on a heavy fixture may legitimately run long, and a
+    timeout there would manufacture a HARNESS_ERROR out of a slow machine.
+    Callers that cannot afford to block (the substrate probe runs at test-module
+    IMPORT time, where a wedged tree-sitter would hang the whole suite rather
+    than skip one test) pass a bound.  An elapsed timeout is represented like a
+    launch failure — _PROBE_TIMEOUT_SENTINEL in stderr, exit_code 124 (the
+    conventional timeout(1) code) — because subprocess.TimeoutExpired derives
+    from SubprocessError, NOT from OSError, so the catch above cannot cover it.
 
     Args:
-        probe: The Probe to run.
+        probe:   The Probe to run.
+        timeout: Seconds to wait before killing the probe, or None for no bound.
 
     Returns:
         A ProbeRun with exit_code, stdout, and stderr from the subprocess.
-        On a launch failure, the sentinel is embedded in stderr so that
-        observe() can classify it as a harness error.
+        If the probe could not be launched or exceeded `timeout`, the matching
+        sentinel is embedded in stderr so that observe() can classify it as a
+        harness error.
     """
     repo_root = _find_repo_root()
     cmd = build_command(probe, repo_root=repo_root)
@@ -569,11 +591,23 @@ def run_probe(probe: Probe) -> ProbeRun:
             capture_output=True,
             text=True,
             cwd=cwd,
+            timeout=timeout,
         )
         return ProbeRun(
             exit_code=proc.returncode,
             stdout=proc.stdout,
             stderr=proc.stderr,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # The probe ran but never finished within the caller's bound.  Same
+        # reasoning as the launch-failure branch below — represent it, do not
+        # raise — but a separate sentinel, because "the tool is wedged" and "the
+        # tool is missing" are different operator problems.  subprocess.run has
+        # already killed the child and reaped it by the time this is raised.
+        return ProbeRun(
+            exit_code=124,  # conventional timeout(1) exit code
+            stdout="",
+            stderr=f"{_PROBE_TIMEOUT_SENTINEL}: {exc}",
         )
     except OSError as exc:
         # The probe could not be launched — missing binary (ENOENT), present but
@@ -597,8 +631,19 @@ def run_probe(probe: Probe) -> ProbeRun:
 # grammar, never whether this particular fixture parses.
 _SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 
+# Wall-clock bound on the substrate probe.  Generous by design: on a COLD cache
+# tree-sitter compiles the grammar with cc before it can parse, so a few seconds
+# is normal and a tight bound would report a healthy substrate as unusable.  The
+# bound exists for the pathological case only — tree-sitter serialises grammar
+# loading through ~/.cache/tree-sitter/lock/<grammar>.lock, the very resource
+# this function exists to interrogate, so a stuck lock must not be able to hang
+# the caller.  That matters because the test module calls this at IMPORT time:
+# unbounded, a wedged tree-sitter would hang the entire suite instead of
+# skipping the one test that needs the grammar.
+_SUBSTRATE_PROBE_TIMEOUT_S = 30.0
 
-def grammar_substrate_usable(fixture: Optional[str] = None) -> tuple:
+
+def grammar_substrate_usable() -> tuple:
     """Return (usable, reason) for the tree-sitter grammar toolchain.
 
     Runs one real grammar probe through the normal build_command()/run_probe()
@@ -608,6 +653,7 @@ def grammar_substrate_usable(fixture: Optional[str] = None) -> tuple:
 
         * the grammar cache/lock directory is unwritable (grammar_cache_denied)
         * the tree-sitter CLI is not on PATH (_BINARY_NOT_FOUND_SENTINEL)
+        * tree-sitter did not finish within _SUBSTRATE_PROBE_TIMEOUT_S
 
     Anything else — including a clean parse and an ordinary parse rejection — is
     reported usable.  This is a BEHAVIOURAL check, deliberately not a
@@ -624,11 +670,10 @@ def grammar_substrate_usable(fixture: Optional[str] = None) -> tuple:
     could not run still reports HARNESS_ERROR / exit 70 (see
     grammar_cache_denied's contract note).
 
-    Cost: one subprocess, no side effects.
-
-    Args:
-        fixture: Repo-relative fixture to probe with.  Defaults to
-                 _SUBSTRATE_PROBE_FIXTURE.  Present for testability.
+    Cost: one subprocess, bounded by _SUBSTRATE_PROBE_TIMEOUT_S, no side effects.
+    Takes no arguments deliberately — the fixture is fixed because the probe
+    interrogates the toolchain, never this fixture, so a caller-chosen one would
+    be a seam with no meaning.
 
     Returns:
         (True, "") when a grammar probe can run; (False, reason) otherwise,
@@ -637,11 +682,20 @@ def grammar_substrate_usable(fixture: Optional[str] = None) -> tuple:
     probe = Probe(
         capability="grammar substrate availability",
         probe_kind="grammar",
-        fixture=fixture if fixture is not None else _SUBSTRATE_PROBE_FIXTURE,
+        fixture=_SUBSTRATE_PROBE_FIXTURE,
         expected={"observation": "present", "match": {}},
     )
 
-    run = run_probe(probe)
+    run = run_probe(probe, timeout=_SUBSTRATE_PROBE_TIMEOUT_S)
+
+    if _PROBE_TIMEOUT_SENTINEL in run.stderr:
+        return (
+            False,
+            f"tree-sitter did not respond within {_SUBSTRATE_PROBE_TIMEOUT_S:g}s, "
+            "so it cannot be confirmed able to load the reify grammar; a stuck "
+            "grammar cache/lock (typically ~/.cache/tree-sitter/lock/) is the "
+            "usual cause",
+        )
 
     if _BINARY_NOT_FOUND_SENTINEL in run.stderr:
         return (
