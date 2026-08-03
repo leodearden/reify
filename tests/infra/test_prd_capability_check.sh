@@ -16,11 +16,16 @@
 #
 # UNLIKE tests/infra/test_prd_gate_corpus.sh, whose identical-looking guard
 # early-exits, this one deliberately does NOT gate: the corpus gate's entire
-# payload is the probe run, whereas here only 1 of 127 unit tests needs the
-# grammar substrate and the other 126 are hermetic.  Skipping the script would
-# trade a spurious RED for a silent 126-test coverage hole in exactly the
-# sandboxed roles this task exists to serve.  The SKIP line is informational;
-# both asserts below still run.
+# payload is the probe run, whereas here exactly ONE of the suite's unit tests
+# needs the grammar substrate and every other one is hermetic (count left
+# unstated on purpose — it moves).  Skipping the script would trade a spurious
+# RED for a silent whole-suite coverage hole in exactly the sandboxed roles this
+# task exists to serve.  The SKIP line is informational; both asserts below
+# still run.
+#
+# The preflight below runs a real tree-sitter subprocess, but a time-bounded one
+# (_SUBSTRATE_PROBE_TIMEOUT_S in prd-capability-check.py), so a tree-sitter
+# wedged on its own grammar lock reports unusable instead of hanging this run.
 
 set -euo pipefail
 

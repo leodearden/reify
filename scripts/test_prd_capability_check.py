@@ -1282,19 +1282,74 @@ class TestMain(unittest.TestCase):
         self.assertIn("cache", lowered)
 
     def test_grammar_substrate_status_needs_no_probe_set(self):
-        """(c) The flag is accepted with NO positional PROBE_SET_JSON.
+        """(c) The flag stands alone — the required-positional check is never reached.
 
-        PROBE_SET_JSON is currently a required positional, so argparse rejects
-        the flag-only invocation and main() maps that to 64.  Pinned separately
-        from (a)/(b) because it is the argparse contract change, and because a
-        64 here would otherwise masquerade as an unrelated usage error.
+        Pinned separately from (a)/(b) because it is the argparse contract
+        change.  It asserts the *usage message* rather than the exit code: on
+        this identical invocation (a) already pins rc == 0, so an
+        `assertNotEqual(rc, 64)` here would be strictly weaker than its sibling
+        and would happily accept a 70.  Naming the message instead makes the
+        test fail for the one reason it exists to catch — the mode being gated
+        behind an argument it never uses.
         """
         rc, _, err = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
-        self.assertNotEqual(
-            rc, 64,
-            "--grammar-substrate-status must not require a probe set; got the "
-            f"usage error instead (stderr: {err!r})",
+        self.assertNotIn(
+            "PROBE_SET_JSON is required", err,
+            "--grammar-substrate-status must satisfy the positional requirement "
+            "on its own",
         )
+        self.assertEqual(
+            err.strip(), "",
+            "a flag-only invocation is not an error and must say nothing on stderr",
+        )
+
+    def test_grammar_substrate_status_ignores_the_json_flag(self):
+        """--json does not apply to the status mode — a decision, not an accident.
+
+        The mode's finding travels by exit code (0 / 75) with a one-line human
+        reason on stdout; there is no result set to serialise, so --json is
+        accepted-and-ignored rather than being made a usage error (which would
+        break a caller that passes --json unconditionally).  Pinned so the
+        silence is documented behaviour: a --json consumer gets plain text here
+        and must read the exit code.
+        """
+        stub = _ts_stub_cache_denied(self._stub_dir())
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            rc, out, _ = self._run_main_capturing(
+                ["--json", "--grammar-substrate-status"]
+            )
+        self.assertEqual(rc, 75, "--json must not perturb the mode's finding")
+        self.assertIn("tree-sitter", out.lower(), "the reason is still emitted")
+        with self.assertRaises(
+            json.JSONDecodeError,
+            msg="the status mode emits plain text; if it ever starts emitting "
+                "JSON under --json, that is a contract change to document",
+        ):
+            json.loads(out)
+
+    def test_grammar_substrate_status_ignores_a_positional_probe_set(self):
+        """A PROBE_SET_JSON alongside the flag is discarded — not read, not evaluated.
+
+        The bogus path is the load-bearing part: without mode precedence the
+        unreadable file returns 64, so this pins that the mode short-circuits
+        ahead of the probe-set IO as well as ahead of evaluation.
+        """
+        sentinel = unittest.mock.Mock(side_effect=AssertionError(
+            "--grammar-substrate-status must not evaluate a probe set"
+        ))
+        stub = _ts_stub_clean(self._stub_dir())
+        with unittest.mock.patch.object(pcc, "evaluate", sentinel), \
+             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            rc, out, _ = self._run_main_capturing(
+                ["--grammar-substrate-status", "/nonexistent/probe-set.json"]
+            )
+        self.assertEqual(
+            rc, 0,
+            "the substrate finding must win over the positional; a 64 here means "
+            "the ignored probe set was read after all",
+        )
+        self.assertIn("usable", out.lower())
+        sentinel.assert_not_called()
 
     def test_grammar_substrate_status_runs_no_probes(self):
         """The status mode must never invoke the probe runner.
