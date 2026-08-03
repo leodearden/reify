@@ -1010,9 +1010,13 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
   **Gates 1, 3 and 4 are already measured** (§6.2, §6.3) — α **re-confirms** those counts
   against HEAD rather than re-deriving them, and inherits their two methodological
   requirements or it will get the wrong answer:
-  - reproduce §6.2's **type-alias extension** to `NAMED_DIMENSIONS` — 16 dimensioned aliases
-    (`Torque`, `Stress`, `HeatFlux`, …) are declared in `.ri` and absent from the registry, so
-    a registry-only sweep **under-counts**;
+  - reproduce §6.2's **type-alias extension** to `NAMED_DIMENSIONS` — **15** dimensioned
+    aliases (`Stress`, `HeatFlux`, `ThermalResistance`, …) are declared in `.ri` and absent
+    from the registry, so a registry-only sweep **under-counts**. *(Read §6.2's
+    "Partially superseded by η" note before using this count: §6.2's as-measured figure is
+    **16**, including a `Torque` alias that η — task 5785, merge `61300d09` — deleted from
+    `stdlib/ports_mechanical.ri` when it registered `Torque` as a `NAMED_DIMENSIONS` row.
+    **15** is the count that holds today; do **not** re-add a `Torque` alias.)*;
   - reproduce §6.3's **file-local shadowing check** — a naive sweep **over-counts by ~8**
     (parser-only fixtures where the walker never runs, plus locally-declared *dimensionless*
     structures of the same name).
