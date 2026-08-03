@@ -281,6 +281,75 @@ fn sub_specialization_arm_accepts_namespaced_structure_name() {
     assert_eq!(field_text(name, "name", source), "Pulley");
 }
 
+/// Specialization arm WITH a type-argument tail: `sub h : pp.Pulley<T>`.
+///
+/// THREE-SURFACE PARITY PIN. The specialization arm's `optional(field(
+/// 'type_args', …))` slot (grammar.js:895) sits AFTER `structure_name`, so
+/// widening `structure_name` to `namespaced_name` made this form parse —
+/// `structure_name` and `type_args` come out as SIBLING fields, not as a
+/// `parameterized_type`. `lower_sub` accordingly builds
+/// `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no
+/// diagnostic (pinned by
+/// `sub_specialization_with_type_args_lowers_dot_joined_structure_name` in
+/// crates/reify-syntax/tests/harness_syntax/namespaced_ref_lowering_tests.rs).
+///
+/// This is pinned on BOTH grammar surfaces because the GUI lezer grammar spells
+/// the `:` arm differently (its type-arg tail rides on `ParameterizedType`
+/// rather than on its own slot), so the two can diverge here without any test
+/// noticing — and an editor stricter than the compiler is the silent
+/// degradation `reifyGrammarQualifiedRef.test.ts` exists to prevent. Note this
+/// is NOT the excluded qualified-generic form: `param p : pp.Box<T>` in TYPE
+/// position still ERRORs, because `namespaced_name` itself carries no
+/// `optional(type_args)` tail (see grammar.js:1146-1149).
+#[test]
+fn sub_specialization_arm_accepts_namespaced_name_with_type_args() {
+    let source = "structure def S {\n    sub h : pp.Pulley<T>\n}\n";
+    let tree = parse_clean(source);
+
+    let sub = find_node_by_kind(tree.root_node(), "sub_declaration")
+        .expect("expected a sub_declaration node");
+    let name = sub
+        .child_by_field_name("structure_name")
+        .expect("sub_declaration must have a `structure_name` field");
+    assert_eq!(
+        name.kind(),
+        "namespaced_name",
+        "structure_name must stay a namespaced_name beside the type_args slot; \
+         got kinds: {:?}",
+        collect_kinds(sub)
+    );
+    assert_eq!(field_text(name, "binding", source), "pp");
+    assert_eq!(field_text(name, "name", source), "Pulley");
+
+    // `field('type_args', seq('<', $.type_arg_list, '>'))` tags every child of
+    // the seq, so `child_by_field_name` returns the `<` token; the list itself
+    // is found by kind, the same way `list_vs_listicle_lexer_discipline_unchanged`
+    // reads it.
+    let type_args = find_node_by_kind(sub, "type_arg_list")
+        .expect("the specialization arm's own `type_args` slot must still bind");
+    assert_eq!(&source[type_args.start_byte()..type_args.end_byte()], "T");
+}
+
+/// The excluded companion: a qualified generic in TYPE position stays an error.
+///
+/// `namespaced_name` deliberately carries NO `optional(type_args)` tail — that
+/// exact formulation is recorded at grammar.js:1146-1149 as the one producing
+/// an unresolved LR conflict, and qualified generics are out of scope for μ.
+/// Pinned so the `sub h : pp.Pulley<T>` acceptance above cannot be mistaken for
+/// a general widening, and so a later deliberate one is a visible change here.
+#[test]
+fn qualified_generic_in_type_position_still_errors() {
+    let source = "structure def S {\n    param p : pp.Box<T>\n}\n";
+    let mut parser = make_parser();
+    let tree = parser.parse(source, None).expect("parse failed");
+    assert!(
+        count_errors(tree.root_node()) > 0,
+        "`param p : pp.Box<T>` must still ERROR — qualified generics are out of \
+         scope for μ; got kinds: {:?}",
+        collect_kinds(tree.root_node())
+    );
+}
+
 /// Collection arm: `sub i : List<pp.Pulley>` binds `structure_name` to a
 /// `namespaced_name` (the `List` keyword still wins the lexer rule-#2 tie-break).
 #[test]

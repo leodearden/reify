@@ -180,6 +180,60 @@ describe('reify.grammar — qualified reference in `sub` position', () => {
     expect(countErrorNodes(src)).toBe(0);
     expect(nodeNamesSpanning(src, 'bore: 5mm')).toContain('NamedArgument');
   });
+
+  /**
+   * THREE-SURFACE PARITY. The `:` arm's own type-argument tail applies to the
+   * qualified structure name too: `sub h : pp.Pulley<T>`.
+   *
+   * MEASURED, not speculative — this is the one case where this grammar had
+   * silently become STRICTER than the compiler. tree-sitter parses it with zero
+   * ERROR nodes (its specialization arm keeps `optional(type_args)` after the
+   * widened `structure_name`, grammar.js:895) and `lower_sub` builds a valid
+   * `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no
+   * diagnostic, while this grammar produced 2 error nodes until
+   * `subSpecializedName` grew the matching tail. An editor that rejects what the
+   * compiler accepts degrades silently — the exact failure this file's header
+   * names.
+   *
+   * The node shape mirrors upstream's: `NamespacedName` and `TypeArgList` are
+   * SIBLINGS, not a `ParameterizedType` wrapper, because the qualified name is
+   * not itself parameterizable (see the next test).
+   */
+  it('accepts a type-argument tail on a qualified specialization name', () => {
+    const src = 'structure def S { sub h : pp.Pulley<T> }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNamesSpanning(src, 'pp.Pulley')).toEqual(['NamespacedName']);
+    expect(nodeNamesSpanning(src, 'T')).toEqual(['TypeArgList', 'TypeExpr', 'Identifier']);
+    expect(countNodesNamed(src, 'NamespacedName')).toBe(1);
+  });
+
+  /**
+   * The excluded companion, keeping the two forms distinguishable: the tail
+   * belongs to the `sub` arm, NOT to `NamespacedName`. A qualified GENERIC in
+   * TYPE position stays rejected — pinned again here, next to the acceptance
+   * above, so neither can be widened by accident on the strength of the other.
+   * (The same pair is pinned on tree-sitter by
+   * `qualified_generic_in_type_position_still_errors`.)
+   */
+  it('still rejects a qualified generic in type position', () => {
+    expect(countErrorNodes('structure def S { param p : pp.Box<T> }')).toBeGreaterThan(0);
+  });
+
+  /** The `=` arm's pre-existing tail is unaffected. */
+  it('keeps the instantiation arm type-argument tail working', () => {
+    const src = 'structure def S { sub p = pp.Pulley<T>() }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNamesSpanning(src, 'pp.Pulley')).toEqual(['NamespacedName']);
+    expect(nodeNamesSpanning(src, '()')).toEqual(['ArgList']);
+  });
+
+  /** Negative control: the unqualified specialized form is unchanged. */
+  it('leaves an unqualified specialized name a ParameterizedType', () => {
+    const src = 'structure def S { sub h : Pulley<T> }';
+    expect(countErrorNodes(src)).toBe(0);
+    expect(nodeNamesSpanning(src, 'Pulley<T>')).toEqual(['ParameterizedType']);
+    expect(countNodesNamed(src, 'NamespacedName')).toBe(0);
+  });
 });
 
 // ── Expression position — the qualified CALL form ───────────────────────────

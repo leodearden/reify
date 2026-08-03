@@ -81,6 +81,28 @@ structure S {
         name: (identifier)))))
 
 ================================================================================
+namespaced_ref: sub specialization arm with type args (sub h : pp.Pulley<T>)
+================================================================================
+
+structure S {
+  sub h : pp.Pulley<T>
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (sub_declaration
+      name: (identifier)
+      structure_name: (namespaced_name
+        binding: (identifier)
+        name: (identifier))
+      type_args: (type_arg_list
+        (type_expr
+          (identifier))))))
+
+================================================================================
 namespaced_ref: sub collection arm (sub i : List<pp.Pulley>)
 ================================================================================
 

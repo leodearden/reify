@@ -745,8 +745,30 @@ subInstanceName {
   NamespacedName | Identifier
 }
 
+// The `:` arm's slot. Its `NamespacedName` alternative carries an OPTIONAL
+// type-argument tail, which the `ParameterizedType` alternative already
+// supplies for the unqualified case — `sub h : pp.Pulley<T>`.
+//
+// MEASURED THREE-SURFACE PARITY, not a speculative widening. Upstream's
+// specialization arm keeps its own `optional(field('type_args', …))` slot AFTER
+// the widened `structure_name` (grammar.js:895), so `sub h : pp.Pulley<T>`
+// parses there with zero ERROR nodes and `lower_sub` builds a valid
+// `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no diagnostic.
+// Without the tail here this grammar produced 2 error nodes on that source —
+// the editor STRICTER than the compiler, which is precisely the silent
+// degradation reifyGrammarQualifiedRef.test.ts exists to catch. Pinned on both
+// surfaces now: `sub_specialization_arm_accepts_namespaced_name_with_type_args`
+// (tree-sitter-reify/tests/qualified_ref_grammar_tests.rs) and the
+// `sub h : pp.Pulley<T>` case in reifyGrammarQualifiedRef.test.ts.
+//
+// This is NOT the excluded qualified-GENERIC form, and it is not a tail on
+// `NamespacedName` itself — see that rule's note. `param p : pp.Box<T>` in TYPE
+// position still errors on both surfaces; the tail belongs to the `sub` arm,
+// exactly as upstream spells it. Shape mirrors upstream too: `NamespacedName`
+// and `TypeArgList` come out as SIBLINGS, not wrapped in a
+// `ParameterizedType`, because `subSpecializedName` is lowercase/inline.
 subSpecializedName {
-  ParameterizedType | NamespacedName | Identifier
+  ParameterizedType | NamespacedName ("<" TypeArgList ">")? | Identifier
 }
 
 // grammar.js:900-920. Accepts both param assignments and ordinary members;
