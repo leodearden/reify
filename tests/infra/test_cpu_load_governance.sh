@@ -1433,6 +1433,26 @@ _row4_share_inconclusive() {
     local w_merge="$3" w_task="$4" tol="$5"
     local host_avg10="$6" ceiling="$7"
 
+    # FAIL-SAFE on an unusable cpu.stat delta (pinned by
+    # ROW4-1-QUIET-VACUITY-6/7): "unavailable" is what cgroup-usage emits when
+    # a slice read fails, and ROW4's bracket arithmetic can propagate it. This
+    # MUST come before any python3/float() conversion — a raw string reaching
+    # float() raises ValueError, and a non-zero python exit is
+    # byte-indistinguishable from an honest below-floor verdict, so the
+    # predicate would wrongly conclude "sub-floor AND hot" and SKIP away a
+    # measurement it never actually evaluated. Returns 1 (NOT inconclusive) so
+    # ROW4-1's hard assert stays reachable. Uses the file's established awk
+    # numeric-validity idiom, same discipline as _row1_stall_contended's
+    # non-integer guard (which likewise short-circuits without invoking
+    # python3).
+    local _valid
+    _valid="$(awk -v m="$merge_delta" -v t="$task_delta" \
+        'BEGIN{ print (m+0 == m && m != "" && t+0 == t && t != "") ? "ok" : "bad" }' \
+        2>/dev/null || true)"
+    if [ "${_valid:-bad}" != "ok" ]; then
+        return 1
+    fi
+
     # Box temperature: quiet_box_met returns 0 = quiet/proceed, 1 = hot.
     # Inconclusive requires HOT, so a quiet box falls through to NOT
     # inconclusive and ROW4-1's hard assert stays reachable.
