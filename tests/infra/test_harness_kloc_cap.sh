@@ -528,6 +528,98 @@ harness_stale_selector_violations() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# harness_layout_orphan_rows <root_dir> <baseline_file>
+#
+# The CONVERSE of rule (b): every data row of the grandfather baseline must name
+# a file that EXISTS under <root_dir>. A row whose file is gone is an ORPHAN —
+# it grandfathers nothing, and it makes the manifest header's regenerate-and-diff
+# recipe report a mismatch that belongs to nobody's diff.
+#
+# WHY THIS DIRECTION NEEDS ITS OWN DETECTOR — neither existing check can see it:
+#   - harness_layout_violations (rule (b), above) iterates `"$tests_dir"/*.rs`.
+#     It enumerates files that EXIST and asks "is this one sanctioned?". A row
+#     with no file is never visited, so rule (b) is one-directional BY
+#     CONSTRUCTION, not by oversight.
+#   - scripts/check-harness-baseline-registration.sh is DIFF-SCOPED: it only
+#     ever considers files ADDED in the diff under review, and skips any
+#     candidate failing its own `[ -e "$path" ]`. A row that no diff touches is
+#     never examined.
+#
+# The concrete witness that this is not hypothetical (task #5938, measured):
+# the `crates/reify-eval/tests/concurrent.rs` row was manufactured by MERGING
+# two individually-green branches. df2911dff4 (#5265 pre-2) generated the
+# baseline on a base where that file still existed, while ffb85f0627 (#5065
+# task ο step-4) deleted the file on a parallel branch; neither is an ancestor
+# of the other, and neither diff both deletes the file and leaves the row. Only
+# a WHOLE-TREE scan can catch that drift class — a diff-scoped gate structurally
+# cannot, because the offending state exists in no single diff.
+#
+# The predicate is on-disk existence `[ -e "$root_dir/$row" ]`, not `git
+# ls-files` tracking: it is the exact converse of rule (b)'s own on-disk
+# enumeration, it keeps this `pool`-classified guard free of a git dependency,
+# and it is drivable from a hermetic mktemp fixture that is not a git repo.
+# scripts/check-harness-baseline-registration.sh takes the same `[ -e ]`
+# posture. Directly parallels the `classification_orphaned` stale-row accessor
+# (tests/infra/run-all-classification-lib.sh) that already solves this same
+# "manifest row whose file no longer exists" problem for the sibling
+# run-all-classification.manifest — so this is a parity fix, not a novel rule.
+#
+# Prints one structured FAIL line per orphan; returns 1 on any. <root_dir> and
+# <baseline_file> are both parameterized so hermetic fixtures drive it exactly
+# as the live tree does.
+# ---------------------------------------------------------------------------
+harness_layout_orphan_rows() {
+    local root_dir="$1"
+    local baseline_file="$2"
+
+    # A missing baseline is an explicit FAIL, never a silent pass — the same
+    # graceful-degradation posture harness_layout_violations takes for a
+    # missing tests dir. (A vacuous pass here would be the worst outcome: the
+    # guard would report clean precisely when it can see nothing.)
+    if [ ! -f "$baseline_file" ]; then
+        _emit FAIL "baseline=$baseline_file" "reason=missing-baseline"
+        return 1
+    fi
+
+    local violations=0 rows=0
+    local row crate rest
+
+    # Process substitution (not a pipe) feeding a loop that DRAINS to
+    # completion: the loop must not early-close the upstream greps inside
+    # harness_layout_baseline_rows (the esc-5172-1 SIGPIPE-141 hazard under this
+    # script's `set -o pipefail`), and the violation tally must survive in THIS
+    # shell rather than dying in a pipeline subshell. Same rule
+    # harness_layout_unit_lines and _bare_mod_decls follow.
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        rows=$((rows + 1))
+        if [ -e "$root_dir/$row" ]; then
+            continue
+        fi
+        # Derive the crate from `crates/<crate>/…`. Anything else reports
+        # `crate=-` — the non-crate-scoped field shape
+        # harness_stale_selector_violations already emits — so a malformed row
+        # surfaces loudly instead of being silently skipped or reported with a
+        # garbled crate.
+        crate="-"
+        case "$row" in
+            crates/*/*)
+                rest="${row#crates/}"
+                crate="${rest%%/*}"
+                ;;
+        esac
+        _emit FAIL "crate=$crate" "file=$row" "reason=orphan-baseline-row"
+        violations=$((violations + 1))
+    done < <(harness_layout_baseline_rows "$baseline_file")
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "scan=baseline-rows" "rows=$rows"
+    return 0
+}
+
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
 
 # Collect every mktemp -d / mktemp path for a SINGLE EXIT cleanup (the
@@ -1036,7 +1128,7 @@ echo "--- Section 5: live scan of the real 5 consolidatable crates ---"
 # Guard integrity: a missing / empty baseline is never a silent pass. (An empty
 # baseline would also flag all 867 grandfathered files -> a loud RED below —
 # these explicit asserts state the intent regardless.)
-_baseline_data="$(grep -vE '^[[:space:]]*#' "$BASELINE" 2>/dev/null | grep -vE '^[[:space:]]*$' || true)"
+_baseline_data="$(harness_layout_baseline_rows "$BASELINE" 2>/dev/null || true)"
 assert "5: grandfather baseline exists (guard integrity)" \
     test -f "$BASELINE"
 assert "5: grandfather baseline is non-empty after comment/blank stripping (guard integrity)" \

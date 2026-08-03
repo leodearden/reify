@@ -32,10 +32,20 @@
 #                                          <base> NOT a harness_*.rs unit and its
 #                                          stem NOT one of the 7 overrides. Pure
 #                                          string predicate (no disk access).
+#   harness_layout_baseline_rows [baseline]
+#                                          print the DATA ROWS of [baseline]
+#                                          (default: harness_layout_baseline_path)
+#                                          one per line — every line that is
+#                                          neither a comment nor blank. THE
+#                                          single definition of "a data row of
+#                                          the baseline"; a missing baseline
+#                                          prints nothing and returns 0 (each
+#                                          caller decides what that means).
 #   harness_layout_baseline_contains <p> [baseline]
-#                                          exit 0 iff <p> is a non-comment,
-#                                          non-blank line of [baseline] (default:
-#                                          harness_layout_baseline_path). Same
+#                                          exit 0 iff <p> is a data row of
+#                                          [baseline] (default:
+#                                          harness_layout_baseline_path), i.e. a
+#                                          non-comment, non-blank line. Same
 #                                          comment/blank stripping as
 #                                          run-all-classification-lib.sh; exact
 #                                          full-line fixed-string match.
@@ -146,10 +156,41 @@ harness_layout_in_scope_standalone() {
     return 0
 }
 
+# harness_layout_baseline_rows [baseline-file] — print the DATA ROWS of
+# [baseline-file] (default: harness_layout_baseline_path), one per line: every
+# line that is neither a comment (`#`, optionally indented) nor blank. Same
+# comment/blank stripping style as run-all-classification-lib.sh.
+#
+# THE SINGLE DEFINITION of "a data row of the baseline" (G7). This rule used to
+# be spelled out three times — inside harness_layout_baseline_contains below,
+# inline in test_harness_kloc_cap.sh's Section 5 guard-integrity check, and
+# (would have been) inside its orphan-row detector. A divergence between any two
+# of those would mean the membership predicate and the row enumerator disagree
+# about which lines of this file are rows, which is exactly the class of silent
+# drift this lib exists to prevent.
+#
+# A MISSING baseline prints nothing and returns 0 — deliberately NOT an error
+# here, because the two callers want different things from it:
+# harness_layout_baseline_contains keeps its own `[ -f ]` guard and returns 1
+# ("not a member"), while the orphan-row detector reports an explicit
+# `reason=missing-baseline` FAIL. Deciding for them here would force one of the
+# two to unpick the decision.
+#
+# The trailing `|| true` keeps an all-comment / empty baseline (grep -v's
+# no-lines-matched exit 1) from propagating a spurious failure into a caller
+# running under `set -e` / `set -o pipefail`: "no data rows" is a legitimate
+# state of a ratchet that shrinks toward empty, not an error.
+harness_layout_baseline_rows() {
+    local baseline="${1:-$(harness_layout_baseline_path)}"
+    [ -f "$baseline" ] || return 0
+    grep -vE '^[[:space:]]*#' "$baseline" \
+        | grep -vE '^[[:space:]]*$' || true
+}
+
 # harness_layout_baseline_contains <repo-rel-path> [baseline-file] — exit 0 iff
-# <repo-rel-path> is a non-comment, non-blank line of [baseline-file] (default:
-# harness_layout_baseline_path). Same comment/blank stripping style as
-# run-all-classification-lib.sh; exact full-line fixed-string match.
+# <repo-rel-path> is a data row of [baseline-file] (default:
+# harness_layout_baseline_path), i.e. a non-comment, non-blank line. Exact
+# full-line fixed-string match.
 #
 # A missing baseline is NOT a member (return 1) — the same "unknown => flag it"
 # posture the callers rely on (a non-member added file is a violation).
@@ -157,15 +198,14 @@ harness_layout_baseline_contains() {
     local path="$1"
     local baseline="${2:-$(harness_layout_baseline_path)}"
     [ -f "$baseline" ] || return 1
-    # Exact full-line match against non-comment/non-blank lines. NOTE: no
-    # `grep -q` on the final stage — under `set -o pipefail` (which the callers
-    # set) a `-q` early-close SIGPIPEs the upstream `grep -v` (exit 141), making
-    # the pipeline report FAILURE despite a match and flagging every
-    # grandfathered file (the esc-5172-1 SIGPIPE hazard). Reading the whole
-    # stream to /dev/null preserves grep's own 0/1 match exit with no early close.
-    grep -vE '^[[:space:]]*#' "$baseline" \
-        | grep -vE '^[[:space:]]*$' \
-        | grep -xF -- "$path" >/dev/null
+    # Exact full-line match against the data rows. NOTE: no `grep -q` on the
+    # final stage — under `set -o pipefail` (which the callers set) a `-q`
+    # early-close SIGPIPEs the upstream harness_layout_baseline_rows stage
+    # (exit 141), making the pipeline report FAILURE despite a match and
+    # flagging every grandfathered file (the esc-5172-1 SIGPIPE hazard).
+    # Reading the whole stream to /dev/null preserves grep's own 0/1 match exit
+    # with no early close.
+    harness_layout_baseline_rows "$baseline" | grep -xF -- "$path" >/dev/null
 }
 
 # _harness_layout_norm_path <path> — set the global `_HL_NORM_OUT` to <path>
