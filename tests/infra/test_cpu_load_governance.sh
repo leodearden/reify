@@ -168,8 +168,24 @@ if [ -f "$LOAD_TOLERANCE_LIB" ]; then
     # shellcheck source=tests/infra/load_tolerance_lib.sh
     source "$LOAD_TOLERANCE_LIB"
 else
+    # DEGRADE FAIL-OPEN, EXPLICITLY.  Leaving quiet_box_met merely undefined
+    # degrades in the fail-MASKING direction, the opposite of what this guard
+    # is for: bash returns 127 for an unknown command, `if quiet_box_met ...`
+    # reads that non-zero rc as "box is HOT", and _row4_share_inconclusive then
+    # reports inconclusive for EVERY sub-floor share — an unconditional SKIP of
+    # the very assertion the lib is supposed to protect.  Measured with the
+    # function unset: _row4_share_inconclusive 10367459 5945387 300 100 0.10
+    # unavailable 20 => rc 0 (SKIP), where the documented fail-open contract
+    # says rc 1.  A stub that always reports quiet keeps the degradation in the
+    # safe direction: the escape hatch never fires, so ROW4-1's hard assert
+    # stays reachable and a genuine governance regression still goes RED (at
+    # the cost of the false-REDs #5998 closes, which is the correct trade when
+    # the guard's own dependency is missing).  The ROW4-1-QUIET-VACUITY asserts
+    # go RED in this state by design — a missing lib must be loud, not silent.
+    quiet_box_met() { return 0; }
     echo "WARN: load_tolerance_lib.sh not found at $LOAD_TOLERANCE_LIB —" \
-         "ROW4-1's quiet-box guard will be unavailable" >&2
+         "ROW4-1's quiet-box guard is DISABLED fail-open (never fires; the" \
+         "hard assert stays reachable and can false-RED under host load)" >&2
 fi
 
 echo "=== cpu-load-governance integration tests (task 4634) ==="
