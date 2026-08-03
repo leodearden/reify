@@ -39,8 +39,14 @@
 # Global pool derivation (task 5984; when REIFY_NEXTEST_TEST_THREADS is unset):
 #   tt = min(HARD_CAP, nproc)                [nproc term skipped if unavailable]
 #
-#   HARD_CAP:  16 (see below; made a knob in a later step of task 5984).
+#   HARD_CAP:  REIFY_NEXTEST_TEST_THREADS_HARD_CAP (default 16, strict
+#              digits-only).  16 matches the dark-factory half
+#              (dark_factory:3589, pytest `-n auto` -> `-n 16`) so neither
+#              fleet gains CPU share over the other.
 #   nproc:     the SAME resolved host CPU count as above.
+#
+#   The result is clamped to >= 1: HARD_CAP=0 is digits-only-VALID and would
+#   otherwise emit `test-threads = 0`, which nextest reads as UNBOUNDED.
 #
 #   NO RAM TERM — deliberate, and asymmetric with the occt cap ON PURPOSE.
 #   This cap's justification is CPU-share symmetry and runqueue depth, not RSS:
@@ -72,6 +78,10 @@
 #   REIFY_OCCT_GIB_PER_THREAD       — GiB per OCCT thread (default 2; see
 #                                       docs/notes/multi-process-occt-bench.md).
 #   REIFY_NEXTEST_TEST_THREADS      — explicit global-pool override; wins verbatim.
+#   REIFY_NEXTEST_TEST_THREADS_HARD_CAP
+#                                   — global-pool upper ceiling (default 16).
+#                                       Ignored when REIFY_NEXTEST_TEST_THREADS
+#                                       is set (the explicit override wins).
 #
 # occt cap:
 #   Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.
@@ -194,15 +204,31 @@ esac
 case "${REIFY_NEXTEST_TEST_THREADS:-}" in
     (''|*[!0-9]*)
         # Explicit override not set (or invalid) — derive host-relative cap.
-        tt=16
-        if [ -n "$_nproc" ] && [ "$_nproc" -lt "$tt" ]; then
-            tt="$_nproc"
+
+        # HARD_CAP: upper ceiling, default 16 (matches dark_factory:3589's
+        # pytest -n 16 so neither fleet gains CPU share over the other).
+        case "${REIFY_NEXTEST_TEST_THREADS_HARD_CAP:-}" in
+            (''|*[!0-9]*) tt_hard_cap=16 ;;
+            (*)           tt_hard_cap="${REIFY_NEXTEST_TEST_THREADS_HARD_CAP}" ;;
+        esac
+
+        # Force base-10: a leading-zero env value (e.g. 08) would otherwise be
+        # read as invalid octal by $(( )) and abort under set -euo pipefail.
+        tt=$(( 10#${tt_hard_cap} ))
+        if [ -n "$_nproc" ] && [ "$(( 10#${_nproc} ))" -lt "$tt" ]; then
+            tt=$(( 10#${_nproc} ))
         fi
         ;;
     (*)
-        tt="${REIFY_NEXTEST_TEST_THREADS}"
+        tt=$(( 10#${REIFY_NEXTEST_TEST_THREADS} ))
         ;;
 esac
+
+# Clamp to minimum 1.  HARD_CAP=0 is digits-only-VALID, so it passes the parse
+# guard above and would otherwise emit `test-threads = 0` — which nextest reads
+# as UNBOUNDED, i.e. exactly the uncapped pool this cap exists to prevent,
+# reached via the cap knob itself.  Same defence the occt ram_bound carries.
+if [ "$tt" -lt 1 ]; then tt=1; fi
 
 # Create a fresh temp file.  Template ends in X's (do NOT combine --suffix with
 # a .toml-terminated template — that form errors on some systems; empirically
