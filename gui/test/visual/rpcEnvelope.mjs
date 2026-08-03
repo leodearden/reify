@@ -116,10 +116,11 @@ export function parseTextPayload(text) {
  * @property {unknown} [payload] The tool's answer, normalised so that BOTH failure
  *           dialects satisfy {@link isInBandError}. `null` means "no text block to
  *           interpret" (e.g. an image content block from `screenshot`) — still true
- *           for `screenshot`/`screenshot_window` and for a scoped or single-match
- *           `element_screenshot`, but since #5891 an UNSCOPED `element_screenshot`
- *           that matched more than one element appends a text block carrying its
- *           pane diagnostics, so that case yields a payload rather than `null`.
+ *           for `screenshot`/`screenshot_window` and for a single-match
+ *           `element_screenshot`, but since #5891 an `element_screenshot` that
+ *           matched more than one element — scoped or not — appends a text block
+ *           carrying its pane diagnostics, so that case yields a payload rather
+ *           than `null`.
  */
 
 /**
@@ -145,7 +146,7 @@ export function parseTextPayload(text) {
  *   3. no text block          → `{payload: null}` (image content, empty/absent content).
  *                               Branch 3 is reached by SEARCHING for a text block, not by
  *                               indexing, so #5891's trailing diagnostics block is handled
- *                               with no change here: an unscoped multi-match
+ *                               with no change here: a multi-match
  *                               `element_screenshot` now has one, falls through to branch 4,
  *                               and yields `{viewportId, matchCount}` instead of `null`. The
  *                               image block itself is never a payload in either case. (The

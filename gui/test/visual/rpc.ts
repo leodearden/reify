@@ -41,8 +41,9 @@ export type RpcResult<T> =
  *
  * Branch 3 is POSITIONAL ON PURPOSE — do not "fix" it into a
  * `.find(c => c.type === "image")`. Since #5891 an image response MAY carry a
- * trailing `text` block: an UNSCOPED `element_screenshot` that matched more than
- * one element appends its pane diagnostics (`viewportId`/`matchCount`) after the
+ * trailing `text` block: an `element_screenshot` that matched more than one
+ * element — scoped or not, since a testId can repeat within one pane — appends
+ * its pane diagnostics (`viewportId`/`matchCount`) after the
  * image (debug_server.rs `mcp_content_blocks`, which keeps the image at
  * `content[0]` for exactly this reason). This branch deliberately ignores that
  * trailing block. Searching instead of indexing would let a text block win branch
