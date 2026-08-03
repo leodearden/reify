@@ -1252,20 +1252,42 @@ assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP g
 
 # ===========================================================================
 # Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
-# (the headline user-observable signal). Also guard integrity: a missing/empty
+# (the headline user-observable signal). Also guard integrity: a missing
 # baseline must never let the scan vacuously pass.
 # ===========================================================================
 echo ""
 echo "--- Section 5: live scan of the real 5 consolidatable crates ---"
 
-# Guard integrity: a missing / empty baseline is never a silent pass. (An empty
-# baseline would also flag all 867 grandfathered files -> a loud RED below —
-# these explicit asserts state the intent regardless.)
-_baseline_data="$(harness_layout_baseline_rows "$BASELINE" 2>/dev/null || true)"
+# Guard integrity: a MISSING baseline is never a silent pass (kept here as
+# `test -f`, below). Non-emptiness is DELIBERATELY NOT asserted anymore —
+# recorded here so a future reader is not tempted to put the floor back:
+#
+#   1. The manifest header calls this file "A RATCHET, NOT A PERMANENT
+#      ALLOW-LIST" whose "shrinking toward empty == consolidation progress".
+#      A non-empty floor would RED the merge gate as a REWARD for FINISHING
+#      the consolidation (#5693-#5696, plus the reify-cli / reify-syntax /
+#      reify-kernel-occt lines) that this guard exists to protect — invisible
+#      today at ~495 rows, firing only at the finish line. Same reasoning as
+#      Section 8's and Section 9's own declined `rows >= N` floors, and as
+#      the sibling ptodo ratchet's crates/reify-audit/tests/ptodo_baseline.rs
+#      :: baseline_is_well_formed, which states the identical rule for its own
+#      baseline: "An empty baseline PASSES — it is the ... zero residual debt
+#      success state, not a failure."
+#   2. It was never load-bearing for THIS section's own vacuity anyway: the
+#      live rule-(b) scan directly below is fail-CLOSED on an emptied baseline
+#      BY CONSTRUCTION — every one of the ~495 grandfathered files would be
+#      flagged as an unsanctioned standalone, a loud RED (see the asserts
+#      below).
+#   3. The properties the deleted assert used to carry — by accident, via its
+#      `2>/dev/null || true` swallow, which made an UNREADABLE live baseline
+#      masquerade as merely "empty" — now live elsewhere, deliberately:
+#      baseline MISSING or UNREADABLE -> Section 8's live orphan-row scan
+#      (`reason=missing-baseline` / `reason=unreadable-baseline`, over this
+#      same $BASELINE) and Section 9's live row-shape scan (same two
+#      reasons); row SHAPE / well-formedness -> Section 9. Section 9's live
+#      well-formedness assert is intentionally NOT duplicated here (G7).
 assert "5: grandfather baseline exists (guard integrity)" \
     test -f "$BASELINE"
-assert "5: grandfather baseline is non-empty after comment/blank stripping (guard integrity)" \
-    test -n "$_baseline_data"
 
 # Wire the live scan over the 5 consolidatable crates' real tests dirs. A
 # missing crate dir surfaces as an explicit missing-tests-dir FAIL from the
