@@ -239,10 +239,16 @@ assert "F: scripts/check-harness-baseline-registration.sh is executable" \
 _G_ROOT="$(mktemp -d)"; _TMPDIRS+=("$_G_ROOT")
 mkdir -p "$_G_ROOT/crates/reify-eval/tests"
 mkdir -p "$_G_ROOT/crates/reify-solver-elastic/tests"
+mkdir -p "$_G_ROOT/crates/reify-compiler/tests"
 : > "$_G_ROOT/crates/reify-eval/tests/newthing.rs"          # in-scope, added
 : > "$_G_ROOT/crates/reify-eval/tests/harness_foo.rs"       # harness_* -> ignored
 : > "$_G_ROOT/crates/reify-eval/tests/tensegrity_t0a.rs"    # override   -> ignored
 : > "$_G_ROOT/crates/reify-solver-elastic/tests/foo.rs"     # non-consolidatable -> ignored
+# A SECOND unregistered in-scope standalone, in a DIFFERENT consolidatable
+# crate — Section G2's `crate=` derivation probe. Deliberately absent from
+# _G_BASELINE_MISSING. Every section here passes its candidates as explicit
+# args, so merely adding this file perturbs no existing section's output.
+: > "$_G_ROOT/crates/reify-compiler/tests/newthing.rs"      # in-scope, added (Section G2)
 # crates/reify-eval/tests/ghost.rs is deliberately NEVER created -> ignored (non-existent).
 
 # Baseline WITHOUT newthing (unregistered -> the gate must FIRE on it).
@@ -277,6 +283,40 @@ assert "G: EXACTLY one FAIL line (harness_*/override/non-consolidatable/non-exis
     bash -c '[ "$(grep -cE "^HARNESS_BASELINE_REG FAIL " "$1")" -eq 1 ]' _ "$_G_OUT"
 assert "G: no ignored candidate leaks into a FAIL line" \
     bash -c '! grep -E "^HARNESS_BASELINE_REG FAIL " "$1" | grep -qE "harness_foo|tensegrity_t0a|reify-solver-elastic|ghost"' _ "$_G_OUT"
+
+# ===========================================================================
+# Section G2: the `crate=` field is DERIVED from each offender's own path, not
+# fixed.
+#
+# Every OTHER gate assertion in this file pins crate=reify-eval and nothing
+# else, so a derivation that hardcoded that field, read the wrong global, or
+# was handed the wrong argument would still satisfy the entire suite. Running
+# two offenders in DIFFERENT consolidatable crates through ONE invocation pins
+# both values simultaneously and closes that hole.
+#
+# The two offenders deliberately share a basename (newthing.rs) and differ
+# ONLY in their crate segment, so an implementation keying on anything but
+# that segment cannot tell them apart.
+# ===========================================================================
+echo ""
+echo "--- Section G2: crate= is derived per-offender across two crates ---"
+
+_G2_OUT="$(mktemp)"; _TMPDIRS+=("$_G2_OUT")
+_G2_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs \
+    crates/reify-compiler/tests/newthing.rs </dev/null ) > "$_G2_OUT" 2>/dev/null || _G2_RC=$?
+
+assert "G2: gate exits 1 when two unregistered in-scope standalones are added" \
+    test "$_G2_RC" -eq 1
+assert "G2: the reify-eval offender's FAIL line carries crate=reify-eval" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing\.rs reason=unregistered-standalone$' "$_G2_OUT"
+assert "G2: the reify-compiler offender's FAIL line carries crate=reify-compiler (derived, not fixed)" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-compiler file=crates/reify-compiler/tests/newthing\.rs reason=unregistered-standalone$' "$_G2_OUT"
+assert "G2: EXACTLY two FAIL lines — one per offender" \
+    bash -c '[ "$(grep -cE "^HARNESS_BASELINE_REG FAIL " "$1")" -eq 2 ]' _ "$_G2_OUT"
+assert "G2: SUMMARY counts both offenders (added=2 violations=2)" \
+    grep -Eq '^HARNESS_BASELINE_REG SUMMARY added=2 violations=2$' "$_G2_OUT"
 
 # ===========================================================================
 # Section H: the SAME added path WITH a matching baseline row PASSES (rc 0).
