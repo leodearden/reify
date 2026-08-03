@@ -103,8 +103,8 @@
 //! today (`no_example_emits_ctor_field_conformance_diagnostics` is green).  The
 //! fix — widen `matrix_shape` to detect heterogeneous cells and degrade to
 //! `Type::dimensionless_scalar()`, which would make the slot yield no dimension
-//! and the rule fall silent — is out of this ruling's scope and is tracked
-//! separately.
+//! and the rule fall silent — is out of this ruling's scope (`math_signatures.rs`
+//! is outside its locks) and is tracked by task 5889.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
 //! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and

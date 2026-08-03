@@ -1220,6 +1220,43 @@ fn arg_quantity_slot(arg_ty: &Type) -> Option<&Type> {
     }
 }
 
+/// Apply the task 5766 quantity-slot rule at one shape arm: emit
+/// `ArgTypeMismatch` iff `arg_ty` carries a quantity slot that CONFLICTS with the
+/// param's.
+///
+/// Callers MUST invoke this only AFTER their own family/arity check has passed —
+/// that ordering is what keeps a `String` rejected by the family check before it
+/// can be compared. Normative rule: `crates/reify-core/src/ty.rs`.
+///
+/// # Why the guard-and-emit is shared, not repeated per arm
+///
+/// The `Vector`, `Point` and `Matrix`/`Tensor` arms each spelled this identical
+/// gate-then-emit inline, all three routing to the SAME emitter, so nothing
+/// distinguished the copies (reviewer_comprehensive, code-duplication). Routing
+/// them through one function makes two claims the design depends on structurally
+/// true rather than comment-enforced:
+///
+/// * the [`arg_quantity_slot`] gate cannot be dropped, so a placeholder scalar /
+///   `ScalarParam` arg keeps reaching its arm's [`is_numeric_placeholder_leaf`]
+///   accept unchallenged — this is how PRD 4's D4-5 unknown-ness fence survives
+///   at these arms;
+/// * the diagnostic is [`DiagnosticCode::ArgTypeMismatch`] at every arm, which is
+///   what leaves the `Vector` arm's bespoke `TypeNotConformingToVector` owning
+///   ARITY/FAMILY failures only. A future arm added by copy/paste cannot pick a
+///   different emitter — or a different rule — by accident.
+fn emit_if_quantity_conflict(
+    param_type: &Type,
+    param_quantity: &Type,
+    arg_ty: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    if arg_quantity_slot(arg_ty)
+        .is_some_and(|arg_quantity| quantity_slots_conflict(param_quantity, arg_quantity))
+    {
+        emit_arg_type_mismatch(param_type, arg_ty, ctx);
+    }
+}
+
 /// Whether a `Type::List` arg at a `Matrix`/`Tensor` param is plausibly the
 /// idiomatic nested-list-literal spelling of that matrix — i.e. it bottoms out
 /// in a NUMERIC (or already tensor-shaped) element type.
@@ -1386,9 +1423,9 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // quantity-coercion arm, so type_compatible(Vector3<Length>, Vector3<Real>)
         // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
         // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
-        // Task 5766's quantity check does NOT reintroduce that hazard: it is keyed on
-        // both sides naming a concrete dimension, so the dimensionless case it would
-        // have false-rejected is exactly the case that yields `None` and stays silent.
+        // Task 5766's quantity check does NOT reintroduce that hazard:
+        // [`quantity_slot_dimension`] returns `None` for exactly the dimensionless arg
+        // such a gate would have false-rejected, so the rule cannot fire on it.
         (Type::Vector {
             quantity: param_quantity,
             ..
@@ -1407,16 +1444,11 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             };
             if !is_conforming {
                 emit_vector_mismatch(param_type, arg_ty, ctx);
-            } else if let Some(arg_quantity) = arg_quantity_slot(arg_ty) {
+            } else {
                 // QUANTITY SLOT (task 5766), applied only AFTER the family/arity
-                // check above has passed. Emitted through `emit_arg_type_mismatch`,
-                // NOT `emit_vector_mismatch`: this arm's bespoke
-                // `TypeNotConformingToVector` code keeps owning ARITY/FAMILY
-                // failures only, so the diagnostic code says WHICH rule fired
-                // instead of collapsing two distinct failures into one label.
-                if quantity_slots_conflict(param_quantity, arg_quantity) {
-                    emit_arg_type_mismatch(param_type, arg_ty, ctx);
-                }
+                // check above has passed. Rule and emitter choice:
+                // [`emit_if_quantity_conflict`].
+                emit_if_quantity_conflict(param_type, param_quantity, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Point (task 5465, family 1). SHAPE-BASED with an
@@ -1459,10 +1491,8 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // `point3` carries a real return type — tracked by the family-5 /
         // placeholder follow-up filed with this task.
         //
-        // That bounded cost is UNCHANGED by task 5766's quantity rule, and for the
-        // same structural reason it exists: a bare numeric literal reaches this arm
-        // through the `is_numeric_placeholder_leaf` branch, which carries no
-        // quantity slot for the rule to compare.
+        // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
+        // `else` branch below for why.
         (
             Type::Point {
                 quantity: param_quantity,
@@ -1480,14 +1510,13 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            } else if let Some(arg_quantity) = arg_quantity_slot(arg_ty) {
-                // QUANTITY SLOT (task 5766), applied only AFTER the arity match
-                // above has succeeded. The `is_numeric_placeholder_leaf` branch
-                // carries no slot, so it stays dimension-blind — and that is the
-                // branch every real corpus `point3(…)` arg takes.
-                if quantity_slots_conflict(param_quantity, arg_quantity) {
-                    emit_arg_type_mismatch(param_type, arg_ty, ctx);
-                }
+            } else {
+                // QUANTITY SLOT (task 5766; rule in [`emit_if_quantity_conflict`]),
+                // applied only AFTER the arity match above has succeeded. The
+                // `is_numeric_placeholder_leaf` branch carries no slot, so it stays
+                // dimension-blind — and that is the branch every real corpus
+                // `point3(…)` arg takes.
+                emit_if_quantity_conflict(param_type, param_quantity, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
@@ -1500,9 +1529,8 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //   • `Type::Matrix` / `Type::Tensor` — the nominal families themselves.
         //     Rule 3 (`type_compat.rs:163-179`) already makes
         //     `Tensor<2,N,Q> → Matrix<N,N,Q>` legal. Since task 5766 the FAMILY
-        //     accept is followed by a QUANTITY-SLOT check (below), so the slot is
-        //     loose only while at least one side declines to name a concrete
-        //     dimension.
+        //     accept is followed by the shared quantity-slot check
+        //     ([`emit_if_quantity_conflict`], below).
         //   • `Type::Vector` — Rules 1a/1b (`type_compat.rs:83-108`) make
         //     `Vector<N,Q>` and `Tensor<1,N,Q>` interconvertible.
         //   • `Type::List` — the idiomatic nested-list-literal spelling of a
@@ -1532,11 +1560,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //
         // That asymmetry is UNCHANGED by task 5766 and ORTHOGONAL to it: ARITY is
         // undecidable here because the idiomatic `Type::List` spelling drops the
-        // element counts, whereas the QUANTITY slot is decidable whenever the arg
-        // happens to arrive in one of the three nominal families. The same
-        // `Type::List` accept is why the rule must stay dimensionless-tolerant for
-        // this family — see `crates/reify-core/src/ty.rs` for the normative
-        // statement, including the FIRST-CELL inference residual this leg leaves.
+        // element counts, whereas the QUANTITY slot is compared whenever the arg
+        // happens to arrive in one of the three nominal families instead. The
+        // tolerance rationale and this leg's own residuals are stated normatively
+        // in `crates/reify-core/src/ty.rs`, not restated here.
         (
             Type::Matrix {
                 quantity: param_quantity,
@@ -1555,14 +1582,12 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             };
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            } else if let Some(arg_quantity) = arg_quantity_slot(arg_ty) {
-                // QUANTITY SLOT (task 5766), applied only AFTER the family check
-                // above has passed. The `Type::List` and
-                // `is_numeric_placeholder_leaf` branches carry no slot and are
-                // left EXACTLY as they were.
-                if quantity_slots_conflict(param_quantity, arg_quantity) {
-                    emit_arg_type_mismatch(param_type, arg_ty, ctx);
-                }
+            } else {
+                // QUANTITY SLOT (task 5766; rule in [`emit_if_quantity_conflict`]),
+                // applied only AFTER the family check above has passed. The
+                // `Type::List` and `is_numeric_placeholder_leaf` branches carry no
+                // slot and are left EXACTLY as they were.
+                emit_if_quantity_conflict(param_type, param_quantity, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Selector or AnySelector (task-4598).
@@ -7434,7 +7459,7 @@ mod tests {
     /// `arg_ty` at `param_type` produces NO diagnostic.
     ///
     /// Same empty-registry `check_fn_arg_conformance` scaffold as the probes
-    /// above; factored out only because the four fences differ solely in their
+    /// above; factored out only because the three fences differ solely in their
     /// two `Type`s and their reason.
     fn assert_quantity_slot_clean(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
@@ -7601,20 +7626,10 @@ mod tests {
         );
     }
 
-    // FENCE (c) — THE `Type::Field` HOLD — is a DECISION, not an oversight, and
-    // is cited here rather than re-fixtured, because re-asserting an identical
-    // claim in two places is the lockstep duplication that rots (house rule G7):
-    //
-    //   * the RULING itself — `Field` has no quantity slot to compare, so a
-    //     tightening there would be zero-signal — is stated normatively in the
-    //     "Point / Vector quantity-slot convention" section of
-    //     `crates/reify-core/src/ty.rs`, and evidentially in the `Type::Field`
-    //     arm's own comment in this file;
-    //   * the behavioural pin is `field_param_given_erased_analytical_field_stays_clean`
-    //     in `struct_ctor_field_conformance_tests.rs`.
-    //
-    // A later session noticing the asymmetry with the other four arms should
-    // read those, NOT "fix" it by false symmetry.
+    // FENCE (c) — the `Type::Field` HOLD — is pinned by
+    // `field_param_given_erased_analytical_field_stays_clean`
+    // (`struct_ctor_field_conformance_tests.rs`) and ruled in
+    // `crates/reify-core/src/ty.rs`; not re-fixtured here.
 
     /// FENCE (d), task 5766: the `Vector` arm's rank-1 `Type::Tensor` arg leg
     /// REJECTS a conflicting dimension.
@@ -7705,6 +7720,38 @@ mod tests {
              the families agree and the arm applies no arity check, so the quantity slot is the \
              only separator and both sides name a concrete — and different — dimension \
              (task 5766).",
+        );
+    }
+
+    /// FENCE (g), task 5766: the rule fires through the WRAPPER recursion, exactly
+    /// once.
+    ///
+    /// The quantity check lives inside `walk_param_against_arg_type`, which the
+    /// `Option`/`List`/`Set`/`Map` arms re-enter on their inner types, so a
+    /// `List<Vector3<Length>>` param reaches the `Vector` arm one level down. Every
+    /// other quantity-slot probe here enters that arm directly, so nothing pinned
+    /// the recursive route — the shape most likely to expose a DOUBLE emission
+    /// (wrapper-shape diagnostic plus quantity diagnostic) or a MISSED one if the
+    /// recursion or the hoisted anti-cascade guard is changed.
+    /// `assert_quantity_slot_conflict` asserts `len() == 1`, so both failure modes
+    /// are caught here.
+    #[test]
+    fn list_wrapped_vector_param_rejects_cross_dimension_element() {
+        assert_quantity_slot_conflict(
+            Type::List(Box::new(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }))),
+            Type::List(Box::new(Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::MASS,
+                }),
+            })),
+            "axes",
+            "a List<Vector3<Mass>> arg at a List<Vector3<Length>> param must be REJECTED with \
+             EXACTLY ONE diagnostic: the List/List wrapper arm recurses lockstep into the \
+             element types, so the quantity rule fires at the Vector arm one level down and \
+             the wrapper walk must not also emit a shape diagnostic on top of it (task 5766).",
         );
     }
 

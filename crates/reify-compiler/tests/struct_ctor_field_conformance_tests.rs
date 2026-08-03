@@ -1599,6 +1599,14 @@ structure def Root {
 #[test]
 fn vec3_dimensionless_at_dimensioned_vector_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONLESS);
+    // Non-vacuity guard: `ctor_conformance_diags` filters to the five
+    // ctor-conformance codes, so a compile-layer error in the fixture would leave
+    // it empty and pass this fence for the wrong reason.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
@@ -1625,6 +1633,12 @@ structure def Root {
 #[test]
 fn vec3_matching_dimension_at_dimensioned_vector_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_VEC3_MATCHING_DIMENSION);
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
@@ -1742,6 +1756,16 @@ structure def Root {
 #[test]
 fn tensor_matching_dimension_at_moi_param_stays_clean() {
     let module = compile_source_with_stdlib(SRC_TENSOR_MATCHING_DIMENSION);
+    // Non-vacuity guard, load-bearing HERE above all: this is the only new fixture
+    // with no rejecting sibling to prove its param/arg spelling still reaches the
+    // walker, so an unresolvable `MomentOfInertia`, a `Tensor<2,3,Q>` resolution
+    // regression, or a change in how `1.0 * 1kg * 1m * 1m` types would otherwise
+    // leave the fence passing vacuously.
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
     let diags = ctor_conformance_diags(&module);
     assert!(
         diags.is_empty(),
