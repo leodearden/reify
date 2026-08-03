@@ -891,8 +891,35 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
 
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
-        let eval_result = engine.eval(&compiled);
+        // D1 item 2 (task 5748): a geometry-bearing module goes through
+        // `build()` here, exactly as `cmd_eval` already does (main.rs, its
+        // `module_has_geometry`-gated branch). Without it this branch realizes
+        // nothing, so `compile_geometry_op` diagnostics are never even PRODUCED
+        // and geometry-query value cells stay `undef`.
+        //
+        // `Engine::with_registered_kernel` (engine_admin.rs) attaches a
+        // GEOMETRY kernel only. `configured_eval_engine` is deliberately NOT
+        // used: it calls `register_compute_trampolines` and wires a solver +
+        // persistent FEA cache, and `check` stays compute-trampoline-free by
+        // design (see the design-intent comment on `cmd_check` above, and the
+        // regression lock `check_fea_violated_constraint_is_not_gated`). The
+        // geometry-kernel axis and the compute-trampoline axis are independent;
+        // this leaf moves only the former.
+        //
+        // The engine must outlive the branch: `activate_purpose` /
+        // `activate_purpose_with_bindings` / `is_purpose_active` /
+        // `check_constraints_with_values` / `run_gdt_check_passes` are all
+        // called on it below.
+        let used_build = module_has_geometry(&compiled);
+        let (values, front_end_diagnostics, mut engine) = if used_build {
+            let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+            let r = engine.build(&compiled, ExportFormat::Step);
+            (r.values, r.diagnostics, engine)
+        } else {
+            let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+            let r = engine.eval(&compiled);
+            (r.values, r.diagnostics, engine)
+        };
 
         // Activate each purpose in flag order; one check_constraints_with_values
         // call after the loop collects results for ALL injected constraints.
@@ -947,8 +974,15 @@ fn cmd_check(args: &[String]) -> ExitCode {
             }
         }
 
+        // `check_constraints_with_values` takes the value map as an ARGUMENT and
+        // never re-runs eval (engine_constraints.rs:700), so on the geometry
+        // branch the verdicts below are computed directly against build()'s
+        // POST-processed values. The staleness gap that forced
+        // `merge_post_build_verdicts` on sub-path (b) — where `Engine::check()`
+        // opens with a fresh `self.eval(module)` and throws build()'s values
+        // away — simply does not exist here, so no verdict merge is needed.
         let (constraint_results, check_diags) =
-            match engine.check_constraints_with_values(&eval_result.values) {
+            match engine.check_constraints_with_values(&values) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("Error: {}", e);
@@ -956,14 +990,33 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 }
             };
 
-        // Eval diagnostics first, then check diagnostics — chronological order.
-        let mut diagnostics = eval_result.diagnostics.clone();
-        diagnostics.extend(check_diags);
+        // Front-end diagnostics first, then check diagnostics — chronological order.
+        let mut diagnostics = if used_build {
+            // D2 (task 5748) for sub-path (c). `build()` re-runs the eval
+            // front-end internally, so its list BOTH carries internal
+            // duplicates (measured: the `mirror(...)` 'ox' compile error twice
+            // for one call site) AND overlaps whatever
+            // `check_constraints_with_values` reports. Route both through the
+            // accumulating dedup: the build entries seed the list in
+            // chronological order, the check entries merge in behind them, and
+            // an entry produced by both passes is reported exactly once.
+            let deduped_build = merge_build_diagnostics(&[], &front_end_diagnostics);
+            merge_build_diagnostics(&deduped_build, &check_diags)
+        } else {
+            // Non-geometry: plain chronological concatenation, byte-identical
+            // to pre-5748 (C2). Deliberately NOT routed through the merge —
+            // `eval()` does not re-run itself, so there is no duplication to
+            // collapse, and running the dedup here could only ever REMOVE a
+            // line this branch prints today.
+            let mut d = front_end_diagnostics.clone();
+            d.extend(check_diags);
+            d
+        };
 
         // GD&T legality pass (task 4589): runs over post-eval values identically
         // to the non-purpose branch.  Folded in BEFORE report_eval_output so the
         // error prints to stderr alongside other diagnostics.
-        diagnostics.extend(engine.run_gdt_check_passes(&compiled, &eval_result.values));
+        diagnostics.extend(engine.run_gdt_check_passes(&compiled, &values));
 
         let outcome = report_eval_output(
             &constraint_results,
@@ -987,6 +1040,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // mirrors the GdtIllegalModifier escalation in the no-purpose branch
         // of cmd_check (the block that follows `finish_check` there).
         // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
+        //
+        // NOTE (task 5748): this is the ONLY ad-hoc escalation on this branch —
+        // there is no DFM-Error counterpart to sub-path (b)'s
+        // `has_dfm_rule && dfm_has_error_diagnostic(...)` gate. That asymmetry
+        // is PRE-EXISTING and deliberately NOT fixed here; leaf γ (#5403)
+        // closes it incidentally when it replaces both ad-hoc predicates with a
+        // single general `Severity::Error` gate over the merged set.
         if diagnostics
             .iter()
             .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
