@@ -79,6 +79,12 @@
 #                                       weighted children, so foreign load on the
 #                                       pinned CPUs still dilutes proportionality.
 #                                       See the ROW4-1-QUIET-VACUITY block below).
+#                                       Raising it cannot make ROW4-1 unfailable:
+#                                       it gates ONLY the corridor between the
+#                                       weights-ignored fair share and the
+#                                       proportional floor, so a share at or below
+#                                       fair share still goes RED at any ceiling
+#                                       (ROW4-1-CORRIDOR-VACUITY-1).
 #                                       ROW1/ROW2_3 do not read it
 #   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
 #                                       (default 1)
