@@ -96,22 +96,34 @@ _REIFY_HARNESS_LAYOUT_LIB_SOURCED=1
 
 _HARNESS_LAYOUT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# harness_layout_consolidatable_crates — the 5 crates whose top-level tests/*.rs
-# are subject to the C1 layout contract. reify-solver-elastic / reify-eval-fea-tests
-# are deliberately NOT here (they host only override + permanently-standalone
-# binaries — out of the consolidation contract's scope).
+# _HL_CRATES — THE single definition (G7) of the 5 crates whose top-level
+# tests/*.rs are subject to the C1 layout contract. reify-solver-elastic /
+# reify-eval-fea-tests are deliberately NOT here (they host only override +
+# permanently-standalone binaries — out of the consolidation contract's
+# scope). harness_layout_consolidatable_crates (below) prints it verbatim;
+# the MEMO block further down builds _HL_CRATE_SET from it once at source
+# time.
+declare -ga _HL_CRATES=(reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler)
+
+# _HL_OVERRIDE_STEMS — THE single definition (G7) of the 7 standalone
+# integration binaries that are NEVER consolidated (invariant I1), identified
+# by file stem (basename without the .rs extension).
+# harness_layout_override_stems (below) prints it verbatim; the MEMO block
+# further down builds _HL_OVERRIDE_STEM_SET from it once at source time.
+declare -ga _HL_OVERRIDE_STEMS=(
+    determinism analytical_validation modal_benchmarks
+    buckling_smoke fea_diagnostics_e2e
+    tensegrity_t0a representation_within_assertion
+)
+
+# harness_layout_consolidatable_crates — see _HL_CRATES above.
 harness_layout_consolidatable_crates() {
-    printf '%s\n' reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler
+    printf '%s\n' "${_HL_CRATES[@]}"
 }
 
-# harness_layout_override_stems — the 7 standalone integration binaries that are
-# NEVER consolidated (invariant I1), identified by file stem (basename without
-# the .rs extension).
+# harness_layout_override_stems — see _HL_OVERRIDE_STEMS above.
 harness_layout_override_stems() {
-    printf '%s\n' \
-        determinism analytical_validation modal_benchmarks \
-        buckling_smoke fea_diagnostics_e2e \
-        tensegrity_t0a representation_within_assertion
+    printf '%s\n' "${_HL_OVERRIDE_STEMS[@]}"
 }
 
 # harness_layout_baseline_path — the grandfather-baseline manifest path. Honors
@@ -121,38 +133,35 @@ harness_layout_baseline_path() {
     printf '%s\n' "${REIFY_HARNESS_LAYOUT_BASELINE:-$_HARNESS_LAYOUT_LIB_DIR/harness-layout-baseline.manifest}"
 }
 
-# MEMO for the two static data lists (the 5 consolidatable crates, the 7
-# override stems) consumed by harness_layout_in_scope_standalone below.
-# Unlike the baseline-rows MEMO further down, these carry no path/file key —
-# harness_layout_consolidatable_crates and harness_layout_override_stems take
-# no arguments and return a fixed list each — so the memo is just a
-# "populated once" flag plus two associative SETS, loaded from the two
-# printf-only functions on first use and never invalidated: nothing in this
-# tree changes either list mid-shell, so no cache_reset escape hatch is
-# provided (unlike harness_layout_baseline_cache_reset, which exists because
-# a caller CAN rewrite a baseline file in place).
+# MEMO for the two static data lists, consumed by
+# harness_layout_in_scope_standalone below as O(1) associative-array lookups.
 #
 # WHY: harness_layout_in_scope_standalone is the membership predicate
 # test_harness_kloc_cap.sh's whole-tree scan calls once per candidate file —
-# ~495 times against the live tree — and each call forked TWO process
-# substitutions (one per list) to walk them. Pure fork overhead: both lists
-# are five and seven static strings. Measured in isolation: ~4s for 495 calls
-# un-memoized; the load below runs those two forks exactly once per shell.
+# ~495 times against the live tree. Before this MEMO, each call forked a
+# process substitution to walk the crate list, plus a SECOND for the override
+# list on every path that reached the stem check (i.e. every candidate whose
+# crate already matched and whose file was not harness_*.rs) — pure fork
+# overhead over five and seven static strings. Measured in isolation: ~4s of
+# that overhead across 495 calls.
+#
+# Built directly from _HL_CRATES / _HL_OVERRIDE_STEMS above by a plain `for`
+# loop AT SOURCE TIME — no subshell, no fork, no read loop — and
+# unconditionally rather than lazily flag-guarded: populating two 5- and
+# 7-entry sets costs nothing measurable, so there is no first-call branch to
+# maintain. Nothing in this tree mutates either array mid-shell, so no
+# cache_reset escape hatch is provided (unlike
+# harness_layout_baseline_cache_reset below, which exists because a caller
+# CAN rewrite a baseline file in place).
 declare -gA _HL_CRATE_SET=()          # crate name         -> 1
 declare -gA _HL_OVERRIDE_STEM_SET=()  # override file stem -> 1
-_HL_STATIC_LOADED=""
-
-_harness_layout_static_load() {
-    [ -z "$_HL_STATIC_LOADED" ] || return 0
-    local _c _o
-    while IFS= read -r _c; do
-        _HL_CRATE_SET["$_c"]=1
-    done < <(harness_layout_consolidatable_crates)
-    while IFS= read -r _o; do
-        _HL_OVERRIDE_STEM_SET["$_o"]=1
-    done < <(harness_layout_override_stems)
-    _HL_STATIC_LOADED=1
-}
+for _hl_static_v in "${_HL_CRATES[@]}"; do
+    _HL_CRATE_SET["$_hl_static_v"]=1
+done
+for _hl_static_v in "${_HL_OVERRIDE_STEMS[@]}"; do
+    _HL_OVERRIDE_STEM_SET["$_hl_static_v"]=1
+done
+unset _hl_static_v
 
 # harness_layout_in_scope_standalone <repo-rel-path> — exit 0 iff <repo-rel-path>
 # is an in-scope re-accretion candidate: a TOP-LEVEL crates/<crate>/tests/<base>.rs
@@ -163,9 +172,9 @@ _harness_layout_static_load() {
 # check on top separately). The explicit component parse (not just the case
 # glob) rejects nested / multi-segment forms: a bash `case` glob's `*` matches
 # `/`, so `crates/*/tests/*.rs` would otherwise accept crates/c/tests/sub/f.rs.
-# The crate/override membership checks below answer from the MEMO above (an
-# O(1) associative-array lookup) rather than looping the two source functions
-# on every call.
+# The crate/override membership checks below answer from the MEMO above —
+# populated once when this file is sourced (an O(1) associative-array
+# lookup) — rather than looping the two source functions on every call.
 harness_layout_in_scope_standalone() {
     local path="$1"
     case "$path" in
@@ -183,8 +192,6 @@ harness_layout_in_scope_standalone() {
         *) return 1 ;;               # not directly under tests/ (e.g. src/…)
     esac
     local base="${tail#tests/}"      # <base>.rs
-
-    _harness_layout_static_load
 
     # <crate> must be one of the 5 consolidatable crates.
     [ -n "${_HL_CRATE_SET["$crate"]:-}" ] || return 1
