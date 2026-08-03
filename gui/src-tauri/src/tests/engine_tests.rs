@@ -17616,16 +17616,15 @@ fn engine_session_registers_fea_and_shell_extract_dispatch() {
 ///
 /// Gated because `reify-mesh-morph` is only on the graph under `--features
 /// gui` (see the `gui` feature list in `gui/src-tauri/Cargo.toml`).
-/// Compile-verified in CI by the gui-feature compile-check block in
-/// `scripts/verify.sh` but never executed there — OCCT/tauri linking makes
-/// gui-feature test execution a local-only step, so this specific assertion
-/// (the only one exercising the new mesh-morph registration) has no
-/// CI-executed regression coverage today: a future change that flipped the
-/// `#[cfg(feature = "gui")]` arm in `from_engine` to `Unavailable` would
-/// compile clean and pass every CI pass silently. Closing that gap is task
-/// 5076 (PRD task A5's static drift guard + gui-feature test execution),
-/// out of this task's scope. Precedent for this gated-module shape:
-/// `kernel_status_tests` and `event_bus_tests` in this same directory.
+/// A change flipping the `#[cfg(feature = "gui")]` arm in `from_engine` to
+/// `Unavailable` compiles clean, so it is caught only by executing this
+/// assertion or by a static check. Task 5076 wired both: `scripts/verify.sh`
+/// now EXECUTES this module, via the `-p reify-gui --features gui` test pass
+/// emitted from `add_test_passes()`, and
+/// `scripts/check-compute-trampoline-registration.sh` pins a
+/// `MorphRegistration::Enabled` on `gui/src-tauri/src/engine.rs`.
+/// Precedent for this gated-module shape: `kernel_status_tests` and
+/// `event_bus_tests` in this same directory.
 ///
 /// Asserts only `morph_producer().is_some()`: TEST A above
 /// (`engine_session_registers_fea_and_shell_extract_dispatch`, ungated)
