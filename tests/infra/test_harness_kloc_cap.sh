@@ -707,7 +707,7 @@ harness_layout_malformed_rows() {
     local rows_raw=""
     rows_raw="$(harness_layout_baseline_rows "$baseline_file")"
 
-    local violations=0
+    local violations=0 rows=0
     local row crate
 
     # A herestring over the already-materialized rows, NOT a pipe — same
@@ -718,6 +718,7 @@ harness_layout_malformed_rows() {
     # drops — so an empty baseline counts zero rows, not one.
     while IFS= read -r row; do
         [ -n "$row" ] || continue
+        rows=$((rows + 1))
         if harness_layout_in_scope_standalone "$row"; then
             continue
         fi
@@ -730,6 +731,7 @@ harness_layout_malformed_rows() {
     if [ "$violations" -gt 0 ]; then
         return 1
     fi
+    _emit PASS "scan=baseline-row-shape" "rows=$rows"
     return 0
 }
 
