@@ -1717,4 +1717,54 @@ assert "8: live orphan scan emits a structured PASS line carrying the data-row c
 # PASS line still carries `rows=<n>` for observability, matched by `[0-9]+`
 # rather than asserted against a value.
 
+# ===========================================================================
+# Section 9: baseline row SHAPE / well-formedness — every grandfather-baseline
+# row must itself be a well-formed in-scope standalone
+# (harness_layout_in_scope_standalone), independent of whether the file it
+# names happens to exist on disk.
+#
+# WHY THIS IS NOT ALREADY COVERED. Section 8 only asks "does this row's file
+# exist?" — a row like `crates/reify-eval/src/foo.rs` or
+# `crates/reify-eval/tests/sub/dir/x.rs`, naming a file that EXISTS, passes
+# Section 8 silently. Rule (b)'s detector (harness_layout_violations)
+# enumerates existing FILES under a tests dir and asks whether each is
+# sanctioned — it never visits a row that names no such file, so a malformed
+# row is structurally unreachable from it too. A malformed-but-backed row
+# therefore drifts into the ratchet as dead weight, caught by neither existing
+# check.
+#
+# "Well-formed" is defined as harness_layout_in_scope_standalone
+# (harness-layout-lib.sh) — the same pure-string predicate that already
+# encodes the manifest header's own "WHAT IT LISTS" / "INTENTIONALLY
+# EXCLUDED" claims — not a locally re-derived regex, which would be a second,
+# weaker expression of the same rule (the G7 no-lockstep-duplication concern
+# the lib's own header exists to prevent).
+# ===========================================================================
+echo ""
+echo "--- Section 9: baseline row shape / well-formedness ---"
+
+# --- must-fire: a baseline row that is not an in-scope standalone. ---
+_s9_fire_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_fire_baseline")
+printf 'crates/reify-eval/tests/present.rs\nnot/a/crate/path.rs\n' \
+    > "$_s9_fire_baseline"
+
+_s9_fire_out="$(mktemp)"; _TMPDIRS+=("$_s9_fire_out")
+_s9_fire_rc=0
+harness_layout_malformed_rows "$_s9_fire_baseline" \
+    > "$_s9_fire_out" 2>/dev/null || _s9_fire_rc=$?
+
+assert "9: a baseline row that is not an in-scope standalone fires (returns 1)" \
+    test "$_s9_fire_rc" -eq 1
+assert "9: malformed row emitted as a structured FAIL line (malformed-baseline-row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=not/a/crate/path\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+# Precision: a row that IS a well-formed in-scope standalone is never flagged.
+assert "9: a well-formed row is NOT flagged (precision)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL .*present\.rs" "$1"' _ "$_s9_fire_out"
+# Exactly one FAIL line: a second malformed row cannot hide behind the first,
+# and a single row is never double-reported.
+_s9_fire_fails="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s9_fire_out" || true)"
+assert "9: exactly one FAIL line for one malformed row (no double-report, no masking)" \
+    test "$_s9_fire_fails" -eq 1
+
 test_summary
