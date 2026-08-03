@@ -304,7 +304,6 @@ crates/reify-eval/tests/compose_example_smoke.rs
 crates/reify-eval/tests/compute_cache_key_population.rs
 crates/reify-eval/tests/compute_contract_reexport_compat.rs
 crates/reify-eval/tests/compute_dispatch_registry.rs
-crates/reify-eval/tests/concurrent.rs
 crates/reify-eval/tests/cone_primitive_e2e.rs
 crates/reify-eval/tests/conformance_runtime.rs
 crates/reify-eval/tests/connect_eval.rs
