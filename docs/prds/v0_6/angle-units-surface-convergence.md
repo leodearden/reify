@@ -714,8 +714,23 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
 
 - **μ — Round-trip property test (Invariant R). Integration gate for cluster C.**
   *Modules:* `crates/reify-compiler/tests/unit_label_round_trip.rs` (new; §11 Q3).
-  *Change:* for every dimension in NAMED_DIMENSIONS (51 entries, `dimension.rs:514-595` —
-  **[drift]**, its own doc comment still says 34) and every label from S1–S4, assert Invariant R.
+  *Change:* for every dimension in NAMED_DIMENSIONS (`crates/reify-core/src/dimension.rs`,
+  superseding the earlier `:514-595` **[drift]** note) and every label from S1–S4, assert
+  Invariant R. **Iterate the slice — do not hardcode a row count.** Every count written down
+  for this table so far has rotted or been mis-derived by hand, which is why the slice's own
+  doc comment deliberately quotes none.
+  **Alias rows — harmless for R itself, fatal for a *name* assertion.** Invariant R (§5) is
+  **name-blind**: it compares the resolved `DimensionVector` and the SI scale for a
+  (dimension, label) pair and never looks at a dimension *name*. Iterating every row of the
+  slice is therefore safe — NAMED_DIMENSIONS holds alias rows where several names share one
+  `DimensionVector`, so a whole-slice sweep merely re-covers three dims a second time, at no
+  cost but duplicate work. The hazard bites only if the harness *additionally* asserts name
+  identity — e.g. deriving each row's label through `canonical_name()` and checking the
+  returned name equals the row's name. **Do not write that assertion.** By the documented
+  placement convention (`dimension.rs:554-559`) an alias row is placed AFTER the canonical
+  row it shares a vector with, so the first-match scan in `canonical_name()` returns the
+  canonical name: `"TranslationalStiffness"`, `"Curvature"`, and `"Momentum"` come back as
+  `"Stiffness"`, `"AbsorptionCoeff"`, and `"Impulse"`.
   Seed one anti-vacuity self-test: a deliberately non-ASCII label injected into the harness's
   input makes it fail.
   *Signal:* the test is red on pre-κ/pre-λ main (for `·` and for `L`) and green after; a new
