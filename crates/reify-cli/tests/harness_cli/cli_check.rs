@@ -578,3 +578,60 @@ fn check_appearance_violated_exits_failure() {
         "stdout should contain 'Some constraints violated', got: {stdout}"
     );
 }
+
+#[test]
+fn check_geometry_module_resolves_geometry_query_constraints() {
+    // Task 5748 / PRD docs/prds/v0_6/check-diagnostic-truthfulness.md leaf β, D1.
+    //
+    // `reify check` used to route a geometry-bearing module through the
+    // lightweight `Engine::new(None) + check()` path whenever it carried none of
+    // {geometric Conforms, RepresentationWithin, DFMRule}.  Geometry-query value
+    // cells (`centroid`, `moment_of_inertia`, …) are populated only by
+    // `run_post_processes`/`post_process_geometry_queries` on the
+    // `with_registered_kernel + build()` path, so they stayed `undef` and every
+    // constraint reading one degraded to INDETERMINATE.
+    //
+    // Measured pre-change baseline for this fixture:
+    //     stdout: "  OK BoltFlange#constraint[0]"
+    //             "  INDETERMINATE BoltFlange#constraint[1]"
+    //             "  OK BoltFlange#constraint[2]" / "[3]"
+    //             "No constraints violated (1 indeterminate)."
+    //     stderr: "error: `centroid` could not be resolved: …"
+    //             "error: `moment_of_inertia` could not be resolved: …"
+    //             "warning: constraint BoltFlange#constraint[1] indeterminate: \
+    //                       undefined inputs: BoltFlange.moi_principal"
+    //     exit 0
+    //
+    // `reify eval` on the same fixture (already geometry-routed via
+    // `module_has_geometry`, main.rs cmd_eval) resolves both cells — so D1's
+    // routing change is exactly what flips constraint[1] INDETERMINATE → OK.
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::example_path("m5_geometry_flange.ri"));
+
+    assert!(
+        status.success(),
+        "reify check should exit 0 for m5_geometry_flange.ri.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("OK BoltFlange#constraint[1]"),
+        "constraint[1] reads a geometry-query cell (moment_of_inertia); with geometry routing it \
+         must resolve to OK.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("INDETERMINATE BoltFlange#constraint[1]"),
+        "constraint[1] must no longer be INDETERMINATE.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("`centroid` could not be resolved"),
+        "the centroid geometry query must resolve on the build() path.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("`moment_of_inertia` could not be resolved"),
+        "the moment_of_inertia geometry query must resolve on the build() path.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("indeterminate: undefined inputs: BoltFlange.moi_principal"),
+        "moi_principal derives from a now-resolvable geometry query, so its constraint must no \
+         longer report undefined inputs.\nstderr: {stderr}"
+    );
+}
