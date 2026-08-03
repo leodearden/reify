@@ -715,10 +715,12 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 /// warning-resurfaces, is out of γ's scope; owned downstream by μ #5062).
 ///
 /// B2 — determinacy identical cold-vs-warm: `engine.eval(&m)` (cold — reaches
-/// `dp`/`s`/`s_det` via the unmigrated main-pass Param/Let evaluator and
-/// `x_rejected`/`ro_det` via the migrated `eval_guarded_group_param_cell`,
-/// impl-1) and a FRESH `engine.eval_cached(&m, VersionId(1))` (warm — reaches
-/// ALL FOUR cells via `eval_cached`'s own separately-implemented, unmigrated
+/// `dp`/`s`/`s_det` via the main-pass Param/Let evaluator, whose main LET
+/// commit task #5238 has since migrated onto `commit_cell_result` while its
+/// Param arm still writes directly, and `x_rejected`/`ro_det` via the migrated
+/// `eval_guarded_group_param_cell`, impl-1) and a FRESH
+/// `engine.eval_cached(&m, VersionId(1))` (warm — reaches
+/// ALL FOUR cells via `eval_cached`'s own separately-implemented
 /// unified Param+Let pass — see engine_eval.rs's "Unified single-pass
 /// evaluation of Param+Let cells" doc comment; it never calls
 /// `eval_guarded_group_param_cell`) must compute IDENTICAL determinacy for
@@ -732,6 +734,33 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 /// code (confirmed by reading both call paths), so parity here proves the
 /// migration changed no externally observable determinacy outcome on
 /// EITHER path.
+///
+/// B2 (task #5238) — FRESHNESS identical cold-vs-warm for a freshness-
+/// PROPAGATED let: the task's headline done-criterion, asserted on `S.s`
+/// (`let s = x + 1mm`), the fixture's only let that READS another cell and so
+/// genuinely propagates freshness. `PLAIN_LET_SRC`'s `let y = 5mm` reads
+/// nothing, which would make a "propagated" claim vacuous there.
+///
+/// KNOWN LIMIT — do not read this as broader coverage than it is. Parity
+/// holds here because `x` is `Final`, so BOTH sides land on `Final`; but they
+/// DERIVE it differently. Cold goes through the migrated
+/// `evaluate_params_and_lets_unified` -> `CacheLeg::RecordPropagating {
+/// still_refining: false }`, i.e. genuine arch §7.2 propagation from the
+/// just-computed trace (engine_eval.rs ~@8467). Warm goes through the
+/// `eval_cached` Let cache-MISS arm's `CacheLeg::Record` -> `record_evaluation`,
+/// which hard-codes `Freshness::Final` (~@7025). A let with a genuinely
+/// non-`Final` input WOULD therefore diverge cold-vs-warm. That divergence is
+/// a PRE-EXISTING property of the warm cache-miss arm inherited from γ
+/// (#5053), not a regression introduced here, and migrating that arm off
+/// `CacheLeg::Record` is out of #5238's scope. The `started_payload` assertion
+/// below pins that the cold side really is on the `RecordPropagating` path, so
+/// the parity is measured where the task claims it.
+///
+/// The task's other named freshness case — a let whose freshness is NOT
+/// `Final` — is covered by
+/// `eval_cached_let_reserve_preserves_freshness_and_commits` (test-4), which
+/// injects `Freshness::Failed` and proves the migrated preserve-freshness
+/// re-serve carries it forward verbatim instead of resetting it to `Final`.
 ///
 /// B3 — consolidated `CacheLeg::Skip` audit: re-asserts, in one place, that
 /// each of the three post-pass sites migrated at impl-4/5/6 (structural-query,
@@ -792,6 +821,61 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
              identical to the cold result"
         );
     }
+
+    // ── B2 (task #5238): FRESHNESS identical cold-vs-warm for a
+    //    freshness-propagated let ──────────────────────────────────────────
+    //
+    // Reuses the cold/warm engines already evaluated above — no re-eval.
+    // `S.s` (`let s = x + 1mm`) is this fixture's genuinely freshness-
+    // PROPAGATING let: it READS param `x`, so its freshness is derived from a
+    // dependency trace rather than minted from nothing (contrast
+    // `PLAIN_LET_SRC`'s `let y = 5mm`, which reads nothing — a "propagated"
+    // assertion there would be vacuous).
+    let s_id = ValueCellId::new("S", "s");
+    let s_node = NodeId::Value(s_id.clone());
+
+    // Existence guard FIRST: `CacheStore::freshness` returns
+    // `Freshness::default()` == `Final` for an ABSENT node, so without this
+    // the parity assertion below could pass by mutual absence.
+    assert!(
+        cold_engine.cache_store().get(&s_node).is_some(),
+        "cold engine must hold a cache entry for S.s — otherwise the freshness \
+         parity assertion below would pass vacuously (freshness() defaults to Final)"
+    );
+    assert!(
+        warm_engine.cache_store().get(&s_node).is_some(),
+        "warm engine must hold a cache entry for S.s — otherwise the freshness \
+         parity assertion below would pass vacuously (freshness() defaults to Final)"
+    );
+
+    let cold_s_freshness = cold_engine.cache_store().freshness(&s_node);
+    let warm_s_freshness = warm_engine.cache_store().freshness(&s_node);
+
+    assert_eq!(
+        cold_s_freshness, warm_s_freshness,
+        "task #5238 acceptance criterion: freshness for the freshness-propagated \
+         let S.s must be IDENTICAL cold (engine.eval() -> migrated \
+         evaluate_params_and_lets_unified, CacheLeg::RecordPropagating) vs warm \
+         (engine.eval_cached()); cold={cold_s_freshness:?} warm={warm_s_freshness:?}"
+    );
+    assert_eq!(
+        cold_s_freshness,
+        Freshness::Final,
+        "both sides must be Freshness::Final specifically — pinning the value as \
+         well as the parity, so a future regression making BOTH sides equally \
+         wrong still fails this test"
+    );
+
+    // Proves the cold side genuinely went through the migrated
+    // `evaluate_params_and_lets_unified` -> `CacheLeg::RecordPropagating`
+    // commit (impl-2), rather than the parity above holding vacuously via some
+    // unmigrated path.
+    assert_eq!(
+        started_payload(&cold_engine, &s_id).as_deref(),
+        Some("cold-eval"),
+        "cold S.s must carry the migrated main-pass provenance slug, proving the \
+         freshness parity above is measured on the RecordPropagating path"
+    );
 
     // ── B3: consolidated CacheLeg::Skip audit across the 3 post-pass sites ──
 
