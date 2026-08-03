@@ -561,6 +561,89 @@ fn merge_post_build_verdicts(
     });
 }
 
+/// Drop the `ConstraintIndeterminate` diagnostics in `build_diags` that the
+/// AUTHORITATIVE `constraint_results` positively falsify.
+///
+/// # Why this exists (task 5748, reviewer_comprehensive review fix)
+///
+/// [`merge_post_build_verdicts`] is the inward leg — it adopts build()'s
+/// verdicts onto `check()`'s results.  This is its outward mirror, and D2's
+/// missing return leg: the diagnostic merge is ONE-DIRECTIONAL by construction,
+/// so nothing anywhere drops a stale indeterminacy claim `build()` made about a
+/// constraint the later, authoritative `check()` resolved on its own.
+///
+/// * `build()`'s internal task-4229 retain (engine_build.rs:5000-5004) drops
+///   only the warnings BUILD itself upgraded, and is gated on its own result
+///   list still holding an `Indeterminate`.
+/// * [`merge_post_build_verdicts`] retains only over `check()`'s OWN list, and
+///   only for the entries IT upgraded.
+///
+/// Neither knows about the other pass's verdicts, so without this filter
+/// `check` prints a self-contradiction: stdout `OK SphereCheck#constraint[0]` +
+/// `All constraints satisfied.` while stderr carries `warning: constraint
+/// SphereCheck#constraint[0] indeterminate: undefined inputs:
+/// SphereCheck.subject` (measured on `tests/fixtures/dfm_with_repr_within.ri`).
+///
+/// # Contract
+///
+/// * **Drop on positive falsification only.**  A diagnostic is removed only
+///   when `constraint_results` holds a DEFINITE (`Satisfied`/`Violated`) verdict
+///   for that same constraint.  An id the authoritative list never mentions is
+///   left alone, so a build-only diagnostic about a constraint outside that list
+///   still reaches the user — which is what preserves PRD D2's "every
+///   build()-only diagnostic appears at least once".
+/// * **Only `DiagnosticCode::ConstraintIndeterminate` is in scope.**  A verdict
+///   falsifies the INDETERMINACY claim and nothing else; a `ConstraintViolated`
+///   (or uncoded) line naming the same constraint survives untouched.
+/// * **The needle prefers the label**, exactly as [`merge_post_build_verdicts`]
+///   and engine_build.rs's `labeled_diagnostics` rewrite do: a labeled
+///   constraint's diagnostic embeds the label, not the raw id.
+/// * **The matcher is ANCHORED** on `constraint {needle} indeterminate` — it
+///   spans the needle AND the trailing ` indeterminate` token, which every
+///   emitted variant carries (reify-constraints/src/lib.rs:187/196/201).  This
+///   is a deliberate STRENGTHENING over the unanchored `contains(needle)` used
+///   at :560 and engine_build.rs:5003: this filter walks ALL definite verdicts
+///   (a far larger needle set than those two, which only walk the entries THEY
+///   upgraded), so prefix-collision exposure is materially higher.  A bare
+///   `contains` would let a definite `Foo#constraint[1]` delete
+///   `Foo#constraint[10]`'s still-true warning; `[1] indeterminate` is not a
+///   substring of `[10] indeterminate`, so the anchored form cannot.
+///
+/// Severity-agnostic by code, but in practice this only ever removes
+/// `Warning`-severity entries.  No exit code can move either way:
+/// `report_eval_output`'s outcome derives solely from `constraint_results` via
+/// `report_constraint_results`, never from the diagnostic list.
+///
+/// An empty `constraint_results` (or one holding no definite verdict) falsifies
+/// nothing → `build_diags` verbatim, so every pre-fix input stays
+/// byte-identical (C2).
+fn drop_falsified_indeterminate_diagnostics(
+    build_diags: &[reify_core::Diagnostic],
+    constraint_results: &[reify_eval::ConstraintCheckEntry],
+) -> Vec<reify_core::Diagnostic> {
+    let anchors: Vec<String> = constraint_results
+        .iter()
+        .filter(|e| e.satisfaction != reify_ir::Satisfaction::Indeterminate)
+        .map(|e| {
+            format!(
+                "constraint {} indeterminate",
+                e.label.clone().unwrap_or_else(|| e.id.to_string())
+            )
+        })
+        .collect();
+    if anchors.is_empty() {
+        return build_diags.to_vec();
+    }
+    build_diags
+        .iter()
+        .filter(|d| {
+            !(d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
+                && anchors.iter().any(|a| d.message.contains(a)))
+        })
+        .cloned()
+        .collect()
+}
+
 fn cmd_check(args: &[String]) -> ExitCode {
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
@@ -5008,7 +5091,9 @@ mod drop_falsified_indeterminate_diagnostics_tests {
     fn never_drops_a_diagnostic_that_is_not_coded_constraint_indeterminate() {
         let violated = Diagnostic::error("constraint Bracket#constraint[2] indeterminate-ish note")
             .with_code(DiagnosticCode::ConstraintViolated);
-        let uncoded = Diagnostic::warning("constraint Bracket#constraint[2] indeterminate: hand-rolled uncoded line");
+        let uncoded = Diagnostic::warning(
+            "constraint Bracket#constraint[2] indeterminate: hand-rolled uncoded line",
+        );
         let build = vec![violated, uncoded];
         let results = vec![entry("Bracket", 2, Satisfaction::Satisfied)];
 
@@ -5119,12 +5204,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
         let dropped = indeterminate_warning("A#constraint[0]", "A.x");
         let second = indeterminate_warning("A#constraint[1]", "A.y");
         let third = Diagnostic::warning("W_DFM_OVERHANG: face dips past the overhang limit");
-        let build = vec![
-            first.clone(),
-            dropped,
-            second.clone(),
-            third.clone(),
-        ];
+        let build = vec![first.clone(), dropped, second.clone(), third.clone()];
         let results = vec![
             entry("A", 0, Satisfaction::Satisfied),
             entry("A", 1, Satisfaction::Indeterminate),
