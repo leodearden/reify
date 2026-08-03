@@ -1974,4 +1974,33 @@ else
     chmod 644 "$_s9_unread_baseline"
 fi
 
+# --- LIVE scan over the real checked-in baseline. Uses the already-resolved
+#     $BASELINE (from harness_layout_baseline_path), so the
+#     REIFY_HARNESS_LAYOUT_BASELINE override is honored identically to the
+#     rest of this guard. ---
+_s9_live_out="$(mktemp)"; _TMPDIRS+=("$_s9_live_out")
+_s9_live_rc=0
+harness_layout_malformed_rows "$BASELINE" \
+    > "$_s9_live_out" 2>/dev/null || _s9_live_rc=$?
+
+# Offender lines to the archived log on failure (the Section 5/8 idiom, gated
+# on failure so a clean run's output stays byte-for-byte unchanged). Not
+# cosmetic: `assert` only dumps the stdout of the `test ...` checker it
+# invokes, which is always empty, so without this a failing live scan's own
+# `file=<row>` lines would never reach the archived merge-verify log — the
+# 2026-07-20 incident the Section 5 comment records.
+if [ "$_s9_live_rc" -ne 0 ]; then
+    echo "  ---- Section 9: live row-shape scan output (printed on failure) ----"
+    cat "$_s9_live_out"
+    echo "  ---- Section 9: end live scan output ----"
+fi
+
+assert "9: live baseline has no malformed rows (every data row is a well-formed in-scope standalone)" \
+    test "$_s9_live_rc" -eq 0
+# Pins the live grammar WITHOUT pinning a row count — a pinned count here would
+# be the same landmine Section 8 declines, in a different section: the count
+# is expected to shrink as consolidation proceeds, all the way to 0.
+assert "9: live row-shape scan emits a structured PASS line carrying the data-row count" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=[0-9]+$' "$_s9_live_out"
+
 test_summary
