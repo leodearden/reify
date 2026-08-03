@@ -1451,6 +1451,59 @@ class TestMain(unittest.TestCase):
             "the hint must point at the mode that turns this into a clean SKIP",
         )
 
+    def test_harness_error_stderr_is_capped_not_unbounded(self):
+        """The HARNESS_ERROR budget is large, but it is still a budget.
+
+        Emitting stderr unbounded would let a `reify eval`/`reify check` harness
+        error dump a multi-megabyte backtrace verbatim into the gate log — in the
+        one code path whose entire purpose is making a failure easy to attribute.
+        The measured cache denial (253 chars) fits ~16x over in the cap, so this
+        costs the motivating case nothing.
+        """
+        tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
+        flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
+        runner = self._make_runner({
+            "grammar": (1, "", flood),
+            "check":   (1, "", "rejection: bad arg"),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
+        self.assertIn(
+            "/home/leo/.cache/tree-sitter/lock/reify-69604127a681544d.lock", out,
+            "the cap must sit far above the signature the operator needs",
+        )
+        self.assertNotIn(
+            tail, out,
+            "a HARNESS_ERROR's stderr must be bounded by "
+            "_HARNESS_ERROR_STDERR_CAP, not emitted unbounded",
+        )
+
+    def test_json_output_keeps_full_harness_error_stderr(self):
+        """--json is unaffected by the text renderer's cap.
+
+        The cap is a human-readability measure for the gate log; a machine
+        consumer asked for the evidence and can afford it.  Pinned so raising or
+        lowering the text cap cannot silently start truncating the JSON contract.
+        """
+        tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
+        flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
+        runner = self._make_runner({
+            "grammar": (1, "", flood),
+            "check":   (1, "", "rejection: bad arg"),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)], runner=runner
+        )
+        self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
+        payload = json.loads(out)
+        grammar = [r for r in payload["results"] if r["probe_kind"] == "grammar"][0]
+        self.assertEqual(
+            grammar["stderr"], flood,
+            "--json must carry the probe's stderr verbatim, uncapped",
+        )
+
     def test_non_harness_error_stderr_is_still_previewed(self):
         """PASS/FAIL results keep the 200-char preview so ordinary output stays compact.
 

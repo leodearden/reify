@@ -830,6 +830,16 @@ def verdict(observation: str, expected_observation: str) -> str:
     return FAIL
 
 
+# Byte budget for a HARNESS_ERROR's stderr in the text renderer.  Sized ~16x the
+# measured cache-denial signature (253 chars) so every realistic tool message
+# arrives whole, while still capping the pathological case — a `reify eval` or
+# `reify check` harness error can carry a large backtrace, and flooding the gate
+# log verbatim would defeat the diagnosability this rendering exists for.  Other
+# verdicts keep the tight 200-char preview.  --json is unaffected: it has always
+# emitted stderr in full, for machine consumers that can afford it.
+_HARNESS_ERROR_STDERR_CAP = 4000
+
+
 def main(argv: List[str]) -> int:
     """CLI entry-point.  Returns an exit code (0/1/2/64/70/75).
 
@@ -958,10 +968,15 @@ def main(argv: List[str]) -> int:
             # A HARNESS_ERROR means the probe could not run, so the operator's
             # only lead is the tool's own message — truncating it at 200 chars
             # discards exactly the part that identifies the cause (the measured
-            # cache denial is cut mid-path, naming no file at all).  PASS/FAIL
-            # keep the preview so an ordinary run is not buried in probe stderr.
+            # cache denial is 253 chars and is cut mid-path, naming no file at
+            # all).  It gets a far larger budget, but still a bounded one: this
+            # is the path whose whole purpose is making a failure easy to
+            # attribute, and a `reify eval` harness error dumping a large
+            # backtrace would bury the signal in the gate log it is meant to
+            # clarify.  PASS/FAIL keep the tight preview so an ordinary run is
+            # not buried in probe stderr.
             if r.stderr and r.verdict == _HARNESS_ERROR:
-                stderr_text = r.stderr
+                stderr_text = r.stderr[:_HARNESS_ERROR_STDERR_CAP]
             else:
                 stderr_text = r.stderr[:200] if r.stderr else "(empty)"
             sys.stdout.write(f"[{r.verdict}] {r.probe.capability}\n")
