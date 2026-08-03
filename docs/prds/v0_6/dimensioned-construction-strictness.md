@@ -590,19 +590,32 @@ sites**, **474 named args land on a dimensioned-Scalar field**.
   widening beyond 5627's scoped question costs **nothing** in migration and buys the guard
   outright. This is the strongest possible evidence for D4-1.
 
-The complete BARE list (β's migration set):
+The complete BARE list (β's migration set). The **Disposition** column records what β
+actually did — added by task 5758, which migrated **15 of the 17** sites; the measurement
+itself is unchanged.
 
-| File:line | Field | Source |
-|---|---|---|
-| `examples/trajectory/tots_optimal_ptp.ri:67` | `JointLimit.max_force : Scalar<Force>` | `let jl = JointLimit(joint: 0.0, max_force: 1000.0)` |
-| `examples/trajectory/tots_optimal_ptp.ri:78` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` |
-| `examples/trajectory/tots_optimal_ptp.ri:79` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` |
-| `examples/trajectory/printer_print_envelope.ri:153` | `JointLimit.max_force` | `actuator_limits: [JointLimit(joint: 0.0, max_force: 1000.0)],` |
-| `examples/trajectory/printer_print_envelope.ri:154` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` |
-| `examples/trajectory/printer_print_envelope.ri:155` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` |
-| `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs:1420` (×2 args) | the pinning probe's own fixture | `let l = Limit(velocity_limit: 300.0, acceleration_limit: 5000.0)` |
-| `crates/reify-eval/tests/input_shape_eval_e2e.rs:248/:255/:256` | `JointLimit.max_force`, `TOTSShaper.{velocity,acceleration}_limit` | bare `100.0` / `300.0` / `5000.0` |
-| `gui/test/fixtures/large_assembly.ri:18/19/27/28/36/37` | `Material.{density : Density, youngs_modulus : Pressure}` | `density: 7850.0,` / `youngs_modulus: 200000000000.0` (×3 materials) |
+| File:line | Field | Source | Disposition after β |
+|---|---|---|---|
+| `examples/trajectory/tots_optimal_ptp.ri:67` | `JointLimit.max_force : Scalar<Force>` | `let jl = JointLimit(joint: 0.0, max_force: 1000.0)` | MIGRATED `1000N` — magnitude-preserving |
+| `examples/trajectory/tots_optimal_ptp.ri:78` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` | MIGRATED `300mm/s` — **RULED mm-scale** (esc-5758-2 option B); SI 300 → 0.3, intended |
+| `examples/trajectory/tots_optimal_ptp.ri:79` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` | MIGRATED `5000mm/s^2` — **RULED mm-scale**; SI 5000 → 5, intended |
+| `examples/trajectory/printer_print_envelope.ri:153` | `JointLimit.max_force` | `actuator_limits: [JointLimit(joint: 0.0, max_force: 1000.0)],` | MIGRATED `1000N` — magnitude-preserving |
+| `examples/trajectory/printer_print_envelope.ri:154` | `TOTSShaper.velocity_limit` | `velocity_limit: 300.0,` | **DEFERRED — stays bare after β.** Task #5847, gated on #5412 (esc-5758-4 option D1) |
+| `examples/trajectory/printer_print_envelope.ri:155` | `TOTSShaper.acceleration_limit` | `acceleration_limit: 5000.0,` | **DEFERRED — stays bare after β.** Task #5847, gated on #5412 |
+| `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs:1420` (×2 args) | the pinning probe's own fixture | `let l = Limit(velocity_limit: 300.0, acceleration_limit: 5000.0)` | MIGRATED `300mm/s` / `5000mm/s^2`; probe renamed (see §11 γ) |
+| `crates/reify-eval/tests/input_shape_eval_e2e.rs:248/:255/:256` | `JointLimit.max_force`, `TOTSShaper.{velocity,acceleration}_limit` | bare `100.0` / `300.0` / `5000.0` | MIGRATED `100N` (magnitude-preserving) / `300mm/s` / `5000mm/s^2` (**RULED mm-scale**) |
+| `gui/test/fixtures/large_assembly.ri:18/19/27/28/36/37` | `Material.{density : Density, youngs_modulus : Pressure}` | `density: 7850.0,` / `youngs_modulus: 200000000000.0` (×3 materials) | MIGRATED `7850kg/m^3` / `200GPa` etc. — all magnitude-preserving |
+
+**Why `printer_print_envelope.ri:154/:155` are deferred (measured, esc-5758-4).**
+Dimensioning them **alone** makes the TOTS solve `ConstraintInfeasible`: `input_shape`
+returns `Undef`, `track_tots` comes back empty and `peak_tots` becomes exactly 0 — with
+**exit 0 and zero diagnostics**, which is how this defect class hides. The cause is that this
+file's `Waypoint.values` are dimensionless `JointValue` (`trajectory.ri:77`,
+`kinematic.ri:306`) running 0 → 50 → 200 → 0 at `:115-118`, demanding ~200 units/s. The
+limits and the waypoints must be corrected **together**; task #5847 (gated on #5412) owns
+that. β pins the split state positively in
+`crates/reify-eval/tests/printer_print_envelope_e2e.rs` section (6) so a later sweep cannot
+silently migrate them.
 
 **The GUI fixture is a degraded copy with a correct twin already in the repo.**
 `gui/test/fixtures/large_assembly.ri` is loaded live by `gui/src-tauri/src/debug_server.rs:1236`
@@ -1010,7 +1023,27 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
 - **Work:** dimension every BARE site in §6.3's table, finishing task 4580's tightening.
   **Fix form per D4-9**: compound literal in `examples/**` and the GUI fixture; the
   compositional `<scalar> * <unit-literal>` form only where a registry-less scope demands it.
-  **SI values must not change.** Three corrections to 5627's `files` list, measured (§2.4):
+  **Measured: no β target is in a registry-less scope** — `examples/**` and the GUI fixture
+  compile with the stdlib prelude, and both Rust fixtures go through prelude-loading helpers
+  (`compile_source_with_stdlib`, `parse_and_compile_with_stdlib`), so the compound form is
+  used in all five files and the compositional fallback nowhere.
+- **SI-value rule — split by Leo's esc-5758-2 ruling.** The flat *"SI values must not
+  change"* holds for **11 of the 15** migrated sites and is asserted **numerically** at the
+  Value layer for each (not inferred from compile-cleanliness — see the note below). It is
+  **superseded for the 4 ruled velocity/acceleration sites**
+  (`tots_optimal_ptp.ri:78/:79`, `input_shape_eval_e2e.rs:255/:256`): a bare literal at a
+  `Scalar<Velocity>` slot was being read as SI, i.e. 300 m/s on a desktop-printer-class
+  mechanism. The mm-scale values are what the design physically means, so the resulting
+  **1000× SI change is deliberate**. Its user-visible consequence — `tots_optimal_ptp`'s
+  optimal second waypoint re-timing from t = 0.07745966692423394 s to t = 0.98 s — was
+  previously unpinned by any test and is now pinned in
+  `crates/reify-eval/tests/harness_engine/dimensioned_ctor_migration_si_values.rs`.
+- **Evidence discipline.** "It still compiles" is not evidence for either half of that rule.
+  Every pin matches `Value::Scalar { si_value, dimension }` **explicitly** and compares
+  `dimension` against a named `DimensionVector` constant. An f64 coercion helper of the
+  `printer_print_envelope_e2e.rs::num()` kind folds `Real` and `Scalar` together and would
+  make every such assertion vacuous.
+- Three corrections to 5627's `files` list, measured (§2.4):
   - `printer_print_envelope.ri` — the bare args are at **`:153-155`**, not `:146-147` (those
     are the *comment* that calls them *"(mm/s placeholder Real)"*).
   - `tots_optimal_ptp.ri` — a **third** site at `:67` (`max_force: 1000.0`) that prior
@@ -1022,9 +1055,21 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
   - `gui/test/fixtures/large_assembly.ri` — copy the spelling from its correct twin
     `examples/large_assembly.ri:51-53`, rather than inventing one.
 - **Signal:** `reify eval examples/trajectory/tots_optimal_ptp.ri` reports the trajectory
-  limits as dimensioned quantities where it previously reported bare `Real`s, with
-  **numerically unchanged** SI values; the whole `examples/` corpus still passes
-  `all_examples_parse_and_compile_with_stdlib`.
+  limits as dimensioned quantities where it previously reported bare `Real`s; the **11
+  magnitude-preserving sites** are numerically unchanged, the **4 ruled sites** sit on their
+  mm-scale values, and `printer_print_envelope.ri:154/:155` are still bare with that file's
+  e2e gate green and its four outputs (budget / peak_impulse / peak_tots / peak_unshaped)
+  bit-identical. The corpus still passes **both**
+  `all_examples_parse_and_compile_with_stdlib` **and**
+  `no_example_emits_ctor_field_conformance_diagnostics`.
+
+  Measured bonus, not predicted by this PRD: dimensioning `Material.density` also **corrects
+  a latent wrong-dimension on derived quantities**. `gui/test/fixtures/large_assembly.ri`'s
+  `mass = volume × density` cells rendered as `m^3` while density was a bare Real and render
+  as `kg` now, with every magnitude bit-identical (`total_mass` 6.299433614916351 in both).
+  When migrating a site, diff the **whole** eval output, not just the migrated field.
+- **β migrated 15 of the 17 arg-sites**; `printer_print_envelope.ri:154/:155` remain bare
+  pending #5847 (see §6.3).
 - **δ-position:** pre-δ; asserts **no** severity — it is a migration, and at this point the
   gate does not yet exist. **Prereqs:** α.
 
@@ -1034,11 +1079,25 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
   `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`,
   `crates/reify-compiler/tests/examples_smoke.rs`.
 - **Work:** the §4.1 predicate arm; the D4-5 `ScalarParam` fence via
-  `is_numeric_placeholder_leaf`; the D4-6 migration hint; **retarget** the pinning probe
-  `excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent`
-  (`struct_ctor_field_conformance_tests.rs:1414-1461`) — its 38-line "HELD pending ruling"
-  doc comment is replaced by a statement of the ruling with a pointer to §0 of this PRD;
-  rewrite the `examples_smoke` panic message (§4.3 trap); add the I1–I8 value floors (§7.1).
+  `is_numeric_placeholder_leaf`; the D4-6 migration hint; rewrite the `examples_smoke` panic
+  message (§4.3 trap); add the I1–I8 value floors (§7.1).
+- **Amended by β (task 5758) — the probe retarget is already done.** β migrated the
+  `SRC_FAMILY_DIMENSIONED_SCALAR` fixture to unit literals, replaced the 38-line "HELD
+  pending ruling" doc comment with a statement of the ruling, and renamed the probe
+  `excluded_family_dimensioned_scalar_given_dimensionless_real_is_silent` →
+  **`family_dimensioned_scalar_given_unit_literal_arg_is_silent`** (the const name is
+  unchanged, and the former test name is quoted verbatim in the new doc comment so this
+  anchor still greps). It now pins that β's **fix form is accepted**. So γ's job there is to
+  **ADD a bare-arg negative probe as one of its I1–I8 value floors**, not to invert an
+  existing probe in place. α's ledger
+  (`docs/notes/dimensioned-construction-blast-radius-2026-07-29.md:2069`) still records this
+  site as γ's to invert; that is a committed historical measurement and was deliberately not
+  rewritten — this bullet is the current authority (divergence filed as esc-5758-5, info).
+- **Transitive-risk flag (esc-5758-4).** If γ's gate rejects bare scalars at dimensioned ctor
+  fields, then `printer_print_envelope.ri:154/:155` — which β left bare on purpose — would
+  make the corpus warn, putting γ behind #5412 → #5847. **Verify this against γ's actual gate
+  predicate rather than assuming it**: the two sites are in `examples/**`, so whether they
+  matter depends on whether γ's `examples_smoke` assertion is diagnostic-count-based.
 - **Signal:** `reify check` on a fixture containing `Steel(youngs_modulus: 200mm)` and
   `Steel(density: "heavy")` **prints two diagnostics with code `ArgTypeMismatch`**, each
   naming its param and carrying a migration hint, where the identical file today prints
