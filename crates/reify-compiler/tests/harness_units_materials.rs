@@ -16,6 +16,7 @@
 //!   - THIS root holds the compiler-side unit *machinery* — `UnitEntry` / `UnitRegistry`,
 //!     the `unit`-declaration pre-pass, dimension resolution — beside the materials / money
 //!     / cost / affine clusters it was swept with.
+//!
 //! Do NOT fold the two roots together: #5789's M1 binding and its `harness_units`
 //! delivered_check both require `harness_units.rs` to keep existing. That file's "μ should
 //! add its module here rather than create a second unit-subsystem harness" steer is aimed at
