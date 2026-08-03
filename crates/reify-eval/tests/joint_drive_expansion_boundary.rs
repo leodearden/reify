@@ -948,6 +948,26 @@ fn strip_inlined_minimize(src: &str) -> String {
     kept.join("\n")
 }
 
+/// Read the shipped example from disk and eval BOTH the merged (inlined
+/// `minimize` present) and frozen-cascade (`minimize` stripped) halves
+/// through the real solver.
+///
+/// Shared by BT-5 and its companion known-limitation pin
+/// (`parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`)
+/// so the two provably evaluate the SAME two halves — deriving this fixture
+/// independently in each test would let them silently drift apart, exactly
+/// the failure mode `strip_inlined_minimize`'s own doc comment warns about
+/// for "derived, never transcribed" baselines.
+fn eval_merged_and_frozen() -> (EvalResult, EvalResult) {
+    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
+    let frozen_src = strip_inlined_minimize(&merged_src);
+
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
+    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    (merged, frozen)
+}
+
 /// BT-5 — THE LEAF. The parent's cost objective reaches the CHILD's auto in one
 /// merged solve, and the whole assembly lands strictly cheaper than the bottom-up
 /// freeze-as-you-go cascade would have pinned it.
@@ -1002,12 +1022,7 @@ fn strip_inlined_minimize(src: &str) -> String {
 /// `dependent_cells` → β folds them per trial → α writes them back.
 #[test]
 fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
-    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    let (merged, frozen) = eval_merged_and_frozen();
 
     // ---- (i) the child auto resolves STRICTLY DIFFERENT from its freeze. ----
 
@@ -1114,19 +1129,15 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 /// the δ cluster DOES form here (BT-5 passes), but this particular
 /// parent-level consumer `let` still never resolves post-solve.
 ///
-/// If this test ever goes RED (`total_cost` starts resolving to a `Scalar`),
-/// the correct response is a reviewed design change — re-enable the parent
+/// If this test ever goes RED (`total_cost` starts resolving to a usable
+/// number — a `Scalar`, `Real`, or `Int`), the correct response is a
+/// reviewed design change — re-enable the parent
 /// aggregate as BT-5(ii)'s preferred cost cell and update the example
 /// header's "Reading the result" section — NOT a silent edit to this
 /// assertion or to #5835's status.
 #[test]
 fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
-    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
-    let frozen_src = strip_inlined_minimize(&merged_src);
-
-    let merged = eval_ri_with_real_solver(&merged_src, "merged (inlined `minimize` present)");
-    let frozen = eval_ri_with_real_solver(&frozen_src, "frozen cascade (`minimize` removed)");
+    let (merged, frozen) = eval_merged_and_frozen();
 
     let total_cost = ValueCellId::new("RivetedPanel", "total_cost");
 
@@ -1144,19 +1155,23 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
          binding, or this cell's id spelling, has changed) — got no entry",
     );
     // UNRESOLVED — the actual claim. Assert the negative shape (not a
-    // resolved `Scalar`) rather than pinning today's exact `Value::Undef`
-    // spelling, so this pins "not a usable number", not one particular
-    // non-Scalar variant.
+    // resolved `Scalar`, `Real`, or `Int` — every numeric `Value` variant)
+    // rather than pinning today's exact `Value::Undef` spelling, so this
+    // pins "not a usable number", not one particular non-Scalar variant.
     assert!(
-        !matches!(merged_cell, Some(Value::Scalar { .. })),
+        !matches!(
+            merged_cell,
+            Some(Value::Scalar { .. } | Value::Real(_) | Value::Int(_))
+        ),
         "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
-         resolved to a Scalar in the merged eval — got {merged_cell:?}. The \
-         engine gap #5835 tracks has apparently closed: a parent-level \
-         consumer `let` over a cluster-solved cross-sub cell now \
-         materialises post-solve. That needs a reviewed design change \
-         (re-enable the parent aggregate as BT-5(ii)'s preferred cost cell, \
-         update the example header's \"Reading the result\" section), not a \
-         silent edit to this assertion.",
+         resolved to a usable number in the merged eval — got \
+         {merged_cell:?}. The engine gap #5835 tracks has apparently \
+         closed: a parent-level consumer `let` over a cluster-solved \
+         cross-sub cell now materialises post-solve. That needs a \
+         reviewed design change (re-enable the parent aggregate as \
+         BT-5(ii)'s preferred cost cell, update the example header's \
+         \"Reading the result\" section), not a silent edit to this \
+         assertion.",
     );
 
     // ---- FROZEN-CASCADE half — same two claims, independently. ----
@@ -1170,21 +1185,25 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
          no entry",
     );
     assert!(
-        !matches!(frozen_cell, Some(Value::Scalar { .. })),
+        !matches!(
+            frozen_cell,
+            Some(Value::Scalar { .. } | Value::Real(_) | Value::Int(_))
+        ),
         "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
-         resolved to a Scalar in the frozen-cascade eval — got \
-         {frozen_cell:?}. The engine gap #5835 tracks has apparently closed: \
-         a parent-level consumer `let` over a cluster-solved cross-sub cell \
-         now materialises post-solve. That needs a reviewed design change \
-         (re-enable the parent aggregate as BT-5(ii)'s preferred cost cell, \
-         update the example header's \"Reading the result\" section), not a \
-         silent edit to this assertion.",
+         resolved to a usable number in the frozen-cascade eval — got \
+         {frozen_cell:?}. The engine gap #5835 tracks has apparently \
+         closed: a parent-level consumer `let` over a cluster-solved \
+         cross-sub cell now materialises post-solve. That needs a \
+         reviewed design change (re-enable the parent aggregate as \
+         BT-5(ii)'s preferred cost cell, update the example header's \
+         \"Reading the result\" section), not a silent edit to this \
+         assertion.",
     );
 
     // ---- LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
     // above are not silently reading a dead or empty map. This is also what
-    // keeps `scalar_si_opt` alive now that BT-5(ii) no longer is its only
-    // caller. ----
+    // keeps `scalar_si_opt` alive now that BT-5(ii) no longer calls it at
+    // all. ----
     assert!(
         scalar_si_opt(&merged, &ValueCellId::new("Rivet", "line_cost")).is_some(),
         "fixture integrity: `Rivet.line_cost` must resolve in the merged eval \
