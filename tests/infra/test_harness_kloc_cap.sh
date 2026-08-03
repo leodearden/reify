@@ -1534,4 +1534,45 @@ assert "8: a non-crates/ orphan row reports crate=- rather than a garbled crate"
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=not/a/crate/path\.rs reason=orphan-baseline-row$' \
         "$_s8_shape_out"
 
+# --- LIVE scan over the real checked-in baseline. Uses the already-resolved
+#     $BASELINE (from harness_layout_baseline_path), so the
+#     REIFY_HARNESS_LAYOUT_BASELINE override is honored identically to the rest
+#     of this guard. ---
+_s8_live_out="$(mktemp)"; _TMPDIRS+=("$_s8_live_out")
+_s8_live_rc=0
+harness_layout_orphan_rows "$REPO_ROOT" "$BASELINE" \
+    > "$_s8_live_out" 2>/dev/null || _s8_live_rc=$?
+
+# Offender lines to the archived log on failure (the Section 5 idiom, gated on
+# failure so a clean run's output stays byte-for-byte unchanged). Not cosmetic:
+# `assert` only dumps the stdout of the `test ...` checker it invokes, which is
+# always empty, so without this a failing live scan's own `file=<row>` lines
+# would never reach the archived merge-verify log — the 2026-07-20 incident the
+# Section 5 comment records.
+if [ "$_s8_live_rc" -ne 0 ]; then
+    echo "  ---- Section 8: live orphan-row scan output (printed on failure) ----"
+    cat "$_s8_live_out"
+    echo "  ---- Section 8: end live scan output ----"
+fi
+
+assert "8: live baseline has no orphan rows (every row names a file that exists on disk)" \
+    test "$_s8_live_rc" -eq 0
+# Pins the live grammar WITHOUT pinning a row count — see the note below.
+assert "8: live orphan scan emits a structured PASS line carrying the data-row count" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-rows rows=[0-9]+$' "$_s8_live_out"
+
+# DELIBERATELY NO `rows >= N` NON-VACUITY FLOOR HERE, unlike Section 6's
+# `>= 13 harness roots` and Section 7's `>= 300 stems`. The analogy is tempting
+# and it is a landmine: this file's own header states the baseline is "a RATCHET,
+# not a permanent allow-list" and that "shrinking toward empty == consolidation
+# progress". A `rows >= N` floor would therefore RED the merge gate as a REWARD
+# for FINISHING the consolidation (#5693-#5696) that this very guard exists to
+# protect — invisible today at ~495 rows, firing only at the finish line.
+#
+# Non-vacuity comes instead from Section 8's own must-fire fixture above, which
+# proves the detector is wired and DOES fire on a synthetic orphan. That is the
+# posture Section 3b takes for missing-tests-dir, not Section 6/7's. The live
+# PASS line still carries `rows=<n>` for observability, matched by `[0-9]+`
+# rather than asserted against a value.
+
 test_summary
