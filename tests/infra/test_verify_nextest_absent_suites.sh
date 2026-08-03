@@ -307,7 +307,9 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 # HEAD=1c039a8232, 65 → 85, after that task added 20 asserts covering the
 # causal PSI-fixture updater; the occt_gated_scope row RE-MEASURED at task/5984
 # HEAD=13ee715628, 48 → 57 nextest-less and 49 → 58 ambient, after that task
-# added 9 asserts covering the global [profile.default] test-threads pool cap).
+# added 9 asserts covering the global [profile.default] test-threads pool cap,
+# then RE-MEASURED AGAIN in task 5984's REVIEW-AMENDMENT pass, 57 → 59
+# nextest-less and 58 → 60 ambient, after 2 further asserts — Tests 17j/17k).
 # See _suite_is_clean_without_nextest for why a bare
 # "0 failed" is not sufficient. Where the floor is BELOW the suite's ambient
 # nextest-ful count, the difference is the asserts deliberately guarded away
@@ -335,7 +337,7 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #   failfast_order    40 nextest-less /  40 ambient (2 recovered by widening,
 #                                                    both halves of each
 #                                                    compound assert)
-#   occt_gated_scope  57 nextest-less /  58 ambient (1 guarded: Test 9's
+#   occt_gated_scope  59 nextest-less /  60 ambient (1 guarded: Test 9's
 #                                                    --config-file assert is
 #                                                    genuinely nextest-only.
 #                                                    Otherwise already clean —
@@ -345,15 +347,23 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #                                                    5984, which added 9 asserts
 #                                                    (Tests 17a-17i) for the
 #                                                    global [profile.default]
-#                                                    test-threads pool cap. All
-#                                                    9 are pure bash/sed/awk
+#                                                    test-threads pool cap, and
+#                                                    again from 57/58 by that
+#                                                    task's REVIEW-AMENDMENT
+#                                                    pass, which added 2 more
+#                                                    (17j: the >=1 clamp on the
+#                                                    explicit-override branch;
+#                                                    17k: uniqueness of the
+#                                                    test-threads sed anchor).
+#                                                    All 11 are pure bash/sed/awk
 #                                                    over .config/nextest.toml
 #                                                    and gen-nextest-config.sh
 #                                                    output, invoking neither
 #                                                    cargo nor nextest, so both
-#                                                    counts rose by the same 9
+#                                                    counts rose by the same 11
 #                                                    and the 1-assert delta is
-#                                                    UNCHANGED)
+#                                                    UNCHANGED — re-measured, not
+#                                                    computed, at each re-pin)
 #   release_mode       9 nextest-less /   9 ambient (already clean — the
 #                                                    alternation was already
 #                                                    used throughout)
@@ -369,12 +379,15 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #                                                    in this suite)
 #
 # DATA-DRIVEN FLOORS. Not every floor is a fixed constant, and a drop below one
-# is not automatically a defect. occt_gated_scope's 57 = 42 fixed asserts + 15
+# is not automatically a defect. occt_gated_scope's 59 = 44 fixed asserts + 15
 # per-crate asserts driven by scripts/occt-touching-crates.txt (5 declared
 # crates x 3 loops: workspace-membership, nextest.toml package() filter, and
 # the no---exclude check). Only the FIXED half moved when task 5984 raised this
 # row from 48 to 57 (33 -> 42): its 9 asserts are all fixed, adding no per-crate
-# loop, so the data-driven 15 is unchanged. Legitimately REMOVING a crate from that manifest
+# loop, so the data-driven 15 is unchanged. Only the FIXED half moved again in
+# that task's review-amendment pass, 57 to 59 (42 -> 44): Tests 17j/17k are two
+# more fixed asserts, likewise adding no per-crate loop, so the data-driven 15
+# is STILL 15. Legitimately REMOVING a crate from that manifest
 # drops this suite's count by 3 and trips S7 with a "COVERAGE SHRANK" message
 # whose (a) branch does not apply — re-pin the floor here with the new split
 # rather than hunting for a nextest guard that does not exist. The other eight
@@ -443,8 +456,8 @@ assert "S6: test_verify_failfast_order.sh reaches test_summary with rc=0 / 0 FAI
 # The residual limitation stands, though: if you must guard an assert, guard it
 # OUTSIDE the assert call. Same reasoning as _suite_is_clean_without_nextest's
 # own "WHY THE FLOOR" note.
-assert "S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 57 passed on a nextest-less host" \
-    _suite_is_clean_without_nextest test_occt_gated_scope.sh 57
+assert "S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 59 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_occt_gated_scope.sh 59
 
 assert "S8: test_release_mode_in_test_command.sh reaches test_summary with rc=0 / 0 FAIL / >= 9 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_release_mode_in_test_command.sh 9

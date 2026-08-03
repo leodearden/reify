@@ -619,6 +619,10 @@ assert "nextest.toml: [profile.default] has test-threads = 16 (sed-template fall
 # Test 17b: that value is a non-empty positive integer >= 1.  nextest treats an
 # absent key as unbounded (= logical CPU count), so this pins that the in-file
 # fallback actually BOUNDS the pool rather than merely being present.
+# NOTE the two zero-ish cases are NOT the same failure and must not be conflated:
+# an ABSENT key silently defaults to the CPU count (fail-open), whereas an
+# explicit `test-threads = 0` is REJECTED by nextest 0.9.136 as an invalid config
+# (fail-closed — see Test 17g).  This assert excludes both.
 assert "nextest.toml: [profile.default] test-threads is a non-empty positive integer >= 1 (fallback actually bounds the pool)" \
     bash -c "
         val=\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')
@@ -645,6 +649,15 @@ assert "nextest.toml: [profile.default] test-threads is a non-empty positive int
 # making the "cap" actively harmful.  REIFY_OCCT_NPROC is injected in every case
 # below so each expectation is an exact integer on ANY host (Tests 13a-15b form).
 # Compile-free: no cargo, no nextest, no workspace compile (task 4613).
+#
+# HERMETICITY (required form — copy this, not a shorter one): every case that
+# asserts an EXACT derived value must clear BOTH global-pool knobs, i.e.
+#   env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP
+# unless it is itself setting that knob.  HARD_CAP is a supported tuning point,
+# so an operator or CI job may legitimately have it exported; clearing only
+# REIFY_NEXTEST_TEST_THREADS leaves 17d/17e resolving to the ambient ceiling
+# (e.g. 4) and failing spuriously in that shell.  17h/17i already used the full
+# form; 17d/17e were widened to match in the task-5984 review pass.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Tests 17c-17e (task 5984): host-relative derivation of the global test-threads cap ---"
@@ -665,7 +678,9 @@ assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=5: [profile.default] te
 # RED against step-2: stays 16.
 assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads resolves to 8 (nproc binds, no 2x oversubscription)" \
     bash -c "
-        cfg=\$(REIFY_OCCT_NPROC=8 env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        cfg=\$(REIFY_OCCT_NPROC=8 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash \"${GEN_CFG}\")
         val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
         rm -f \"\$cfg\"
         [ \"\$val\" = \"8\" ]
@@ -677,7 +692,9 @@ assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads
 # anchor that pins the ceiling once 17d forces a real derivation.
 assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profile.default] test-threads resolves to 16 (HARD_CAP binds)" \
     bash -c "
-        cfg=\$(REIFY_OCCT_NPROC=32 env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        cfg=\$(REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash \"${GEN_CFG}\")
         val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
         rm -f \"\$cfg\"
         [ \"\$val\" = \"16\" ]
@@ -692,10 +709,19 @@ assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profil
 #   bound; without this assert a regression in that parse silently produces 16
 #   and nothing notices.
 # 17g pins the zero-clamp.  `0` is digits-only-VALID, so it passes the parse
-#   guard and would otherwise reach the config as `test-threads = 0` — which
-#   nextest reads as unbounded, i.e. the exact failure this whole task exists to
-#   prevent, reached by setting the cap knob.  Same "arithmetically valid,
-#   semantically nonsensical" defence the occt ram_bound already carries.
+#   guard and would otherwise reach the config as `test-threads = 0`.
+#   VERIFIED on cargo-nextest 0.9.136 (scratch crate, task-5984 review pass):
+#   nextest REJECTS that value rather than treating it as unbounded —
+#     error: failed to parse nextest config at `.../nextest.toml`
+#     Caused by: profile.default.test-threads: invalid value: integer `0`,
+#                expected an integer or the string "num-cpus"
+#   and exits 96.  So the unclamped failure mode is fail-CLOSED: every nextest
+#   pass on the host aborts before running a test — a verify OUTAGE, not the
+#   silently-uncapped pool an earlier draft of this comment claimed.  (Reason
+#   from the verified behaviour, not that inverted claim: an unclamped 0 is not
+#   merely a perf problem.)  Same "arithmetically valid, semantically
+#   nonsensical" defence the occt ram_bound already carries, and the identical
+#   nextest rejection it cites for `max-threads = 0`.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Tests 17f-17g (task 5984): global-cap HARD_CAP knob and >=1 clamp ---"
@@ -713,8 +739,10 @@ assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4/NPROC=32: [p
     "
 
 # Test 17g: REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 with NPROC=32 -> 1, never 0.
+#   Drives the clamp via the DERIVE branch; Test 17j drives the same clamp via
+#   the explicit-override branch.
 #   RED against step-4, which has no clamp.
-assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0/NPROC=32: [profile.default] test-threads = 1 (clamped, never 0 = unbounded)" \
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0/NPROC=32: [profile.default] test-threads = 1 (clamped, never 0 = invalid config nextest rejects)" \
     bash -c "
         cfg=\$(REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 REIFY_OCCT_NPROC=32 \
               env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
@@ -775,6 +803,70 @@ assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): generated 
         oc=\$(awk '${_OCCT_AWK}' \"\$cfg\")
         rm -f \"\$cfg\"
         [ -n \"\$tt\" ] && [ -n \"\$oc\" ] && [ \"\$tt\" -lt \"\$oc\" ]
+    "
+
+# ---------------------------------------------------------------------------
+# Tests 17j-17k (task 5984, REVIEW-AMENDMENT pass): the two gaps a reviewer
+# found in the 17a-17i block above.  Appended rather than interleaved so the
+# existing letters keep their meaning in the commit history and in the S7
+# accounting table; each cross-references the test it belongs beside.
+#
+# 17j closes a CLAMP-BRANCH coverage gap next to Test 17g.
+# 17k turns gen-nextest-config.sh's PROSE uniqueness claim about its sed anchor
+#   into a checked invariant.
+# Both are compile-free (bash/sed/awk only), so they raise the nextest-less and
+# ambient S7 counts by the same amount.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17j-17k (task 5984 review amendment): clamp covers BOTH branches; sed anchor is unique ---"
+
+# Test 17j (sibling of 17g — the OTHER branch into the same clamp):
+# the >=1 clamp in gen-nextest-config.sh sits AFTER the
+# `case "${REIFY_NEXTEST_TEST_THREADS:-}"` block, so it guards the
+# explicit-override branch (tt=$(( 10#${REIFY_NEXTEST_TEST_THREADS} ))) as well
+# as the derive branch that 17g exercises.  REIFY_NEXTEST_TEST_THREADS=0 is
+# equally digits-only-VALID and equally reachable, but reaches the clamp by a
+# DIFFERENT code path.
+#
+# Why this assert is not redundant with 17g: a natural-looking tidy-up that
+# moves the clamp inside the derive branch (where its explanatory comment sits)
+# leaves 17g GREEN while REIFY_NEXTEST_TEST_THREADS=0 emits `test-threads = 0`
+# and aborts every nextest pass with the config parse error quoted at 17g.
+# Falsifiability checked by mutation, not assumed: moving the clamp into the
+# derive branch fails THIS assert and only this one.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=0/NPROC=32: [profile.default] test-threads = 1 (the >=1 clamp also covers the EXPLICIT-OVERRIDE branch, not just the derive branch 17g drives)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS=0 REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"1\" ]
+    "
+
+# Test 17k (the sed anchor's unstated precondition, made explicit):
+# gen-nextest-config.sh rewrites the global cap with a LINE-anchored but NOT
+# section-anchored substitution:
+#     sed -e "s/^test-threads = [0-9][0-9]*\$/test-threads = \${tt}/"
+# The occt anchor next to it is safe because `occt = { max-threads = N }` is
+# unique by key NAME.  `test-threads` is NOT: it is a generic nextest PROFILE
+# key that a future [profile.ci] / [profile.offline] table could legitimately
+# carry with a deliberately different value.  A second such line would be
+# rewritten to the SAME host-derived value, silently clobbering that profile's
+# setting.
+#
+# Assertion I in tests/infra/test_nextest_slow_priority.sh cannot catch this:
+# its extractor is section-scoped to [profile.default] and would report the
+# correctly-rewritten default while the other profile was quietly overwritten.
+# The script's comment asserts uniqueness in prose; this assert is what makes
+# the claim CHECKED, so adding a second profile turns a silent clobber into a
+# loud CI failure that forces the sed to be made section-aware first.
+#
+# Counted on the SOURCE .config/nextest.toml (the sed template), which is what
+# the anchor is matched against.
+assert "nextest.toml: exactly ONE line matches gen-nextest-config.sh's '^test-threads = <int>\$' sed anchor (uniqueness precondition of the non-section-scoped substitution — a second profile's test-threads would be silently clobbered)" \
+    bash -c "
+        n=\$(grep -c '^test-threads = [0-9][0-9]*\$' '$NEXTEST_TOML' || true)
+        [ \"\$n\" = \"1\" ]
     "
 
 test_summary

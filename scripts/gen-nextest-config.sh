@@ -46,7 +46,16 @@
 #   nproc:     the SAME resolved host CPU count as above.
 #
 #   The result is clamped to >= 1: HARD_CAP=0 is digits-only-VALID and would
-#   otherwise emit `test-threads = 0`, which nextest reads as UNBOUNDED.
+#   otherwise emit `test-threads = 0`, which nextest 0.9.136 REJECTS outright:
+#     error: failed to parse nextest config at `...`
+#     Caused by: profile.default.test-threads: invalid value: integer `0`,
+#                expected an integer or the string "num-cpus"
+#   (exit 96; re-verified in a scratch crate during the task-5984 review pass).
+#   So the unclamped failure mode is fail-CLOSED — a hard config parse error
+#   that aborts EVERY nextest pass on the host, i.e. a verify outage, not the
+#   silently-uncapped pool an earlier draft of this comment claimed.  Same
+#   direction as the occt ram_bound clamp below, which cites the identical
+#   nextest behaviour for `max-threads = 0`.
 #
 #   NO RAM TERM — deliberate, and asymmetric with the occt cap ON PURPOSE.
 #   This cap's justification is CPU-share symmetry and runqueue depth, not RSS:
@@ -224,10 +233,30 @@ case "${REIFY_NEXTEST_TEST_THREADS:-}" in
         ;;
 esac
 
-# Clamp to minimum 1.  HARD_CAP=0 is digits-only-VALID, so it passes the parse
-# guard above and would otherwise emit `test-threads = 0` — which nextest reads
-# as UNBOUNDED, i.e. exactly the uncapped pool this cap exists to prevent,
-# reached via the cap knob itself.  Same defence the occt ram_bound carries.
+# Clamp to minimum 1.  `0` is digits-only-VALID, so it passes the parse guards
+# above on BOTH branches — REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 (derive branch)
+# and REIFY_NEXTEST_TEST_THREADS=0 (explicit-override branch) — and would
+# otherwise emit `test-threads = 0`.
+#
+# VERIFIED on cargo-nextest 0.9.136 (scratch crate, task-5984 review pass):
+# nextest REJECTS that value rather than treating it as unbounded —
+#   error: failed to parse nextest config at `.../nextest.toml`
+#   Caused by: profile.default.test-threads: invalid value: integer `0`,
+#              expected an integer or the string "num-cpus"
+# and exits 96.  The unclamped failure mode is therefore fail-CLOSED: every
+# nextest pass on the host aborts before running a single test — a verify
+# outage, NOT the silently-uncapped pool an earlier draft of this comment
+# asserted.  Do not reason from that inverted claim; the clamp is load-bearing
+# for availability, not merely for concurrency hygiene.
+#
+# This clamp is deliberately placed AFTER the case above so it covers both
+# branches.  Do not "tidy" it into the derive branch (where its sibling comment
+# sits): that would leave REIFY_NEXTEST_TEST_THREADS=0 reaching the config
+# unclamped.  Test 17j in tests/infra/test_occt_gated_scope.sh pins the
+# explicit-override branch specifically, so such a move fails CI.
+#
+# Same defence the occt ram_bound carries above, which cites the identical
+# nextest rejection for `max-threads = 0`.
 if [ "$tt" -lt 1 ]; then tt=1; fi
 
 # Create a fresh temp file.  Template ends in X's (do NOT combine --suffix with
@@ -241,8 +270,21 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 # per-test slow-timeout/terminate-after ceilings, task 5141) and every other
 # [profile.default] key is untouched.
 #
-# `^test-threads = [0-9][0-9]*$` (task 5984) is unique in the file — the
-# overrides blocks carry no such key.
+# `^test-threads = [0-9][0-9]*$` (task 5984) is LINE-anchored but NOT
+# section-anchored, and is correct only while exactly one line in the file
+# matches it.  Unlike the occt anchor — safe because `occt = { max-threads = N }`
+# is unique by key NAME — `test-threads` is a generic nextest PROFILE key: a
+# future [profile.ci] or [profile.offline] table could legitimately carry its
+# own, and this single sed would rewrite BOTH to the same host-derived value,
+# silently clobbering the second profile's deliberate setting.  The current
+# [[profile.default.overrides]] blocks carry no such key, so the precondition
+# holds today.
+#
+# That precondition is CHECKED, not merely asserted here: Test 17k in
+# tests/infra/test_occt_gated_scope.sh pins that exactly one line matches this
+# anchor.  Adding a second profile with its own test-threads therefore fails CI
+# loudly and forces this substitution to be made section-aware (e.g. an awk pass
+# scoped to the [profile.default] table) BEFORE the clobber can ship.
 #
 # Both forms fail SAFE: if a future edit breaks an anchor the substitution
 # silently no-ops and the generated config keeps that line's in-file literal —
