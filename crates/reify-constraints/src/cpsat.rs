@@ -253,3 +253,155 @@ impl ConstraintSolver for CpSatSolver {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// LAYER 3 remainder — the CP-SAT forward-check has no per-trial dependent-cell
+// fold (task #5467 / PRD2 α, §3 decision 9, step-10 RED).
+//
+// `backtrack` computes `auto_refs = refs ∩ auto_param_ids`. For a constraint
+// that reads ONLY a dependent cell that set is EMPTY, so `all_assigned` is
+// VACUOUSLY true and the constraint IS evaluated — against the stale/absent
+// base value of that cell. `eval_expr` returns a non-`Bool`, the
+// `_ => // Indeterminate — skip (don't prune)` arm fires, and nothing is ever
+// pruned. `solve` therefore returns the FIRST domain value regardless, and
+// `build_variable_domain` yields `[Bool(true), Bool(false)]` for `Type::Bool`,
+// so "first" is deterministically `true`.
+//
+// CP-SAT is landed-but-unwired (unreachable in production until PRD2 γ), so
+// these units are the ONLY behavioural pin on this half — they assert the
+// WRONG VALUE loudly rather than merely "did not panic".
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod dependent_cell_fold_tests {
+    use super::*;
+    use reify_ir::{ObjectiveSet, UnOp};
+    use std::sync::Arc;
+
+    fn bool_auto(member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Bool,
+            bounds: None,
+            free: true,
+        }
+    }
+
+    fn bref(member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Bool)
+    }
+
+    fn not(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::unop(UnOp::Not, e, Type::Bool)
+    }
+
+    fn eq_true(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Eq,
+            e,
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        )
+    }
+
+    fn problem(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: ValueMap::new(),
+            objective: None::<ObjectiveSet>,
+            functions: Arc::from(Vec::new()),
+            dependent_cells,
+        }
+    }
+
+    /// The solved value of `S.<member>`, or a panic naming what actually came
+    /// back — an unpruned search reports `Solved`/`unique: true` with the WRONG
+    /// value, so a test that only checked the variant would pass on the bug.
+    fn solved_value(result: &SolveResult, member: &str) -> Value {
+        match result {
+            SolveResult::Solved { values, .. } => values
+                .get(&ValueCellId::new("S", member))
+                .unwrap_or_else(|| {
+                    panic!("no solved value for S.{member}; got values {values:?}")
+                })
+                .clone(),
+            other => panic!("expected SolveResult::Solved for S.{member}; got {other:?}"),
+        }
+    }
+
+    /// (a) LET-INDIRECTED PRUNING — a constraint reading ONLY a dependent cell
+    /// must still prune the domain of the auto that cell is derived from.
+    ///
+    /// `let f = not(up)`, `constraint f == true`. The unique satisfying
+    /// assignment is `up = false`.
+    ///
+    /// RED today: `backtrack` never materialises `S.f`, so `eval_expr` sees an
+    /// absent cell, returns a non-`Bool`, takes the skip-don't-prune arm, and
+    /// `solve` hands back the first domain value `Bool(true)` — reported as
+    /// `Solved` with `unique: true`, i.e. SILENTLY WRONG rather than loudly
+    /// unsolved.
+    #[test]
+    fn a_constraint_reading_only_a_dependent_cell_prunes_the_auto_it_derives_from() {
+        let p = problem(
+            vec![bool_auto("up")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("f")))],
+            vec![(ValueCellId::new("S", "f"), not(bref("up")))],
+        );
+
+        let got = solved_value(&CpSatSolver.solve(&p), "up");
+
+        assert_eq!(
+            got,
+            Value::Bool(false),
+            "`constraint f == true` over `let f = not(up)` is satisfied ONLY by \
+             up = false. Without a per-trial fold of `dependent_cells`, the \
+             forward-check evaluates the constraint against an absent `S.f`, \
+             takes the skip-don't-prune arm, and returns the FIRST domain \
+             value (`true`) as a `Solved`/`unique` answer",
+        );
+    }
+
+    /// (b) D1/B2 IDENTITY, negative half — the SAME logical problem written
+    /// with the auto read DIRECTLY and an EMPTY `dependent_cells` still solves
+    /// to `up = false`.
+    #[test]
+    fn a_direct_constraint_with_no_dependent_cells_still_prunes_to_false() {
+        let p = problem(
+            vec![bool_auto("up")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(not(bref("up"))))],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&p), "up"),
+            Value::Bool(false),
+            "`constraint not(up) == true` reads the auto DIRECTLY, so it prunes \
+             today and must keep pruning — the fold must not perturb the \
+             empty-`dependent_cells` path",
+        );
+    }
+
+    /// (b) D1/B2 IDENTITY, positive half — a direct-only problem whose answer
+    /// is `true` still returns `true`.
+    ///
+    /// Paired with the negative half deliberately: alone, either one could pass
+    /// on a solver that always returned the first domain value.
+    #[test]
+    fn a_direct_constraint_with_no_dependent_cells_still_solves_to_true() {
+        let p = problem(
+            vec![bool_auto("up")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("up")))],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&p), "up"),
+            Value::Bool(true),
+            "`constraint up == true` is satisfied only by up = true",
+        );
+    }
+}
