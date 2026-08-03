@@ -347,10 +347,8 @@ cpu_governance:
   # defaults (cross-checked by tests/infra/test_fleet_load_detector.sh Block I,
   # kept self-contained rather than enlarging test_cpu_governance_config.sh).
   # A second knob, avg10_threshold (a PSI `some avg10 >= 80` arm), lived here
-  # and was DROPPED by task 5985: avg10 never discriminated load regimes on
-  # this host — the whole distribution slides upward with load rather than
-  # spreading out, so the 80 ceiling never fired and no retuned value behaves
-  # sensibly — while the ratio arm alone separates the same regimes ~3x. Block
+  # and was DROPPED by task 5985 — rationale and supporting measurements in the
+  # scripts/fleet-load-detector.sh header, which is the canonical record. Block
   # I now pins that key's ABSENCE, so reintroducing it here fails the suite.
   # `enabled` is DF-consumed (not grep-checked against a reify script, exactly
   # like DF_AGENT_CPU_GOVERN above) — dark-factory L3b (out of scope for reify;

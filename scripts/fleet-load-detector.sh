@@ -47,17 +47,37 @@
 #
 # A second axis — PSI `some avg10 >= 80`, read from /proc/pressure/cpu — used to
 # sit beside the ratio arm here. Task 5985 DROPPED it (deliberately: dropped,
-# not retuned), adopting dark_factory:3590's recommended disposition. Evidence:
+# not retuned), adopting dark_factory:3590's recommended disposition.
+#
+# THIS PARAGRAPH IS THE CANONICAL RECORD of that decision — this file is the
+# artifact that implements it. dark-factory-orchestrator.yaml and
+# tests/infra/test_fleet_load_detector.sh carry one-line pointers here rather
+# than their own copies of the numbers, so a future retune updates the evidence
+# in exactly one place instead of leaving two stale copies behind.
+#
+# Evidence:
 # two 1 Hz samples three days apart show CPU PSI `some avg10` does not
 # discriminate load regimes on this 32-core host. At load ~85 the distribution
 # was min 5.5 / med 46.3 / p90 60.8 / max 68.9; at load ~190 it was min 62.2 /
 # med 66.8 / p90 71.2 / max 74.1 — the WHOLE distribution slides upward with
-# load (~1.4x separation) rather than spreading out. The observed maximum
-# across both samples is 74.1, so the 80 ceiling has never fired and cannot;
-# and retuning would mean picking a value in the 70-75 band, which sits inside
-# a merely-busy host's normal operating range and would make the detector fire
-# ~always. The load1/nproc arm separates the same two regimes ~3x (2.4x cores
-# quiet, 7.1x cores busy) and was already doing all the real work.
+# load (~1.4x separation) rather than spreading out, and the two ranges OVERLAP
+# (the quiet sample's max, 68.9, exceeds the busy sample's min, 62.2), so no
+# threshold cleanly separates the regimes. The observed maximum across both
+# samples is 74.1, so the 80 ceiling has never fired and cannot; and retuning
+# would mean picking from the 70-75 band, which lies entirely in the top decile
+# of an ALREADY-saturated host — at 70 the gate engages on ~13.5% of busy ticks
+# and 0% of quiet ones, and by 75 it is inert on both. A 5-point window whose
+# useful end discriminates only the worst tenth of a bad day is not a signal
+# worth carrying. The load1/nproc arm separates the same two regimes ~3x (2.4x
+# cores quiet, 7.1x cores busy) and was already doing all the real work.
+#
+# (Those engagement fractions are measured, from the same two samples; the full
+# per-threshold table is in dark-factory-orchestrator.yaml's PsiAdmissionConfig
+# comment. That gate reads the SAME signal and retuned to 70 rather than
+# dropping it — not a contradiction: a per-dispatch admission gate is USEFUL
+# when it engages on the worst tenth of a busy day, whereas a fleet monitor
+# that only speaks then, and never on a merely-loaded host, adds nothing the
+# ratio arm does not already say sooner.)
 #
 # This SUPERSEDES docs/prds/cpu-load-admission-control.md §G6's dual-axis
 # rationale FOR THIS DETECTOR ONLY. §G6's PSI-over-loadavg argument still
@@ -67,6 +87,15 @@
 # The ratio arm's threshold (4.0) and semantics are UNCHANGED by 5985, so
 # dark_factory:3590's `PsiAdmissionConfig.runqueue_ratio` default of 4.0 —
 # added specifically to mirror this arm — needs NO follow-up change.
+#
+# The VERDICT LINE did change, though, and a DF-side parser must expect the
+# narrowed shape: 5985 removed the `avg10=` and `avg10_threshold=` fields from
+# both output channels (stdout line + @@REIFY_FLEET_OVERSUBSCRIBED@@ marker),
+# and shrank the `reason=` domain from {ratio,avg10,both,none} to {ratio,none}.
+# No in-repo consumer parses these (a repo-wide grep finds only doc references
+# to the exit-3/marker convention, which is unchanged), so nothing broke here —
+# this is forward-notice for the DF-side L3b consumer, whose invocation is the
+# cross-repo half of this seam and has not landed yet.
 #
 # Fail-open (C-A4 philosophy, mirrors cpu-admit.sh / load_tolerance_lib.sh): an
 # unreadable/unparseable loadavg is treated as ABSENT (not 0-or-huge) and

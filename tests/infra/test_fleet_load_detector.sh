@@ -10,10 +10,10 @@
 # (docs/prds/run-all-pool-contention-tiering-fix.md §9).
 #
 # SINGLE-AXIS since task 5985: the PSI `some avg10 >= 80` arm was DROPPED (not
-# retuned) — avg10 never discriminated load regimes on this host. Block K pins
-# its absence BEHAVIOURALLY (a would-have-fired PSI fixture is inert, the two
-# flags are unknown, neither output channel carries an avg10= field) so the
-# dead arm cannot silently return.
+# retuned) — rationale and supporting measurements in the canonical record, the
+# scripts/fleet-load-detector.sh header. Block K pins the arm's absence through
+# the CLI/env surface and both output channels; Block I (I-B) pins it at the
+# source, which is what catches a reintroduction in a form Block K cannot see.
 #
 # Fully hermetic: env-injected synthetic loadavg-path/nproc; no real
 # /proc reads, no CPU burn. Classified `pool` in run-all-classification.manifest.
@@ -347,14 +347,18 @@ assert "G5: verdict line reports the parsed load1 with an empty nproc/ratio" \
 # deletion of Blocks D/E/G3/G4/H2/H4/J2 would leave nothing that notices the
 # dead arm being reintroduced — the exact failure mode 5985 fixes. These assert
 # the arm's ABSENCE behaviourally (a would-have-fired PSI fixture is inert,
-# both flags are unknown, neither output channel carries an avg10= field),
-# which is stronger and cheaper than grepping the script source.
+# both flags are unknown, neither output channel carries an avg10= field).
 #
-# Rationale for the drop (dark_factory:3590): CPU PSI `some avg10` never
-# discriminated load regimes on this 32-core host — the observed maximum across
-# a load~85 and a load~190 sample was 74.1, so the 80 ceiling has never fired
-# and cannot; the whole distribution slides upward with load (~1.4× separation)
-# rather than spreading out, so no threshold behaves sensibly across both.
+# Behavioural pins are the cheaper and more meaningful half, but NOT the
+# stronger one, and this block used to claim otherwise: every assertion here
+# drives the script through the CLI/env surface 5985 removed, so an arm rebuilt
+# against /proc/pressure/cpu directly passes all of them (verified by patching
+# such an arm in — K1 stayed green). Block I (I-B) carries the source-level
+# pins that close that gap; the two halves are complementary, not redundant.
+#
+# Rationale for the drop (dark_factory:3590) lives in the canonical record, the
+# scripts/fleet-load-detector.sh header — not restated here, so a future retune
+# revises the measurements in one place rather than three.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block K: the PSI avg10 arm is dropped (task 5985) ---"
