@@ -4757,11 +4757,13 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // WHY THE LAST THREE FILES REMAIN — one line each, because "27 short of the
 // corpus" is not a finding and "which three, and whose" is:
 //
-//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references,
-//   - stdlib_ns_qualified_type.ri  ) OWNED BY TASK #5495 (pending; verified at
-//     the time of writing). Its own file list already covers this grammar, the
-//     dedicated reifyGrammarQualifiedRef test, and both of these fixtures. Left
-//     deliberately: duplicating it here would collide with that task.
+//   - stdlib_ns_qualified_expr.ri  ) `pp.Pulley` binding-qualified references.
+//   - stdlib_ns_qualified_type.ri  ) LANDED by #5495 μ, which round 4 named as
+//     the only inheritable work left here. Both are now in the ledger below and
+//     the pinned set moves 327 → 329 of 330. The node shapes the two new
+//     productions must produce — and the controls they must not disturb — are
+//     pinned in reifyGrammarQualifiedRef.test.ts, the file that task owns; this
+//     ledger records only that the two fixtures parse clean.
 //   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
 //     and `param` is not a top-level declaration in tree-sitter's
 //     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
@@ -4771,9 +4773,10 @@ describe('reifyLanguage — fold and indent coverage', () => {
 //     pinned above: the member-position arrow type IS clean, and the top-level
 //     `param` MUST error.
 //
-// So the only inheritable work left in this ledger is #5495's, and it is
-// already assigned. A future round adding a family should extend the arithmetic
-// above rather than start a fresh block.
+// With #5495 landed, the only file this ledger still leaves un-pinned is
+// arrow_type.ri, and it is a deliberate FAIL probe rather than inheritable
+// work. A future round adding a family should extend the arithmetic above
+// rather than start a fresh block.
 //
 // AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
 // reasoning for every change above — why `ekw<>` and not `kw<>`, why the
@@ -4809,8 +4812,8 @@ describe('reifyLanguage — fold and indent coverage', () => {
 // every path below is expected to parse clean, filtered by what still exists
 // on disk. Removals drop out naturally, a genuine regression names the exact
 // file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. #5950 turned that ratchet to 327 of 330; the 327 entries below
-// are now exactly the clean set, so the next gain is #5495's two fixtures.
+// addition here. #5950 turned that ratchet to 327 of 330; #5495 μ took it to
+// 329 of 330, and the 329 entries below are now exactly the clean set.
 const EXPECTED_CLEAN = [
   'examples/ad_hoc_face_selector.ri',
   'examples/affine_tapered_spacer.ri',
@@ -5130,6 +5133,8 @@ const EXPECTED_CLEAN = [
   'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
   'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri',
+  'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
   'tests/prd-gate/fixtures/stdlib_ns_std_nonexistent_import.ri',
   'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
   'tests/prd-gate/fixtures/subbody_objective_ignored.ri',
