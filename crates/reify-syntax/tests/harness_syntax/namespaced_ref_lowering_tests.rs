@@ -167,6 +167,40 @@ fn sub_structure_name_whitespace_is_normalised() {
     assert_eq!(sub.structure_name, "pp.Pulley");
 }
 
+/// Specialization arm with a type-argument tail: `sub h : pp.Pulley<T>`.
+///
+/// THREE-SURFACE PARITY PIN. The specialization arm keeps its own
+/// `optional(field('type_args', …))` slot AFTER the widened `structure_name`
+/// (grammar.js:895), so widening that slot to `namespaced_name` made the
+/// qualified-plus-specialized form parse and lower cleanly — a form neither
+/// surface accepted before μ. The tail belongs to the `sub` arm, NOT to
+/// `namespaced_name` itself: a qualified generic in TYPE position (`param p :
+/// pp.Box<T>`) is still rejected on every surface, and
+/// `qualified_type_lowers_to_dot_joined_named` pins that `type_args` stays
+/// empty there.
+///
+/// Pinned here so the compiler's accepted language is recorded; the matching
+/// grammar-surface pins are `sub_specialization_arm_admits_a_type_arg_tail`
+/// (tree-sitter-reify/tests/qualified_ref_grammar_tests.rs) and the
+/// `sub h : pp.Pulley<T>` case in `reifyGrammarQualifiedRef.test.ts`. The GUI
+/// editor rejecting what the compiler accepts is the silent degradation those
+/// files exist to prevent.
+#[test]
+fn sub_specialization_with_type_args_lowers_dot_joined_structure_name() {
+    let sub = first_sub("structure def S { sub h : pp.Pulley<T> }");
+    assert_eq!(sub.structure_name, "pp.Pulley");
+    assert!(!sub.is_collection);
+    assert_eq!(
+        sub.type_args.len(),
+        1,
+        "the arm's own type_args slot must still bind; got {:?}",
+        sub.type_args
+    );
+    let (arg, arg_args) = as_named(&sub.type_args[0]);
+    assert_eq!(arg, "T");
+    assert!(arg_args.is_empty());
+}
+
 /// Negative control: an unqualified structure name is unchanged.
 #[test]
 fn bare_sub_structure_name_unchanged() {
@@ -269,16 +303,80 @@ fn three_segment_callee_is_rejected_with_a_diagnostic() {
     );
 }
 
-/// The 3-segment rejection must not fabricate a dotted name anywhere in the
-/// lowered AST.
+/// The REAL post-state of a rejected callee: the member is DROPPED, and the
+/// diagnostic points at the callee.
+///
+/// `lower_namespaced_call` returns `None`, `lower_binding_value` propagates it,
+/// and `lower_let` drops the whole member — so the structure ends up with no
+/// members at all. Asserting that is what catches a future change that starts
+/// lowering a fabricated 3-segment name: a `!rendered.contains("a.b.c")` check
+/// alone is vacuous here, because an empty member list cannot contain the
+/// string no matter what the name-joining code does.
 #[test]
-fn three_segment_callee_fabricates_no_dotted_name() {
-    let (decls, _errors) = parse_decls("structure def S { let h = a.b.c() }");
+fn three_segment_callee_drops_the_member_and_spans_the_callee() {
+    let source = "structure def S { let h = a.b.c() }";
+    let (decls, errors) = parse_decls(source);
+
+    let structure = only_structure(&decls);
+    assert!(
+        structure.members.is_empty(),
+        "a rejected callee must drop the enclosing member, not half-build it; got {:?}",
+        structure.members
+    );
+
+    let callee_start = source.find("a.b.c").expect("callee in source") as u32;
+    let callee_end = callee_start + "a.b.c".len() as u32;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.span.start == callee_start && e.span.end == callee_end),
+        "the diagnostic must span the callee `a.b.c` ({callee_start}..{callee_end}); \
+         got {errors:?}"
+    );
+
+    // Secondary guard: no fabricated dotted name reaches the AST.
     let rendered = format!("{decls:?}");
     assert!(
         !rendered.contains("a.b.c"),
         "lowering must not fabricate a 3-segment name; got: {rendered}"
     );
+}
+
+/// A callee object that is not dotted at all still reaches the same guard,
+/// because `member_access.object` is a full `_expression` (grammar.js:1621) —
+/// so `arr[0].g()` reduces to `namespaced_call` with an `index_access` object.
+///
+/// The diagnostic must fit the input: it names the required `binding.Name(...)`
+/// shape and the offending object, and must NOT tell a user who wrote
+/// `arr[0].g()` that "full-path qualification is out of scope" — advice with no
+/// relation to their code. That sentence is reserved for the dotted-path case
+/// pinned above.
+#[test]
+fn non_dotted_callee_object_is_rejected_with_a_fitting_diagnostic() {
+    for source in [
+        "structure def S { let x = arr[0].g() }",
+        "structure def S { let x = f(1).g() }",
+    ] {
+        let (decls, errors) = parse_decls(source);
+        assert!(
+            only_structure(&decls).members.is_empty(),
+            "a rejected callee must drop the enclosing member in `{source}`"
+        );
+        let joined = errors
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("binding.Name("),
+            "the diagnostic must name the required form `binding.Name(...)`; got: {joined}"
+        );
+        assert!(
+            !joined.contains("full-path qualification"),
+            "the full-path sentence must not fire for a non-dotted callee object \
+             in `{source}`; got: {joined}"
+        );
+    }
 }
 
 // ── Expression-position negative controls ───────────────────────────────────

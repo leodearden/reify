@@ -835,11 +835,25 @@ impl<'a> Lowering<'a> {
         }
         let binding = node.child_by_field_name("binding")?;
         let name = node.child_by_field_name("name")?;
-        Some(format!(
-            "{}.{}",
-            self.node_text(binding),
-            self.node_text(name)
-        ))
+        Some(self.dot_join(binding, name))
+    }
+
+    /// The ONE implementation of μ's dot-join, shared by the two rules that
+    /// produce a qualified name — `namespaced_name_text` (type + `sub`
+    /// position, joining `binding`/`name`) and `lower_namespaced_call`
+    /// (expression position, joining the callee's `object`/`member`).
+    ///
+    /// The two CST rules have different field NAMES, so they cannot share a
+    /// single entry point — but the encoding contract the whole of μ rests on
+    /// is this join, and it must not drift between the two halves. Extracted
+    /// for exactly the reason `lower_call_arguments` gives the argument walk
+    /// exactly one implementation.
+    ///
+    /// Joining the two nodes' texts — rather than reading the parent's source
+    /// text — is what normalises interior whitespace, so both `pp . Pulley` and
+    /// `pp . Pulley()` yield exactly `"pp.Pulley"`.
+    fn dot_join(&self, first: tree_sitter::Node, second: tree_sitter::Node) -> String {
+        format!("{}.{}", self.node_text(first), self.node_text(second))
     }
 
     /// Lower a type_expr node to a TypeExpr. Handles bare identifiers, parameterized types,
@@ -884,17 +898,16 @@ impl<'a> Lowering<'a> {
             self.lower_parameterized_type(node)
         } else if node.kind() == "qualified_type" {
             self.lower_qualified_type(node)
-        } else if let Some(dotted) = self.namespaced_name_text(node) {
-            // Un-wrapped `namespaced_name` (e.g. a `sub`'s structure_name node
-            // reached directly rather than through a `type_expr` wrapper).
-            TypeExpr {
-                kind: TypeExprKind::Named {
-                    name: dotted,
-                    type_args: vec![],
-                },
-                span: self.span(node),
-            }
         } else {
+            // NOTE: no un-wrapped `namespaced_name` arm here, deliberately.
+            // `namespaced_name` occurs in exactly two grammar positions: as a
+            // `type_expr` arm (handled above, through the wrapper) and as a
+            // `sub_declaration`'s `structure_name`. The `structure_name` field
+            // has exactly two readers — `lower_sub`, which calls
+            // `namespaced_name_text` on the node itself, and
+            // `lower_match_arm_decl_arm`, which reads it as raw text — so
+            // neither routes a bare `namespaced_name` here. An arm for it would
+            // be unreachable-and-untested code on a hot lowering path.
             // treat as bare identifier
             TypeExpr {
                 kind: TypeExprKind::Named {
@@ -4329,19 +4342,27 @@ impl<'a> Lowering<'a> {
     /// resolution phase (task ν), of which this is the expression-position half.
     ///
     /// The qualifier is joined from the callee's `object`/`member` CST FIELDS
-    /// rather than read as source text, so `pp . Pulley()` normalises to exactly
-    /// `"pp.Pulley"` — identical to `namespaced_name_text`'s treatment of the
-    /// type-position form.
+    /// via the shared `dot_join`, so `pp . Pulley()` normalises to exactly
+    /// `"pp.Pulley"` — the same single implementation `namespaced_name_text`
+    /// uses for the type-position form.
     ///
-    /// **Out-of-scope guard (D-7 / PRD §9).** The grammar's callee is a full
+    /// **Callee-shape guard (D-7 / PRD §9).** The grammar's callee is a full
     /// `member_access` (grammar.js:1609 — an inline `identifier '.' identifier`
-    /// would collide with `member_access` as a reduce-reduce ambiguity), so a
-    /// 3+-segment callee such as `a.b.c()` is syntactically ACCEPTED and reaches
-    /// here. Bare full-path qualification is out of scope for μ, so it is
-    /// rejected at lowering with a specific diagnostic — a better message than
-    /// the anonymous ERROR node it produced before μ, and unchanged in kind
-    /// (`a.b.c()` was an error before μ and still is). The rejection lowers
-    /// nothing, so no fabricated 3-segment name ever reaches the AST.
+    /// would collide with `member_access` as a reduce-reduce ambiguity), and
+    /// `member_access.object` is in turn a full `_expression` (grammar.js:1621).
+    /// So the callee's object is not necessarily a binding identifier: a
+    /// 3+-segment path (`a.b.c()`, object = `member_access`) reaches here, and so
+    /// does any other postfix chain (`arr[0].g()`, object = `index_access`;
+    /// `f(1).g()`, object = `function_call`). Every one of those is rejected at
+    /// lowering, and the diagnostic is worded around what is actually checked —
+    /// the callee must be a simple `binding.Name` — with the μ-scope sentence
+    /// (bare full-path qualification is out of scope) appended ONLY for the
+    /// dotted-path case it describes. Rejection is unchanged in kind: every one
+    /// of these forms was an error before μ and still is, now with a message
+    /// instead of an anonymous ERROR node. The rejection lowers nothing, so no
+    /// fabricated multi-segment name ever reaches the AST — and, since
+    /// `lower_binding_value` propagates the `None`, the enclosing member is
+    /// dropped rather than half-built.
     ///
     /// The call-LESS forms (`pp.Pulley`, `pp.FitClass.Clearance`) are NOT routed
     /// here: they stay `member_access`, indistinguishable from `self.width` at
@@ -4353,20 +4374,27 @@ impl<'a> Lowering<'a> {
         let member = callee.child_by_field_name("member")?;
 
         if object.kind() != "identifier" {
+            let scope_note = if object.kind() == "member_access" {
+                "; bare full-path qualification is out of scope \
+                 (docs/prds/v0_6/stdlib-namespace.md §9)"
+            } else {
+                ""
+            };
             self.push_error(
                 format!(
-                    "unsupported qualified call `{}(...)`: only a two-segment \
-                     `binding.Name(...)` call through an `import ... as binding` alias is \
-                     supported; bare full-path qualification is out of scope \
-                     (docs/prds/v0_6/stdlib-namespace.md §9)",
-                    self.node_text(callee)
+                    "unsupported qualified call `{callee_text}(...)`: the callee of a \
+                     qualified call must be a simple `binding.Name(...)` through an \
+                     `import ... as binding` alias, but `{object_text}` is not a binding \
+                     name{scope_note}",
+                    callee_text = self.node_text(callee),
+                    object_text = self.node_text(object),
                 ),
                 self.span(callee),
             );
             return None;
         }
 
-        let name = format!("{}.{}", self.node_text(object), self.node_text(member));
+        let name = self.dot_join(object, member);
         let (args, arg_names) = self.lower_call_arguments(node);
 
         Some(Expr {
