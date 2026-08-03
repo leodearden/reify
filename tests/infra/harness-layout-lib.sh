@@ -121,6 +121,39 @@ harness_layout_baseline_path() {
     printf '%s\n' "${REIFY_HARNESS_LAYOUT_BASELINE:-$_HARNESS_LAYOUT_LIB_DIR/harness-layout-baseline.manifest}"
 }
 
+# MEMO for the two static data lists (the 5 consolidatable crates, the 7
+# override stems) consumed by harness_layout_in_scope_standalone below.
+# Unlike the baseline-rows MEMO further down, these carry no path/file key —
+# harness_layout_consolidatable_crates and harness_layout_override_stems take
+# no arguments and return a fixed list each — so the memo is just a
+# "populated once" flag plus two associative SETS, loaded from the two
+# printf-only functions on first use and never invalidated: nothing in this
+# tree changes either list mid-shell, so no cache_reset escape hatch is
+# provided (unlike harness_layout_baseline_cache_reset, which exists because
+# a caller CAN rewrite a baseline file in place).
+#
+# WHY: harness_layout_in_scope_standalone is the membership predicate
+# test_harness_kloc_cap.sh's whole-tree scan calls once per candidate file —
+# ~495 times against the live tree — and each call forked TWO process
+# substitutions (one per list) to walk them. Pure fork overhead: both lists
+# are five and seven static strings. Measured in isolation: ~4s for 495 calls
+# un-memoized; the load below runs those two forks exactly once per shell.
+declare -gA _HL_CRATE_SET=()          # crate name         -> 1
+declare -gA _HL_OVERRIDE_STEM_SET=()  # override file stem -> 1
+_HL_STATIC_LOADED=""
+
+_harness_layout_static_load() {
+    [ -z "$_HL_STATIC_LOADED" ] || return 0
+    local _c _o
+    while IFS= read -r _c; do
+        _HL_CRATE_SET["$_c"]=1
+    done < <(harness_layout_consolidatable_crates)
+    while IFS= read -r _o; do
+        _HL_OVERRIDE_STEM_SET["$_o"]=1
+    done < <(harness_layout_override_stems)
+    _HL_STATIC_LOADED=1
+}
+
 # harness_layout_in_scope_standalone <repo-rel-path> — exit 0 iff <repo-rel-path>
 # is an in-scope re-accretion candidate: a TOP-LEVEL crates/<crate>/tests/<base>.rs
 # where <crate> is one of the 5 consolidatable crates, <base> is NOT a
@@ -130,6 +163,9 @@ harness_layout_baseline_path() {
 # check on top separately). The explicit component parse (not just the case
 # glob) rejects nested / multi-segment forms: a bash `case` glob's `*` matches
 # `/`, so `crates/*/tests/*.rs` would otherwise accept crates/c/tests/sub/f.rs.
+# The crate/override membership checks below answer from the MEMO above (an
+# O(1) associative-array lookup) rather than looping the two source functions
+# on every call.
 harness_layout_in_scope_standalone() {
     local path="$1"
     case "$path" in
@@ -148,12 +184,10 @@ harness_layout_in_scope_standalone() {
     esac
     local base="${tail#tests/}"      # <base>.rs
 
+    _harness_layout_static_load
+
     # <crate> must be one of the 5 consolidatable crates.
-    local _c _crate_ok=0
-    while IFS= read -r _c; do
-        if [ "$_c" = "$crate" ]; then _crate_ok=1; break; fi
-    done < <(harness_layout_consolidatable_crates)
-    [ "$_crate_ok" -eq 1 ] || return 1
+    [ -n "${_HL_CRATE_SET["$crate"]:-}" ] || return 1
 
     # A harness_*.rs compile unit is sanctioned by construction.
     case "$base" in
@@ -161,10 +195,8 @@ harness_layout_in_scope_standalone() {
     esac
 
     # An override binary (by stem) is permanently standalone (I1).
-    local _ov _stem="${base%.rs}"
-    while IFS= read -r _ov; do
-        if [ "$_ov" = "$_stem" ]; then return 1; fi
-    done < <(harness_layout_override_stems)
+    local _stem="${base%.rs}"
+    [ -z "${_HL_OVERRIDE_STEM_SET["$_stem"]:-}" ] || return 1
 
     return 0
 }
