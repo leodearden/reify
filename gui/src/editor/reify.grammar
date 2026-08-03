@@ -345,16 +345,40 @@ TypeAnnotation {
   ":" TypeExpr
 }
 
-// Four-way choice transliterated from tree-sitter-reify grammar.js:1064-1140.
+// Five-way choice transliterated from tree-sitter-reify grammar.js:1064-1154.
 // The leading token is unique per alternative — `(` for FunctionType, `Name<`
-// for ParameterizedType, `Name::` for QualifiedType — so no precedence hacks
-// are needed. `auto_type_arg` (`Bearing<auto: Seal>`), which task 5907 left
-// deferred here, is now implemented — see AutoTypeArg below.
+// for ParameterizedType, `Name::` for QualifiedType, `Name.` for
+// NamespacedName — so no precedence hacks are needed. `auto_type_arg`
+// (`Bearing<auto: Seal>`), which task 5907 left deferred here, is now
+// implemented — see AutoTypeArg below.
 TypeExpr {
   FunctionType |
   ParameterizedType |
   QualifiedType |
+  NamespacedName |
   Identifier
+}
+
+// Qualified reference through an import binding: `pp.Pulley`, from
+// `import parts as pp` (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md
+// §3.3 NS-Q1). Transliterated from grammar.js:1150-1154, which uses ONE
+// `namespaced_name` rule for both type position and `sub`'s structure-name
+// slot so the two cannot drift; the same single rule serves both here.
+//
+// Putting it on `TypeExpr` rather than on `TypeAnnotation` is what makes it
+// reachable from every type position at once, `List<pp.Pulley>` included
+// (`TypeArgList → typeArg → TypeExpr`) — pinned in
+// reifyGrammarQualifiedRef.test.ts rather than claimed here.
+//
+// EXACTLY TWO SEGMENTS, and NO `("<" TypeArgList ">")?` tail. Qualified
+// GENERIC types (`pp.Box<T>`) are out of scope for μ, and upstream records
+// (grammar.js:1146-1149) that the tail is the one formulation producing an
+// unresolved LR conflict there. Adding it here would make this grammar accept
+// what neither tree-sitter nor the compiler does — the third-dialect failure
+// the AutoTypeArg note already forbids. The corpus test pins that `pp.Box<T>`
+// still errors, so a later widening has to be deliberate.
+NamespacedName {
+  Identifier "." Identifier
 }
 
 // Arrow / function type: `(T) -> U`, `(A, B) -> C`, `() -> U`
@@ -694,11 +718,35 @@ JointBody {
 // (crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs),
 // never by GUI code — so folding is behaviour-preserving for every consumer
 // here and removes an unresolvable lexer dependency.
+// THE STRUCTURE-NAME SLOT IS NOT A `TypeExpr` in either arm, so widening
+// `TypeExpr` with `NamespacedName` does not reach it — both arms are widened
+// explicitly (see `subInstanceName` / `subSpecializedName` below), exactly as
+// upstream widens all three of its own arms' `structure_name` to
+// `choice($.identifier, $.namespaced_name)` (grammar.js:814, :842, and the
+// specialization arm). `sub p = pp.Pulley()` and `sub p : pp.Pulley` are the
+// two shapes; the collection arm folded into the `:` arm above reaches
+// `List<pp.Pulley>` through `ParameterizedType`.
 SubDeclaration {
   kw<"priv">? kw<"aux">? kw<"sub"> Identifier (
-    "=" Identifier ("<" TypeArgList ">")? ArgList ~where WhereClause? |
-    ":" (ParameterizedType | Identifier) ~where WhereClause? subBody?
+    "=" subInstanceName ("<" TypeArgList ">")? ArgList ~where WhereClause? |
+    ":" subSpecializedName ~where WhereClause? subBody?
   ) PoseClause?
+}
+
+// The two structure-name slots, as NAMED rules rather than inline choices —
+// the same instrument, and for the same measured reason, as `subBody` below.
+// MEASURED: widening both slots inline pushed `SubDeclaration` from 128 to 160
+// expansions and re-tripped lezer-generator's "generating a lot of choices"
+// advisory that naming `subBody` had cleared; naming these two brings it back
+// under the threshold. Lowercase, so neither appears in the tree — the arms'
+// own node names (`NamespacedName`, `ParameterizedType`, `Identifier`) stay
+// exactly what reifyGrammarQualifiedRef.test.ts pins.
+subInstanceName {
+  NamespacedName | Identifier
+}
+
+subSpecializedName {
+  ParameterizedType | NamespacedName | Identifier
 }
 
 // grammar.js:900-920. Accepts both param assignments and ordinary members;
@@ -1311,6 +1359,8 @@ primaryExpression {
   QualifiedAccess |
   InstanceQualifiedAccess |
   TraitMethodCall |
+  // grammar.js:1609 — the `.` twin of TraitMethodCall (task 5495 μ).
+  NamespacedCall |
   ListLiteral |
   SetLiteral |
   MapLiteral |
@@ -1508,6 +1558,33 @@ InstanceQualifiedAccess {
 // choice for the same reason `FunctionCall`'s does: see the note there.
 TraitMethodCall {
   (QualifiedAccess | InstanceQualifiedAccess) !postfix ArgListExpr
+}
+
+// Call through an import binding: `pp.Pulley()`, `pp.compute(1, scale: 2)`
+// (task 5495 μ; PRD docs/prds/v0_6/stdlib-namespace.md §3.3 NS-Q2 / D-7).
+// Structurally the `.` twin of `TraitMethodCall` directly above — a whole
+// qualified access as the callee, the shared `ArgListExpr` as the tail — and
+// it sits on the same `postfix` level for the same reason, so `pp.Pulley`
+// followed by `(` shifts into the call rather than settling as a bare
+// `MemberAccess`. MEASURED: lezer-generator reports zero conflicts, so no `~`
+// ambiguity marker was needed; the separation is the ONE token after the
+// callee, the same one-token parting `InstanceQualifiedAccess` vs
+// `MemberAccess` already rests on.
+//
+// THE CALLEE IS A FULL `MemberAccess`, not an inline `Identifier "." Identifier`
+// — mirroring grammar.js:1609, where the inline form is recorded as colliding
+// with `member_access` as a reduce-reduce ambiguity. Two consequences worth
+// stating because neither is visible from the rule:
+//   • the callee node is IDENTICAL to the call-LESS `pp.Pulley`, which stays a
+//     plain `MemberAccess` here (it is indistinguishable from `self.width` at
+//     parse time), so the resolution phase sees one uniform base on every
+//     surface;
+//   • a 3+-segment callee (`a.b.c()`) is syntactically ACCEPTED. Bare full-path
+//     qualification is out of scope (D-7 / PRD §9) and the compiler rejects it
+//     in LOWERING with a specific diagnostic — so accepting it here is what
+//     keeps the editor from being a stricter third dialect than the compiler.
+NamespacedCall {
+  MemberAccess !postfix ArgListExpr
 }
 
 ParenthesizedExpression {
