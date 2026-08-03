@@ -529,6 +529,33 @@ harness_stale_selector_violations() {
 }
 
 # ---------------------------------------------------------------------------
+# _harness_layout_row_crate <repo-rel-path>
+#
+# Sets the global _HL_ROW_CRATE to the derived `<c>` from a
+# `crates/<c>/...`-rooted <repo-rel-path>, or to `-` for any other shape — the
+# same non-crate-scoped field harness_stale_selector_violations emits above.
+# THE SINGLE DEFINITION of what `crate=` means for a baseline row, shared by
+# harness_layout_orphan_rows and harness_layout_malformed_rows below, so the
+# two baseline-row detectors cannot drift on it.
+#
+# Returns via a global, not stdout: it runs once per baseline row (currently
+# ~495 times per live detector call), and `$(...)` would fork a subshell per
+# row for what is pure string manipulation — the same tradeoff
+# harness-layout-lib.sh's _harness_layout_norm_path documents for the same
+# reason.
+# ---------------------------------------------------------------------------
+_harness_layout_row_crate() {
+    local row="$1" rest
+    _HL_ROW_CRATE="-"
+    case "$row" in
+        crates/*/*)
+            rest="${row#crates/}"
+            _HL_ROW_CRATE="${rest%%/*}"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
 # harness_layout_orphan_rows <root_dir> <baseline_file>
 #
 # The CONVERSE of rule (b): every data row of the grandfather baseline must name
@@ -610,7 +637,7 @@ harness_layout_orphan_rows() {
     fi
 
     local violations=0 rows=0
-    local row crate rest
+    local row crate
 
     # A herestring over the already-materialized rows, NOT a pipe: the loop must
     # not early-close the grep inside harness_layout_baseline_rows (the
@@ -627,18 +654,13 @@ harness_layout_orphan_rows() {
         if [ -e "$root_dir/$row" ]; then
             continue
         fi
-        # Derive the crate from `crates/<crate>/…`. Anything else reports
-        # `crate=-` — the non-crate-scoped field shape
-        # harness_stale_selector_violations already emits — so a malformed row
-        # surfaces loudly instead of being silently skipped or reported with a
-        # garbled crate.
-        crate="-"
-        case "$row" in
-            crates/*/*)
-                rest="${row#crates/}"
-                crate="${rest%%/*}"
-                ;;
-        esac
+        # Derive the crate via the shared helper (harness_layout_malformed_rows
+        # below calls the same one), so a malformed row surfaces loudly
+        # instead of being silently skipped or reported with a garbled crate,
+        # and the two baseline-row detectors cannot drift on what `crate=`
+        # means for a non-`crates/` row.
+        _harness_layout_row_crate "$row"
+        crate="$_HL_ROW_CRATE"
         _emit FAIL "crate=$crate" "file=$row" "reason=orphan-baseline-row"
         violations=$((violations + 1))
     done <<< "$rows_raw"
@@ -647,6 +669,67 @@ harness_layout_orphan_rows() {
         return 1
     fi
     _emit PASS "scan=baseline-rows" "rows=$rows"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# harness_layout_malformed_rows <baseline_file>
+#
+# Every data row of <baseline_file> must itself be a well-formed in-scope
+# standalone (harness_layout_in_scope_standalone) — independent of whether the
+# file it names exists on disk, which is the property
+# harness_layout_orphan_rows above does NOT check (that detector asks only
+# "does this row's file exist?"). A row that is malformed but whose file
+# EXISTS (e.g. `crates/reify-eval/src/foo.rs`, or a nested
+# `crates/reify-eval/tests/sub/dir/x.rs`) passes harness_layout_orphan_rows
+# silently and is structurally unreachable from rule (b)'s detector
+# (harness_layout_violations), which enumerates existing FILES, not baseline
+# ROWS — so it would otherwise drift into the ratchet as dead weight.
+#
+# "Well-formed" is deliberately harness_layout_in_scope_standalone
+# (harness-layout-lib.sh), NOT a locally re-derived
+# `^crates/[^/]+/tests/[^/]+\.rs$`-style regex: that predicate already
+# single-sources exactly this rule — it IS the manifest header's own "WHAT IT
+# LISTS" / "INTENTIONALLY EXCLUDED" claims (the 5 consolidatable crates,
+# top-level only, no harness_*.rs, none of the 7 override stems) — so
+# re-deriving it here would be a second, weaker expression of the same rule
+# (the G7 no-lockstep-duplication concern that lib's own header exists to
+# prevent). The predicate is pure-string (no disk access), which is why this
+# detector — unlike harness_layout_orphan_rows — takes NO <root_dir> argument.
+#
+# Prints one structured FAIL line per malformed row; returns 1 on any.
+# <baseline_file> is parameterized so hermetic fixtures drive it exactly as
+# the live tree does.
+# ---------------------------------------------------------------------------
+harness_layout_malformed_rows() {
+    local baseline_file="$1"
+
+    local rows_raw=""
+    rows_raw="$(harness_layout_baseline_rows "$baseline_file")"
+
+    local violations=0
+    local row crate
+
+    # A herestring over the already-materialized rows, NOT a pipe — same
+    # rationale as harness_layout_orphan_rows above: the violation tally must
+    # survive in THIS shell rather than dying in a pipeline subshell (the
+    # esc-5172-1 SIGPIPE-141 hazard under this script's `set -o pipefail`).
+    # `<<< ""` yields ONE empty line, which the `[ -n "$row" ]` guard below
+    # drops — so an empty baseline counts zero rows, not one.
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        if harness_layout_in_scope_standalone "$row"; then
+            continue
+        fi
+        _harness_layout_row_crate "$row"
+        crate="$_HL_ROW_CRATE"
+        _emit FAIL "crate=$crate" "file=$row" "reason=malformed-baseline-row"
+        violations=$((violations + 1))
+    done <<< "$rows_raw"
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
     return 0
 }
 
