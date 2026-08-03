@@ -361,8 +361,15 @@ echo "--- Block K: the PSI avg10 arm is dropped (task 5985) ---"
 
 # K1: a PSI fixture at avg10=99.00 — comfortably above the OLD 80 ceiling, so
 # it WOULD have flagged oversubscribed — is now completely inert next to a
-# healthy loadavg. This is the load-bearing pin: it fails loudly if the arm
-# ever comes back, whatever form it takes.
+# healthy loadavg.
+#
+# SCOPE, precisely: this proves the OLD ENV SEAM is dead, no more. It injects
+# through REIFY_FLEET_LOAD_PSI_PATH, which the script no longer reads at all,
+# so an arm reintroduced against /proc/pressure/cpu directly (or via a renamed
+# seam) would ignore this fixture, read the REAL host PSI, and sit green on a
+# quiet host — while silently breaking this file's hermeticity property. The
+# load-bearing negatives are K2-K6 (CLI + both output channels) and Block I's
+# source-level pins, which catch a reintroduced arm in ANY form.
 K1_LOADAVG="$(_mk_loadavg 0.50)"
 K1_PSI="$(_mk_psi 99.00)"
 REIFY_FLEET_LOAD_LOADAVG_PATH="$K1_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$K1_PSI" REIFY_FLEET_LOAD_NPROC=32 \
@@ -417,10 +424,13 @@ assert "K6: check --help advertises neither --avg10-threshold nor --psi-path" \
 # Since task 5985 the sub-block declares exactly ONE grep-checked knob
 # (ratio_threshold); the avg10_threshold assertions were inverted into NEGATIVE
 # pins so a reintroduced config knob is caught the same way Block K catches a
-# reintroduced code arm. The negatives are anchored on the declaration form
-# (`avg10_threshold:`) and the `:-` fallback form, NOT on a bare knob-name
-# substring, so the prose that documents the drop in each file's header
-# neither satisfies nor breaks them.
+# reintroduced code arm. (I-B) also carries the SOURCE-level negatives for the
+# dropped arm — no /proc/pressure read, no avg10 quantity — which are what
+# actually catch a reintroduction in a form Block K's CLI/env-driven pins
+# cannot see. All four negatives are anchored on a declaration/fallback form or
+# evaluated against comment-stripped source, NOT on a bare name substring, so
+# the prose documenting the drop in each file's header neither satisfies nor
+# breaks them.
 #
 # The BLOCK ITSELF must stay alive: config_key_census.ignore in
 # dark-factory-orchestrator.yaml lists `cpu_governance.fleet_load_detector`
@@ -450,6 +460,22 @@ assert "avg10_threshold is NOT declared in dark-factory-orchestrator.yaml (dropp
 
 assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD is NOT a :- fallback in scripts/fleet-load-detector.sh" \
     bash -c '! grep -q "REIFY_FLEET_LOAD_AVG10_THRESHOLD:-" "$1"' _ "$SCRIPT"
+
+# SOURCE-LEVEL negatives for the dropped arm — the form-independent complement
+# to Block K. K1-K6 drive the script through its CLI/env surface, so they can
+# only see an arm reintroduced through the SAME seams 5985 removed; an arm
+# rebuilt against /proc/pressure/cpu directly would slip past every one of them
+# (and would silently start reading real host state from a suite that documents
+# itself as hermetic). These two assert the arm's absence in the source instead,
+# so it fails loudly however it comes back.
+#
+# Comment lines are stripped first: each file's header deliberately explains the
+# drop in prose, and that documentation must neither satisfy nor break the pin.
+assert "scripts/fleet-load-detector.sh reads no /proc/pressure source (non-comment)" \
+    bash -c '! grep -vE "^[[:space:]]*#" "$1" | grep -q "/proc/pressure"' _ "$SCRIPT"
+
+assert "scripts/fleet-load-detector.sh computes no avg10 quantity (non-comment)" \
+    bash -c '! grep -vE "^[[:space:]]*#" "$1" | grep -q "avg10"' _ "$SCRIPT"
 
 # (I-A) STRUCTURE + VALUE DRIFT — parse YAML (SKIP if PyYAML unavailable,
 # mirrors test_cpu_governance_config.sh's SKIP guard)
