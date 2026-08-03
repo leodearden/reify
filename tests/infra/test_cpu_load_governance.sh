@@ -1682,6 +1682,18 @@ else
     # /proc/pressure/cpu reading at loadavg 138/32 while reproducing this).
     assert "ROW4-1-QUIET-VACUITY-1: measured false-RED replay (Δmerge=10367459 Δtask=5945387 => share 0.6355 < floor 0.65, host avg10=64.92 >= ceiling=20) => inconclusive (SKIP)" \
         _row4_share_inconclusive 10367459 5945387 300 100 0.10 64.92 20
+
+    # (2) NON-VACUITY CRUX: the SAME sub-floor deltas as (1), but measured on
+    # a QUIET box — the "others quiet" precondition PRD §8 row 4 actually
+    # assumes. A sub-floor share there is a genuine cpu.weight governance
+    # regression, not foreign dilution, so the predicate must report NOT
+    # inconclusive and leave ROW4-1's hard assert reachable to go RED.
+    # Forbids degenerating the guard into an unconditional SKIP.
+    _row4_quiet_vacuity2_rc=0
+    _row4_share_inconclusive 10367459 5945387 300 100 0.10 5.0 20 \
+        || _row4_quiet_vacuity2_rc=$?
+    assert "ROW4-1-QUIET-VACUITY-2: NON-VACUITY CRUX -- same sub-floor share but QUIET box (avg10=5.0 < ceiling=20) => NOT inconclusive (hard assert stays reachable; a real governance regression still goes RED)" \
+        test "$_row4_quiet_vacuity2_rc" -ne 0
 fi
 
 if ! host_supports_governance; then
