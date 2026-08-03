@@ -1272,20 +1272,30 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
         Type::Point { n, quantity } if coords_si.len() == *n => {
             // Reject Point<Int> (and any other unsupported quantity) up
             // front so the result is uniformly Undef rather than a
-            // Point of silently-coerced Reals.
+            // Point of silently-coerced Reals. NOT redundant with
+            // wrap_scalar_coord's own None gate below:
+            // `collect::<Option<Vec<Value>>>()` over an EMPTY iterator
+            // yields `Some(vec![])`, so for `Point { n: 0, quantity: Int }`
+            // with empty `coords_si`, omitting this early return would
+            // produce `Value::Point([])` here instead of `Value::Undef`.
             if !is_supported_scalar_quantity(quantity) {
                 return Value::Undef;
             }
-            let components: Vec<Value> = coords_si
+            coords_si
                 .iter()
                 .map(|&c| wrap_scalar_coord(c, quantity))
-                .collect();
-            Value::Point(components)
+                .collect::<Option<Vec<Value>>>()
+                .map_or(Value::Undef, Value::Point)
         }
-        // 1-D scalar/dimensionless domain: single coord. `Type::Int` is
-        // intentionally NOT in this arm — see doc-comment above.
+        // 1-D scalar/dimensionless domain: single coord. This arm's guard
+        // (`Type::Scalar { .. }`) never matches `Type::Int` — Int falls
+        // through to the outer `_ => Value::Undef` arm below instead. The
+        // `.unwrap_or(Value::Undef)` here is therefore defensive: by
+        // construction `domain_type` is always `Type::Scalar` in this arm,
+        // so `wrap_scalar_coord` (gated by `is_supported_scalar_quantity`)
+        // never actually returns `None` from this call site.
         Type::Scalar { .. } if coords_si.len() == 1 => {
-            wrap_scalar_coord(coords_si[0], domain_type)
+            wrap_scalar_coord(coords_si[0], domain_type).unwrap_or(Value::Undef)
         }
         _ => Value::Undef,
     }
@@ -1304,25 +1314,28 @@ fn is_supported_scalar_quantity(ty: &Type) -> bool {
 
 /// Wrap a single SI coord per a scalar quantity type.
 ///
-/// Contract:
+/// Contract (enforced, not just documented — see task 5996):
+/// - Returns `None` for any `quantity` that is not a supported per-axis
+///   scalar quantity per [`is_supported_scalar_quantity`] — notably
+///   `Type::Int`, for which there is no precise integer round-trip from
+///   `axis_grids`' `f64` storage (see [`wrap_coord_for_domain`] for the
+///   full rationale).
 /// - `Type::Scalar { dimension }` with non-dimensionless `dimension`
-///   → `Value::Scalar { si_value, dimension }`.
-/// - `Type::dimensionless_scalar()` and `Type::Scalar` with dimensionless `dimension`
-///   → `Value::Real(coord_si)`.
+///   → `Some(Value::Scalar { si_value, dimension })`.
+/// - `Type::dimensionless_scalar()` and `Type::Scalar` with dimensionless
+///   `dimension` → `Some(Value::Real(coord_si))`.
 ///
-/// Callers MUST pre-filter `quantity` via [`is_supported_scalar_quantity`]
-/// — passing any other type (e.g. `Type::Int`) hits the catch-all arm
-/// and silently returns `Value::Real`, which is incorrect for the caller's
-/// contract. The `wrap_coord_for_domain` Point arm performs this check.
-/// The 1-D scalar arm only routes `Type::dimensionless_scalar()` / `Type::Scalar` here, so
-/// it is also safe.
-fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Value {
+/// Both call sites in `wrap_coord_for_domain` map `None` to `Value::Undef`.
+fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Option<Value> {
+    if !is_supported_scalar_quantity(quantity) {
+        return None;
+    }
     match quantity {
-        Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(Value::Scalar {
             si_value: coord_si,
             dimension: *dimension,
-        },
-        _ => Value::Real(coord_si),
+        }),
+        _ => Some(Value::Real(coord_si)),
     }
 }
 
