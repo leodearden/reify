@@ -175,8 +175,8 @@ const FEA_CHANNEL_SELECT = '[data-testid="fea-mode-channel-select"]';
  *
  * SCOPE: this ladder covers the channel `<select>` only. Every other control is
  * scoped by `resolveByTestId` below (#5891), which reads the same
- * `data-viewport-id`. The two ladders agree on everything except what an
- * UNSCOPED multi-match means: here it is an ERROR (`selectAmbiguous`), there it
+ * `data-viewport-id`. The two ladders agree on everything except what a
+ * multi-match means: here it is an ERROR (`selectAmbiguous`), there it
  * is first-match plus a reported `viewportId`/`matchCount`. That is not drift —
  * this helper owns exactly one testid, so ambiguity is always a genuine
  * multi-pane request, whereas the generic resolver serves hundreds of testids
@@ -230,7 +230,14 @@ export interface ResolvedByTestId {
   el: Element;
   /** The pane the resolved element actually sits in, or null if it sits in none. */
   viewportId: string | null;
-  /** How many elements the request matched — >1 only ever on an unscoped request. */
+  /**
+   * How many elements the request matched.
+   *
+   * >1 is NOT unique to unscoped requests: a scoped request matches more than
+   * once whenever the same testid repeats INSIDE the named pane. Both cases mean
+   * the same thing — a pane was guessed — so `paneDiagnostics` reports on
+   * `matchCount` alone and never on whether the request carried a `viewportId`.
+   */
   matchCount: number;
 }
 
@@ -248,18 +255,24 @@ export interface ResolvedByTestId {
  *     from a bare `notFound`, which means no such testid exists ANYWHERE).
  *  2. No id → today's document-wide lookup; zero is `notFound`.
  *
- * THE ONE DIVERGENCE from `pickFeaChannelSelect`: an unscoped request matching
- * more than one element stays FIRST-MATCH rather than erroring the way
- * `selectAmbiguous` does. That helper owns exactly one testid, so ambiguity
- * there is always a genuine multi-pane request; this resolver serves the whole
- * app across hundreds of testids, many of which legitimately repeat, so a hard
- * error would break every currently-green caller. Correctness is bought instead
- * by making the guess VISIBLE — see `paneDiagnostics` — not by breaking
- * back-compat. `matchCount` is what callers gate that reporting on.
+ * THE ONE DIVERGENCE from `pickFeaChannelSelect`: a request matching more than
+ * one element stays FIRST-MATCH rather than erroring the way `selectAmbiguous`
+ * does. That helper owns exactly one testid, so ambiguity there is always a
+ * genuine multi-pane request; this resolver serves the whole app across hundreds
+ * of testids, many of which legitimately repeat, so a hard error would break
+ * every currently-green caller. Correctness is bought instead by making the
+ * guess VISIBLE — see `paneDiagnostics` — not by breaking back-compat.
+ * `matchCount` is what callers gate that reporting on.
+ *
+ * That applies to SCOPED requests too, not just unscoped ones: naming a pane
+ * narrows the candidate set but does not guarantee it to one, because the same
+ * testid can repeat inside a single pane. Such a request is first-match and
+ * reports `matchCount` exactly as an unscoped one does.
  *
  * `querySelectorAll` returns a de-duplicated, document-ordered result, so an
- * element matching both arms of the scoped selector list is counted once and
- * `matchCount` stays truthful.
+ * element matching both arms of the scoped selector list is counted once — the
+ * root, which carries `data-testid` and `data-viewport-id` on the SAME node, is
+ * the common case — and `matchCount` stays truthful.
  */
 function resolveByTestId(
   testId: string,
@@ -301,21 +314,29 @@ function resolveByTestId(
  * The fields a handler spreads into its success payload to report a guess (#5891).
  *
  * Returns `{}` — leaving the payload byte-identical to pre-#5891 — unless the
- * request was UNSCOPED and matched more than one element, i.e. exactly the
- * condition under which a pane was guessed. Emitting unconditionally would
- * append keys to responses that existing tests and harness steps compare with
- * `toEqual`, turning a back-compat fix into broad breakage; emitting never would
- * leave the wrong-target failure as silent as it was before this task.
+ * request matched more than one element, i.e. exactly the condition under which
+ * a pane was guessed. Emitting unconditionally would append keys to responses
+ * that existing tests and harness steps compare with `toEqual`, turning a
+ * back-compat fix into broad breakage; emitting never would leave the
+ * wrong-target failure as silent as it was before this task.
  *
- * Kept as ONE function rather than repeating `!scoped && matchCount > 1` in each
- * handler, so the tools that route through `resolveByTestId` cannot drift apart
- * on when they report.
+ * The gate is `matchCount` ALONE — deliberately not `!scoped && matchCount > 1`.
+ * A scoped request that matches twice inside the named pane guessed just as
+ * blindly as an unscoped one that matched two panes; suppressing the report
+ * there would reintroduce, one level down, the exact silence this task exists to
+ * remove. Reporting it breaks no caller: `viewportId` is read off the RESOLVED
+ * element (so it stays meaningful under scoping), and every pre-#5891 caller is
+ * by definition unscoped, so no existing `toEqual` sees a new key it did not
+ * already see.
+ *
+ * Kept as ONE function rather than repeating `matchCount > 1` in each handler,
+ * so the tools that route through `resolveByTestId` cannot drift apart on when
+ * they report.
  */
 function paneDiagnostics(
   r: ResolvedByTestId,
-  scoped: boolean,
 ): { viewportId?: string | null; matchCount?: number } {
-  if (scoped || r.matchCount <= 1) return {};
+  if (r.matchCount <= 1) return {};
   return { viewportId: r.viewportId, matchCount: r.matchCount };
 }
 
@@ -783,7 +804,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         text: el.innerText?.slice(0, 500) ?? '',
         tagName: el.tagName.toLowerCase(),
         bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-        ...paneDiagnostics(r, params.viewportId !== undefined),
+        ...paneDiagnostics(r),
       };
     },
 
@@ -978,7 +999,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       if ('error' in r) return r;
 
       (r.el as HTMLElement).click();
-      return { ok: true, ...paneDiagnostics(r, params.viewportId !== undefined) };
+      return { ok: true, ...paneDiagnostics(r) };
     },
 
     // Select the active FEA scalar channel (e.g. 'errorIndicator') in the FEA-mode
@@ -1145,7 +1166,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       const r = resolveByTestId(testId, params.viewportId);
       if ('error' in r) return r;
       (r.el as HTMLElement).focus();
-      return { ok: true, ...paneDiagnostics(r, params.viewportId !== undefined) };
+      return { ok: true, ...paneDiagnostics(r) };
     },
 
     // Focus the CodeMirror editor so subsequent keyboard() calls reach it.
@@ -1196,7 +1217,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         ok: true,
         scrollTop: el.scrollTop,
         scrollLeft: el.scrollLeft,
-        ...paneDiagnostics(r, params.viewportId !== undefined),
+        ...paneDiagnostics(r),
       };
     },
 
@@ -1881,7 +1902,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         return { error: 'screenshot too large', size: cropped.length, limit: MAX_SCREENSHOT_CHARS };
       }
 
-      return { data: cropped, ...paneDiagnostics(r, params.viewportId !== undefined) };
+      return { data: cropped, ...paneDiagnostics(r) };
     },
   };
 }

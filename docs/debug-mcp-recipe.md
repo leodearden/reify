@@ -104,7 +104,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
 | `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection |
-| `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. An UNSCOPED call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — delivered over MCP as a second `text` content block after the image |
+| `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. A call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — scoped or not, since a testId can repeat within one pane — delivered over MCP as a second `text` content block after the image |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 
 ### F2 — LSP probes

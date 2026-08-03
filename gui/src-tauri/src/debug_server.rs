@@ -115,7 +115,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Scope the query to the pane whose [data-viewport-id] subtree contains (or is) the element. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched. A testId not present in the named pane yields { exists: false }, not an error."
+                        "description": "Optional. Scope the query to the pane whose [data-viewport-id] subtree contains (or is) the element. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane. A testId not present in the named pane yields { exists: false }, not an error."
                     }
                 },
                 "required": ["testId"]
@@ -138,7 +138,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Click the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched."
+                        "description": "Optional. Click the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -281,7 +281,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched."
+                        "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -854,7 +854,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Focus the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched."
+                        "description": "Optional. Focus the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -893,7 +893,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional, DOM mode only. Scroll the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match, which additionally reports viewportId and matchCount when more than one element matched. Ignored (never rejected) when target:'editor'."
+                        "description": "Optional, DOM mode only. Scroll the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane. Ignored (never rejected) when target:'editor'."
                     },
                     "target": {
                         "type": "string",

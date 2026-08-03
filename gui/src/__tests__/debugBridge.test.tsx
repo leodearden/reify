@@ -4894,4 +4894,46 @@ describe('debug bridge resolveByTestId viewport scoping', () => {
 
     expect(result).toEqual({ ok: true, viewportId: null, matchCount: 2 });
   });
+
+  it('(l) a SCOPED request that matches TWICE INSIDE the named pane also reports the guess', async () => {
+    // Naming a pane narrows the candidate set; it does not guarantee it to one.
+    // Gating the diagnostic on "was the request scoped?" instead of on
+    // matchCount would re-create, one level down, exactly the silent
+    // wrong-target failure #5891 exists to remove — the caller named a pane and
+    // still got an arbitrary one of two elements, with nothing in the payload
+    // saying so.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    document.body.innerHTML =
+      '<div data-viewport-id="pane-1">' +
+      '<div data-testid="intra-dup"></div><div data-testid="intra-dup"></div>' +
+      '</div>' +
+      '<div data-viewport-id="design-main"><div data-testid="intra-dup"></div></div>';
+
+    const result = await dispatchCmd(5113, 'click_element', {
+      testId: 'intra-dup',
+      viewportId: 'pane-1',
+    });
+
+    // matchCount is 2, not 3: the scoping DID exclude design-main's copy, so the
+    // count reports the ambiguity that actually remained after scoping.
+    expect(result).toEqual({ ok: true, viewportId: 'pane-1', matchCount: 2 });
+  });
+
+  it('(m) the pane ROOT matching both arms of the scoped selector counts ONCE, so it stays a bare {ok:true}', async () => {
+    // The scoped selector is a two-arm list (`el-with-both-attrs, pane el`).
+    // FeaModeToolbar stamps data-testid and data-viewport-id on the SAME node, so
+    // the root matches arm 1; querySelectorAll de-duplicates, keeping matchCount
+    // at 1. Without that de-duplication every scoped root lookup would report a
+    // phantom matchCount:2 — this pins the distinction against case (l), where
+    // the two matches are genuinely different elements.
+    await mountTwoPanes();
+
+    const result = await dispatchCmd(5114, 'click_element', {
+      testId: 'fea-mode-toolbar',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
 });
