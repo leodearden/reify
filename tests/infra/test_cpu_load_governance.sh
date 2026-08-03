@@ -1594,6 +1594,59 @@ EOF_CONFINE_PROBE
         test "${_CONFINE_OWN_FIRST:-}" = "max"
 fi
 
+# ----------------------------------------------------------------------------
+# ROW4-1-QUIET-VACUITY (task 5998): non-vacuity guard for the RESTORED ROW4-1
+# quiet-box escape hatch.
+#
+# ROW4-1 below carried the design claim that "the confined parent quota makes
+# this measurement host-load-independent, so it asserts directly" — which is
+# why it was, uniquely in this file, the ONLY live-measurement assertion with
+# no load/contention escape hatch (ROW1-1 has four SKIP branches, ROW2-1
+# three, ROW2-2 and ROW3-1 partial ones). MEASUREMENT FALSIFIES THAT PREMISE:
+# on tip 6f234cf98d at loadavg ~190/32, four back-to-back runs of this file
+# produced one FAIL —
+#     Δmerge=10367459, Δtask=5945387 => merge_share 0.6355 < floor 0.65
+# — against a passing run minutes later on the same tip
+#     Δmerge=11214247, Δtask=4615047 => merge_share 0.7084.
+# The quota bounds the AGGREGATE (both runs saturated it: usage fractions
+# 1.019 and 0.989 against the 2-core × 8 s budget) but NOT the SPLIT between
+# the two weighted children. The burns are taskset-pinned to the confine
+# CPUs, and pinning does not exclude FOREIGN processes from those CPUs
+# (task 4967); under heavy oversubscription that foreign traffic perturbs the
+# interleaving and cpu.weight proportionality — only asymptotically enforced —
+# degrades from 0.75 toward 0.50. Every observation of this shape sits in that
+# corridor: 0.6355, plus the 0.6435/0.6471/0.639 already recorded in this
+# file's own history (:1378). This is a recurrence of the #4656 flake class,
+# whose quiet-box gate H5/#4926 removed on the now-falsified premise.
+#
+# The fix restores that gate as a POST-measurement guard, NOT a pre-gate, and
+# loosens no threshold (_ROW4_TOL stays byte-identical; the ceiling reused is
+# the existing shared REIFY_CPU_GOV_TEST_QUIET_CEILING, default 20 — G6, no
+# new number). _row4_share_inconclusive returns rc 0 (inconclusive -> caller
+# SKIPs) ONLY when the measured share is below the floor AND the box was hot,
+# which keeps all three outcomes maximally informative:
+#   share >= floor              -> assert runs and PASSES, even on a hot box
+#                                  (no green is ever suppressed);
+#   share <  floor, box QUIET   -> assert runs and goes RED (non-vacuous — a
+#                                  genuine governance regression still fails);
+#   share <  floor, box HOT     -> SKIP-inconclusive (the false-RED case).
+# Mirrors ROW2-2's existing post-measurement idiom in this same file.
+#
+# Pure synthetic literals, no cgroup/live measurement — deterministic at any
+# host load. Python-gated because the predicate consults share_ge_proportional
+# (the SAME function the live ROW4-1 assertion calls, so the guard's floor can
+# never drift from the assertion's floor).
+# ----------------------------------------------------------------------------
+if [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
+    echo "  SKIP ROW4-1-QUIET-VACUITY: python3 not on PATH"
+else
+    # (1) The escape hatch FIRES on the real measured false-RED: sub-floor
+    # share measured on a hot box (host avg10 64.92 was the live
+    # /proc/pressure/cpu reading at loadavg 138/32 while reproducing this).
+    assert "ROW4-1-QUIET-VACUITY-1: measured false-RED replay (Δmerge=10367459 Δtask=5945387 => share 0.6355 < floor 0.65, host avg10=64.92 >= ceiling=20) => inconclusive (SKIP)" \
+        _row4_share_inconclusive 10367459 5945387 300 100 0.10 64.92 20
+fi
+
 if ! host_supports_governance; then
     echo "  SKIP ROW4: host does not support cgroup governance"
 elif [ "$_PYTHON_AVAILABLE" -eq 0 ]; then
