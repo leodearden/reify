@@ -800,3 +800,644 @@ fn lexicographic_epsilon_band_anchor_is_folded_like_the_stage_it_constrains() {
         a + b
     );
 }
+
+// ---------------------------------------------------------------------------
+// Cross-component joint drive — decomposition must follow `dependent_cells`
+// ---------------------------------------------------------------------------
+//
+// β made `dependent_cells` reach the domain solver, but `SolverRegistry::
+// solve_inner` still decomposes as if the objective read only the autos it
+// mentions SYNTACTICALLY. The canonical β shape is a BARE read of a derived
+// cell, so `obj_refs` holds no auto ids at all: `decompose_into_components`'
+// objective-union step unions nothing, and two autos coupled ONLY through a
+// dependent cell land in SEPARATE components. Two consequences, both here:
+//
+//   * the objective is attached by the hardcoded `0` fallthrough (registry.rs
+//     :202-211) to a NONDETERMINISTIC component, so the other component's
+//     autos are solved feasibility-only against stale seeds; and
+//   * each sub-problem is handed `dependent_cells` WHOLESALE, so the component
+//     owning only `a` folds `total = A_COEFF*a + B_COEFF*b` with `b` unbound —
+//     the fold writes `Undef` and the objective read yields
+//     `NoProgress { reason: "objective expression evaluated to undefined at
+//     solution point" }`.
+
+/// A joint-drive problem whose autos are coupled ONLY through a dependent cell.
+///
+/// * autos `a`, `b`, each bounded on `[LO, HI]`;
+/// * TWO constraints that each touch exactly ONE auto, so
+///   `decompose_into_components` splits them into two components on the
+///   constraint graph alone. Deliberately NO constraint mentions both autos —
+///   the split is the entire point of the fixture;
+/// * `dependent_cells = [(total, A_COEFF*a + B_COEFF*b)]` — the only coupling;
+/// * the objective is a BARE read of `total` (the canonical β shape), so
+///   `obj_refs` contains no auto ids;
+/// * `current_values` seeds ONLY `total`, at [`STALE_TOTAL`] — deliberately NOT
+///   `a`/`b`, so a cross-component fold hits an unbound ref and yields `Undef`
+///   rather than a coincidentally-plausible stale number.
+fn cross_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId, ValueCellId) {
+    let a_id = ValueCellId::new("Part", "a");
+    let b_id = ValueCellId::new("Part", "b");
+    let total_id = ValueCellId::new("Part", "total");
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(total_id.clone(), scalar(STALE_TOTAL));
+
+    let total_expr = CompiledExpr::binop(
+        BinOp::Add,
+        CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a_id), dimensionless()),
+        CompiledExpr::binop(BinOp::Mul, lit(B_COEFF), vref(&b_id), dimensionless()),
+        dimensionless(),
+    );
+
+    let auto = |id: &ValueCellId| AutoParam {
+        id: id.clone(),
+        param_type: dimensionless(),
+        bounds: Some((LO, HI)),
+        free: true,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![auto(&a_id), auto(&b_id)],
+        constraints: vec![
+            (
+                ConstraintNodeId::new("Part", 0),
+                CompiledExpr::binop(BinOp::Ge, vref(&a_id), lit(LO), Type::Bool),
+            ),
+            (
+                ConstraintNodeId::new("Part", 1),
+                CompiledExpr::binop(BinOp::Ge, vref(&b_id), lit(LO), Type::Bool),
+            ),
+        ],
+        current_values,
+        objective: Some(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            vref(&total_id),
+        )),
+        functions: Arc::from(Vec::new()),
+        dependent_cells: vec![(total_id, total_expr)],
+    };
+
+    (problem, a_id, b_id)
+}
+
+/// Decomposition must follow `dependent_cells`: two autos coupled only through
+/// a derived cell the objective reads must be solved JOINTLY, at the true
+/// folded argmin.
+///
+/// RED before the fix: the registry splits `a` and `b` into two components,
+/// hands each the WHOLE `dependent_cells` list, and attaches the objective to
+/// an arbitrary one. The component that owns only one auto folds `total` with
+/// the other auto unbound → `Undef` → `NoProgress`. (Where the fold happens to
+/// stay evaluable, the milder manifestation is a constant stale objective — no
+/// gradient, so a silently suboptimal feasibility-only answer.)
+///
+/// No assertion here touches component ORDER or WHICH component receives the
+/// objective: `decompose_into_components` iterates its component map, a
+/// `HashMap`, so that is nondeterministic. The bad outcome is deterministic
+/// regardless of which component wins, because NEITHER owns both autos.
+#[test]
+fn cross_component_dependent_cell_resolves_to_the_joint_argmin() {
+    let (problem, a_id, b_id) = cross_component_joint_drive_problem();
+    let total_id = ValueCellId::new("Part", "total");
+
+    let solved_pair = |result: SolveResult, who: &str| -> (f64, f64) {
+        let SolveResult::Solved { values, .. } = result else {
+            panic!(
+                "({who}) `(a, b) = ({LO}, {LO})` is feasible, so the solve must \
+                 succeed; got: {result:?}\n\n\
+                 A `NoProgress {{ reason: \"objective expression evaluated to \
+                 undefined at solution point\" }}` is THE cross-component fold \
+                 defect: the component solving `a` does not own `b`, but it was \
+                 handed the whole `dependent_cells` list, so folding \
+                 `total = {A_COEFF}*a + {B_COEFF}*b` read an unbound `b`, \
+                 evaluated to `Undef`, and the objective's read of `total` \
+                 inherited it."
+            );
+        };
+        let a = values
+            .get(&a_id)
+            .and_then(|v| v.as_f64())
+            .expect("auto `a` solved");
+        let b = values
+            .get(&b_id)
+            .and_then(|v| v.as_f64())
+            .expect("auto `b` solved");
+        (a, b)
+    };
+
+    // Precondition: the fold demonstrably works one layer down, on the
+    // UNDECOMPOSED problem. This also MEASURES the achievable tolerance rather
+    // than assuming it, so a failure here is attributable to the per-trial fold
+    // itself and not to the registry.
+    let (direct_a, direct_b) = solved_pair(DimensionalSolver.solve(&problem), "direct");
+    assert!(
+        (direct_a - LO).abs() < 1e-3 && (direct_b - LO).abs() < 1e-3,
+        "precondition — the bare `DimensionalSolver` on the UNDECOMPOSED \
+         problem must fold `total` and descend to the lower corner \
+         (a={LO}, b={LO}); got (a={direct_a:.6}, b={direct_b:.6}). If THIS \
+         fails, the per-trial fold itself regressed, not the registry."
+    );
+
+    // The production dispatch path must reach the same JOINT argmin.
+    let (a, b) = solved_pair(
+        reify_constraints::SolverRegistry::production().solve(&problem),
+        "registry",
+    );
+    assert!(
+        (a - LO).abs() < 1e-3 && (b - LO).abs() < 1e-3,
+        "the production path must reach the JOINT folded argmin \
+         (a={LO}, b={LO}) — as the direct solve did \
+         (a={direct_a:.6}, b={direct_b:.6}); got (a={a:.6}, b={b:.6}). \
+         An auto sitting anywhere else in [{LO}, {HI}] means its component was \
+         solved FEASIBILITY-ONLY: `obj_refs` holds no auto ids (the objective \
+         is a bare read of `total`), so `decompose_into_components` unioned \
+         nothing, `a` and `b` landed in separate components, and \
+         `objective_component`'s lookup fell through to the hardcoded `0` \
+         in `SolverRegistry::solve_inner` — attaching the objective to an arbitrary \
+         component of a nondeterministic `HashMap` iteration and leaving the \
+         other component's auto pinned near its stale start."
+    );
+
+    // Fixture integrity: the stale seed must still be sitting in
+    // `current_values`, so the test cannot pass merely because the fixture
+    // forgot to seed it.
+    assert_eq!(
+        problem.current_values.get(&total_id).and_then(|v| v.as_f64()),
+        Some(STALE_TOTAL),
+        "fixture integrity: `total` must be seeded stale in current_values"
+    );
+    assert_eq!(
+        problem.current_values.get(&a_id).and_then(|v| v.as_f64()),
+        None,
+        "fixture integrity: `a` must NOT be seeded — an unbound auto is what \
+         makes a cross-component fold yield `Undef` instead of a plausible \
+         stale number"
+    );
+    assert_eq!(
+        problem.current_values.get(&b_id).and_then(|v| v.as_f64()),
+        None,
+        "fixture integrity: `b` must NOT be seeded — see the `a` assertion"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Per-component `dependent_cells` filter
+// ---------------------------------------------------------------------------
+//
+// `solve_inner` builds each component's sub-problem from `..problem.clone()`,
+// which hands every component the WHOLE `dependent_cells` list. That is both
+// the cross-component `Undef` source (a component folds a cell reading an auto
+// it does not own) and the O(#components × |dependent_cells| × NM_iterations ×
+// multistart_K) cost that per-trial folding pays for cells it can never move.
+
+/// Coefficient on `c` in the second component's dependent cell `side`.
+const SIDE_COEFF: f64 = 2.0;
+
+/// The stale seed for `side`. Distinct from [`STALE_TOTAL`] so a mixed-up
+/// assertion cannot pass by coincidence.
+const STALE_SIDE: f64 = 555.0;
+
+/// A problem that decomposes into TWO components even AFTER the `obj_refs`
+/// expansion.
+///
+/// * component X — autos `a`, `b`, each with its own single-auto constraint;
+///   dependent cells `mid = A_COEFF*a` then `total = mid + B_COEFF*b`; the
+///   objective is a bare `Minimize total`, so the expansion unions `a` and `b`
+///   into ONE component;
+/// * component Y — auto `c` with its own constraint `c >= LO`, plus a dependent
+///   cell `side = SIDE_COEFF*c` feeding the constraint `side >= LO` and nothing
+///   in the objective. Feeding a constraint is what keeps `side` legitimately
+///   inside `dependent_cells` under the documented membership invariant
+///   (transitively feeds objective OR constraint exprs AND transitively reads
+///   ≥1 auto). Decomposition itself skips `side >= LO` — it references no auto
+///   directly — which is pre-existing behaviour and not what these tests probe.
+/// * neither — `mix = mid + side`, which transitively reads `{a, c}` and so
+///   STRADDLES both components.
+///
+/// The objective never reaches `c`, so component Y is what proves the filter
+/// actually filters rather than being vacuously the identity.
+///
+/// Two shapes here exist purely to make the guard suite discriminating, and
+/// both were added after review found the assertions unfalsifiable without
+/// them:
+///
+/// * `mid` makes component X retain TWO cells. With one cell apiece the
+///   subsequence/order assertions are vacuously true for ANY output ordering,
+///   so a filter rebuilt from a `HashMap` iteration — the exact regression the
+///   assertion messages describe — would go green. `mid` also exercises the
+///   TRANSITIVE path end-to-end through the registry: `total` reaches `a` only
+///   through `mid`, so a non-transitive `dependent_cell_auto_reads` would
+///   report `total` as reading `{b}` alone.
+/// * `mix` is the only cell whose auto set is neither owned nor disjoint from a
+///   component. Without it every cell is either fully owned or fully disjoint,
+///   and `is_subset` is indistinguishable from `!is_disjoint` — the mutation
+///   that reintroduces the cross-component `Undef` fold this task removes.
+struct TwoComponentFixture {
+    problem: ResolutionProblem,
+    a: ValueCellId,
+    b: ValueCellId,
+    c: ValueCellId,
+    mid: ValueCellId,
+    total: ValueCellId,
+    side: ValueCellId,
+    mix: ValueCellId,
+}
+
+fn two_component_dependent_cell_problem() -> TwoComponentFixture {
+    let a = ValueCellId::new("Part", "a");
+    let b = ValueCellId::new("Part", "b");
+    let c = ValueCellId::new("Part", "c");
+    let mid = ValueCellId::new("Part", "mid");
+    let total = ValueCellId::new("Part", "total");
+    let side = ValueCellId::new("Part", "side");
+    let mix = ValueCellId::new("Part", "mix");
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(mid.clone(), scalar(STALE_TOTAL));
+    current_values.insert(total.clone(), scalar(STALE_TOTAL));
+    current_values.insert(side.clone(), scalar(STALE_SIDE));
+    current_values.insert(mix.clone(), scalar(STALE_SIDE));
+
+    let auto = |id: &ValueCellId| AutoParam {
+        id: id.clone(),
+        param_type: dimensionless(),
+        bounds: Some((LO, HI)),
+        free: true,
+    };
+    let ge_lo = |e: CompiledExpr| CompiledExpr::binop(BinOp::Ge, e, lit(LO), Type::Bool);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![auto(&a), auto(&b), auto(&c)],
+        constraints: vec![
+            (ConstraintNodeId::new("Part", 0), ge_lo(vref(&a))),
+            (ConstraintNodeId::new("Part", 1), ge_lo(vref(&b))),
+            (ConstraintNodeId::new("Part", 2), ge_lo(vref(&c))),
+            (ConstraintNodeId::new("Part", 3), ge_lo(vref(&side))),
+            (ConstraintNodeId::new("Part", 4), ge_lo(vref(&mix))),
+        ],
+        current_values,
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, vref(&total))),
+        functions: Arc::from(Vec::new()),
+        // Stored order is load-bearing: `mid` BEFORE `total`, which reads it.
+        dependent_cells: vec![
+            // mid = A_COEFF*a — reads {a}.
+            (
+                mid.clone(),
+                CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a), dimensionless()),
+            ),
+            // total = mid + B_COEFF*b — reads {a, b}, and `a` ONLY through `mid`.
+            (
+                total.clone(),
+                CompiledExpr::binop(
+                    BinOp::Add,
+                    vref(&mid),
+                    CompiledExpr::binop(BinOp::Mul, lit(B_COEFF), vref(&b), dimensionless()),
+                    dimensionless(),
+                ),
+            ),
+            // side = SIDE_COEFF*c — reads {c}.
+            (
+                side.clone(),
+                CompiledExpr::binop(BinOp::Mul, lit(SIDE_COEFF), vref(&c), dimensionless()),
+            ),
+            // mix = mid + side — reads {a, c}: STRADDLES both components, so it
+            // is a subset of NEITHER while overlapping BOTH.
+            (
+                mix.clone(),
+                CompiledExpr::binop(BinOp::Add, vref(&mid), vref(&side), dimensionless()),
+            ),
+        ],
+    };
+
+    TwoComponentFixture {
+        problem,
+        a,
+        b,
+        c,
+        mid,
+        total,
+        side,
+        mix,
+    }
+}
+
+/// Capture every sub-problem `SolverRegistry` hands its domain solver.
+///
+/// `solve()` runs with `want_optimality = false`, so EVERY component — the
+/// objective-bearing one included — takes the plain `solver.solve()` arm and
+/// the spy sees them all.
+fn capture_subproblems(problem: &ResolutionProblem) -> Vec<ResolutionProblem> {
+    let spy = reify_test_support::MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: std::collections::HashMap::new(),
+        unique: true,
+    }]);
+    // Taken BEFORE the spy is boxed into the registry.
+    let captured = spy.captured_problems();
+    let registry = reify_constraints::SolverRegistry::new(Box::new(spy));
+    let _ = ConstraintSolver::solve(&registry, problem);
+    let guard = captured.lock().unwrap();
+    guard.clone()
+}
+
+/// The ids of a sub-problem's autos, as a set — the ONLY safe way to identify a
+/// captured component. `decompose_into_components` iterates its component map,
+/// a `HashMap`, so capture ORDER is nondeterministic and an index-based
+/// assertion would be intermittently red.
+fn auto_id_set(p: &ResolutionProblem) -> std::collections::HashSet<ValueCellId> {
+    p.auto_params.iter().map(|ap| ap.id.clone()).collect()
+}
+
+fn dependent_cell_ids(p: &ResolutionProblem) -> Vec<ValueCellId> {
+    p.dependent_cells.iter().map(|(id, _)| id.clone()).collect()
+}
+
+/// Is `filtered` a subsequence of `original` (same relative order, gaps allowed)?
+fn is_subsequence(filtered: &[ValueCellId], original: &[ValueCellId]) -> bool {
+    let mut rest = original.iter();
+    filtered.iter().all(|f| rest.any(|o| o == f))
+}
+
+/// Each component's sub-problem must carry ONLY the dependent cells whose
+/// transitively-read autos it OWNS.
+///
+/// RED before the filter: both sub-problems receive ALL cells. Folding `total`
+/// in the `{c}` component reads unbound `a`/`b` and writes `Undef`; folding
+/// `side` in the `{a, b}` component reads unbound `c` and does the same. It is
+/// also the O(#components × |dependent_cells| × NM_iterations × multistart_K)
+/// cost the per-trial fold pays re-evaluating cells the component cannot move —
+/// the efficiency half of this task's finding.
+#[test]
+fn each_component_subproblem_receives_only_its_own_dependent_cells() {
+    let fx = two_component_dependent_cell_problem();
+    let captured = capture_subproblems(&fx.problem);
+
+    assert_eq!(
+        captured.len(),
+        2,
+        "the fixture must decompose into exactly 2 components even AFTER the \
+         obj_refs expansion ({{a, b}} joined by the objective's read of \
+         `total`; {{c}} on its own); got {} sub-problem(s) with autos {:?}",
+        captured.len(),
+        captured.iter().map(auto_id_set).collect::<Vec<_>>()
+    );
+
+    let original = dependent_cell_ids(&fx.problem);
+    let find = |want: &[&ValueCellId]| -> &ResolutionProblem {
+        let want: std::collections::HashSet<ValueCellId> =
+            want.iter().map(|id| (*id).clone()).collect();
+        captured
+            .iter()
+            .find(|p| auto_id_set(p) == want)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no captured sub-problem owns exactly the autos {want:?}; \
+                     captured auto sets were {:?}",
+                    captured.iter().map(auto_id_set).collect::<Vec<_>>()
+                )
+            })
+    };
+
+    for (autos, want_cells, why) in [
+        (
+            vec![&fx.a, &fx.b],
+            // Stored order — `mid` precedes `total`, which reads it.
+            vec![fx.mid.clone(), fx.total.clone()],
+            "`side = SIDE_COEFF*c` reads `c`, which this component does not own — \
+             folding it here reads an unbound `c` and writes `Undef`. \
+             `mix = mid + side` reads `{a, c}`: it OVERLAPS this component's \
+             autos without being a SUBSET of them, so it must be dropped here \
+             too — a filter testing mere intersection instead of containment \
+             would keep it and fold the unowned `c`",
+        ),
+        (
+            vec![&fx.c],
+            vec![fx.side.clone()],
+            "`mid = A_COEFF*a` and `total = mid + B_COEFF*b` read `a` and `b`, \
+             which this component does not own — folding either here reads \
+             unbound autos and writes `Undef`. `mix` reads `{a, c}` and so \
+             overlaps without being contained, and must be dropped here as well",
+        ),
+    ] {
+        let sub = find(&autos);
+        let got = dependent_cell_ids(sub);
+        // Compared as an ORDERED Vec, not a set: the retained cells must come
+        // back in stored order, so a filter that rebuilt the list from a set or
+        // a `HashMap` iteration fails here rather than passing on membership.
+        assert_eq!(
+            got, want_cells,
+            "the sub-problem owning autos {:?} must carry exactly the dependent \
+             cells {want_cells:?}, IN THAT ORDER; got {got:?}. Pre-fix BOTH \
+             sub-problems receive ALL cells, because `solve_inner` builds each \
+             from `..problem.clone()` and never filters the field. {why}.",
+            autos.iter().map(|i| (*i).clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            !got.contains(&fx.mix),
+            "`mix` transitively reads `{{a, c}}`, which NO component owns in \
+             full, so it must be dropped from EVERY sub-problem — it is the \
+             only cell in this fixture that distinguishes the `is_subset` \
+             predicate from mere overlap (`!is_disjoint` / `intersects`). Got \
+             {got:?} for the component owning {:?}.",
+            autos.iter().map(|i| (*i).clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            is_subsequence(&got, &original),
+            "the filtered list {got:?} must be a SUBSEQUENCE of the stored \
+             order {original:?} — filtering must preserve the topological order \
+             `build_dependent_cells` produced (PRD §6.3: the stored order is the \
+             single authority, consumed here and never re-derived). A reorder \
+             means the filter rebuilt the list from a set or a `HashMap` \
+             iteration instead of retaining in place."
+        );
+    }
+}
+
+/// The single-component shape of [`lexicographic_joint_drive_problem`], with a
+/// single-term objective so the whole cluster reaches ONE `solver.solve()` call.
+///
+/// The ONE constraint `a + b >= A_PLUS_B_FLOOR` joins both autos on the
+/// constraint graph alone, so the component is single regardless of the
+/// `obj_refs` expansion.
+fn single_component_joint_drive_problem() -> (ResolutionProblem, ValueCellId, ValueCellId) {
+    const A_PLUS_B_FLOOR: f64 = 4.0;
+
+    let a = ValueCellId::new("Part", "a");
+    let b = ValueCellId::new("Part", "b");
+    let mid = ValueCellId::new("Part", "mid");
+    let total = ValueCellId::new("Part", "total");
+
+    let mut current_values = ValueMap::new();
+    current_values.insert(mid.clone(), scalar(STALE_TOTAL));
+    current_values.insert(total.clone(), scalar(STALE_TOTAL));
+
+    let auto = |id: &ValueCellId| AutoParam {
+        id: id.clone(),
+        param_type: dimensionless(),
+        bounds: Some((LO, HI)),
+        free: true,
+    };
+
+    let problem = ResolutionProblem {
+        auto_params: vec![auto(&a), auto(&b)],
+        constraints: vec![(
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(
+                BinOp::Ge,
+                CompiledExpr::binop(BinOp::Add, vref(&a), vref(&b), dimensionless()),
+                lit(A_PLUS_B_FLOOR),
+                Type::Bool,
+            ),
+        )],
+        current_values,
+        objective: Some(ObjectiveSet::single(ObjectiveSense::Minimize, vref(&total))),
+        functions: Arc::from(Vec::new()),
+        // TWO cells in a known stored order, `mid` before the `total` that
+        // reads it. A single-cell list would make the "FULL list in the SAME
+        // order" assertion below unfalsifiable — any ordering of a 1-element
+        // Vec is correct — so the identity claim needs at least two.
+        dependent_cells: vec![
+            (
+                mid.clone(),
+                CompiledExpr::binop(BinOp::Mul, lit(A_COEFF), vref(&a), dimensionless()),
+            ),
+            (
+                total.clone(),
+                CompiledExpr::binop(BinOp::Add, vref(&mid), vref(&b), dimensionless()),
+            ),
+        ],
+    };
+
+    (problem, mid, total)
+}
+
+/// I1 non-regression — the filter must be the IDENTITY on the single-component
+/// path.
+///
+/// This is the guard against an OVER-aggressive filter. Every pre-existing
+/// single-component solve stays byte-identical only because every cell's
+/// transitive auto-read set is trivially a subset of the one component's autos
+/// (PRD §6.2 / I1). A shortfall here means the subset predicate is measuring
+/// the wrong thing — e.g. testing against the autos a component's CONSTRAINTS
+/// mention rather than the autos it OWNS, or demanding set equality rather than
+/// containment.
+#[test]
+fn single_component_subproblem_still_receives_the_full_dependent_cells_list() {
+    let (problem, mid, total) = single_component_joint_drive_problem();
+    let captured = capture_subproblems(&problem);
+
+    assert_eq!(
+        captured.len(),
+        1,
+        "`a + b >= FLOOR` joins both autos on the constraint graph alone, so \
+         there is exactly ONE component; got {} sub-problem(s) with autos {:?}",
+        captured.len(),
+        captured.iter().map(auto_id_set).collect::<Vec<_>>()
+    );
+
+    let sub = &captured[0];
+    assert_eq!(
+        auto_id_set(sub),
+        std::collections::HashSet::from([
+            ValueCellId::new("Part", "a"),
+            ValueCellId::new("Part", "b"),
+        ]),
+        "the single component must own BOTH autos"
+    );
+    assert_eq!(
+        dependent_cell_ids(sub),
+        dependent_cell_ids(&problem),
+        "the filter is REQUIRED to be the identity whenever every auto lives in \
+         one component: `mid` reads `a` and `total` reads `a` (through `mid`) \
+         and `b`, all owned here, so every transitive auto-read set is \
+         trivially a subset. That identity is the only thing keeping every \
+         pre-existing single-component solve byte-identical (PRD §6.2 / I1) — \
+         dropping a cell here silently un-folds an objective the pre-#5720 code \
+         folded correctly. Compared as an ORDERED Vec, so a filter that rebuilt \
+         the list from a set or a `HashMap` iteration fails here too. Expected \
+         the FULL list in the SAME order, {:?}; got {:?}.",
+        dependent_cell_ids(&problem),
+        dependent_cell_ids(sub)
+    );
+    assert_eq!(
+        dependent_cell_ids(sub),
+        vec![mid, total],
+        "fixture integrity: the list must hold at least TWO cells in a known \
+         order, or the identity-and-order claim above is vacuous"
+    );
+}
+
+/// The objective must attach to the component owning the autos it reaches ONLY
+/// through a dependent cell.
+///
+/// Pins the expansion → union → `objective_component` chain that the hardcoded
+/// `0` fallthrough in `SolverRegistry::solve_inner` used to short-circuit. Pre-expansion,
+/// `obj_refs` held no auto ids at all — the objective is a bare read of `total`
+/// — so no component matched, the lookup fell through to component `0` of a
+/// NONDETERMINISTIC `HashMap` iteration, and the objective could land on `{c}`,
+/// leaving `a` and `b` solved feasibility-only against stale seeds. A silently
+/// suboptimal answer on exactly the production path β exists to enable.
+///
+/// Identified by auto SET, never by capture index, for the same reason.
+#[test]
+fn objective_reaching_an_auto_only_through_a_dependent_cell_attaches_to_that_autos_component() {
+    let fx = two_component_dependent_cell_problem();
+    let captured = capture_subproblems(&fx.problem);
+
+    let with_objective: Vec<&ResolutionProblem> = captured
+        .iter()
+        .filter(|p| p.objective.is_some())
+        .collect();
+
+    assert_eq!(
+        with_objective.len(),
+        1,
+        "exactly one component may carry the objective; got {} of {} \
+         sub-problem(s) (auto sets: {:?})",
+        with_objective.len(),
+        captured.len(),
+        captured.iter().map(auto_id_set).collect::<Vec<_>>()
+    );
+
+    assert_eq!(
+        auto_id_set(with_objective[0]),
+        std::collections::HashSet::from([fx.a.clone(), fx.b.clone()]),
+        "the objective reads `total = A_COEFF*a + B_COEFF*b` and NO auto \
+         directly, so it must attach to the component owning {{a, b}} — the \
+         autos it reaches through that cell. It landed on the component owning \
+         {:?} instead. Without the `obj_refs` expansion, \
+         `decompose_into_components` unions nothing, `a` and `b` never share a \
+         component with each other, and `objective_component` falls through to \
+         the hardcoded `0` — handing the objective to whichever component \
+         `decompose_into_components`' component-map iteration happened to \
+         yield first, and \
+         leaving the unattached autos solved feasibility-only against their \
+         stale seeds.",
+        auto_id_set(with_objective[0])
+    );
+
+    // The objective-bearing component must also still be able to SCORE: every
+    // cell the objective transitively reads has to survive the step-4 filter
+    // there, or `build_scoring_values` folds an incomplete map.
+    assert!(
+        dependent_cell_ids(with_objective[0]).contains(&fx.total),
+        "the objective-bearing component must retain `total` — the cell the \
+         objective actually reads. This is the invariant that makes the \
+         per-component filter SAFE: the expansion guarantees every auto the \
+         objective transitively drives lands in ONE component, so every cell it \
+         reads passes the subset test there. Got {:?}.",
+        dependent_cell_ids(with_objective[0])
+    );
+    assert!(
+        !dependent_cell_ids(with_objective[0]).contains(&fx.side),
+        "…and must NOT retain `side`, which reads the auto `c` it does not own; \
+         got {:?}",
+        dependent_cell_ids(with_objective[0])
+    );
+    // `c`'s component is the one that must never see the objective.
+    assert_ne!(
+        auto_id_set(with_objective[0]),
+        std::collections::HashSet::from([fx.c.clone()]),
+        "the objective must never attach to the component owning only `c`, \
+         which the objective does not reach at all"
+    );
+}
