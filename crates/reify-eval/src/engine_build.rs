@@ -3214,6 +3214,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
+            cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
             morph_producer: _,     // mesh-morph producer hook
@@ -8097,6 +8098,20 @@ impl Engine {
                                                     ),
                                                     id: handle.id,
                                                 };
+                                                // **Task 4152: this is the UNCOUNTED
+                                                // insert.** Plain `insert`, so it does
+                                                // not move
+                                                // `CacheStats::realization_entries`.
+                                                // These are per-step conversion
+                                                // intermediates *within* one
+                                                // realization (keyed
+                                                // `"{entity}#conv-step{N}"`), not
+                                                // realizations — the OCCT→gmsh
+                                                // VolumeMesh route passes through here,
+                                                // so counting them would break the
+                                                // "one body, one entry" contract. The
+                                                // terminal site below uses
+                                                // `insert_terminal`.
                                                 realization_cache.insert(
                                                     &intermediate_entity,
                                                     terminal_to,
@@ -9271,7 +9286,15 @@ impl Engine {
                     // the entity+tol key — intermediate lets are intra-build
                     // scratch and must not pollute the cross-build cache.
                     let resolved_repr = last_produced_repr.unwrap_or(cache_repr);
-                    realization_cache.insert(
+                    // **Task 4152: this is the COUNTED insert.** `insert_terminal`
+                    // is `insert` plus a bump of the monotonic
+                    // `CacheStats::realization_entries` lifetime counter when the
+                    // insert is accepted. This site is the one the counter is
+                    // defined by: a terminal realization that genuinely produced
+                    // and cached new geometry. The conversion-intermediate insert
+                    // (search `intermediate_cache_inserts`) stays on plain
+                    // `insert` and is deliberately NOT counted.
+                    realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
                         tol,

@@ -3177,6 +3177,103 @@ mod tests {
         );
     }
 
+    /// Task 4152: `eval_cached`'s per-call stats and `Engine::cache_stats()`
+    /// are coherent, and the three eval-cache counters ACCUMULATE.
+    ///
+    /// Two contracts:
+    ///
+    /// - **`realization_entries` coherence.** The `realization_entries` in a
+    ///   `CachedEvalResult`'s stats block reports the same live cache counter
+    ///   `Engine::cache_stats()` does. Both are 0 throughout here, and must be:
+    ///   `eval_cached` dispatches no compute nodes, so it realizes no geometry
+    ///   (and this engine has no kernel at all).
+    /// - **Accumulation.** `cache_stats()`'s `cache_hits` / `cache_misses` /
+    ///   `early_cutoffs` are cumulative totals across every `eval_cached` call,
+    ///   not the last call's figures — so after two calls the engine-level
+    ///   total equals the sum of the two per-call values. `CachedEvalResult::stats`
+    ///   remains the place to read one call's own numbers.
+    #[test]
+    fn cache_stats_accumulates_eval_cache_counters_and_agrees_on_realization_entries() {
+        use reify_core::{ModulePath, Type, VersionId};
+        use reify_ir::BinOp;
+        use reify_test_support::builders::*;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let e = "T";
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new("T")
+                    .param(e, "a", Type::Int, Some(literal(Value::Int(5))))
+                    .let_binding(
+                        e,
+                        "y",
+                        Type::Int,
+                        binop(
+                            BinOp::Add,
+                            value_ref_typed(e, "a", Type::Int),
+                            literal(Value::Int(100)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build();
+
+        let checker = MockConstraintChecker::new();
+        let mut engine = crate::Engine::new(Box::new(checker), None);
+
+        assert_eq!(
+            engine.cache_stats().realization_entries,
+            0,
+            "a kernel-less engine starts with no realizations"
+        );
+
+        let r1 = engine.eval_cached(&module, VersionId(1));
+        let (h1, m1, c1) = (
+            r1.stats.cache_hits,
+            r1.stats.cache_misses,
+            r1.stats.early_cutoffs,
+        );
+        assert_eq!(
+            r1.stats.realization_entries,
+            engine.cache_stats().realization_entries,
+            "the per-call stats block's realization_entries must agree with the \
+             engine-level counter at that moment"
+        );
+        assert_eq!(
+            r1.stats.realization_entries, 0,
+            "eval_cached dispatches no compute nodes, so it can realize nothing"
+        );
+
+        let after1 = engine.cache_stats();
+        assert_eq!(
+            (after1.cache_hits, after1.cache_misses, after1.early_cutoffs),
+            (h1, m1, c1),
+            "after one call the cumulative totals equal that call's own figures"
+        );
+
+        // Second call, same version: served from cache.
+        let r2 = engine.eval_cached(&module, VersionId(1));
+        let (h2, m2, c2) = (
+            r2.stats.cache_hits,
+            r2.stats.cache_misses,
+            r2.stats.early_cutoffs,
+        );
+
+        let after2 = engine.cache_stats();
+        assert_eq!(
+            (after2.cache_hits, after2.cache_misses, after2.early_cutoffs),
+            (h1 + h2, m1 + m2, c1 + c2),
+            "cache_stats() must ACCUMULATE across eval_cached calls, not report \
+             only the last call's figures"
+        );
+        assert_eq!(
+            r2.stats.realization_entries,
+            engine.cache_stats().realization_entries,
+            "per-call/engine-level coherence must hold on every call"
+        );
+    }
+
     #[test]
     fn early_cutoff_prevents_downstream_re_evaluation() {
         use reify_core::{ContentHash, ModulePath, Type, VersionId};

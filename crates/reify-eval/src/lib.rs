@@ -954,6 +954,17 @@ pub struct Engine {
     /// `anonymous_realization_does_not_populate_realization_cache_when_lookup_gate_requires_name`
     /// in `tests/tolerance_wiring_e2e.rs`.
     realization_cache: crate::realization_cache::RealizationCache<KernelHandle>,
+    /// Running totals of the per-call eval-cache counters, folded in at the end
+    /// of every [`Engine::eval_cached`] call (task 4152).
+    ///
+    /// Deliberately NOT a [`CacheStats`]: the public struct's fourth field,
+    /// `realization_entries`, has no meaning here (it is a lifetime count
+    /// already owned by [`Engine::realization_cache`], so accumulating it too
+    /// would double-count). Storing only the three fields this actually
+    /// accumulates makes that a compile error rather than a silently-discarded
+    /// write. [`Engine::cache_stats`] assembles the public [`CacheStats`]
+    /// field-by-field from this plus the live realization counter.
+    cumulative_eval_cache_totals: EvalCacheTotals,
     /// Test-instrumentation set of `ValueCellId`s whose let-binding evaluation
     /// should be force-panicked just before `reify_expr::eval_expr` runs.
     ///
@@ -1105,12 +1116,49 @@ pub struct Engine {
     persistent_miss_count: u64,
 }
 
+/// Engine-lifetime running totals of the three eval-cache counters (task 4152).
+///
+/// Private accumulator behind `Engine::cumulative_eval_cache_totals`, folded
+/// in at the end of every [`Engine::eval_cached`] call and read back out by
+/// [`Engine::cache_stats`].
+///
+/// This exists so the accumulator can hold ONLY the counters that are genuinely
+/// accumulable. The public [`CacheStats`] additionally carries
+/// `realization_entries`, which is a lifetime count owned by the
+/// [`RealizationCache`] and read live — accumulating it here would double-count,
+/// so there is deliberately no field for it to be written into.
+#[derive(Debug, Clone, Default)]
+struct EvalCacheTotals {
+    hits: usize,
+    misses: usize,
+    early_cutoffs: usize,
+}
+
 /// Statistics about cache behavior during a cached evaluation.
 #[derive(Debug, Clone, Default)]
 pub struct CacheStats {
     pub cache_hits: usize,
     pub cache_misses: usize,
     pub early_cutoffs: usize,
+    /// Number of NEW geometry-[`RealizationCache`] **terminal** entries created
+    /// over the engine's lifetime — incremented when a realization genuinely
+    /// produced and cached new geometry, NOT on a cache hit.
+    ///
+    /// This is the re-mesh-avoidance signal (PRD
+    /// `docs/prds/v0_4/fea-result-model.md` B9): two load cases sharing one body
+    /// must move it by exactly 1, because the second case reuses the first's
+    /// cached volume mesh rather than re-meshing.
+    ///
+    /// **Monotonic lifetime count, not a live cache size.** It is never
+    /// decremented — not by cache eviction, not by
+    /// [`Engine::clear_realization_cache`], and not across the implicit
+    /// invalidation that `edit_param`/`edit_source` perform. See
+    /// [`RealizationCache::realization_entries`] for the full contract and for
+    /// why `RealizationCache::len()` is deliberately not this signal.
+    ///
+    /// Only [`Engine::build`]-family entry points can move it: `eval_cached`
+    /// dispatches no compute nodes, so it realizes no geometry.
+    pub realization_entries: usize,
 }
 
 /// Result of a cached evaluation, wrapping EvalResult with stats.
