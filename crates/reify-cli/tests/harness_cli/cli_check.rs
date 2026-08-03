@@ -732,6 +732,24 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
 ///             "warning: W_MODULE_DECL_MISSING: …"
 ///             "warning: W_DFM_OVERHANG: face dips below the build plane — …"
 ///     exit 0
+///
+/// # The contradiction lock (review fix)
+///
+/// Note what is NOT in that baseline: any line claiming
+/// `SphereCheck#constraint[0]` is indeterminate.  `check()` resolved that
+/// constraint to `Satisfied`, so `check()` cannot have emitted a
+/// `ConstraintIndeterminate` for it; and at the base commit `build()`'s result
+/// was discarded wholesale, so build's own copy of that claim had no route to
+/// stderr.  D2 opened one — and D2's merge is ONE-DIRECTIONAL by construction:
+/// build()'s internal task-4229 retain (engine_build.rs:5000-5004) drops only
+/// the warnings BUILD itself upgraded, and `merge_post_build_verdicts`
+/// (main.rs) retains only over check()'s OWN list, for the entries IT upgraded.
+/// Nothing in either pass knows about the later, authoritative `check()`, which
+/// is why the CLI-side `drop_falsified_indeterminate_diagnostics` filter is
+/// required: stdout reporting `OK SphereCheck#constraint[0]` +
+/// `All constraints satisfied.` while stderr calls that same constraint
+/// indeterminate is a self-contradiction, and truthfulness is the whole point
+/// of PRD `check-diagnostic-truthfulness.md`.
 #[test]
 fn check_constraint_results_come_from_authoritative_check_not_build() {
     let (status, stdout, stderr) =
@@ -761,6 +779,20 @@ fn check_constraint_results_come_from_authoritative_check_not_build() {
     assert!(
         stdout.contains("All constraints satisfied."),
         "the summary line must be unchanged from the pre-change baseline.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The contradiction lock.  Deliberately placed BEFORE the OCCT_AVAILABLE
+    // early-return: the leak reproduces regardless of whether the DFM rule
+    // actually fired, so gating it on the kernel would hide the defect in
+    // stub-mode builds.
+    assert!(
+        !stderr.contains("SphereCheck#constraint[0] indeterminate"),
+        "stdout reports `OK SphereCheck#constraint[0]` and `All constraints satisfied.`, \
+         so a stderr line calling that same constraint indeterminate is a \
+         self-contradiction — and it is absent from this test's own recorded \
+         pre-change baseline.  build()'s stale claim must be dropped against the \
+         AUTHORITATIVE verdict list before the D2 merge.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 
@@ -859,4 +891,74 @@ fn check_purpose_surfaces_geometry_compile_error() {
          one call site, so it must collapse to exactly one line — got {occurrences}.\n\
          stderr: {stderr}"
     );
+}
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β — the `--purpose`
+/// twin of the contradiction lock in
+/// `check_constraint_results_come_from_authoritative_check_not_build`.
+///
+/// SELF-MAINTAINING encoding of the invariant rather than a hard-coded needle:
+/// every definite verdict line `check` prints on stdout (`  OK <id>` /
+/// `  VIOLATED <id>`) is read back out and its subject is required to be absent
+/// from stderr's indeterminacy claims.  Whatever constraints the fixture grows,
+/// the invariant travels with it.  The `<id>` token is exactly the right needle
+/// because `report_constraint_results` prints `constraint_display_label(entry)`
+/// — the same label-preferring string the checker embeds in
+/// `constraint {…} indeterminate: …` (reify-constraints/src/lib.rs:187).
+///
+/// STATED HONESTLY: unlike its sub-path (b) sibling this is expected GREEN both
+/// before and after the fix — a regression LOCK, not a RED.  Two targeted probes
+/// while planning failed to reproduce the leak on sub-path (c), and the plan
+/// records that rather than asserting a defect it did not measure.  The
+/// mechanism explaining the asymmetry: here `build()`'s internal task-4229
+/// recheck and the CLI's `check_constraints_with_values(&values)` run against
+/// the SAME post-realization value map (and build's own retain already dropped
+/// what it upgraded), so the two lists normally agree — whereas on sub-path (b)
+/// `Engine::check()` opens with a fresh `self.eval(module)`
+/// (engine_constraints.rs:1841) and is a genuinely independent, stronger
+/// authority.  A residual divergence path does exist on (c) (the UnifiedDag
+/// `declined` set, engine_build.rs:4952-4966), so the symmetric filter ships as
+/// defence-in-depth and this test is what stops the two sub-paths drifting.
+#[test]
+fn check_purpose_does_not_contradict_definite_verdicts() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &common::fixture_path("mirror_bare_origin_purpose.ri"),
+    ]);
+
+    // Unchanged by this leaf — γ (#5403) lands the Severity::Error exit gate.
+    assert!(
+        status.success(),
+        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
+         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let definite: Vec<&str> = stdout
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            t.strip_prefix("OK ")
+                .or_else(|| t.strip_prefix("VIOLATED "))
+        })
+        .map(str::trim)
+        .collect();
+    assert!(
+        !definite.is_empty(),
+        "the fixture must report at least one definite verdict, else this lock \
+         is vacuous.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    for id in &definite {
+        let claim = format!("constraint {id} indeterminate");
+        assert!(
+            !stderr.contains(&claim),
+            "stdout reports a DEFINITE verdict for `{id}`, so a stderr line \
+             claiming it is indeterminate is a self-contradiction — sub-path (c) \
+             must filter build()'s stale claims against the authoritative \
+             `check_constraints_with_values` verdicts exactly as sub-path (b) \
+             does.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
 }
