@@ -2253,6 +2253,7 @@ build_plan() {
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
             add "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
+            add "if test -f scripts/check-compute-trampoline-registration.sh; then timeout --kill-after=60 5m bash scripts/check-compute-trampoline-registration.sh; else echo 'WARNING: check-compute-trampoline-registration.sh not found, skipping'; fi"
         fi
     fi
 
