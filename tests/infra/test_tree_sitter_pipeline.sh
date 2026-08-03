@@ -778,22 +778,15 @@ test_freshness_script_exists_and_executable() {
     assert_cmd_success "tree-sitter-freshness.sh parses under bash -n" \
         bash -n "$FRESHNESS_SCRIPT" || return 1
 
-    local first_line
-    first_line=$(head -n 1 "$FRESHNESS_SCRIPT")
-    if [[ "$first_line" != "#!/usr/bin/env bash" ]]; then
-        echo ""
-        echo "  ASSERTION FAILED: line 1 is not '#!/usr/bin/env bash'"
-        echo "  Got: $first_line"
-        return 1
-    fi
-
-    if ! grep -qF 'set -euo pipefail' "$FRESHNESS_SCRIPT"; then
-        echo ""
-        echo "  ASSERTION FAILED: tree-sitter-freshness.sh does not 'set -euo pipefail'"
-        echo "  A freshness guard that swallows an error would fail OPEN — exactly the"
-        echo "  false-GREEN shape this task exists to close."
-        return 1
-    fi
+    # Deliberately NO source-text assertions here (no shebang pin, no
+    # `grep 'set -euo pipefail'`). Both were tried and removed: they pin cosmetic
+    # detail without exercising behaviour. A grep passes on the string appearing in
+    # a comment — this script's own header discusses exactly that text — and fails
+    # on a semantically identical `set -e; set -u; set -o pipefail`; a shebang pin
+    # fails on `#!/bin/bash` even though the script works identically as a plan
+    # leaf. What actually matters (the file exists, is directly runnable, and
+    # parses) is asserted above; strict-mode BEHAVIOUR is covered by the modes
+    # exercised elsewhere in this suite, which assert exit codes rather than text.
 }
 
 test_freshness_script_lists_all_compiled_inputs() {
@@ -1695,9 +1688,32 @@ test_freshness_detects_and_repairs_stale_archive() {
     # The restore is registered AHEAD of the `rm -rf`: cleanup replays in insertion
     # order, so the backup dir must not be removable before it has been restored from.
     # `mv` (not `cp -p`) also gives the restored file an mtime of now, matching the
-    # test_auto_generation_rebuilds_parser precedent. The trailing ensure leaves the
-    # lane's target/ consistent with the tree whichever way this test exits.
-    CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'; touch '$parser'; bash '$FRESHNESS_SCRIPT' ensure >/dev/null 2>&1 || true")
+    # test_auto_generation_rebuilds_parser precedent.
+    #
+    # The trailing touch-sweep leaves the lane's target/ consistent with the restored
+    # tree whichever way this test exits: the last cargo check below rebuilds the real
+    # archive from the PROBED parser.c, so once the original is restored that archive
+    # is genuinely stale and something must make cargo recompile it.
+    #
+    # It deliberately does NOT run `bash "$FRESHNESS_SCRIPT" ensure` against the real
+    # target/. `ts_mode_ensure` writes $TARGET_DIR/.tree-sitter-freshness.epoch
+    # unconditionally as its FIRST action, and this suite runs mid-plan (run_all.sh,
+    # well before the final `check` leaf). Re-stamping the epoch here would move the
+    # run window forward past every dir the earlier cargo leaves already rebuilt,
+    # demoting them to DORMANT `note:` lines and narrowing `check` back to the newest
+    # dir only — the exact multi-archive false GREEN the run window was added to close.
+    # Pointing `ensure` at a throwaway target dir is not a fix either: an empty target
+    # scans as `none` and returns before ts_force_touch, so the repair would silently
+    # not happen.
+    #
+    # So the repair is applied directly, as `ts_force_touch` would: bump the mtime
+    # (content untouched) of grammar.js plus every compiled input, which is what makes
+    # cargo re-run the build script. The set is DERIVED from `--list-inputs` rather
+    # than restated, so a new header or a second .c cannot drift out of it; grammar.js
+    # is added because it is an input to generation, not to compilation, and so is
+    # absent from that list. Tracked files are only ever mtime-touched, never
+    # content-mutated, so a concurrent `git status` still sees a clean tree.
+    CLEANUP_ACTIONS+=("mv -f '$backup' '$parser'; ( cd '$TS_DIR' && { printf 'grammar.js\n'; bash '$FRESHNESS_SCRIPT' --list-inputs; } | xargs -r touch ) || true")
     CLEANUP_ACTIONS+=("rm -rf '$bakdir'")
     # `|| return 1`: set -e is disabled inside test bodies (the runner invokes them as
     # `if "$t"; then`), so an unchecked cp would fail silently and the probe append
