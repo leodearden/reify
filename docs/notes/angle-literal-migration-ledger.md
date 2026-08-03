@@ -82,23 +82,45 @@ Therefore:
 | Consumer | Sites | Status |
 |---|---|---|
 | `GeometryOp::Draft` | 13 | **MIGRATED by task 5777** → `Value::angle(..)` |
-| Revolve / Rotate / CircularPattern | 8 | Out of α's scope — still bare |
+| `GeometryOp::CircularPattern` | 8 | Out of α's scope — still bare |
 
 The 13 Draft sites: 6 in `reify-kernel-occt/src/lib.rs`, 3 in
 `reify-ir/src/geometry.rs`, 3 in `reify-eval/src/engine_build/tests.rs`, 1 in
 `reify-test-support/src/mocks.rs`.
 
-The 8 that remain bare: `reify-ir/src/geometry.rs` (1), `reify-kernel-occt/src/lib.rs`
-(1), `reify-kernel-occt/tests/harness_occt/pattern_single_pass_counter.rs` (1),
+The 8 that remain bare — **every one a `CircularPattern`**:
+`reify-ir/src/geometry.rs` (1), `reify-kernel-occt/src/lib.rs` (1),
+`reify-kernel-occt/tests/harness_occt/pattern_single_pass_counter.rs` (1),
 `reify-eval/src/engine_build/tests.rs` (3), `reify-eval/src/primitive_attribute_seed.rs`
 (1), `reify-test-support/src/mocks.rs` (1).
 
-**After α, `rg 'angle: Value::Real' crates/` returns exactly 8 sites.** Seven are
-the non-Draft leftovers above (the eighth of those is the `r(1.57)` closure form,
-which that grep never matched in the first place).
+Draft and CircularPattern are in fact the **only** two bucket-1 consumers there
+can be. `GeometryOp::Revolve` and `GeometryOp::Rotate` declare their angle as a
+bare `angle_rad: f64` field, not a `Value` at all (`crates/reify-ir/src/geometry.rs`),
+so they are structurally outside this question — do not go looking for hand-built
+Revolve/Rotate angles to migrate.
 
-The one remaining `Draft` hit is **deliberate**: it is the bare control arm of
-α's own equivalence pin, `draft_angle_dimensioned_matches_bare_real_volume` in
+#### 1.2.1 The two eights are DIFFERENT sets
+
+Two post-α counts both come to 8. They are **not** the same 8, and conflating
+them is the easiest way to mis-derive this table:
+
+| Which 8 | Composition |
+|---|---|
+| hits of `rg 'angle: Value::Real' crates/` | 7 grep-visible bare CircularPattern **+ 1** deliberate `Draft` control arm (below) |
+| bare fixture sites (the §1.2 table row) | *those same* 7 **+ 1** `r(1.57)` closure-form CircularPattern, which that grep cannot see (§1.3) |
+
+The two sets overlap in 7 and differ only in the 8th member. So the migration
+work still outstanding in bucket 1 is **8 CircularPattern sites**, not 8 grep
+hits — the control arm is not a migration target, and the closure form does not
+show up in the grep you would naturally reach for.
+
+Pre-α the bucket-1 total was 21 = 13 Draft + 8 CircularPattern; α migrated the
+13, which is why §1's header counts 19 literal + 2 closure forms while the grep
+now returns 8.
+
+The one remaining `Draft` grep hit is **deliberate**: it is the bare control arm
+of α's own equivalence pin, `draft_angle_dimensioned_matches_bare_real_volume` in
 `reify-kernel-occt/src/lib.rs`, which executes the same draft twice — once with
 `Value::Real`, once with `Value::angle` — and asserts the volumes match. Retyping
 it would delete the comparison. Every Draft *fixture* is migrated.
@@ -106,9 +128,10 @@ it would delete the comparison. Every Draft *fixture* is migrated.
 ### 1.3 The closure form the literal grep misses
 
 `crates/reify-eval/src/engine_build/tests.rs` has a local
-`let r = |v| Value::Real(v);` whose call sites include one Draft angle and one
-Rotate angle. `rg 'angle: Value::Real'` cannot see either. This is why the PRD's
-original Draft count was 8 rather than 13.
+`let r = |v| Value::Real(v);` whose call sites include one Draft angle (migrated
+by α) and one CircularPattern angle (still bare — it is the 8th site of §1.2).
+`rg 'angle: Value::Real'` cannot see either; `rg 'angle: r\('` is the grep that
+does. This is why the PRD's original Draft count was 8 rather than 13.
 
 **That closure is shared** with the Chamfer `distance`, Shell `thickness` and
 Thicken `offset` cases in the same table, all of which are LENGTH-semantic. Do
@@ -198,12 +221,30 @@ catches this: the re-baselined goldens would simply absorb the wrong value.
 A migrator working uniformly down the 31-site table would make this error in
 seven places at once.
 
+**This rule is bucket-2-only — do not carry it into bucket 1.** Bucket 1 also
+holds CircularPattern angle sites (§1.2), and they are the *opposite* case: they
+are hand-built, so they sit **downstream** of `resolve_bare_angle` and already
+hold post-conversion radians (`TAU`, `FRAC_PI_2`, `1.57`). The kernel reads them
+through `extract_f64` → `Value::as_f64` with no conversion. Converting a
+bucket-1 CircularPattern angle would introduce the very error §3 exists to
+prevent, just in the other direction.
+
+> **Bucket 2 CONVERTS (degrees → radians). Bucket 1 RETYPES ONLY.**
+
 ---
 
 ## 4. The `.ri` corpus
 
-Across **595 tracked `.ri` files** there are **21** angle-consuming builtin call
-sites (`revolve` / `rotate` / `rotate_around` / `circular_pattern` / `arc`).
+A sweep of every tracked `.ri` file (`git ls-files '*.ri'`) finds **21**
+executable angle-consuming builtin call sites (`revolve` / `rotate` /
+`rotate_around` / `circular_pattern` / `arc`).
+
+No absolute count of tracked `.ri` files is given here on purpose: it rots on the
+next example that lands, exactly the way a line number does — it already moved by
+one between this note's measurement SHA and the branch that published it. Re-run
+the §"Derivation commands" sweep, and discard its comment-only hits (the raw
+regex matches commented-out call sites and the word "arc" in prose) to reproduce
+the 21.
 
 Before α, exactly **three** carried a bare angle. After α, **two** — and both are
 deliberate:
