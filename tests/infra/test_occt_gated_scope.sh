@@ -682,4 +682,44 @@ assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profil
         [ \"\$val\" = \"16\" ]
     "
 
+# ---------------------------------------------------------------------------
+# Tests 17f-17g (task 5984): the HARD_CAP knob and the >=1 clamp.
+#
+# 17f exercises the REIFY_NEXTEST_TEST_THREADS_HARD_CAP parse path — mirroring
+#   Test 15a's role for REIFY_OCCT_NEXTEST_HARD_CAP.  With NPROC=32 neither the
+#   default 16 nor the CPU term binds, so the custom ceiling is the SOLE active
+#   bound; without this assert a regression in that parse silently produces 16
+#   and nothing notices.
+# 17g pins the zero-clamp.  `0` is digits-only-VALID, so it passes the parse
+#   guard and would otherwise reach the config as `test-threads = 0` — which
+#   nextest reads as unbounded, i.e. the exact failure this whole task exists to
+#   prevent, reached by setting the cap knob.  Same "arithmetically valid,
+#   semantically nonsensical" defence the occt ram_bound already carries.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17f-17g (task 5984): global-cap HARD_CAP knob and >=1 clamp ---"
+
+# Test 17f: REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4 with NPROC=32
+#   min(4, 32) = 4 (custom ceiling binds).
+#   RED against step-4, which hardcodes 16 with no knob.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4/NPROC=32: [profile.default] test-threads = 4 (custom HARD_CAP binds)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS_HARD_CAP=4 REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"4\" ]
+    "
+
+# Test 17g: REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 with NPROC=32 -> 1, never 0.
+#   RED against step-4, which has no clamp.
+assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0/NPROC=32: [profile.default] test-threads = 1 (clamped, never 0 = unbounded)" \
+    bash -c "
+        cfg=\$(REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0 REIFY_OCCT_NPROC=32 \
+              env -u REIFY_NEXTEST_TEST_THREADS bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ \"\$val\" = \"1\" ]
+    "
+
 test_summary
