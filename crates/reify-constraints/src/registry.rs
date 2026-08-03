@@ -3,7 +3,6 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
-use crate::decompose::decompose_into_components;
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledFunction, ComputeDispatch, ConstraintDomain, ConstraintSolver,
@@ -184,14 +183,14 @@ impl SolverRegistry {
                 }
                 // Expand through `dependent_cells` (task #5720): a ref to a
                 // derived cell also means every auto that cell transitively
-                // drives.  `dependent_cell_auto_reads` is already transitive, so
-                // one pass over the syntactic refs closes the set.
-                let reached: Vec<ValueCellId> = refs
-                    .iter()
-                    .filter_map(|id| dependent_auto_reads.get(id))
-                    .flat_map(|autos| autos.iter().cloned())
-                    .collect();
-                refs.extend(reached);
+                // drives.  Delegated to decompose.rs' ONE expansion body (task
+                // #5467 layer 2) rather than hand-rolled here — the same helper
+                // the decomposition's own constraint and objective sides use,
+                // so the three cannot drift out of lock-step (G7).
+                crate::decompose::expand_refs_through_dependent_cells(
+                    &mut refs,
+                    &dependent_auto_reads,
+                );
                 refs
             });
 
@@ -211,10 +210,18 @@ impl SolverRegistry {
         // objective to an arbitrary component of a nondeterministic `HashMap`
         // iteration while the other component's autos were solved
         // feasibility-only against stale seeds.
-        let components = decompose_into_components(
+        //
+        // LAYER 2 (task #5467 / PRD2 α): the CONSTRAINT side now follows
+        // `dependent_cells` too, so `constraint s == 10.0` over `let s = a + b`
+        // couples `a` and `b` into one component instead of referencing no auto
+        // at all and being skipped. `_with_reads` is called directly with the
+        // map built once above — the 4-arg `decompose_into_components` wrapper
+        // would rebuild it, a second transitive walk on the solve hot path.
+        let components = crate::decompose::decompose_into_components_with_reads(
             &problem.auto_params,
             &problem.constraints,
             obj_refs.as_ref(),
+            &dependent_auto_reads,
         );
 
         // If no components (all constraints reference non-auto params),

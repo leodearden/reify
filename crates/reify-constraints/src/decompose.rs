@@ -263,6 +263,36 @@ pub(crate) fn dependent_cell_auto_reads(
     out
 }
 
+/// Fold each ref's TRANSITIVE auto reads into `refs`, in place.
+///
+/// This is the ONE expansion body shared by the constraint side and the
+/// objective side of the decomposition, and by `SolverRegistry::solve_inner`'s
+/// `objective_component` lookup (task #5467 / PRD2 α, layer 2). A ref to a
+/// derived cell also means every auto that cell transitively drives, so a
+/// constraint reading only `let s = a + b` must be seen to reference `a` and
+/// `b`. `auto_reads` is already transitive, so ONE pass closes the set — the
+/// expansion is idempotent and may safely be applied to an already-expanded
+/// set.
+///
+/// D1/B2 IDENTITY is structural, not incidental: an empty `auto_reads` (which
+/// is exactly what `dependent_cell_auto_reads` returns for an empty
+/// `dependent_cells`) inserts nothing, so every downstream ref set, union edge
+/// and `referenced_params` list is byte-identical to the pre-α behaviour.
+pub(crate) fn expand_refs_through_dependent_cells(
+    refs: &mut HashSet<ValueCellId>,
+    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
+) {
+    if auto_reads.is_empty() {
+        return;
+    }
+    let reached: Vec<ValueCellId> = refs
+        .iter()
+        .filter_map(|id| auto_reads.get(id))
+        .flat_map(|autos| autos.iter().cloned())
+        .collect();
+    refs.extend(reached);
+}
+
 /// Decompose a constraint problem into independent connected components.
 ///
 /// Each component groups constraints that share auto parameters (directly
@@ -271,10 +301,40 @@ pub(crate) fn dependent_cell_auto_reads(
 ///
 /// The domain for each component is determined by classifying each
 /// constraint's expression: unanimous domain → that domain, mixed → CrossDomain.
+///
+/// Connectivity FOLLOWS `dependent_cells` (task #5467 / PRD2 α, layer 2).
+/// `collect_value_refs ∩ param_index` is ONE HOP: for
+/// `let s = a + b; constraint s == 10.0` the constraint's ref set is `{s}`,
+/// which intersects the auto params in NOTHING — so before α the constraint
+/// was skipped entirely and the decomposition came back EMPTY, which
+/// `solve_inner` reads as "all auto params are unconstrained".
+///
+/// This is a thin wrapper: it builds the transitive map and delegates. Callers
+/// that ALREADY hold the map (notably `SolverRegistry::solve_inner`, which
+/// needs it for its per-component fold filter and its `objective_component`
+/// lookup) should call [`decompose_into_components_with_reads`] directly rather
+/// than pay for a second walk on the solve hot path.
 pub fn decompose_into_components(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     objective_refs: Option<&HashSet<ValueCellId>>,
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+) -> Vec<SubProblem> {
+    let auto_reads = dependent_cell_auto_reads(dependent_cells, auto_params);
+    decompose_into_components_with_reads(auto_params, constraints, objective_refs, &auto_reads)
+}
+
+/// [`decompose_into_components`] over an ALREADY-BUILT
+/// `dependent-cell id → transitive auto set` map.
+///
+/// See [`dependent_cell_auto_reads`] for the map's construction and its
+/// fail-safe cycle semantics (a cell on or downstream of a back edge is
+/// OMITTED rather than published with a partial set).
+pub(crate) fn decompose_into_components_with_reads(
+    auto_params: &[AutoParam],
+    constraints: &[(ConstraintNodeId, CompiledExpr)],
+    objective_refs: Option<&HashSet<ValueCellId>>,
+    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
 ) -> Vec<SubProblem> {
     if constraints.is_empty() {
         return vec![];
@@ -304,6 +364,12 @@ pub fn decompose_into_components(
     for (ci, (_cid, expr)) in constraints.iter().enumerate() {
         let mut refs = HashSet::new();
         collect_value_refs(expr, &mut refs);
+        // LAYER 2 (task #5467 / PRD2 α): a constraint that reads a derived
+        // cell references every auto that cell transitively drives. With an
+        // empty `auto_reads` this inserts nothing and the ref set — hence the
+        // union edges and `referenced_params` below — is byte-identical to
+        // pre-α.
+        expand_refs_through_dependent_cells(&mut refs, auto_reads);
 
         // Filter to only auto params
         let referenced: Vec<usize> = refs
@@ -335,6 +401,19 @@ pub fn decompose_into_components(
     // params land in the same component, even if the constraints alone don't
     // connect them. Single-term reduces to prior single-expr behavior identically.
     if let Some(refs) = objective_refs {
+        // The OBJECTIVE-side twin of the constraint expansion above. Leaving
+        // this direct-only while constraint refs go transitive would be a G7
+        // half-fix: the same union-find would receive transitive edges from one
+        // source and one-hop edges from the other. Borrowed unchanged when
+        // there is nothing to expand, so the direct path allocates nothing.
+        let refs: std::borrow::Cow<'_, HashSet<ValueCellId>> = if auto_reads.is_empty() {
+            std::borrow::Cow::Borrowed(refs)
+        } else {
+            let mut owned = refs.clone();
+            expand_refs_through_dependent_cells(&mut owned, auto_reads);
+            std::borrow::Cow::Owned(owned)
+        };
+
         let obj_param_indices: Vec<usize> = refs
             .iter()
             .filter_map(|id| param_index.get(id).copied())
