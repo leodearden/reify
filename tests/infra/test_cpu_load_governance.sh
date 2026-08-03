@@ -1736,6 +1736,28 @@ else
         || _row4_quiet_vacuity3_rc=$?
     assert "ROW4-1-QUIET-VACUITY-3: hot box but SATURATING share (Δmerge=11214247 Δtask=4615047 => 0.7084 >= floor 0.65) => NOT inconclusive (a passing measurement still PASSES; the guard never suppresses a green)" \
         test "$_row4_quiet_vacuity3_rc" -ne 0
+
+    # (4) FAIL-SAFE on an unmeasurable box: sub-floor share, but the host PSI
+    # sample is the literal "unavailable" sentinel (/proc/pressure/cpu
+    # unreadable). quiet_box_met deliberately fails OPEN on that input, so
+    # "cannot measure the box" must read as "box was quiet" => NOT
+    # inconclusive. An unmeasurable box must never mask a genuine governance
+    # regression behind a SKIP. Mirrors ROW2-1-BAND-VACUITY-5 and
+    # _row1_measurement_inactive's unavailable fail-safe convention.
+    _row4_quiet_vacuity4_rc=0
+    _row4_share_inconclusive 10367459 5945387 300 100 0.10 unavailable 20 \
+        || _row4_quiet_vacuity4_rc=$?
+    assert "ROW4-1-QUIET-VACUITY-4: FAIL-SAFE -- sub-floor share but host PSI unreadable (avg10=unavailable) => NOT inconclusive (an unmeasurable box never masks a genuine break)" \
+        test "$_row4_quiet_vacuity4_rc" -ne 0
+
+    # (5) Same fail-safe for a non-numeric (garbage) PSI sample — a truncated
+    # or malformed /proc read must take the same never-mask path as an absent
+    # one, not fall through to a SKIP.
+    _row4_quiet_vacuity5_rc=0
+    _row4_share_inconclusive 10367459 5945387 300 100 0.10 nan-ish 20 \
+        || _row4_quiet_vacuity5_rc=$?
+    assert "ROW4-1-QUIET-VACUITY-5: FAIL-SAFE -- sub-floor share but non-numeric PSI sample (avg10='nan-ish') => NOT inconclusive (malformed read takes the same never-mask path as an absent one)" \
+        test "$_row4_quiet_vacuity5_rc" -ne 0
 fi
 
 if ! host_supports_governance; then
