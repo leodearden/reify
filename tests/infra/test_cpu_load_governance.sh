@@ -142,6 +142,7 @@ LIB_CGROUP="$REPO_ROOT/scripts/lib_cgroup.sh"
 FIXTURE="$SCRIPT_DIR/cpu_load_fixture.sh"
 INSTRUMENT="$SCRIPT_DIR/cpu_gov_instrument.py"
 CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
+LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || {
     echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh" >&2
@@ -149,6 +150,20 @@ CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
 }
 # shellcheck source=tests/infra/test_helpers.sh
 source "$SCRIPT_DIR/test_helpers.sh"
+
+# quiet_box_met (task 5998): ROW4-1's quiet-box escape hatch delegates its
+# hot/quiet decision to this shared helper rather than re-deriving one — see
+# _row4_share_inconclusive below.  Sourced GUARDED (mirrors the LIB_CGROUP
+# existence idiom above): a missing lib must degrade rather than abort the
+# whole suite under `set -euo pipefail`.  The helper's own docstring has
+# claimed ROW4 as its consumer since #4656; this source makes that true again.
+if [ -f "$LOAD_TOLERANCE_LIB" ]; then
+    # shellcheck source=tests/infra/load_tolerance_lib.sh
+    source "$LOAD_TOLERANCE_LIB"
+else
+    echo "WARN: load_tolerance_lib.sh not found at $LOAD_TOLERANCE_LIB —" \
+         "ROW4-1's quiet-box guard will be unavailable" >&2
+fi
 
 echo "=== cpu-load-governance integration tests (task 4634) ==="
 
@@ -1394,6 +1409,28 @@ _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
 # PSI source for ROW4 quiet-gate avg10 sampling (testability seam; mirrors
 # the existing REIFY_CPU_ADMIT_PROC_PATH fixture injection in ROW4-BYPASS).
 _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
+
+# _row4_share_inconclusive <merge_delta> <task_delta> <w_merge> <w_task> <tol>
+#                          <host_avg10> <ceiling>
+#   ROW4-1 quiet-box escape-hatch predicate (task 5998): decides whether a
+#   measured merge_share that misses the proportional floor should SKIP as
+#   inconclusive (foreign load co-resident on the pinned CPUs diluting
+#   cpu.weight arbitration) rather than fall through to ROW4-1's hard FAIL.
+#   Returns 0 (inconclusive -> caller SKIPs); 1 (NOT inconclusive -> ROW4-1's
+#   hard assert stays reachable and can still go RED).
+#
+#   Pure (no I/O, no globals read) so it stays hermetically testable with
+#   synthetic literals, matching _row2_band_inconclusive and
+#   _row1_measurement_inactive above.
+_row4_share_inconclusive() {
+    local merge_delta="$1" task_delta="$2"
+    local w_merge="$3" w_task="$4" tol="$5"
+    local host_avg10="$6" ceiling="$7"
+
+    # Skeleton (task 5998 step-2): the share and box-temperature branches are
+    # driven out by ROW4-1-QUIET-VACUITY-2/3 in the steps that follow.
+    return 0
+}
 
 # _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper
 # functions, and _ROW4_CONFINE_CORES/QUOTA/W/CPUS/PARENT are now computed in
