@@ -2816,6 +2816,83 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
         .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
 }
 
+/// Structural-equality merge of a discarded [`reify_eval::BuildResult`]'s
+/// diagnostics into the authoritative [`reify_eval::CheckResult`]'s.
+///
+/// # Why this exists (task 5748, PRD `check-diagnostic-truthfulness.md` D2)
+///
+/// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
+/// side effect and then, separately, `check()` as the source of record.  The
+/// `BuildResult` used to be dropped on the floor, which silently swallowed
+/// every realization-only diagnostic — `compile_geometry_op` gating errors and
+/// kernel-dispatch failures that `check()` alone never produces.  A module
+/// whose geometry cannot compile at all therefore reported "All constraints
+/// satisfied." under `check` while `eval`/`build` reported a hard error on the
+/// same file.
+///
+/// Neither naive alternative works.  Using build()'s diagnostics *instead* is
+/// wrong: `build_with_geometry_output` calls `self.check(module)` internally as
+/// its first step, so its copy of the check-style entries is stale (computed
+/// before `realization_handles` / `achieved_repr_tol` are populated).  Plain
+/// concatenation is also wrong: both passes re-run `eval()` over the same
+/// deterministic input, so every genuine eval-level diagnostic would print
+/// twice.  Hence: keep check()'s list authoritative and verbatim, then append
+/// only what is not already present by `(severity, code, message)`.
+///
+/// # Invariants upheld (PRD D2, verbatim)
+///
+/// * No diagnostic that would appear in `check()`'s own diagnostics today is
+///   ever printed twice.
+/// * Every diagnostic that `build()` alone would have produced (i.e. every
+///   `compile_geometry_op` / kernel-dispatch diagnostic) appears at least once
+///   in the reported set.
+/// * `constraint_results` come from the authoritative `check()` call only
+///   (never `build()`'s stale copy) — RepresentationWithin/GD&T/DFM
+///   correctness is unaffected.
+///
+/// That third invariant is the caller's contract, not this function's: this
+/// helper takes and returns diagnostics ONLY and never sees a
+/// `constraint_results`.  (The one narrow, adjacent exception the esc-5748-1
+/// ruling carved out lives in [`merge_post_build_verdicts`], which upgrades
+/// `Indeterminate` verdicts and can never substitute or regress a definite one.)
+///
+/// # Dedup key
+///
+/// A `HashSet<(Severity, Option<DiagnosticCode>, String)>` rather than a
+/// derived `PartialEq`: [`reify_core::Diagnostic`] is `#[non_exhaustive]` and
+/// derives only `Debug, Clone` (diagnostics.rs:3834), so deriving equality
+/// would be a reify-core API change outside this leaf's scope AND would drag
+/// `labels`/`candidates` into identity, which the PRD deliberately excludes.
+/// The three compared fields are each `Eq + Hash` (`Severity` :94,
+/// `DiagnosticCode` :152, `String`), so the tuple key is buildable here.
+///
+/// Membership is tested against the ACCUMULATING set — seeded from
+/// `check_diags`, then grown as build entries are appended — so duplicates
+/// *internal to* `build_diags` also collapse to one occurrence.  This is not
+/// hypothetical: on the `mirror(...)` bare-origin shape (fixture
+/// `tests/fixtures/mirror_bare_origin.ri`) `build()` emits
+/// `failed to compile geometry operation: missing or non-Length argument 'ox'
+/// for mirror` TWICE for a single call site.  The PRD requires "at least
+/// once", and collapsing matches `check`'s existing output discipline.
+fn merge_build_diagnostics(
+    check_diags: &[reify_core::Diagnostic],
+    build_diags: &[reify_core::Diagnostic],
+) -> Vec<reify_core::Diagnostic> {
+    type DiagKey = (Severity, Option<reify_core::DiagnosticCode>, String);
+    let key = |d: &reify_core::Diagnostic| -> DiagKey {
+        (d.severity, d.code, d.message.clone())
+    };
+
+    let mut merged = check_diags.to_vec();
+    let mut seen: std::collections::HashSet<DiagKey> = check_diags.iter().map(key).collect();
+    for diag in build_diags {
+        if seen.insert(key(diag)) {
+            merged.push(diag.clone());
+        }
+    }
+    merged
+}
+
 /// Returns `true` when `module` contains at least one realization operation
 /// that is `CompiledGeometryOp::Isosurface` (the `isosurface(...)` builtin,
 /// which lowers to the runtime-IR `Operation::Surface` — engine_build.rs:1961).
