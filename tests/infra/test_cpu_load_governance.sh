@@ -1436,6 +1436,18 @@ _row4_share_inconclusive() {
     # Box temperature: quiet_box_met returns 0 = quiet/proceed, 1 = hot.
     # Inconclusive requires HOT, so a quiet box falls through to NOT
     # inconclusive and ROW4-1's hard assert stays reachable.
+    #
+    # LOAD-BEARING (task 5998, pinned by ROW4-1-QUIET-VACUITY-4/5): this
+    # branch inherits quiet_box_met's FAIL-OPEN — an empty, "unavailable" or
+    # non-numeric avg10 returns rc 0 (quiet), NOT rc 1 (hot). That is what
+    # makes "cannot measure the box" compose to "box was quiet" and therefore
+    # NOT inconclusive, so an unreadable /proc/pressure/cpu can never turn a
+    # genuine governance regression into a silent SKIP. Do NOT "harden" this
+    # by treating an unmeasurable sample as hot, and do not add a
+    # pre-validation guard on host_avg10 here — either inverts the fail-safe
+    # direction. Measured semantics (load_tolerance_lib.sh:146):
+    #   'unavailable' -> rc 0   'nan-ish' -> rc 0   '' -> rc 0
+    #   '5.0'         -> rc 0   '64.92'   -> rc 1
     if quiet_box_met "$host_avg10" "$ceiling"; then
         return 1
     fi
