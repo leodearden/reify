@@ -9,12 +9,21 @@
 # (NO-OP for test-groups — verified on 0.9.136).
 # The in-file literal '24' below is the sed-template fallback (hard-cap ceiling).
 #
-# Headroom basis (task 4503/γ, supersedes task 4451 §d basis):
+# Headroom basis (task 4503/γ, supersedes task 4451 §d basis; AMENDED task 5984):
 #   32-core / 125 GiB host; held-slot semaphore (task β/4502) bounds concurrent
 #   verify runs to ≤2 (1 task slot at default N=1 + 1 exempt merge); worst case
-#   2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB → guaranteed no swap; cap 24 stays
-#   below nproc=32 global so it remains a real backstop.  See
+#   2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB → guaranteed no swap.  See
 #   docs/notes/multi-process-occt-bench.md §d for full evidence.
+#   AMENDMENT (task 5984): the original basis ended "cap 24 stays below
+#   nproc=32 global so it remains a real backstop" — that sentence is now
+#   FALSE.  [profile.default] test-threads (below) bounds the GLOBAL pool at
+#   min(16, nproc), so no more than 16 tests run concurrently overall and a
+#   group cap of 24 can never bind.  This is a strict TIGHTENING (the group's
+#   effective memory bound falls from 24 × ~2 GiB = 48 GiB to 16 × ~2 GiB =
+#   32 GiB), not a loosening.  The group is deliberately KEPT, not deleted: it
+#   becomes a real backstop again the moment the global is raised via
+#   REIFY_NEXTEST_TEST_THREADS — which is exactly when a runaway OCCT pool
+#   would matter most.  Do not remove it as "dead config".
 #
 # The OCCT-touching crates (reify-kernel-occt, reify-eval, reify-cli,
 # reify-config — authoritative list: scripts/occt-touching-crates.txt) are
@@ -46,6 +55,54 @@ occt = { max-threads = 24 }
 # guard until one exists.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
+
+# Global test-thread pool cap (task 5984).
+#
+# WHY: cargo-nextest defaults the global pool to the host's logical CPU count
+# (32 here), so before this key EVERY crate outside the `occt` test-group —
+# reify_lsp, reify-syntax, reify-compiler, the GUI Rust tests — ran unbounded.
+# Observed: 23 concurrent reify_lsp test binaries from a SINGLE warm lane
+# during a load-276 spike.  Compounded by REIFY_TEST_SEMAPHORE_CONCURRENCY: 2
+# (two lanes' worth of that at once) plus merge-role verifies, which bypass the
+# semaphore entirely.
+#
+# THE JUSTIFICATION IS CPU-SHARE SYMMETRY AND RUNQUEUE DEPTH — **NOT** MEMORY.
+# Stated explicitly with its counter-evidence so nobody "helpfully" adds a RAM
+# term here later for consistency with the occt cap above:
+#   - orchestrator-reify.service holds 25.3 GiB memory.current against only
+#     3.6 GiB anon — the remainder is reclaimable cargo page cache.
+#   - a live df-verify-reify-*.scope measured 25.4 GiB current / 0.1 GiB anon.
+# Reify's test footprint is not the problem; runqueue depth is.  The occt cap's
+# RAM term is asymmetric ON PURPOSE: OCCT threads really do carry ~2 GiB of
+# anon each (docs/notes/multi-process-occt-bench.md); ordinary Rust test
+# binaries do not.
+#
+# WHY 16: it matches the dark-factory half (dark_factory:3589, pytest
+# `-n auto` -> `-n 16`).  A fleet's share of a saturated host is roughly
+# proportional to its runnable-thread count, so an ASYMMETRIC pair of caps
+# would merely transfer share from the capped side to the uncapped one.
+#
+# KEY-NAME HAZARD — the highest-risk failure mode of this key.  nextest 0.9.136
+# does NOT deny unknown config keys: it emits
+#   warning: in config file .config/nextest.toml, ignoring unknown
+#            configuration key: profile.default.<key>
+# and silently continues.  A misspelling (`test_threads`, `test-thredz`) fails
+# OPEN — the pool stays uncapped with no error anywhere.  Verified on 0.9.136
+# that the exact hyphenated spelling `test-threads` produces no such warning
+# while `test-thredz` does.  Same "verified once on 0.9.136" convention this
+# file already uses for the `--config`-is-a-NO-OP-for-test-groups note above.
+#
+# The in-file literal '16' is the sed-template fallback (the HARD_CAP ceiling),
+# mirroring the "in-file literal '24'" convention for the occt cap above:
+# scripts/gen-nextest-config.sh rewrites it to the host-resolved
+# min(HARD_CAP=16, nproc) for verify.sh, and a bare `cargo nextest run` that
+# bypasses verify.sh entirely still gets a bounded pool rather than 32.
+#
+# CLI PRECEDENCE: nextest's own `--test-threads` beats the config file, so
+# verify.sh's `--test-threads=N` (task 5264, the dark-factory offline deep-test
+# lane) still wins verbatim when passed.  This key changes only the UNSET
+# default.
+test-threads = 16
 
 # Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
 # Kept in sync with scripts/occt-touching-crates.txt by hand (these are config
