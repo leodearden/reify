@@ -289,8 +289,9 @@ structure SphereCheck {
 /// below the `1mm` (1e-3 m) bound (1.61x inside) → used by BT7 to verify
 /// `Satisfied`.
 ///
-/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3.75x
-/// cheaper to tessellate than 0.1mm and still passes, as do both its measured
+/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper
+/// to tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves
+/// with machine load) and still passes, as do both its measured
 /// neighbours (0.25mm → 5.198e-4 m, 0.35mm → 7.271e-4 m), so there is no
 /// sawtooth cliff within ±17%. The deviation is a SAWTOOTH in `#precision`
 /// (integer segment counts inside OCCT's mesher) and must never be
