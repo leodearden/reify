@@ -554,7 +554,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
     if purpose_values.is_empty() {
         // No --purpose flag: route through the appropriate check path.
         //
-        // Three constraint kinds need live kernel state, and a single module may
+        // Four routing kinds need live kernel state, and a single module may
         // carry any combination:
         //   * RepresentationWithin (task-4199 γ) — needs
         //     `set_capture_repr_tol(true)` + `tessellate_realizations` to
@@ -573,6 +573,21 @@ fn cmd_check(args: &[String]) -> ExitCode {
         //     measure_dfm_rules C1 guard fires → no output, exit 0).
         //     C2 (modules without DFMRule see has_dfm_rule=false →
         //     byte-identical to their previous path).
+        //   * module has geometry (task 5748, PRD
+        //     docs/prds/v0_6/check-diagnostic-truthfulness.md leaf β D1) — a
+        //     module whose templates carry a realization op or a
+        //     `Type::Geometry` value cell ([`module_has_geometry`], whose doc
+        //     contract spells out both signals) needs
+        //     `build(ExportFormat::Step)` for a DIFFERENT reason than the three
+        //     above: geometry-query value cells (`centroid`,
+        //     `moment_of_inertia`, `mass`, …) are populated only by
+        //     `run_post_processes`/`post_process_geometry_queries`, which run
+        //     on the build()/tessellate() path. Without it those cells stay
+        //     `undef` and every constraint reading one degrades to
+        //     Indeterminate — a check that is silent about geometry it never
+        //     realized. `cmd_eval` already routes this way (its
+        //     `module_has_geometry` branch is the precedent); this makes
+        //     `check` agree. Same predicate, no new detection logic.
         //
         // amend (reviewer suggestion: robustness_routing) — these were
         // previously two mutually-exclusive `else if` arms with geometric
@@ -593,20 +608,31 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // tessellate realize nothing → all three kinds yield Indeterminate or
         // are skipped (never a false Violated or false W_DFM_OVERHANG) → exit 0.
         //
-        // When the module has NONE of the three kinds, keep the existing
+        // When the module has NONE of the four kinds, keep the existing
         // `Engine::new(None)+check()` path verbatim (C2).
         let checker = SimpleConstraintChecker;
         let has_geometric_conforms = module_has_geometric_conforms(&compiled);
         let has_representation_within = module_has_representation_within(&compiled);
         let has_dfm_rule = module_has_dfm_rule(&compiled);
         let has_thickness_dfm = module_has_thickness_dfm_rule(&compiled);
-        let result = if has_geometric_conforms || has_representation_within || has_dfm_rule {
+        let has_geometry = module_has_geometry(&compiled);
+        // BOTH nested gates below learn `has_geometry`, and both are
+        // load-bearing (task 5748): extending only the outer one would put a
+        // geometry-only module on the kernel-backed engine but never call
+        // `build()`, so `run_post_processes`/`post_process_geometry_queries`
+        // would never fire and the geometry-query cells would stay `undef` —
+        // the routing change would be observably inert.
+        let result = if has_geometric_conforms
+            || has_representation_within
+            || has_dfm_rule
+            || has_geometry
+        {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
             if has_representation_within {
                 // Record deviation during tessellation.
                 engine.set_capture_repr_tol(true);
             }
-            if has_geometric_conforms || has_dfm_rule {
+            if has_geometric_conforms || has_dfm_rule || has_geometry {
                 // Realize live B-rep handles into `realization_handles`. The
                 // build result is discarded; only its handle-population side
                 // effect matters. Run BEFORE `tessellate_realizations` —
@@ -618,6 +644,13 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // `realization_handles` to set each rule's `subject_handle`
                 // and skips rules where the handle is None — the same
                 // precondition as geometric Conforms.
+                //
+                // has_geometry (task 5748): `build()` additionally runs
+                // `run_post_processes`/`post_process_geometry_queries`, which
+                // is the ONLY thing that resolves geometry-query value cells
+                // (`centroid`, `moment_of_inertia`, …). This gate — not just
+                // the outer routing one — is what flips those cells from
+                // `undef` to a real value for the check() call below.
                 let _ = engine.build(&compiled, ExportFormat::Step);
             }
             if has_representation_within {
