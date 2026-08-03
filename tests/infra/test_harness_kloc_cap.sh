@@ -1876,9 +1876,36 @@ assert "8: live orphan scan emits a structured PASS line carrying the data-row c
 echo ""
 echo "--- Section 9: baseline row shape / well-formedness ---"
 
-# --- must-fire: a baseline row that is not an in-scope standalone. ---
+# --- must-fire: a baseline row that is not an in-scope standalone. Six
+#     distinct malformed shapes, chosen to name what Section 8 (the
+#     orphan-row detector) is structurally blind to whenever the file
+#     happens to exist on disk — Section 8 only asks "is the file there?",
+#     never "is the row itself well-formed?". This detector is pure-string
+#     (no <root_dir>), so none of these rows needs a backing file on disk to
+#     exercise it:
+#       - crates/reify-eval/src/foo.rs                  exists, but is not
+#         under tests/ at all — passes Section 8 silently if it existed.
+#       - crates/reify-eval/tests/sub/dir/x.rs           nested below tests/.
+#       - crates/reify-eval/tests/harness_something.rs  a harness_*.rs root,
+#         sanctioned by construction, never itself a baseline row.
+#       - crates/reify-eval/tests/tensegrity_t0a.rs      one of the 7
+#         permanently-standalone override stems (invariant I1).
+#       - crates/reify-solver-elastic/tests/x.rs         a real crate, but
+#         not one of the 5 consolidatable crates.
+#       - not/a/crate/path.rs                            not crates/-rooted
+#         at all.
+#     The first five also exercise the DERIVED half of
+#     _harness_layout_row_crate (crate=reify-eval / crate=reify-solver-elastic)
+#     — before this fixture grew, only its `-`-fallback branch was pinned. ---
 _s9_fire_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_fire_baseline")
-printf 'crates/reify-eval/tests/present.rs\nnot/a/crate/path.rs\n' \
+printf '%s\n' \
+    'crates/reify-eval/tests/present.rs' \
+    'crates/reify-eval/src/foo.rs' \
+    'crates/reify-eval/tests/sub/dir/x.rs' \
+    'crates/reify-eval/tests/harness_something.rs' \
+    'crates/reify-eval/tests/tensegrity_t0a.rs' \
+    'crates/reify-solver-elastic/tests/x.rs' \
+    'not/a/crate/path.rs' \
     > "$_s9_fire_baseline"
 
 _s9_fire_out="$(mktemp)"; _TMPDIRS+=("$_s9_fire_out")
@@ -1891,14 +1918,30 @@ assert "9: a baseline row that is not an in-scope standalone fires (returns 1)" 
 assert "9: malformed row emitted as a structured FAIL line (malformed-baseline-row)" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=not/a/crate/path\.rs reason=malformed-baseline-row$' \
         "$_s9_fire_out"
-# Precision: a row that IS a well-formed in-scope standalone is never flagged.
+assert "9: a file that EXISTS but is not under tests/ is caught (crate= derived, not the - fallback)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/src/foo\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a row nested below tests/ is rejected" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/sub/dir/x\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a harness_*.rs root is rejected (sanctioned by construction, never a baseline row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/harness_something\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: one of the 7 override stems is rejected (permanently standalone, never a baseline row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/tensegrity_t0a\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a non-consolidatable crate is rejected (its own crate= derived, not skipped)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-solver-elastic file=crates/reify-solver-elastic/tests/x\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+# Precision: the one row that IS a well-formed in-scope standalone is never
+# flagged.
 assert "9: a well-formed row is NOT flagged (precision)" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL .*present\.rs" "$1"' _ "$_s9_fire_out"
-# Exactly one FAIL line: a second malformed row cannot hide behind the first,
-# and a single row is never double-reported.
+# Exactly one FAIL line per malformed row, six total: none hides behind
+# another, and none is double-reported.
 _s9_fire_fails="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s9_fire_out" || true)"
-assert "9: exactly one FAIL line for one malformed row (no double-report, no masking)" \
-    test "$_s9_fire_fails" -eq 1
+assert "9: exactly one FAIL line per malformed row, six total (no double-report, no masking)" \
+    test "$_s9_fire_fails" -eq 6
 
 # --- must-not-fire: every row is a well-formed in-scope standalone, plus
 #     comment / blank / commented-out-path lines, which are NOT data rows. ---
