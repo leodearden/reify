@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Generate a temp nextest config file with the occt max-threads cap set from
-# the environment (REIFY_OCCT_NEXTEST_MAX_THREADS, default: host-relative min).
+# Generate a temp nextest config file with BOTH concurrency caps set from the
+# environment:
+#   * the occt test-group cap  (REIFY_OCCT_NEXTEST_MAX_THREADS, task 4503/4621)
+#   * the global [profile.default] test-threads pool cap
+#                              (REIFY_NEXTEST_TEST_THREADS,     task 5984)
 #
 # Stdout contract: prints ONLY the resolved temp file path (bare path).
 # All diagnostics go to stderr.  Mirrors scripts/setup-worktree-debug-port.sh.
@@ -33,21 +36,92 @@
 #              else parsed from /proc/meminfo (MemTotal kB → GiB); else RAM
 #              term is skipped so non-Linux/unreadable hosts keep CPU-only.
 #
+# Global pool derivation (task 5984; when REIFY_NEXTEST_TEST_THREADS is unset):
+#   tt = min(HARD_CAP, nproc)                [nproc term skipped if unavailable]
+#
+#   HARD_CAP:  16 (see below; made a knob in a later step of task 5984).
+#   nproc:     the SAME resolved host CPU count as above.
+#
+#   NO RAM TERM — deliberate, and asymmetric with the occt cap ON PURPOSE.
+#   This cap's justification is CPU-share symmetry and runqueue depth, not RSS:
+#   orchestrator-reify.service holds 25.3 GiB memory.current against only
+#   3.6 GiB anon (rest = reclaimable cargo page cache), and a live
+#   df-verify-reify-*.scope measured 25.4 GiB current / 0.1 GiB anon.  OCCT
+#   threads really do carry ~2 GiB anon each, which is why that term belongs on
+#   the occt cap and not here.  Full rationale: .config/nextest.toml.
+#
+#   Host-relative rather than a bare literal, for the task 4621 reason: a fixed
+#   16 equals nproc on a 16t laptop (no reduction at all) and oversubscribes an
+#   8-core host or CPU-quota'd container 2x.
+#
 # Env knobs (all strictly digits-only validated):
-#   REIFY_OCCT_NEXTEST_MAX_THREADS  — explicit override; wins verbatim.
-#   REIFY_OCCT_NEXTEST_HARD_CAP     — upper ceiling (default 24).
+#   REIFY_OCCT_NEXTEST_MAX_THREADS  — explicit occt-group override; wins verbatim.
+#   REIFY_OCCT_NEXTEST_HARD_CAP     — occt-group upper ceiling (default 24).
 #   REIFY_OCCT_NPROC                — inject CPU count (testability, CI injection).
+#                                       NOTE: the OCCT_ prefix is HISTORICAL
+#                                       (it landed with task 4621's occt-only
+#                                       derivation).  The value is the host's
+#                                       logical CPU count — nothing about it is
+#                                       OCCT-specific — and it is now the single
+#                                       injection point for BOTH derivations.
+#                                       Deliberately NOT aliased to a second
+#                                       name: two knobs would need a precedence
+#                                       rule and duplicated tests for zero added
+#                                       expressiveness.
 #   REIFY_OCCT_MEMTOTAL_GIB         — inject MemTotal in GiB (testability).
 #   REIFY_OCCT_GIB_PER_THREAD       — GiB per OCCT thread (default 2; see
 #                                       docs/notes/multi-process-occt-bench.md).
+#   REIFY_NEXTEST_TEST_THREADS      — explicit global-pool override; wins verbatim.
 #
-# Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.
-# Laptop (16t, 32 GiB):        min(24,16,16)=16 — avoids 24×2 GiB ≈ 48 GiB OOM.
-# Laptop (16t, 16 GiB):        min(24,16,8)=8.
+# occt cap:
+#   Workstation (32t, ~125 GiB): min(24,32,62)=24 — bit-identical to pre-4621.
+#   Laptop (16t, 32 GiB):        min(24,16,16)=16 — avoids 24×2 GiB ≈ 48 GiB OOM.
+#   Laptop (16t, 16 GiB):        min(24,16,8)=8.
+# global pool:
+#   Workstation (32t): min(16,32)=16 — the reduction this task exists for.
+#   Laptop (16t):      min(16,16)=16.
+#   8-core host:       min(16,8)=8   — no oversubscription.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Host logical-CPU count — resolved ONCE here (task 5984 hoist) and shared by
+# BOTH derivations below (the occt test-group cap and the global test-threads
+# pool cap).  Precedence and validation are preserved verbatim from the
+# occt-only form this replaces: REIFY_OCCT_NPROC → `nproc` →
+# `getconf _NPROCESSORS_ONLN` → empty (the CPU term is then skipped by each
+# caller, preserving today's behavior on hosts without either tool).
+#
+# Behaviour delta from the hoist: nproc is now resolved even when
+# REIFY_OCCT_NEXTEST_MAX_THREADS is set explicitly — one extra subprocess, no
+# change to any resolved value.
+# ---------------------------------------------------------------------------
+_resolve_host_nproc() {
+    local n=""
+    case "${REIFY_OCCT_NPROC:-}" in
+        (''|*[!0-9]*) ;;   # invalid or unset — try system commands below
+        (*)           n="${REIFY_OCCT_NPROC}" ;;
+    esac
+    if [ -z "$n" ]; then
+        if command -v nproc >/dev/null 2>&1; then
+            n="$(nproc 2>/dev/null || true)"
+        fi
+    fi
+    if [ -z "$n" ]; then
+        if command -v getconf >/dev/null 2>&1; then
+            n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+        fi
+    fi
+    # Validate: must be a non-empty pure-digit string to be used.
+    case "${n:-}" in
+        (''|*[!0-9]*) n="" ;;
+    esac
+    printf '%s' "$n"
+}
+
+_nproc="$(_resolve_host_nproc)"
 
 # Resolve the cap — strict digits-only check, same rule as parse_debug_port.
 # Empty, non-digit, whitespace-padded, or otherwise non-numeric → default 24.
@@ -61,26 +135,7 @@ case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
             (*)           hard_cap="${REIFY_OCCT_NEXTEST_HARD_CAP}" ;;
         esac
 
-        # nproc: testability-injectable CPU count.
-        _nproc=""
-        case "${REIFY_OCCT_NPROC:-}" in
-            (''|*[!0-9]*) ;;   # invalid or unset — try system commands below
-            (*)           _nproc="${REIFY_OCCT_NPROC}" ;;
-        esac
-        if [ -z "$_nproc" ]; then
-            if command -v nproc >/dev/null 2>&1; then
-                _nproc="$(nproc 2>/dev/null || true)"
-            fi
-        fi
-        if [ -z "$_nproc" ]; then
-            if command -v getconf >/dev/null 2>&1; then
-                _nproc="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
-            fi
-        fi
-        # Validate: must be a non-empty pure-digit string to be used.
-        case "${_nproc:-}" in
-            (''|*[!0-9]*) _nproc="" ;;
-        esac
+        # nproc: resolved once at top level by _resolve_host_nproc ($_nproc).
 
         # GIB_PER_THREAD: GiB consumed per concurrent OCCT thread (default 2).
         case "${REIFY_OCCT_GIB_PER_THREAD:-}" in
@@ -126,17 +181,51 @@ case "${REIFY_OCCT_NEXTEST_MAX_THREADS:-}" in
         ;;
 esac
 
+# ---------------------------------------------------------------------------
+# Global [profile.default] test-threads pool cap (task 5984).
+#
+# tt = min(HARD_CAP=16, nproc)  — the nproc term is skipped when unavailable,
+# mirroring the occt min()'s skip-unavailable-term structure above, so a host
+# without nproc/getconf falls back to HARD_CAP rather than erroring.
+#
+# Same strict digits-only parse idiom as REIFY_OCCT_NEXTEST_MAX_THREADS: empty,
+# non-digit or whitespace-padded input falls through to the derivation.
+# ---------------------------------------------------------------------------
+case "${REIFY_NEXTEST_TEST_THREADS:-}" in
+    (''|*[!0-9]*)
+        # Explicit override not set (or invalid) — derive host-relative cap.
+        tt=16
+        if [ -n "$_nproc" ] && [ "$_nproc" -lt "$tt" ]; then
+            tt="$_nproc"
+        fi
+        ;;
+    (*)
+        tt="${REIFY_NEXTEST_TEST_THREADS}"
+        ;;
+esac
+
 # Create a fresh temp file.  Template ends in X's (do NOT combine --suffix with
 # a .toml-terminated template — that form errors on some systems; empirically
 # confirmed during planning that the plain X-terminated template works).
 tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 
-# Write a full copy of .config/nextest.toml with ONLY the occt literal line
-# rewritten to the resolved cap.  Anchored sed substitution preserves the
-# [[profile.default.overrides]] filter verbatim (including the per-test
-# slow-timeout/terminate-after ceilings, task 5141 — [profile.default] and
-# the per-binary overrides are untouched by this sed).
-sed "s/^occt = { max-threads = [0-9][0-9]* }$/occt = { max-threads = ${cap} }/" \
+# Write a full copy of .config/nextest.toml with ONLY the two cap literal lines
+# rewritten to their resolved values.  Both substitutions are ANCHORED, so the
+# [[profile.default.overrides]] blocks are preserved verbatim (including the
+# per-test slow-timeout/terminate-after ceilings, task 5141) and every other
+# [profile.default] key is untouched.
+#
+# `^test-threads = [0-9][0-9]*$` (task 5984) is unique in the file — the
+# overrides blocks carry no such key.
+#
+# Both forms fail SAFE: if a future edit breaks an anchor the substitution
+# silently no-ops and the generated config keeps that line's in-file literal —
+# still a BOUNDED cap, never an uncapped pool.  Because a no-op is invisible at
+# runtime, Assertion I in tests/infra/test_nextest_slow_priority.sh rewrites
+# BOTH anchors in ONE generate and checks both landed, converting the silent
+# no-op into a loud CI failure.
+sed -e "s/^occt = { max-threads = [0-9][0-9]* }$/occt = { max-threads = ${cap} }/" \
+    -e "s/^test-threads = [0-9][0-9]*$/test-threads = ${tt}/" \
     "$REPO_ROOT/.config/nextest.toml" > "$tmp"
 
 # Stdout contract: ONLY the path.
