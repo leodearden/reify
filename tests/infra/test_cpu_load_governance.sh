@@ -1494,6 +1494,26 @@ sys.exit(0 if ok else 1)
     return 0
 }
 
+# _row4_sample_host_avg10 <proc_path>
+#   Echo the `some` line's avg10 field from a PSI-formatted file, or the
+#   literal "unavailable" when the path is missing/unreadable/malformed
+#   (task 5998).  Delegates to the instrument's psi-avg10 subcommand — the
+#   SAME sampler ROW2_3 uses at its own bracket — which already prints
+#   "unavailable" (exit 0) on any read/parse failure; the `|| echo` guard
+#   covers python3 itself failing to launch.
+#
+#   "unavailable" is the FAIL-SAFE direction, not a degenerate one: it feeds
+#   quiet_box_met's fail-open, so an unreadable PSI source reads as a quiet
+#   box and leaves ROW4-1's hard assert reachable.  Never substitute 0 here —
+#   a numeric 0 reads as a maximally quiet box for the same reason, but does
+#   so by ASSERTING quiet rather than by declining to measure, which is the
+#   distinction ROW4-1-SAMPLE-VACUITY-2 pins.
+_row4_sample_host_avg10() {
+    local proc_path="$1"
+    python3 "$INSTRUMENT" psi-avg10 "$proc_path" 2>/dev/null \
+        || echo "unavailable"
+}
+
 # _ROW4_SLICE_TASK/_MERGE, the naming derivation, the _row4_confine_* helper
 # functions, and _ROW4_CONFINE_CORES/QUOTA/W/CPUS/PARENT are now computed in
 # the hoisted "Confined-quota derivation" section ABOVE Cycle ROW1 (H5, task
@@ -1966,6 +1986,18 @@ else
     _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
         2>/dev/null || echo "unavailable")"
 
+    # (g2) Sample HOST-WIDE PSI at the same instant the window closes, before
+    #      the reap below — as close to the bracketed interval as possible, so
+    #      the sample describes the interval that was actually measured rather
+    #      than teardown.  Host-wide (not slice-relative) is deliberate: the
+    #      ROW4 parent is quota-capped, and a cgroup's `some` pressure counts
+    #      runnable-but-not-running time, which INCLUDES quota throttling — so
+    #      a quota-capped slice always shows high stall and slice-relative PSI
+    #      is useless as a foreign-load discriminator here.  What actually
+    #      breaks this measurement is other work contending for the pinned
+    #      CPUs, which is exactly what host-wide PSI measures.
+    _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+
     # (h) Reap both burns (natural completion or timeout) before cleanup.
     wait "$_ROW4_TASK_BG" 2>/dev/null || true
     wait "$_ROW4_MERGE_BG" 2>/dev/null || true
@@ -1987,10 +2019,21 @@ else
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
     # Asserts the C-G2 proportional cpu.weight enforcement under contention,
     # measured INSIDE the confined parent-slice budget with the burns pinned
-    # to the confined CPUs (H5 + esc-4926-3) -- the pinning-forced per-CPU
-    # co-residency is what makes the bound host-load-independent (PRD §1 G6
-    # #3 as revised; foreign/concurrent load on the pinned CPUs only deepens
-    # co-residency and improves convergence).
+    # to the confined CPUs (H5 + esc-4926-3).
+    #
+    # SCOPE OF THE CONFINEMENT (task 5998 — corrects the earlier claim that
+    # pinning makes this bound host-load-independent, and the "foreign load
+    # only deepens co-residency and improves convergence" gloss): the quota
+    # bounds the AGGREGATE, not the SPLIT. Both runs of the 5998 reproduction
+    # saturated the aggregate — usage fractions 1.019 (failing) and 0.989
+    # (passing) against the 2-core × 8 s budget — while their merge_share
+    # differed by 0.07. Pinning does not exclude FOREIGN processes from the
+    # pinned CPUs (task 4967); under heavy oversubscription that foreign
+    # traffic perturbs the interleaving and cpu.weight proportionality, which
+    # is only asymptotically enforced, degrades from 0.75 toward 0.50. The
+    # measured false-RED was 0.6355 vs the 0.65 floor (#4656 flake class; this
+    # file's own history at :1378 records 0.639 of the same shape). The
+    # quiet-box escape hatch below closes it WITHOUT loosening any threshold.
     # W_merge/(W_merge+W_task) = 300/(300+100) = 0.75; floor = 0.75 - tol.
     # Default tol=0.10 (floor=0.65) accounts for real-world cgroup scheduling
     # measurement variance (startup stagger, scope-creation lag, process overhead).
@@ -2006,10 +2049,21 @@ else
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
+    elif _row4_share_inconclusive "$_ROW4_MERGE_DELTA" "$_ROW4_TASK_DELTA" \
+            "$_ROW4_W_MERGE" "$_ROW4_W_TASK" "$_ROW4_TOL" \
+            "$_ROW4_HOST_AVG10" "$_ROW4_QUIET_CEILING"; then
+        # Quiet-box escape hatch (task 5998, restoring the gate H5/#4926
+        # removed). Ordered AFTER the measurement, never as a pre-gate: a
+        # pre-gate would discard every ROW4-1 measurement on an orchestrator
+        # host, which is essentially never quiet, making the assertion
+        # vacuous in practice. Here it fires in exactly one quadrant —
+        # sub-floor share AND hot box — so a share at/above the floor still
+        # PASSES even on a hot box, and a sub-floor share on a QUIET box still
+        # goes RED (ROW4-1-QUIET-VACUITY-2 is the non-vacuity crux pinning
+        # that). No threshold is loosened: _ROW4_TOL is untouched and the
+        # ceiling is the existing shared REIFY_CPU_GOV_TEST_QUIET_CEILING.
+        echo "  SKIP ROW4-1: inconclusive — sub-floor merge_share (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},tol=${_ROW4_TOL}) measured on a NON-QUIET box (host avg10=${_ROW4_HOST_AVG10} >= ceiling=${_ROW4_QUIET_CEILING}) — foreign load on the pinned CPUs dilutes cpu.weight proportionality, not a governance failure"
     else
-        # No quiet-box fallback here (H5): the confined parent quota makes
-        # this measurement host-load-independent, so it asserts directly and
-        # can go RED if governance is broken (non-vacuous; PRD §8).
         assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
             python3 -c "
 import sys
