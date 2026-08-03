@@ -19,7 +19,6 @@
 //! * `bind()` with port 0 *means* "kernel, assign me an ephemeral port", so a
 //!   listener that asks for `:0` is handed a **different** port. Nothing can
 //!   ever end up listening on port 0, so there is no TOCTOU window to lose.
-//!   (Measured here: `bind("127.0.0.1:0")` came back bound to port 59193.)
 //! * `connect()` to port 0 is rejected by the kernel immediately — measured
 //!   on Linux as `ECONNREFUSED` (errno 111). Other platforms return
 //!   `EADDRNOTAVAIL`/`WSAEADDRNOTAVAIL` instead; still an error, which is all
@@ -41,13 +40,15 @@
 //! (`spawn_mock_mcp` in `cli.rs`) answers `initialize` with a fully
 //! well-formed JSON-RPC result carrying `protocolVersion`, `capabilities` and
 //! `serverInfo`, which any realistic response validation would accept — so
-//! hardening the handshake would have left the flake untouched. A separate
-//! follow-up task tracks that hardening; it needs live-wire verification
-//! against a running jcodemunch serve, which is a different verification
-//! budget from this test-only de-flake.
+//! hardening the handshake would have left the flake untouched. Task #5832
+//! tracks that hardening; it needs live-wire verification against a running
+//! jcodemunch serve, which is a different verification budget from this
+//! test-only de-flake.
 //!
 //! Per the `common` partial-consumer contract, every item here carries
 //! `#[allow(dead_code)]` so a test binary may consume only a subset.
+
+use std::net::{SocketAddr, TcpListener};
 
 /// `host:port` of an endpoint nothing can ever listen on. See the module doc
 /// for why port 0 is unreachable by construction rather than by luck.
@@ -61,4 +62,36 @@ pub const UNREACHABLE_ADDR: &str = "127.0.0.1:0";
 #[allow(dead_code)]
 pub fn unreachable_mcp_url() -> String {
     format!("http://{UNREACHABLE_ADDR}/mcp")
+}
+
+/// Attempt to occupy the EXACT `host:port` that `url` names.
+///
+/// Returns the parsed address plus `Some(listener)` iff the kernel actually
+/// handed back that same port — a bind request for port 0 is a request for an
+/// *ephemeral* port, so it comes back bound somewhere else and is correctly
+/// reported as "no hijack".
+///
+/// This is how the #5830 port-recycling race is made deterministic: the test
+/// itself plays the adversary at the address under test instead of soaking and
+/// hoping to catch a real recycler in the act.
+///
+/// The address is parsed back out of `url` rather than read from
+/// [`UNREACHABLE_ADDR`] on purpose: it ties the adversary to the endpoint the
+/// caller actually probes, so a future change to [`unreachable_mcp_url`] that
+/// pointed somewhere else could not leave these locks quietly hijacking an
+/// address nobody is testing.
+#[allow(dead_code)]
+pub fn try_hijack_url(url: &str) -> (SocketAddr, Option<TcpListener>) {
+    let host_port = url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .expect("url has a host:port segment");
+    let addr: SocketAddr = host_port
+        .parse()
+        .unwrap_or_else(|e| panic!("'{host_port}' must parse as a SocketAddr: {e}"));
+    let hijack = TcpListener::bind(addr)
+        .ok()
+        .filter(|l| l.local_addr().ok().map(|a| a.port()) == Some(addr.port()));
+    (addr, hijack)
 }

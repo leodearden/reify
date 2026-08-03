@@ -355,7 +355,6 @@ fn live_audit_produces_p1_and_pdead_findings() {
 #[cfg(test)]
 mod serve_preflight {
     use super::*;
-    use std::net::{SocketAddr, TcpListener};
 
     /// The endpoint the preflight gate probes must be unreachable BY
     /// CONSTRUCTION — not merely unowned at the instant its URL was minted.
@@ -374,22 +373,10 @@ mod serve_preflight {
     #[test]
     fn unreachable_sentinel_is_not_reachable_under_a_racing_binder() {
         let url = common::net::unreachable_mcp_url();
-        let host_port = url
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .expect("url has a host:port segment");
-        let addr: SocketAddr = host_port
-            .parse()
-            .unwrap_or_else(|e| panic!("'{host_port}' must parse as a SocketAddr: {e}"));
-
-        // Play the adversary: occupy the exact address the URL names, and
-        // hold it across the assertion below. A bind request for port 0 is a
-        // request for an *ephemeral* port, so it comes back bound elsewhere
-        // and is correctly reported as "no hijack".
-        let _hijack = TcpListener::bind(addr)
-            .ok()
-            .filter(|l| l.local_addr().ok().map(|a| a.port()) == Some(addr.port()));
+        // Play the adversary: occupy the exact address the URL names. Binding
+        // `_hijack` (not `_`) keeps any listener that DID land alive across
+        // the assertion below.
+        let (addr, _hijack) = common::net::try_hijack_url(&url);
 
         assert!(
             !jcodemunch_serve_reachable(&url),

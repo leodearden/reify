@@ -106,21 +106,6 @@ fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
     })
 }
 
-/// A URL suitable for "connection refused" tests: it names TCP port 0, which
-/// no listener can ever occupy (a `bind()` for port 0 is a request for an
-/// *ephemeral* port, so the asker is handed a different one) and which the
-/// kernel refuses to `connect()` to immediately. The endpoint is therefore
-/// unreachable by construction, with no time-of-check/time-of-use window.
-///
-/// This used to bind an ephemeral port, record it, and drop the listener —
-/// yielding a port that was merely unowned at the instant it was minted. The
-/// in-suite mock MCP server recycled such a port, answered `initialize`, and
-/// suppressed the fail-soft breadcrumb these tests assert on; that was the
-/// #5830 flake. See `common::net` for the full rationale.
-fn closed_port_url() -> String {
-    common::net::unreachable_mcp_url()
-}
-
 /// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
 /// Used to lift the committed `tests/fixtures/ptodo/` tree into a throwaway
 /// git repo so its root-relative paths escape the live `crates/reify-audit/`
@@ -784,13 +769,13 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--pattern", "P1",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -816,14 +801,19 @@ mod cli {
             serde_json::Value::Array(findings)
         );
 
-        // Fallback breadcrumb must appear on stderr.
+        // Fallback breadcrumb must appear on stderr, pinned to the endpoint
+        // under test. Loose substrings will not do: the binary independently
+        // emits "tasks.db unreachable at ... advisory lanes degraded", so a
+        // bare `contains("unreachable")`/`contains("degrad")` is satisfied
+        // whether or not the jcodemunch arm ever ran.
+        let breadcrumb = format!("jcodemunch unreachable at '{unreachable_url}'");
         assert!(
-            stderr.contains("jcodemunch"),
-            "stderr must contain fallback breadcrumb mentioning 'jcodemunch'; stderr:\n{stderr}"
+            stderr.contains(&breadcrumb),
+            "stderr must contain the fail-soft breadcrumb `{breadcrumb}`; stderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("degrad") || stderr.contains("unreachable") || stderr.contains("Noop"),
-            "stderr breadcrumb must describe fail-soft degradation; stderr:\n{stderr}"
+            stderr.contains("P1 degraded to zero findings"),
+            "stderr breadcrumb must describe the fail-soft degradation; stderr:\n{stderr}"
         );
     }
 
@@ -840,12 +830,12 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -887,31 +877,6 @@ mod cli {
         );
     }
 
-    /// Attempt to occupy the EXACT `host:port` that `url` names.
-    ///
-    /// Returns the parsed address plus `Some(listener)` iff the kernel
-    /// actually handed back that same port — a bind request for port 0 is a
-    /// request for an *ephemeral* port, so it comes back bound somewhere
-    /// else and is correctly reported as "no hijack".
-    ///
-    /// This is how the #5830 port-recycling race is made deterministic: the
-    /// test itself plays the adversary at the address under test instead of
-    /// soaking and hoping to catch a real recycler in the act.
-    fn try_hijack_url(url: &str) -> (SocketAddr, Option<TcpListener>) {
-        let host_port = url
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .expect("url has a host:port segment");
-        let addr: SocketAddr = host_port
-            .parse()
-            .unwrap_or_else(|e| panic!("'{host_port}' must parse as a SocketAddr: {e}"));
-        let hijack = TcpListener::bind(addr)
-            .ok()
-            .filter(|l| l.local_addr().ok().map(|a| a.port()) == Some(addr.port()));
-        (addr, hijack)
-    }
-
     /// Regression lock (#5830): the URL minted for "jcodemunch is
     /// unreachable" tests must be unreachable BY CONSTRUCTION, not merely
     /// unowned at the instant it is minted.
@@ -922,12 +887,13 @@ mod cli {
     /// well-formed JSON-RPC result, so `RealJCodemunchOps::new` returns
     /// `Ok`, the fail-soft `Err(e)` breadcrumb arm never runs, and
     /// `default_sweep_survives_unreachable_jcodemunch`'s breadcrumb
-    /// assertion blows up. Same fixture and argv as that test; the only
-    /// difference is the deliberate hijack.
+    /// assertion blows up. Same fixture and argv as that test, and the same
+    /// assertion set, so this lock is strictly stronger than the test it
+    /// shadows; the only difference is the deliberate hijack.
     #[test]
     fn unreachable_jcodemunch_url_cannot_be_hijacked_by_a_racing_mcp_responder() {
-        let url = closed_port_url();
-        let (_addr, hijack) = try_hijack_url(&url);
+        let url = common::net::unreachable_mcp_url();
+        let (_addr, hijack) = common::net::try_hijack_url(&url);
         // Stand a REAL MCP responder at the address the URL names, if the
         // hijack landed. `|_args| None` suffices: the breadcrumb hinges on
         // `initialize` succeeding, which the mock always answers happily.
@@ -957,17 +923,45 @@ mod cli {
             mock.stop();
         }
 
+        let code = out.status.code().unwrap_or(99);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("jcodemunch"),
-            "the unreachable-jcodemunch breadcrumb must survive a racing MCP \
-             responder on {url} (hijack landed: {hijacked}); stderr:\n{stderr}"
+
+        assert_ne!(
+            code, 125,
+            "default sweep must NOT exit 125 under a racing MCP responder on \
+             {url} (hijack landed: {hijacked}); got {code}\nstderr:\n{stderr}"
         );
         assert!(
-            stderr.contains("unreachable"),
-            "the breadcrumb must still describe the endpoint as unreachable \
-             despite a racing MCP responder on {url} (hijack landed: \
-             {hijacked}); stderr:\n{stderr}"
+            code >= 1,
+            "default sweep must exit non-zero (P5 finding expected) under a \
+             racing MCP responder on {url} (hijack landed: {hijacked}); got \
+             {code}\nstderr:\n{stderr}"
+        );
+
+        // P5 must still fire and find the phantom-done task.
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("3242")
+        });
+        assert!(
+            p5_high.is_some(),
+            "P5PhantomDone/High/3242 must survive a racing MCP responder on \
+             {url} (hijack landed: {hijacked}); findings:\n{:#}",
+            serde_json::Value::Array(findings)
+        );
+
+        // Assert the WHOLE breadcrumb, pinned to the endpoint under test.
+        // Two loose substrings would not do: the binary also emits an
+        // unrelated "tasks.db unreachable at ..." PTODO diagnostic for this
+        // tempdir project root, so a bare `contains("unreachable")` is
+        // satisfied whether or not the jcodemunch arm ever ran.
+        let breadcrumb = format!("jcodemunch unreachable at '{url}'");
+        assert!(
+            stderr.contains(&breadcrumb),
+            "the fail-soft breadcrumb `{breadcrumb}` must survive a racing MCP \
+             responder on {url} (hijack landed: {hijacked}); stderr:\n{stderr}"
         );
     }
 
@@ -980,10 +974,10 @@ mod cli {
     /// time-of-check/time-of-use window rather than over-fitting to one.
     #[test]
     fn unreachable_jcodemunch_url_refuses_connections_even_under_a_racing_binder() {
-        let url = closed_port_url();
+        let url = common::net::unreachable_mcp_url();
         // `_hijack` is deliberately bound (not `_`) so any listener that DID
         // land stays alive across the connect below — that is the adversary.
-        let (addr, _hijack) = try_hijack_url(&url);
+        let (addr, _hijack) = common::net::try_hijack_url(&url);
         assert!(
             TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_err(),
             "a client must be refused at {addr} even while a racing binder \
@@ -1004,14 +998,14 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--pattern", "P1",
                 "--no-jcodemunch",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -1052,14 +1046,14 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--task", "42",
                 "--pre-done",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -1328,13 +1322,13 @@ mod cli {
         let tasks_file = write_tasks_json(dir, &tasks);
         let runs_db = write_empty_runs_db(dir);
 
-        let closed_url = closed_port_url();
+        let unreachable_url = common::net::unreachable_mcp_url();
 
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
                 "--pattern", "P5",
-                "--jcodemunch-url", &closed_url,
+                "--jcodemunch-url", &unreachable_url,
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
