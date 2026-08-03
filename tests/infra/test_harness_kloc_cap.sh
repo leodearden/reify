@@ -704,8 +704,26 @@ harness_layout_orphan_rows() {
 harness_layout_malformed_rows() {
     local baseline_file="$1"
 
-    local rows_raw=""
-    rows_raw="$(harness_layout_baseline_rows "$baseline_file")"
+    # A missing baseline is an explicit FAIL, never a silent pass — the same
+    # graceful-degradation posture harness_layout_orphan_rows takes above.
+    if [ ! -f "$baseline_file" ]; then
+        _emit FAIL "baseline=$baseline_file" "reason=missing-baseline"
+        return 1
+    fi
+
+    # A baseline that EXISTS but cannot be READ is likewise an explicit FAIL,
+    # for the same reason and via a distinct reason= token, checked on the
+    # enumerator's own exit status: `rows -eq 0` is NOT a usable proxy for it,
+    # because a baseline holding only its header comment is the legitimate END
+    # STATE of a ratchet that shrinks toward empty (pinned above) — treating
+    # zero rows as an error would RED the merge gate as a reward for FINISHING
+    # the consolidation this guard protects.
+    local rows_raw="" rows_rc=0
+    rows_raw="$(harness_layout_baseline_rows "$baseline_file")" || rows_rc=$?
+    if [ "$rows_rc" -ne 0 ]; then
+        _emit FAIL "baseline=$baseline_file" "reason=unreadable-baseline"
+        return 1
+    fi
 
     local violations=0 rows=0
     local row crate
