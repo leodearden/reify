@@ -7,6 +7,7 @@ since the filename is not importable by name.  Exercises all pure functions and 
 CLI main() in hermetic golden tests — real subprocess probes are skip-guarded.
 """
 
+import functools
 import importlib.util
 import io
 import json
@@ -1039,31 +1040,54 @@ _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 # Order matters.  isfile() runs first and short-circuits, so a lane that never
 # generated the grammar pays no subprocess; only when parser.c exists do we spend
 # one probe asking whether it can be loaded.
-def _compute_ts_grammar_available() -> bool:
-    """Return whether the grammar e2e can run here.  Never raises.
+def _compute_grammar_e2e_status() -> tuple:
+    """Return (available, reason) for the grammar e2e.  Never raises.
 
     The bare `except Exception` is deliberate, and is the one place in this
-    change where a broad catch is correct: this runs at import time in a test
-    harness whose only sane failure mode is "cannot confirm the substrate → skip
-    the one test that needs it".  The alternative, measured on this branch, is
-    losing every test in the module plus the infra script's
-    `scripts/test_prd_capability_check.py exits 0` assert.
+    change where a broad catch is correct: the only sane failure mode for a test
+    harness here is "cannot confirm the substrate → skip the one test that needs
+    it".  The alternative, measured on this branch, is losing every test in the
+    module plus the infra script's `test_prd_capability_check.py exits 0` assert.
 
-    This is defence-in-depth and explicitly NOT a substitute for fixing the
-    trigger.  Swallowing an exception here would hide a genuinely broken
-    run_probe() from the CLI path too, which is why an unlaunchable binary is
-    represented as a harness error at source in run_probe() and this guard only
-    bounds the blast radius of whatever else may one day escape.
+    Defence-in-depth, explicitly NOT a substitute for fixing the trigger:
+    swallowing an exception here would hide a genuinely broken run_probe() from
+    the CLI path too, which is why an unlaunchable binary is represented as a
+    harness error at source in run_probe().
     """
     if not os.path.isfile(_TS_GRAMMAR_PARSER):
-        return False
+        return (False, f"{_TS_GRAMMAR_PARSER} not found — grammar never generated")
     try:
-        return bool(pcc.grammar_substrate_usable()[0])
-    except Exception:
-        return False
+        usable, reason = pcc.grammar_substrate_usable()
+    except Exception as exc:
+        return (False, f"the grammar substrate could not be interrogated ({exc!r})")
+    return (bool(usable), reason)
 
 
-_TS_GRAMMAR_AVAILABLE = _compute_ts_grammar_available()
+@functools.lru_cache(maxsize=1)
+def _grammar_e2e_status() -> tuple:
+    """Memoized _compute_grammar_e2e_status(), evaluated on FIRST USE.
+
+    Deliberately not a module-level constant.  The behavioural half spawns a real
+    tree-sitter (and on a cold cache tree-sitter compiles the grammar with cc
+    before it answers), so as an import-time constant EVERY invocation of this
+    module paid it — including `python3 -m unittest ...TestProbeSetRoundTrip` and
+    the ~140 hermetic tests that need none of it.  Only the one e2e that needs
+    the grammar calls this, so only that run spends the subprocess.
+    """
+    return _compute_grammar_e2e_status()
+
+
+def _require_grammar_substrate(test) -> None:
+    """skipTest unless a grammar probe can run here.  Call from a test body.
+
+    The measured reason is carried into the skip message rather than a static
+    one: a substrate reported unusable because tree-sitter exceeded
+    _SUBSTRATE_PROBE_TIMEOUT_S on a loaded machine is a coverage hole, not a
+    real gap, and must be tellable from a genuine sandbox denial in the log.
+    """
+    available, reason = _grammar_e2e_status()
+    if not available:
+        test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
 
 
 # ---------------------------------------------------------------------------
@@ -1071,18 +1095,20 @@ _TS_GRAMMAR_AVAILABLE = _compute_ts_grammar_available()
 # ---------------------------------------------------------------------------
 
 class TestGrammarAvailabilityGuard(unittest.TestCase):
-    """Pins _compute_ts_grammar_available() — the skip-guard's blast radius.
+    """Pins _compute_grammar_e2e_status() — the skip-guard's blast radius.
 
     Before this task the guard was a pure os.path.isfile() and could not raise
-    at all.  Making it behavioural gave it a way to fail, and it is evaluated at
-    MODULE IMPORT time, so any exception escaping it converts a one-test skip
-    into losing the entire suite — strictly worse than the spurious
-    HARNESS_ERROR this task set out to remove.
+    at all.  Making it behavioural gave it a way to fail, so any exception
+    escaping it converts a one-test skip into losing the entire suite — strictly
+    worse than the spurious HARNESS_ERROR this task set out to remove.
 
     The house rule is the one stated in tests/infra/test_prd_gate_corpus.sh:52-60
     — a toolchain that cannot be interrogated is a clean SKIP, never a spurious
     FAIL.  These tests hold the guard to it for ANY exception, not just the
     PermissionError whose trigger is fixed at source in run_probe().
+
+    Tested through the UN-memoized function, so each case observes its own
+    patches; _grammar_e2e_status() is the lru_cache'd wrapper the e2e calls.
     """
 
     @staticmethod
@@ -1102,20 +1128,25 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
 
     def test_substrate_probe_exception_degrades_to_unavailable(self):
-        """(a) ANY exception from the substrate probe → False, never propagated."""
+        """(a) ANY exception from the substrate probe → unavailable, never propagated."""
         with self._patch_parser_c(True), \
              unittest.mock.patch.object(
                  pcc, "grammar_substrate_usable",
                  side_effect=RuntimeError("boom")):
-            available = _compute_ts_grammar_available()
+            available, reason = _compute_grammar_e2e_status()
         self.assertFalse(
             available,
             "a substrate that cannot be interrogated must degrade to 'skip the "
-            "grammar e2e', not take the module down at import time",
+            "grammar e2e', not take the module down",
+        )
+        self.assertIn(
+            "boom", reason,
+            "the swallowed exception must survive into the skip message; a "
+            "silent 'unavailable' is the coverage hole this guard trades for",
         )
 
     def test_usable_substrate_with_parser_c_is_available(self):
-        """(b) parser.c present + substrate usable → True.
+        """(b) parser.c present + substrate usable → available.
 
         The hardening must not silently disable the e2e on a healthy lane; that
         would be a coverage loss disguised as a fix.
@@ -1123,10 +1154,11 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         with self._patch_parser_c(True), \
              unittest.mock.patch.object(
                  pcc, "grammar_substrate_usable", return_value=(True, "")):
-            self.assertTrue(_compute_ts_grammar_available())
+            available, _ = _compute_grammar_e2e_status()
+        self.assertTrue(available)
 
     def test_missing_parser_c_short_circuits_without_probing(self):
-        """(c) No parser.c → False, and the substrate is never probed.
+        """(c) No parser.c → unavailable, and the substrate is never probed.
 
         Pins the existing cheap short-circuit: a lane that never generated the
         grammar must pay no subprocess.  Asserted via call_count so a refactor
@@ -1135,11 +1167,27 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         probe = unittest.mock.Mock(return_value=(True, ""))
         with self._patch_parser_c(False), \
              unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
-            available = _compute_ts_grammar_available()
+            available, reason = _compute_grammar_e2e_status()
         self.assertFalse(available)
         self.assertEqual(
             probe.call_count, 0,
             "isfile(parser.c) must short-circuit before any subprocess is spent",
+        )
+        self.assertIn("parser.c", reason, "the skip message must name what is missing")
+
+    def test_hermetic_import_spawns_no_substrate_probe(self):
+        """The behavioural half is LAZY — importing this module must not probe.
+
+        As an import-time constant it ran a real tree-sitter (on a cold cache, a
+        cc compile of the grammar first) for every invocation of this module,
+        including the ~140 hermetic tests that need none of it.  Asserted from a
+        snapshot taken at the END of the module body, so the pin is on import
+        itself and does not depend on which tests have run by now.
+        """
+        self.assertEqual(
+            _GRAMMAR_STATUS_CALLS_AT_IMPORT, 0,
+            "_grammar_e2e_status() must not be evaluated at import time; only "
+            "the grammar e2e should ever spend the subprocess",
         )
 
 
@@ -1687,14 +1735,13 @@ class TestMain(unittest.TestCase):
 
     # ── skip-guarded real e2e (tree-sitter grammar) ───────────────────────────
 
-    @unittest.skipUnless(
-        _TS_GRAMMAR_AVAILABLE,
-        "grammar substrate unavailable — tree-sitter-reify/src/parser.c not "
-        "found, or tree-sitter cannot load the grammar (e.g. a sandboxed role "
-        "whose write set excludes ~/.cache/tree-sitter/); skip grammar e2e",
-    )
     def test_e2e_arrow_type_grammar_is_fail(self):
-        """Real tree-sitter parse: arrow_type.ri with expected present → FAIL (exit 1, stable)."""
+        """Real tree-sitter parse: arrow_type.ri with expected present → FAIL (exit 1, stable).
+
+        Guarded in the body rather than by @skipUnless so the substrate probe is
+        spent only when this test runs — see _grammar_e2e_status().
+        """
+        _require_grammar_substrate(self)
         probe_json = json.dumps({"probes": [{
             "capability": "arrow-type grammar (3979 — should FAIL)",
             "probe_kind": "grammar",
@@ -2309,6 +2356,13 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             usable, reason = self._call(stub)
             self.assertIsInstance(usable, bool)
             self.assertIsInstance(reason, str)
+
+
+# Taken after the whole module body has executed, so it records exactly what
+# IMPORT cost — read by TestGrammarAvailabilityGuard to pin that the substrate
+# probe stayed lazy.  Must remain the last statement before the entry-point.
+_info = _grammar_e2e_status.cache_info()
+_GRAMMAR_STATUS_CALLS_AT_IMPORT = _info.hits + _info.misses
 
 
 if __name__ == "__main__":
