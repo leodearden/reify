@@ -430,6 +430,18 @@ async function pollUntil(
  * immediately. Every other resolver error — `notFound`, `notFoundForViewport` —
  * IS a transient DOM state and is folded into `el === null`, which is exactly
  * what 'gone' waits for and what 'visible' polls past.
+ *
+ * ASYMMETRY WORTH KNOWING (documented on both tools' schemas, pinned by
+ * waitFor.test.ts case (g)): because `notFoundForViewport` folds into
+ * `el === null`, a `viewportId` naming a pane that does not exist AT ALL — not
+ * yet mounted, or simply a typo — satisfies 'gone' vacuously and resolves at
+ * waited_ms 0, indistinguishably from a real teardown. That is deliberate, not
+ * an oversight: a pane torn down WITH its contents is a legitimate way for an
+ * element to be gone from it, and demanding the pane still exist would make
+ * "wait for this pane to disappear" un-expressible and turn a correct green into
+ * a timeout. The cost is that a typo'd id reads as instant success, so callers
+ * proving a teardown should confirm the pane exists first. Under 'visible' the
+ * same typo fails loudly (timeout), which is why only this arm needs the note.
  */
 function buildSelectorPredicate(opts: {
   testId: string;

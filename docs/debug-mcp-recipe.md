@@ -60,7 +60,7 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane |
+| `wait_for_selector` | `{testId, state, viewportId?}` | `{ok}` — waits until element matches state; `viewportId` scopes the wait to one pane. Caveat: under `state:'gone'` a `viewportId` naming a pane that does not exist (unmounted, or a typo) resolves immediately — confirm the pane exists before treating a gone-wait as proof of teardown |
 | `list_console_errors` | `{}` | `{errors:[{message,stack}], count}` |
 
 ### I1 — Editor interaction

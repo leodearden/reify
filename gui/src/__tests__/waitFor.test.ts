@@ -650,6 +650,41 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
 
     expect(result).toEqual({ error: 'timeout' });
   });
+
+  // (g) pins the ONE asymmetry a harness author can trip over, called out on both
+  // tools' schema descriptions. `notFoundForViewport` folds into `el === null`,
+  // so 'gone' is satisfied vacuously by a pane that does not exist — a pane not
+  // yet mounted, or an id with a typo in it, is indistinguishable from a real
+  // teardown. Kept deliberately rather than hard-failed: a pane torn down WITH
+  // its contents is a legitimate way for an element to be gone from it, and
+  // requiring the pane to still exist would make "wait for this pane to
+  // disappear" un-expressible and turn a correct green into a timeout.
+  it('(g) state:"gone" against a pane that does not exist resolves IMMEDIATELY — vacuously gone', async () => {
+    mountPanes(true); // design-main and pane-1 exist; 'pane-typo' does not
+
+    const { result, settledBeforePolling } = await dispatchDrained(29, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'gone', viewportId: 'pane-typo', timeout_ms: 100,
+    });
+
+    expect(result.ok).toBe(true);
+    // Not merely "eventually true": the predicate is satisfied on its first
+    // evaluation, before pollUntil's first 16 ms tick. That is what makes a
+    // typo'd pane id a SILENT instant success rather than a slow one.
+    expect(settledBeforePolling).toBe(true);
+  });
+
+  it('(g) the same absent pane under state:"visible" instead fails LOUDLY with a timeout', async () => {
+    // The contrast that makes (g) safe to keep: a typo is only invisible on the
+    // 'gone' arm. Documenting the asymmetry is the whole mitigation, so pin that
+    // it IS an asymmetry and not a blanket "absent pane always succeeds".
+    mountPanes(true);
+
+    const { result } = await dispatchDrained(30, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', viewportId: 'pane-typo', timeout_ms: 100,
+    });
+
+    expect(result).toEqual({ error: 'timeout' });
+  });
 });
 
 // ─── Part B: wait_for ────────────────────────────────────────────────────────

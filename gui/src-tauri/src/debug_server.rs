@@ -599,13 +599,13 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for",
-            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text?, viewportId? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. The selector arm's optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text?, viewportId? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. The selector arm's optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -613,7 +613,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -623,7 +623,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount."
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
