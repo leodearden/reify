@@ -397,6 +397,40 @@ _harness_layout_norm_path() {
     _HL_NORM_OUT="$leading$out"
 }
 
+# _harness_layout_row_crate <repo-rel-path> — set the global `_HL_ROW_CRATE` to
+# the `<c>` of a `crates/<c>/…`-rooted <repo-rel-path>, for the `crate=<c>`
+# field of a structured verdict line.
+#
+# EVERY other shape yields the `-` sentinel — the same "not crate-scoped" value
+# the harness guards already emit for a row they cannot attribute to a crate.
+# The sentinel is written FIRST, before any branch, so no caller can read the
+# global unset under `set -u`.
+#
+# The guard is the TWO-segment `crates/*/*`, not merely `crates/*`, and that is
+# the whole point of routing this through one definition: a bare `crates/<seg>`
+# has no crate-plus-remainder shape, and a naive `${p#crates/}` strip would
+# report `<seg>` as a phantom crate on a row that names no file within one.
+# Likewise a path not rooted at `crates/` yields `-` rather than its own first
+# segment. Guards that disagree here emit contradictory `crate=` attributions
+# for the same path.
+#
+# RETURNS VIA A GLOBAL, NOT stdout, for consistency with
+# _harness_layout_norm_path above — explicitly NOT a measured hot-path
+# optimization, unlike that helper's fork-avoidance rationale: every caller
+# reaches this only AFTER a path has already been classified a violation, so on
+# a clean tree it runs zero times. Callers read `$_HL_ROW_CRATE` immediately
+# after the call.
+_harness_layout_row_crate() {
+    local row="$1" rest
+    _HL_ROW_CRATE="-"
+    case "$row" in
+        crates/*/*)
+            rest="${row#crates/}"
+            _HL_ROW_CRATE="${rest%%/*}"
+            ;;
+    esac
+}
+
 # _harness_layout_mod_decls <file>... — print `<file>|<kind>|<lineno>|<value>`
 # for every OUT-OF-LINE module declaration in each <file>:
 #   <file>|path|<lineno>|<P>       for `#[path = "<P>"] mod <ident>;`

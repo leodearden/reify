@@ -529,41 +529,6 @@ harness_stale_selector_violations() {
 }
 
 # ---------------------------------------------------------------------------
-# _harness_layout_row_crate <repo-rel-path>
-#
-# Sets the global _HL_ROW_CRATE to the derived `<c>` from a
-# `crates/<c>/...`-rooted <repo-rel-path>, or to `-` for any other shape — the
-# same non-crate-scoped field harness_stale_selector_violations emits above.
-# Shared by harness_layout_orphan_rows and harness_layout_malformed_rows below
-# — the two baseline-row detectors in THIS file — so neither can drift from
-# the other on what `crate=` means for a non-`crates/` row. NOT the single
-# repo-wide definition: scripts/check-harness-baseline-registration.sh:118-119
-# inlines the identical `rest="${path#crates/}"; crate="${rest%%/*}"`
-# derivation for the same `crate=` field on its own FAIL line, and folding
-# that script's copy in here is out of this file's scope.
-#
-# Returns via a global, not stdout, for consistency with
-# harness-layout-lib.sh's _harness_layout_norm_path — NOT as a measured
-# hot-path optimization. Both call sites invoke this only AFTER a row has
-# already been classified a violation (`continue` is taken first on a clean
-# row in both harness_layout_orphan_rows and harness_layout_malformed_rows),
-# so on the live tree — where Section 8 and Section 9 both assert zero
-# violations — this runs ZERO times per live detector call. It would take
-# ~495 calls only in the pathological case where every single live row is
-# broken at once.
-# ---------------------------------------------------------------------------
-_harness_layout_row_crate() {
-    local row="$1" rest
-    _HL_ROW_CRATE="-"
-    case "$row" in
-        crates/*/*)
-            rest="${row#crates/}"
-            _HL_ROW_CRATE="${rest%%/*}"
-            ;;
-    esac
-}
-
-# ---------------------------------------------------------------------------
 # _harness_layout_row_exists <row> <root_dir> — predicate for
 # harness_layout_orphan_rows: exit 0 iff <row> names a file that EXISTS under
 # <root_dir> (rule (b)'s own on-disk enumeration, in reverse).
