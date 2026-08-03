@@ -4,21 +4,25 @@
 #
 # Fleet-wide host-oversubscription DETECTOR: observes HOST-AGGREGATE CPU
 # oversubscription across ALL concurrently-dispatched orchestrator lanes by
-# reading host-global /proc/loadavg + /proc/pressure/cpu (the aggregate
-# contributed by every dispatched lane — no per-lane enumeration needed).
+# reading host-global /proc/loadavg (the aggregate contributed by every
+# dispatched lane — no per-lane enumeration needed).
 # Reify-side signal for the DF-owned L3b dispatch-admission companion
 # (docs/prds/run-all-pool-contention-tiering-fix.md §9).
 #
-# Fully hermetic: env-injected synthetic loadavg-path/psi-path/nproc; no real
+# SINGLE-AXIS since task 5985: the PSI `some avg10 >= 80` arm was DROPPED (not
+# retuned) — avg10 never discriminated load regimes on this host. Block K pins
+# its absence BEHAVIOURALLY (a would-have-fired PSI fixture is inert, the two
+# flags are unknown, neither output channel carries an avg10= field) so the
+# dead arm cannot silently return.
+#
+# Fully hermetic: env-injected synthetic loadavg-path/nproc; no real
 # /proc reads, no CPU burn. Classified `pool` in run-all-classification.manifest.
 #
 # Test seams (env-controlled synthetic sources; script never touches the
 # real host /proc during these tests):
 #   REIFY_FLEET_LOAD_LOADAVG_PATH      — /proc/loadavg-format file (field 1 = load1)
-#   REIFY_FLEET_LOAD_PSI_PATH          — /proc/pressure/cpu-format file (avg10=)
 #   REIFY_FLEET_LOAD_NPROC             — synthetic nproc (avoids reading the real host)
 #   REIFY_FLEET_LOAD_RATIO_THRESHOLD   — ratio ceiling override (default 4.0)
-#   REIFY_FLEET_LOAD_AVG10_THRESHOLD   — avg10 % ceiling override (default 80)
 #
 # run_helper captures STDOUT, STDERR, and RC separately:
 #   OUT     — captured stdout from the script
@@ -27,7 +31,10 @@
 #
 # Blocks (grown incrementally across task 5135's plan.json TDD steps):
 #   A — CLI guard: --help, unknown flag, missing/unknown subcommand
-#   (B..I land in later steps)
+#   B/F/C/H/J/G — happy path, boundary (>=), incident reproduction, threshold-knob
+#                 override, CLI-flag parity, fail-open
+#   K — negative pins: the dropped PSI avg10 arm stays dropped (task 5985)
+#   I — dark-factory-orchestrator.yaml config-drift cross-check
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; co-registered
 # `pool` in run-all-classification.manifest so the declared==discovered
@@ -119,6 +126,8 @@ _mk_loadavg() {
 }
 
 # _mk_psi AVG10 — writes a /proc/pressure/cpu-format file with `some` avg10 = AVG10.
+# RETAINED after task 5985 dropped the avg10 arm: Block K repurposes it to build
+# a would-have-fired (99.00) PSI fixture and prove the detector ignores it.
 _mk_psi() {
     local _f
     _f="$(mktemp /tmp/test-fleet-load-detector-psi-XXXXXX)"
@@ -128,19 +137,18 @@ _mk_psi() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block B — happy path: ratio < threshold AND avg10 < threshold → healthy
+# Block B — happy path: ratio < threshold → healthy
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block B: happy path (healthy) ---"
 
 B_LOADAVG="$(_mk_loadavg 0.50)"
-B_PSI="$(_mk_psi 1.00)"
 
-REIFY_FLEET_LOAD_LOADAVG_PATH="$B_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$B_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+REIFY_FLEET_LOAD_LOADAVG_PATH="$B_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     run_helper check
 assert "B1: healthy fixture exits 0" test "$RC" -eq 0
 assert "B2: stdout is exactly the expected FLEET_LOAD verdict line" \
-    bash -c '[ "$1" = "FLEET_LOAD status=ok load1=0.50 nproc=32 ratio=0.02 ratio_threshold=4.0 avg10=1.00 avg10_threshold=80 reason=none" ]' \
+    bash -c '[ "$1" = "FLEET_LOAD status=ok load1=0.50 nproc=32 ratio=0.02 ratio_threshold=4.0 reason=none" ]' \
     _ "$OUT"
 assert "B3: stdout is a single line" \
     bash -c '[ "$(printf "%s\n" "$1" | wc -l)" -eq 1 ]' _ "$OUT"
@@ -159,8 +167,7 @@ echo "--- Block F: boundary (>= operator) ---"
 
 # F1: load1=128 nproc=32 → ratio exactly 4.0 → status=oversubscribed (>=, not >)
 F1_LOADAVG="$(_mk_loadavg 128)"
-F_PSI="$(_mk_psi 1.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$F1_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$F_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+REIFY_FLEET_LOAD_LOADAVG_PATH="$F1_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     run_helper check
 assert "F1: ratio exactly at threshold (4.00) is status=oversubscribed" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
@@ -169,7 +176,7 @@ assert "F1: ratio field reads 4.00" \
 
 # F2: load1=127 nproc=32 → ratio 3.97 (just below 4.0) → status=ok, exit 0
 F2_LOADAVG="$(_mk_loadavg 127)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$F2_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$F_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+REIFY_FLEET_LOAD_LOADAVG_PATH="$F2_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     run_helper check
 assert "F2: ratio just below threshold (3.97) is status=ok" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
@@ -177,15 +184,18 @@ assert "F2: just-below-threshold exits 0" test "$RC" -eq 0
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block C — incident reproduction (ratio axis): the reference esc-4037
-# loadavg~419 on 32 cores incident (ratio≈13.1×), avg10 low → the ratio axis
-# alone must flag oversubscription with the flagged-path exit code + marker.
+# loadavg~419 on 32 cores incident (ratio≈13.1×) → the sole (ratio) axis must
+# flag oversubscription with the flagged-path exit code + marker.
+#
+# Since task 5985 dropped the avg10 arm this block also subsumes the old G2
+# ("PSI unreadable, ratio high → ratio alone still fires"): with no PSI axis at
+# all, every high-ratio run IS that case.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block C: incident reproduction (ratio axis) ---"
 
 C_LOADAVG="$(_mk_loadavg 419)"
-C_PSI="$(_mk_psi 5.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$C_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$C_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+REIFY_FLEET_LOAD_LOADAVG_PATH="$C_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     run_helper check
 assert "C1: incident fixture (419/32) exits 3" test "$RC" -eq 3
 assert "C2: stdout status=oversubscribed" \
@@ -194,50 +204,17 @@ assert "C3: stdout reason=ratio" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=ratio$"' _ "$OUT"
 assert "C4: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
     bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
-assert "C5: marker line carries ratio=/load1=/nproc=/avg10= fields" \
-    bash -c 'printf "%s\n" "$1" | grep -E "@@REIFY_FLEET_OVERSUBSCRIBED@@" | grep -qE "ratio=.*load1=.*nproc=.*avg10="' \
+assert "C5: marker line carries ratio=/load1=/nproc= fields" \
+    bash -c 'printf "%s\n" "$1" | grep -E "@@REIFY_FLEET_OVERSUBSCRIBED@@" | grep -qE "ratio=.*load1=.*nproc="' \
     _ "$ERR_OUT"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Block E — both axes high simultaneously → reason=both
-# ──────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Block E: both axes high ---"
-
-E_LOADAVG="$(_mk_loadavg 419)"
-E_PSI="$(_mk_psi 90.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$E_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$E_PSI" REIFY_FLEET_LOAD_NPROC=32 \
-    run_helper check
-assert "E1: both-high fixture exits 3" test "$RC" -eq 3
-assert "E2: stdout reason=both" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=both$"' _ "$OUT"
-assert "E3: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
-    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+# (Blocks D and E — "avg10 axis alone → reason=avg10" and "both axes high →
+# reason=both" — were DELETED by task 5985 along with the avg10 arm itself.
+# Block K below pins that those verdicts can no longer be produced.)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block D — avg10 axis ALONE (ratio healthy) → the independent OR-branch.
-# Distinct from Block C/E (which both exercise a high RATIO): this is the one
-# combination not yet covered — avg10 must be able to trigger oversubscribed
-# on its own, not merely decorate the reason= string when ratio also fires.
-# ──────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Block D: avg10 axis alone ---"
-
-D_LOADAVG="$(_mk_loadavg 16)"
-D_PSI="$(_mk_psi 90.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$D_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$D_PSI" REIFY_FLEET_LOAD_NPROC=32 \
-    run_helper check
-assert "D1: avg10-alone fixture exits 3" test "$RC" -eq 3
-assert "D2: stdout reason=avg10" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
-assert "D3: stdout ratio field reads 0.50 (healthy, did not contribute)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])ratio=0\.50([[:space:]]|$)"' _ "$OUT"
-assert "D4: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
-    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Block H — threshold-knob override: proves the thresholds are real runtime
-# knobs (env-driven), not hard-coded constants, and that garbage input falls
+# Block H — threshold-knob override: proves the threshold is a real runtime
+# knob (env-driven), not a hard-coded constant, and that garbage input falls
 # back to the documented default rather than corrupting the awk comparison.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -245,33 +222,19 @@ echo "--- Block H: threshold-knob override ---"
 
 # H1: incident fixture (419/32≈13.1) but a raised ratio ceiling → healthy.
 H1_LOADAVG="$(_mk_loadavg 419)"
-H1_PSI="$(_mk_psi 5.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$H1_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H1_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+REIFY_FLEET_LOAD_LOADAVG_PATH="$H1_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     REIFY_FLEET_LOAD_RATIO_THRESHOLD=20 \
     run_helper check
 assert "H1: raised ratio threshold (20) makes the incident fixture status=ok" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
 assert "H1: raised ratio threshold (20) exits 0" test "$RC" -eq 0
 
-# H2: avg10 threshold override flips an otherwise-healthy avg10 into flagged.
-H2_LOADAVG="$(_mk_loadavg 16)"
-H2_PSI="$(_mk_psi 50.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$H2_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H2_PSI" REIFY_FLEET_LOAD_NPROC=32 \
-    REIFY_FLEET_LOAD_AVG10_THRESHOLD=40 \
-    run_helper check
-assert "H2: lowered avg10 threshold (40) flips avg10=50.00 to oversubscribed" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
-assert "H2: lowered avg10 threshold exits 3" test "$RC" -eq 3
-assert "H2: reason=avg10" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
-
 # H3: garbage REIFY_FLEET_LOAD_RATIO_THRESHOLD falls back to the documented
 # default (4.0) rather than leaking into the stdout line or corrupting the
 # awk comparison (an unvalidated non-numeric string can make the comparison
 # behave unpredictably instead of safely defaulting).
 H3_LOADAVG="$(_mk_loadavg 0.50)"
-H3_PSI="$(_mk_psi 1.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$H3_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H3_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+REIFY_FLEET_LOAD_LOADAVG_PATH="$H3_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     REIFY_FLEET_LOAD_RATIO_THRESHOLD=abc \
     run_helper check
 assert "H3: garbage ratio threshold falls back to 4.0 in the stdout line" \
@@ -279,13 +242,9 @@ assert "H3: garbage ratio threshold falls back to 4.0 in the stdout line" \
 assert "H3: garbage ratio threshold still reports status=ok on a healthy fixture" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
 
-# H4: garbage REIFY_FLEET_LOAD_AVG10_THRESHOLD falls back to the documented
-# default (80), mirroring H3 for the avg10 axis.
-REIFY_FLEET_LOAD_LOADAVG_PATH="$H3_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H3_PSI" REIFY_FLEET_LOAD_NPROC=32 \
-    REIFY_FLEET_LOAD_AVG10_THRESHOLD=abc \
-    run_helper check
-assert "H4: garbage avg10 threshold falls back to 80 in the stdout line" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10_threshold=80([[:space:]]|$)"' _ "$OUT"
+# (H2 and H4 — the avg10-threshold override and its garbage-fallback mirror —
+# were DELETED by task 5985 along with the knob itself; Block K2 pins that
+# --avg10-threshold is now an unknown flag.)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block J — CLI-flag parity: every block above drives the script exclusively
@@ -297,26 +256,17 @@ assert "H4: garbage avg10 threshold falls back to 80 in the stdout line" \
 echo ""
 echo "--- Block J: CLI-flag parity ---"
 
-# J1: --loadavg-path/--psi-path/--nproc/--ratio-threshold entirely via CLI
-# flags (no env vars at all) on the incident fixture with a raised ratio
-# ceiling — mirrors H1 but through the flag-parsing branches.
+# J1: --loadavg-path/--nproc/--ratio-threshold entirely via CLI flags (no env
+# vars at all) on the incident fixture with a raised ratio ceiling — mirrors H1
+# but through the flag-parsing branches.
 J1_LOADAVG="$(_mk_loadavg 419)"
-J1_PSI="$(_mk_psi 5.00)"
-run_helper check --loadavg-path "$J1_LOADAVG" --psi-path "$J1_PSI" --nproc 32 --ratio-threshold 20
+run_helper check --loadavg-path "$J1_LOADAVG" --nproc 32 --ratio-threshold 20
 assert "J1: CLI-flag form (raised ratio threshold) makes incident fixture status=ok" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
 assert "J1: CLI-flag form exits 0" test "$RC" -eq 0
 
-# J2: --avg10-threshold via CLI flips an otherwise-healthy avg10 into flagged
-# (mirrors H2 through the flag-parsing branch).
-J2_LOADAVG="$(_mk_loadavg 16)"
-J2_PSI="$(_mk_psi 50.00)"
-run_helper check --loadavg-path "$J2_LOADAVG" --psi-path "$J2_PSI" --nproc 32 --avg10-threshold 40
-assert "J2: CLI-flag --avg10-threshold flips avg10=50.00 to oversubscribed" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
-assert "J2: CLI-flag form exits 3" test "$RC" -eq 3
-assert "J2: CLI-flag form reason=avg10" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
+# (J2 — CLI parity for --avg10-threshold — was DELETED by task 5985; Block K2
+# pins that the flag is now rejected rather than honoured.)
 
 # J3: missing-value guard — `--nproc` with no following value must exit 2
 # (usage error), proving the `[ $# -ge 2 ] || { err ...; exit 2; }` guard
@@ -336,58 +286,91 @@ echo ""
 echo "--- Block G: fail-open (unreadable sources) ---"
 
 G_MISSING_LOADAVG="$(mktemp -u /tmp/test-fleet-load-detector-missing-loadavg-XXXXXX)"
-G_MISSING_PSI="$(mktemp -u /tmp/test-fleet-load-detector-missing-psi-XXXXXX)"
 
-# G1: both sources unreadable → exit 0, status=ok, reason=none, and a WARNING
-# on stderr (never a spurious flag when the detector cannot measure at all).
-REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G_MISSING_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+# G1: the sole measurement source is unreadable → exit 0, status=ok,
+# reason=none, and a WARNING on stderr (never a spurious flag when the detector
+# cannot measure at all). Since task 5985 dropped the avg10 arm, loadavg IS the
+# only source, so this single case is the whole blind-detector contract.
+REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
     run_helper check
-assert "G1: both sources unreadable exits 0 (fail-open)" test "$RC" -eq 0
-assert "G1: both sources unreadable is status=ok" \
+assert "G1: unreadable loadavg exits 0 (fail-open)" test "$RC" -eq 0
+assert "G1: unreadable loadavg is status=ok" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
-assert "G1: both sources unreadable is reason=none" \
+assert "G1: unreadable loadavg is reason=none" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=none$"' _ "$OUT"
-assert "G1: both sources unreadable prints a WARNING on stderr" \
+assert "G1: unreadable loadavg prints a WARNING on stderr" \
     bash -c 'printf "%s\n" "$1" | grep -qi "warning"' _ "$ERR_OUT"
-assert "G1: both sources unreadable emits no oversubscribed marker" \
+assert "G1: unreadable loadavg emits no oversubscribed marker" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
 
-# G2: PSI unreadable, loadavg ratio high (incident fixture 419/32≈13.1) → the
-# ratio axis alone still fires; avg10 renders as the literal "unavailable" in
-# the stdout line (not a blank field) since it never participated.
-G2_LOADAVG="$(_mk_loadavg 419)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$G2_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G_MISSING_PSI" REIFY_FLEET_LOAD_NPROC=32 \
-    run_helper check
-assert "G2: PSI unreadable + high ratio exits 3" test "$RC" -eq 3
-assert "G2: PSI unreadable + high ratio is reason=ratio" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=ratio$"' _ "$OUT"
-assert "G2: PSI unreadable renders avg10=unavailable in the stdout line" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10=unavailable([[:space:]]|$)"' _ "$OUT"
-assert "G2: PSI unreadable + high ratio still emits the oversubscribed marker" \
-    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+# (G2/G3/G4 — the per-axis "one source unreadable, the other decides" matrix —
+# were DELETED by task 5985: with a single axis there is no "other axis". G2's
+# surviving intent (a high ratio still fires) is Block C; G1 above covers the
+# fully-blind case.)
 
-# G3: loadavg unreadable, avg10 high → the avg10 axis alone still fires
-# (symmetric to G2 for the other axis).
-G3_PSI="$(_mk_psi 90.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G3_PSI" REIFY_FLEET_LOAD_NPROC=32 \
-    run_helper check
-assert "G3: loadavg unreadable + high avg10 exits 3" test "$RC" -eq 3
-assert "G3: loadavg unreadable + high avg10 is reason=avg10" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
-assert "G3: loadavg unreadable + high avg10 still emits the oversubscribed marker" \
-    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K — the PSI avg10 arm is DROPPED (task 5985). NEGATIVE pins: a pure
+# deletion of Blocks D/E/G3/G4/H2/H4/J2 would leave nothing that notices the
+# dead arm being reintroduced — the exact failure mode 5985 fixes. These assert
+# the arm's ABSENCE behaviourally (a would-have-fired PSI fixture is inert,
+# both flags are unknown, neither output channel carries an avg10= field),
+# which is stronger and cheaper than grepping the script source.
+#
+# Rationale for the drop (dark_factory:3590): CPU PSI `some avg10` never
+# discriminated load regimes on this 32-core host — the observed maximum across
+# a load~85 and a load~190 sample was 74.1, so the 80 ceiling has never fired
+# and cannot; the whole distribution slides upward with load (~1.4× separation)
+# rather than spreading out, so no threshold behaves sensibly across both.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block K: the PSI avg10 arm is dropped (task 5985) ---"
 
-# G4: loadavg unreadable, avg10 healthy → exit 0 (the surviving axis alone
-# decides; it must not be treated as spuriously flagged just because the
-# other axis is absent).
-G4_PSI="$(_mk_psi 1.00)"
-REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G4_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+# K1: a PSI fixture at avg10=99.00 — comfortably above the OLD 80 ceiling, so
+# it WOULD have flagged oversubscribed — is now completely inert next to a
+# healthy loadavg. This is the load-bearing pin: it fails loudly if the arm
+# ever comes back, whatever form it takes.
+K1_LOADAVG="$(_mk_loadavg 0.50)"
+K1_PSI="$(_mk_psi 99.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$K1_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$K1_PSI" REIFY_FLEET_LOAD_NPROC=32 \
     run_helper check
-assert "G4: loadavg unreadable + healthy avg10 exits 0" test "$RC" -eq 0
-assert "G4: loadavg unreadable + healthy avg10 is status=ok" \
+assert "K1: would-have-fired avg10=99.00 is inert — exits 0" test "$RC" -eq 0
+assert "K1: would-have-fired avg10=99.00 is inert — status=ok" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
-assert "G4: loadavg unreadable + healthy avg10 emits no oversubscribed marker" \
+assert "K1: would-have-fired avg10=99.00 is inert — reason=none" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=none$"' _ "$OUT"
+assert "K1: would-have-fired avg10=99.00 emits no oversubscribed marker" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
+# K4: the healthy verdict line carries no avg10=/avg10_threshold= field at all
+# (asserted on the same K1 run — the stdout contract lost both terms).
+assert "K4: stdout verdict line carries no avg10=/avg10_threshold= field" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10(_threshold)?="' _ "$OUT"
+
+# K2: --avg10-threshold is now an UNKNOWN flag (rejected via the pre-existing
+# `-*` catch-all), not a silently-ignored one.
+run_helper check --avg10-threshold 40
+assert "K2: check --avg10-threshold exits 2 (unknown flag)" test "$RC" -eq 2
+assert "K2: stderr names the rejected --avg10-threshold flag" \
+    bash -c 'printf "%s\n" "$1" | grep -qE -- "--avg10-threshold"' _ "$ERR_OUT"
+
+# K3: --psi-path is likewise gone (the PSI source seam no longer exists).
+K3_PSI="$(_mk_psi 99.00)"
+run_helper check --psi-path "$K3_PSI"
+assert "K3: check --psi-path exits 2 (unknown flag)" test "$RC" -eq 2
+
+# K5: the stderr marker line on the flagged path also lost its avg10= field
+# (both output channels changed in lockstep — C5 pins what remains).
+K5_LOADAVG="$(_mk_loadavg 419)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$K5_LOADAVG" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "K5: oversubscribed marker line carries no avg10= field" \
+    bash -c '! printf "%s\n" "$1" | grep -E "@@REIFY_FLEET_OVERSUBSCRIBED@@" | grep -q "avg10="' _ "$ERR_OUT"
+
+# K6: CLI surface parity with Block A — the usage text must not advertise a
+# flag the parser rejects.
+run_helper check --help
+assert "K6: check --help advertises neither --avg10-threshold nor --psi-path" \
+    bash -c '! printf "%s\n" "$1" | grep -qE -- "--(avg10-threshold|psi-path)"' _ "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block I — dark-factory-orchestrator.yaml config-drift cross-check. Self-contained (does
