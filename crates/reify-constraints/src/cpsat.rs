@@ -122,8 +122,27 @@ fn build_variable_domain(
 /// Recursive backtracking search with forward-checking.
 ///
 /// At each level, picks the next unassigned variable, tries each domain value,
-/// evaluates all constraints whose variables are fully assigned, and prunes
-/// on violation.
+/// materialises `dependent_cells` against that trial assignment, evaluates all
+/// constraints whose variables are fully assigned, and prunes on violation.
+///
+/// # Why the fold is inside the value loop (task #5467, PRD2 §3 decision 9)
+///
+/// Without it, a constraint that reads ONLY a dependent cell has an EMPTY
+/// `auto_refs`, so `all_assigned` is vacuously true and the constraint is
+/// evaluated against that cell's stale/absent base value. `eval_expr` returns a
+/// non-`Bool`, the skip-don't-prune arm fires, and the search prunes nothing.
+///
+/// # Why no explicit unwind is needed
+///
+/// The fold is TOTAL — it recomputes every dependent cell from the running
+/// assignment — and runs after EVERY trial insert, before any constraint is
+/// evaluated. So entries left behind by an abandoned sibling branch are always
+/// overwritten before they can be read: a cell whose expression reads a
+/// not-yet-assigned deeper auto simply re-evaluates to `Undef` here rather than
+/// retaining the abandoned branch's value. `assignment.remove` on unwind
+/// therefore only has to drop the variable itself. The
+/// `two_autos_*_abandoned_sibling_branch` unit below pins this, because the
+/// argument is not obvious from the code alone.
 fn backtrack(
     variables: &[Variable],
     var_index: usize,
@@ -131,6 +150,7 @@ fn backtrack(
     constraints: &[(ConstraintNodeId, CompiledExpr, HashSet<ValueCellId>)],
     auto_param_ids: &HashSet<ValueCellId>,
     functions: &[reify_ir::CompiledFunction],
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
 ) -> Option<HashMap<ValueCellId, Value>> {
     // Base case: all variables assigned
     if var_index >= variables.len() {
@@ -149,6 +169,17 @@ fn backtrack(
     for value in &var.domain {
         // Assign this variable
         assignment.insert(var.id.clone(), value.clone());
+
+        // Materialise the dependent cells against this trial assignment, in
+        // STORED (topological) order, through THE fold body the DimensionalSolver
+        // residual path uses — never a cpsat-local twin (PRD2 §3.9 G7).
+        // `is_solver_owned` keeps a fold from clobbering a trial auto. An empty
+        // `dependent_cells` early-returns inside the helper without touching
+        // `assignment` or running any guard work, so the D1/B2 path is
+        // byte-identical to pre-α.
+        crate::solver::fold_dependent_cells(assignment, dependent_cells, functions, |id| {
+            auto_param_ids.contains(id)
+        });
 
         // Forward-check: evaluate all constraints whose auto-param refs are fully assigned
         let mut feasible = true;
@@ -182,6 +213,7 @@ fn backtrack(
                 constraints,
                 auto_param_ids,
                 functions,
+                dependent_cells,
             )
         {
             return Some(solution);
@@ -237,6 +269,7 @@ impl ConstraintSolver for CpSatSolver {
             &constraints_with_refs,
             &auto_param_ids,
             &problem.functions,
+            &problem.dependent_cells,
         ) {
             Some(solution) => SolveResult::Solved {
                 values: solution,
@@ -362,6 +395,57 @@ mod dependent_cell_fold_tests {
              forward-check evaluates the constraint against an absent `S.f`, \
              takes the skip-don't-prune arm, and returns the FIRST domain \
              value (`true`) as a `Solved`/`unique` answer",
+        );
+    }
+
+    /// UNWIND SAFETY — a dependent value left behind by an ABANDONED sibling
+    /// branch must never be observed by the branch that follows it.
+    ///
+    /// Two autos, `up` and `dn`. `let f = not(up) and dn`,
+    /// `constraint f == true`, `constraint dn == true` — unique satisfying
+    /// assignment `up = false, dn = true`.
+    ///
+    /// `Type::Bool` domains enumerate `[true, false]`, so the search tries
+    /// `up = true` FIRST. That branch folds `S.f` to `false` and is pruned,
+    /// leaving `S.f = false` behind in the assignment map. The sibling
+    /// `up = false` branch then re-folds `S.f` before the forward-check reads
+    /// it. Discriminating in BOTH directions: with no fold at all the
+    /// constraint never prunes and `up` comes back as the first domain value
+    /// `true`; with a fold that is not re-run per trial, the stale `S.f =
+    /// false` prunes the correct branch too and the solve returns Infeasible.
+    ///
+    /// This is what pins `backtrack`'s claim that no explicit undo of the
+    /// folded entries is required.
+    #[test]
+    fn two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch() {
+        let and = |l: CompiledExpr, r: CompiledExpr| {
+            CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
+        };
+        let p = problem(
+            vec![bool_auto("up"), bool_auto("dn")],
+            vec![
+                (ConstraintNodeId::new("S", 0), eq_true(bref("f"))),
+                (ConstraintNodeId::new("S", 1), eq_true(bref("dn"))),
+            ],
+            vec![(
+                ValueCellId::new("S", "f"),
+                and(not(bref("up")), bref("dn")),
+            )],
+        );
+
+        let result = CpSatSolver.solve(&p);
+        assert_eq!(
+            solved_value(&result, "up"),
+            Value::Bool(false),
+            "`f = not(up) and dn` with `f == true` forces up = false. Getting \
+             `true` means the let-indirected constraint never pruned; getting \
+             Infeasible means the abandoned `up = true` branch's stale `S.f` \
+             was read instead of being re-folded",
+        );
+        assert_eq!(
+            solved_value(&result, "dn"),
+            Value::Bool(true),
+            "`f = not(up) and dn` with `f == true` forces dn = true",
         );
     }
 

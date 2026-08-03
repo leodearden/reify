@@ -293,7 +293,26 @@ const SEED_NUDGE_ABS: f64 = 1e-6;
 ///   semantically wrong: rebuilding against the RUNNING map each iteration is
 ///   exactly what makes an earlier dependent cell visible to a later one, which
 ///   is what makes the stored topological order load-bearing.
-fn fold_dependent_cells(
+///
+/// # Consumers (task #5467)
+///
+/// PRD2 §3 decision 9 mandates ONE fold body, not per-solver twins. There are
+/// now THREE consumer classes, which is why this is `pub(crate)` rather than
+/// private (`mod solver` is crate-private, so this is a no-op on the crate's
+/// public API):
+///
+/// 1. `build_trial_values` — the DimensionalSolver residual/cost hot path.
+/// 2. `build_scoring_values` — post-solve objective scoring.
+/// 3. `cpsat::backtrack` — the CP-SAT forward-check, which must materialise
+///    dependent cells per trial assignment or a constraint reading only a
+///    dependent cell evaluates to a non-`Bool` and is never able to prune.
+///
+/// A fourth (ζ's mixed outer loop) is expected. Do NOT copy this body into a
+/// caller: the two invariants a copy silently loses are consumption in STORED
+/// topological order with the `EvalContext` rebuilt against the RUNNING map
+/// each iteration (PRD §6.3 single-authority-on-order), and the
+/// `is_solver_owned` guard that stops a fold from clobbering a trial auto.
+pub(crate) fn fold_dependent_cells(
     values: &mut ValueMap,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
     functions: &[CompiledFunction],
