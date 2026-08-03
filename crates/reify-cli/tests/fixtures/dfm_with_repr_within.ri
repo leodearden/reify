@@ -34,7 +34,7 @@
 
 import std.process
 
-#precision(0.1mm)
+#precision(0.3mm)
 
 // ── DFM kind ─────────────────────────────────────────────────────────────────
 
