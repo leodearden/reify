@@ -210,13 +210,17 @@ assert "E2: crates/reify-eval/src/foo.rs derives crate=reify-eval (independent o
 assert "E2: a non-crates/-rooted path derives the '-' sentinel" \
     bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
     _ "$LIB" "not/a/crate/path.rs" "-"
-# The guard is the TWO-segment `crates/*/*`, not merely `crates/*`: a bare
-# `crates/<seg>` has no crate-plus-remainder shape, so it must fall back to the
-# sentinel rather than manufacture `<seg>` as a phantom crate. This is exactly
-# where the sentinel and a naive `${p#crates/}` strip diverge.
+# The degenerate shapes, where the sentinel and a naive `${p#crates/}` strip
+# diverge (rationale: harness-layout-lib.sh's header on the function).
 assert "E2: a bare crates/<seg> (single segment) derives the '-' sentinel, not a phantom crate" \
     bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
     _ "$LIB" "crates/loneseg" "-"
+# A doubled slash MATCHES `crates/*/*` (bash lets `*` match the empty string),
+# so this pins that the derived value is re-checked: `crate=` must never be
+# emitted blank for a typo'd manifest row the malformed-row detector reports.
+assert "E2: a doubled-slash crates//<f> derives the '-' sentinel, not an EMPTY crate" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates//foo.rs" "-"
 assert "E2: the empty string derives the '-' sentinel (a blank row cannot manufacture a crate)" \
     bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
     _ "$LIB" "" "-"

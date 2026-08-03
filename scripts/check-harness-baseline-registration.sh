@@ -116,14 +116,11 @@ _check_candidates() {
         if harness_layout_baseline_contains "$path"; then
             continue
         fi
-        # `crate=` via the shared derivation. Its `-` sentinel is unreachable
-        # from here: the in-scope predicate above has already constrained $path
-        # to crates/<one-of-5>/tests/<base>.rs, so this is not about handling an
-        # odd shape TODAY. It is about where that shape is handled TOMORROW —
-        # should the predicate ever widen to a differently-shaped path, `crate=`
-        # changes in ONE place for every harness guard at once, instead of this
-        # script quietly emitting a raw first path segment as if it were a crate
-        # name while the other guards emit the sentinel for the same file.
+        # `crate=` via the shared derivation (contract + sentinel rationale:
+        # harness-layout-lib.sh). Its `-` sentinel is unreachable from here —
+        # the in-scope predicate above already constrained $path — so the value
+        # is that a future widening of that predicate changes `crate=` for every
+        # harness guard at once rather than only here.
         _harness_layout_row_crate "$path"
         crate="$_HL_ROW_CRATE"
         _emit FAIL "crate=$crate" "file=$path" "reason=unregistered-standalone"

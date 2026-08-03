@@ -414,6 +414,15 @@ _harness_layout_norm_path() {
 # segment. Guards that disagree here emit contradictory `crate=` attributions
 # for the same path.
 #
+# `crates/*/*` alone does NOT establish that shape, which is why the derived
+# value is re-checked before it is assigned: bash lets each `*` match the EMPTY
+# string, so a doubled-slash row (`crates//foo.rs`) matches the pattern with an
+# empty first segment and a bare `${rest%%/*}` would emit `crate=` — an empty
+# value in a field this grammar documents as `crate=<c>`. That shape is
+# reachable: the kLOC-cap guard's malformed-row detector feeds hand-written
+# manifest rows through here, and a typo'd row must degrade to the sentinel
+# every other unattributable row already uses, not to a blank.
+#
 # RETURNS VIA A GLOBAL, NOT stdout, for consistency with
 # _harness_layout_norm_path above — explicitly NOT a measured hot-path
 # optimization, unlike that helper's fork-avoidance rationale: every caller
@@ -426,7 +435,10 @@ _harness_layout_row_crate() {
     case "$row" in
         crates/*/*)
             rest="${row#crates/}"
-            _HL_ROW_CRATE="${rest%%/*}"
+            case "${rest%%/*}" in
+                '') ;;                       # `crates//…`: keep the sentinel
+                *) _HL_ROW_CRATE="${rest%%/*}" ;;
+            esac
             ;;
     esac
 }
