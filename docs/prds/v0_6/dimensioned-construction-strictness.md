@@ -510,8 +510,10 @@ by the registry alone **under-counts**; α must reproduce the alias extension.
 
 > **Partially superseded by η (task 5785, merge `61300d09`).** This measurement predates η.
 > `NAMED_DIMENSIONS` has since moved — re-measured 2026-08-03 at `dimension.rs:576-663` — and
-> now holds **52 rows** (51 distinct `DimensionVector`s; `IMPULSE` is registered twice, as
-> `"Impulse"` and its alias `"Momentum"`), up from the 51 rows cited above, because η added
+> now holds **52 rows** — 51 distinct constant identifiers but only **49 distinct
+> `DimensionVector` values**, because three alias pairs share a vector: `STIFFNESS`/
+> `TRANSLATIONAL_STIFFNESS`, `ABSORPTION_COEFF`/`CURVATURE`, and `IMPULSE` registered twice
+> as `"Impulse"` and `"Momentum"` — up from the 51 rows cited above, because η added
 > `Torque` as a new registry row. `Torque` is therefore no longer one of the "aliases the
 > registry does not name": the `pub type Torque` alias this paragraph cites at
 > `ports_mechanical.ri:29` was deleted by η (that line is now a pointer comment), so the

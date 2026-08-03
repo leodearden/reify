@@ -714,10 +714,20 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
 
 - **μ — Round-trip property test (Invariant R). Integration gate for cluster C.**
   *Modules:* `crates/reify-compiler/tests/unit_label_round_trip.rs` (new; §11 Q3).
-  *Change:* for every dimension in NAMED_DIMENSIONS (52 rows / 51 distinct `DimensionVector`s —
-  re-measured 2026-08-03 at `dimension.rs:576-663`, superseding the earlier `:514-595`/51-entries
-  **[drift]** note; its own doc comment still says 34) and every label from S1–S4, assert
-  Invariant R.
+  *Change:* for every dimension in NAMED_DIMENSIONS (`crates/reify-core/src/dimension.rs`,
+  superseding the earlier `:514-595` **[drift]** note) and every label from S1–S4, assert
+  Invariant R. **Iterate the slice — do not hardcode a row count.** Every count written down
+  for this table so far has rotted or been mis-derived by hand, which is why the slice's own
+  doc comment deliberately quotes none.
+  **Alias-row hazard — this changes what μ may assert.** NAMED_DIMENSIONS holds alias rows
+  where several *names* share one `DimensionVector`, and by the documented placement
+  convention (`dimension.rs:556-559`) an alias row is placed AFTER its canonical row so the
+  first-match scan in `canonical_name()` keeps returning the canonical name. A
+  name→dim→name round-trip therefore does **not** return the input name for
+  `"TranslationalStiffness"`, `"Curvature"`, or `"Momentum"` — they normalize to
+  `"Stiffness"`, `"AbsorptionCoeff"`, and `"Impulse"`. An assertion phrased as "every row
+  round-trips to the same name" is false and will fail; assert Invariant R per-row over the
+  slice, with alias rows expected to normalize to their canonical name.
   Seed one anti-vacuity self-test: a deliberately non-ASCII label injected into the harness's
   input makes it fail.
   *Signal:* the test is red on pre-κ/pre-λ main (for `·` and for `L`) and green after; a new
