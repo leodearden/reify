@@ -1495,25 +1495,63 @@ _row4_share_inconclusive() {
         return 1
     fi
 
-    # Share: computed by share_ge_proportional — the SAME function the live
-    # ROW4-1 assertion below calls, with the same weights and the same tol
-    # threaded through, so the guard's floor can never drift from the
-    # assertion's floor.  rc 0 (share at/above floor) means the measurement
-    # PASSES, so it is NOT inconclusive no matter how hot the box was: a green
-    # is never suppressed.
-    if python3 -c "
+    # Share: the inconclusive quadrant is the OPEN corridor
+    #     fair_share  <  merge_share  <  proportional_floor
+    # measured on a hot box.  Both ends are computed by share_ge_proportional
+    # — the SAME function the live ROW4-1 assertion below calls — so neither
+    # bound can drift from the assertion's floor.
+    #
+    # UPPER bound (share >= floor): the measurement PASSES, so it is NOT
+    # inconclusive no matter how hot the box was — a green is never
+    # suppressed.
+    #
+    # LOWER bound (share <= fair share): bounding above ALONE would make every
+    # sub-floor share on a hot box a SKIP, including a TOTAL governance
+    # failure — and since an orchestrator host is essentially never quiet (see
+    # the escape-hatch comment at the live branch), that is the branch that
+    # actually runs, so ROW4-1 would collapse to "PASS or SKIP, never RED".
+    # Fair share is what this measures when cpu.weight arbitration is absent
+    # or ignored: two sibling slices under one parent split evenly at ~0.50,
+    # and a starved merge slice reads ~0.00.  Neither is dilution — every
+    # dilution observation on record is far above (0.6355, plus
+    # 0.6435/0.6471/0.639 at :1378) — so both fall through to the hard assert.
+    # G6 (no new number): the bound is share_ge_proportional with the two
+    # weights held EQUAL (w_task twice — the literal reading of "weights
+    # ignored") and no tolerance, evaluated on the SWAPPED pair so the
+    # comparison is task_share >= 0.5, i.e. merge_share <= 0.5.  Swapping
+    # rather than negating is what makes the bound STRICT: a share exactly at
+    # fair share is conclusive (ROW4-1-CORRIDOR-VACUITY-1), while one
+    # microsecond above it is still inside the corridor (-3).
+    #
+    # Verdict is read from STDOUT, not from python3's exit status: a failed
+    # import or a missing interpreter also exits non-zero, which would be
+    # byte-indistinguishable from an honest below-floor verdict and would make
+    # a broken python mask a regression.  Defaulting the empty capture to
+    # "conclusive" keeps that failure in the fail-safe direction.  Same
+    # discipline as quiet_box_met's own `|| echo quiet` capture.
+    local _corridor
+    _corridor="$(python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
 from cpu_gov_instrument import share_ge_proportional
-ok = share_ge_proportional(float('${merge_delta}'), float('${task_delta}'),
-                           float('${w_merge}'), float('${w_task}'),
-                           float('${tol}'))
-sys.exit(0 if ok else 1)
-" 2>/dev/null; then
-        return 1
-    fi
+m = float('${merge_delta}')
+t = float('${task_delta}')
+w_merge = float('${w_merge}')
+w_task = float('${w_task}')
+tol = float('${tol}')
+if m + t <= 0:
+    print('conclusive')          # nothing ran; not evidence of dilution
+elif share_ge_proportional(m, t, w_merge, w_task, tol):
+    print('conclusive')          # at/above the floor -> ROW4-1 PASSES
+elif share_ge_proportional(t, m, w_task, w_task, 0.0):
+    print('conclusive')          # merge_share <= fair share -> looks BROKEN
+else:
+    print('corridor')            # strictly inside the dilution corridor
+" 2>/dev/null || true)"
+    [ "${_corridor:-conclusive}" = "corridor" ] || return 1
 
-    # Sub-floor share AND a hot box — the only inconclusive quadrant.
+    # Share strictly inside the dilution corridor AND a hot box — the only
+    # inconclusive quadrant.
     return 0
 }
 
