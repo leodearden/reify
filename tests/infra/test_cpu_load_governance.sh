@@ -68,11 +68,18 @@
 #                                       kept only for other callers of the pure
 #                                       fair_share_floor primitive, not read here
 #   REIFY_CPU_GOV_TEST_SLOWDOWN_K       slowdown upper-band multiplier (default 4)
-#   REIFY_CPU_GOV_TEST_QUIET_CEILING    UNUSED as of H5/task 4926 — ROW1/ROW2_3/ROW4
-#                                       all moved to confined-cgroup-quota + pinning
-#                                       (CONFINE_CORES/CONFINE_CPUS below), which is
-#                                       host-load-independent by construction; no
-#                                       quiet-box precondition remains in this file
+#   REIFY_CPU_GOV_TEST_QUIET_CEILING    host-wide PSI avg10 ceiling above which the
+#                                       box counts as HOT (default 20). READ AGAIN by
+#                                       ROW4-1 as of task 5998 (this entry previously
+#                                       declared it UNUSED on the H5/#4926 premise
+#                                       that confined-quota + pinning made ROW4-1
+#                                       host-load-independent by construction —
+#                                       measurement falsified that: the quota bounds
+#                                       the AGGREGATE, not the SPLIT between the two
+#                                       weighted children, so foreign load on the
+#                                       pinned CPUs still dilutes proportionality.
+#                                       See the ROW4-1-QUIET-VACUITY block below).
+#                                       ROW1/ROW2_3 do not read it
 #   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
 #                                       (default 1)
 #   REIFY_CPU_GOV_TEST_ROW1_MEASURE_S   ROW1-1 steady-state delta window (default 3)
