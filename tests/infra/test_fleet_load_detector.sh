@@ -376,9 +376,22 @@ assert "K6: check --help advertises neither --avg10-threshold nor --psi-path" \
 # Block I — dark-factory-orchestrator.yaml config-drift cross-check. Self-contained (does
 # NOT enlarge tests/infra/test_cpu_governance_config.sh): mirrors that test's
 # (A2) PyYAML-guarded value-drift check + (B) always-run plain-grep knob-name
-# check, scoped to the new cpu_governance.fleet_load_detector sub-block.
+# check, scoped to the cpu_governance.fleet_load_detector sub-block.
 # `enabled` is DF-consumed (not grep-checked against a reify script, exactly
 # like DF_AGENT_CPU_GOVERN) — only its presence/truthiness is asserted here.
+#
+# Since task 5985 the sub-block declares exactly ONE grep-checked knob
+# (ratio_threshold); the avg10_threshold assertions were inverted into NEGATIVE
+# pins so a reintroduced config knob is caught the same way Block K catches a
+# reintroduced code arm. The negatives are anchored on the declaration form
+# (`avg10_threshold:`) and the `:-` fallback form, NOT on a bare knob-name
+# substring, so the prose that documents the drop in each file's header
+# neither satisfies nor breaks them.
+#
+# The BLOCK ITSELF must stay alive: config_key_census.ignore in
+# dark-factory-orchestrator.yaml lists `cpu_governance.fleet_load_detector`
+# block-level, so removing the whole block would make that ignore entry stale
+# and turn tests/infra/test_cpu_governance_config.sh red.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block I: dark-factory-orchestrator.yaml config-drift cross-check ---"
@@ -394,11 +407,15 @@ assert "REIFY_FLEET_LOAD_RATIO_THRESHOLD cited in dark-factory-orchestrator.yaml
 assert "REIFY_FLEET_LOAD_RATIO_THRESHOLD referenced in scripts/fleet-load-detector.sh" \
     grep -q "REIFY_FLEET_LOAD_RATIO_THRESHOLD" "$SCRIPT"
 
-assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD cited in dark-factory-orchestrator.yaml" \
-    grep -q "REIFY_FLEET_LOAD_AVG10_THRESHOLD" "$ORCH_YAML"
+# NEGATIVE pins (task 5985): the dropped avg10 arm must not come back as a
+# config knob either. Anchored on the YAML declaration form and the shell `:-`
+# fallback form so a prose mention of the drop in a comment neither satisfies
+# nor breaks them.
+assert "avg10_threshold is NOT declared in dark-factory-orchestrator.yaml (dropped by 5985)" \
+    bash -c '! grep -qE "^[[:space:]]*avg10_threshold:" "$1"' _ "$ORCH_YAML"
 
-assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD referenced in scripts/fleet-load-detector.sh" \
-    grep -q "REIFY_FLEET_LOAD_AVG10_THRESHOLD" "$SCRIPT"
+assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD is NOT a :- fallback in scripts/fleet-load-detector.sh" \
+    bash -c '! grep -q "REIFY_FLEET_LOAD_AVG10_THRESHOLD:-" "$1"' _ "$SCRIPT"
 
 # (I-A) STRUCTURE + VALUE DRIFT — parse YAML (SKIP if PyYAML unavailable,
 # mirrors test_cpu_governance_config.sh's SKIP guard)
@@ -418,12 +435,11 @@ Checks (no <script_path>):
   parse_ok                       — file parses as valid YAML (no exception)
   has_fleet_load_detector        — cpu_governance.fleet_load_detector block exists
   has_ratio_threshold            — ...ratio_threshold key present
-  has_avg10_threshold            — ...avg10_threshold key present
+  no_avg10_threshold             — ...avg10_threshold key ABSENT (dropped by task 5985)
   has_enabled                    — ...enabled key present
   enabled_truthy                 — ...enabled is truthy
 Checks (with <script_path> — value-drift cross-check):
   ratio_threshold_matches_script — YAML ratio_threshold == fleet-load-detector.sh :- default
-  avg10_threshold_matches_script — YAML avg10_threshold == fleet-load-detector.sh :- default
 Exit 0 on pass, 1 on fail.
 """
 import sys, yaml, re
@@ -450,8 +466,14 @@ if fld is None:
 if check == "has_ratio_threshold":
     sys.exit(0 if "ratio_threshold" in fld else 1)
 
-if check == "has_avg10_threshold":
-    sys.exit(0 if "avg10_threshold" in fld else 1)
+if check == "no_avg10_threshold":
+    # Task 5985 dropped the PSI avg10 arm; the structural half pins the key's
+    # ABSENCE rather than merely no longer mentioning it, so a reintroduced
+    # knob fails loudly instead of going unnoticed.
+    if "avg10_threshold" in fld:
+        print("fleet_load_detector.avg10_threshold reappeared (dropped by task 5985)", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
 
 if check == "has_enabled":
     sys.exit(0 if "enabled" in fld else 1)
@@ -473,20 +495,6 @@ if check == "ratio_threshold_matches_script":
         sys.exit(1)
     sys.exit(0)
 
-if check == "avg10_threshold_matches_script":
-    script_path = sys.argv[3]
-    content = open(script_path).read()
-    m = re.search(r'REIFY_FLEET_LOAD_AVG10_THRESHOLD:-([0-9.]+)', content)
-    if not m:
-        print(f"REIFY_FLEET_LOAD_AVG10_THRESHOLD default not found in {script_path}", file=sys.stderr)
-        sys.exit(1)
-    script_val = float(m.group(1))
-    yaml_val = fld.get("avg10_threshold")
-    if yaml_val is None or float(yaml_val) != script_val:
-        print(f"Drift: YAML avg10_threshold={yaml_val} != fleet-load-detector.sh default={script_val}", file=sys.stderr)
-        sys.exit(1)
-    sys.exit(0)
-
 print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -500,8 +508,8 @@ PYEOF
     assert "fleet_load_detector.ratio_threshold key present" \
         python3 "$_FLD_PARSE_PY" "$ORCH_YAML" has_ratio_threshold
 
-    assert "fleet_load_detector.avg10_threshold key present" \
-        python3 "$_FLD_PARSE_PY" "$ORCH_YAML" has_avg10_threshold
+    assert "fleet_load_detector.avg10_threshold key ABSENT (dropped by task 5985)" \
+        python3 "$_FLD_PARSE_PY" "$ORCH_YAML" no_avg10_threshold
 
     assert "fleet_load_detector.enabled key present" \
         python3 "$_FLD_PARSE_PY" "$ORCH_YAML" has_enabled
@@ -511,9 +519,6 @@ PYEOF
 
     assert "REIFY_FLEET_LOAD_RATIO_THRESHOLD: YAML ratio_threshold matches fleet-load-detector.sh :-fallback (4.0)" \
         python3 "$_FLD_PARSE_PY" "$ORCH_YAML" ratio_threshold_matches_script "$SCRIPT"
-
-    assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD: YAML avg10_threshold matches fleet-load-detector.sh :-fallback (80)" \
-        python3 "$_FLD_PARSE_PY" "$ORCH_YAML" avg10_threshold_matches_script "$SCRIPT"
 fi
 
 test_summary
