@@ -468,6 +468,35 @@ fn argmax_sampled_field_1d_real_domain_returns_real_coord() {
     );
 }
 
+/// `argmax(field)` over a Sampled 1-D `Type::Int`-domain field returns
+/// `Value::Undef`. `wrap_coord_for_domain`'s match has no arm for
+/// `Type::Int` (only `Type::Point { .. }` and `Type::Scalar { .. }` are
+/// handled), so this exercises the function's `_ => Value::Undef`
+/// catch-all directly — the same rejection the 2-D `Point<Int>` case
+/// reaches via `is_supported_scalar_quantity`. Pins the pre-existing
+/// end-to-end behaviour before the `wrap_scalar_coord` refactor in task
+/// 5996.
+#[test]
+fn argmax_sampled_field_int_domain_returns_undef() {
+    let sf = make_sampled_1d("f", vec![0.0, 1.0, 2.0], vec![1.0, 5.0, 3.0]);
+    let (field, field_type) = wrap_sampled_field(sf, Type::Int, Type::dimensionless_scalar());
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        Type::Int,
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmax(field) over Type::Int domain should return Value::Undef (no arm in wrap_coord_for_domain)"
+    );
+}
+
 /// `min(field)` over a Sampled 1-D Pressure-codomain field returns the
 /// minimum value as `Value::Scalar { si_value: <min>, dimension: PRESSURE }`.
 #[test]
@@ -633,6 +662,45 @@ fn argmin_sampled_field_2d_length_domain_returns_point2_at_min_index() {
             },
         ]),
         "argmin(field) over 2-D Point2<Length> domain should return the per-axis coords at the data min"
+    );
+}
+
+/// `argmax(field)` over a Sampled 2-D `Point<Int>`-domain field returns
+/// `Value::Undef`. `Type::Int` is not a supported per-axis scalar quantity
+/// (`is_supported_scalar_quantity` in `field_reductions.rs` accepts only
+/// `Type::Scalar { .. }`): there is no precise integer round-trip from
+/// `axis_grids`' `f64` storage, so `wrap_coord_for_domain`'s `Type::Point`
+/// arm rejects it up front via its `is_supported_scalar_quantity` guard
+/// rather than silently coercing coords to Real. This pins the pre-existing
+/// end-to-end behaviour of that guard (previously untested) before the
+/// `wrap_scalar_coord` refactor in task 5996.
+#[test]
+fn argmax_sampled_field_point_int_domain_returns_undef() {
+    let domain = Type::Point {
+        n: 2,
+        quantity: Box::new(Type::Int),
+    };
+    let sf = make_sampled_2d(
+        "f",
+        vec![0.0, 1.0],
+        vec![0.0, 1.0],
+        vec![1.0, 4.0, 2.0, 3.0],
+    );
+    let (field, field_type) = wrap_sampled_field(sf, domain.clone(), Type::dimensionless_scalar());
+
+    let expr = make_function_call(
+        "argmax",
+        vec![CompiledExpr::literal(field, field_type)],
+        domain.clone(),
+    );
+
+    let values = ValueMap::new();
+    let result = eval_expr(&expr, &EvalContext::simple(&values));
+
+    assert_eq!(
+        result,
+        Value::Undef,
+        "argmax(field) over Point<Int> domain should return Value::Undef (Int is not a supported scalar quantity)"
     );
 }
 
