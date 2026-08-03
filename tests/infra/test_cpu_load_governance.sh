@@ -1770,6 +1770,27 @@ else
         || _row4_quiet_vacuity5_rc=$?
     assert "ROW4-1-QUIET-VACUITY-5: FAIL-SAFE -- sub-floor share but non-numeric PSI sample (avg10='nan-ish') => NOT inconclusive (malformed read takes the same never-mask path as an absent one)" \
         test "$_row4_quiet_vacuity5_rc" -ne 0
+
+    # (6)/(7) FAIL-SAFE on an unusable cpu.stat delta. "unavailable" is the
+    # exact shape `cpu_gov_instrument.py cgroup-usage` emits when a slice read
+    # fails, and the ROW4 bracket arithmetic above can propagate it. A delta
+    # that cannot be read is NOT evidence of dilution, so even on a HOT box it
+    # must be NOT inconclusive — otherwise an unreadable measurement silently
+    # becomes a SKIP that hides a regression. Mirrors _row1_stall_contended's
+    # numeric-validity guard, which returns rc 1 on non-integer input WITHOUT
+    # invoking python3 (a raw string reaching float() raises ValueError, which
+    # is indistinguishable from an honest below-floor verdict).
+    _row4_quiet_vacuity6_rc=0
+    _row4_share_inconclusive unavailable 5945387 300 100 0.10 64.92 20 \
+        || _row4_quiet_vacuity6_rc=$?
+    assert "ROW4-1-QUIET-VACUITY-6: FAIL-SAFE -- merge delta unreadable (Δmerge=unavailable, hot box) => NOT inconclusive (an unreadable measurement never becomes a SKIP)" \
+        test "$_row4_quiet_vacuity6_rc" -ne 0
+
+    _row4_quiet_vacuity7_rc=0
+    _row4_share_inconclusive 10367459 unavailable 300 100 0.10 64.92 20 \
+        || _row4_quiet_vacuity7_rc=$?
+    assert "ROW4-1-QUIET-VACUITY-7: FAIL-SAFE -- task delta unreadable (Δtask=unavailable, hot box) => NOT inconclusive (symmetric with -6)" \
+        test "$_row4_quiet_vacuity7_rc" -ne 0
 fi
 
 if ! host_supports_governance; then
