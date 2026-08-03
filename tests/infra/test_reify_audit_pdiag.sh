@@ -42,16 +42,26 @@
 # skip must never take the whole file down — that is precisely the bug that let
 # the PTODO hard gate be silently bypassed.
 #
-# NO-SILENT-GREEN FLOOR (esc-5405-7).  The rc-75 partition above is only sound
-# while the binary is PRESENT-but-stale.  The same guard also returns 75 for an
-# ABSENT binary, and returns 125 when a rebuild was attempted and the binary is
-# still unusable — in BOTH of those the `[ -x "$REIFY_AUDIT_BIN" ]` guards below
-# are false, EVERY scenario is skipped, and an unguarded `test_summary` would
-# print "0 passed, 0 failed" and exit 0.  run_all.sh grades on exit code alone,
-# so that is a hard gate reporting green having asserted nothing — the exact
-# failure mode this file's partition was written to prevent.  Two floors close
-# it: any guard rc outside {0,75} aborts LOUD immediately, and the $RAN tracker
-# refuses to exit 0 unless at least one scenario actually executed.
+# NO-SILENT-GREEN FLOOR (esc-5405-7, corrected esc-5405-9).  The rc-75
+# partition above is only sound while the binary is PRESENT-but-stale.  The
+# same guard also returns 75 for an ABSENT binary, and returns 125 when the
+# rebuild path ran and the binary is STILL judged stale.  Neither rc implies
+# the binary is unusable: 125 in particular covers a `cargo build` that was a
+# legitimate no-op while the on-disk mtime still predates the last
+# crates/reify-audit commit — a warm-lane seeded target/ with stamped mtimes,
+# where $REIFY_AUDIT_BIN is fully executable (see the `return 125` site in
+# scripts/reify-audit-freshness.sh).  So BOTH rcs are split on detector
+# USABILITY, never on the rc alone:
+#   PRESENT-but-stale → RATCHET_SKIP=1.  Only the precision-sensitive (a) is
+#     skipped; the staleness-stable (b)+(c) hard gate still runs, so the run
+#     does assert something.
+#   ABSENT → exit 1.  Every scenario is guarded on `[ -x "$REIFY_AUDIT_BIN" ]`,
+#     so NONE execute, and an unguarded `test_summary` would print
+#     "0 passed, 0 failed" and exit 0.  run_all.sh grades on exit code alone,
+#     so that is a hard gate reporting green having asserted nothing — the
+#     exact failure mode this file's partition was written to prevent.
+# The $RAN tracker is the backstop under both: it refuses to exit 0 unless at
+# least one scenario actually executed.
 #
 # SELF-MATCH SAFETY: this file must not contain a literal `Diagnostic::error(`
 # anchor or a literal opt-out token.  Both are assembled from shell variables at
@@ -171,13 +181,34 @@ if [ "$_guard_rc" -eq 75 ]; then
     RATCHET_SKIP=1
 elif [ "$_guard_rc" -ne 0 ]; then
     # Any other nonzero rc — 125 from reify_audit_guard means the binary is
-    # STILL stale/absent after the rebuild path ran (typically a failed
-    # `cargo build -p reify-audit`).  Leaving RATCHET_SKIP=0 here would look
-    # like "ratchet enabled" while the `-x` guards below silently skip every
-    # scenario.  That is not a budget-safe skip; it is a broken toolchain, and
-    # it must be loud.
-    echo "test_reify_audit_pdiag.sh: reify-audit freshness guard failed (rc=$_guard_rc) — the detector could not be made usable and no budget-safe skip was requested; refusing to report green" >&2
-    exit 1
+    # STILL judged stale after the rebuild path ran.  That covers two very
+    # different worlds: a failed `cargo build -p reify-audit` (no usable
+    # detector at all), and a build that was a legitimate no-op — cargo's
+    # fingerprint says up-to-date — while the on-disk mtime still predates the
+    # last crates/reify-audit commit, e.g. a warm-lane seeded target/ with
+    # stamped mtimes, where the binary is fully usable.
+    #
+    # So split on detector USABILITY, exactly as the rc-75 partition above
+    # does and exactly as tests/infra/test_reify_audit_ptodo.sh does (#5962
+    # review, esc-5405-9).  Collapsing both worlds into one unconditional
+    # `exit 1` turns every stamped-mtime warm-lane run into a spurious hard RED
+    # while emitting a diagnostic ("could not be made usable") that is
+    # factually wrong about an executable binary.
+    if [ -x "$REIFY_AUDIT_BIN" ]; then
+        # PRESENT: the detector runs, so the staleness-stable (b)+(c) hard gate
+        # must still execute.  Only the precision-sensitive ratchet (a) is
+        # skipped.  This is not a silent green: (b)+(c) set $RAN, and the floor
+        # after test_summary still refuses a run that executed none of them.
+        echo "test_reify_audit_pdiag.sh: reify-audit freshness guard failed (rc=$_guard_rc) but '$REIFY_AUDIT_BIN' is executable — skipping the precision-sensitive ratchet (a); the (b)+(c) hard gate still runs against the stale binary" >&2
+        RATCHET_SKIP=1
+    else
+        # ABSENT: nothing can run.  Leaving RATCHET_SKIP=0 here would look like
+        # "ratchet enabled" while the `-x` guards below silently skip every
+        # scenario.  That is not a budget-safe skip; it is a broken toolchain,
+        # and it must be loud.
+        echo "test_reify_audit_pdiag.sh: reify-audit freshness guard failed (rc=$_guard_rc) — the detector could not be made usable and no budget-safe skip was requested; refusing to report green" >&2
+        exit 1
+    fi
 fi
 
 # -----------------------------------------------------------------------
