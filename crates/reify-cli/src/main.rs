@@ -793,9 +793,31 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let mut result = result;
         merge_post_build_verdicts(&mut result, build_result.as_ref());
 
+        // D2 (task 5748): `build()`'s diagnostics are no longer discarded.
+        // `check()` alone never produces the realization-only entries
+        // (`compile_geometry_op` gating, kernel-dispatch failures), so without
+        // this merge a module whose geometry cannot compile at all still
+        // reported "All constraints satisfied." under `check`.
+        //
+        // Ordering is load-bearing and runs AFTER `merge_post_build_verdicts`:
+        // that pass drops the now-false `ConstraintIndeterminate` warnings for
+        // the entries it upgraded, and merging first would let build()'s copy
+        // of those same warnings reappend them.
+        //
+        // The plan's separate `build_diagnostics` accumulator is subsumed by the
+        // `build_result` capture the esc-5748-1 ruling landed: `None` (the
+        // lightweight arm, and the kernel-backed sub-case that takes only the
+        // `tessellate_realizations` side effect) yields an empty slice, so those
+        // paths stay byte-identical (C2) with no redundant clone.
+        let build_diagnostics: &[reify_core::Diagnostic] = build_result
+            .as_ref()
+            .map(|b| b.diagnostics.as_slice())
+            .unwrap_or(&[]);
+        let merged_diagnostics = merge_build_diagnostics(&result.diagnostics, build_diagnostics);
+
         let outcome = report_eval_output(
             &result.constraint_results,
-            &result.diagnostics,
+            &merged_diagnostics,
             &mut std::io::stdout(),
             &mut std::io::stderr(),
         );
@@ -808,11 +830,20 @@ fn cmd_check(args: &[String]) -> ExitCode {
             &mut std::io::stderr(),
         );
 
+        // Both ad-hoc escalations below read the MERGED set, not check()'s alone
+        // (PRD D2). Safe in both directions: merged ⊇ check()'s set, so nothing
+        // that fails today can start passing; and the entries build() adds are
+        // realization-only (`compile_geometry_op` / kernel dispatch), carrying
+        // neither `DiagnosticCode::GdtIllegalModifier` nor an `E_DFM_` message
+        // prefix, so nothing that passes today starts failing. Leaf γ (#5403)
+        // replaces both predicates with a single general `Severity::Error` gate
+        // over this same merged set — feeding one set to both reporting and the
+        // exit decision here is what keeps γ's diff small.
+        //
         // Escalate to FAILURE when a GdtIllegalModifier error is present.
         // Scoped strictly to this code so non-GD&T modules are byte-identical.
         // GdtRemoved2018 warnings remain non-fatal (exit 0 preserved).
-        if result
-            .diagnostics
+        if merged_diagnostics
             .iter()
             .any(|d| d.code == Some(DiagnosticCode::GdtIllegalModifier))
         {
@@ -828,7 +859,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // remain byte-identical (C2).
         // DFMSeverity.Warning diagnostics (W_DFM_OVERHANG etc.) are non-fatal —
         // exit 0, never a false positive (C1 graceful degradation).
-        if has_dfm_rule && dfm_has_error_diagnostic(&result.diagnostics) {
+        if has_dfm_rule && dfm_has_error_diagnostic(&merged_diagnostics) {
             return ExitCode::FAILURE;
         }
 
