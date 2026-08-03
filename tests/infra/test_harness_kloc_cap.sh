@@ -1850,4 +1850,58 @@ _s9_fire_fails="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s9_fire_out" || true)"
 assert "9: exactly one FAIL line for one malformed row (no double-report, no masking)" \
     test "$_s9_fire_fails" -eq 1
 
+# --- must-not-fire: every row is a well-formed in-scope standalone, plus
+#     comment / blank / commented-out-path lines, which are NOT data rows. ---
+_s9_ok_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_ok_baseline")
+{
+    printf '# a header comment\n'
+    printf '\n'
+    printf 'crates/reify-eval/tests/present.rs\n'
+    printf '#crates/reify-eval/tests/gone.rs\n'
+    printf 'crates/reify-compiler/tests/present2.rs\n'
+} > "$_s9_ok_baseline"
+
+_s9_ok_out="$(mktemp)"; _TMPDIRS+=("$_s9_ok_out")
+_s9_ok_rc=0
+harness_layout_malformed_rows "$_s9_ok_baseline" \
+    > "$_s9_ok_out" 2>/dev/null || _s9_ok_rc=$?
+
+assert "9: a baseline whose every row is a well-formed in-scope standalone does NOT fire (returns 0)" \
+    test "$_s9_ok_rc" -eq 0
+# rows=2 pins that the comment, the blank line and the commented-out path are
+# stripped — neither counted nor flagged — i.e. the SAME data-row semantics
+# harness_layout_baseline_contains uses. The two rows span two DIFFERENT
+# consolidatable crates, so the crate-membership half of the predicate is
+# exercised for more than one value.
+assert "9: clean scan emits a structured PASS line counting only data rows (rows=2)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=2$' "$_s9_ok_out"
+assert "9: clean scan emits no FAIL line (comment/blank/commented-out are not rows)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s9_ok_out"
+
+# --- ZERO DATA ROWS is a PASS, not a failure — the exact assert this task
+#     exists to install. A baseline holding only its header comment (or
+#     nothing at all) is the legitimate END STATE of the ratchet: this file's
+#     own header calls it "a RATCHET, not a permanent allow-list" whose
+#     "shrinking toward empty == consolidation progress", so REDding at zero
+#     rows would punish FINISHING the consolidation (#5693-#5696, plus the
+#     reify-cli / reify-syntax / reify-kernel-occt lines) that this guard
+#     protects. Non-vacuity for THIS section comes from the must-fire fixture
+#     above, NEVER from a `rows >= N` floor — the same posture Section 8
+#     takes for its own zero-rows fixture. ---
+_s9_norows_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_norows_baseline")
+{
+    printf '# every row consolidated away — the ratchet reached empty\n'
+    printf '\n'
+} > "$_s9_norows_baseline"
+
+_s9_norows_out="$(mktemp)"; _TMPDIRS+=("$_s9_norows_out")
+_s9_norows_rc=0
+harness_layout_malformed_rows "$_s9_norows_baseline" \
+    > "$_s9_norows_out" 2>/dev/null || _s9_norows_rc=$?
+
+assert "9: an all-comment baseline (zero data rows) PASSes — the ratchet's designed end state, not a failure" \
+    test "$_s9_norows_rc" -eq 0
+assert "9: zero-data-row baseline reports rows=0, not a phantom row from the herestring's empty line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=0$' "$_s9_norows_out"
+
 test_summary
