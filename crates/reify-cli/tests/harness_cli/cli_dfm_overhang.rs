@@ -110,7 +110,8 @@ fn check_dfm_overhang_emits_one_w_dfm_overhang_under_occt() {
 ///
 /// Under OCCT: exactly one `W_DFM_OVERHANG` on stderr (box bottom face dips
 /// 90° with max_overhang_angle=0deg); RepresentationWithin Satisfied (1m sphere
-/// at #precision(0.1mm) ≪ 1mm bound); no `VIOLATED` on stdout; exit 0.
+/// at #precision(0.3mm) measures 6.202e-4 m against the 1.000e-3 m bound —
+/// a 1.61x margin); no `VIOLATED` on stdout; exit 0.
 ///
 /// Stub mode (no OCCT): exit 0, no `W_DFM_OVERHANG`, no `VIOLATED` (C1).
 #[test]
