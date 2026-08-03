@@ -1334,4 +1334,112 @@ done
 assert "7: live consolidated-stem set is non-empty (>= 300 stems, non-vacuity)" \
     test "$_s7_live_stems" -ge 300
 
+# ===========================================================================
+# Section 8: the CONVERSE of rule (b) — every grandfather-baseline row must
+# name a file that exists on disk. Rule (b)'s detector
+# (harness_layout_violations) enumerates `"$tests_dir"/*.rs`, so it only ever
+# visits files that EXIST and asks whether each is sanctioned; a row whose file
+# is gone is structurally unreachable from it. The sibling gate
+# scripts/check-harness-baseline-registration.sh is diff-scoped, so a row that
+# no diff touches is never examined either. An orphan row therefore drifts in
+# silently and only surfaces as a regenerate-and-diff mismatch belonging to no
+# one's diff.
+# ===========================================================================
+echo ""
+echo "--- Section 8: baseline orphan rows (row with no file on disk) ---"
+
+# The shared fixture root. It carries TWO existing files (not one) because the
+# must-not-fire case below pins `rows=2`, which needs two rows each backed by a
+# real file; `gone.rs` is the one deliberately absent from it. A second on-disk
+# file is inert for the must-fire case — the detector enumerates ROWS, not
+# files, so a file with no row is simply never visited.
+_s8_root="$(mktemp -d)"; _TMPDIRS+=("$_s8_root")
+mkdir -p "$_s8_root/crates/reify-eval/tests"
+printf 'fn main() {}\n' > "$_s8_root/crates/reify-eval/tests/present.rs"
+printf 'fn main() {}\n' > "$_s8_root/crates/reify-eval/tests/present2.rs"
+
+# --- must-fire: a baseline row naming a file that is NOT on disk. ---
+_s8_fire_baseline="$(mktemp)"; _TMPDIRS+=("$_s8_fire_baseline")
+printf 'crates/reify-eval/tests/present.rs\ncrates/reify-eval/tests/gone.rs\n' \
+    > "$_s8_fire_baseline"
+
+_s8_fire_out="$(mktemp)"; _TMPDIRS+=("$_s8_fire_out")
+_s8_fire_rc=0
+harness_layout_orphan_rows "$_s8_root" "$_s8_fire_baseline" \
+    > "$_s8_fire_out" 2>/dev/null || _s8_fire_rc=$?
+
+assert "8: a baseline row whose file is gone fires (returns 1)" \
+    test "$_s8_fire_rc" -eq 1
+assert "8: orphan row emitted as a structured FAIL line (orphan-baseline-row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/gone\.rs reason=orphan-baseline-row$' \
+        "$_s8_fire_out"
+# Precision: a row BACKED by a real file is never flagged.
+assert "8: a baseline row backed by a real file is NOT flagged (precision)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL .*present\.rs" "$1"' _ "$_s8_fire_out"
+# Exactly one FAIL line: a second orphan cannot hide behind the first, and a
+# single row is never double-reported.
+_s8_fire_fails="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s8_fire_out" || true)"
+assert "8: exactly one FAIL line for one orphan row (no double-report, no masking)" \
+    test "$_s8_fire_fails" -eq 1
+
+# --- must-not-fire: every row backed by a file, plus comment / blank /
+#     commented-out-path lines, which are NOT data rows. ---
+_s8_ok_baseline="$(mktemp)"; _TMPDIRS+=("$_s8_ok_baseline")
+{
+    printf '# a header comment\n'
+    printf '\n'
+    printf 'crates/reify-eval/tests/present.rs\n'
+    printf '#crates/reify-eval/tests/gone.rs\n'
+    printf 'crates/reify-eval/tests/present2.rs\n'
+} > "$_s8_ok_baseline"
+
+_s8_ok_out="$(mktemp)"; _TMPDIRS+=("$_s8_ok_out")
+_s8_ok_rc=0
+harness_layout_orphan_rows "$_s8_root" "$_s8_ok_baseline" \
+    > "$_s8_ok_out" 2>/dev/null || _s8_ok_rc=$?
+
+assert "8: a baseline whose every row is backed by a file does NOT fire (returns 0)" \
+    test "$_s8_ok_rc" -eq 0
+# rows=2 pins that the comment, the blank line and the commented-out path are
+# stripped — neither counted nor flagged — i.e. the SAME data-row semantics
+# harness_layout_baseline_contains uses.
+assert "8: clean scan emits a structured PASS line counting only data rows (rows=2)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-rows rows=2$' "$_s8_ok_out"
+assert "8: clean scan emits no FAIL line (comment/blank/commented-out are not rows)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s8_ok_out"
+
+# --- graceful degradation: a MISSING baseline is an explicit FAIL, never a
+#     silent pass (the posture Section 3b pins for missing-tests-dir). ---
+_s8_missing_base="$(mktemp -d)"; _TMPDIRS+=("$_s8_missing_base")
+_s8_missing_baseline="$_s8_missing_base/does-not-exist.manifest"   # never created
+
+_s8_missing_out="$(mktemp)"; _TMPDIRS+=("$_s8_missing_out")
+_s8_missing_rc=0
+harness_layout_orphan_rows "$_s8_root" "$_s8_missing_baseline" \
+    > "$_s8_missing_out" 2>/dev/null || _s8_missing_rc=$?
+
+assert "8: a missing baseline fires rather than vacuously passing (returns 1)" \
+    test "$_s8_missing_rc" -eq 1
+assert "8: missing baseline surfaces an explicit FAIL (missing-baseline)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL baseline=.*does-not-exist.* reason=missing-baseline$' \
+        "$_s8_missing_out"
+
+# --- shape: a row that is not `crates/<crate>/...` must still be reported, with
+#     crate=- (the same non-crate-scoped field harness_stale_selector_violations
+#     emits). A malformed row surfaces loudly instead of crashing the crate
+#     derivation or being silently skipped. ---
+_s8_shape_baseline="$(mktemp)"; _TMPDIRS+=("$_s8_shape_baseline")
+printf 'not/a/crate/path.rs\n' > "$_s8_shape_baseline"
+
+_s8_shape_out="$(mktemp)"; _TMPDIRS+=("$_s8_shape_out")
+_s8_shape_rc=0
+harness_layout_orphan_rows "$_s8_root" "$_s8_shape_baseline" \
+    > "$_s8_shape_out" 2>/dev/null || _s8_shape_rc=$?
+
+assert "8: a non-crates/ orphan row still fires (returns 1)" \
+    test "$_s8_shape_rc" -eq 1
+assert "8: a non-crates/ orphan row reports crate=- rather than a garbled crate" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=not/a/crate/path\.rs reason=orphan-baseline-row$' \
+        "$_s8_shape_out"
+
 test_summary
