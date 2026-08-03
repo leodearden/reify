@@ -1708,6 +1708,18 @@ else
         || _row4_quiet_vacuity2_rc=$?
     assert "ROW4-1-QUIET-VACUITY-2: NON-VACUITY CRUX -- same sub-floor share but QUIET box (avg10=5.0 < ceiling=20) => NOT inconclusive (hard assert stays reachable; a real governance regression still goes RED)" \
         test "$_row4_quiet_vacuity2_rc" -ne 0
+
+    # (3) A SATURATING share on a HOT box must still be NOT inconclusive, so
+    # the guard never suppresses a green: the assert runs and PASSES. Replays
+    # the real measured PASSING run from the same reproduction session (same
+    # tip, same box, minutes from the failing run replayed in (1)) — this is
+    # what forbids short-circuiting on box temperature alone, which is
+    # precisely what the implementation does today.
+    _row4_quiet_vacuity3_rc=0
+    _row4_share_inconclusive 11214247 4615047 300 100 0.10 64.92 20 \
+        || _row4_quiet_vacuity3_rc=$?
+    assert "ROW4-1-QUIET-VACUITY-3: hot box but SATURATING share (Δmerge=11214247 Δtask=4615047 => 0.7084 >= floor 0.65) => NOT inconclusive (a passing measurement still PASSES; the guard never suppresses a green)" \
+        test "$_row4_quiet_vacuity3_rc" -ne 0
 fi
 
 if ! host_supports_governance; then
