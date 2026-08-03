@@ -529,6 +529,151 @@ harness_stale_selector_violations() {
 }
 
 # ---------------------------------------------------------------------------
+# _harness_layout_row_crate <repo-rel-path>
+#
+# Sets the global _HL_ROW_CRATE to the derived `<c>` from a
+# `crates/<c>/...`-rooted <repo-rel-path>, or to `-` for any other shape — the
+# same non-crate-scoped field harness_stale_selector_violations emits above.
+# Shared by harness_layout_orphan_rows and harness_layout_malformed_rows below
+# — the two baseline-row detectors in THIS file — so neither can drift from
+# the other on what `crate=` means for a non-`crates/` row. NOT the single
+# repo-wide definition: scripts/check-harness-baseline-registration.sh:118-119
+# inlines the identical `rest="${path#crates/}"; crate="${rest%%/*}"`
+# derivation for the same `crate=` field on its own FAIL line, and folding
+# that script's copy in here is out of this file's scope.
+#
+# Returns via a global, not stdout, for consistency with
+# harness-layout-lib.sh's _harness_layout_norm_path — NOT as a measured
+# hot-path optimization. Both call sites invoke this only AFTER a row has
+# already been classified a violation (`continue` is taken first on a clean
+# row in both harness_layout_orphan_rows and harness_layout_malformed_rows),
+# so on the live tree — where Section 8 and Section 9 both assert zero
+# violations — this runs ZERO times per live detector call. It would take
+# ~495 calls only in the pathological case where every single live row is
+# broken at once.
+# ---------------------------------------------------------------------------
+_harness_layout_row_crate() {
+    local row="$1" rest
+    _HL_ROW_CRATE="-"
+    case "$row" in
+        crates/*/*)
+            rest="${row#crates/}"
+            _HL_ROW_CRATE="${rest%%/*}"
+            ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# _harness_layout_row_exists <row> <root_dir> — predicate for
+# harness_layout_orphan_rows: exit 0 iff <row> names a file that EXISTS under
+# <root_dir> (rule (b)'s own on-disk enumeration, in reverse).
+# ---------------------------------------------------------------------------
+_harness_layout_row_exists() {
+    [ -e "${2}/${1}" ]
+}
+
+# ---------------------------------------------------------------------------
+# _harness_layout_row_in_scope <row> <_unused> — predicate for
+# harness_layout_malformed_rows: exit 0 iff <row> is a well-formed in-scope
+# standalone (harness_layout_in_scope_standalone, harness-layout-lib.sh) —
+# pure string, no disk access. Takes the same <row> <arg> shape as
+# _harness_layout_row_exists so _harness_layout_scan_baseline_rows below can
+# dispatch to either predicate identically; the second argument is simply
+# unused here.
+# ---------------------------------------------------------------------------
+_harness_layout_row_in_scope() {
+    harness_layout_in_scope_standalone "$1"
+}
+
+# ---------------------------------------------------------------------------
+# _harness_layout_scan_baseline_rows <scan_token> <reason_token>
+#                                     <baseline_file> <predicate_fn> [predicate_arg]
+#
+# Shared row-scanning skeleton for harness_layout_orphan_rows and
+# harness_layout_malformed_rows below. The two started as near-verbatim
+# copies of this scaffolding — same missing/unreadable-baseline guards, same
+# herestring loop, same violation tally, same crate-derivation-and-emit shape
+# — differing only in what makes a row a violation and in two literal
+# tokens (task #5983 review: nothing enforced that a fix to one copy, e.g.
+# tightening the unreadable-baseline check, would not silently leave the
+# other behind). Hoisted here so there is exactly one place left to get it
+# right; each caller below is now a thin wrapper supplying its own predicate
+# and tokens.
+#
+# <predicate_fn> is invoked as `"$predicate_fn" <row> <predicate_arg>` — a
+# function name carried in a variable and invoked via `"$@"`-style expansion,
+# the same idiom test_helpers.sh's assert() already uses for every check in
+# this suite — and must return 0 for a well-formed row, 1 for a violation.
+# <predicate_arg> is passed through unexamined, empty when the predicate does
+# not need one (_harness_layout_row_in_scope).
+#
+# A missing baseline is an explicit FAIL, never a silent pass — the same
+# graceful-degradation posture harness_layout_violations takes for a missing
+# tests dir. (A vacuous pass here would be the worst outcome: the guard would
+# report clean precisely when it can see nothing.) A baseline that EXISTS but
+# cannot be READ is likewise an explicit FAIL, via a distinct
+# reason=unreadable-baseline token, checked on the enumerator's own exit
+# status: `rows -eq 0` is NOT a usable proxy for it, because a baseline
+# holding only its header comment is the legitimate END STATE of a ratchet
+# that shrinks toward empty — treating zero rows as an error would RED the
+# merge gate as a reward for FINISHING the consolidation this guard protects
+# (the same landmine the Section 8/9 notes decline a `rows >= N` floor over).
+#
+# The loop consumes a HERESTRING over the already-materialized rows, NOT a
+# pipe: it must not early-close the grep inside harness_layout_baseline_rows
+# (the esc-5172-1 SIGPIPE-141 hazard under this script's `set -o pipefail`),
+# and the violation tally must survive in THIS shell rather than dying in a
+# pipeline subshell. A herestring is used, rather than the process
+# substitution harness_layout_unit_lines and _bare_mod_decls use elsewhere,
+# because the enumerator's exit status is needed above, which a process
+# substitution would discard. `<<< ""` yields ONE empty line, which the
+# `[ -n "$row" ]` guard drops — so an empty baseline counts zero rows, not
+# one.
+#
+# Prints one structured FAIL line per violation — crate derived via the
+# shared _harness_layout_row_crate, so callers cannot drift on what `crate=`
+# means for a non-`crates/` row — and returns 1 on any. On a clean scan,
+# prints one PASS line carrying the scanned row count and returns 0.
+# ---------------------------------------------------------------------------
+_harness_layout_scan_baseline_rows() {
+    local scan_token="$1" reason_token="$2" baseline_file="$3" predicate_fn="$4"
+    local predicate_arg="${5:-}"
+
+    if [ ! -f "$baseline_file" ]; then
+        _emit FAIL "baseline=$baseline_file" "reason=missing-baseline"
+        return 1
+    fi
+
+    local rows_raw="" rows_rc=0
+    rows_raw="$(harness_layout_baseline_rows "$baseline_file")" || rows_rc=$?
+    if [ "$rows_rc" -ne 0 ]; then
+        _emit FAIL "baseline=$baseline_file" "reason=unreadable-baseline"
+        return 1
+    fi
+
+    local violations=0 rows=0
+    local row crate
+
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        rows=$((rows + 1))
+        if "$predicate_fn" "$row" "$predicate_arg"; then
+            continue
+        fi
+        _harness_layout_row_crate "$row"
+        crate="$_HL_ROW_CRATE"
+        _emit FAIL "crate=$crate" "file=$row" "reason=$reason_token"
+        violations=$((violations + 1))
+    done <<< "$rows_raw"
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    _emit PASS "scan=$scan_token" "rows=$rows"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # harness_layout_orphan_rows <root_dir> <baseline_file>
 #
 # The CONVERSE of rule (b): every data row of the grandfather baseline must name
@@ -579,75 +724,52 @@ harness_stale_selector_violations() {
 #
 # Prints one structured FAIL line per orphan; returns 1 on any. <root_dir> and
 # <baseline_file> are both parameterized so hermetic fixtures drive it exactly
-# as the live tree does.
+# as the live tree does. Thin wrapper over _harness_layout_scan_baseline_rows
+# above, supplying the on-disk-existence predicate and this detector's own
+# scan=/reason= tokens.
 # ---------------------------------------------------------------------------
 harness_layout_orphan_rows() {
     local root_dir="$1"
     local baseline_file="$2"
+    _harness_layout_scan_baseline_rows "baseline-rows" "orphan-baseline-row" \
+        "$baseline_file" _harness_layout_row_exists "$root_dir"
+}
 
-    # A missing baseline is an explicit FAIL, never a silent pass — the same
-    # graceful-degradation posture harness_layout_violations takes for a
-    # missing tests dir. (A vacuous pass here would be the worst outcome: the
-    # guard would report clean precisely when it can see nothing.)
-    if [ ! -f "$baseline_file" ]; then
-        _emit FAIL "baseline=$baseline_file" "reason=missing-baseline"
-        return 1
-    fi
-
-    # A baseline that EXISTS but cannot be READ is likewise an explicit FAIL,
-    # for the same reason and via a distinct reason= token. This has to be
-    # checked here, on the enumerator's own exit status: `rows -eq 0` is NOT a
-    # usable proxy for it, because a baseline holding only its header comment is
-    # the legitimate END STATE of a ratchet that shrinks toward empty — treating
-    # zero rows as an error would RED the merge gate as a reward for FINISHING
-    # the consolidation this guard protects (the same landmine the Section 8
-    # note declines a `rows >= N` floor over).
-    local rows_raw="" rows_rc=0
-    rows_raw="$(harness_layout_baseline_rows "$baseline_file")" || rows_rc=$?
-    if [ "$rows_rc" -ne 0 ]; then
-        _emit FAIL "baseline=$baseline_file" "reason=unreadable-baseline"
-        return 1
-    fi
-
-    local violations=0 rows=0
-    local row crate rest
-
-    # A herestring over the already-materialized rows, NOT a pipe: the loop must
-    # not early-close the grep inside harness_layout_baseline_rows (the
-    # esc-5172-1 SIGPIPE-141 hazard under this script's `set -o pipefail`), and
-    # the violation tally must survive in THIS shell rather than dying in a
-    # pipeline subshell. Same rule harness_layout_unit_lines and _bare_mod_decls
-    # follow with process substitution; the herestring is used here because the
-    # enumerator's exit status is needed above, which a process substitution
-    # would discard. `<<< ""` yields ONE empty line, which the `[ -n "$row" ]`
-    # guard below drops — so an empty baseline counts zero rows, not one.
-    while IFS= read -r row; do
-        [ -n "$row" ] || continue
-        rows=$((rows + 1))
-        if [ -e "$root_dir/$row" ]; then
-            continue
-        fi
-        # Derive the crate from `crates/<crate>/…`. Anything else reports
-        # `crate=-` — the non-crate-scoped field shape
-        # harness_stale_selector_violations already emits — so a malformed row
-        # surfaces loudly instead of being silently skipped or reported with a
-        # garbled crate.
-        crate="-"
-        case "$row" in
-            crates/*/*)
-                rest="${row#crates/}"
-                crate="${rest%%/*}"
-                ;;
-        esac
-        _emit FAIL "crate=$crate" "file=$row" "reason=orphan-baseline-row"
-        violations=$((violations + 1))
-    done <<< "$rows_raw"
-
-    if [ "$violations" -gt 0 ]; then
-        return 1
-    fi
-    _emit PASS "scan=baseline-rows" "rows=$rows"
-    return 0
+# ---------------------------------------------------------------------------
+# harness_layout_malformed_rows <baseline_file>
+#
+# Every data row of <baseline_file> must itself be a well-formed in-scope
+# standalone (harness_layout_in_scope_standalone) — independent of whether the
+# file it names exists on disk, which is the property
+# harness_layout_orphan_rows above does NOT check (that detector asks only
+# "does this row's file exist?"). A row that is malformed but whose file
+# EXISTS (e.g. `crates/reify-eval/src/foo.rs`, or a nested
+# `crates/reify-eval/tests/sub/dir/x.rs`) passes harness_layout_orphan_rows
+# silently and is structurally unreachable from rule (b)'s detector
+# (harness_layout_violations), which enumerates existing FILES, not baseline
+# ROWS — so it would otherwise drift into the ratchet as dead weight.
+#
+# "Well-formed" is deliberately harness_layout_in_scope_standalone
+# (harness-layout-lib.sh), NOT a locally re-derived
+# `^crates/[^/]+/tests/[^/]+\.rs$`-style regex: that predicate already
+# single-sources exactly this rule — it IS the manifest header's own "WHAT IT
+# LISTS" / "INTENTIONALLY EXCLUDED" claims (the 5 consolidatable crates,
+# top-level only, no harness_*.rs, none of the 7 override stems) — so
+# re-deriving it here would be a second, weaker expression of the same rule
+# (the G7 no-lockstep-duplication concern that lib's own header exists to
+# prevent). The predicate is pure-string (no disk access), which is why this
+# detector — unlike harness_layout_orphan_rows — takes NO <root_dir> argument.
+#
+# Prints one structured FAIL line per malformed row; returns 1 on any.
+# <baseline_file> is parameterized so hermetic fixtures drive it exactly as
+# the live tree does. Thin wrapper over _harness_layout_scan_baseline_rows
+# above, supplying the in-scope-standalone predicate and this detector's own
+# scan=/reason= tokens.
+# ---------------------------------------------------------------------------
+harness_layout_malformed_rows() {
+    local baseline_file="$1"
+    _harness_layout_scan_baseline_rows "baseline-row-shape" "malformed-baseline-row" \
+        "$baseline_file" _harness_layout_row_in_scope
 }
 
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
@@ -1149,20 +1271,42 @@ assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP g
 
 # ===========================================================================
 # Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
-# (the headline user-observable signal). Also guard integrity: a missing/empty
+# (the headline user-observable signal). Also guard integrity: a missing
 # baseline must never let the scan vacuously pass.
 # ===========================================================================
 echo ""
 echo "--- Section 5: live scan of the real 5 consolidatable crates ---"
 
-# Guard integrity: a missing / empty baseline is never a silent pass. (An empty
-# baseline would also flag all 867 grandfathered files -> a loud RED below —
-# these explicit asserts state the intent regardless.)
-_baseline_data="$(harness_layout_baseline_rows "$BASELINE" 2>/dev/null || true)"
+# Guard integrity: a MISSING baseline is never a silent pass (kept here as
+# `test -f`, below). Non-emptiness is DELIBERATELY NOT asserted anymore —
+# recorded here so a future reader is not tempted to put the floor back:
+#
+#   1. The manifest header calls this file "A RATCHET, NOT A PERMANENT
+#      ALLOW-LIST" whose "shrinking toward empty == consolidation progress".
+#      A non-empty floor would RED the merge gate as a REWARD for FINISHING
+#      the consolidation (#5693-#5696, plus the reify-cli / reify-syntax /
+#      reify-kernel-occt lines) that this guard exists to protect — invisible
+#      today at ~495 rows, firing only at the finish line. Same reasoning as
+#      Section 8's and Section 9's own declined `rows >= N` floors, and as
+#      the sibling ptodo ratchet's crates/reify-audit/tests/ptodo_baseline.rs
+#      :: baseline_is_well_formed, which states the identical rule for its own
+#      baseline: "An empty baseline PASSES — it is the ... zero residual debt
+#      success state, not a failure."
+#   2. It was never load-bearing for THIS section's own vacuity anyway: the
+#      live rule-(b) scan directly below is fail-CLOSED on an emptied baseline
+#      BY CONSTRUCTION — every one of the ~495 grandfathered files would be
+#      flagged as an unsanctioned standalone, a loud RED (see the asserts
+#      below).
+#   3. The properties the deleted assert used to carry — by accident, via its
+#      `2>/dev/null || true` swallow, which made an UNREADABLE live baseline
+#      masquerade as merely "empty" — now live elsewhere, deliberately:
+#      baseline MISSING or UNREADABLE -> Section 8's live orphan-row scan
+#      (`reason=missing-baseline` / `reason=unreadable-baseline`, over this
+#      same $BASELINE) and Section 9's live row-shape scan (same two
+#      reasons); row SHAPE / well-formedness -> Section 9. Section 9's live
+#      well-formedness assert is intentionally NOT duplicated here (G7).
 assert "5: grandfather baseline exists (guard integrity)" \
     test -f "$BASELINE"
-assert "5: grandfather baseline is non-empty after comment/blank stripping (guard integrity)" \
-    test -n "$_baseline_data"
 
 # Wire the live scan over the 5 consolidatable crates' real tests dirs. A
 # missing crate dir surfaces as an explicit missing-tests-dir FAIL from the
@@ -1716,5 +1860,231 @@ assert "8: live orphan scan emits a structured PASS line carrying the data-row c
 # posture Section 3b takes for missing-tests-dir, not Section 6/7's. The live
 # PASS line still carries `rows=<n>` for observability, matched by `[0-9]+`
 # rather than asserted against a value.
+
+# ===========================================================================
+# Section 9: baseline row SHAPE / well-formedness — every grandfather-baseline
+# row must itself be a well-formed in-scope standalone
+# (harness_layout_in_scope_standalone), independent of whether the file it
+# names happens to exist on disk.
+#
+# WHY THIS IS NOT ALREADY COVERED. Section 8 only asks "does this row's file
+# exist?" — a row like `crates/reify-eval/src/foo.rs` or
+# `crates/reify-eval/tests/sub/dir/x.rs`, naming a file that EXISTS, passes
+# Section 8 silently. Rule (b)'s detector (harness_layout_violations)
+# enumerates existing FILES under a tests dir and asks whether each is
+# sanctioned — it never visits a row that names no such file, so a malformed
+# row is structurally unreachable from it too. A malformed-but-backed row
+# therefore drifts into the ratchet as dead weight, caught by neither existing
+# check.
+#
+# "Well-formed" is defined as harness_layout_in_scope_standalone
+# (harness-layout-lib.sh) — the same pure-string predicate that already
+# encodes the manifest header's own "WHAT IT LISTS" / "INTENTIONALLY
+# EXCLUDED" claims — not a locally re-derived regex, which would be a second,
+# weaker expression of the same rule (the G7 no-lockstep-duplication concern
+# the lib's own header exists to prevent).
+# ===========================================================================
+echo ""
+echo "--- Section 9: baseline row shape / well-formedness ---"
+
+# --- must-fire: a baseline row that is not an in-scope standalone. Six
+#     distinct malformed shapes, chosen to name what Section 8 (the
+#     orphan-row detector) is structurally blind to whenever the file
+#     happens to exist on disk — Section 8 only asks "is the file there?",
+#     never "is the row itself well-formed?". This detector is pure-string
+#     (no <root_dir>), so none of these rows needs a backing file on disk to
+#     exercise it:
+#       - crates/reify-eval/src/foo.rs                  exists, but is not
+#         under tests/ at all — passes Section 8 silently if it existed.
+#       - crates/reify-eval/tests/sub/dir/x.rs           nested below tests/.
+#       - crates/reify-eval/tests/harness_something.rs  a harness_*.rs root,
+#         sanctioned by construction, never itself a baseline row.
+#       - crates/reify-eval/tests/tensegrity_t0a.rs      one of the 7
+#         permanently-standalone override stems (invariant I1).
+#       - crates/reify-solver-elastic/tests/x.rs         a real crate, but
+#         not one of the 5 consolidatable crates.
+#       - not/a/crate/path.rs                            not crates/-rooted
+#         at all.
+#     The first five also exercise the DERIVED half of
+#     _harness_layout_row_crate (crate=reify-eval / crate=reify-solver-elastic)
+#     — before this fixture grew, only its `-`-fallback branch was pinned. ---
+_s9_fire_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_fire_baseline")
+printf '%s\n' \
+    'crates/reify-eval/tests/present.rs' \
+    'crates/reify-eval/src/foo.rs' \
+    'crates/reify-eval/tests/sub/dir/x.rs' \
+    'crates/reify-eval/tests/harness_something.rs' \
+    'crates/reify-eval/tests/tensegrity_t0a.rs' \
+    'crates/reify-solver-elastic/tests/x.rs' \
+    'not/a/crate/path.rs' \
+    > "$_s9_fire_baseline"
+
+_s9_fire_out="$(mktemp)"; _TMPDIRS+=("$_s9_fire_out")
+_s9_fire_rc=0
+harness_layout_malformed_rows "$_s9_fire_baseline" \
+    > "$_s9_fire_out" 2>/dev/null || _s9_fire_rc=$?
+
+assert "9: a baseline row that is not an in-scope standalone fires (returns 1)" \
+    test "$_s9_fire_rc" -eq 1
+assert "9: malformed row emitted as a structured FAIL line (malformed-baseline-row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=- file=not/a/crate/path\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a file that EXISTS but is not under tests/ is caught (crate= derived, not the - fallback)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/src/foo\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a row nested below tests/ is rejected" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/sub/dir/x\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a harness_*.rs root is rejected (sanctioned by construction, never a baseline row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/harness_something\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: one of the 7 override stems is rejected (permanently standalone, never a baseline row)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-eval file=crates/reify-eval/tests/tensegrity_t0a\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+assert "9: a non-consolidatable crate is rejected (its own crate= derived, not skipped)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=reify-solver-elastic file=crates/reify-solver-elastic/tests/x\.rs reason=malformed-baseline-row$' \
+        "$_s9_fire_out"
+# Precision: the one row that IS a well-formed in-scope standalone is never
+# flagged.
+assert "9: a well-formed row is NOT flagged (precision)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL .*present\.rs" "$1"' _ "$_s9_fire_out"
+# Exactly one FAIL line per malformed row, six total: none hides behind
+# another, and none is double-reported.
+_s9_fire_fails="$(grep -cE '^HARNESS_KLOC_CAP FAIL ' "$_s9_fire_out" || true)"
+assert "9: exactly one FAIL line per malformed row, six total (no double-report, no masking)" \
+    test "$_s9_fire_fails" -eq 6
+
+# --- must-not-fire: every row is a well-formed in-scope standalone, plus
+#     comment / blank / commented-out-path lines, which are NOT data rows. ---
+_s9_ok_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_ok_baseline")
+{
+    printf '# a header comment\n'
+    printf '\n'
+    printf 'crates/reify-eval/tests/present.rs\n'
+    printf '#crates/reify-eval/tests/gone.rs\n'
+    printf 'crates/reify-compiler/tests/present2.rs\n'
+} > "$_s9_ok_baseline"
+
+_s9_ok_out="$(mktemp)"; _TMPDIRS+=("$_s9_ok_out")
+_s9_ok_rc=0
+harness_layout_malformed_rows "$_s9_ok_baseline" \
+    > "$_s9_ok_out" 2>/dev/null || _s9_ok_rc=$?
+
+assert "9: a baseline whose every row is a well-formed in-scope standalone does NOT fire (returns 0)" \
+    test "$_s9_ok_rc" -eq 0
+# rows=2 pins that the comment, the blank line and the commented-out path are
+# stripped — neither counted nor flagged — i.e. the SAME data-row semantics
+# harness_layout_baseline_contains uses. The two rows span two DIFFERENT
+# consolidatable crates, so the crate-membership half of the predicate is
+# exercised for more than one value.
+assert "9: clean scan emits a structured PASS line counting only data rows (rows=2)" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=2$' "$_s9_ok_out"
+assert "9: clean scan emits no FAIL line (comment/blank/commented-out are not rows)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s9_ok_out"
+
+# --- ZERO DATA ROWS is a PASS, not a failure — the exact assert this task
+#     exists to install. A baseline holding only its header comment (or
+#     nothing at all) is the legitimate END STATE of the ratchet: this file's
+#     own header calls it "a RATCHET, not a permanent allow-list" whose
+#     "shrinking toward empty == consolidation progress", so REDding at zero
+#     rows would punish FINISHING the consolidation (#5693-#5696, plus the
+#     reify-cli / reify-syntax / reify-kernel-occt lines) that this guard
+#     protects. Non-vacuity for THIS section comes from the must-fire fixture
+#     above, NEVER from a `rows >= N` floor — the same posture Section 8
+#     takes for its own zero-rows fixture. ---
+_s9_norows_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_norows_baseline")
+{
+    printf '# every row consolidated away — the ratchet reached empty\n'
+    printf '\n'
+} > "$_s9_norows_baseline"
+
+_s9_norows_out="$(mktemp)"; _TMPDIRS+=("$_s9_norows_out")
+_s9_norows_rc=0
+harness_layout_malformed_rows "$_s9_norows_baseline" \
+    > "$_s9_norows_out" 2>/dev/null || _s9_norows_rc=$?
+
+assert "9: an all-comment baseline (zero data rows) PASSes — the ratchet's designed end state, not a failure" \
+    test "$_s9_norows_rc" -eq 0
+assert "9: zero-data-row baseline reports rows=0, not a phantom row from the herestring's empty line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=0$' "$_s9_norows_out"
+
+# --- graceful degradation: a MISSING baseline is an explicit FAIL, never a
+#     silent pass (the posture Section 8 pins for its own orphan-row detector).
+#     "I read it and it has no rows" (PASS, above) and "I could not read it /
+#     it is not there" (FAIL, here) must never collapse into the same verdict,
+#     or the guard reports clean at the exact moment it can see nothing. ---
+_s9_missing_base="$(mktemp -d)"; _TMPDIRS+=("$_s9_missing_base")
+_s9_missing_baseline="$_s9_missing_base/does-not-exist.manifest"   # never created
+
+_s9_missing_out="$(mktemp)"; _TMPDIRS+=("$_s9_missing_out")
+_s9_missing_rc=0
+harness_layout_malformed_rows "$_s9_missing_baseline" \
+    > "$_s9_missing_out" 2>/dev/null || _s9_missing_rc=$?
+
+assert "9: a missing baseline fires rather than vacuously passing (returns 1)" \
+    test "$_s9_missing_rc" -eq 1
+assert "9: missing baseline surfaces an explicit FAIL (missing-baseline)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL baseline=.*does-not-exist.* reason=missing-baseline$' \
+        "$_s9_missing_out"
+
+# --- UNREADABLE baseline: an explicit FAIL with its own reason= token, never a
+#     vacuous `rows=0` PASS. This cannot be inferred from the row count — it is
+#     read off harness_layout_baseline_rows's EXIT STATUS, which is exactly why
+#     that lib function narrowly propagates grep's error exit (>= 2) instead of
+#     swallowing it alongside the no-lines-matched exit 1
+#     (tests/infra/harness-layout-lib.sh:252-260). ---
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  (skipped: running as uid 0 — chmod 000 does not deny root reads)"
+else
+    _s9_unread_baseline="$(mktemp)"; _TMPDIRS+=("$_s9_unread_baseline")
+    printf 'crates/reify-eval/tests/present.rs\n' > "$_s9_unread_baseline"
+    chmod 000 "$_s9_unread_baseline"
+
+    _s9_unread_out="$(mktemp)"; _TMPDIRS+=("$_s9_unread_out")
+    _s9_unread_rc=0
+    harness_layout_malformed_rows "$_s9_unread_baseline" \
+        > "$_s9_unread_out" 2>/dev/null || _s9_unread_rc=$?
+
+    assert "9: an unreadable baseline fires rather than vacuously passing (returns 1)" \
+        test "$_s9_unread_rc" -eq 1
+    assert "9: unreadable baseline surfaces its own FAIL token (unreadable-baseline)" \
+        grep -Eq '^HARNESS_KLOC_CAP FAIL baseline=.* reason=unreadable-baseline$' \
+            "$_s9_unread_out"
+    assert "9: unreadable baseline emits NO rows=0 PASS line (the vacuous-pass regression)" \
+        bash -c '! grep -qE "^HARNESS_KLOC_CAP PASS scan=baseline-row-shape" "$1"' \
+            _ "$_s9_unread_out"
+
+    # Restore so the EXIT trap's `rm -rf` is never fighting permissions.
+    chmod 644 "$_s9_unread_baseline"
+fi
+
+# --- LIVE scan over the real checked-in baseline. Uses the already-resolved
+#     $BASELINE (from harness_layout_baseline_path), so the
+#     REIFY_HARNESS_LAYOUT_BASELINE override is honored identically to the
+#     rest of this guard. ---
+_s9_live_out="$(mktemp)"; _TMPDIRS+=("$_s9_live_out")
+_s9_live_rc=0
+harness_layout_malformed_rows "$BASELINE" \
+    > "$_s9_live_out" 2>/dev/null || _s9_live_rc=$?
+
+# Offender lines to the archived log on failure (the Section 5/8 idiom, gated
+# on failure so a clean run's output stays byte-for-byte unchanged). Not
+# cosmetic: `assert` only dumps the stdout of the `test ...` checker it
+# invokes, which is always empty, so without this a failing live scan's own
+# `file=<row>` lines would never reach the archived merge-verify log — the
+# 2026-07-20 incident the Section 5 comment records.
+if [ "$_s9_live_rc" -ne 0 ]; then
+    echo "  ---- Section 9: live row-shape scan output (printed on failure) ----"
+    cat "$_s9_live_out"
+    echo "  ---- Section 9: end live scan output ----"
+fi
+
+assert "9: live baseline has no malformed rows (every data row is a well-formed in-scope standalone)" \
+    test "$_s9_live_rc" -eq 0
+# Pins the live grammar WITHOUT pinning a row count — a pinned count here would
+# be the same landmine Section 8 declines, in a different section: the count
+# is expected to shrink as consolidation proceeds, all the way to 0.
+assert "9: live row-shape scan emits a structured PASS line carrying the data-row count" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS scan=baseline-row-shape rows=[0-9]+$' "$_s9_live_out"
 
 test_summary
