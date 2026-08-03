@@ -786,3 +786,77 @@ fn check_constraint_results_come_from_authoritative_check_not_build() {
          stderr: {stderr}"
     );
 }
+
+/// Task 5748 / PRD `check-diagnostic-truthfulness.md` leaf β, D1 item 2 + D2 —
+/// the `--purpose` twin of `check_surfaces_geometry_compile_error_from_discarded_build`.
+///
+/// Sub-path (c) takes an unconditional `Engine::new(checker, None).eval(...)`
+/// branch, so a geometry-bearing module under `--purpose` realizes nothing: the
+/// `compile_geometry_op` diagnostic is never even PRODUCED, let alone reported.
+/// D1 item 2 gives this branch the same `module_has_geometry` build()-vs-eval()
+/// choice `cmd_eval` already has.
+///
+/// Measured pre-change baseline for `fixtures/mirror_bare_origin_purpose.ri`:
+///     stdout: "  OK purpose:mfg_ready@MirrorBareOriginPurpose#constraint[0]"
+///             "All constraints satisfied."
+///     stderr: EMPTY
+///     exit 0
+///
+/// The stdout assertions are the load-bearing half of D1 item 2: they prove the
+/// purpose activation + `check_constraints_with_values` path is unaffected by
+/// swapping `EvalResult` for `BuildResult` as the `.values` source (PRD
+/// Contract, `--purpose` branch: that call is agnostic to which result type
+/// produced `.values`).
+#[test]
+fn check_purpose_surfaces_geometry_compile_error() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=MirrorBareOriginPurpose",
+        &common::fixture_path("mirror_bare_origin_purpose.ri"),
+    ]);
+
+    // Unchanged by this leaf — see the sibling test: β fixes collection, γ
+    // (#5403) lands the Severity::Error exit gate that flips this.
+    assert!(
+        status.success(),
+        "leaf β fixes diagnostic collection only — the exit gate stays as-is until \
+         #5403 (γ) lands the Severity::Error gate.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The purpose path itself must be untouched by the build()-vs-eval() swap.
+    assert!(
+        stdout.contains("purpose:mfg_ready@"),
+        "the purpose-injected constraint id prefix must still be reported — \
+         check_constraints_with_values is agnostic to which result produced .values.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied."),
+        "the purpose constraint (subject.width > 0mm, default 80mm) stays satisfied.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping --purpose build-diagnostic assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let needle = "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror";
+    assert!(
+        stderr.contains(needle),
+        "with geometry routing, the --purpose branch realizes geometry and must \
+         report the compile error it produces.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences,
+        1,
+        "D2's dedup applies on this branch too: build() emits this error TWICE for \
+         one call site, so it must collapse to exactly one line — got {occurrences}.\n\
+         stderr: {stderr}"
+    );
+}
