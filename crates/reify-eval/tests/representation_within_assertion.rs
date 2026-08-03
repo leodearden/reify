@@ -269,7 +269,7 @@ fn compile_no_errors(source: &str, name: &str) -> reify_compiler::CompiledModule
 /// - `SphereCheck`: carries `RepresentationWithin(subject, 1mm)` — bound = 1e-3 m.
 ///
 /// BT6 uses this source verbatim (coarse → Violated).
-/// BT7 replaces `#precision(50mm)` with `#precision(0.1mm)` so deviation < 1mm.
+/// BT7 replaces `#precision(50mm)` with `#precision(0.3mm)` so deviation < 1mm.
 /// BT8 uses this source but skips `tessellate_realizations` → Indeterminate.
 /// C4 uses a variant with `0mm` bound.
 ///
@@ -285,10 +285,18 @@ structure SphereCheck {
 }
 "#;
 
-/// Fine-precision variant: `#precision(0.1mm)` — sampled deviation ≪ 1mm →
-/// used by BT7 to verify `Satisfied`.
+/// Fine-precision variant: `#precision(0.3mm)` — sampled deviation 6.202e-4 m,
+/// below the `1mm` (1e-3 m) bound (1.61x inside) → used by BT7 to verify
+/// `Satisfied`.
+///
+/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3.75x
+/// cheaper to tessellate than 0.1mm and still passes, as do both its measured
+/// neighbours (0.25mm → 5.198e-4 m, 0.35mm → 7.271e-4 m), so there is no
+/// sawtooth cliff within ±17%. The deviation is a SAWTOOTH in `#precision`
+/// (integer segment counts inside OCCT's mesher) and must never be
+/// interpolated — see BT7's band assertion for the re-measurement recipe.
 const OCCT_SOURCE_FINE: &str = r#"
-#precision(0.1mm)
+#precision(0.3mm)
 structure Sphere {
     let r = sphere(1000mm)
 }
@@ -363,9 +371,10 @@ fn bt6_coarse_sphere_tight_bound_yields_violated() {
 
 // ── BT7/C3: fine sphere + tight bound → Satisfied ────────────────────────────
 
-/// BT7 / C3: a sphere tessellated at fine precision (0.1 mm deflection) has
-/// sampled deviation < 1 mm, so `RepresentationWithin(subject, 1mm)` is
-/// **Satisfied** after the full pipeline.
+/// BT7 / C3: a sphere tessellated at fine precision (0.3 mm deflection) has
+/// sampled deviation 6.202e-4 m, below the 1 mm (1e-3 m) bound, so
+/// `RepresentationWithin(subject, 1mm)` is **Satisfied** after the full
+/// pipeline.
 #[test]
 fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
