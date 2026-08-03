@@ -161,7 +161,6 @@ pub structure Capstan {
     let blank_volume = volume(drum_blank)
     let body_volume  = volume(body)
 
-    constraint land_r > bore_r
     constraint flange_r > land_r
     // The seat must be a TRUE HALF-ROUND — arc centre ON the land surface, i.e.
     // land_r == pitch_r. The two bounds below are the one-sided halves of that
@@ -174,13 +173,20 @@ pub structure Capstan {
     //    break-through bound is subsumed by the tighter one here.
     //  - a land below the centreline cuts the land past the rope centreline, so
     //    the mouth closes OVER a rope that no longer sits in a seat.
-    // The ±1%-of-groove_r width is fp slack around the equality, not a design
-    // freedom: no other seat depth admits the rope.
-    constraint land_r < pitch_r + groove_r * 0.01
-    constraint land_r > pitch_r - groove_r * 0.01
+    // The ±1e-6-of-groove_r width (3nm at the defaults) is fp slack around the
+    // equality, not a design freedom: no other seat depth admits the rope, and
+    // `land_r = pitch_r` above is a bit-exact assignment so the width only has to
+    // be positive. It is deliberately the SAME window the Rust acceptance gate
+    // (crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs) uses to guard
+    // its half-round closed form, so there is no band of seat depths that passes
+    // `reify check` here but panics there.
+    constraint land_r < pitch_r + groove_r * 0.000001
+    constraint land_r > pitch_r - groove_r * 0.000001
     // Wall between the groove BOTTOM (pitch_r - groove_r = the deepest stock the
-    // seat removes) and the shaft bore. `land_r > bore_r` above only bounds the
-    // land surface, which sits a full groove_r clear of the seat's bottom.
+    // seat removes) and the shaft bore. This is the ONLY wall statement: the
+    // weaker `land_r > bore_r` it replaces bounded the land surface, which sits a
+    // full groove_r clear of the seat's bottom, and is strictly implied by this
+    // one given the half-round band above (land_r == pitch_r > bore_r + groove_r).
     constraint pitch_r - groove_r > bore_r
     // Clearance lead: at a half-round seat each wrap opens a 2*groove_r wide mouth
     // in the land, so the lead must exceed the MOUTH width or adjacent seats merge
