@@ -255,8 +255,17 @@ fi
 # (fail-open; mirrors cpu-admit.sh C-A4 / load_tolerance_lib.sh's fail-safe
 # philosophy). STATUS/REASON above already resolve to ok/none in this case
 # (RATIO_HIT stays 0), so this only adds the stderr warning.
+#
+# The ratio needs BOTH inputs, so blame the one that actually failed: nproc can
+# fail to resolve while loadavg parses fine (invalid --nproc/REIFY_FLEET_LOAD
+# _NPROC, or no `nproc` binary). Unconditionally blaming loadavg there would
+# print a diagnostic the very next line contradicts (`load1=1.00 nproc=`).
 if [ -z "$RATIO" ]; then
-    warn "loadavg ($LOADAVG_PATH) is unreadable/unparseable — cannot assess fleet load; reporting healthy (fail-open)"
+    if [ -z "$LOAD1" ]; then
+        warn "loadavg ($LOADAVG_PATH) is unreadable/unparseable — cannot assess fleet load; reporting healthy (fail-open)"
+    else
+        warn "nproc could not be resolved (invalid --nproc/REIFY_FLEET_LOAD_NPROC, or \`nproc\` unavailable) — cannot compute ratio; reporting healthy (fail-open)"
+    fi
 fi
 
 printf 'FLEET_LOAD status=%s load1=%s nproc=%s ratio=%s ratio_threshold=%s reason=%s\n' \

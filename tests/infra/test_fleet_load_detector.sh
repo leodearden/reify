@@ -302,11 +302,45 @@ assert "G1: unreadable loadavg prints a WARNING on stderr" \
     bash -c 'printf "%s\n" "$1" | grep -qi "warning"' _ "$ERR_OUT"
 assert "G1: unreadable loadavg emits no oversubscribed marker" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+# The diagnostic must name the input that actually failed (paired with G5).
+assert "G1: warning names loadavg as the failed input" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "loadavg"' _ "$ERR_OUT"
 
 # (G2/G3/G4 — the per-axis "one source unreadable, the other decides" matrix —
 # were DELETED by task 5985: with a single axis there is no "other axis". G2's
 # surviving intent (a high ratio still fires) is Block C; G1 above covers the
-# fully-blind case.)
+# loadavg-blind case. Those labels stay retired; G5 below is a new case, not a
+# revival of one of them.)
+
+# G5: the OTHER blind path. The ratio needs BOTH inputs, so it is equally
+# unavailable when loadavg parses fine but nproc does not resolve (invalid
+# override, or no `nproc` binary). The fail-open VERDICT is identical to G1 —
+# what must differ is the diagnostic: it has to name nproc, because blaming the
+# loadavg here is contradicted by the load1= field on the very next line. This
+# branch is only reachable since 5985 made the detector single-axis (the old
+# two-axis guard fired only when BOTH axes were absent, so this case emitted no
+# warning at all), which is exactly why it needs its own pin.
+G5_LOADAVG="$(_mk_loadavg 1.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$G5_LOADAVG" REIFY_FLEET_LOAD_NPROC=abc \
+    run_helper check
+assert "G5: unresolvable nproc exits 0 (fail-open)" test "$RC" -eq 0
+assert "G5: unresolvable nproc is status=ok" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+assert "G5: unresolvable nproc is reason=none" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=none$"' _ "$OUT"
+assert "G5: unresolvable nproc emits no oversubscribed marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+assert "G5: warning names nproc as the failed input" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "nproc"' _ "$ERR_OUT"
+# The regression this pins: the loadavg WAS readable, so the warning must not
+# claim otherwise. Anchored on the readable source's own path, which the
+# loadavg-blaming message interpolates and the nproc one never mentions.
+assert "G5: warning does not blame the readable loadavg source" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$G5_LOADAVG"
+# ...and the verdict line proves the loadavg parsed: load1 is populated, nproc
+# and ratio are the empty ones.
+assert "G5: verdict line reports the parsed load1 with an empty nproc/ratio" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])load1=1\.00 nproc= ratio= "' _ "$OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block K — the PSI avg10 arm is DROPPED (task 5985). NEGATIVE pins: a pure
