@@ -29,6 +29,13 @@ echo "=== check-compute-trampoline-registration.sh wiring tests ==="
 
 GATE="$REPO_ROOT/scripts/check-compute-trampoline-registration.sh"
 
+# The orchestrator runs scripts/verify.sh, so wiring is asserted against the
+# verify.sh plans. --include-infra so the lint-side infra leaf appears;
+# --scope all for the full plan; env/comment lines stripped via `grep -v '^#'`.
+LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan | grep -v '^#')"
+TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan | grep -v '^#')"
+export LINT_PLAN_SEGS TEST_PLAN_SEGS
+
 # _exits_with <want> <cmd...> — assert an EXACT exit code, not merely non-zero.
 # The gate's contract distinguishes 1 (violation found) from 2 (usage / not a
 # work tree); a bare `! cmd` would conflate them, so a gate that crashed with a
@@ -42,6 +49,43 @@ _exits_with() {
     return 1
 }
 
+# -- (a): script is referenced in the lint plan ---------------------------------
+echo ""
+echo "--- (a): scripts/check-compute-trampoline-registration.sh is in the lint plan ---"
+assert "lint plan contains 'scripts/check-compute-trampoline-registration.sh'" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'scripts/check-compute-trampoline-registration.sh'"
+
+# -- (b): if-test-f guard is used -----------------------------------------------
+echo ""
+echo "--- (b): if test -f guard is used in the lint plan ---"
+assert "lint plan contains 'if test -f scripts/check-compute-trampoline-registration.sh'" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'if test -f scripts/check-compute-trampoline-registration.sh'"
+
+# -- (c): WARNING echo is present for the guard-skip branch ---------------------
+echo ""
+echo "--- (c): WARNING echo for guard-skip branch in the lint plan ---"
+assert "lint plan has WARNING echo for check-compute-trampoline-registration.sh skip" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -q 'WARNING.*check-compute-trampoline-registration'"
+
+# -- (d): invocation is wrapped with its OWN scoped timeout ---------------------
+echo ""
+echo "--- (d): timeout --kill-after=60 wraps the invocation in the lint plan ---"
+# Exact-shape pattern: it cannot span &&-separated clauses because every segment
+# between 'timeout --kill-after=60' and the script name is a short anchored class
+# with no greedy '.*'.
+TIMEOUT_PATTERN='timeout --kill-after=60 [0-9]+m bash scripts/check-compute-trampoline-registration\.sh'
+assert "lint plan wraps check-compute-trampoline-registration.sh with 'timeout --kill-after=60'" \
+    bash -c "printf '%s\n' \"\$LINT_PLAN_SEGS\" | grep -qE '$TIMEOUT_PATTERN'"
+
+# Synthetic-negatives: the tight pattern must reject BOTH a 'timeout' sitting on
+# a different &&-clause than the script, and a path-only mention with no timeout
+# at all. A greedy '.*' regex would silently pass the first; a bare
+# grep -q '<script name>' would silently pass the second.
+assert "TIMEOUT_PATTERN rejects: timeout on a different clause than the script" \
+    bash -c "! echo 'lint_command: timeout --kill-after=60 30m cargo clippy && bash scripts/check-compute-trampoline-registration.sh' | grep -qE '$TIMEOUT_PATTERN'"
+assert "TIMEOUT_PATTERN rejects: a path-only reference carrying no timeout" \
+    bash -c "! echo 'lint_command: cat scripts/check-compute-trampoline-registration.sh' | grep -qE '$TIMEOUT_PATTERN'"
+
 # -- (e): script exists and is executable on disk -------------------------------
 echo ""
 echo "--- (e): scripts/check-compute-trampoline-registration.sh exists and is executable ---"
@@ -49,6 +93,12 @@ assert "scripts/check-compute-trampoline-registration.sh exists" \
     test -f "$GATE"
 assert "scripts/check-compute-trampoline-registration.sh is executable" \
     test -x "$GATE"
+
+# -- (f): script is NOT in the test plan (placement in lint only) ---------------
+echo ""
+echo "--- (f): scripts/check-compute-trampoline-registration.sh is NOT in the test plan ---"
+assert "test plan does NOT reference scripts/check-compute-trampoline-registration.sh" \
+    bash -c "! printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -q 'scripts/check-compute-trampoline-registration.sh'"
 
 # -- (g): script runs clean (exit 0) against the current tree -------------------
 echo ""
