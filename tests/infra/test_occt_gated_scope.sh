@@ -722,4 +722,58 @@ assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0/NPROC=32: [p
         [ \"\$val\" = \"1\" ]
     "
 
+# ---------------------------------------------------------------------------
+# Tests 17h-17i (task 5984): REGRESSION GUARDS (green-on-arrival).
+#
+# Labeled as such following Test 16d's precedent, so a reviewer does not read
+# them as a failed RED step: they pin properties the derivation already
+# satisfies, so that a future edit cannot quietly violate them.
+#
+# Both derive BOTH operands from real parsed state rather than repeating
+# literals — the test-quality standard Test 16c and Assertion H were amended to
+# meet.  An assertion whose two sides are both hardcoded can never fail no
+# matter what the config says.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17h-17i (task 5984): REGRESSION GUARDS (green-on-arrival) — no oversubscription; global cap is the binding ceiling ---"
+
+# Test 17h (no oversubscription): the generated global pool never exceeds the
+# host's CPU count.  This is the invariant the whole task exists to establish,
+# and precisely what a bare in-file literal violates on a small host.  The
+# comparison operand is the INJECTED cpu count (8), not a repeated expectation
+# of the derivation's output.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8 (no explicit overrides): generated [profile.default] test-threads is a positive integer <= the injected CPU count 8 (never oversubscribes)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=8 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              bash \"${GEN_CFG}\")
+        val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ] && [ \"\$val\" -le 8 ]
+    "
+
+# Test 17i (the global is the binding ceiling; the occt group is a BACKSTOP,
+# not competing config): under the host-independent workstation profile, extract
+# BOTH caps from the SAME generated file and assert the global is strictly less
+# than the occt group cap (16 < 24).  Pins the design property documented in
+# .config/nextest.toml: the global subsumes the group cap on this host class,
+# TIGHTENING the group's effective memory bound (24x2=48 GiB -> 16x2=32 GiB)
+# rather than loosening anything — which is why the group is kept, not deleted.
+#
+# DO NOT generalise this to "global <= occt cap on any host".  That is FALSE:
+# the occt cap carries a RAM term the global deliberately does not, so on e.g.
+# NPROC=8 with a small MemTotal the occt cap resolves BELOW the global.  This
+# assertion is deliberately scoped to the injected workstation profile.
+assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): generated [profile.default] test-threads is strictly less than the generated [test-groups] occt max-threads, BOTH extracted from the same file (global binds; occt group is a backstop)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 \
+              env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
+              -u REIFY_OCCT_NEXTEST_MAX_THREADS -u REIFY_OCCT_NEXTEST_HARD_CAP \
+              bash \"${GEN_CFG}\")
+        tt=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
+        oc=\$(awk '${_OCCT_AWK}' \"\$cfg\")
+        rm -f \"\$cfg\"
+        [ -n \"\$tt\" ] && [ -n \"\$oc\" ] && [ \"\$tt\" -lt \"\$oc\" ]
+    "
+
 test_summary
