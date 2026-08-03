@@ -164,6 +164,25 @@ fn check_dfm_plus_repr_within_combined_arm() {
         "OCCT mode: no E_DFM_OVERHANG (severity is Warning, not Error).\n\
          stderr: {stderr}"
     );
+
+    // RepresentationWithin kind — REAL, non-Indeterminate. The `!VIOLATED` check
+    // above is satisfied by an *Indeterminate* verdict too, so on its own it would
+    // pass straight through a hole where tessellate_realizations never populated
+    // `achieved_repr_tol`. Pin the positive verdict as well (#5976).
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "OCCT: RepresentationWithin must be a REAL Satisfied verdict → summary \
+         'All constraints satisfied' (not Indeterminate). At #precision(0.3mm) the \
+         1m sphere measures 6.202e-4 m against the 1.000e-3 m bound (1.61x margin), \
+         so a genuine Satisfied is expected; an Indeterminate here means \
+         tessellate_realizations did not populate achieved_repr_tol.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.to_lowercase().contains("indeterminate"),
+        "OCCT: no constraint may be Indeterminate — both kinds measured a real \
+         verdict.\nstdout: {stdout}\nstderr: {stderr}"
+    );
 }
 
 /// OCCT-gated: `reify check fixtures/dfm_overhang_error.ri` on a DFMRule(Error)
