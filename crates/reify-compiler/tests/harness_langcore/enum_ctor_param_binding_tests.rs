@@ -41,7 +41,7 @@ use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::Value;
 use reify_test_support::{
-    cell_value, check_source_with_stdlib, compile_source_with_stdlib, make_engine,
+    cell_value, check_source_with_stdlib, compile_source_with_stdlib, errors_only, make_engine,
     parse_and_compile_with_stdlib,
 };
 
@@ -274,5 +274,99 @@ structure def Consumer {
         Type::StructureRef("Fit".to_string()),
         "a same-module `structure def Fit` must still beat a same-module \
          `enum Fit`; got {f:?}"
+    );
+}
+
+// ── Cross-phase agreement (esc-5429-1) ───────────────────────────────────────
+//
+// The shadow set must be visible to EVERY phase that lowers a declared type
+// name in the module, not just `phase_entities`. `phase_traits` and
+// `phase_functions` both run BEFORE `phase_entities` in
+// `compile_with_prelude_context_checked_with_config`, so a scope installed only
+// inside `phase_entities` left trait requirement types and fn signature params
+// at `Type::StructureRef("Fit")` while the conforming structure's own param
+// lowered to `Type::Enum("Fit")`. The two then disagreed and a module that
+// compiled with a WARNING before #5429 failed with a hard ERROR after it —
+// a warning-to-error severity regression on previously-valid user code.
+//
+// Both tests assert on ERROR-severity diagnostics only: the residual
+// `TypeNotConformingToStructureRef` WARNING that the pre-#5429 compiler emitted
+// is exactly what #5429 removes, but these tests are about the ERROR.
+
+/// A trait requirement typed by a prelude-shadowing local enum must agree with
+/// the conforming structure's param type. Regression oracle for
+/// `TypeMismatchForTraitMember: expected Fit, got Enum(Fit)`.
+#[test]
+fn trait_member_typed_by_shadowing_local_enum_conforms() {
+    const SOURCE: &str = r#"
+module test.trait_member_shadowing_enum
+
+enum Fit { Close, Medium }
+
+trait HasFit {
+    param f: Fit
+}
+
+structure def C : HasFit {
+    param f: Fit = Fit.Close
+}
+"#;
+    let module = compile_source_with_stdlib(SOURCE);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "a trait requirement `param f: Fit` must lower through the SAME shadow \
+         set as the conforming structure's `param f: Fit`; got errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Pin the DIRECTION of agreement: both sides must be the ENUM, not both
+    // left at StructureRef (which would also produce zero errors while silently
+    // reverting #5429's root claim).
+    let f = param_cell_type(&module, "C", "f");
+    assert_eq!(
+        f,
+        Type::Enum("Fit".to_string()),
+        "C.f must still lower to the shadowing local enum; got {f:?}"
+    );
+}
+
+/// A module-level `fn` whose parameter names the shadowing enum must agree with
+/// the calling structure's cell type. Regression oracle for `no matching
+/// overload for pick(Enum(Fit)), candidates: pick(Fit) -> Scalar[m]`.
+#[test]
+fn fn_param_typed_by_shadowing_local_enum_resolves_call() {
+    const SOURCE: &str = r#"
+module test.fn_param_shadowing_enum
+
+enum Fit { Close, Medium }
+
+fn pick(f: Fit) -> Length {
+    match f {
+        Close => 1mm,
+        Medium => 2mm
+    }
+}
+
+structure def Consumer {
+    param f: Fit = Fit.Close
+    let d = pick(f)
+}
+"#;
+    let module = compile_source_with_stdlib(SOURCE);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "`fn pick(f: Fit)` must lower its param through the SAME shadow set as \
+         the caller's `param f: Fit`, so overload resolution finds the \
+         candidate; got errors: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let f = param_cell_type(&module, "Consumer", "f");
+    assert_eq!(
+        f,
+        Type::Enum("Fit".to_string()),
+        "Consumer.f must still lower to the shadowing local enum; got {f:?}"
     );
 }

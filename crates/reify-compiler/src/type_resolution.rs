@@ -51,9 +51,18 @@ thread_local! {
     /// Same thread-local rationale as `RESOLUTION_ENUM_NAMES` above (threading an
     /// argument through ~100 call sites for a narrow rule is churn with no
     /// behavioural change at the sites that would pass it empty), and the same
-    /// scoping discipline: installed via [`LocalEnumShadowScope`] ONLY around
-    /// entity/param compilation (`compile_builder/entities_phase.rs::phase_entities`),
-    /// empty everywhere else — so every other type position is unaffected.
+    /// scoping discipline: installed via [`LocalEnumShadowScope`] ONLY around the
+    /// compile-phase sequence of a single module
+    /// (`lib.rs::compile_with_prelude_context_checked_with_config`), empty
+    /// everywhere else — so every other type position is unaffected.
+    ///
+    /// The scope is MODULE-WIDE rather than per-phase on purpose: every phase that
+    /// lowers a declared type name must agree on what a shadowed name means.
+    /// Scoping it to `phase_entities` alone left `phase_traits`/`phase_functions`
+    /// (which run earlier) resolving the same name to `Type::StructureRef` while
+    /// entity params resolved to `Type::Enum`, so trait conformance and overload
+    /// resolution rejected the mismatched pair — a warning-to-error regression on
+    /// previously-valid modules (esc-5429-1).
     static RESOLUTION_SHADOWING_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
@@ -89,9 +98,11 @@ impl Drop for EnumNameScope {
 /// separate.
 ///
 /// Construct one around a region of type resolution where a MODULE-LOCAL `enum N`
-/// should outrank a same-named PRELUDE `structure def N` — today only
-/// `compile_builder/entities_phase.rs::phase_entities`, which holds both halves
-/// of the set (`ctx.enum_defs` minus the local structure/occurrence names).
+/// should outrank a same-named PRELUDE `structure def N` — today exactly one site,
+/// `lib.rs::compile_with_prelude_context_checked_with_config`, which wraps the
+/// whole phase sequence so every phase agrees on the name. Build the set with
+/// `compile_builder::enums_phase::build_local_enum_shadow_set` (the single source
+/// of truth for its two membership rules) rather than inlining the filter.
 ///
 /// Contract pinned by `tests::shadow_scope_restores_prior_set_on_drop`.
 pub(crate) struct LocalEnumShadowScope {

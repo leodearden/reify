@@ -91,44 +91,24 @@ pub(crate) fn phase_entities(
     // trait-name fallback.  Collected from local structure/occurrence decls
     // (already in `ctx.seen_entity_names` from pre_pass::collect_decl_refs)
     // and every prelude module's exported templates. See task 1876.
-    // The local half is extracted into its own binding so the shadow-set filter
-    // below has ONE source of truth for "what counts as a local structure name"
-    // (task #5429) — `structure_names` is byte-equivalent to the pre-#5429 set.
-    let local_structure_names: HashSet<String> = ctx
+    //
+    // The module-local `enum N` shadowing rule that reinterprets a name in this
+    // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
+    // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
+    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // phase on what the name means (esc-5429-1). See
+    // `enums_phase::build_local_enum_shadow_set`.
+    let structure_names: HashSet<String> = ctx
         .seen_entity_names
         .iter()
         .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
         .map(|(name, _)| name.clone())
-        .collect();
-    let structure_names: HashSet<String> = local_structure_names
-        .iter()
-        .cloned()
         .chain(
             prelude
                 .iter()
                 .flat_map(|m| m.templates.iter().map(|t| t.name.clone())),
         )
         .collect();
-
-    // #5429 / PRD docs/prds/v0_6/uniform-member-access.md §4 M5, D8: a MODULE-LOCAL
-    // `enum N` shadows a PRELUDE `structure def N` in param positions, so
-    // `enum Fit` + `param fit: Fit` lowers to Type::Enum("Fit") rather than being
-    // conflated with std.tolerancing's `structure def Fit`.
-    // `ctx.enum_defs` is module-local ONLY (ctx.resolution_enums is prelude ++ local) —
-    // a prelude enum must never shadow a local structure. Local structure/occurrence
-    // names are subtracted so a same-module `structure def N` still wins.
-    //
-    // Whole-phase RAII binding: it covers every entity compiled below and drops at
-    // the end of `phase_entities`, leaving the ambient set empty for every other
-    // phase. Bound to a leading-underscore NAME (never `let _ = …`, which would drop
-    // it immediately and make the scope a no-op).
-    let _enum_shadow_scope = crate::type_resolution::LocalEnumShadowScope::new(
-        ctx.enum_defs
-            .iter()
-            .map(|e| e.name.clone())
-            .filter(|n| !local_structure_names.contains(n))
-            .collect(),
-    );
 
     // Lazily build the set of dotted import paths that are already resolved
     // in the prelude (e.g. "std.units", "a", "shapes.bolts"). Initialised on
