@@ -217,7 +217,7 @@ From the research doc PHASE 2 §1, re-confirmed this session against a fresh rel
 | `examples/bearing_auto_seal.ri` (5627 `files`) | **ZERO ctor sites.** Its only issue is `param durometer : Length = 70.0` at `:46` — **gate 3, not gate 1** | mis-attributed |
 | `fea_multi_case.ri:315` load-struct decls | `:315-317` (`PointLoad`), `:418-419`, `:446-448`, `:476-478` — **all four still `Real`** | confirmed |
 | `examples/**/analysis.ri` yield fields | **no such file.** `stdlib/analysis.ri:46` `yield_strength : Real` is dimensionless, documented at `:24-28` as not participating in dimension checking | non-existent |
-| `NAMED_DIMENSIONS` doc-comment "34 entries" | actually **51** (`reify-core/src/dimension.rs:514-597`) | **+17, stale** (PRD 3's) |
+| `NAMED_DIMENSIONS` doc-comment "34 entries" | actually **51** (`reify-core/src/dimension.rs:514-597`) — **both halves superseded by η; see §6.2's note**: the doc comment now deliberately quotes *no* count, and the table is **52 rows** at `:576-663` (2026-08-03) | **+17, stale** (PRD 3's) |
 | `main.rs:546-552` check compile-diagnostic gate | `:546-552` | **none** |
 | `real-dimensionless-unification.md:17/51/64/82/97/134` | unchanged | **none** |
 | `struct_ctor_field_conformance_tests.rs` pinning probe | `:1414-1461` | (not previously anchored) |
@@ -517,8 +517,14 @@ by the registry alone **under-counts**; α must reproduce the alias extension.
 > `Torque` as a new registry row. `Torque` is therefore no longer one of the "aliases the
 > registry does not name": the `pub type Torque` alias this paragraph cites at
 > `ports_mechanical.ri:29` was deleted by η (that line is now a pointer comment), so the
-> alias-extension count drops from 16 to **15** — `Stress` and the other exemplars are
-> unaffected. The underlying claim (a registry-only sweep under-counts) still holds.
+> alias-extension count drops from 16 to **15**. The other exemplars all still exist, but
+> three of their four line cites above have drifted — re-measured 2026-08-03: `Stress`
+> `stdlib/analysis.ri:13` (still exact), `HeatFlux` `stdlib/ports_thermal.ri:39`,
+> `ThermalResistance` `stdlib/ports_thermal.ri:44`, `VolumetricFlowRate`
+> `stdlib/ports_fluid.ri:37`. The `dimension.rs:514` anchor in the paragraph above no longer
+> resolves to the registry either — at HEAD that line sits inside
+> `DimensionVector::to_display_units` (`:504`), not `NAMED_DIMENSIONS`.
+> The underlying claim (a registry-only sweep under-counts) still holds.
 
 | Category | Count |
 |---|---|
@@ -1010,13 +1016,18 @@ Labels are PRD-local; task ids are assigned at decompose. Every edge below is a 
   **Gates 1, 3 and 4 are already measured** (§6.2, §6.3) — α **re-confirms** those counts
   against HEAD rather than re-deriving them, and inherits their two methodological
   requirements or it will get the wrong answer:
-  - reproduce §6.2's **type-alias extension** to `NAMED_DIMENSIONS` — **15** dimensioned
-    aliases (`Stress`, `HeatFlux`, `ThermalResistance`, …) are declared in `.ri` and absent
-    from the registry, so a registry-only sweep **under-counts**. *(Read §6.2's
-    "Partially superseded by η" note before using this count: §6.2's as-measured figure is
-    **16**, including a `Torque` alias that η — task 5785, merge `61300d09` — deleted from
-    `stdlib/ports_mechanical.ri` when it registered `Torque` as a `NAMED_DIMENSIONS` row.
-    **15** is the count that holds today; do **not** re-add a `Torque` alias.)*;
+  - reproduce §6.2's **type-alias extension** to `NAMED_DIMENSIONS` — dimensioned aliases
+    (`Stress`, `HeatFlux`, `ThermalResistance`, …) are declared in `.ri` and absent from the
+    registry, so a registry-only sweep **under-counts**. The requirement is a **derivation,
+    not a number**: sweep `pub type <X> = <dimensioned expr>` across
+    `crates/reify-compiler/stdlib/*.ri` and subtract the names already registered in
+    `NAMED_DIMENSIONS`; α re-confirms the count by re-running that sweep against HEAD, not by
+    copying a figure written down here. *(As-measured figures — re-derive, do not match:
+    §6.2 recorded **16**;
+    **15** as of 2026-08-03, after η — task 5785, merge `61300d09` — deleted the `Torque`
+    alias from `stdlib/ports_mechanical.ri` and registered `Torque` as a `NAMED_DIMENSIONS`
+    row. Both rot on the next stdlib alias add/remove, exactly as 16 did. Do **not** re-add a
+    `Torque` alias.)*;
   - reproduce §6.3's **file-local shadowing check** — a naive sweep **over-counts by ~8**
     (parser-only fixtures where the walker never runs, plus locally-declared *dimensionless*
     structures of the same name).

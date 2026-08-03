@@ -719,15 +719,18 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
   Invariant R. **Iterate the slice — do not hardcode a row count.** Every count written down
   for this table so far has rotted or been mis-derived by hand, which is why the slice's own
   doc comment deliberately quotes none.
-  **Alias-row hazard — this changes what μ may assert.** NAMED_DIMENSIONS holds alias rows
-  where several *names* share one `DimensionVector`, and by the documented placement
-  convention (`dimension.rs:556-559`) an alias row is placed AFTER its canonical row so the
-  first-match scan in `canonical_name()` keeps returning the canonical name. A
-  name→dim→name round-trip therefore does **not** return the input name for
-  `"TranslationalStiffness"`, `"Curvature"`, or `"Momentum"` — they normalize to
-  `"Stiffness"`, `"AbsorptionCoeff"`, and `"Impulse"`. An assertion phrased as "every row
-  round-trips to the same name" is false and will fail; assert Invariant R per-row over the
-  slice, with alias rows expected to normalize to their canonical name.
+  **Alias rows — harmless for R itself, fatal for a *name* assertion.** Invariant R (§5) is
+  **name-blind**: it compares the resolved `DimensionVector` and the SI scale for a
+  (dimension, label) pair and never looks at a dimension *name*. Iterating every row of the
+  slice is therefore safe — NAMED_DIMENSIONS holds alias rows where several names share one
+  `DimensionVector`, so a whole-slice sweep merely re-covers three dims a second time, at no
+  cost but duplicate work. The hazard bites only if the harness *additionally* asserts name
+  identity — e.g. deriving each row's label through `canonical_name()` and checking the
+  returned name equals the row's name. **Do not write that assertion.** By the documented
+  placement convention (`dimension.rs:554-559`) an alias row is placed AFTER the canonical
+  row it shares a vector with, so the first-match scan in `canonical_name()` returns the
+  canonical name: `"TranslationalStiffness"`, `"Curvature"`, and `"Momentum"` come back as
+  `"Stiffness"`, `"AbsorptionCoeff"`, and `"Impulse"`.
   Seed one anti-vacuity self-test: a deliberately non-ASCII label injected into the harness's
   input makes it fail.
   *Signal:* the test is red on pre-κ/pre-λ main (for `·` and for `L`) and green after; a new
