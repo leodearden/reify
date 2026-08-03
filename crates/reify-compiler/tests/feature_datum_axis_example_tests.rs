@@ -80,6 +80,27 @@ fn cyl_template(module: &CompiledModule) -> &TopologyTemplate {
         })
 }
 
+/// Look up a compiled op's argument by name, panicking with the full argument
+/// list when it is absent.
+///
+/// Shared by every argument assertion below (the angle and each axis-direction
+/// component) so the "not found" diagnostic — the message that actually has to
+/// carry a reader through a signature change — is written once. A future ANGLE
+/// corpus pin added by γ/δ/ε should reach for this rather than re-inlining the
+/// `find` + `panic!` pair a third time.
+fn named_arg<'a>(args: &'a [(String, CompiledExpr)], name: &str) -> &'a CompiledExpr {
+    &args
+        .iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "op carries no \"{name}\" argument; args present: {:?}",
+                args.iter().map(|(n, _)| n).collect::<Vec<_>>()
+            )
+        })
+        .1
+}
+
 /// The dimension a compiled argument expression carries, for the
 /// dimension assertions below.
 ///
@@ -174,16 +195,7 @@ fn feature_datum_axis_example_revolve_angle_is_angle_dimensioned() {
     );
     let args = revolves[0];
 
-    let angle = &args
-        .iter()
-        .find(|(name, _)| name == "angle")
-        .unwrap_or_else(|| {
-            panic!(
-                "revolve carries no \"angle\" argument; args present: {:?}",
-                args.iter().map(|(n, _)| n).collect::<Vec<_>>()
-            )
-        })
-        .1;
+    let angle = named_arg(args, "angle");
 
     // (a) DIMENSION — the angle is ANGLE-dimensioned, not bare.
     assert_eq!(
@@ -219,16 +231,7 @@ fn feature_datum_axis_example_revolve_angle_is_angle_dimensioned() {
 
     // The axis DIRECTION components stay DIMENSIONLESS — PRD C1 invariant 4.
     for name in ["ax", "ay", "az"] {
-        let dir = &args
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| {
-                panic!(
-                    "revolve carries no \"{name}\" axis-direction argument; args present: {:?}",
-                    args.iter().map(|(n, _)| n).collect::<Vec<_>>()
-                )
-            })
-            .1;
+        let dir = named_arg(args, name);
         assert_eq!(
             arg_dimension(dir),
             Some(DimensionVector::DIMENSIONLESS),
