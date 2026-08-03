@@ -796,17 +796,11 @@ class TestRunProbe(unittest.TestCase):
     def test_non_executable_tree_sitter_binary_produces_harness_error(self):
         """A tree-sitter CLI that EXISTS but cannot be LAUNCHED → sentinel, not a raise.
 
-        Sibling to the missing-binary case above, and distinct from it: the file
-        is on disk, so every isfile()/exists() guard passes and only the exec
-        fails (EACCES → PermissionError, which `except FileNotFoundError` does
-        not catch).  run_probe() must represent it the same way it represents
-        ENOENT — "the probe could not be launched" — because an escaping
-        exception propagates out of grammar_substrate_usable(), which this test
-        module evaluates at IMPORT time, turning a one-test skip into a
-        whole-suite loss.
-
-        Merely calling run_probe() is the assertion: an escaping exception errors
-        the test before any assert runs.
+        EACCES raises PermissionError, which `except FileNotFoundError` did not
+        catch; run_probe() must represent it as "could not be launched" like
+        ENOENT, or the exception escapes grammar_substrate_usable() and turns a
+        one-test skip into a whole-suite loss.  Merely calling run_probe() is
+        part of the assertion — an escaping exception errors the test outright.
         """
         stub = _ts_stub_not_executable(self._tmpdir)
         self.assertTrue(
@@ -1043,16 +1037,11 @@ _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 def _compute_grammar_e2e_status() -> tuple:
     """Return (available, reason) for the grammar e2e.  Never raises.
 
-    The bare `except Exception` is deliberate, and is the one place in this
-    change where a broad catch is correct: the only sane failure mode for a test
-    harness here is "cannot confirm the substrate → skip the one test that needs
-    it".  The alternative, measured on this branch, is losing every test in the
-    module plus the infra script's `test_prd_capability_check.py exits 0` assert.
-
-    Defence-in-depth, explicitly NOT a substitute for fixing the trigger:
-    swallowing an exception here would hide a genuinely broken run_probe() from
-    the CLI path too, which is why an unlaunchable binary is represented as a
-    harness error at source in run_probe().
+    The bare `except Exception` is deliberate: the only sane failure mode here is
+    "cannot confirm the substrate → skip the one test that needs it".  The
+    alternative, measured on this branch, is losing every test in the module.
+    It is defence-in-depth, not the fix — the trigger is fixed at source in
+    run_probe(), which represents an unlaunchable binary rather than raising.
     """
     if not os.path.isfile(_TS_GRAMMAR_PARSER):
         return (False, f"{_TS_GRAMMAR_PARSER} not found — grammar never generated")
@@ -1067,12 +1056,10 @@ def _compute_grammar_e2e_status() -> tuple:
 def _grammar_e2e_status() -> tuple:
     """Memoized _compute_grammar_e2e_status(), evaluated on FIRST USE.
 
-    Deliberately not a module-level constant.  The behavioural half spawns a real
-    tree-sitter (and on a cold cache tree-sitter compiles the grammar with cc
-    before it answers), so as an import-time constant EVERY invocation of this
-    module paid it — including `python3 -m unittest ...TestProbeSetRoundTrip` and
-    the ~140 hermetic tests that need none of it.  Only the one e2e that needs
-    the grammar calls this, so only that run spends the subprocess.
+    Deliberately not a module-level constant: the behavioural half spawns a real
+    tree-sitter (on a cold cache, a cc compile of the grammar first), so as an
+    import-time constant every invocation of this module paid it — including the
+    ~140 hermetic tests that need none of it.
     """
     return _compute_grammar_e2e_status()
 
@@ -1080,10 +1067,9 @@ def _grammar_e2e_status() -> tuple:
 def _require_grammar_substrate(test) -> None:
     """skipTest unless a grammar probe can run here.  Call from a test body.
 
-    The measured reason is carried into the skip message rather than a static
-    one: a substrate reported unusable because tree-sitter exceeded
-    _SUBSTRATE_PROBE_TIMEOUT_S on a loaded machine is a coverage hole, not a
-    real gap, and must be tellable from a genuine sandbox denial in the log.
+    Carries the MEASURED reason into the skip message: an unusable verdict caused
+    by tree-sitter exceeding _SUBSTRATE_PROBE_TIMEOUT_S on a loaded machine is a
+    coverage hole, not a real gap, and must be tellable from a genuine denial.
     """
     available, reason = _grammar_e2e_status()
     if not available:
@@ -1097,18 +1083,14 @@ def _require_grammar_substrate(test) -> None:
 class TestGrammarAvailabilityGuard(unittest.TestCase):
     """Pins _compute_grammar_e2e_status() — the skip-guard's blast radius.
 
-    Before this task the guard was a pure os.path.isfile() and could not raise
-    at all.  Making it behavioural gave it a way to fail, so any exception
-    escaping it converts a one-test skip into losing the entire suite — strictly
-    worse than the spurious HARNESS_ERROR this task set out to remove.
-
-    The house rule is the one stated in tests/infra/test_prd_gate_corpus.sh:52-60
-    — a toolchain that cannot be interrogated is a clean SKIP, never a spurious
-    FAIL.  These tests hold the guard to it for ANY exception, not just the
-    PermissionError whose trigger is fixed at source in run_probe().
-
-    Tested through the UN-memoized function, so each case observes its own
-    patches; _grammar_e2e_status() is the lru_cache'd wrapper the e2e calls.
+    Shared rationale.  The guard was a pure isfile() and could not raise; making
+    it behavioural gave it a way to fail, and any exception escaping it loses the
+    whole suite instead of one test — strictly worse than the spurious
+    HARNESS_ERROR this task removes.  The house rule
+    (tests/infra/test_prd_gate_corpus.sh:52-60) is that a toolchain which cannot
+    be interrogated is a clean SKIP, so these hold the guard to it for ANY
+    exception.  Tested through the UN-memoized function, so each case observes
+    its own patches.
     """
 
     @staticmethod
@@ -1178,11 +1160,8 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
     def test_hermetic_import_spawns_no_substrate_probe(self):
         """The behavioural half is LAZY — importing this module must not probe.
 
-        As an import-time constant it ran a real tree-sitter (on a cold cache, a
-        cc compile of the grammar first) for every invocation of this module,
-        including the ~140 hermetic tests that need none of it.  Asserted from a
-        snapshot taken at the END of the module body, so the pin is on import
-        itself and does not depend on which tests have run by now.
+        Read from a snapshot taken at the END of the module body, so the pin is
+        on import itself and survives whatever tests have run by now.
         """
         self.assertEqual(
             _GRAMMAR_STATUS_CALLS_AT_IMPORT, 0,
@@ -1281,12 +1260,10 @@ class TestMain(unittest.TestCase):
 
     # ── --grammar-substrate-status (5894 step-5) ──────────────────────────────
     #
-    # A shell caller (tests/infra/test_prd_capability_check.sh) needs to ask "can
-    # a grammar probe run here at all?" WITHOUT running the gate, so it can print
-    # a clean SKIP instead of reporting the sandbox's cache denial as a gate FAIL.
-    # Every case is driven by a TREE_SITTER_BIN stub, never by ambient sandbox
-    # state — see TestGrammarSubstrateUsable's class docstring for why that is
-    # load-bearing rather than merely tidy.
+    # Lets a shell caller ask "can a grammar probe run here?" WITHOUT running the
+    # gate, so it can SKIP rather than report the sandbox's denial as a FAIL.
+    # Driven by TREE_SITTER_BIN stubs, never ambient state — see
+    # TestGrammarSubstrateUsable's docstring for why that is load-bearing.
 
     def _stub_dir(self):
         """Per-test tempdir for TREE_SITTER_BIN stubs, removed on test teardown.
@@ -1332,13 +1309,9 @@ class TestMain(unittest.TestCase):
     def test_grammar_substrate_status_needs_no_probe_set(self):
         """(c) The flag stands alone — the required-positional check is never reached.
 
-        Pinned separately from (a)/(b) because it is the argparse contract
-        change.  It asserts the *usage message* rather than the exit code: on
-        this identical invocation (a) already pins rc == 0, so an
-        `assertNotEqual(rc, 64)` here would be strictly weaker than its sibling
-        and would happily accept a 70.  Naming the message instead makes the
-        test fail for the one reason it exists to catch — the mode being gated
-        behind an argument it never uses.
+        Asserts the usage *message*, not the exit code: (a) already pins rc == 0
+        on this identical invocation, so assertNotEqual(rc, 64) would be strictly
+        weaker than its sibling and would happily accept a 70.
         """
         rc, _, err = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
         self.assertNotIn(
@@ -1352,14 +1325,10 @@ class TestMain(unittest.TestCase):
         )
 
     def test_grammar_substrate_status_ignores_the_json_flag(self):
-        """--json does not apply to the status mode — a decision, not an accident.
+        """--json is accepted-and-ignored by the status mode, not a usage error.
 
-        The mode's finding travels by exit code (0 / 75) with a one-line human
-        reason on stdout; there is no result set to serialise, so --json is
-        accepted-and-ignored rather than being made a usage error (which would
-        break a caller that passes --json unconditionally).  Pinned so the
-        silence is documented behaviour: a --json consumer gets plain text here
-        and must read the exit code.
+        There is no result set to serialise; making it an error would break a
+        caller that passes --json unconditionally.
         """
         stub = _ts_stub_cache_denied(self._stub_dir())
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
@@ -1416,10 +1385,7 @@ class TestMain(unittest.TestCase):
     def test_grammar_substrate_status_non_executable_cli_returns_75(self):
         """A present-but-unlaunchable tree-sitter CLI → exit 75, reason on stdout.
 
-        Same contract as the cache-denial case above: the mode's whole job is to
-        answer "can a grammar probe run here?" so that a shell caller can print a
-        SKIP.  A CLI it cannot launch is the clearest possible "no", and must not
-        arrive as a traceback and exit 1 — that is indistinguishable from the
+        Must not arrive as a traceback and exit 1 — indistinguishable from the
         harness itself being broken.
         """
         stub = _ts_stub_not_executable(self._stub_dir())
@@ -1510,18 +1476,16 @@ class TestMain(unittest.TestCase):
 
     # ── diagnosability of HARNESS_ERROR text output (5894 step-7) ─────────────
     #
-    # The text renderer previews stderr at 200 chars.  For a PASS/FAIL that keeps
-    # output compact, but for a HARNESS_ERROR it truncates away the one thing the
-    # operator needs: WHAT was denied.  The measured cache-denial signature is
-    # 253 chars and the cut lands mid-path at ".../home/leo/", so the reader sees
-    # a permission denial naming nothing -- which is why the original failure cost
-    # several probes to attribute.
+    # The 200-char preview truncates away the one thing a HARNESS_ERROR reader
+    # needs: WHAT was denied.  The measured signature is 253 chars and the cut
+    # lands mid-path, so the reader sees a denial naming nothing — which is why
+    # the original failure cost several probes to attribute.
 
     def _cache_denial_runner(self):
         """Runner whose grammar probe reproduces the measured cache denial.
 
         exit 1 + "Failed to load language" is what observe() classifies as
-        _HARNESS_ERROR, so this is the real rendering path, not a synthetic one.
+        _HARNESS_ERROR, so this exercises the real rendering path.
         """
         return self._make_runner({
             "grammar": (1, "", _CACHE_DENIED_STDERR),
@@ -1572,10 +1536,8 @@ class TestMain(unittest.TestCase):
     def test_missing_binary_harness_error_emits_no_cache_denial_hint(self):
         """A missing-binary HARNESS_ERROR is still 70, but carries no cache hint.
 
-        The positive hint test alone would pass with the
-        `if grammar_cache_denied(...)` guard widened, inverted, or dropped
-        entirely — leaving the renderer telling an operator that a missing
-        tree-sitter CLI is a landlock cache denial.
+        The positive hint test alone passes with the guard widened, inverted or
+        dropped — leaving the renderer calling a missing CLI a landlock denial.
         """
         runner = self._make_runner({
             "grammar": (127, "", pcc._BINARY_NOT_FOUND_SENTINEL +
@@ -1590,9 +1552,8 @@ class TestMain(unittest.TestCase):
     def test_non_permission_load_failure_emits_no_cache_denial_hint(self):
         """A load failure with no permission indicator gets no cache hint either.
 
-        The other half of the predicate's narrowness, asserted through the
-        renderer: a missing or corrupt grammar is a real harness error the
-        operator must not be told to write off as an environmental skip.
+        The predicate's other narrowness half, through the renderer: a missing or
+        corrupt grammar must not be written off as an environmental skip.
         """
         runner = self._make_runner({
             "grammar": (1, "", "Error: Failed to load language for path \"x.ri\"\n"
@@ -1607,11 +1568,8 @@ class TestMain(unittest.TestCase):
     def test_harness_error_stderr_is_capped_not_unbounded(self):
         """The HARNESS_ERROR budget is large, but it is still a budget.
 
-        Emitting stderr unbounded would let a `reify eval`/`reify check` harness
-        error dump a multi-megabyte backtrace verbatim into the gate log — in the
-        one code path whose entire purpose is making a failure easy to attribute.
-        The measured cache denial (253 chars) fits ~16x over in the cap, so this
-        costs the motivating case nothing.
+        Unbounded, a `reify eval` backtrace would bury the gate log in the one
+        path meant to clarify it.  The measured denial (253 chars) fits ~16x over.
         """
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
@@ -1635,9 +1593,7 @@ class TestMain(unittest.TestCase):
     def test_json_output_keeps_full_harness_error_stderr(self):
         """--json is unaffected by the text renderer's cap.
 
-        The cap is a human-readability measure for the gate log; a machine
-        consumer asked for the evidence and can afford it.  Pinned so raising or
-        lowering the text cap cannot silently start truncating the JSON contract.
+        Pinned so moving the text cap cannot silently truncate the JSON contract.
         """
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
@@ -1660,9 +1616,8 @@ class TestMain(unittest.TestCase):
     def test_non_harness_error_stderr_is_still_previewed(self):
         """PASS/FAIL results keep the 200-char preview so ordinary output stays compact.
 
-        The untruncated emission is scoped to HARNESS_ERROR precisely because
-        that is the case where the operator needs the whole message; widening it
-        to every verdict would bury a normal run in probe stderr.
+        The wide budget is scoped to HARNESS_ERROR; widening it to every verdict
+        would bury a normal run in probe stderr.
         """
         long_tail = "TAIL_BEYOND_200_CHARS"
         runner = self._make_runner({
@@ -1982,10 +1937,9 @@ def _ts_stub_clean(tmpdir: str, name: str = "ts_stub_clean") -> str:
 def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -> str:
     """Stub that never answers within the test's patched timeout.
 
-    Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock — the
-    exact resource this task is about, and one tree-sitter serialises grammar
-    loading through.  Tests pair it with a sub-second _SUBSTRATE_PROBE_TIMEOUT_S
-    so the case costs milliseconds; the sleep only has to outlast that bound.
+    Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock.
+    Tests pair it with a sub-second _SUBSTRATE_PROBE_TIMEOUT_S, so the sleep only
+    has to outlast that bound.
     """
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
 
@@ -1993,11 +1947,9 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     """Stub that EXISTS on disk but carries no execute bit.
 
-    Launching it raises PermissionError (EACCES) out of subprocess.run().  This
-    is deliberately NOT the missing-CLI case: the file is present, so every
-    isfile()/exists() guard upstream passes and only the exec itself fails.
-    Callers assert os.path.isfile() on the returned path so the case can never
-    silently degenerate into the already-covered missing-CLI case.
+    Deliberately NOT the missing-CLI case: every isfile()/exists() guard upstream
+    passes and only the exec fails (EACCES).  Callers assert os.path.isfile() on
+    the returned path so it cannot silently degenerate into that case.
     """
     path = _write_ts_stub(tmpdir, name, "exit 0\n")
     os.chmod(path, 0o644)
@@ -2005,17 +1957,15 @@ def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
 
 
 class TestGrammarCacheDenied(unittest.TestCase):
-    """Pins pcc.grammar_cache_denied(run) -> bool.
+    """Pins pcc.grammar_cache_denied(run) -> bool.  Hermetic: no subprocess.
 
-    Hermetic: ProbeRun objects are constructed directly, no subprocess.
-
-    The predicate is deliberately NARROW — it requires a grammar *load* failure
-    AND a permission denial simultaneously.  The negative cases below are the
-    load-bearing half: they prove it cannot absorb a genuine grammar regression
-    (which surfaces as a *parse* error, exit 1 with no load failure) nor a
-    non-permission load failure.  Both must keep reaching _HARNESS_ERROR/exit 70,
-    because the skip this predicate authorizes happens in the *callers*, never in
-    the probe verdict.
+    Shared rationale for every case below.  The predicate is deliberately NARROW,
+    requiring a grammar *load* failure AND a permission denial simultaneously.
+    The negatives are the load-bearing half: they prove it can absorb neither a
+    genuine grammar regression (a *parse* error, exit 1 with no load failure) nor
+    a non-permission load failure.  Both must keep reaching _HARNESS_ERROR/exit
+    70 — the skip this predicate authorizes happens in the CALLERS, never in the
+    probe verdict.
     """
 
     @staticmethod
@@ -2048,9 +1998,8 @@ class TestGrammarCacheDenied(unittest.TestCase):
     def test_plain_parse_failure_is_not_denied(self):
         """(c) A real grammar rejection (exit 1, no load failure) → False.
 
-        This is the ABSENT path — the grammar loaded fine and rejected the
-        fixture.  Swallowing it would silently green a probe that legitimately
-        FAILs, which is the whole risk this predicate is narrowed against.
+        The ABSENT path.  Swallowing it would silently green a probe that
+        legitimately FAILs — the risk this predicate is narrowed against.
         """
         stderr = "x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])\n"
         self.assertFalse(pcc.grammar_cache_denied(self._run(1, stderr)))
@@ -2062,10 +2011,8 @@ class TestGrammarCacheDenied(unittest.TestCase):
     def test_load_failure_without_permission_indicator_is_not_denied(self):
         """(e) A load failure with NO permission indicator → False.
 
-        A genuinely broken/absent grammar must still reach HARNESS_ERROR (70)
-        rather than being written off as an environmental skip.  This is the
-        assertion that fails first if someone widens the predicate to 'any load
-        failure'.
+        A broken or absent grammar must still reach HARNESS_ERROR (70).  Fails
+        first if the predicate is widened to 'any load failure'.
         """
         stderr = (
             "Error: Failed to load language for path \"x.ri\"\n"
@@ -2087,12 +2034,9 @@ class TestGrammarCacheDenied(unittest.TestCase):
     def test_denied_run_is_also_a_harness_error_to_observe(self):
         """Anything this predicate calls a denial must also be HARNESS_ERROR.
 
-        The consistency that matters, stated over behaviour rather than over
-        which constant a branch dereferences.  If the two classifiers ever
-        disagreed — grammar_cache_denied() still recognising a reworded
-        tree-sitter signature while observe() reclassified the load failure as
-        ABSENT — a harness error would be promoted into a real PASS/FAIL
-        verdict, the mis-attribution this task exists to remove.
+        Stated over behaviour rather than over which constant a branch reads.
+        Were the two classifiers to disagree, a harness error would be promoted
+        into a real PASS/FAIL verdict — the mis-attribution this task removes.
         """
         for stderr in (
             _CACHE_DENIED_STDERR,
@@ -2119,13 +2063,11 @@ class TestGrammarCacheDenied(unittest.TestCase):
 class TestGrammarSubstrateUsable(unittest.TestCase):
     """Pins pcc.grammar_substrate_usable() -> (bool, reason).
 
-    Every case is driven by an executable TREE_SITTER_BIN stub (the idiom at
-    TestBuildCommandAbsoluteFixture._make_file_exists_stub), never by ambient
-    sandbox state.  That is deliberate and load-bearing: whether
-    ~/.cache/tree-sitter/lock is writable depends on which agent role executes
-    the suite, so an ambient-conditioned test would flip between RED and GREEN
-    by role and could not be turned green by the role that has to fix it.
-    Stubs make the outcome identical in sandboxed and unsandboxed roles.
+    Shared rationale.  Every case is driven by a TREE_SITTER_BIN stub, never by
+    ambient sandbox state — load-bearing, not tidiness: whether
+    ~/.cache/tree-sitter/lock is writable depends on which agent role runs the
+    suite, so an ambient-conditioned test would flip RED/GREEN by role and could
+    not be turned green by the role that has to fix it.
     """
 
     def setUp(self):
@@ -2170,10 +2112,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_parse_error_is_usable(self):
         """An ordinary parse rejection → (True, "").
 
-        The substrate probe answers "can tree-sitter load the grammar", not
-        "does this fixture parse".  Reading an unparseable fixture as a broken
-        substrate would skip the e2e test precisely when the grammar works,
-        which is the inverse of the bug being fixed.
+        Reading an unparseable fixture as a broken substrate would skip the e2e
+        precisely when the grammar works — the inverse of the bug being fixed.
         """
         self.assertEqual(self._call(self._parse_error_stub()), (True, ""))
 
@@ -2202,12 +2142,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_launch_failure_reason_carries_the_offending_path(self):
         """The launch-failure reason must name WHAT could not be launched.
 
-        run_probe() represents every launch OSError with one sentinel, so a
-        missing grammar cwd (<repo_root>/tree-sitter-reify never generated)
-        raises the same FileNotFoundError as a missing CLI.  The reason text
-        therefore cannot assert which one it was — only the errno detail
-        run_probe() appends distinguishes them, and it must survive into the
-        operator-facing string that the shell preflight prints as its SKIP line.
+        One sentinel covers every launch OSError, so a missing grammar cwd raises
+        the same FileNotFoundError as a missing CLI.  Only the errno detail
+        distinguishes them, and it must survive into the SKIP line.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here")
         _, cli_reason = self._call(missing)
@@ -2233,12 +2170,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_non_executable_cli_is_unusable_with_reason(self):
         """A CLI that exists but cannot be launched → (False, reason), not a raise.
 
-        The reason string this function already emits for the missing-CLI case
-        advertises "is not executable or not on PATH" — but until run_probe()
-        represents an EACCES launch the same way it represents ENOENT, the
-        "not executable" half cannot be delivered: the PermissionError escapes
-        instead.  Returning normally is as load-bearing as the boolean, because
-        this function is called at module-import time by the skip-guard below.
+        Until run_probe() represented an EACCES launch the way it represents
+        ENOENT, the PermissionError escaped instead.  Returning normally is as
+        load-bearing as the boolean — the skip-guard cannot recover from a raise.
         """
         stub = self._not_executable_stub()
         self.assertTrue(
@@ -2259,16 +2193,12 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_hanging_cli_is_unusable_within_the_timeout(self):
         """A tree-sitter that never answers → (False, reason), and it returns.
 
-        This is the failure mode the behavioural guard introduced: the old
-        skip-guard was os.path.isfile() and structurally could not block, whereas
-        this function now runs a real subprocess at test-module IMPORT time.
-        Unbounded, a tree-sitter wedged on its own grammar lock — the very
-        resource this task is about, and one it serialises grammar loading
-        through — would hang the entire suite rather than skip one test, and the
-        exception-swallowing guard cannot help because a hang raises nothing.
-
-        Bounded here to 0.4s so the case is cheap; the production bound is
-        _SUBSTRATE_PROBE_TIMEOUT_S, deliberately generous for cold-cache compiles.
+        The failure mode the behavioural guard introduced: the old isfile() guard
+        structurally could not block.  Unbounded, a tree-sitter wedged on the very
+        grammar lock this task is about would hang the suite rather than skip one
+        test, and the exception-swallowing guard cannot help — a hang raises
+        nothing.  Bounded to 0.4s here; production uses
+        _SUBSTRATE_PROBE_TIMEOUT_S, generous for cold-cache compiles.
         """
         stub = _ts_stub_hangs(self._tmpdir)
         with unittest.mock.patch.object(pcc, "_SUBSTRATE_PROBE_TIMEOUT_S", 0.4):

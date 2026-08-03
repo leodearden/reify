@@ -294,10 +294,9 @@ _PERMISSION_DENIAL_MARKERS = ("Permission denied", "os error 13")
 # Substring marking a grammar *load* failure, as opposed to a parse failure.
 _GRAMMAR_LOAD_FAILURE_MARKER = "Failed to load language"
 
-# Single operator-facing wording for the cache-denial condition, shared by
-# grammar_substrate_usable()'s reason and main()'s renderer hint.  Both are
-# user-visible text asserted by tests, so two hand-maintained copies could drift
-# apart while describing the same condition.
+# One operator-facing wording for the cache-denial condition, shared by
+# grammar_substrate_usable()'s reason and main()'s renderer hint — both are
+# substring-asserted, so separate copies would drift silently.
 _CACHE_DENIAL_EXPLANATION = (
     "tree-sitter cannot write its grammar cache/lock directory (typically "
     "~/.cache/tree-sitter/), so it cannot load the reify grammar; this is "
@@ -306,8 +305,8 @@ _CACHE_DENIAL_EXPLANATION = (
     "denial is an LSM hook"
 )
 
-# Appended to the explanation where the reader already has a failing probe in
-# hand and needs the next action rather than only the cause.
+# Appended where the reader has a failing probe in hand and needs the next
+# action, not only the cause.
 _CACHE_DENIAL_NEXT_STEP = (
     "Run `prd-capability-check.py --grammar-substrate-status` to confirm, and "
     "treat it as a SKIP rather than a gate FAIL."
@@ -335,9 +334,8 @@ def grammar_cache_denied(run: ProbeRun) -> bool:
     only and reports the directory writable under a landlock hook (measured: the
     lock dir is ``drwxrwxr-x`` owned by the invoking user, yet ``touch`` fails).
 
-    A pure observation over captured output: it does NOT influence observe(),
-    verdict() or harness_exit_code(), so a denied probe still yields
-    HARNESS_ERROR / exit 70.  Callers use it to decide whether to SKIP.
+    Pure observation: does NOT influence observe(), verdict() or
+    harness_exit_code(), so a denied probe still yields HARNESS_ERROR / exit 70.
     """
     stderr = run.stderr
     if _GRAMMAR_LOAD_FAILURE_MARKER not in stderr:
