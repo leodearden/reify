@@ -589,4 +589,39 @@ assert "no 'retries' key in gen-nextest-config.sh generated config (no-retries i
         exit \$rc
     "
 
+# ---------------------------------------------------------------------------
+# Tests 17a-17b (task 5984): global [profile.default] test-threads pool cap.
+#
+# Before this task the ONLY concurrency bound in nextest.toml was the `occt`
+# test-group's max-threads.  Every crate OUTSIDE that group (reify_lsp,
+# reify-syntax, reify-compiler, the GUI Rust tests, ...) ran in nextest's
+# DEFAULT global pool, which is the host's logical CPU count (32 here) —
+# i.e. uncapped in practice.  `[profile.default] test-threads` is the global
+# pool bound; these tests pin that it exists and actually bounds.
+#
+# The extractor below is section-scoped to the [profile.default] TABLE: the
+# `/^\[/{f=0}` reset is what stops a match inside a following
+# [[profile.default.overrides]] block from satisfying a [profile.default]
+# assertion (same reason Test 16a is section-scoped).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 17a-17b (task 5984): global [profile.default] test-threads pool cap ---"
+
+_DEFAULT_TT_AWK='/^\[profile\.default\]/{f=1;next}/^\[/{f=0}f&&/^test-threads[[:space:]]*=/{match($0,/[0-9]+/);print substr($0,RSTART,RLENGTH);exit}'
+
+# Test 17a: the in-file literal is the sed-template fallback / HARD_CAP ceiling.
+# Asserted on the EXTRACTED value (not a raw grep) so an occurrence inside an
+# overrides block cannot satisfy it.
+assert "nextest.toml: [profile.default] has test-threads = 16 (sed-template fallback / HARD_CAP literal, section-scoped to the [profile.default] table)" \
+    bash -c "[ \"\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')\" = '16' ]"
+
+# Test 17b: that value is a non-empty positive integer >= 1.  nextest treats an
+# absent key as unbounded (= logical CPU count), so this pins that the in-file
+# fallback actually BOUNDS the pool rather than merely being present.
+assert "nextest.toml: [profile.default] test-threads is a non-empty positive integer >= 1 (fallback actually bounds the pool)" \
+    bash -c "
+        val=\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')
+        [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ]
+    "
+
 test_summary
