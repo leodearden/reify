@@ -1855,6 +1855,64 @@ else
     assert "ROW4-1-QUIET-VACUITY-7: FAIL-SAFE -- task delta unreadable (Δtask=unavailable, hot box) => NOT inconclusive (symmetric with -6)" \
         test "$_row4_quiet_vacuity7_rc" -ne 0
 
+    # ── ROW4-1-CORRIDOR-VACUITY: the inconclusive quadrant's LOWER bound ────
+    # The QUIET family above bounds the inconclusive quadrant ABOVE (share <
+    # floor). Bounding it above ALONE is not enough: it would make every
+    # sub-floor share on a hot box a SKIP, including a TOTAL governance
+    # failure. That matters because this row's own escape-hatch comment
+    # concedes an orchestrator host "is essentially never quiet" — so the hot
+    # branch is the branch that actually runs here, and if it swallowed
+    # everything below the floor, ROW4-1 could only PASS or SKIP in practice
+    # and VACUITY-2's quiet-box crux would pin a case that never occurs.
+    #
+    # The lower bound is the WEIGHTS-IGNORED FAIR SHARE: with two sibling
+    # slices under one parent, cpu.weight arbitration being absent or broken
+    # yields ~0.50 (equal split), and a starved merge slice yields ~0.00.
+    # Neither is dilution. Every dilution observation on record sits well
+    # ABOVE that: 0.6355 (the #5998 reproduction) plus 0.6435/0.6471/0.639
+    # from this file's history (:1378). So the corridor is (fair, floor) —
+    # open at BOTH ends — and a share at or below fair share falls through to
+    # ROW4-1's hard assert no matter how hot the box was.
+    #
+    # G6 (no new number): the bound is not a tuned constant. It is
+    # share_ge_proportional applied with the two weights held EQUAL — the
+    # literal meaning of "weights ignored" — reusing _ROW4_W_TASK, so it can
+    # no more drift from the assertion than the upper bound can.
+    _row4_corridor_vacuity1_rc=0
+    _row4_share_inconclusive 5945387 5945387 300 100 0.10 64.92 20 \
+        || _row4_corridor_vacuity1_rc=$?
+    assert "ROW4-1-CORRIDOR-VACUITY-1: LOWER-BOUND CRUX -- weights-ignored fair share (Δmerge=Δtask=5945387 => 0.50) on a HOT box => NOT inconclusive (forbids 'hot box => never RED'; broken cpu.weight still goes RED where the row actually runs)" \
+        test "$_row4_corridor_vacuity1_rc" -ne 0
+
+    # (2) A STARVED merge slice (share 0.00) on a hot box is the other end of
+    # the same argument — and it is also the shape the WIRED path produces
+    # when a cpu.stat read fails, because the bracket arithmetic below
+    # initializes each delta to 0 and only overwrites it when both endpoint
+    # samples are numeric. VACUITY-6/7 pin the predicate's own string guard;
+    # this pins the shape ROW4 can actually hand it.
+    _row4_corridor_vacuity2_rc=0
+    _row4_share_inconclusive 0 5945387 300 100 0.10 64.92 20 \
+        || _row4_corridor_vacuity2_rc=$?
+    assert "ROW4-1-CORRIDOR-VACUITY-2: starved merge slice (Δmerge=0 => share 0.00, hot box) => NOT inconclusive (also the wired shape of an unreadable slice read, which collapses to delta 0)" \
+        test "$_row4_corridor_vacuity2_rc" -ne 0
+
+    # (3) NON-VACUITY for the bound itself: the lower bound must be STRICT, or
+    # it would swallow the corridor it exists to preserve and re-open the
+    # #4656 false-RED this task closes. Pinned to one microsecond above fair
+    # share — the tightest statement that the hatch still fires just inside
+    # the corridor. (The measured false-RED at 0.6355 sits far above this.)
+    assert "ROW4-1-CORRIDOR-VACUITY-3: one microsecond ABOVE fair share (Δmerge=5945388 Δtask=5945387 => 0.5000000 > 0.50) on a HOT box => inconclusive (the lower bound is strict and does not swallow the dilution corridor)" \
+        _row4_share_inconclusive 5945388 5945387 300 100 0.10 64.92 20
+
+    # (4) No usage at all is not evidence of dilution either. The live branch
+    # already guards both-zero ahead of the predicate; this keeps the
+    # predicate itself total, so a future caller cannot reach a 0/0 SKIP.
+    _row4_corridor_vacuity4_rc=0
+    _row4_share_inconclusive 0 0 300 100 0.10 64.92 20 \
+        || _row4_corridor_vacuity4_rc=$?
+    assert "ROW4-1-CORRIDOR-VACUITY-4: FAIL-SAFE -- no usage at all (Δmerge=Δtask=0, hot box) => NOT inconclusive (an empty measurement is not evidence of dilution)" \
+        test "$_row4_corridor_vacuity4_rc" -ne 0
+
     # ── ROW4-1-SAMPLE-VACUITY: the host-PSI sampler feeding the guard ───────
     # _row4_sample_host_avg10 <proc_path> echoes the `some` line's avg10 field,
     # or the literal "unavailable" when the path is missing/unreadable/
