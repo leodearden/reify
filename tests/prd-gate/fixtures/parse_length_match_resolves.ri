@@ -1,0 +1,17 @@
+// Fixture (γ decompose-phase, builtin-signature-registry leaf alpha):
+// REGRESSION BASELINE ONLY — this fixture passing `reify check` (exit 0)
+// is NOT evidence that parse_length is registered or typed: the D3
+// adversary controls (2026-08-04) showed check also exits 0 with a bogus
+// variant name (`Sme`) and with the payload bound under an Angle
+// annotation. Registration evidence is source-level:
+// crates/reify-compiler/src/parse_signatures.rs:22 PARSE_FN_NAMES +
+// crates/reify-stdlib/src/parse.rs:17 eval arm. This fixture pins that
+// the alpha registry swap keeps the observable behavior byte-stable.
+
+structure def ParseLengthMatchProbe {
+    let r = parse_length("3mm")
+    let bore : Length = match r {
+        Some { value: v } => v,
+        None => 6mm,
+    }
+}

@@ -1,0 +1,14 @@
+// Fixture (γ decompose-phase premise, negative assertion / adversary probe):
+// compose is claimed to resolve via the TYPED stdlib .ri generic fn
+// pub fn compose<A,B,C>(f: Field<B,C>, g: Field<A,B>) -> Field<A,C>
+// (crates/reify-compiler/stdlib/fields.ri). A typed 2-param fn must REJECT a
+// 1-arg call — if this passes `reify check`, compose is being resolved by a
+// permissive fallback (e.g. the first-arg-fallback type-inference noted in
+// units.rs field_op_result_type), not the typed generic fn, and the tau7
+// "resolves via the typed stdlib .ri generic fn" premise is undercut.
+//
+// Expectation: `reify check` exits 1 (rejected).
+
+structure def ComposeOneArgRejected {
+    let bad = sample(compose(fn_field(|x| 2.0 * x)), 3.0)
+}
