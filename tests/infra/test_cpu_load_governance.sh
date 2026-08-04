@@ -1135,6 +1135,55 @@ _row3_measurement_unusable "$_row3_muv8_tb" "9.000000" || _row3_muv8_rc=$?
 assert "ROW3-1-UNUSABLE-VACUITY-8: COMPOSE CRUX counterpart -- genuine probe -> _row3_base_sample -> t_base=${_row3_muv8_tb}, t_mix=9.000000 => NOT unusable (the fix must not blanket-SKIP; real slowdown 9.0/3.0=3.0 must still be evaluated)" \
     test "$_row3_muv8_rc" -ne 0
 
+# Non-vacuity guard for the NEW ROW3-1 bound predicate (task 5999): the
+# SINGLE source of truth for ROW3-1's bound, encoding EXACTLY what the
+# inline `python3 -c` ROW3-1 assert evaluates today: `s <= k*floor AND
+# s < 10.0`. _row3_within_bound <slowdown> <k> <floor> (rc 0 = within the
+# bound, rc != 0 = breached) will replace that inline copy in step-7 so the
+# bound has one definition instead of two independently-driftable ones
+# (G7 no-lockstep-duplication) — the new high-direction hedge (step-9) must
+# skip in EXACTLY the cases the assert would fail, so both consult this same
+# predicate rather than restating the comparison.
+#
+# Pure awk, NO python3 needed, so always-on.
+
+# (1) s=3.0 k=4 floor=1.5 (bound=6.0) => within.
+assert "ROW3-1-BOUND-VACUITY-1: s=3.0 k=4 floor=1.5 (bound=6.0) => within_bound" \
+    _row3_within_bound 3.0 4 1.5
+
+# (2) BOUNDARY: s exactly AT K*floor => within, pinning the <= inclusivity.
+assert "ROW3-1-BOUND-VACUITY-2: BOUNDARY -- s=6.0 k=4 floor=1.5, exactly K*floor => within_bound (pins <= inclusivity)" \
+    _row3_within_bound 6.0 4 1.5
+
+# (3) s beyond K*floor => NOT within.
+_row3_bndv3_rc=0
+_row3_within_bound 7.0 4 1.5 || _row3_bndv3_rc=$?
+assert "ROW3-1-BOUND-VACUITY-3: s=7.0 k=4 floor=1.5 (bound=6.0) => NOT within_bound" \
+    test "$_row3_bndv3_rc" -ne 0
+
+# (4) HARD-CEILING NON-VACUITY: the proportional clause is satisfied
+# (K*floor=160 >> s) but the absolute < 10.0 ceiling still breaches => NOT
+# within. Proves the ceiling clause is independently load-bearing and cannot
+# be dissolved by a large floor.
+_row3_bndv4_rc=0
+_row3_within_bound 10.5 4 40 || _row3_bndv4_rc=$?
+assert "ROW3-1-BOUND-VACUITY-4: HARD-CEILING NON-VACUITY -- s=10.5 k=4 floor=40 (K*floor=160, proportional clause satisfied) => NOT within_bound (absolute ceiling independently load-bearing)" \
+    test "$_row3_bndv4_rc" -ne 0
+
+# (5) CEILING BOUNDARY: s exactly AT the absolute ceiling => NOT within,
+# pinning the strict < (not <=).
+_row3_bndv5_rc=0
+_row3_within_bound 10.0 4 40 || _row3_bndv5_rc=$?
+assert "ROW3-1-BOUND-VACUITY-5: CEILING BOUNDARY -- s=10.0 k=4 floor=40, exactly the absolute ceiling => NOT within_bound (pins strict <)" \
+    test "$_row3_bndv5_rc" -ne 0
+
+# (6) FAIL-SAFE: non-numeric slowdown => NOT within, so an unreadable
+# measurement can never be laundered into a PASS.
+_row3_bndv6_rc=0
+_row3_within_bound abc 4 1.5 || _row3_bndv6_rc=$?
+assert "ROW3-1-BOUND-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 => NOT within_bound (never laundered into a PASS)" \
+    test "$_row3_bndv6_rc" -ne 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
