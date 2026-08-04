@@ -40,18 +40,46 @@
 //! been an orphan audit silently enumerating the wrong tree rather than
 //! erroring.
 //!
+//! **As of task 5698**, the local copy sanitizes a SECOND `orphan_audit.rs`
+//! site too: `child_repo_root`, a `git rev-parse --show-toplevel` probe run
+//! against the caller-supplied `repo_root` before the script spawn. Where the
+//! sanitization above stops an ambient redirect var from overriding an
+//! otherwise-correct `repo_root`, this probe covers a channel sanitization
+//! cannot: a `repo_root` that was wrong to begin with — a `CARGO_MANIFEST_DIR`
+//! `.parent()` walk landing on the wrong level, a `.git` file pointing at
+//! another checkout, a symlinked or embedded checkout. It asserts the
+//! property the sanitization is meant to establish — that the child resolves
+//! the SAME work tree the caller intended — by comparing the caller's
+//! `repo_root` against what the (sanitized) child itself resolves; a
+//! disagreement is now a hard panic. That closes the "blast radius" named
+//! above for this second channel too: without the probe, a wrong `repo_root`
+//! would have been an orphan audit silently enumerating the wrong tree rather
+//! than erroring, exactly like the unsanitized-redirect-var case above.
+//!
 //! ## Sweep status
 //!
 //! `git grep -n 'Command::new("git")' -- '*.rs'` over the whole workspace
-//! returns, besides this module and prose references to it, exactly the three
-//! `git --version` probes named above. Every repo-targeting *git* site — the
-//! three `RealGitOps` methods (`spawn_once`, `is_gitignored`, `is_ancestor`)
-//! and the six fixture helpers in `tests/cli.rs` and `tests/real_git_ops.rs` —
-//! is routed through here. The grep does NOT catch the orphan-audit site
-//! described above, because that site spawns a *shell script* that runs git
-//! internally rather than calling `git` directly; a sweep for new call sites
-//! must consider both shapes. Re-run that grep when adding a git call site: a
-//! new hit that is not a `--version` probe is a defect.
+//! returns, besides this module and prose references to it, the `git
+//! --version` probes named above. **As of task 5698**, the same grep also
+//! returns two more accounted-for, non-exempt sites, both in
+//! `crates/reify-test-support/src/orphan_audit.rs`: the `child_repo_root`
+//! probe described above, and a `git init` test fixture in
+//! `wrong_tree_with_real_scope_panics` (builds a decoy repo to audit; "a
+//! fixture helper that shells `git init` into a tempdir" is literally the
+//! example the rule at the top of this module names). Neither is a
+//! `--version` probe, so neither qualifies for the carve-out above; both are
+//! legitimate because both are routed through `orphan_audit.rs`'s own local
+//! `sanitize` copy, for the same dependency-direction reason the script spawn
+//! is (see "Resolved non-central case" above). Every OTHER repo-targeting
+//! *git* site — the three `RealGitOps` methods (`spawn_once`,
+//! `is_gitignored`, `is_ancestor`) and the six fixture helpers in
+//! `tests/cli.rs` and `tests/real_git_ops.rs` — is routed through here. The
+//! grep does NOT catch the orphan-audit *script spawn* described above,
+//! because that site spawns a *shell script* that runs git internally rather
+//! than calling `git` directly; a sweep for new call sites must consider both
+//! shapes. Re-run that grep when adding a git call site: a new hit that is
+//! neither a `--version` probe nor one of the two `orphan_audit.rs` sites
+//! named above is a defect.
 //!
 //! # The failure mode this prevents
 //!
