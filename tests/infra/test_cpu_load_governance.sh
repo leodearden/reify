@@ -805,6 +805,36 @@ _row3_measurement_unusable() {
     return 1
 }
 
+# _row3_within_bound <slowdown> <k> <floor>
+#   ROW3-1's bound predicate (task 5999): the SINGLE source of truth for "is
+#   this slowdown acceptable", encoding exactly what the inline
+#   `python3 -c` ROW3-1 assert used to evaluate: s <= k*floor AND s < 10.0.
+#   Extracting it here — and reusing it from the step-9 high-direction
+#   hedge — means the assert and the hedge cannot silently diverge the
+#   moment either bound is retuned (G7 no-lockstep-duplication); mirrors
+#   #5998's share_ge_proportional extraction (6b3c6c2879).
+#
+#   The 10.0 absolute ceiling is kept as a documented in-helper constant, NOT
+#   a new env knob: it already existed as an inline literal in the ROW3-1
+#   assert, so lifting it in here is a MOVE, not a new host-baked tunable
+#   (the file header's G6 CRUX forbids the latter). It independently bounds
+#   a runaway slowdown even when a large floor would otherwise satisfy the
+#   proportional K*floor clause (ROW3-1-BOUND-VACUITY-4/5 non-vacuity cases).
+#
+#   Returns 0 (within bound) iff slowdown is numeric AND s <= k*floor AND
+#   s < 10.0. Returns 1 (breached / NOT within) on a non-numeric slowdown —
+#   fail-safe, so an unreadable measurement can never be laundered into a
+#   PASS.
+_row3_within_bound() {
+    local slowdown="$1" k="$2" floor="$3"
+    # Absolute anti-runaway ceiling (4415 cannot recur) — moved verbatim
+    # from the old inline `python3 -c` copy, not a new tunable.
+    local ceiling=10.0
+    case "$slowdown" in ''|*[!0-9.]*) return 1 ;; esac
+    awk -v s="$slowdown" -v k="$k" -v f="$floor" -v c="$ceiling" \
+        'BEGIN{ exit !((s+0) <= (k+0)*(f+0) && (s+0) < (c+0)) }'
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -1614,14 +1644,7 @@ sys.exit(0 if v < t else 1)
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
     else
         assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
-            python3 -c "
-import sys
-s = float('${_ROW3_SLOWDOWN}')
-fl = float('${_ROW3_FLOOR}')
-k = float('${_SLOWDOWN_K}')
-ok = (s <= k * fl) and s < 10.0
-sys.exit(0 if ok else 1)
-"
+            _row3_within_bound "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}"
     fi
 fi
 
