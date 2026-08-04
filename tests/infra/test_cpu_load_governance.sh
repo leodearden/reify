@@ -1214,6 +1214,57 @@ _row3_within_bound abc 4 1.5 || _row3_bndv6_rc=$?
 assert "ROW3-1-BOUND-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 => NOT within_bound (never laundered into a PASS)" \
     test "$_row3_bndv6_rc" -ne 0
 
+# Non-vacuity guard for the NEW ROW3-1 high-direction hedge (task 5999):
+# _row3_slowdown_inconclusive <slowdown> <k> <floor> <contended> (rc 0 =
+# inconclusive -> caller SKIPs; rc != 0 = the hard assert stays reachable) is
+# the high-direction hedge ROW3-1 currently lacks entirely -- composed from
+# _row3_within_bound (step-9's definition), never a second copy of the bound.
+# SKIPs only on the conjunction NOT within_bound AND _ROW23_CONTENDED==1,
+# mirroring ROW2-2's existing "sub-90% completion AND _ROW23_CONTENDED =>
+# SKIP" conjunction (line ~1569) -- a precedent-following hedge, not new
+# policy.
+#
+# Pure shell, NO python3 needed, so always-on.
+
+# (1) FALSE-RED REPLAY: s=9.0 breaches the 6.0 bound (k=4 floor=1.5) on a
+# slice whose own avg10 >= 90 => inconclusive (SKIP). The exact #5999 shape.
+assert "ROW3-1-CONTENDED-VACUITY-1: FALSE-RED REPLAY -- s=9.0 k=4 floor=1.5 (breaches bound=6.0) contended=1 => inconclusive" \
+    _row3_slowdown_inconclusive 9.0 4 1.5 1
+
+# (2) NON-VACUITY CRUX: same breach, but UNCONTENDED => NOT inconclusive, so
+# the hard assert stays reachable -- a runaway slowdown on a quiet box must
+# still hard-FAIL (the #4415 regression this row exists to catch cannot
+# recur).
+_row3_civ2_rc=0
+_row3_slowdown_inconclusive 9.0 4 1.5 0 || _row3_civ2_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-2: NON-VACUITY CRUX -- s=9.0 k=4 floor=1.5 (breaches bound) contended=0 => NOT inconclusive (hard assert stays reachable, #4415 cannot recur)" \
+    test "$_row3_civ2_rc" -ne 0
+
+# (3) FORBIDS SUPPRESSING A GREEN: s=3.0 is well inside the bound; even
+# contended, a hedge must never convert a green into a SKIP (mirrors
+# 2908c04db0 test(5998): ROW4-1-QUIET-VACUITY-3 forbids suppressing a green).
+_row3_civ3_rc=0
+_row3_slowdown_inconclusive 3.0 4 1.5 1 || _row3_civ3_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-3: FORBIDS SUPPRESSING A GREEN -- s=3.0 k=4 floor=1.5 (well within bound=6.0) contended=1 => NOT inconclusive (assert still runs and PASSes)" \
+    test "$_row3_civ3_rc" -ne 0
+
+# (4) CEILING DIRECTION: the absolute-ceiling breach (not just the
+# proportional K*floor clause) is covered too.
+assert "ROW3-1-CONTENDED-VACUITY-4: CEILING DIRECTION -- s=10.5 k=4 floor=40 (K*floor=160 satisfied, absolute ceiling breached) contended=1 => inconclusive" \
+    _row3_slowdown_inconclusive 10.5 4 40 1
+
+# (5) same ceiling breach, UNCONTENDED => NOT inconclusive.
+_row3_civ5_rc=0
+_row3_slowdown_inconclusive 10.5 4 40 0 || _row3_civ5_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-5: s=10.5 k=4 floor=40 (ceiling breach) contended=0 => NOT inconclusive (hard assert stays reachable)" \
+    test "$_row3_civ5_rc" -ne 0
+
+# (6) FAIL-SAFE: unreadable slowdown is never masked by the hedge.
+_row3_civ6_rc=0
+_row3_slowdown_inconclusive abc 4 1.5 1 || _row3_civ6_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 contended=1 => NOT inconclusive (unreadable measurement never masked)" \
+    test "$_row3_civ6_rc" -ne 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
