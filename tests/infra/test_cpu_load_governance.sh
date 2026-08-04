@@ -53,6 +53,27 @@
 # edges (50/90) and the saturation floor (0.85) are the existing knobs,
 # just read together.
 #
+# ROW3-1 measurement-usability + high-direction hedge (task 5999): the
+# slowdown = T_mix/T_base ratio's live T_base capture used to collapse a
+# timed-out/errored baseline probe to a literal "1" via `|| echo "1"`,
+# manufacturing an inflated slowdown on a busy host and hard-FAILing what
+# was really a passing measurement — the same flake class as #4656/#4967/
+# #4970/#5998 (a real, transient host condition misread as a genuine
+# governance break). Two structural fixes, both SKIP-direction only — neither
+# ever converts a would-be PASS into a SKIP, nor loosens the anti-runaway
+# (#4415) hard assert on a genuinely quiet box:
+#   - _row3_base_sample takes the probe's EXIT STATUS as an explicit
+#     parameter, not just its stdout, because stdout ALONE cannot
+#     discriminate an errored probe that still printed a plausible number
+#     from a genuine 1-second measurement — the exit status is the only
+#     honest discriminator. An unusable T_base or T_mix
+#     (_row3_measurement_unusable) SKIPs rather than manufacturing a ratio
+#     from noise.
+#   - _row3_slowdown_inconclusive SKIPs a bound-breaching slowdown IFF the
+#     task slice's own avg10 is ALSO >= 90 (_ROW23_CONTENDED) — the same
+#     conjunction ROW2-2 already uses, not a new policy. A breach on an
+#     UNCONTENDED (quiet) slice still hard-FAILs, so #4415 cannot recur.
+#
 # Design decisions honored here:
 #   G6 CRUX: all bounds PSI-relative/ratio/self-relative with a STATED
 #             fair-share floor; NEVER absolute load==32.
@@ -1462,8 +1483,14 @@ fi
 #
 # §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
 #   confined+pinned sources completed.
-# §8 Row 3 assertion:  slowdown = T_mix/T_base within
-#   [fair_share_floor(active, confine-cores), K·floor] AND < 10.
+# §8 Row 3 assertion (ROW3-1, task 5999 — see the ROW3-1 note above): the
+#   slowdown = T_mix/T_base decision is a four-branch chain, in order:
+#     1. either probe unusable (_row3_measurement_unusable)         → SKIP
+#     2. slowdown < fair_share_floor(active, confine-cores)         → SKIP
+#     3. slowdown breaches [.., K·floor] AND < 10 (_row3_within_bound)
+#        AND the task slice's own avg10 >= 90 (_ROW23_CONTENDED)    → SKIP
+#     4. otherwise → hard assert: slowdown within [fair_share_floor,
+#        K·floor] AND < 10 (the anti-runaway guarantee; #4415 cannot recur).
 # Every real assertion carries a measurement-integrity SKIP fallback (never a
 # false-RED under concurrent pool load, esc-4926-3).
 # ============================================================================
