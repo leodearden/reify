@@ -835,6 +835,50 @@ _row3_within_bound() {
         'BEGIN{ exit !((s+0) <= (k+0)*(f+0) && (s+0) < (c+0)) }'
 }
 
+# _row3_slowdown_inconclusive <slowdown> <k> <floor> <contended>
+#   ROW3-1's high-direction hedge (task 5999): the row currently has NO hatch
+#   at all in the high-slowdown direction, which is exactly the direction a
+#   busy host pushes it (the #5999 false RED). COMPOSED from
+#   _row3_within_bound above — never a second copy of the bound — so the
+#   hedge SKIPs in exactly the cases the assert would otherwise FAIL
+#   (G7 no-lockstep-duplication; mirrors #5998's share_ge_proportional
+#   extraction, 6b3c6c2879).
+#
+#   Returns 0 (inconclusive -> caller SKIPs) iff the slowdown is NOT within
+#   _row3_within_bound's bound AND contended="1". Returns 1 (not
+#   inconclusive -> the hard assert stays reachable) otherwise — including
+#   when the slowdown IS within bound (a hedge must never suppress a green,
+#   mirrors 2908c04db0 test(5998): ROW4-1-QUIET-VACUITY-3) and when the
+#   slowdown breaches the bound but contended != "1" (a runaway slowdown on
+#   a quiet box must still hard-FAIL, so the #4415 regression this row
+#   exists to catch cannot recur).
+#
+#   The conjunction (breach AND contended) is not a new policy: ROW2-2 (line
+#   ~1569) already SKIPs on precisely "sub-90% completion AND
+#   _ROW23_CONTENDED" — this hedge follows the same precedent. contended is
+#   consumed as _ROW23_CONTENDED verbatim (avg10 >= 90 on the task slice's
+#   own cpu.pressure, computed at the ROW2/3 measurement site) — no new
+#   sample, threshold, or env knob is introduced.
+#
+#   Fails SAFE toward "hard assert stays reachable" (rc 1) on a non-numeric
+#   slowdown — the SAME direction as _row3_within_bound's own fail-safe
+#   (deliberately the OPPOSITE direction from _row3_measurement_unusable,
+#   which guards the slowdown ratio's divisor rather than the ratio itself).
+#   Without this explicit guard, composing through _row3_within_bound alone
+#   would flip an unreadable slowdown into a false "breached" signal and
+#   this hedge would SKIP it — swallowing the very case that must surface as
+#   a hard, visible FAIL at the assert below instead (never masked).
+_row3_slowdown_inconclusive() {
+    local slowdown="$1" k="$2" floor="$3" contended="$4"
+    [ "$contended" = "1" ] || return 1
+    case "$slowdown" in ''|*[!0-9.]*) return 1 ;; esac
+    if _row3_within_bound "$slowdown" "$k" "$floor"; then
+        return 1
+    else
+        return 0
+    fi
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -1693,6 +1737,8 @@ sys.exit(0 if v < t else 1)
         echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
+    elif _row3_slowdown_inconclusive "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}" "${_ROW23_CONTENDED}"; then
+        echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} exceeds bound(K=${_SLOWDOWN_K},floor=${_ROW3_FLOOR}) but the task slice's own avg10 (${_ROW23_AVG10}) >= 90 — foreign load on the pinned CPUs inflated it, inconclusive"
     else
         assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
             _row3_within_bound "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}"
