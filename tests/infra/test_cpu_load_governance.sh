@@ -739,6 +739,37 @@ _row2_usage_fraction() {
         'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
 }
 
+# _row3_base_sample <rc> <raw>
+#   Baseline-probe normalizer for ROW3-1 (task 5999, #5999 false-RED): the
+#   live T_base capture used to collapse a timed-out (rc 124) or errored
+#   (rc != 0) probe to a literal "1" via `|| echo "1"` plus a rescue
+#   `[ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"` — which
+#   reads as a legitimate 1.000000-second baseline and, divided into a real
+#   T_mix, manufactures an inflated slowdown ratio (the false RED this task
+#   fixes). Mirrors _row2_usage_fraction's sentinel-propagation shape above:
+#   an unreadable/untrustworthy sample must propagate the literal
+#   "unavailable" sentinel rather than collapse to a numeric that reads as
+#   legitimate.
+#
+#   Takes the probe's EXIT STATUS as an explicit first parameter because
+#   stdout ALONE cannot discriminate an errored probe that still printed a
+#   plausible number (e.g. a partial "1.000000") from a genuine 1-second
+#   measurement — the exit status is the only honest discriminator.
+#
+#   Echoes "unavailable" when: rc is non-zero or non-numeric; OR raw is
+#   empty/non-numeric (file's `case ''|*[!0-9.]*)` idiom, float-permissive
+#   like _row2_band_inconclusive's avg10/usage_fraction guards); OR raw is
+#   <= 0 (degenerate divisor — a zero or negative baseline can never be a
+#   real wall-clock measurement). Otherwise echoes raw verbatim.
+_row3_base_sample() {
+    local rc="$1" raw="$2"
+    case "$rc" in ''|*[!0-9]*) echo unavailable; return 0 ;; esac
+    [ "$rc" -ne 0 ] && { echo unavailable; return 0; }
+    case "$raw" in ''|*[!0-9.]*) echo unavailable; return 0 ;; esac
+    awk -v v="$raw" 'BEGIN{ exit !((v+0) > 0) }' || { echo unavailable; return 0; }
+    echo "$raw"
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
