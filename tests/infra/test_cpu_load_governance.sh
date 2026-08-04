@@ -1029,6 +1029,77 @@ _row3_bsv6="$(_row3_base_sample 0 "2.750000" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-6: NON-VACUITY CRUX -- rc=0 with genuine baseline ('2.750000') passes through (got ${_row3_bsv6})" \
     awk -v v="$_row3_bsv6" 'BEGIN{ exit !((v+0) > 2.74 && (v+0) < 2.76) }'
 
+# Non-vacuity guard for the NEW ROW3-1 measurement-usability predicate (task
+# 5999): both T_base and T_mix must be usable numeric samples before ROW3-1's
+# slowdown ratio (T_mix/T_base) means anything.
+# _row3_measurement_unusable <t_base> <t_mix> subsumes today's inline
+# `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only hatch (case 4
+# below is byte-equivalent to it) and closes the missing T_base arm the #5999
+# false-RED exploited -- the #5999 defect IS the asymmetry: T_mix got a
+# hatch, T_base did not. Treating both probes through ONE predicate makes the
+# symmetry structural rather than conventional.
+#
+# Predicate-rc contract (rc 0 = unusable/inconclusive -> caller SKIPs; rc != 0
+# = usable -> the hard assert stays reachable), same convention as
+# _row2_band_inconclusive/_row1_stall_contended/_row1_measurement_inactive.
+# Fails SAFE toward SKIP (rc 0) on a non-numeric input -- the OPPOSITE
+# direction from those predicates' "fail toward assert stays reachable": this
+# predicate guards the DIVISOR of the slowdown ratio, and an unreadable
+# divisor can only manufacture noise, never evidence of a governance break,
+# so continuing to the assert would manufacture a verdict rather than
+# preserve one.
+#
+# Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
+# rationale as ROW2-1-USAGE-FRACTION-VACUITY / ROW3-1-BASE-SAMPLE-VACUITY
+# above.
+
+# (1) THE GAP: t_base unavailable, t_mix usable => unusable (SKIP). No guard
+# at all exists for this direction today -- the #5999 defect.
+assert "ROW3-1-UNUSABLE-VACUITY-1: THE GAP -- t_base=unavailable, t_mix=3.0 => unusable (SKIP; no guard exists for this direction today)" \
+    _row3_measurement_unusable unavailable 3.0
+
+# (2) t_base non-numeric.
+assert "ROW3-1-UNUSABLE-VACUITY-2: t_base=abc (non-numeric), t_mix=3.0 => unusable (SKIP)" \
+    _row3_measurement_unusable abc 3.0
+
+# (3) t_base degenerate divisor.
+assert "ROW3-1-UNUSABLE-VACUITY-3: t_base=0 (degenerate divisor), t_mix=3.0 => unusable (SKIP)" \
+    _row3_measurement_unusable 0 3.0
+
+# (4) PRESERVES THE EXISTING HATCH: t_mix<=0, byte-equivalent to today's
+# inline `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only hatch.
+assert "ROW3-1-UNUSABLE-VACUITY-4: PRESERVES THE EXISTING HATCH -- t_base=2.0, t_mix=0 => unusable (SKIP; byte-equivalent to today's inline T_mix<=0 hatch)" \
+    _row3_measurement_unusable 2.0 0
+
+# (5) Symmetric counterpart: t_mix unavailable.
+assert "ROW3-1-UNUSABLE-VACUITY-5: t_base=2.0, t_mix=unavailable => unusable (SKIP; symmetric treatment of both probes)" \
+    _row3_measurement_unusable 2.0 unavailable
+
+# (6) NON-VACUITY CRUX: both usable => NOT unusable, so ROW3-1's hard assert
+# stays reachable.
+_row3_muv6_rc=0
+_row3_measurement_unusable 3.0 9.0 || _row3_muv6_rc=$?
+assert "ROW3-1-UNUSABLE-VACUITY-6: NON-VACUITY CRUX -- t_base=3.0, t_mix=9.0 (both usable) => NOT unusable (ROW3-1's hard assert stays reachable)" \
+    test "$_row3_muv6_rc" -ne 0
+
+# (7) END-TO-END COMPOSE / #5999 false-RED replay: feed a timed-out probe
+# through the step-2 helper, then into this predicate. The OLD collapse
+# produced t_base=1 (usable) => slowdown 9.0/1=9.0 > K*floor=6.0 (K=4,
+# floor=1.5 defaults) => the false RED this task fixes; the fix instead SKIPs
+# as inconclusive.
+_row3_muv7_tb="$(_row3_base_sample 124 "" 2>/dev/null || true)"
+assert "ROW3-1-UNUSABLE-VACUITY-7: END-TO-END COMPOSE / #5999 false-RED replay -- timed-out probe -> _row3_base_sample -> t_base=${_row3_muv7_tb}, t_mix=9.000000 => unusable (SKIP; OLD collapse made t_base=1 => usable => slowdown 9.0/1=9.0 > K*floor=6.0 => the false RED)" \
+    _row3_measurement_unusable "$_row3_muv7_tb" "9.000000"
+
+# (8) COMPOSE CRUX counterpart: a genuine baseline through the step-2 helper
+# must NOT blanket-SKIP ROW3-1 -- real slowdown 9.0/3.0=3.0 is inside the
+# bound and must still be evaluated.
+_row3_muv8_tb="$(_row3_base_sample 0 "3.000000" 2>/dev/null || true)"
+_row3_muv8_rc=0
+_row3_measurement_unusable "$_row3_muv8_tb" "9.000000" || _row3_muv8_rc=$?
+assert "ROW3-1-UNUSABLE-VACUITY-8: COMPOSE CRUX counterpart -- genuine probe -> _row3_base_sample -> t_base=${_row3_muv8_tb}, t_mix=9.000000 => NOT unusable (the fix must not blanket-SKIP; real slowdown 9.0/3.0=3.0 must still be evaluated)" \
+    test "$_row3_muv8_rc" -ne 0
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
