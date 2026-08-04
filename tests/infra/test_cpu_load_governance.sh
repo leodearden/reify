@@ -940,6 +940,64 @@ _row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5
 assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
     test "$_row2_uf_vacuity5_rc" -ne 0
 
+# Non-vacuity guard for the NEW ROW3-1 baseline-sample normalizer (task 5999,
+# #5999 false-RED): the live T_base capture used to collapse a timed-out or
+# errored probe to a literal "1" (`|| echo "1"` plus a
+# `[ -z ] || [ = "0" ]` rescue), which reads as a legitimate 1.000000-second
+# baseline and, divided into a real T_mix, manufactures an inflated slowdown
+# ratio -- the false RED. _row3_base_sample <rc> <raw> takes the probe's EXIT
+# STATUS as an explicit parameter because stdout alone cannot discriminate an
+# errored probe that still printed a plausible number from a genuine
+# measurement (case 2 below). Mirrors _row2_usage_fraction's
+# "unavailable"-sentinel-propagation shape (lines 693-706) -- same class of
+# defect (an unreadable/untrustworthy sample collapsing to a numeric that
+# reads as legitimate), same remedy.
+#
+# Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
+# rationale as ROW2-1-USAGE-FRACTION-VACUITY above.
+#
+# Capture idiom: "$(_row3_base_sample ... || true)" -- MUST be `|| true`, NOT
+# `|| echo unavailable`: an echo-unavailable fallback would make every case
+# below pass even while the helper is undefined and would destroy the RED
+# signal (lines 867-869 prohibition).
+
+# (1) REGRESSION CRUX / #5999 replay: probe timed out (rc=124, no stdout) =>
+# propagate "unavailable", never the old collapse to "1".
+_row3_bsv1="$(_row3_base_sample 124 "" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-1: REGRESSION CRUX -- timed-out probe (rc=124, raw='') => 'unavailable' (never the old '1')" \
+    test "$_row3_bsv1" = "unavailable"
+
+# (2) Probe errored but still printed a plausible number -- stdout alone
+# cannot discriminate this from a genuine 1-second baseline; the EXIT STATUS
+# is the only honest discriminator, so rc=1 must still sentinel even though
+# raw looks legitimate.
+_row3_bsv2="$(_row3_base_sample 1 "1.000000" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-2: errored probe (rc=1) with plausible stdout ('1.000000') => 'unavailable' (a failed probe must never be laundered into a legitimate-looking baseline)" \
+    test "$_row3_bsv2" = "unavailable"
+
+# (3) rc=0 but empty stdout => unavailable.
+_row3_bsv3="$(_row3_base_sample 0 "" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-3: rc=0 with empty stdout => 'unavailable'" \
+    test "$_row3_bsv3" = "unavailable"
+
+# (4) rc=0, degenerate divisor "0.000000" => unavailable.
+_row3_bsv4="$(_row3_base_sample 0 "0.000000" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-4: rc=0 with degenerate divisor ('0.000000') => 'unavailable'" \
+    test "$_row3_bsv4" = "unavailable"
+
+# (5) rc=0, non-numeric stdout => unavailable.
+_row3_bsv5="$(_row3_base_sample 0 "abc" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-5: rc=0 with non-numeric stdout ('abc') => 'unavailable'" \
+    test "$_row3_bsv5" = "unavailable"
+
+# (6) NON-VACUITY CRUX: rc=0 with a genuine positive baseline passes through
+# verbatim, asserted NUMERICALLY via awk (locale-proof, mirrors
+# ROW2-1-USAGE-FRACTION-VACUITY-3) -- sentinelling a GOOD baseline would make
+# ROW3-1 SKIP unconditionally, which is vacuous.
+_row3_bsv6="$(_row3_base_sample 0 "2.750000" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-6: NON-VACUITY CRUX -- rc=0 with genuine baseline ('2.750000') passes through (got ${_row3_bsv6})" \
+    awk -v v="$_row3_bsv6" 'BEGIN{ exit !((v+0) > 2.74 && (v+0) < 2.76) }'
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
