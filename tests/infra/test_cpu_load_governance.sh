@@ -1382,13 +1382,21 @@ PROBE_PY
     # (a) Pre-measure T_base: uncontended CONFINED+PINNED governed probe
     #     (H5: same confine-cores CPUs the mix will run on, so the baseline
     #     is a fair comparison point, not diluted by a different slice/CPU
-    #     set).
-    _T_BASE="$(
+    #     set). Captures the probe's EXIT STATUS explicitly (task 5999,
+    #     #5999 false-RED) instead of masking it behind `|| echo "1"` — no
+    #     `|| echo <sentinel>` fallback appears in this capture at all, which
+    #     is strictly stronger than swapping the old numeric fallback for a
+    #     string one and sidesteps the fallback class this file prohibits
+    #     (lines 867-869). _row3_base_sample turns (rc, raw) into either the
+    #     literal "unavailable" or the genuine measurement — never a
+    #     manufactured "1" that reads as a legitimate 1-second baseline.
+    _T_BASE_RC=0
+    _T_BASE_RAW="$(
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         timeout 30 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1"
-    )"
-    [ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
+    )" || _T_BASE_RC=$?
+    _T_BASE="$(_row3_base_sample "$_T_BASE_RC" "$_T_BASE_RAW")"
 
     # (b) Launch mix: _MIX_N task-role + 1 merge-role, each through composed
     #     wrappers (γ cpu-governed-exec → β agent-bin/cargo shim → α
