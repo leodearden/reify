@@ -770,6 +770,41 @@ _row3_base_sample() {
     echo "$raw"
 }
 
+# _row3_measurement_unusable <t_base> <t_mix>
+#   ROW3-1 measurement-usability predicate (task 5999): both T_base and
+#   T_mix must be usable numeric samples before the slowdown ratio
+#   (T_mix/T_base) means anything. Subsumes the pre-existing inline
+#   `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only hatch and
+#   closes the missing T_base arm — the #5999 defect WAS this asymmetry:
+#   T_mix got a guard (`|| echo "0"` plus this hatch), T_base got an
+#   ungarded `|| echo "1"` and no hatch at all. Both arguments run through
+#   the SAME loop so the symmetry is structural, not two independently
+#   driftable branches.
+#
+#   Returns 0 (unusable -> caller SKIPs) iff EITHER argument is the literal
+#   "unavailable", empty/non-numeric (file's `case ''|*[!0-9.]*)` idiom,
+#   float-permissive), or <= 0 by awk (a degenerate/negative divisor or
+#   probe-work-time can never be real). Returns 1 (usable -> the hard assert
+#   stays reachable) only when BOTH arguments pass all three checks.
+#
+#   Fails SAFE toward SKIP (rc 0) on a non-numeric/unavailable input — the
+#   OPPOSITE direction from _row1_stall_contended/_row1_measurement_inactive/
+#   _row2_band_inconclusive, which all fail toward "assert stays reachable"
+#   because there an unreadable sample could otherwise MASK a genuine break.
+#   Here T_base is the DIVISOR of the slowdown ratio: an unreadable divisor
+#   cannot produce evidence of anything, only noise, so continuing to the
+#   assert would manufacture a verdict rather than preserve one.
+_row3_measurement_unusable() {
+    local t_base="$1" t_mix="$2"
+    local v
+    for v in "$t_base" "$t_mix"; do
+        case "$v" in unavailable) return 0 ;; esac
+        case "$v" in ''|*[!0-9.]*) return 0 ;; esac
+        awk -v x="$v" 'BEGIN{ exit !((x+0) > 0) }' || return 0
+    done
+    return 1
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -1500,9 +1535,13 @@ sys.exit(0 if v < t else 1)
         2>/dev/null || echo "0")"
     # ROW3-1: slowdown <= K·floor AND < 10 (4415 cannot recur — the DANGEROUS
     # direction, a real runaway-slowdown governance break, stays a hard assert).
-    # Skip if T_mix probe timed out or failed (returns "0") — on a heavily contended
-    # host the probe can exceed its budget when a large slowdown is real, making
-    # T_mix == 0 an inconclusive measurement, not a governance failure.
+    # Skip if either probe is unusable (task 5999: _row3_measurement_unusable
+    # subsumes the former T_mix-only hatch and closes the matching T_base
+    # arm — a timed-out/errored baseline probe used to collapse to a literal
+    # "1" and manufacture an inflated slowdown, the #5999 false-RED) — on a
+    # heavily contended host a probe can exceed its budget when a large
+    # slowdown is real, making an unusable T_base/T_mix an inconclusive
+    # measurement, not a governance failure.
     # Skip (not FAIL) if slowdown < floor too (H5, esc-4926-3 follow-up,
     # empirically observed): at confine-cores scale (active_sources=3 by
     # default) cpu-admit's OWN legitimate admission staggering means not all
@@ -1512,8 +1551,8 @@ sys.exit(0 if v < t else 1)
     # below, never a governance failure (mirrors fair_share_floor's own
     # docstring: below-floor is "physically impossible" for the model, i.e.
     # a modeling/measurement mismatch, not evidence of broken governance).
-    if awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'; then
-        echo "  SKIP ROW3-1: T_mix probe timed out or failed (T_mix=${_T_MIX:-0}) — inconclusive"
+    if _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
+        echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
     else
