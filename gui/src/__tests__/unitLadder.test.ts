@@ -7,6 +7,7 @@ import {
   normalizeUnitLabel,
   quantityUnitAlphabet,
   BASE_UNIT_LABELS,
+  buildQuantityRe,
 } from '../stores/unitLadder';
 
 describe('formatDisplayNumber', () => {
@@ -240,5 +241,137 @@ describe('quantityUnitAlphabet', () => {
       ],
     };
     expect(quantityUnitAlphabet(bothSpellings).filter((u) => u === 'm^3')).toHaveLength(1);
+  });
+});
+
+/**
+ * Task #6028: the ONE definition of the typed-quantity grammar. Before this,
+ * the `mm|cm|deg|rad|m` alternation was written FOUR times across
+ * `PropertyEditor.tsx` (x2) and `PropertyEditor.test.tsx` (x2).
+ */
+describe('buildQuantityRe', () => {
+  // THE CRITICAL CASE. Inside an alternation branch an unescaped `^` is a
+  // START-OF-INPUT ANCHOR, so a `mm^3` branch would compile to "mm, then
+  // start-of-input, then 3" — a regex that is perfectly valid and can never
+  // match. The failure is entirely silent (no throw, no warning), so it gets
+  // its own explicit pin rather than riding along in the table below.
+  it('escapes ^ in a label — an unescaped ^ is an anchor and would never match', () => {
+    expect(buildQuantityRe(['mm^3']).test('5mm^3')).toBe(true);
+    expect(buildQuantityRe(['m^2']).test('1.5m^2')).toBe(true);
+  });
+
+  it('escapes / in a label so a compound unit survives', () => {
+    expect(buildQuantityRe(['kg/m^3']).test('7.8kg/m^3')).toBe(true);
+    expect(buildQuantityRe(['g/cm^3']).test('0.5g/cm^3')).toBe(true);
+  });
+
+  it.each([
+    ['.', ['a.c'], '5a.c', '5abc'],
+    ['*', ['a*'], '5a*', '5aa'],
+    ['+', ['a+'], '5a+', '5aa'],
+    ['?', ['ab?'], '5ab?', '5a'],
+    ['$', ['a$'], '5a$', '5a'],
+    ['|', ['a|b'], '5a|b', '5a'],
+    ['(', ['a(b)'], '5a(b)', '5ab'],
+    ['[', ['a[b]'], '5a[b]', '5ab'],
+    ['{', ['a{2}'], '5a{2}', '5aa'],
+  ])('escapes the regex metacharacter %s', (_meta, labels, literal, notLiteral) => {
+    const re = buildQuantityRe(labels);
+    expect(re.test(literal)).toBe(true);
+    expect(re.test(notLiteral)).toBe(false);
+  });
+
+  // Capture group 1 is the FULL signed numeric literal — sign, mantissa and
+  // exponent. That is what removes the need for a second regex (the old
+  // `value.replace(/(mm|cm|deg|rad|m)$/, '')` strip): the caller reads m[1]
+  // instead of re-declaring the alternation to strip the suffix.
+  it.each([
+    ['-1.5e-2deg', '-1.5e-2'],
+    ['.5mm', '.5'],
+    ['80mm', '80'],
+    ['1e+3mm', '1e+3'],
+    ['-10mm', '-10'],
+    ['7.8kg/m^3', '7.8'],
+  ])('captures the whole signed literal of %s as group 1', (input, numeric) => {
+    const m = buildQuantityRe([...BASE_UNIT_LABELS, 'kg/m^3']).exec(input);
+    expect(m).not.toBeNull();
+    expect(m![1]).toBe(numeric);
+  });
+
+  // Overlapping labels must resolve by the `$` anchor, not by branch order.
+  it('resolves overlapping labels correctly under $-anchoring', () => {
+    const re = buildQuantityRe(['kg/m^3', 'm^3', 'kg', 'g', 'mm', 'm']);
+    expect(re.exec('7.8kg/m^3')![1]).toBe('7.8');
+    expect(re.exec('5m^3')![1]).toBe('5');
+    expect(re.exec('5kg')![1]).toBe('5');
+    expect(re.exec('5g')![1]).toBe('5');
+    expect(re.exec('80mm')![1]).toBe('80');
+    expect(re.exec('80m')![1]).toBe('80');
+  });
+
+  it('is insensitive to the order labels are supplied in', () => {
+    const forward = buildQuantityRe(['m', 'mm', 'kg', 'kg/m^3']);
+    const reverse = buildQuantityRe(['kg/m^3', 'kg', 'mm', 'm']);
+    expect(forward.source).toBe(reverse.source);
+    for (const input of ['80mm', '80m', '5kg', '7.8kg/m^3']) {
+      expect(forward.test(input)).toBe(true);
+      expect(reverse.test(input)).toBe(true);
+    }
+  });
+
+  describe('the legacy accept/reject table still holds against the baseline alphabet', () => {
+    // Built lazily inside each case, not at describe-collection time, so a
+    // missing/throwing builder fails these cases individually instead of
+    // aborting collection for the whole file.
+    const re = () => buildQuantityRe(BASE_UNIT_LABELS);
+
+    it.each([
+      ['80mm'], ['.5mm'], ['1e3mm'], ['1e+3mm'], ['1.5m'],
+      ['100cm'], ['1rad'], ['90deg'], ['1.5e-2deg'], ['-10mm'],
+      ['1e2mm'], ['-3.14rad'], ['0.5cm'], ['100deg'], ['.25deg'],
+    ])('accepts %s', (input) => {
+      expect(re().test(input)).toBe(true);
+    });
+
+    it.each([
+      ['10xyz'],
+      ['mm80'],
+      // Leading '+' is rejected: the numeric part is `-?` (minus-only), so
+      // '+10mm' fails even though the exponent group [eE][+-]? does accept
+      // '+' ('1e+3mm' is valid). This matches the .ri grammar, which defines
+      // only unary minus for number literals.
+      ['+10mm'],
+      // Both numeric branches require at least one digit, so a bare unit fails.
+      ['mm'],
+      ['deg'],
+      // Whitespace between number and unit is rejected — the .ri grammar uses
+      // token.immediate (tree-sitter-reify/grammar.js). The backend's
+      // parse_value_string is more lenient; the frontend is deliberately not.
+      ['5 mm'],
+      ['5  mm'],
+      ['5\tmm'],
+      [' 5 mm '],
+      ['Infinity'],
+      ['-Infinity'],
+      // Not in the baseline alphabet — widening is scoped to what the backend
+      // actually advertises via the ladders.
+      ['5mm^3'],
+      ['5L'],
+    ])('rejects %s', (input) => {
+      expect(re().test(input)).toBe(false);
+    });
+  });
+
+  // The overflow contract the existing suite documents: the regex has no
+  // numeric range check, so `Number.isFinite(Number(m[1]))` in the caller is
+  // load-bearing.
+  it.each([
+    ['1e999mm'],
+    ['-1e999deg'],
+    ['1e999m'],
+  ])('matches the overflow string %s but group 1 converts to a non-finite number', (input) => {
+    const m = buildQuantityRe(BASE_UNIT_LABELS).exec(input);
+    expect(m).not.toBeNull();
+    expect(Number.isFinite(Number(m![1]))).toBe(false);
   });
 });
