@@ -7,6 +7,7 @@ import {
   convertToUnit,
   formatDisplayNumber,
   ladderForDimension,
+  normalizeUnitLabel,
   quantityUnitAlphabet,
 } from '../stores/unitLadder';
 import { loadAllUnitPreferences, pruneUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
@@ -150,10 +151,40 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     return ladder;
   }
 
-  /** The currently chosen unit option for a cell: in-session pick, else persisted, else the ladder default. */
+  /**
+   * The currently chosen unit option for a cell: in-session pick, else
+   * persisted, else the ladder default.
+   *
+   * Resolution is exact-match first, then a match on the ASCII normal form of
+   * BOTH sides (task #6028). Without that second attempt, task #5788's relabel
+   * of the curated tables (`m³` -> `m^3`) silently invalidates every stored
+   * preference written in the old spelling: the lookup misses and the cell
+   * snaps back to the default rung, changing the displayed magnitude with no
+   * user action and no notice.
+   *
+   * WHY at COMPARISON time rather than as a one-way rewrite of the persisted
+   * blob (the obvious "migration"): a stored-form rewrite is ORDER-DEPENDENT.
+   * Landing before #5788 — as this does — rewriting a stored `m³` to `m^3`
+   * would stop it matching the still-superscript live ladder, inflicting the
+   * exact harm being removed, only earlier. Normalizing both sides at
+   * comparison time resolves in both eras and in both directions, so #6028 and
+   * #5788 may land in either order. `gui/src/stores/unitPreferences.ts` is
+   * therefore deliberately untouched: localStorage keeps the verbatim label.
+   *
+   * A one-time user-facing notice was also considered and rejected:
+   * disproportionate UI for a pure relabel that preserves rung identity, and
+   * moot in any case — with this fix there is no reset to announce.
+   *
+   * Note the fallback is a NORMALIZED equality, not a fuzzy one: a genuinely
+   * unknown label still falls through to the `is_default` rung as before.
+   */
   function chosenOptionFor(val: ValueData, ladder: UnitOption[]): UnitOption {
     const label = selectedUnits()[val.cell_id] ?? persistedUnits[val.cell_id] ?? undefined;
-    const found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
+    let found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
+    if (found === undefined && label !== undefined) {
+      const normalized = normalizeUnitLabel(label);
+      found = ladder.find((u) => normalizeUnitLabel(u.label) === normalized);
+    }
     return found ?? ladder.find((u) => u.is_default) ?? ladder[0];
   }
 
