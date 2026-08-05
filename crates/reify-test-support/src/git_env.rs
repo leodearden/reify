@@ -12,6 +12,62 @@
 //! constructor (`reify_audit::git_env::command`) on top of them; that module's
 //! doc carries the full failure-mode analysis this sanitizer exists to prevent.
 
+use std::process::Command;
+
+/// Git environment variables that redirect *which repository* a command
+/// operates on, and therefore can silently override an explicit `-C <root>`.
+///
+/// The set is enumerated rather than a wholesale `GIT_*` clear because it has
+/// a crisp defining criterion: these are exactly the vars that answer *"which
+/// repository am I operating on"* — the question `-C <root>` is supposed to
+/// answer authoritatively. Clearing all `GIT_*` would additionally drop
+/// `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` (which a
+/// harness may set precisely to *increase* isolation), `GIT_TRACE*`
+/// (debuggability) and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (commit determinism) —
+/// strictly more collateral for no gain. Those are left untouched.
+///
+/// Removed — not overwritten — by [`sanitize`].
+///
+/// `reify_audit::git_env`'s `repo_redirect_vars_covers_the_removal_floor` names
+/// each entry independently as a containment FLOOR, so this list may still GROW
+/// without a lockstep test edit, but an entry cannot be silently DELETED from
+/// it.
+pub const REPO_REDIRECT_VARS: &[&str] = &[
+    // Exported by git into a hook's process tree — the observed failure.
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    // Same class: each redirects part of "which repository / which objects".
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
+/// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment.
+///
+/// Returns `&mut Command` so callers that need a shape other than
+/// `git -C <root>` can still chain off it — this crate's own `orphan_audit`
+/// sites are exactly that case (`.current_dir(..)`, and a spawn of a shell
+/// script that runs git internally).
+///
+/// Removal (`env_remove`) rather than assignment is deliberate: there is no
+/// correct value to assign, and an inherited-but-empty var is not the same as
+/// an absent one to git.
+///
+/// `reify_audit::git_env::command` is the `git -C <root>` constructor built on
+/// top of this, and is the path of least resistance for a repo-targeting call
+/// site above the dependency edge. A caller needing another shape must be able
+/// to reach this sanitizer rather than re-derive [`REPO_REDIRECT_VARS`] by
+/// hand, which is exactly how this class of bug reaches a new helper.
+pub fn sanitize(cmd: &mut Command) -> &mut Command {
+    for var in REPO_REDIRECT_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
