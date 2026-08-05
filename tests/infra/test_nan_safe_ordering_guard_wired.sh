@@ -90,30 +90,66 @@ GATE="$REPO_ROOT/scripts/check-nan-safe-ordering.sh"
 DET_TMP="$(mktemp -d)"
 cleanup_det() { rm -rf "$DET_TMP"; }
 trap cleanup_det EXIT
-git -C "$DET_TMP" init -q
-git -C "$DET_TMP" config user.email test@invalid.local
-git -C "$DET_TMP" config user.name test
-mkdir -p "$DET_TMP/crates/reify-fdm/src"
 
-# unguarded → flagged (gate exits non-zero)
-printf 'fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); }\n' \
-    > "$DET_TMP/crates/reify-fdm/src/synthetic.rs"
-git -C "$DET_TMP" add -A
+# _exits_with <want> <cmd...> — assert an EXACT exit code, not merely non-zero.
+# The gate's contract distinguishes exit 1 (violation found) from exit 2
+# (usage / not-a-work-tree error); a bare `! cmd` would conflate them, so a
+# gate that crashed with a usage error on every invocation would satisfy every
+# detection assertion below. Ported from
+# task/5076:tests/infra/test_compute_trampoline_registration_wired.sh.
+_exits_with() {
+    local want="$1"; shift
+    local rc=0
+    "$@" || rc=$?
+    [ "$rc" -eq "$want" ] && return 0
+    echo "expected exit $want, got $rc from: $*"
+    return 1
+}
+
+# Reusable single-file fixture harness, mirroring task/5076's FIX /
+# write_baseline / stage idiom. This gate has ONE pass and needs only one
+# covered-crate file, so write_fixture/stage are sized down to that.
+FIX="$DET_TMP/fixture"
+mkdir -p "$FIX"
+git -C "$FIX" init -q
+git -C "$FIX" config user.email test@invalid.local
+git -C "$FIX" config user.name test
+
+# write_fixture — reads the heredoc from stdin into the one covered-crate file
+# (crates/reify-fdm is in SCOPE_PATHSPECS).
+write_fixture() {
+    mkdir -p "$FIX/crates/reify-fdm/src"
+    cat > "$FIX/crates/reify-fdm/src/lib.rs"
+}
+
+# The gate's source set is `git ls-files`-hermetic: every fixture mutation
+# MUST be re-staged via stage() or it is invisible to the gate. This is the #1
+# way these fixtures silently pass vacuously.
+stage() { git -C "$FIX" add -A; }
+
+# unguarded → flagged (gate exits 1)
+write_fixture <<'RS'
+fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); }
+RS
+stage
 assert "gate FLAGS a synthetic unguarded partial_cmp().unwrap_or(Ordering::Equal) in a covered crate" \
-    bash -c "! bash '$GATE' --repo-root '$DET_TMP'"
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
 # annotated → cleared (gate exits 0)
-printf 'fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); } // nan-safe:allow — guarded upstream\n' \
-    > "$DET_TMP/crates/reify-fdm/src/synthetic.rs"
-git -C "$DET_TMP" add -A
+write_fixture <<'RS'
+fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); } // nan-safe:allow — guarded upstream
+RS
+stage
 assert "gate CLEARS the same site once annotated with // nan-safe:allow" \
-    bash "$GATE" --repo-root "$DET_TMP"
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
 # doc-comment mention → not flagged
-printf '/// avoid partial_cmp(...).unwrap_or(Ordering::Equal) here; use total_cmp\nfn s() {}\n' \
-    > "$DET_TMP/crates/reify-fdm/src/synthetic.rs"
-git -C "$DET_TMP" add -A
+write_fixture <<'RS'
+/// avoid partial_cmp(...).unwrap_or(Ordering::Equal) here; use total_cmp
+fn s() {}
+RS
+stage
 assert "gate does NOT flag a doc-comment mention of the hazard" \
-    bash "$GATE" --repo-root "$DET_TMP"
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
 test_summary
