@@ -472,6 +472,47 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// body-inlining)" diagnostic on stderr for `@optimized` FEA solves.  The
 /// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
 /// separate engine-side concern (deferred, out of scope for this CLI task).
+/// The ANCHORED needle that identifies a `ConstraintIndeterminate` diagnostic
+/// as being *about* `entry`'s constraint.
+///
+/// # Why this exists (task 5748, esc-5748-4 review fix)
+///
+/// Both indeterminacy-diagnostic matchers in this file —
+/// [`merge_post_build_verdicts`]'s retain (inward leg) and
+/// [`drop_falsified_indeterminate_diagnostics`] (outward leg) — must agree on
+/// what "this diagnostic is about that constraint" means, or they drift and one
+/// of them silently deletes output the other would have kept.  esc-5748-4 caught
+/// exactly that drift: the outward leg was anchored while the inward leg used a
+/// bare `message.contains(needle)`.
+///
+/// * **The needle prefers the label**, exactly as engine_build.rs's
+///   `labeled_diagnostics` rewrite does: a labeled constraint's diagnostic
+///   embeds the label, not the raw id.
+/// * **It spans `constraint {needle} indeterminate`** — the needle AND the
+///   trailing ` indeterminate` token, which every emitted variant carries
+///   (reify-constraints/src/lib.rs:187/196/201).  A bare `contains(needle)` has
+///   two live failure modes.  (a) Raw-id prefix collision: a verdict for
+///   `Foo#constraint[1]` would delete `Foo#constraint[10]`'s still-true
+///   warning, since `Foo#constraint[1]` IS a substring of
+///   `Foo#constraint[10]`; `constraint Foo#constraint[1] indeterminate` is not
+///   a substring of `constraint Foo#constraint[10] indeterminate`, so the
+///   anchored form cannot.  (b) Short-label collision, the likelier one: a
+///   constraint labeled `w` would match essentially every other constraint's
+///   message (`… undefined inputs: Bracket.width` contains `w`), wiping the
+///   whole indeterminacy-explanation set.  Anchoring bounds the match on both
+///   sides of the needle, so a label only matches in the one position the
+///   checker actually writes it.
+///
+/// Deletion here is unrecoverable output loss, not a cosmetic difference: the
+/// dropped line is the ONLY explanation the user gets for a printed
+/// `INDETERMINATE` verdict.  Hence one helper, one definition, both call sites.
+fn indeterminacy_anchor(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    format!(
+        "constraint {} indeterminate",
+        entry.label.clone().unwrap_or_else(|| entry.id.to_string())
+    )
+}
+
 /// Adopt post-realization constraint verdicts from a captured [`BuildResult`]
 /// onto the authoritative [`CheckResult`], for entries `check()` left
 /// `Indeterminate`.
@@ -513,9 +554,13 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// * **The stale warning is dropped.**  When an entry upgrades, the
 ///   `ConstraintIndeterminate` diagnostic `check()` emitted for it (e.g.
 ///   "indeterminate: undefined inputs: BoltFlange.moi_principal") is no longer
-///   true, so it is removed — matched by the same needle the checker embeds
-///   (the constraint label when present, else the raw id), mirroring
-///   engine_build.rs's own retain.
+///   true, so it is removed — matched by the shared ANCHORED needle
+///   [`indeterminacy_anchor`] (`constraint {label-or-id} indeterminate`), the
+///   same matcher [`drop_falsified_indeterminate_diagnostics`] uses, so the two
+///   legs cannot drift.  A bare `contains(label-or-id)` (what
+///   engine_build.rs:5003 still does internally) would let a definite
+///   `Foo#constraint[1]` delete `Foo#constraint[10]`'s still-true warning, and
+///   would let a one-character label wipe the whole explanation set.
 /// * **Diagnostics are otherwise untouched** here; D2's separate
 ///   `merge_build_diagnostics` owns appending build()-only entries.
 ///
@@ -529,9 +574,10 @@ fn merge_post_build_verdicts(
     let Some(build_result) = build_result else {
         return;
     };
-    // Needles of the entries that upgraded, collected during the walk and
-    // applied to `diagnostics` afterwards (one `&mut result` borrow at a time).
-    let mut upgraded_needles: Vec<String> = Vec::new();
+    // Anchored needles of the entries that upgraded, collected during the walk
+    // and applied to `diagnostics` afterwards (one `&mut result` borrow at a
+    // time).
+    let mut upgraded_anchors: Vec<String> = Vec::new();
     for entry in result.constraint_results.iter_mut() {
         if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
             continue;
@@ -548,16 +594,20 @@ fn merge_post_build_verdicts(
             continue;
         }
         entry.satisfaction = new_sat;
-        upgraded_needles.push(entry.label.clone().unwrap_or_else(|| entry.id.to_string()));
+        upgraded_anchors.push(indeterminacy_anchor(entry));
     }
-    if upgraded_needles.is_empty() {
+    if upgraded_anchors.is_empty() {
         return;
     }
     // The "indeterminate: undefined inputs: …" warnings check() emitted for the
-    // upgraded constraints are now false — drop them.
+    // upgraded constraints are now false — drop them.  Matched by the SHARED
+    // anchored needle (`indeterminacy_anchor`), never a bare
+    // `contains(label_or_id)`: an unanchored match lets `Foo#constraint[1]`
+    // delete `Foo#constraint[10]`'s still-true warning, and lets a
+    // short-labeled constraint (`w`) wipe the entire explanation set.
     result.diagnostics.retain(|d| {
         !(d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
-            && upgraded_needles.iter().any(|n| d.message.contains(n)))
+            && upgraded_anchors.iter().any(|a| d.message.contains(a)))
     });
 }
 
@@ -595,19 +645,16 @@ fn merge_post_build_verdicts(
 /// * **Only `DiagnosticCode::ConstraintIndeterminate` is in scope.**  A verdict
 ///   falsifies the INDETERMINACY claim and nothing else; a `ConstraintViolated`
 ///   (or uncoded) line naming the same constraint survives untouched.
-/// * **The needle prefers the label**, exactly as [`merge_post_build_verdicts`]
-///   and engine_build.rs's `labeled_diagnostics` rewrite do: a labeled
-///   constraint's diagnostic embeds the label, not the raw id.
-/// * **The matcher is ANCHORED** on `constraint {needle} indeterminate` — it
-///   spans the needle AND the trailing ` indeterminate` token, which every
-///   emitted variant carries (reify-constraints/src/lib.rs:187/196/201).  This
-///   is a deliberate STRENGTHENING over the unanchored `contains(needle)` used
-///   at :560 and engine_build.rs:5003: this filter walks ALL definite verdicts
-///   (a far larger needle set than those two, which only walk the entries THEY
-///   upgraded), so prefix-collision exposure is materially higher.  A bare
-///   `contains` would let a definite `Foo#constraint[1]` delete
-///   `Foo#constraint[10]`'s still-true warning; `[1] indeterminate` is not a
-///   substring of `[10] indeterminate`, so the anchored form cannot.
+/// * **The needle is the shared [`indeterminacy_anchor`]** — label-preferring
+///   and ANCHORED on `constraint {needle} indeterminate`.  See that helper for
+///   why anchoring is load-bearing (raw-id prefix collision; short-label
+///   collision).  [`merge_post_build_verdicts`] uses the identical matcher, so
+///   the inward and outward legs cannot drift apart (esc-5748-4).
+/// * Anchoring matters MORE here than on the inward leg: this filter walks ALL
+///   definite verdicts, a far larger needle set than the entries a single pass
+///   upgraded, so collision exposure is correspondingly higher.  (engine_build
+///   .rs:5003 still uses a bare `contains` internally — engine-side, out of
+///   scope for this CLI task.)
 ///
 /// Severity-agnostic by code, but in practice this only ever removes
 /// `Warning`-severity entries.  No exit code can move either way:
@@ -624,12 +671,7 @@ fn drop_falsified_indeterminate_diagnostics(
     let anchors: Vec<String> = constraint_results
         .iter()
         .filter(|e| e.satisfaction != reify_ir::Satisfaction::Indeterminate)
-        .map(|e| {
-            format!(
-                "constraint {} indeterminate",
-                e.label.clone().unwrap_or_else(|| e.id.to_string())
-            )
-        })
+        .map(indeterminacy_anchor)
         .collect();
     if anchors.is_empty() {
         return build_diags.to_vec();
@@ -5252,6 +5294,216 @@ mod drop_falsified_indeterminate_diagnostics_tests {
             "the filter must retain in place: surviving entries keep their \
              original relative order"
         );
+    }
+}
+
+/// Prefix-collision coverage for the INWARD leg — the sibling of
+/// `drop_falsified_indeterminate_diagnostics_tests` (task 5748, esc-5748-4).
+///
+/// `merge_post_build_verdicts`'s retain used a bare
+/// `d.message.contains(label_or_id)` while the outward leg was already anchored.
+/// Both now share [`indeterminacy_anchor`]; these tests pin that the inward leg
+/// really is anchored, so the two matchers cannot drift apart again.
+#[cfg(test)]
+mod merge_post_build_verdicts_tests {
+    use super::merge_post_build_verdicts;
+    use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity};
+    use reify_eval::{BuildResult, CheckResult, ConstraintCheckEntry};
+    use reify_ir::Satisfaction;
+
+    fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
+        (d.severity, d.code, d.message.clone())
+    }
+
+    fn keys(ds: &[Diagnostic]) -> Vec<(Severity, Option<DiagnosticCode>, String)> {
+        ds.iter().map(key).collect()
+    }
+
+    fn entry(
+        entity: &str,
+        index: u32,
+        label: Option<&str>,
+        satisfaction: Satisfaction,
+    ) -> ConstraintCheckEntry {
+        ConstraintCheckEntry {
+            id: ConstraintNodeId::new(entity, index),
+            label: label.map(str::to_string),
+            satisfaction,
+        }
+    }
+
+    /// The exact shape the checker emits (reify-constraints/src/lib.rs:187).
+    fn indeterminate_warning(needle: &str, undefined: &str) -> Diagnostic {
+        Diagnostic::warning(format!(
+            "constraint {} indeterminate: undefined inputs: {}",
+            needle, undefined
+        ))
+        .with_code(DiagnosticCode::ConstraintIndeterminate)
+    }
+
+    fn check_result(
+        constraint_results: Vec<ConstraintCheckEntry>,
+        diagnostics: Vec<Diagnostic>,
+    ) -> CheckResult {
+        CheckResult {
+            values: Default::default(),
+            constraint_results,
+            diagnostics,
+            resolved_params: Default::default(),
+            structured_detail: Vec::new(),
+        }
+    }
+
+    fn build_result(constraint_results: Vec<ConstraintCheckEntry>) -> BuildResult {
+        BuildResult {
+            values: Default::default(),
+            constraint_results,
+            geometry_output: None,
+            diagnostics: Vec::new(),
+            resolved_params: Default::default(),
+        }
+    }
+
+    /// Baseline: the upgraded constraint's own now-false warning IS dropped.
+    /// The anchoring fix must not weaken the behaviour the helper exists for.
+    #[test]
+    fn drops_the_upgraded_constraints_own_warning() {
+        let mut result = check_result(
+            vec![entry("BoltFlange", 1, None, Satisfaction::Indeterminate)],
+            vec![indeterminate_warning(
+                "BoltFlange#constraint[1]",
+                "BoltFlange.moi_principal",
+            )],
+        );
+        let build = build_result(vec![entry("BoltFlange", 1, None, Satisfaction::Satisfied)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "the build verdict must be adopted onto the indeterminate entry"
+        );
+        assert!(
+            result.diagnostics.is_empty(),
+            "the upgraded constraint's own indeterminacy warning is now false \
+             and must be dropped, got {:?}",
+            keys(&result.diagnostics)
+        );
+    }
+
+    /// Reviewer failure scenario A — RAW-ID PREFIX COLLISION.
+    ///
+    /// `Foo#constraint[1]` upgrades; `Foo#constraint[10]` stays indeterminate.
+    /// A bare `contains("Foo#constraint[1]")` matches `[10]`'s message and
+    /// silently deletes it, leaving stdout printing `INDETERMINATE
+    /// Foo#constraint[10]` with NO stderr explanation. Anchoring makes that
+    /// impossible: `constraint Foo#constraint[1] indeterminate` is not a
+    /// substring of `constraint Foo#constraint[10] indeterminate`.
+    #[test]
+    fn anchored_matcher_survives_an_id_prefix_collision() {
+        let surviving = indeterminate_warning("Foo#constraint[10]", "Foo.x");
+        let mut result = check_result(
+            vec![
+                entry("Foo", 1, None, Satisfaction::Indeterminate),
+                entry("Foo", 10, None, Satisfaction::Indeterminate),
+            ],
+            vec![
+                indeterminate_warning("Foo#constraint[1]", "Foo.centroid"),
+                surviving.clone(),
+            ],
+        );
+        // Only [1] resolves under build(); [10] is genuinely still unknown.
+        let build = build_result(vec![
+            entry("Foo", 1, None, Satisfaction::Satisfied),
+            entry("Foo", 10, None, Satisfaction::Indeterminate),
+        ]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            keys(&result.diagnostics),
+            keys(&[surviving]),
+            "upgrading Foo#constraint[1] must drop ONLY its own warning — \
+             Foo#constraint[10] is still indeterminate and its explanation is \
+             the only thing telling the user why"
+        );
+    }
+
+    /// Reviewer failure scenario B — SHORT-LABEL COLLISION (the likelier one).
+    ///
+    /// The needle prefers the label, so an upgraded constraint labeled `w`
+    /// would, unanchored, match essentially EVERY other message (`… undefined
+    /// inputs: Bracket.width` contains `w`), wiping the whole explanation set.
+    #[test]
+    fn anchored_matcher_survives_a_short_label_collision() {
+        let surviving = indeterminate_warning("depth", "Bracket.width");
+        let mut result = check_result(
+            vec![
+                entry("Bracket", 0, Some("w"), Satisfaction::Indeterminate),
+                entry("Bracket", 1, Some("depth"), Satisfaction::Indeterminate),
+            ],
+            vec![
+                indeterminate_warning("w", "Bracket.centroid"),
+                surviving.clone(),
+            ],
+        );
+        let build = build_result(vec![
+            entry("Bracket", 0, Some("w"), Satisfaction::Satisfied),
+            entry("Bracket", 1, Some("depth"), Satisfaction::Indeterminate),
+        ]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            keys(&result.diagnostics),
+            keys(&[surviving]),
+            "a one-character label must not wipe every other constraint's \
+             indeterminacy explanation — the matcher must be anchored"
+        );
+    }
+
+    /// A non-`ConstraintIndeterminate` diagnostic naming the upgraded
+    /// constraint survives: the verdict falsifies the INDETERMINACY claim and
+    /// nothing else. Mirrors the outward leg's same-named contract.
+    #[test]
+    fn leaves_other_codes_about_the_same_constraint_alone() {
+        let other = Diagnostic::error(
+            "failed to compile geometry operation: missing or non-Length \
+             argument 'ox' for mirror (constraint Foo#constraint[0])",
+        );
+        let mut result = check_result(
+            vec![entry("Foo", 0, None, Satisfaction::Indeterminate)],
+            vec![other.clone()],
+        );
+        let build = build_result(vec![entry("Foo", 0, None, Satisfaction::Satisfied)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            keys(&result.diagnostics),
+            keys(&[other]),
+            "only ConstraintIndeterminate entries are in scope for the retain"
+        );
+    }
+
+    /// `None` build result → total no-op (the lightweight arm). Pins the
+    /// byte-identical-for-pre-5748-inputs guarantee.
+    #[test]
+    fn none_build_result_is_a_total_no_op() {
+        let warning = indeterminate_warning("Foo#constraint[0]", "Foo.x");
+        let mut result = check_result(
+            vec![entry("Foo", 0, None, Satisfaction::Indeterminate)],
+            vec![warning.clone()],
+        );
+
+        merge_post_build_verdicts(&mut result, None);
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Indeterminate
+        );
+        assert_eq!(keys(&result.diagnostics), keys(&[warning]));
     }
 }
 
