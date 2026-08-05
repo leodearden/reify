@@ -35,14 +35,17 @@
 //! (unconditional compile check + OCCT-gated value assertions).
 //!
 //! Also pins `examples/best_practices/clearance_oracle.ri`'s eval-surface
-//! answers (#5674) via `clearance_oracle_evals_expected_fouls_and_gap` below.
-//! That fixture is unrelated to KGQ-γ intersects dispatch — the test lives
-//! here rather than in its own module file only because #5674's locked scope
-//! excludes `harness_kernel_realization.rs` (which would need a new
-//! `mod`/`#[path]` registration); splitting it out is left as a follow-up.
+//! answers (#5674) via `clearance_oracle_evals_expected_fouls_and_gap` and
+//! `clearance_oracle_check_surface_reports_indeterminate_geometry_constraints`
+//! below. That fixture is unrelated to KGQ-γ intersects dispatch — the tests
+//! live here rather than in their own module file only because #5674's
+//! locked scope excludes `harness_kernel_realization.rs` (which would need a
+//! new `mod`/`#[path]` registration); splitting them out into
+//! `harness_kernel_realization/clearance_oracle_evals.rs` has been filed as
+//! a tracked follow-up task rather than left as unanchored prose.
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ConstraintNodeId, ValueCellId};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, Satisfaction, Value};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
@@ -216,44 +219,138 @@ fn clearance_oracle_evals_expected_fouls_and_gap() {
     }
 
     // Pin the fixture's own documented `reify check` behaviour (its
-    // "EVAL/BUILD ONLY" header section): `constraint not fouls`
-    // (ClearanceOracle#constraint[0]) and `constraint gap > min_gap`
-    // (ClearanceOracle#constraint[1]) — index order per the header's own
-    // quoted diagnostics — are `Indeterminate` under `check()` alone but must
-    // resolve on the build() surface once the geometry-consumer builtins
-    // they depend on (`intersects`/`distance`) are realized (the task-4229
-    // post-geometry re-check, `engine_build.rs` `BuildResult` construction).
-    // Asserting this — not just the raw `fouls`/`gap` cell values above —
-    // pins the "run it on a surface that can answer it" promise the
-    // fixture's header makes: a regression that stalls these constraints at
-    // `Indeterminate` on `build()` while the value cells still populate from
-    // the same kernel queries would otherwise leave this test green.
-    let find_constraint = |index: u32| {
+    // "EVAL/BUILD ONLY" header section): `constraint not fouls` and
+    // `constraint gap > min_gap` are `Indeterminate` under `check()` alone
+    // but must resolve on the build() surface once the geometry-consumer
+    // builtins they depend on (`intersects`/`distance`) are realized (the
+    // task-4229 post-geometry re-check, `engine_build.rs` `BuildResult`
+    // construction). Asserting this — not just the raw `fouls`/`gap` cell
+    // values above — pins the "run it on a surface that can answer it"
+    // promise the fixture's header makes: a regression that stalls these
+    // constraints at `Indeterminate` on `build()` while the value cells
+    // still populate from the same kernel queries would otherwise leave
+    // this test green.
+    //
+    // Deliberately NOT keyed by `ConstraintNodeId` index: the fixture's
+    // other three constraints (`bore_r > shaft_r`, `min_gap > 0mm`,
+    // `offset_x > bore_r`) are ALSO trivially Satisfied on build(), so an
+    // index-based lookup would silently start asserting against one of
+    // those the moment the fixture gains or reorders a constraint —
+    // defeating the very regression this block exists to catch. Asserting
+    // the full set's length AND uniform satisfaction instead catches the
+    // Indeterminate-stall regression and a dropped constraint, and cannot
+    // be defeated by fixture reordering.
+    assert_eq!(
+        result.constraint_results.len(),
+        5,
+        "ClearanceOracle should report exactly 5 constraint results (not fouls, \
+         gap > min_gap, bore_r > shaft_r, min_gap > 0mm, offset_x > bore_r), \
+         got: {:#?}",
+        result.constraint_results
+    );
+    assert!(
         result
             .constraint_results
             .iter()
-            .find(|entry| entry.id == ConstraintNodeId::new("ClearanceOracle", index))
-    };
+            .all(|entry| entry.satisfaction == Satisfaction::Satisfied),
+        "every ClearanceOracle constraint should be Satisfaction::Satisfied on the \
+         build() surface (this includes `not fouls` / `gap > min_gap`, which are \
+         only Indeterminate on the pure check surface — see the companion test \
+         clearance_oracle_check_surface_reports_indeterminate_geometry_constraints), \
+         got: {:#?}",
+        result.constraint_results
+    );
+}
 
-    let fouls_constraint = find_constraint(0).expect(
-        "ClearanceOracle#constraint[0] (`not fouls`) missing from result.constraint_results",
+/// Companion to `clearance_oracle_evals_expected_fouls_and_gap`: pins the
+/// OTHER half of the fixture header's "EVAL/BUILD ONLY" contract — the pure
+/// check/eval surface (kernel-less `Engine`), where `intersects`/`distance`
+/// are geometry-consumer builtins that CANNOT resolve. Runs unconditionally
+/// on every runner (no OCCT needed), so it also raises the value of the
+/// otherwise-unconditional half of the sibling test.
+///
+/// Expected on `Engine::check` with `kernel: None`:
+/// - `fouls`/`gap` each emit a `DiagnosticCode::EvalUnresolved` error (one
+///   for the `intersects` call, one for the `distance` call) — the fixture
+///   header's quoted "`intersects` could not be resolved: ..." message.
+/// - `ClearanceOracle#constraint[0]` (`not fouls`) and `#constraint[1]`
+///   (`gap > min_gap`) come back `Satisfaction::Indeterminate`; the other
+///   three ordinary value-surface constraints (`bore_r > shaft_r`,
+///   `min_gap > 0mm`, `offset_x > bore_r`) come back `Satisfaction::Satisfied`.
+///
+/// Counts, not `ConstraintNodeId` indices, for the same reordering-fragility
+/// reason as the sibling build-surface test.
+#[test]
+fn clearance_oracle_check_surface_reports_indeterminate_geometry_constraints() {
+    // Read + compile unconditionally, matching the unconditional half of
+    // every sibling oracle pin in this module.
+    let source = std::fs::read_to_string(CLEARANCE_ORACLE_PATH)
+        .expect("examples/best_practices/clearance_oracle.ri should exist (task 5389)");
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "examples/best_practices/clearance_oracle.ri should compile with no \
+         error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // Kernel-less engine: `intersects`/`distance` are geometry-consumer
+    // builtins and cannot resolve here, per the fixture's own header.
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let result = engine.check(&compiled);
+
+    let unresolved_messages: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::EvalUnresolved) && d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        unresolved_messages.len(),
+        2,
+        "expected exactly 2 EvalUnresolved errors (one for `fouls = intersects(...)`, \
+         one for `gap = distance(...)`), got {} — full diagnostics: {:#?}",
+        unresolved_messages.len(),
+        result.diagnostics
+    );
+    assert!(
+        unresolved_messages.iter().any(|m| m.contains("intersects")),
+        "expected an EvalUnresolved message naming `intersects`, got: {unresolved_messages:#?}"
+    );
+    assert!(
+        unresolved_messages.iter().any(|m| m.contains("distance")),
+        "expected an EvalUnresolved message naming `distance`, got: {unresolved_messages:#?}"
+    );
+
+    assert_eq!(
+        result.constraint_results.len(),
+        5,
+        "ClearanceOracle should report exactly 5 constraint results on the check \
+         surface too, got: {:#?}",
+        result.constraint_results
+    );
+    let indeterminate_count = result
+        .constraint_results
+        .iter()
+        .filter(|entry| entry.satisfaction == Satisfaction::Indeterminate)
+        .count();
+    let satisfied_count = result
+        .constraint_results
+        .iter()
+        .filter(|entry| entry.satisfaction == Satisfaction::Satisfied)
+        .count();
+    assert_eq!(
+        indeterminate_count, 2,
+        "expected exactly 2 Indeterminate constraints (`not fouls`, `gap > min_gap`) \
+         on the check surface, got {indeterminate_count} — full results: {:#?}",
+        result.constraint_results
     );
     assert_eq!(
-        fouls_constraint.satisfaction,
-        Satisfaction::Satisfied,
-        "ClearanceOracle#constraint[0] (`not fouls`) should be Satisfaction::Satisfied \
-         on the build() surface, got {:?}",
-        fouls_constraint.satisfaction
-    );
-
-    let gap_constraint = find_constraint(1).expect(
-        "ClearanceOracle#constraint[1] (`gap > min_gap`) missing from result.constraint_results",
-    );
-    assert_eq!(
-        gap_constraint.satisfaction,
-        Satisfaction::Satisfied,
-        "ClearanceOracle#constraint[1] (`gap > min_gap`) should be Satisfaction::Satisfied \
-         on the build() surface, got {:?}",
-        gap_constraint.satisfaction
+        satisfied_count, 3,
+        "expected exactly 3 Satisfied constraints (the ordinary value-surface \
+         constraints `bore_r > shaft_r`, `min_gap > 0mm`, `offset_x > bore_r`) \
+         on the check surface, got {satisfied_count} — full results: {:#?}",
+        result.constraint_results
     );
 }
