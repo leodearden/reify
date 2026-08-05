@@ -36,11 +36,41 @@
 #   which is a legitimate public API rather than a bundler.
 #
 # PRODUCTION-CODE VIEW (shared by BOTH passes — `_AWK_PRODUCTION_PROLOGUE`).
-# A line is invisible to both passes when it is inside a `#[cfg(test)] mod`
-# body or inside a `/* … */` block comment; and every visible line has its
-# `//…` tail, its inline `/* … */` spans and its double-quoted string-literal
-# CONTENTS blanked before matching. The two passes are therefore symmetric by
-# construction. That symmetry is load-bearing on BOTH sides:
+# Each raw line is reduced to its production code by a single LEFT-TO-RIGHT
+# LEXER (`_strip_line`), not by a chain of regex substitutions. Comment text is
+# DROPPED; string, char-literal and raw-string CONTENTS are BLANKED with their
+# delimiters kept (a blanked string reads exactly `""`). The lexer carries
+# `/* … */` (which nests), `"…"` and `r#"…"#` state ACROSS lines, and tells a
+# char literal from a lifetime, so `&'static str` and `<'a, 'b>` survive
+# untouched. A line is invisible to both passes when it is inside a
+# `#[cfg(test)] mod` body, or wholly inside a block comment or a carried-over
+# multi-line string.
+#
+# The brace counts that drive `depth` — and so BOTH depth-driven skippers, the
+# `#[cfg(test)] mod` one and the definition-file `in_bundler` one — are taken
+# from that LEXED view, never from the raw line. A brace that exists only inside
+# a comment, a string, a char literal or a raw string must not move `depth`: a
+# stray `{` over-extends the test-module skipper until the fourth-bundler pass
+# goes blind (hazard 3), and a stray `}` releases it early until the per-site
+# variant pin goes vacuous (hazard 2). Both are live shapes, not hypotheticals —
+# four unbalanced brace char literals sit in the scan set today
+# (crates/reify-kernel-occt/src/lib.rs:4930,4948,9167 and
+# crates/reify-test-support/src/orphan_audit.rs:778) and 277 of its files carry
+# raw strings.
+#
+# A two-regex chain cannot do this in EITHER order, which is why it was replaced
+# rather than reordered: strip comments first and a `//` living inside a STRING
+# truncates the code after it (11 lines of the live scan set change their brace
+# balance under that, e.g. crates/reify-audit/src/ptodo.rs:90
+# `if line.trim_start().starts_with("//") {`); blank strings first and a quote
+# living inside a COMMENT mis-blanks the code after it.
+#
+# Still BEST-EFFORT, deliberately not exhaustive: no macro expansion, no `cfg`
+# evaluation, and a `*/` appearing inside a string inside a block comment is not
+# modelled.
+#
+# The two passes are therefore symmetric by construction. That symmetry is
+# load-bearing on BOTH sides:
 #   - negative: crates/reify-mesh-morph/src/lib.rs carries a rustdoc MENTION of
 #     a bundle half OUTSIDE any `#[cfg(test)]` module, so only the //-strip
 #     keeps it green;
@@ -155,9 +185,10 @@ EXEMPT_DEFINITION_FILES=(
 violations=""
 note() { violations+="$1"$'\n'; }
 
-# ── Shared awk prologue: reduce each line to its PRODUCTION code in `code`, and
-# `next` the line entirely when it is test-only or wholly inside a block
-# comment. Both passes prepend this, so neither can see what the other cannot.
+# ── Shared awk prologue: lex each line down to its PRODUCTION code in `code`,
+# count the braces that drive `depth` from THAT view, and `next` the line
+# entirely when it is test-only or wholly inside a block comment / carried-over
+# string. Both passes prepend this, so neither can see what the other cannot.
 #
 # The `#[cfg(test)]` skipper additionally requires the opening line to declare a
 # `mod` (check-nan-safe-ordering.sh:106-120 does not). Without that requirement
@@ -166,11 +197,129 @@ note() { violations+="$1"$'\n'; }
 # can be an unrelated production item; that misfire is a silent under-flag on
 # the negative pass but a FALSE RED on the positive pass, so it is fixed here
 # rather than inherited.
-_AWK_PRODUCTION_PROLOGUE='
+#
+# The prologue is assembled through a quoted heredoc rather than a single-quoted
+# assignment so the lexer can contain apostrophes (it must reason about `'` to
+# tell a char literal from a lifetime).
+_AWK_PRODUCTION_PROLOGUE="$(cat <<'AWK_PROLOGUE'
+# _strip_line(line) -> the PRODUCTION-code view of one raw line.
+#
+# Comment text is DROPPED. String, char-literal and raw-string CONTENTS are
+# BLANKED with their delimiters KEPT, so a blanked string reads exactly "" —
+# the shape the _code_has patterns and the h2c fixture are written against.
+#
+# Cross-line state lives in globals: in_block (a NESTING depth, because Rust
+# block comments nest), in_str, and in_raw + raw_hashes. carried_in records
+# whether the line STARTED inside one of them.
+#
+# POSIX constructs only (substr / index / length / match, extra parameters as
+# locals, no gensub), so the gate is not silently gawk-only.
+function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
+    carried_in = (in_block > 0 || in_str || in_raw)
+    n = length(line)
+    # Fast path: nothing here can open a comment, a string or a char literal.
+    # (A bare `/` is division or a path; only `//` and `/*` matter.)
+    if (!carried_in && line !~ /["']|\/\/|\/\*/) return line
+    out = ""
+    i = 1
+    while (i <= n) {
+        # --- state carried in from a previous line, or opened earlier here ---
+        if (in_block > 0) {
+            if (substr(line, i, 2) == "*/") { in_block--; i += 2; continue }
+            if (substr(line, i, 2) == "/*") { in_block++; i += 2; continue }
+            i++
+            continue
+        }
+        if (in_raw) {
+            # A raw string closes on a quote followed by exactly raw_hashes
+            # hashes, and honours NO escapes.
+            if (substr(line, i, 1) == "\"") {
+                h = 0
+                while (h < raw_hashes && substr(line, i + 1 + h, 1) == "#") h++
+                if (h == raw_hashes) {
+                    out = out substr(line, i, 1 + h)
+                    in_raw = 0
+                    i += 1 + h
+                    continue
+                }
+            }
+            i++
+            continue
+        }
+        if (in_str) {
+            if (substr(line, i, 1) == "\\") { i += 2; continue }
+            if (substr(line, i, 1) == "\"") { out = out "\""; in_str = 0; i++; continue }
+            i++
+            continue
+        }
+
+        # --- ordinary code: emit the run up to the next interesting token ---
+        rest = substr(line, i)
+        if (!match(rest, /["']|\/\/|\/\*|(r|b|c|br|cr)#*"/)) { out = out rest; break }
+        if (RSTART > 1) { out = out substr(rest, 1, RSTART - 1); i += RSTART - 1; continue }
+
+        ch = substr(line, i, 1)
+        if (ch == "/") {
+            if (substr(line, i, 2) == "//") break   # //… tail: drop it entirely
+            in_block++                              # /*: enter (nesting) comment
+            i += 2
+            continue
+        }
+        if (ch == "'") {
+            # A CHAR LITERAL closes within one character — two with a backslash
+            # escape, more for \x41 / \u{7f}, whose own braces must not count.
+            # Anything else is a LIFETIME and is emitted verbatim, so
+            # &'static str and <'a, 'b> are untouched.
+            if (substr(line, i + 1, 1) == "\\") {
+                j = i + 3
+                while (j <= n && substr(line, j, 1) != "'") j++
+                if (j <= n && j - i <= 12) { out = out "''"; i = j + 1; continue }
+            } else if (substr(line, i + 2, 1) == "'") {
+                out = out "''"
+                i += 3
+                continue
+            }
+            out = out "'"
+            i++
+            continue
+        }
+        if (ch == "\"") { out = out "\""; in_str = 1; i++; continue }
+
+        # r"…" / r#"…"# / b"…" / br#"…"# / c"…" / cr#"…"# — the match above
+        # guarantees a prefix of at most two letters, then #*, then a quote.
+        pfx = ""
+        k = i
+        while (k <= n && length(pfx) < 2 && index("rbc", substr(line, k, 1)) > 0) {
+            pfx = pfx substr(line, k, 1)
+            k++
+        }
+        h = 0
+        while (substr(line, k + h, 1) == "#") h++
+        if (substr(line, k + h, 1) == "\"") {
+            out = out substr(line, i, (k - i) + h + 1)   # prefix + hashes + quote
+            if (index(pfx, "r") > 0) { in_raw = 1; raw_hashes = h } else { in_str = 1 }
+            i = k + h + 1
+            continue
+        }
+        out = out ch                                     # not a prefix after all
+        i++
+    }
+    return out
+}
+
 {
-    # Brace counts on this line (throwaway copies so $0 stays intact).
-    c = $0; n_open  = gsub(/[{]/, "x", c)
-    c = $0; n_close = gsub(/[}]/, "x", c)
+    code = _strip_line($0)
+
+    # A line wholly inside a block comment or a carried-over multi-line string
+    # contributes no code braces at all — drop it before any depth bookkeeping.
+    if (carried_in && code == "") next
+
+    # Brace counts on the LEXED view, never on $0 (throwaway copies so `code`
+    # stays intact). Counting the raw line lets a brace that exists only inside
+    # a comment, a string, a char literal or a raw string move `depth`, which
+    # silently mis-drives both skippers below — see PRODUCTION-CODE VIEW.
+    c = code; n_open  = gsub(/[{]/, "x", c)
+    c = code; n_close = gsub(/[}]/, "x", c)
 
     # --- #[cfg(test)] MODULE skipping (best-effort brace tracking) ---
     if (in_test) {
@@ -178,16 +327,18 @@ _AWK_PRODUCTION_PROLOGUE='
         if (depth <= test_base) in_test = 0
         next
     }
-    if ($0 ~ /#\[cfg\(test\)\]/) {
+    if (code ~ /#\[cfg\(test\)\]/) {
         pending_test = 1
     } else if (pending_test) {
-        # The pending gate survives only across blank lines, further
-        # attributes and comments; any other non-mod line disarms it.
-        t = $0; sub(/^[ \t]+/, "", t)
-        if (!(t == "" || t ~ /^#\[/ || t ~ /^\/\// || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/)) pending_test = 0
+        # The pending gate survives only across blank lines, further attributes
+        # and comments; any other non-mod line disarms it. A comment-only line
+        # now lexes to the empty string, so the former `t ~ /^\/\//` alternative
+        # is unreachable and is gone: `t == ""` already covers it.
+        t = code; sub(/^[ \t]+/, "", t)
+        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/)) pending_test = 0
     }
     if (pending_test && n_open > 0) {
-        if ($0 ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+        if (code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
             in_test = 1
             test_base = depth        # depth BEFORE this block opened
             depth += n_open - n_close
@@ -197,18 +348,9 @@ _AWK_PRODUCTION_PROLOGUE='
         pending_test = 0             # cfg(test) on a fn/field/use, not a module
     }
     depth += n_open - n_close
-
-    # --- comment + string-literal removal -> code ---
-    code = $0
-    if (in_block) {
-        if (code ~ /\*\//) { sub(/^.*\*\//, "", code); in_block = 0 } else next
-    }
-    gsub(/\/\*[^*]*\*+([^\/*][^*]*\*+)*\//, " ", code)   # whole /*…*/ on one line
-    if (code ~ /\/\*/) { sub(/\/\*.*$/, "", code); in_block = 1 }
-    sub(/\/\/.*/, "", code)                              # //… tail
-    gsub(/"([^"\\]|\\.)*"/, "\"\"", code)                # string-literal contents
 }
-'
+AWK_PROLOGUE
+)"
 
 # _code_has <file> <awk-regex> — is the pattern present in PRODUCTION code?
 _code_has() {
@@ -259,6 +401,8 @@ for f in "${_files[@]}"; do
     out="$(awk -v rel="$f" -v allow_defs="$_allow_defs" "$_AWK_PRODUCTION_PROLOGUE"'
         {
             # --- inline escape (same-line), mirrors ptodo:allow §6.8 ---
+            # RAW $0 on purpose: the escape lives in a `//` comment, which the
+            # lexer drops, so matching `code` here would silently kill it.
             if ($0 ~ /trampoline-registration:allow/) next
 
             if (allow_defs) {
@@ -284,6 +428,8 @@ for f in "${_files[@]}"; do
             }
 
             if (code ~ /register_compute_fns[(]/ || code ~ /register_shell_extract_compute_fns[(]/) {
+                # RAW $0 on purpose: this is human-readable violation output,
+                # so it must show the source line as written, not the lexed view.
                 printf "%s:%d: %s\n", rel, FNR, $0
             }
         }
