@@ -53,6 +53,33 @@
 # edges (50/90) and the saturation floor (0.85) are the existing knobs,
 # just read together.
 #
+# ROW3-1 measurement-usability + high-direction hedge (task 5999): the
+# slowdown = T_mix/T_base ratio's live T_base capture used to collapse a
+# timed-out/errored baseline probe to a literal "1" via `|| echo "1"`,
+# manufacturing an inflated slowdown on a busy host and hard-FAILing what
+# was really a passing measurement — the same flake class as #4656/#4967/
+# #4970/#5998 (a real, transient host condition misread as a genuine
+# governance break). Two structural fixes, both SKIP-direction only — neither
+# ever converts a would-be PASS into a SKIP, nor loosens the anti-runaway
+# (#4415) hard assert on a genuinely quiet box:
+#   - _row3_probe_sample takes the probe's EXIT STATUS as an explicit
+#     parameter, not just its stdout, because stdout ALONE cannot
+#     discriminate an errored probe that still printed a plausible number
+#     from a genuine 1-second measurement — the exit status is the only
+#     honest discriminator. An unusable T_base or T_mix
+#     (_row3_measurement_unusable) SKIPs rather than manufacturing a ratio
+#     from noise.
+#   - _row3_slowdown_inconclusive SKIPs a bound-breaching slowdown IFF
+#     _row3_foreign_load reports a GENUINE foreign-load reading — avg10 >= 90
+#     from an actual PSI read (not the "99" default an unreadable PSI file
+#     produces) AND the slice is starved rather than self-inflicting the
+#     load (review-amendment: raw avg10 >= 90 alone is neither immune to an
+#     unreadable-PSI false positive nor independent of the over-admission
+#     failure this row exists to catch). The bound-breach + contended
+#     conjunction itself is the same shape ROW2-2 already uses, not a new
+#     policy. A breach on an UNCONTENDED (quiet) slice still hard-FAILs, so
+#     #4415 cannot recur.
+#
 # Design decisions honored here:
 #   G6 CRUX: all bounds PSI-relative/ratio/self-relative with a STATED
 #             fair-share floor; NEVER absolute load==32.
@@ -739,6 +766,209 @@ _row2_usage_fraction() {
         'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
 }
 
+# _row3_sample_usable <value>
+#   Shared numeric-usability predicate (task 5999 review-amendment,
+#   reviewer_comprehensive/duplication): a value is usable iff it is numeric
+#   (float-permissive, file's `case ''|*[!0-9.]*)` idiom) AND strictly
+#   positive by awk. Extracted so _row3_probe_sample and
+#   _row3_measurement_unusable cannot silently drift apart on what counts as
+#   a usable sample — two independently-editable copies of the identical
+#   case+awk triad is exactly the G7 no-lockstep-duplication shape
+#   _row3_within_bound was already extracted below to avoid. The literal
+#   "unavailable" sentinel needs no separate case: it already fails the
+#   numeric guard. Returns 0 (usable) / 1 (not usable).
+_row3_sample_usable() {
+    local v="$1"
+    case "$v" in ''|*[!0-9.]*) return 1 ;; esac
+    awk -v x="$v" 'BEGIN{ exit !((x+0) > 0) }'
+}
+
+# _row3_probe_sample <rc> <raw>
+#   Probe-sample normalizer for ROW3-1 (task 5999, #5999 false-RED): the
+#   live T_base capture used to collapse a timed-out (rc 124) or errored
+#   (rc != 0) probe to a literal "1" via `|| echo "1"` plus a rescue
+#   `[ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"` — which
+#   reads as a legitimate 1.000000-second baseline and, divided into a real
+#   T_mix, manufactures an inflated slowdown ratio (the false RED this task
+#   fixes). Mirrors _row2_usage_fraction's sentinel-propagation shape above:
+#   an unreadable/untrustworthy sample must propagate the literal
+#   "unavailable" sentinel rather than collapse to a numeric that reads as
+#   legitimate. Despite the historical name, this normalizer is probe-
+#   agnostic (review-amendment: the T_mix capture had the SAME
+#   stdout-only-collapse defect, asymmetrically left unfixed — see the T_mix
+#   live capture below), so it is called for BOTH T_base and T_mix.
+#
+#   Takes the probe's EXIT STATUS as an explicit first parameter because
+#   stdout ALONE cannot discriminate an errored probe that still printed a
+#   plausible number (e.g. a partial "1.000000") from a genuine measurement
+#   — the exit status is the only honest discriminator.
+#
+#   Echoes "unavailable" when: rc is non-zero or non-numeric; OR raw fails
+#   _row3_sample_usable (empty/non-numeric/<= 0 — a degenerate divisor or
+#   probe-work-time can never be a real wall-clock measurement). Otherwise
+#   echoes raw verbatim.
+_row3_probe_sample() {
+    local rc="$1" raw="$2"
+    case "$rc" in ''|*[!0-9]*) echo unavailable; return 0 ;; esac
+    [ "$rc" -ne 0 ] && { echo unavailable; return 0; }
+    _row3_sample_usable "$raw" || { echo unavailable; return 0; }
+    echo "$raw"
+}
+
+# _row3_measurement_unusable <t_base> <t_mix>
+#   ROW3-1 measurement-usability predicate (task 5999): both T_base and
+#   T_mix must be usable numeric samples (_row3_sample_usable) before the
+#   slowdown ratio (T_mix/T_base) means anything. Subsumes the pre-existing
+#   inline `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only
+#   hatch and closes the missing T_base arm — the #5999 defect WAS this
+#   asymmetry: T_mix got a guard (`|| echo "0"` plus this hatch), T_base got
+#   an ungarded `|| echo "1"` and no hatch at all. Both arguments run
+#   through the SAME loop AND the SAME usability predicate _row3_probe_sample
+#   itself uses on its raw value, so the symmetry is structural on two axes
+#   (T_base/T_mix, and capture-time normalization/here) rather than
+#   conventional.
+#
+#   Returns 0 (unusable -> caller SKIPs) iff EITHER argument fails
+#   _row3_sample_usable — which already covers the literal "unavailable"
+#   sentinel (it fails that predicate's numeric guard), empty/non-numeric,
+#   and <= 0 (a degenerate/negative divisor or probe-work-time can never be
+#   real). Returns 1 (usable -> the hard assert stays reachable) only when
+#   BOTH arguments pass.
+#
+#   Fails SAFE toward SKIP (rc 0) on a non-numeric/unavailable input — the
+#   OPPOSITE direction from _row1_stall_contended/_row1_measurement_inactive/
+#   _row2_band_inconclusive, which all fail toward "assert stays reachable"
+#   because there an unreadable sample could otherwise MASK a genuine break.
+#   Here T_base is the DIVISOR of the slowdown ratio: an unreadable divisor
+#   cannot produce evidence of anything, only noise, so continuing to the
+#   assert would manufacture a verdict rather than preserve one.
+_row3_measurement_unusable() {
+    local t_base="$1" t_mix="$2"
+    local v
+    for v in "$t_base" "$t_mix"; do
+        _row3_sample_usable "$v" || return 0
+    done
+    return 1
+}
+
+# _row3_within_bound <slowdown> <k> <floor>
+#   ROW3-1's bound predicate (task 5999): the SINGLE source of truth for "is
+#   this slowdown acceptable", encoding exactly what the inline
+#   `python3 -c` ROW3-1 assert used to evaluate: s <= k*floor AND s < 10.0.
+#   Extracting it here — and reusing it from the step-9 high-direction
+#   hedge — means the assert and the hedge cannot silently diverge the
+#   moment either bound is retuned (G7 no-lockstep-duplication); mirrors
+#   #5998's share_ge_proportional extraction (6b3c6c2879).
+#
+#   The 10.0 absolute ceiling is kept as a documented in-helper constant, NOT
+#   a new env knob: it already existed as an inline literal in the ROW3-1
+#   assert, so lifting it in here is a MOVE, not a new host-baked tunable
+#   (the file header's G6 CRUX forbids the latter). It independently bounds
+#   a runaway slowdown even when a large floor would otherwise satisfy the
+#   proportional K*floor clause (ROW3-1-BOUND-VACUITY-4/5 non-vacuity cases).
+#
+#   Returns 0 (within bound) iff slowdown is numeric AND s <= k*floor AND
+#   s < 10.0. Returns 1 (breached / NOT within) on a non-numeric slowdown —
+#   fail-safe, so an unreadable measurement can never be laundered into a
+#   PASS.
+_row3_within_bound() {
+    local slowdown="$1" k="$2" floor="$3"
+    # Absolute anti-runaway ceiling (4415 cannot recur) — moved verbatim
+    # from the old inline `python3 -c` copy, not a new tunable.
+    local ceiling=10.0
+    case "$slowdown" in ''|*[!0-9.]*) return 1 ;; esac
+    awk -v s="$slowdown" -v k="$k" -v f="$floor" -v c="$ceiling" \
+        'BEGIN{ exit !((s+0) <= (k+0)*(f+0) && (s+0) < (c+0)) }'
+}
+
+# _row3_slowdown_inconclusive <slowdown> <k> <floor> <contended>
+#   ROW3-1's high-direction hedge (task 5999): the row currently has NO hatch
+#   at all in the high-slowdown direction, which is exactly the direction a
+#   busy host pushes it (the #5999 false RED). COMPOSED from
+#   _row3_within_bound above — never a second copy of the bound — so the
+#   hedge SKIPs in exactly the cases the assert would otherwise FAIL
+#   (G7 no-lockstep-duplication; mirrors #5998's share_ge_proportional
+#   extraction, 6b3c6c2879).
+#
+#   Returns 0 (inconclusive -> caller SKIPs) iff the slowdown is NOT within
+#   _row3_within_bound's bound AND contended="1". Returns 1 (not
+#   inconclusive -> the hard assert stays reachable) otherwise — including
+#   when the slowdown IS within bound (a hedge must never suppress a green,
+#   mirrors 2908c04db0 test(5998): ROW4-1-QUIET-VACUITY-3) and when the
+#   slowdown breaches the bound but contended != "1" (a runaway slowdown on
+#   a quiet box must still hard-FAIL, so the #4415 regression this row
+#   exists to catch cannot recur).
+#
+#   The conjunction (breach AND contended) is not a new policy: ROW2-2 (see
+#   the ROW2-2 assert below) already SKIPs on precisely "sub-90% completion
+#   AND _ROW23_CONTENDED" — this hedge follows the same precedent. contended
+#   is a plain 0/1 flag; the live caller passes _row3_foreign_load's
+#   refined verdict below rather than _ROW23_CONTENDED directly (review-
+#   amendment: raw _ROW23_CONTENDED alone is neither immune to an
+#   unreadable-PSI false positive nor independent of this row's own failure
+#   mode — see _row3_foreign_load's docstring) — no new sample, threshold,
+#   or env knob is introduced beyond what _row3_foreign_load documents.
+#
+#   Fails SAFE toward "hard assert stays reachable" (rc 1) on a non-numeric
+#   slowdown — the SAME direction as _row3_within_bound's own fail-safe
+#   (deliberately the OPPOSITE direction from _row3_measurement_unusable,
+#   which guards the slowdown ratio's divisor rather than the ratio itself).
+#   Without this explicit guard, composing through _row3_within_bound alone
+#   would flip an unreadable slowdown into a false "breached" signal and
+#   this hedge would SKIP it — swallowing the very case that must surface as
+#   a hard, visible FAIL at the assert below instead (never masked).
+_row3_slowdown_inconclusive() {
+    local slowdown="$1" k="$2" floor="$3" contended="$4"
+    [ "$contended" = "1" ] || return 1
+    case "$slowdown" in ''|*[!0-9.]*) return 1 ;; esac
+    if _row3_within_bound "$slowdown" "$k" "$floor"; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# _row3_foreign_load <contended> <avg10_rc> <usage_fraction>
+#   ROW3-1 review-amendment (task 5999, reviewer_comprehensive/robustness +
+#   /test-quality): refines the raw _ROW23_CONTENDED signal before it may
+#   license _row3_slowdown_inconclusive's SKIP. Reads the starvation floor
+#   internally from REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR (default 0.85)
+#   — the SAME knob _row2_band_inconclusive already reads for the identical
+#   starved-vs-saturating distinction — fresh at call time.
+#
+#   Closes two gaps a genuine over-admission regression (#4415) could
+#   otherwise exploit to launder itself into a green ROW3-1 run:
+#     1. avg10_rc must be "0" (a genuine PSI read): _ROW23_CONTENDED is "1"
+#        whenever avg10 >= 90, but the live capture defaults avg10 to "99"
+#        when the PSI read itself FAILS (an unreadable cpu.pressure file,
+#        not genuine contention) — the same "unreadable sample collapsing to
+#        a numeric that reads as legitimate" defect class _row3_probe_sample
+#        exists to eliminate, reintroduced on the contention axis. avg10_rc
+#        carries whether the read actually succeeded, so an unreadable PSI
+#        file can no longer manufacture contended=1.
+#     2. the slice must be STARVED (usage_fraction < floor), mirroring
+#        _row2_band_inconclusive's own starved-vs-saturating discriminator:
+#        a genuine over-admission regression drives too many governed
+#        sources into the SAME task slice, which self-inflicts high avg10 on
+#        that slice WHILE the slice keeps consuming its own cpu.pressure
+#        budget (NOT starved) — so avg10 alone cannot distinguish foreign
+#        load from the exact failure this row exists to catch; a saturating
+#        slice must still hard-FAIL.
+#
+#   Echoes "1" iff contended="1" AND avg10_rc="0" AND usage_fraction is
+#   numeric AND usage_fraction < floor; "0" otherwise — including a
+#   non-numeric usage_fraction (fail-safe: an unreadable STARVATION signal
+#   must not license a SKIP either).
+_row3_foreign_load() {
+    local contended="$1" avg10_rc="$2" usage_fraction="$3"
+    local floor="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+    [ "$contended" = "1" ] || { echo 0; return 0; }
+    [ "$avg10_rc" = "0" ] || { echo 0; return 0; }
+    case "$usage_fraction" in ''|*[!0-9.]*) echo 0; return 0 ;; esac
+    awk -v u="$usage_fraction" -v f="$floor" 'BEGIN{ exit !((u+0) < (f+0)) }' || { echo 0; return 0; }
+    echo 1
+}
+
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
 # comparison below is capable of going RED — a synthetic usage just BELOW
 # floor·budget must be rejected, one just AT floor·budget must be accepted.
@@ -940,6 +1170,303 @@ _row2_band_inconclusive 57 50 "$_row2_uf5" 0 900000 1000000 || _row2_uf_vacuity5
 assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'unavailable' usage_fraction (avg10=57 in-band, stall high) => NOT inconclusive (hard assert stays reachable, never masks a genuine regression)" \
     test "$_row2_uf_vacuity5_rc" -ne 0
 
+# Non-vacuity guard for the NEW ROW3-1 baseline-sample normalizer (task 5999,
+# #5999 false-RED): the live T_base capture used to collapse a timed-out or
+# errored probe to a literal "1" (`|| echo "1"` plus a
+# `[ -z ] || [ = "0" ]` rescue), which reads as a legitimate 1.000000-second
+# baseline and, divided into a real T_mix, manufactures an inflated slowdown
+# ratio -- the false RED. _row3_probe_sample <rc> <raw> takes the probe's EXIT
+# STATUS as an explicit parameter because stdout alone cannot discriminate an
+# errored probe that still printed a plausible number from a genuine
+# measurement (case 2 below). Mirrors _row2_usage_fraction's
+# "unavailable"-sentinel-propagation shape above -- same class of
+# defect (an unreadable/untrustworthy sample collapsing to a numeric that
+# reads as legitimate), same remedy.
+#
+# Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
+# rationale as ROW2-1-USAGE-FRACTION-VACUITY above.
+#
+# Capture idiom: "$(_row3_probe_sample ... || true)" -- MUST be `|| true`, NOT
+# `|| echo unavailable`: an echo-unavailable fallback would make every case
+# below pass even while the helper is undefined and would destroy the RED
+# signal (same prohibition as _row2_usage_fraction's Capture idiom above).
+
+# (1) REGRESSION CRUX / #5999 replay: probe timed out (rc=124, no stdout) =>
+# propagate "unavailable", never the old collapse to "1".
+_row3_bsv1="$(_row3_probe_sample 124 "" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-1: REGRESSION CRUX -- timed-out probe (rc=124, raw='') => 'unavailable' (never the old '1')" \
+    test "$_row3_bsv1" = "unavailable"
+
+# (2) Probe errored but still printed a plausible number -- stdout alone
+# cannot discriminate this from a genuine 1-second baseline; the EXIT STATUS
+# is the only honest discriminator, so rc=1 must still sentinel even though
+# raw looks legitimate.
+_row3_bsv2="$(_row3_probe_sample 1 "1.000000" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-2: errored probe (rc=1) with plausible stdout ('1.000000') => 'unavailable' (a failed probe must never be laundered into a legitimate-looking baseline)" \
+    test "$_row3_bsv2" = "unavailable"
+
+# (3) rc=0 but empty stdout => unavailable.
+_row3_bsv3="$(_row3_probe_sample 0 "" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-3: rc=0 with empty stdout => 'unavailable'" \
+    test "$_row3_bsv3" = "unavailable"
+
+# (4) rc=0, degenerate divisor "0.000000" => unavailable.
+_row3_bsv4="$(_row3_probe_sample 0 "0.000000" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-4: rc=0 with degenerate divisor ('0.000000') => 'unavailable'" \
+    test "$_row3_bsv4" = "unavailable"
+
+# (5) rc=0, non-numeric stdout => unavailable.
+_row3_bsv5="$(_row3_probe_sample 0 "abc" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-5: rc=0 with non-numeric stdout ('abc') => 'unavailable'" \
+    test "$_row3_bsv5" = "unavailable"
+
+# (6) NON-VACUITY CRUX: rc=0 with a genuine positive baseline passes through
+# verbatim, asserted NUMERICALLY via awk (locale-proof, mirrors
+# ROW2-1-USAGE-FRACTION-VACUITY-3) -- sentinelling a GOOD baseline would make
+# ROW3-1 SKIP unconditionally, which is vacuous.
+_row3_bsv6="$(_row3_probe_sample 0 "2.750000" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-6: NON-VACUITY CRUX -- rc=0 with genuine baseline ('2.750000') passes through (got ${_row3_bsv6})" \
+    awk -v v="$_row3_bsv6" 'BEGIN{ exit !((v+0) > 2.74 && (v+0) < 2.76) }'
+
+# (7)/(8) task 5999 review-amendment (reviewer_comprehensive/test-coverage):
+# the rc guard (case ''|*[!0-9]*)) is not reachable from the only production
+# call site, which always assigns rc from a literal "0" or a captured "$?"
+# (always numeric 0-255) -- but it was also previously unverified by any
+# case here. Pin it directly rather than dropping it: dropping would leave
+# `[ "$rc" -ne 0 ]` to run on a raw empty/non-numeric rc, which errors under
+# `set -e` instead of returning false.
+_row3_bsv7="$(_row3_probe_sample "" "2.0" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-7: rc='' (empty, non-numeric) => 'unavailable' even with a plausible raw value" \
+    test "$_row3_bsv7" = "unavailable"
+
+_row3_bsv8="$(_row3_probe_sample "abc" "2.0" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-8: rc='abc' (non-numeric) => 'unavailable' even with a plausible raw value" \
+    test "$_row3_bsv8" = "unavailable"
+
+# Non-vacuity guard for the NEW ROW3-1 measurement-usability predicate (task
+# 5999): both T_base and T_mix must be usable numeric samples before ROW3-1's
+# slowdown ratio (T_mix/T_base) means anything.
+# _row3_measurement_unusable <t_base> <t_mix> subsumes today's inline
+# `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only hatch (case 4
+# below is byte-equivalent to it) and closes the missing T_base arm the #5999
+# false-RED exploited -- the #5999 defect IS the asymmetry: T_mix got a
+# hatch, T_base did not. Treating both probes through ONE predicate makes the
+# symmetry structural rather than conventional.
+#
+# Predicate-rc contract (rc 0 = unusable/inconclusive -> caller SKIPs; rc != 0
+# = usable -> the hard assert stays reachable), same convention as
+# _row2_band_inconclusive/_row1_stall_contended/_row1_measurement_inactive.
+# Fails SAFE toward SKIP (rc 0) on a non-numeric input -- the OPPOSITE
+# direction from those predicates' "fail toward assert stays reachable": this
+# predicate guards the DIVISOR of the slowdown ratio, and an unreadable
+# divisor can only manufacture noise, never evidence of a governance break,
+# so continuing to the assert would manufacture a verdict rather than
+# preserve one.
+#
+# Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
+# rationale as ROW2-1-USAGE-FRACTION-VACUITY / ROW3-1-BASE-SAMPLE-VACUITY
+# above.
+
+# (1) THE GAP: t_base unavailable, t_mix usable => unusable (SKIP). No guard
+# at all exists for this direction today -- the #5999 defect.
+assert "ROW3-1-UNUSABLE-VACUITY-1: THE GAP -- t_base=unavailable, t_mix=3.0 => unusable (SKIP; no guard exists for this direction today)" \
+    _row3_measurement_unusable unavailable 3.0
+
+# (2) t_base non-numeric.
+assert "ROW3-1-UNUSABLE-VACUITY-2: t_base=abc (non-numeric), t_mix=3.0 => unusable (SKIP)" \
+    _row3_measurement_unusable abc 3.0
+
+# (3) t_base degenerate divisor.
+assert "ROW3-1-UNUSABLE-VACUITY-3: t_base=0 (degenerate divisor), t_mix=3.0 => unusable (SKIP)" \
+    _row3_measurement_unusable 0 3.0
+
+# (4) PRESERVES THE EXISTING HATCH: t_mix<=0, byte-equivalent to today's
+# inline `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only hatch.
+assert "ROW3-1-UNUSABLE-VACUITY-4: PRESERVES THE EXISTING HATCH -- t_base=2.0, t_mix=0 => unusable (SKIP; byte-equivalent to today's inline T_mix<=0 hatch)" \
+    _row3_measurement_unusable 2.0 0
+
+# (5) Symmetric counterpart: t_mix unavailable.
+assert "ROW3-1-UNUSABLE-VACUITY-5: t_base=2.0, t_mix=unavailable => unusable (SKIP; symmetric treatment of both probes)" \
+    _row3_measurement_unusable 2.0 unavailable
+
+# (6) NON-VACUITY CRUX: both usable => NOT unusable, so ROW3-1's hard assert
+# stays reachable.
+_row3_muv6_rc=0
+_row3_measurement_unusable 3.0 9.0 || _row3_muv6_rc=$?
+assert "ROW3-1-UNUSABLE-VACUITY-6: NON-VACUITY CRUX -- t_base=3.0, t_mix=9.0 (both usable) => NOT unusable (ROW3-1's hard assert stays reachable)" \
+    test "$_row3_muv6_rc" -ne 0
+
+# (7) END-TO-END COMPOSE / #5999 false-RED replay: feed a timed-out probe
+# through the step-2 helper, then into this predicate. The OLD collapse
+# produced t_base=1 (usable) => slowdown 9.0/1=9.0 > K*floor=6.0 (K=4,
+# floor=1.5 defaults) => the false RED this task fixes; the fix instead SKIPs
+# as inconclusive.
+_row3_muv7_tb="$(_row3_probe_sample 124 "" 2>/dev/null || true)"
+assert "ROW3-1-UNUSABLE-VACUITY-7: END-TO-END COMPOSE / #5999 false-RED replay -- timed-out probe -> _row3_probe_sample -> t_base=${_row3_muv7_tb}, t_mix=9.000000 => unusable (SKIP; OLD collapse made t_base=1 => usable => slowdown 9.0/1=9.0 > K*floor=6.0 => the false RED)" \
+    _row3_measurement_unusable "$_row3_muv7_tb" "9.000000"
+
+# (8) COMPOSE CRUX counterpart: a genuine baseline through the step-2 helper
+# must NOT blanket-SKIP ROW3-1 -- real slowdown 9.0/3.0=3.0 is inside the
+# bound and must still be evaluated.
+_row3_muv8_tb="$(_row3_probe_sample 0 "3.000000" 2>/dev/null || true)"
+_row3_muv8_rc=0
+_row3_measurement_unusable "$_row3_muv8_tb" "9.000000" || _row3_muv8_rc=$?
+assert "ROW3-1-UNUSABLE-VACUITY-8: COMPOSE CRUX counterpart -- genuine probe -> _row3_probe_sample -> t_base=${_row3_muv8_tb}, t_mix=9.000000 => NOT unusable (the fix must not blanket-SKIP; real slowdown 9.0/3.0=3.0 must still be evaluated)" \
+    test "$_row3_muv8_rc" -ne 0
+
+# Non-vacuity guard for the NEW ROW3-1 bound predicate (task 5999): the
+# SINGLE source of truth for ROW3-1's bound, encoding EXACTLY what the
+# inline `python3 -c` ROW3-1 assert evaluates today: `s <= k*floor AND
+# s < 10.0`. _row3_within_bound <slowdown> <k> <floor> (rc 0 = within the
+# bound, rc != 0 = breached) will replace that inline copy in step-7 so the
+# bound has one definition instead of two independently-driftable ones
+# (G7 no-lockstep-duplication) — the new high-direction hedge (step-9) must
+# skip in EXACTLY the cases the assert would fail, so both consult this same
+# predicate rather than restating the comparison.
+#
+# Pure awk, NO python3 needed, so always-on.
+
+# (1) s=3.0 k=4 floor=1.5 (bound=6.0) => within.
+assert "ROW3-1-BOUND-VACUITY-1: s=3.0 k=4 floor=1.5 (bound=6.0) => within_bound" \
+    _row3_within_bound 3.0 4 1.5
+
+# (2) BOUNDARY: s exactly AT K*floor => within, pinning the <= inclusivity.
+assert "ROW3-1-BOUND-VACUITY-2: BOUNDARY -- s=6.0 k=4 floor=1.5, exactly K*floor => within_bound (pins <= inclusivity)" \
+    _row3_within_bound 6.0 4 1.5
+
+# (3) s beyond K*floor => NOT within.
+_row3_bndv3_rc=0
+_row3_within_bound 7.0 4 1.5 || _row3_bndv3_rc=$?
+assert "ROW3-1-BOUND-VACUITY-3: s=7.0 k=4 floor=1.5 (bound=6.0) => NOT within_bound" \
+    test "$_row3_bndv3_rc" -ne 0
+
+# (4) HARD-CEILING NON-VACUITY: the proportional clause is satisfied
+# (K*floor=160 >> s) but the absolute < 10.0 ceiling still breaches => NOT
+# within. Proves the ceiling clause is independently load-bearing and cannot
+# be dissolved by a large floor.
+_row3_bndv4_rc=0
+_row3_within_bound 10.5 4 40 || _row3_bndv4_rc=$?
+assert "ROW3-1-BOUND-VACUITY-4: HARD-CEILING NON-VACUITY -- s=10.5 k=4 floor=40 (K*floor=160, proportional clause satisfied) => NOT within_bound (absolute ceiling independently load-bearing)" \
+    test "$_row3_bndv4_rc" -ne 0
+
+# (5) CEILING BOUNDARY: s exactly AT the absolute ceiling => NOT within,
+# pinning the strict < (not <=).
+_row3_bndv5_rc=0
+_row3_within_bound 10.0 4 40 || _row3_bndv5_rc=$?
+assert "ROW3-1-BOUND-VACUITY-5: CEILING BOUNDARY -- s=10.0 k=4 floor=40, exactly the absolute ceiling => NOT within_bound (pins strict <)" \
+    test "$_row3_bndv5_rc" -ne 0
+
+# (6) FAIL-SAFE: non-numeric slowdown => NOT within, so an unreadable
+# measurement can never be laundered into a PASS.
+_row3_bndv6_rc=0
+_row3_within_bound abc 4 1.5 || _row3_bndv6_rc=$?
+assert "ROW3-1-BOUND-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 => NOT within_bound (never laundered into a PASS)" \
+    test "$_row3_bndv6_rc" -ne 0
+
+# Non-vacuity guard for the NEW ROW3-1 high-direction hedge (task 5999):
+# _row3_slowdown_inconclusive <slowdown> <k> <floor> <contended> (rc 0 =
+# inconclusive -> caller SKIPs; rc != 0 = the hard assert stays reachable) is
+# the high-direction hedge ROW3-1 currently lacks entirely -- composed from
+# _row3_within_bound (step-9's definition), never a second copy of the bound.
+# SKIPs only on the conjunction NOT within_bound AND _ROW23_CONTENDED==1,
+# mirroring ROW2-2's existing "sub-90% completion AND _ROW23_CONTENDED =>
+# SKIP" conjunction (see the ROW2-2 assert below) -- a precedent-following
+# hedge, not new policy.
+#
+# Pure shell, NO python3 needed, so always-on.
+
+# (1) FALSE-RED REPLAY: s=9.0 breaches the 6.0 bound (k=4 floor=1.5) on a
+# slice whose own avg10 >= 90 => inconclusive (SKIP). The exact #5999 shape.
+assert "ROW3-1-CONTENDED-VACUITY-1: FALSE-RED REPLAY -- s=9.0 k=4 floor=1.5 (breaches bound=6.0) contended=1 => inconclusive" \
+    _row3_slowdown_inconclusive 9.0 4 1.5 1
+
+# (2) NON-VACUITY CRUX: same breach, but UNCONTENDED => NOT inconclusive, so
+# the hard assert stays reachable -- a runaway slowdown on a quiet box must
+# still hard-FAIL (the #4415 regression this row exists to catch cannot
+# recur).
+_row3_civ2_rc=0
+_row3_slowdown_inconclusive 9.0 4 1.5 0 || _row3_civ2_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-2: NON-VACUITY CRUX -- s=9.0 k=4 floor=1.5 (breaches bound) contended=0 => NOT inconclusive (hard assert stays reachable, #4415 cannot recur)" \
+    test "$_row3_civ2_rc" -ne 0
+
+# (3) FORBIDS SUPPRESSING A GREEN: s=3.0 is well inside the bound; even
+# contended, a hedge must never convert a green into a SKIP (mirrors
+# 2908c04db0 test(5998): ROW4-1-QUIET-VACUITY-3 forbids suppressing a green).
+_row3_civ3_rc=0
+_row3_slowdown_inconclusive 3.0 4 1.5 1 || _row3_civ3_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-3: FORBIDS SUPPRESSING A GREEN -- s=3.0 k=4 floor=1.5 (well within bound=6.0) contended=1 => NOT inconclusive (assert still runs and PASSes)" \
+    test "$_row3_civ3_rc" -ne 0
+
+# (4) CEILING DIRECTION: the absolute-ceiling breach (not just the
+# proportional K*floor clause) is covered too.
+assert "ROW3-1-CONTENDED-VACUITY-4: CEILING DIRECTION -- s=10.5 k=4 floor=40 (K*floor=160 satisfied, absolute ceiling breached) contended=1 => inconclusive" \
+    _row3_slowdown_inconclusive 10.5 4 40 1
+
+# (5) same ceiling breach, UNCONTENDED => NOT inconclusive.
+_row3_civ5_rc=0
+_row3_slowdown_inconclusive 10.5 4 40 0 || _row3_civ5_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-5: s=10.5 k=4 floor=40 (ceiling breach) contended=0 => NOT inconclusive (hard assert stays reachable)" \
+    test "$_row3_civ5_rc" -ne 0
+
+# (6) FAIL-SAFE: unreadable slowdown is never masked by the hedge.
+_row3_civ6_rc=0
+_row3_slowdown_inconclusive abc 4 1.5 1 || _row3_civ6_rc=$?
+assert "ROW3-1-CONTENDED-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 contended=1 => NOT inconclusive (unreadable measurement never masked)" \
+    test "$_row3_civ6_rc" -ne 0
+
+# Non-vacuity guard for the NEW ROW3-1 contention-refinement predicate (task
+# 5999 review-amendment, reviewer_comprehensive/robustness + /test-quality):
+# _row3_foreign_load <contended> <avg10_rc> <usage_fraction> is what the live
+# caller now feeds into _row3_slowdown_inconclusive's <contended> argument
+# instead of raw _ROW23_CONTENDED, closing two gaps: (1) an unreadable PSI
+# read defaults avg10 to "99" (>= 90), which would otherwise manufacture
+# contended=1 with zero genuine evidence; (2) avg10 >= 90 alone is not
+# independent of the failure ROW3-1 exists to catch, since a genuine
+# over-admission regression self-inflicts pressure on its OWN slice -- so a
+# starved-vs-saturating check (mirroring _row2_band_inconclusive) is
+# required too.
+#
+# Pure shell+awk, NO python3 needed, so always-on.
+
+# (1) FOREIGN LOAD CONFIRMED: contended, a genuine PSI read (avg10_rc=0),
+# and the slice is STARVED (0.5 < default floor 0.85) => foreign load.
+_row3_flv1="$(_row3_foreign_load 1 0 0.5 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-1: contended=1 avg10_rc=0 usage_fraction=0.5 (starved) => '1' (got '${_row3_flv1}')" \
+    test "$_row3_flv1" = "1"
+
+# (2) NON-VACUITY CRUX (self-inflicted / SATURATING): same contended+genuine
+# signal, but usage_fraction=0.95 is AT/ABOVE the floor -- the slice is
+# saturating its OWN budget, exactly the over-admission regression this row
+# exists to catch, so foreign load must NOT be reported.
+_row3_flv2="$(_row3_foreign_load 1 0 0.95 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-2: NON-VACUITY CRUX -- contended=1 avg10_rc=0 usage_fraction=0.95 (saturating, not starved) => '0' (got '${_row3_flv2}')" \
+    test "$_row3_flv2" = "0"
+
+# (3) UNREADABLE PSI: avg10_rc != 0 means _ROW23_AVG10 was the manufactured
+# "99" fallback, not a genuine reading -- must not license a SKIP.
+_row3_flv3="$(_row3_foreign_load 1 1 0.5 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-3: contended=1 avg10_rc=1 (PSI read failed) usage_fraction=0.5 => '0' (got '${_row3_flv3}')" \
+    test "$_row3_flv3" = "0"
+
+# (4) NOT CONTENDED at all (avg10 genuinely < 90).
+_row3_flv4="$(_row3_foreign_load 0 0 0.5 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-4: contended=0 avg10_rc=0 usage_fraction=0.5 => '0' (got '${_row3_flv4}')" \
+    test "$_row3_flv4" = "0"
+
+# (5) FAIL-SAFE: non-numeric/unavailable usage_fraction must not license a
+# SKIP either -- an unreadable starvation signal is not evidence of foreign
+# load.
+_row3_flv5="$(_row3_foreign_load 1 0 unavailable 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-5: FAIL-SAFE -- contended=1 avg10_rc=0 usage_fraction=unavailable => '0' (got '${_row3_flv5}')" \
+    test "$_row3_flv5" = "0"
+
+# (6) BOUNDARY: usage_fraction exactly AT the default floor (0.85) is NOT
+# starved -- pins the strict '<', same convention _row2_band_inconclusive
+# uses for the identical starvation check.
+_row3_flv6="$(_row3_foreign_load 1 0 0.85 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-6: BOUNDARY -- contended=1 avg10_rc=0 usage_fraction=0.85 (== floor) => '0' (got '${_row3_flv6}')" \
+    test "$_row3_flv6" = "0"
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
@@ -1093,8 +1620,16 @@ fi
 #
 # §8 Row 2 assertions: subtree avg10 < REIFY_CPU_ADMIT_AGENT_THRESHOLD; all
 #   confined+pinned sources completed.
-# §8 Row 3 assertion:  slowdown = T_mix/T_base within
-#   [fair_share_floor(active, confine-cores), K·floor] AND < 10.
+# §8 Row 3 assertion (ROW3-1, task 5999 — see the ROW3-1 note above): the
+#   slowdown = T_mix/T_base decision is a four-branch chain, in order:
+#     1. either probe unusable (_row3_measurement_unusable)         → SKIP
+#     2. slowdown < fair_share_floor(active, confine-cores)         → SKIP
+#     3. slowdown breaches [.., K·floor] AND < 10 (_row3_within_bound)
+#        AND the task slice has a GENUINE foreign-load reading
+#        (_row3_foreign_load: avg10 >= 90 from an actual PSI read, AND
+#        the slice is starved rather than self-inflicting the load)  → SKIP
+#     4. otherwise → hard assert: slowdown within [fair_share_floor,
+#        K·floor] AND < 10 (the anti-runaway guarantee; #4415 cannot recur).
 # Every real assertion carries a measurement-integrity SKIP fallback (never a
 # false-RED under concurrent pool load, esc-4926-3).
 # ============================================================================
@@ -1187,13 +1722,22 @@ PROBE_PY
     # (a) Pre-measure T_base: uncontended CONFINED+PINNED governed probe
     #     (H5: same confine-cores CPUs the mix will run on, so the baseline
     #     is a fair comparison point, not diluted by a different slice/CPU
-    #     set).
-    _T_BASE="$(
+    #     set). Captures the probe's EXIT STATUS explicitly (task 5999,
+    #     #5999 false-RED) instead of masking it behind `|| echo "1"` — no
+    #     `|| echo <sentinel>` fallback appears in this capture at all, which
+    #     is strictly stronger than swapping the old numeric fallback for a
+    #     string one and sidesteps the fallback class this file prohibits
+    #     (see _row2_usage_fraction's Capture idiom comment above).
+    #     _row3_probe_sample turns (rc, raw) into either the literal
+    #     "unavailable" or the genuine measurement — never a manufactured
+    #     "1" that reads as a legitimate 1-second baseline.
+    _T_BASE_RC=0
+    _T_BASE_RAW="$(
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         timeout 30 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "1"
-    )"
-    [ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
+    )" || _T_BASE_RC=$?
+    _T_BASE="$(_row3_probe_sample "$_T_BASE_RC" "$_T_BASE_RAW")"
 
     # (b) Launch mix: _MIX_N task-role + 1 merge-role, each through composed
     #     wrappers (γ cpu-governed-exec → β agent-bin/cargo shim → α
@@ -1240,7 +1784,18 @@ PROBE_PY
     # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
     #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
     sleep "$_ROW23_WARMUP_S"
-    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null || echo "99")"
+    # Captures the read's exit status alongside the existing "99" fallback
+    # (task 5999 review-amendment, reviewer_comprehensive/robustness):
+    # _ROW23_AVG10 keeps its EXACT pre-existing value/semantics in every case
+    # (ROW2-1/ROW2-2 below are unaffected), but _ROW23_AVG10_RC now lets the
+    # ROW3-1 hedge (_row3_foreign_load below) tell a genuine 99+ reading
+    # apart from a defaulted-because-unreadable one.
+    _ROW23_AVG10_RC=0
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null)" || _ROW23_AVG10_RC=$?
+    # Rescue on RC, not emptiness: a read that fails AFTER printing a
+    # plausible partial value must not keep that value, same "stdout alone
+    # cannot discriminate" principle as the T_base capture above.
+    [ "$_ROW23_AVG10_RC" -ne 0 ] && _ROW23_AVG10="99"
 
     # AFTER bracket, same point the avg10 sample above is taken.
     _ROW23_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
@@ -1258,13 +1813,22 @@ PROBE_PY
     _ROW23_USAGE_FRACTION="$(_row2_usage_fraction "$_ROW23_USAGE_BEFORE" "$_ROW23_USAGE_AFTER" "$_ROW23_USAGE_BUDGET")"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
-    #     (Row 3 slowdown).
-    _T_MIX="$(
+    #     (Row 3 slowdown). Mirrors the T_base capture above (task 5999
+    #     review-amendment, reviewer_comprehensive/correctness-symmetry): the
+    #     previous `|| echo "0"` + `[ -z ] && _T_MIX="0"` pair discarded the
+    #     probe's exit status exactly like the old T_base collapse did — an
+    #     errored probe (rc!=0) that still printed a partial/plausible
+    #     elapsed value would be accepted as a genuine measurement. Routes
+    #     through the SAME _row3_probe_sample normalizer so both probes share
+    #     one usability rule; _row3_measurement_unusable already handles the
+    #     "unavailable" sentinel on either arm, so no other change is needed.
+    _T_MIX_RC=0
+    _T_MIX_RAW="$(
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0"
-    )"
-    [ -z "${_T_MIX}" ] && _T_MIX="0"
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
+    )" || _T_MIX_RC=$?
+    _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
 
     # (e) Wait for mix to finish (natural completion or timeout).
     for _mpid in $_MIX_PIDS; do
@@ -1294,6 +1858,12 @@ PROBE_PY
         }' 2>/dev/null; then
         _ROW23_CONTENDED=1
     fi
+
+    # Refined foreign-load verdict for ROW3-1's hedge ONLY (task 5999
+    # review-amendment, reviewer_comprehensive/robustness + /test-quality;
+    # see _row3_foreign_load's docstring above) — ROW2-1/ROW2-2 below keep
+    # consuming raw _ROW23_CONTENDED unchanged.
+    _ROW23_FOREIGN_LOAD="$(_row3_foreign_load "${_ROW23_CONTENDED}" "${_ROW23_AVG10_RC}" "${_ROW23_USAGE_FRACTION}")"
 
     # ── Row 2 assertions ──
     # ROW2-1: after warm-up, the TASK SLICE's OWN cpu.pressure avg10 (H5:
@@ -1340,9 +1910,13 @@ sys.exit(0 if v < t else 1)
         2>/dev/null || echo "0")"
     # ROW3-1: slowdown <= K·floor AND < 10 (4415 cannot recur — the DANGEROUS
     # direction, a real runaway-slowdown governance break, stays a hard assert).
-    # Skip if T_mix probe timed out or failed (returns "0") — on a heavily contended
-    # host the probe can exceed its budget when a large slowdown is real, making
-    # T_mix == 0 an inconclusive measurement, not a governance failure.
+    # Skip if either probe is unusable (task 5999: _row3_measurement_unusable
+    # subsumes the former T_mix-only hatch and closes the matching T_base
+    # arm — a timed-out/errored baseline probe used to collapse to a literal
+    # "1" and manufacture an inflated slowdown, the #5999 false-RED) — on a
+    # heavily contended host a probe can exceed its budget when a large
+    # slowdown is real, making an unusable T_base/T_mix an inconclusive
+    # measurement, not a governance failure.
     # Skip (not FAIL) if slowdown < floor too (H5, esc-4926-3 follow-up,
     # empirically observed): at confine-cores scale (active_sources=3 by
     # default) cpu-admit's OWN legitimate admission staggering means not all
@@ -1352,20 +1926,15 @@ sys.exit(0 if v < t else 1)
     # below, never a governance failure (mirrors fair_share_floor's own
     # docstring: below-floor is "physically impossible" for the model, i.e.
     # a modeling/measurement mismatch, not evidence of broken governance).
-    if awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'; then
-        echo "  SKIP ROW3-1: T_mix probe timed out or failed (T_mix=${_T_MIX:-0}) — inconclusive"
+    if _row3_measurement_unusable "${_T_BASE}" "${_T_MIX}"; then
+        echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
+    elif _row3_slowdown_inconclusive "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}" "${_ROW23_FOREIGN_LOAD}"; then
+        echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} exceeds bound(K=${_SLOWDOWN_K},floor=${_ROW3_FLOOR}) but the task slice's own avg10 (${_ROW23_AVG10}) >= 90 with a genuine PSI read and usage_fraction=${_ROW23_USAGE_FRACTION} < floor (starved, not self-inflicted) — foreign load on the pinned CPUs inflated it, inconclusive"
     else
         assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
-            python3 -c "
-import sys
-s = float('${_ROW3_SLOWDOWN}')
-fl = float('${_ROW3_FLOOR}')
-k = float('${_SLOWDOWN_K}')
-ok = (s <= k * fl) and s < 10.0
-sys.exit(0 if ok else 1)
-"
+            _row3_within_bound "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}"
     fi
 fi
 
