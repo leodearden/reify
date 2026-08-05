@@ -29,10 +29,6 @@ const STDLIB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
 /// then sweeps those files (GREEN), so every intermediate commit stays green
 /// and each batch is independently bisectable and revertable.
 const PENDING_SWEEP: &[(&str, &str)] = &[
-    ("solver_elastic.ri", "pending #5856 batch C sweep"),
-    ("fea_multi_case.ri", "pending #5856 batch C sweep"),
-    ("solver_buckling.ri", "pending #5856 batch C sweep"),
-    ("solver_buckling_fns.ri", "pending #5856 batch C sweep"),
     ("trajectory.ri", "pending #5856 batch D sweep"),
     ("trajectory_fns.ri", "pending #5856 batch D sweep"),
     ("kinematic.ri", "pending #5856 batch D sweep"),
