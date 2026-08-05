@@ -1772,3 +1772,116 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect((screen.getByTestId('unit-select-c1') as HTMLSelectElement).value).toBe('mm³');
   });
 });
+
+describe('PropertyEditor persisted unit preference survives the curated-label relabel (task #6028)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  const SUPERSCRIPT_VOLUME: UnitLadderMap = {
+    Volume: [
+      { label: 'mm³', si_scale: 1e-9, is_default: true },
+      { label: 'cm³', si_scale: 1e-6, is_default: false },
+      { label: 'L', si_scale: 1e-3, is_default: false },
+      { label: 'm³', si_scale: 1.0, is_default: false },
+    ],
+  };
+
+  const ASCII_VOLUME: UnitLadderMap = {
+    Volume: [
+      { label: 'mm^3', si_scale: 1e-9, is_default: true },
+      { label: 'cm^3', si_scale: 1e-6, is_default: false },
+      { label: 'L', si_scale: 1e-3, is_default: false },
+      { label: 'm^3', si_scale: 1.0, is_default: false },
+    ],
+  };
+
+  function capacityValues(): Record<string, ValueData> {
+    return {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'capacity',
+        entity_path: 'Tank.capacity',
+        value: '7045002.24',
+        unit: 'mm³',
+        dimension: 'Volume',
+        si_value: 0.00704500224,
+      }),
+    };
+  }
+
+  function renderWith(ladders: UnitLadderMap) {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={ladders}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    return {
+      select: screen.getByTestId('unit-select-c1') as HTMLSelectElement,
+      input: row.querySelector('input[type="text"]') as HTMLInputElement,
+    };
+  }
+
+  // The default rung (mm^3) displays the backend value verbatim; the m^3 rung
+  // displays the converted magnitude. Asserting the INPUT as well as the
+  // select proves the rung IDENTITY survived, not merely the label text.
+  const DEFAULT_RUNG_MAGNITUDE = '7045002.24';
+  const M3_RUNG_MAGNITUDE = '0.00704500224';
+
+  it('(a) a preference stored in the superscript spelling resolves against an ASCII ladder', () => {
+    // The upgrade path: the user picked m³ before #5788 relabelled the curated
+    // table, then #5788 lands. Without normalization the lookup misses and the
+    // cell silently snaps back to the mm^3 default.
+    saveUnitPreference('c1', 'm³');
+    const { select, input } = renderWith(ASCII_VOLUME);
+    expect(select.value).toBe('m^3');
+    expect(input.value).toBe(M3_RUNG_MAGNITUDE);
+  });
+
+  it('(b) a preference stored in the ASCII spelling resolves against a superscript ladder', () => {
+    // The mirror — a downgrade/rollback. This direction is what makes the fix
+    // order-independent w.r.t. #5788: it holds whichever task lands first.
+    saveUnitPreference('c1', 'm^3');
+    const { select, input } = renderWith(SUPERSCRIPT_VOLUME);
+    expect(select.value).toBe('m³');
+    expect(input.value).toBe(M3_RUNG_MAGNITUDE);
+  });
+
+  it('(c) an exact match still wins — unchanged behaviour', () => {
+    saveUnitPreference('c1', 'cm³');
+    const { select, input } = renderWith(SUPERSCRIPT_VOLUME);
+    expect(select.value).toBe('cm³');
+    expect(input.value).toBe('7045.00224');
+  });
+
+  it.each([
+    ['the superscript ladder', SUPERSCRIPT_VOLUME, 'mm³'],
+    ['the ASCII ladder', ASCII_VOLUME, 'mm^3'],
+  ])(
+    '(d) a genuinely unknown label still falls back to the is_default rung against %s',
+    (_desc, ladders, defaultLabel) => {
+      // The normalized fallback must not have become an accept-anything.
+      saveUnitPreference('c1', 'furlong');
+      const { select, input } = renderWith(ladders);
+      expect(select.value).toBe(defaultLabel);
+      expect(input.value).toBe(DEFAULT_RUNG_MAGNITUDE);
+    },
+  );
+
+  it.each([
+    ['m³', ASCII_VOLUME],
+    ['m^3', SUPERSCRIPT_VOLUME],
+    ['furlong', SUPERSCRIPT_VOLUME],
+  ])('leaves the stored spelling %s verbatim in localStorage', (stored, ladders) => {
+    // This is resolution-time normalization, NOT a storage rewrite. Rewriting
+    // the persisted blob would be order-dependent: landing before #5788, a
+    // stored-form rewrite would itself break a preference that works today.
+    saveUnitPreference('c1', stored);
+    renderWith(ladders);
+    expect(loadUnitPreference('c1')).toBe(stored);
+  });
+});
