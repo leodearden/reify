@@ -2874,6 +2874,58 @@ _ROW4_BYPASS_ELAPSED=$(( _ROW4_BYPASS_END - _ROW4_BYPASS_START ))
 assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 fast (rc=${_ROW4_BYPASS_RC}, elapsed=${_ROW4_BYPASS_ELAPSED}s)" \
     test "${_ROW4_BYPASS_RC}" -eq 0
 
+# ── ROW4-BYPASS-VACUITY-1: the stderr marker DISCRIMINATES (task 6000) ─────
+# Drives a not-yet-defined `_row4_bypass_probe <admit_script> <psi_fixture>
+# <timeout_s> <stderr_file>` against two synthetic "admit" stub scripts
+# (never the real cpu-admit.sh), so this block is hermetic and needs no host
+# PSI/cgroup support. Proves the structural stderr marker that the live
+# ROW4-3 assertion (added once the helper exists) checks actually
+# DISCRIMINATES — i.e. that an rc-only check (today's ROW4-2 alone) is BLIND
+# to a cpu-admit that keeps returning 0 but stops emitting the marker.
+#
+# Capture idiom: "_rc=0; _row4_bypass_probe ... || _rc=$?" — MUST NOT be a
+# bare "_x=\"\$(_row4_bypass_probe ...)\"" at top level. Under this file's
+# `set -euo pipefail` (line 176), calling a not-yet-defined function is
+# "command not found" (rc 127); inside an `||` arm that is a clean per-assert
+# FAIL, but unguarded at top level it would abort the ENTIRE suite instead —
+# same capture-idiom hazard flagged at the _row4_sample_host_avg10 comment
+# above (~line 2590).
+_row4_bypass_faithful_stub="$(mktemp -p "$WORK" row4-bypass-stub-faithful.XXXXXX)"
+printf '#!/usr/bin/env bash\necho "cpu-admit: bypass (role=merge)" >&2\nexit 0\n' \
+    > "$_row4_bypass_faithful_stub"
+
+_row4_bypass_mutant_stub="$(mktemp -p "$WORK" row4-bypass-stub-mutant.XXXXXX)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$_row4_bypass_mutant_stub"
+
+_row4_bypass_vacuity1_stderr="$(mktemp -p "$WORK" row4-bypass-vacuity1.XXXXXX)"
+_row4_bypass_vacuity1a_rc=0
+_row4_bypass_probe "$_row4_bypass_faithful_stub" "$_ROW4_PSI_FIXTURE" 5 "$_row4_bypass_vacuity1_stderr" \
+    || _row4_bypass_vacuity1a_rc=$?
+assert "ROW4-BYPASS-VACUITY-1a: faithful stub (echoes marker, exits 0) => probe rc is 0 (got ${_row4_bypass_vacuity1a_rc})" \
+    test "$_row4_bypass_vacuity1a_rc" -eq 0
+assert "ROW4-BYPASS-VACUITY-1b: faithful stub => captured stderr matches 'bypass (role=merge)'" \
+    bash -c 'grep -qF "bypass (role=merge)" "$1"' _ "$_row4_bypass_vacuity1_stderr"
+
+# (1c) THE discriminator. Poison-seed the stderr file with the marker text
+# BEFORE probing: _row4_bypass_probe's own `2>"$stderr_file"` redirection
+# truncates it the instant the child is launched, so a correctly-behaving
+# probe always overwrites the seed with the mutant stub's REAL (empty)
+# stderr. But while the helper is still undefined (this RED step), the call
+# fails at shell command-lookup before any redirection in its body can run,
+# so the seed survives untouched — making the "must NOT match" assert below
+# correctly FAIL here too, instead of passing vacuously on an untouched empty
+# file. Same fail-vacuously hazard as the sampler capture idiom above, just
+# on the file side rather than the variable side.
+_row4_bypass_vacuity1c_stderr="$(mktemp -p "$WORK" row4-bypass-vacuity1c.XXXXXX)"
+printf 'bypass (role=merge)\n' > "$_row4_bypass_vacuity1c_stderr"
+_row4_bypass_vacuity1c_rc=0
+_row4_bypass_probe "$_row4_bypass_mutant_stub" "$_ROW4_PSI_FIXTURE" 5 "$_row4_bypass_vacuity1c_stderr" \
+    || _row4_bypass_vacuity1c_rc=$?
+assert "ROW4-BYPASS-VACUITY-1c: mutant stub (no marker, still exits 0) => probe rc is STILL 0 (got ${_row4_bypass_vacuity1c_rc}; rc alone cannot tell this apart from the faithful stub)" \
+    test "$_row4_bypass_vacuity1c_rc" -eq 0
+assert "ROW4-BYPASS-VACUITY-1c: mutant stub => captured stderr does NOT match 'bypass (role=merge)' (the discriminator the new live ROW4-3 assertion exists to catch)" \
+    bash -c '! grep -qF "bypass (role=merge)" "$1"' _ "$_row4_bypass_vacuity1c_stderr"
+
 # ============================================================================
 # Cycle CLASSIFY — run_all.sh classification-manifest self-check (H5, task
 # 4926; always-on, hermetic — no host/PSI/cgroup precondition, pure file
