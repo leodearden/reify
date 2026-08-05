@@ -23,7 +23,8 @@
 //      position like Voltage/Current. The param name `impedance` conveys intent.
 //      Task δ §5.3 uses `impedance : Resistance = undef`; the `= undef` grammar-
 //      fiction becomes `Option<Resistance> = none` per PRD §2 optional-param rule
-//      (precedent: flexures.ri:153, fdm_correlations.ri:242).
+//      (precedent: `FlexureCompliance.parasitic_error` in flexures.ri,
+//      `FDMCouponOverride.ex` in fdm_correlations.ri).
 //   2. Traits are NOT `pub`, matching the io.ri/process.ri convention.
 //   3. No `#no_prelude` pragma. std.ports.electrical refines Port from
 //      std.ports (inter-stdlib dependency), so the growing-prelude sequence

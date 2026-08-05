@@ -12,7 +12,7 @@
 //
 // Deviations from §11 spec (forced by current language scope):
 //   1. `Directionality` mirrors the Rust `PortDirection` enum at
-//      reify-core/src/primitives.rs:11 (In/Out/Bidi). The DSL enum is declared
+//      reify-core/src/primitives.rs (In/Out/Bidi). The DSL enum is declared
 //      WITHOUT `pub`, matching the io.ri/process.ri convention.
 //   2. No `#no_prelude` pragma. std.ports is a general-purpose stdlib module
 //      with no inter-module dependencies that would require prelude isolation;
@@ -69,17 +69,18 @@ structure def Frame3 {
 
 // Trait for ports with a defined spatial attachment frame.
 // The compiler has expected this trait BY NAME since task 370
-// (reify-core/src/identity.rs:115, LOCATED_PORT_TRAIT = "LocatedPort").
-// connect.rs:322 checks trait_satisfies(port_type, LOCATED_PORT_TRAIT) and
-// emits the asymmetric-LocatedPort warning (connect.rs:344) when only one side
-// of a connection satisfies it.
+// (reify-core/src/identity.rs, LOCATED_PORT_TRAIT = "LocatedPort").
+// connect::compile_connection checks trait_satisfies(port_type,
+// LOCATED_PORT_TRAIT) and emits the asymmetric-LocatedPort warning when only
+// one side of a connection satisfies it.
 trait LocatedPort : Port {
     param frame : Frame3
 }
 
 // A port with a spatial attachment frame AND a bounding geometry region.
 // Refines LocatedPort (frame) and adds a `region` param typed as the canonical
-// Geometry surface alias (dep 4253 / task G: type_resolution.rs:564).
+// Geometry surface alias (dep 4253 / task G: the "Geometry" arm of
+// type_resolution::resolve_type_name).
 // Useful for ports that represent spatial envelopes or connection regions,
 // e.g. an interface pad, a mating surface, or a spatial service volume.
 trait RegionPort : LocatedPort {
