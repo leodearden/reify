@@ -335,7 +335,9 @@ structure def PointLoad : Load {
     // `direction` stays `List<Real>` — NOT `Vec3`. Vec3 is now `Vector3<Length>`
     // (tightened by task #4575), which is the WRONG type here: PointLoad direction
     // is a DIMENSIONLESS unit-direction vector consumed component-wise by
-    // reify-eval (elastic_static.rs:1769) as `Value::List`. The honest future
+    // reify-eval (`extract_loads` in
+    // crates/reify-eval/src/compute_targets/elastic_static.rs) as
+    // `Value::List`. The honest future
     // target is `Vector3<Dimensionless>` + eval marshalling, mirroring the
     // modal-direction precedent (`Vector3<Dimensionless>` in modal_analysis.ri).
     // That migration is out of scope for #4575 (positive Vec3 surface only) and
@@ -359,7 +361,7 @@ structure def FixedSupport : Support {
 // (`crates/reify-stdlib/src/supports.rs::eval_supports` arm retired in task
 // 3546 SIR-β-sup step-4). The `target` field mirrors the `target` key emitted
 // by the pre-retirement `make_kind_map("pinned_support", ...)` call
-// (supports.rs:106-114; Q-SIR-4 preserve-don't-redesign):
+// (crates/reify-stdlib/src/supports.rs; Q-SIR-4 preserve-don't-redesign):
 //
 //   `target` — geometry selector target. `String` is a placeholder for
 //              `Selector` until the topology-selector type aliases land;
@@ -384,7 +386,7 @@ structure def PinnedSupport : Support {
 // (crates/reify-stdlib/src/loads.rs::eval_loads arm retired in task 3544
 // SIR-β-load step-4). Field shapes mirror the three keys emitted by the
 // pre-retirement `make_kind_map("pressure_load", ...)` call
-// (loads.rs:102-109; Q-SIR-4 preserve-don't-redesign):
+// (crates/reify-stdlib/src/loads.rs; Q-SIR-4 preserve-don't-redesign):
 //
 //   `magnitude`  — applied pressure. `Real` is a placeholder for
 //                  `Scalar<PRESSURE>` until the dimensional type aliases land;
@@ -490,15 +492,16 @@ structure def BodyForce : Load {
 //
 //   `magnitude`  — gravitational acceleration applied to the body.
 //                  `Acceleration` resolves to the built-in `DimensionVector::ACCELERATION`
-//                  (crates/reify-core/src/dimension.rs:508).  Defaults to
-//                  `STANDARD_GRAVITY()` (units.ri:133) = 9.80665 m/s²
+//                  (crates/reify-core/src/dimension.rs).  Defaults to
+//                  `STANDARD_GRAVITY()` (units.ri) = 9.80665 m/s²
 //                  (standard Earth surface gravity, ISO 80000-3).
 //                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
 //   `direction`  — unit vector pointing in the direction gravity acts.
 //                  `List<Real>` stays as-is — NOT `Vec3`. Vec3 is now
 //                  `Vector3<Length>` (tightened by task #4575), which is the
 //                  WRONG type here: gravity direction is a DIMENSIONLESS unit
-//                  vector consumed component-wise by reify-eval (elastic_static.rs:3234)
+//                  vector consumed component-wise by reify-eval (`extract_loads`
+//                  in crates/reify-eval/src/compute_targets/elastic_static.rs)
 //                  as `Value::List`. Honest future target: `Vector3<Dimensionless>`
 //                  + eval marshalling (cf. `PointLoad.direction` above and the
 //                  modal-direction `Vector3<Dimensionless>` precedent). Deferred.
@@ -531,7 +534,7 @@ structure def Gravity : Load {
 //   - `self.`-qualified member-access readthrough:
 //       `self.case.name`, `self.case.loads[0]`, `self.case.supports[0]`
 //   - `options` default evaluates to `Value::Option(None)` (not `Value::None`)
-//     per `CompiledExprKind::OptionNone` in `crates/reify-expr/src/lib.rs:611`
+//     per `CompiledExprKind::OptionNone` in `crates/reify-expr/src/lib.rs`
 //   - Map-vs-StructureInstance pattern-match discriminates (GR-001 §Resolution)
 //
 // Lives in: `crates/reify-eval/tests/load_case.rs`
