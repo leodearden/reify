@@ -700,8 +700,8 @@ fn detect_underdetermined(
             }
         }
     }
-    let global_reads = CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes)
-        .read_closure(seeds.into_iter());
+    let global_reads =
+        CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes).read_closure(seeds);
 
     // Emit W_UNDERDETERMINED for each STRICTLY-auto cell (not auto(free)) absent
     // from the global read-set.  auto(free) cells are intentionally free by
@@ -1884,7 +1884,7 @@ fn build_dependent_cells(
             // sort BEFORE the child cell it reads.
             let mut trace = extract_dependency_trace(expr);
             for read in &mut trace.reads {
-                if let Some(normalized) = crate::resolve_order::normalize_cell_id(read, &path_map) {
+                if let Some(normalized) = crate::resolve_order::normalize_cell_id(read, path_map) {
                     *read = normalized;
                 }
             }
