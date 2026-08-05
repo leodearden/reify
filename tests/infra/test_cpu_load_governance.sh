@@ -81,10 +81,12 @@
 #                                       See the ROW4-1-QUIET-VACUITY block below).
 #                                       Raising it cannot make ROW4-1 unfailable:
 #                                       it gates ONLY the corridor between the
-#                                       weights-ignored fair share and the
-#                                       proportional floor, so a share at or below
-#                                       fair share still goes RED at any ceiling
-#                                       (ROW4-1-CORRIDOR-VACUITY-1).
+#                                       weights-ignored fair share (widened by
+#                                       _ROW4_TOL) and the proportional floor —
+#                                       (0.60, 0.65) at the defaults — so a share
+#                                       at or below fair share + tol still goes RED
+#                                       at any ceiling (ROW4-1-CORRIDOR-VACUITY-1,
+#                                       and -3/-3b pin that edge to one microsecond).
 #                                       ROW1/ROW2_3 do not read it
 #   REIFY_CPU_GOV_TEST_ROW1_WARMUP_S    ROW1-1 steady-state ramp before sampling
 #                                       (default 1)
@@ -166,33 +168,26 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 # quiet_box_met (task 5998): ROW4-1's quiet-box escape hatch delegates its
 # hot/quiet decision to this shared helper rather than re-deriving one — see
-# _row4_share_inconclusive below.  Sourced GUARDED (mirrors the LIB_CGROUP
-# existence idiom above): a missing lib must degrade rather than abort the
-# whole suite under `set -euo pipefail`.  The helper's own docstring has
-# claimed ROW4 as its consumer since #4656; this source makes that true again.
-if [ -f "$LOAD_TOLERANCE_LIB" ]; then
-    # shellcheck source=tests/infra/load_tolerance_lib.sh
-    source "$LOAD_TOLERANCE_LIB"
-else
-    # DEGRADE FAIL-OPEN, EXPLICITLY.  Leaving quiet_box_met merely undefined
-    # degrades in the fail-MASKING direction, the opposite of what this guard
-    # is for: bash returns 127 for an unknown command, `if quiet_box_met ...`
-    # reads that non-zero rc as "box is HOT", and _row4_share_inconclusive then
-    # reports inconclusive for EVERY sub-floor share — an unconditional SKIP of
-    # the very assertion the lib is supposed to protect.  Measured with the
-    # function unset: _row4_share_inconclusive 10367459 5945387 300 100 0.10
-    # unavailable 20 => rc 0 (SKIP), where the documented fail-open contract
-    # says rc 1.  A stub that always reports quiet keeps the degradation in the
-    # safe direction: the escape hatch never fires, so ROW4-1's hard assert
-    # stays reachable and a genuine governance regression still goes RED (at
-    # the cost of the false-REDs #5998 closes, which is the correct trade when
-    # the guard's own dependency is missing).  The ROW4-1-QUIET-VACUITY asserts
-    # go RED in this state by design — a missing lib must be loud, not silent.
-    quiet_box_met() { return 0; }
-    echo "WARN: load_tolerance_lib.sh not found at $LOAD_TOLERANCE_LIB —" \
-         "ROW4-1's quiet-box guard is DISABLED fail-open (never fires; the" \
-         "hard assert stays reachable and can false-RED under host load)" >&2
-fi
+# _row4_share_inconclusive below.  The helper's own docstring has claimed ROW4
+# as its consumer since #4656; this source makes that true again.
+#
+# MANDATORY, not degradable — same idiom as test_helpers.sh directly above,
+# deliberately NOT the optional LIB_CGROUP shape.  A degrading `else` arm was
+# tried and removed: there is no stub that both keeps the ROW4-1-QUIET-VACUITY
+# asserts honest AND lets the file finish green, because those asserts exist
+# precisely to pin quiet_box_met's real fail-open semantics.  A stub that
+# always reports quiet sends three of them RED; one that reports hot inverts
+# the guard into fail-MASKING.  So the lib's absence is reported ONCE, clearly,
+# instead of as three misleading corridor-predicate failures.  (The lib is a
+# tracked sibling in this directory and an implicit closure member of every
+# pool run — run-all-skip-closures.manifest #5 — so this is a broken-checkout
+# assertion, not a runtime-degradation path.)
+[ -f "$LOAD_TOLERANCE_LIB" ] || {
+    echo "ERROR: load_tolerance_lib.sh not found at $LOAD_TOLERANCE_LIB" >&2
+    exit 1
+}
+# shellcheck source=tests/infra/load_tolerance_lib.sh
+source "$LOAD_TOLERANCE_LIB"
 
 echo "=== cpu-load-governance integration tests (task 4634) ==="
 
@@ -1454,9 +1449,15 @@ _ROW4_PROC_PATH="${REIFY_CPU_GOV_TEST_PROC_PATH:-/proc/pressure/cpu}"
 #   semantics are already unit-tested (test_load_tolerance_lib.sh:168-194), and
 #   reusing it is what makes its own ROW4-naming docstring true again.
 #
-#   Pure (no I/O, no globals read) so it stays hermetically testable with
-#   synthetic literals, matching _row2_band_inconclusive and
-#   _row1_measurement_inactive above.
+#   Deterministic on its arguments — it reads NO ambient host state, so it
+#   stays hermetically testable with synthetic literals like
+#   _row2_band_inconclusive and _row1_measurement_inactive above.  But unlike
+#   those two (which are awk-only) it is NOT I/O-free: it forks python3 and
+#   reads the global $SCRIPT_DIR to import share_ge_proportional.  That is
+#   deliberate — importing the live assertion's own floor function is what
+#   keeps the corridor bounds from drifting from the floor they bracket — and
+#   it means this helper must not be called where a process spawn is unsafe
+#   (a signal handler, a tight loop) or where $SCRIPT_DIR is unset.
 _row4_share_inconclusive() {
     local merge_delta="$1" task_delta="$2"
     local w_merge="$3" w_task="$4" tol="$5"
@@ -1504,7 +1505,7 @@ _row4_share_inconclusive() {
     fi
 
     # Share: the inconclusive quadrant is the OPEN corridor
-    #     fair_share  <  merge_share  <  proportional_floor
+    #     fair_share + tol  <  merge_share  <  proportional_floor - tol
     # measured on a hot box.  Both ends are computed by share_ge_proportional
     # — the SAME function the live ROW4-1 assertion below calls — so neither
     # bound can drift from the assertion's floor.
@@ -1513,8 +1514,8 @@ _row4_share_inconclusive() {
     # inconclusive no matter how hot the box was — a green is never
     # suppressed.
     #
-    # LOWER bound (share <= fair share): bounding above ALONE would make every
-    # sub-floor share on a hot box a SKIP, including a TOTAL governance
+    # LOWER bound (share <= fair share + tol): bounding above ALONE would make
+    # every sub-floor share on a hot box a SKIP, including a TOTAL governance
     # failure — and since an orchestrator host is essentially never quiet (see
     # the escape-hatch comment at the live branch), that is the branch that
     # actually runs, so ROW4-1 would collapse to "PASS or SKIP, never RED".
@@ -1523,13 +1524,25 @@ _row4_share_inconclusive() {
     # and a starved merge slice reads ~0.00.  Neither is dilution — every
     # dilution observation on record is far above (0.6355, plus
     # 0.6435/0.6471/0.639 at :1378) — so both fall through to the hard assert.
+    #
+    # The lower bound is a BAND, not the point share == fair share.  A
+    # weights-ignored regression does not land on 0.5000000 exactly: it is an
+    # even split measured over ~16M usec of counters with noise in BOTH
+    # directions, so an exact-equality bound would be conclusive with
+    # probability ~0 and roughly half of such regressions would measure
+    # 0.50xx, land inside the corridor and SKIP instead of going RED — on the
+    # hot host where this row actually runs.  Widening it by tol makes the
+    # whole weights-ignored neighbourhood conclusive.
     # G6 (no new number): the bound is share_ge_proportional with the two
     # weights held EQUAL (w_task twice — the literal reading of "weights
-    # ignored") and no tolerance, evaluated on the SWAPPED pair so the
-    # comparison is task_share >= 0.5, i.e. merge_share <= 0.5.  Swapping
-    # rather than negating is what makes the bound STRICT: a share exactly at
-    # fair share is conclusive (ROW4-1-CORRIDOR-VACUITY-1), while one
-    # microsecond above it is still inside the corridor (-3).
+    # ignored") and the SAME tol the live assertion uses, evaluated on the
+    # SWAPPED pair so the comparison is task_share >= 0.5 - tol, i.e.
+    # merge_share <= 0.5 + tol.  Swapping rather than negating is what makes
+    # the bound STRICT: a share at fair share + tol is conclusive, while one
+    # microsecond above it is still inside the corridor
+    # (ROW4-1-CORRIDOR-VACUITY-3).  At the default tol=0.10 the corridor is
+    # (0.60, 0.65), which still contains every recorded dilution observation
+    # above, so widening the band re-arms the RED without re-opening #4656.
     #
     # Verdict is read from STDOUT, not from python3's exit status: a failed
     # import or a missing interpreter also exits non-zero, which would be
@@ -1551,8 +1564,8 @@ if m + t <= 0:
     print('conclusive')          # nothing ran; not evidence of dilution
 elif share_ge_proportional(m, t, w_merge, w_task, tol):
     print('conclusive')          # at/above the floor -> ROW4-1 PASSES
-elif share_ge_proportional(t, m, w_task, w_task, 0.0):
-    print('conclusive')          # merge_share <= fair share -> looks BROKEN
+elif share_ge_proportional(t, m, w_task, w_task, tol):
+    print('conclusive')          # merge_share <= fair share + tol -> BROKEN
 else:
     print('corridor')            # strictly inside the dilution corridor
 " 2>/dev/null || true)"
@@ -1811,13 +1824,17 @@ fi
 # loosens no threshold (_ROW4_TOL stays byte-identical; the ceiling reused is
 # the existing shared REIFY_CPU_GOV_TEST_QUIET_CEILING, default 20 — G6, no
 # new number). _row4_share_inconclusive returns rc 0 (inconclusive -> caller
-# SKIPs) ONLY when the measured share is below the floor AND the box was hot,
-# which keeps all three outcomes maximally informative:
-#   share >= floor              -> assert runs and PASSES, even on a hot box
-#                                  (no green is ever suppressed);
-#   share <  floor, box QUIET   -> assert runs and goes RED (non-vacuous — a
-#                                  genuine governance regression still fails);
-#   share <  floor, box HOT     -> SKIP-inconclusive (the false-RED case).
+# SKIPs) ONLY when the measured share sits strictly inside the OPEN dilution
+# corridor (fair + tol, floor) = (0.60, 0.65) at the defaults AND the box was
+# hot, which keeps all four outcomes maximally informative:
+#   share >= floor                -> assert runs and PASSES, even on a hot box
+#                                    (no green is ever suppressed);
+#   share <= fair + tol           -> assert runs (a weights-ignored or starved
+#                                    split is a governance break, not dilution,
+#                                    and goes RED at any ceiling);
+#   in corridor, box QUIET        -> assert runs and goes RED (non-vacuous — a
+#                                    genuine governance regression still fails);
+#   in corridor, box HOT          -> SKIP-inconclusive (the false-RED case).
 # Mirrors ROW2-2's existing post-measurement idiom in this same file.
 #
 # Pure synthetic literals, no cgroup/live measurement — deterministic at any
@@ -1916,23 +1933,38 @@ else
     # everything below the floor, ROW4-1 could only PASS or SKIP in practice
     # and VACUITY-2's quiet-box crux would pin a case that never occurs.
     #
-    # The lower bound is the WEIGHTS-IGNORED FAIR SHARE: with two sibling
-    # slices under one parent, cpu.weight arbitration being absent or broken
-    # yields ~0.50 (equal split), and a starved merge slice yields ~0.00.
-    # Neither is dilution. Every dilution observation on record sits well
-    # ABOVE that: 0.6355 (the #5998 reproduction) plus 0.6435/0.6471/0.639
-    # from this file's history (:1378). So the corridor is (fair, floor) —
-    # open at BOTH ends — and a share at or below fair share falls through to
-    # ROW4-1's hard assert no matter how hot the box was.
+    # The lower bound is the WEIGHTS-IGNORED FAIR SHARE, WIDENED BY tol: with
+    # two sibling slices under one parent, cpu.weight arbitration being absent
+    # or broken yields ~0.50 (equal split), and a starved merge slice yields
+    # ~0.00. Neither is dilution. Every dilution observation on record sits
+    # well ABOVE that: 0.6355 (the #5998 reproduction) plus 0.6435/0.6471/0.639
+    # from this file's history (:1378). So the corridor is
+    # (fair + tol, floor) — (0.60, 0.65) at the default tol — open at BOTH
+    # ends, and a share at or below fair share + tol falls through to ROW4-1's
+    # hard assert no matter how hot the box was.
+    #
+    # Why a BAND and not the point 0.50: a weights-ignored regression is an
+    # even split measured over ~16M usec of counters, noisy in both
+    # directions, so it lands on 0.5000000 exactly with probability ~0. An
+    # exact-equality bound would therefore be conclusive almost never and
+    # would SKIP roughly half of real weights-ignored regressions on the hot
+    # host where this row runs — the exact failure mode ROW4-1 exists to
+    # catch. Widening by tol makes the whole neighbourhood conclusive while
+    # leaving every recorded dilution observation inside the corridor.
     #
     # G6 (no new number): the bound is not a tuned constant. It is
     # share_ge_proportional applied with the two weights held EQUAL — the
-    # literal meaning of "weights ignored" — reusing _ROW4_W_TASK, so it can
-    # no more drift from the assertion than the upper bound can.
+    # literal meaning of "weights ignored" — reusing _ROW4_W_TASK and the SAME
+    # _ROW4_TOL the live assertion uses, so it can no more drift from the
+    # assertion than the upper bound can.
+    #
+    # (1) pins a REALISTICALLY NOISY near-fair split rather than an exact tie:
+    # 0.500110 is the shape the wired path actually produces when cpu.weight
+    # is ignored, and it is the case an exact-equality bound would have missed.
     _row4_corridor_vacuity1_rc=0
-    _row4_share_inconclusive 5945387 5945387 300 100 0.10 64.92 20 \
+    _row4_share_inconclusive 5948000 5945387 300 100 0.10 64.92 20 \
         || _row4_corridor_vacuity1_rc=$?
-    assert "ROW4-1-CORRIDOR-VACUITY-1: LOWER-BOUND CRUX -- weights-ignored fair share (Δmerge=Δtask=5945387 => 0.50) on a HOT box => NOT inconclusive (forbids 'hot box => never RED'; broken cpu.weight still goes RED where the row actually runs)" \
+    assert "ROW4-1-CORRIDOR-VACUITY-1: LOWER-BOUND CRUX -- noisy weights-ignored split (Δmerge=5948000 Δtask=5945387 => 0.500110, just off an exact tie) on a HOT box => NOT inconclusive (forbids 'hot box => never RED'; broken cpu.weight still goes RED where the row actually runs, even though it never measures 0.50 exactly)" \
         test "$_row4_corridor_vacuity1_rc" -ne 0
 
     # (2) A STARVED merge slice (share 0.00) on a hot box is the other end of
@@ -1950,11 +1982,24 @@ else
 
     # (3) NON-VACUITY for the bound itself: the lower bound must be STRICT, or
     # it would swallow the corridor it exists to preserve and re-open the
-    # #4656 false-RED this task closes. Pinned to one microsecond above fair
-    # share — the tightest statement that the hatch still fires just inside
-    # the corridor. (The measured false-RED at 0.6355 sits far above this.)
-    assert "ROW4-1-CORRIDOR-VACUITY-3: one microsecond ABOVE fair share (Δmerge=5945388 Δtask=5945387 => 0.5000000 > 0.50) on a HOT box => inconclusive (the lower bound is strict and does not swallow the dilution corridor)" \
-        _row4_share_inconclusive 5945388 5945387 300 100 0.10 64.92 20
+    # #4656 false-RED this task closes. Pinned to one microsecond above the
+    # widened bound fair + tol = 0.60 — the tightest statement that the hatch
+    # still fires just inside the corridor. (The measured false-RED at 0.6355
+    # sits far above this.) Its one-microsecond-lower neighbour is the
+    # conclusive side of the same edge, pinned by (3b).
+    assert "ROW4-1-CORRIDOR-VACUITY-3: one microsecond ABOVE fair share + tol (Δmerge=8918081 Δtask=5945387 => 0.60000001 > 0.60) on a HOT box => inconclusive (the lower bound is strict and does not swallow the dilution corridor)" \
+        _row4_share_inconclusive 8918081 5945387 300 100 0.10 64.92 20
+
+    # (3b) The other side of that same microsecond: one usec LOWER is at/below
+    # fair + tol and must be conclusive. Together with (3) this pins the bound
+    # to a single microsecond, so neither a silently-widened corridor (which
+    # would re-swallow weights-ignored regressions) nor a silently-narrowed
+    # one (which would re-open the #5998 false-RED) can pass unnoticed.
+    _row4_corridor_vacuity3b_rc=0
+    _row4_share_inconclusive 8918080 5945387 300 100 0.10 64.92 20 \
+        || _row4_corridor_vacuity3b_rc=$?
+    assert "ROW4-1-CORRIDOR-VACUITY-3b: one microsecond BELOW the same edge (Δmerge=8918080 Δtask=5945387 => 0.59999999 <= 0.60) on a HOT box => NOT inconclusive (the conclusive side of the strict bound)" \
+        test "$_row4_corridor_vacuity3b_rc" -ne 0
 
     # (4) No usage at all is not evidence of dilution either. The live branch
     # already guards both-zero ahead of the predicate; this keeps the
@@ -2207,12 +2252,16 @@ else
         # removed). Ordered AFTER the measurement, never as a pre-gate: a
         # pre-gate would discard every ROW4-1 measurement on an orchestrator
         # host, which is essentially never quiet, making the assertion
-        # vacuous in practice. Here it fires in exactly one quadrant —
-        # sub-floor share AND hot box — so a share at/above the floor still
-        # PASSES even on a hot box, and a sub-floor share on a QUIET box still
-        # goes RED (ROW4-1-QUIET-VACUITY-2 is the non-vacuity crux pinning
-        # that). No threshold is loosened: _ROW4_TOL is untouched and the
-        # ceiling is the existing shared REIFY_CPU_GOV_TEST_QUIET_CEILING.
+        # vacuous in practice. Here it fires in exactly one quadrant — a share
+        # strictly inside the dilution corridor (fair + tol, floor) AND a hot
+        # box — so a share at/above the floor still PASSES even on a hot box,
+        # a corridor share on a QUIET box still goes RED
+        # (ROW4-1-QUIET-VACUITY-2 is the non-vacuity crux pinning that), and a
+        # share at or below fair + tol — the weights-ignored shape this row
+        # exists to catch — goes RED at ANY ceiling, hot box included
+        # (ROW4-1-CORRIDOR-VACUITY-1). No threshold is loosened: _ROW4_TOL is
+        # untouched and the ceiling is the existing shared
+        # REIFY_CPU_GOV_TEST_QUIET_CEILING.
         echo "  SKIP ROW4-1: inconclusive — sub-floor merge_share (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},tol=${_ROW4_TOL}) measured on a NON-QUIET box (host avg10=${_ROW4_HOST_AVG10} >= ceiling=${_ROW4_QUIET_CEILING}) — foreign load on the pinned CPUs dilutes cpu.weight proportionality, not a governance failure"
     else
         assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
