@@ -162,13 +162,18 @@
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
-#                                       correct stub sleep seconds (default 1;
-#                                       proves a bypass merely slow to START
+#                                       correct stub sleep seconds (default 6;
+#                                       strictly ABOVE the retired 5 s bound,
+#                                       proving a bypass merely slow to START
 #                                       does not flip the verdict; task 6000).
 #                                       Must stay strictly below
 #                                       REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S
 #                                       (below) or ROW4-BYPASS-VACUITY-2a fails
-#                                       by construction.
+#                                       by construction. This default is
+#                                       coupled to the inline rationale at its
+#                                       resolution site (search
+#                                       _ROW4_BYPASS_SLOW_S below) -- move
+#                                       both together if it ever changes.
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S  ROW4-2/ROW4-3 anti-hang guard,
 #                                       never a discriminator (default 120;
 #                                       task 6000 T-treatment). The
@@ -3050,7 +3055,11 @@ assert "ROW4-BYPASS-VACUITY-1c: mutant stub => captured stderr does NOT match 'b
 _ROW4_BYPASS_SLOW_S="${REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S:-6}"
 # Strictly greater than the RETIRED 5 s bound, so a bypass that is merely
 # slow to start (process-spawn latency on an oversubscribed host) is proven
-# not to flip the verdict.
+# not to flip the verdict. This default (6) is coupled to the knob-header
+# doc above (REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S) -- if it ever changes,
+# move the header line and this rationale together, or the two silently
+# drift apart again (task 6000 review-cycle-1 caught exactly that drift:
+# the header briefly said "default 1" while this line stayed "6").
 _row4_bypass_slow_stub="$(mktemp -p "$WORK" row4-bypass-stub-slow.XXXXXX)"
 printf '#!/usr/bin/env bash\nsleep "%s"\necho "cpu-admit: bypass (role=merge)" >&2\nexit 0\n' \
     "$_ROW4_BYPASS_SLOW_S" > "$_row4_bypass_slow_stub"
