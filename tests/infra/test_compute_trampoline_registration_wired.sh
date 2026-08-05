@@ -11,9 +11,16 @@
 #     MorphRegistration::Enabled to Unavailable (the esc-2962-66 class — it
 #     compiles clean and silently un-registers the mesh-morph producer);
 #   * a FOURTH production site that hand-rolls the bundle from its halves
-#     instead of delegating;
+#     instead of delegating — in src/, in benches/, in examples/, in a build.rs,
+#     and inside a DEFINITION file outside the bundler body;
 # and that it does NOT false-positive on the two shapes that are legitimate:
 # a #[cfg(test)] module body, and a rustdoc mention of a bundle half.
+#
+# The h2b/h2c cases pin the ASYMMETRY hazard specifically: the positive
+# (delegation/variant) pass and the negative (fourth-bundler) pass must read the
+# same production-code view, so a #[cfg(test)] module, a rustdoc line, a block
+# comment or a string literal naming MorphRegistration::Enabled( can never stand
+# in for the production arm and make the variant pin vacuous.
 #
 # Mirrors tests/infra/test_nan_safe_ordering_guard_wired.sh (task 5093).
 
@@ -156,6 +163,42 @@ fn engine_for_tests(engine: &mut crate::Engine) {
     });
 }
 RS
+    # The two DEFINITION files, in their real shape: mod.rs defines one half AND
+    # carries the bundler body that legitimately calls both; shell_extract
+    # defines the other. Present in the BASELINE so h0 is also the positive
+    # control for the scoped (non-wholesale) definition-file exemption, and so
+    # h7 below can flip exactly one thing.
+    mkdir -p "$FIX/crates/reify-eval/src/compute_targets"
+    cat > "$FIX/crates/reify-eval/src/compute_targets/mod.rs" <<'RS'
+pub fn register_compute_fns(engine: &mut crate::Engine) {
+    engine.register_compute_fn("solver::elastic_static", elastic_static as crate::ComputeFn);
+}
+
+impl crate::Engine {
+    pub fn register_production_compute_fns(&mut self, morph: MorphRegistration) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+        match morph {
+            MorphRegistration::Enabled(f) => f(self),
+            MorphRegistration::Unavailable { .. } => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn double_registration_panics() {
+        let mut engine = crate::Engine::new();
+        super::register_compute_fns(&mut engine);
+    }
+}
+RS
+    cat > "$FIX/crates/reify-eval/src/shell_extract_compute.rs" <<'RS'
+pub fn register_shell_extract_compute_fns(engine: &mut Engine) {
+    engine.register_compute_fn("shell-extract::extract", shell_extract_compute_fn as ComputeFn);
+}
+RS
 }
 
 stage() { git -C "$FIX" add -A; }
@@ -194,6 +237,50 @@ assert "h2: gate FLAGS gui engine.rs carrying Unavailable but no MorphRegistrati
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
 assert "h2: stderr names gui/src-tauri/src/engine.rs" \
     bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'gui/src-tauri/src/engine.rs'"
+
+# h2b — THE VACUOUS-PIN HAZARD.  Same production flip as h2, but a #[cfg(test)]
+# module in the SAME file still names MorphRegistration::Enabled(.  A file-wide
+# presence check would be satisfied by that mention and exit 0, leaving hazard
+# (2) unguarded exactly where it is most likely to arise: engine.rs already
+# carries three inline #[cfg(test)] modules, and this task adds execution
+# coverage for the registration, so a unit test naming the variant is a
+# probable next edit.
+write_baseline
+cat > "$FIX/gui/src-tauri/src/engine.rs" <<'RS'
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+stage
+assert "h2b: a #[cfg(test)] mention of MorphRegistration::Enabled( does NOT satisfy the production variant pin" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# h2c — the same vacuity through the other three non-code channels: a rustdoc
+# line, a /* */ block comment, and a Rust string literal.  The real tree already
+# carries the string-literal shape at crates/reify-cli/src/main.rs:4390
+# ("register_compute_trampolines must pass MorphRegistration::Enabled, ").
+write_baseline
+cat > "$FIX/gui/src-tauri/src/engine.rs" <<'RS'
+/// Must pass `MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer)`.
+/* MorphRegistration::Enabled( — historical note, not code */
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    debug_assert!(false, "from_engine must pass MorphRegistration::Enabled( under the gui feature");
+    engine.register_production_compute_fns(morph);
+}
+RS
+stage
+assert "h2c: rustdoc / block-comment / string-literal mentions of the variant do NOT satisfy the pin" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
 # h3 — a FOURTH production site hand-rolls the bundle from its halves.
 write_baseline
@@ -264,6 +351,64 @@ RS
 stage
 assert "h5b: gate does NOT flag a rustdoc mention of a bundle half (comment-tail strip)" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# h7 — the DEFINITION-file exemption is SCOPED, not wholesale.  Exempting
+# crates/reify-eval/src/compute_targets/mod.rs as a file would make the single
+# most likely home for a fourth hand-rolled bundle exempt by construction: the
+# file already defines one half and legitimately calls both from the bundler
+# body, so "just add it here" is the path of least resistance.  Only the
+# definition lines and the `fn register_production_compute_fns(` body are
+# allowed; a half-call anywhere else in the file is a violation.
+write_baseline
+cat >> "$FIX/crates/reify-eval/src/compute_targets/mod.rs" <<'RS'
+
+pub fn build_scratch_engine() -> crate::Engine {
+    let mut engine = crate::Engine::new();
+    register_compute_fns(&mut engine);
+    crate::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "h7: gate FLAGS a hand-rolled bundle added to a DEFINITION file outside the bundler body" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "h7: stderr names compute_targets/mod.rs as file:line" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-eval/src/compute_targets/mod\.rs:[0-9]+'"
+
+# h8 — SCOPE_PATHSPECS reaches the non-src production Rust surface.  benches,
+# examples and build.rs are real build inputs; a bundle hand-rolled in one of
+# them is the same hazard (3) as one in src/, and h3 (which only exercises
+# crates/reify-foo/src/lib.rs) would not notice if the pathspecs regressed to
+# src-only.
+for _sub in benches/bundle.rs examples/smoke.rs build.rs; do
+    write_baseline
+    mkdir -p "$FIX/crates/reify-foo/$(dirname "$_sub")"
+    cat > "$FIX/crates/reify-foo/$_sub" <<'RS'
+fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+    stage
+    assert "h8: gate FLAGS a hand-rolled bundle in crates/reify-foo/$_sub" \
+        _exits_with 1 bash "$GATE" --repo-root "$FIX"
+done
+
+# h8b — gui/src-tauri/build.rs is in scope too (it is a real build input that
+# runs tauri_build::build()).
+write_baseline
+cat > "$FIX/gui/src-tauri/build.rs" <<'RS'
+fn main() {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+}
+RS
+stage
+assert "h8b: gate FLAGS a hand-rolled bundle in gui/src-tauri/build.rs" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
 # h6 — usage / not-a-work-tree errors are exit 2, distinct from exit 1.
 NONGIT="$DET_TMP/nongit"
