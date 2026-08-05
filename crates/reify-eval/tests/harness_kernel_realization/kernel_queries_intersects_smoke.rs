@@ -41,8 +41,8 @@
 //! live here rather than in their own module file only because #5674's
 //! locked scope excludes `harness_kernel_realization.rs` (which would need a
 //! new `mod`/`#[path]` registration); splitting them out into
-//! `harness_kernel_realization/clearance_oracle_evals.rs` has been filed as
-//! a tracked follow-up task rather than left as unanchored prose.
+//! `harness_kernel_realization/clearance_oracle_evals.rs` is tracked as
+//! follow-up task #5982, not left as unanchored prose.
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
