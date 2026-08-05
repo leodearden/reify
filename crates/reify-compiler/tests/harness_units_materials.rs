@@ -20,8 +20,18 @@
 //! Do NOT fold the two roots together: #5789's M1 binding and its `harness_units`
 //! delivered_check both require `harness_units.rs` to keep existing. That file's "μ should
 //! add its module here rather than create a second unit-subsystem harness" steer is aimed at
-//! #5789, not at these pre-existing `unit_*_tests.rs`; the reciprocal note there is outside
-//! this leaf's lock set.
+//! #5789, not at these pre-existing `unit_*_tests.rs`.
+//!
+//! This boundary is currently recorded ONE-SIDEDLY, and knowingly so: `harness_units.rs`'s own
+//! header still declares its scope as "the stdlib unit-declaration subsystem (`stdlib/units.ri`
+//! and the `UnitRegistry` it populates)" — wording that literally covers the
+//! `unit_declaration_tests.rs` / `unit_registry_tests.rs` modules declared BELOW, in this root.
+//! So a reader who opens that file first gets the pre-split rule with no pointer back here.
+//! The reciprocal edit is outside this leaf's lock set and lands in a file #5789 is pre-bound
+//! to extend, so it is deferred rather than dropped: follow-up ticket
+//! tkt_0RS43PW3WV70QHNJT878VTWXCR (escalation id `agent-followup-5284`) narrows that header to
+//! the unit *surface* and adds the cross-reference. Until it lands, THIS note is the
+//! authoritative routing rule for the pair.
 //!
 //! Layout contract C1 (naming, the mandatory `#[path]`, kLOC cap, baseline ratchet):
 //! see `tests/infra/test_harness_kloc_cap.sh` C1 header and
