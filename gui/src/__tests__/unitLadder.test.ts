@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import type { UnitLadderMap } from '../types';
 import {
   formatDisplayNumber,
   convertToUnit,
   ladderForDimension,
   normalizeUnitLabel,
+  quantityUnitAlphabet,
+  BASE_UNIT_LABELS,
 } from '../stores/unitLadder';
 
 describe('formatDisplayNumber', () => {
@@ -127,5 +130,115 @@ describe('normalizeUnitLabel', () => {
     // curated unit-label glyphs and are deliberately left alone.
     expect(normalizeUnitLabel('m¹')).toBe('m¹');
     expect(normalizeUnitLabel('m⁴')).toBe('m⁴');
+  });
+});
+
+/**
+ * Task #6028: the unit alphabet the typed-quantity gate accepts, DERIVED from
+ * the live ladders rather than hand-mirrored from the Rust curated table.
+ */
+describe('quantityUnitAlphabet', () => {
+  /** The same Volume+Density ladders in both spellings — pre- and post-#5788. */
+  const SUPERSCRIPT_LADDERS: UnitLadderMap = {
+    Volume: [
+      { label: 'mm³', si_scale: 1e-9, is_default: true },
+      { label: 'cm³', si_scale: 1e-6, is_default: false },
+      { label: 'L', si_scale: 1e-3, is_default: false },
+      { label: 'm³', si_scale: 1.0, is_default: false },
+    ],
+    Density: [
+      { label: 'kg/m³', si_scale: 1.0, is_default: true },
+      { label: 'g/cm³', si_scale: 1000.0, is_default: false },
+    ],
+  };
+
+  const ASCII_LADDERS: UnitLadderMap = {
+    Volume: [
+      { label: 'mm^3', si_scale: 1e-9, is_default: true },
+      { label: 'cm^3', si_scale: 1e-6, is_default: false },
+      { label: 'L', si_scale: 1e-3, is_default: false },
+      { label: 'm^3', si_scale: 1.0, is_default: false },
+    ],
+    Density: [
+      { label: 'kg/m^3', si_scale: 1.0, is_default: true },
+      { label: 'g/cm^3', si_scale: 1000.0, is_default: false },
+    ],
+  };
+
+  // (a) The ladders-unavailable floor. `get_unit_ladders` is a best-effort
+  // one-shot fetch that can fail (App.test.tsx pins a toast for that path), so
+  // validation must not silently narrow when it does — and every existing
+  // ladder-less validation test must stay byte-identical.
+  it.each([
+    ['undefined (fetch not resolved / failed)', undefined],
+    ['an empty map', {}],
+  ])('returns exactly the static baseline for %s', (_desc, ladders) => {
+    expect(new Set(quantityUnitAlphabet(ladders as UnitLadderMap | undefined))).toEqual(
+      new Set(['mm', 'cm', 'm', 'deg', 'rad']),
+    );
+  });
+
+  it('exposes that same baseline as BASE_UNIT_LABELS', () => {
+    expect([...BASE_UNIT_LABELS]).toEqual(['mm', 'cm', 'm', 'deg', 'rad']);
+  });
+
+  // (b) Baseline UNION the ladders' labels, ASCII-normalized.
+  it('unions the baseline with the ladder labels, normalized to ASCII', () => {
+    expect(new Set(quantityUnitAlphabet(SUPERSCRIPT_LADDERS))).toEqual(
+      new Set([
+        'mm', 'cm', 'm', 'deg', 'rad',
+        'mm^3', 'cm^3', 'L', 'm^3',
+        'kg/m^3', 'g/cm^3',
+      ]),
+    );
+  });
+
+  // THE property that makes this survive #5788 landing on either side: the two
+  // spellings of the same curated ladder yield the SAME alphabet.
+  it('yields an identical alphabet for the superscript and ASCII spellings', () => {
+    expect(new Set(quantityUnitAlphabet(SUPERSCRIPT_LADDERS))).toEqual(
+      new Set(quantityUnitAlphabet(ASCII_LADDERS)),
+    );
+  });
+
+  // (c) No superscript survives into the alphabet — the typed-input gate must
+  // accept what the .ri grammar accepts, and superscript spellings have never
+  // been parseable.
+  it.each([
+    ['the superscript spelling', SUPERSCRIPT_LADDERS],
+    ['the ASCII spelling', ASCII_LADDERS],
+  ])('emits no U+00B2 or U+00B3 entry for %s', (_desc, ladders) => {
+    for (const label of quantityUnitAlphabet(ladders)) {
+      expect(label).not.toContain('²');
+      expect(label).not.toContain('³');
+    }
+  });
+
+  // (d) Duplicates across dimensions (and against the baseline) collapse.
+  it('collapses duplicate labels across dimensions and the baseline', () => {
+    const withOverlap: UnitLadderMap = {
+      Length: [
+        { label: 'mm', si_scale: 1e-3, is_default: true },
+        { label: 'm', si_scale: 1.0, is_default: false },
+      ],
+      Volume: [
+        { label: 'm³', si_scale: 1.0, is_default: true },
+        { label: 'L', si_scale: 1e-3, is_default: false },
+      ],
+    };
+    const alphabet = quantityUnitAlphabet(withOverlap);
+    expect(new Set(alphabet).size).toBe(alphabet.length);
+    expect(alphabet.filter((u) => u === 'm')).toHaveLength(1);
+    expect(alphabet.filter((u) => u === 'mm')).toHaveLength(1);
+  });
+
+  it('collapses two spellings of the same label into one entry', () => {
+    const bothSpellings: UnitLadderMap = {
+      Volume: [
+        { label: 'm³', si_scale: 1.0, is_default: true },
+        { label: 'm^3', si_scale: 1.0, is_default: false },
+      ],
+    };
+    expect(quantityUnitAlphabet(bothSpellings).filter((u) => u === 'm^3')).toHaveLength(1);
   });
 });
