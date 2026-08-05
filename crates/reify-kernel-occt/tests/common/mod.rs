@@ -21,7 +21,7 @@
 #![cfg(has_occt)]
 
 use reify_kernel_occt::{
-    DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OCCT_AVAILABLE, OcctKernelHandle,
+    DeletedRecord, HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle,
 };
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
