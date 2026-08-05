@@ -185,12 +185,14 @@ fn fdm_process_structure_has_seven_params_plus_seven_provenance_slots() {
     let provenance_ty = Type::StructureRef("MaterialPropertyProvenance".to_string());
     let expected: &[(&str, Type)] = &[
         (
+            // A DIRECTION, so the quantity slot is DIMENSIONLESS (task 5848) —
+            // not Length. The contrast with `layer_height` below (a genuine
+            // distance, still Length) is the point: this table is where the
+            // direction/position split is visible side by side.
             "build_direction",
             Type::Vector {
                 n: 3,
-                quantity: Box::new(Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
-                }),
+                quantity: Box::new(Type::dimensionless_scalar()),
             },
         ),
         (
@@ -248,7 +250,7 @@ fn fdm_process_structure_has_seven_params_plus_seven_provenance_slots() {
 /// magnitude of each default expression, guarding against unit-prefix typos
 /// (e.g. `0.2m` vs `0.2mm`).
 ///
-/// For the `build_direction = vec3(0mm, 0mm, 1mm)` default, the test checks
+/// For the `build_direction = vec3(0, 0, 1)` default, the test checks
 /// the presence and type of the FunctionCall node rather than attempting to
 /// numerically reduce a runtime builtin call at compile time.
 ///
@@ -332,27 +334,27 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
         }
     }
 
-    // build_direction = vec3(0mm, 0mm, 1mm) → FunctionCall { function.name: "vec3" }
-    // Note: the compiled default_expr.result_type for a vec3(...) call is
-    // the common scalar dimension of the args (Scalar<Length>), not Vector3<Length>.
-    // The Vector3<Length> type is pinned by the cell's declared cell_type (step-5).
-    // Here we verify the FunctionCall structure and the component SI values.
+    // build_direction = vec3(0, 0, 1) → FunctionCall { function.name: "vec3" }
+    // A build direction is a DIRECTION, so its quantity slot is dimensionless
+    // (task 5848); the declared cell_type is what pins that, and here we also
+    // verify the FunctionCall structure and the component values.
     {
         let cell = template
             .value_cells
             .iter()
             .find(|vc| vc.id.member == "build_direction")
             .expect("FDMProcess missing 'build_direction' cell");
-        // The declared cell type must be Vector3<Length> (pinned in step-5)
+        // The declared cell type must be a DIMENSIONLESS 3-vector (task 5848).
         assert_eq!(
             cell.cell_type,
             Type::Vector {
                 n: 3,
                 quantity: Box::new(Type::Scalar {
-                    dimension: DimensionVector::LENGTH,
+                    dimension: DimensionVector::DIMENSIONLESS,
                 }),
             },
-            "FDMProcess.build_direction cell_type should be Vector3<Length>"
+            "FDMProcess.build_direction denotes a DIRECTION, so its cell_type \
+             should be a dimensionless 3-vector"
         );
         let expr = cell
             .default_expr
@@ -373,27 +375,25 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
                     "vec3 call in build_direction default should have 3 args, got {}",
                     args.len()
                 );
-                // z-component (index 2) should be 1mm = 0.001 m SI
-                let z_si = extract_scalar_si(&args[2]);
+                // The default is the unit +Z direction: vec3(0, 0, 1).
                 let tol = 1e-9_f64;
+                let z = extract_numeric_literal(&args[2]);
                 assert!(
-                    (z_si - 1e-3).abs() <= tol,
-                    "build_direction z-component (vec3 arg[2]) should be 1mm = 0.001 m, \
-                     got {} m",
-                    z_si
+                    (z - 1.0).abs() <= tol,
+                    "build_direction z-component (vec3 arg[2]) should be 1, got {}",
+                    z
                 );
-                // x and y components should be 0
-                let x_si = extract_scalar_si(&args[0]);
-                let y_si = extract_scalar_si(&args[1]);
+                let x = extract_numeric_literal(&args[0]);
+                let y = extract_numeric_literal(&args[1]);
                 assert!(
-                    x_si.abs() <= tol,
-                    "build_direction x-component should be 0 m, got {} m",
-                    x_si
+                    x.abs() <= tol,
+                    "build_direction x-component should be 0, got {}",
+                    x
                 );
                 assert!(
-                    y_si.abs() <= tol,
-                    "build_direction y-component should be 0 m, got {} m",
-                    y_si
+                    y.abs() <= tol,
+                    "build_direction y-component should be 0, got {}",
+                    y
                 );
             }
             other => panic!(
@@ -491,13 +491,21 @@ fn compute_si_value(expr: &CompiledExpr) -> f64 {
     }
 }
 
-/// Extract the SI scalar magnitude from a dimensioned literal expression.
-/// Only accepts `Literal(Value::Scalar { si_value, .. })` directly.
-fn extract_scalar_si(expr: &CompiledExpr) -> f64 {
+/// Read a bare numeric literal, tolerating the three spellings a component of
+/// a DIMENSIONLESS vector literal can compile to. `vec3(0, 0, 1)` bakes
+/// `Value::Int`, not `Value::Scalar`, so a reader that accepted only
+/// `Value::Scalar` — the right strictness for a *dimensioned* literal — is
+/// wrong for a dimensionless one (task 5848; mirrors the same split on the
+/// eval side's component readers). Dimensionality is not erased by this
+/// looseness: it is pinned separately, on the cell's `result_type`, by
+/// [`assert_scalar_default`] and by the param type table.
+fn extract_numeric_literal(expr: &CompiledExpr) -> f64 {
     match &expr.kind {
+        CompiledExprKind::Literal(Value::Int(n)) => *n as f64,
+        CompiledExprKind::Literal(Value::Real(r)) => *r,
         CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,
         other => panic!(
-            "extract_scalar_si: expected Literal(Value::Scalar), got: {:?}",
+            "extract_numeric_literal: expected Literal(Int|Real|Scalar), got: {:?}",
             other
         ),
     }
@@ -631,7 +639,7 @@ fn prd_motivating_example_named_arg_ctor_compiles_cleanly() {
     let source = r#"
 structure def TestFDM {
     let proc = FDMProcess(
-        build_direction: vec3(0mm, 0mm, 1mm),
+        build_direction: vec3(0, 0, 1),
         layer_height: 0.2mm,
         walls: 3,
         top_bottom_layers: 4,

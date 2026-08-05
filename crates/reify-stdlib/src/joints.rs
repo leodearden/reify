@@ -7890,4 +7890,132 @@ mod tests {
             }
         }
     }
+
+    // ── task 5848: the decl/runtime divergence the retype corrects ───────────
+
+    /// Re-tag a dimensionless axis `Value::Vector` as LENGTH, keeping every
+    /// component number bit-identical. The two legs of the pin below then
+    /// differ ONLY in the dimension tag, so nothing else can explain a
+    /// rejection.
+    fn as_length_axis(axis: &Value) -> Value {
+        match axis {
+            Value::Vector(comps) => Value::Vector(
+                comps
+                    .iter()
+                    .map(|c| match c {
+                        Value::Real(r) => Value::length(*r),
+                        other => {
+                            panic!("as_length_axis: expected a Real component, got {other:?}")
+                        }
+                    })
+                    .collect(),
+            ),
+            other => panic!("as_length_axis: expected Value::Vector, got {other:?}"),
+        }
+    }
+
+    /// Characterization pin for task 5848's ruling that stdlib direction fields
+    /// are DIMENSIONLESS: across ALL FIVE of the joint direction params the
+    /// evaluator ALREADY required a dimensionless axis and evaluated a
+    /// `Length`-dimensioned one to `Undef` — while `kinematic.ri` declared
+    /// `Vec3<Length>`.
+    ///
+    /// That is what makes the retype a CORRECTION rather than a risk. The old
+    /// declaration was not merely "observationally irrelevant"; it was actively
+    /// contradicted by `validate_dimensionless_unit_axis_vec3` (helpers.rs) at
+    /// every constructor guard, so `revolute(vec3(0mm, 0mm, 1mm), …)` was
+    /// already dead on arrival. Steps 1-2 made the declaration honest; they did
+    /// not change what the evaluator accepts.
+    ///
+    /// NOT a copy of the per-constructor validation surfaces
+    /// (`prismatic_length_dimensioned_axis_returns_undef`,
+    /// `revolute_length_dimensioned_axis_returns_undef`,
+    /// `cylindrical_constructor_validation_table`,
+    /// `planar_invalid_args_returns_undef`). Each of those enumerates ONE
+    /// constructor's rejection set, mixing the dimension case in with arity,
+    /// arity-of-vector, zero, NaN and range cases. The claim here is the
+    /// cross-cutting one none of them states: the set of params the evaluator
+    /// requires dimensionless is exactly the set kinematic.ri now declares
+    /// dimensionless, with no member unmatched on either side — and it isolates
+    /// the dimension tag as the sole variable by deriving the rejected axis
+    /// from the accepted one.
+    #[test]
+    fn every_retyped_joint_direction_param_requires_a_dimensionless_axis() {
+        let lr = length_range_0_to_1m();
+        let ar = angle_range_0_to_pi();
+
+        // (kinematic.ri field, builtin — which is also the Map's "kind",
+        //  full arg list with every axis dimensionless, index of THIS field's
+        //  axis slot). The five entries are exactly the five params retyped in
+        //  kinematic.ri; Planar contributes two rows because it has two axes.
+        let cases: Vec<(&str, &str, Vec<Value>, usize)> = vec![
+            (
+                "Prismatic.axis",
+                "prismatic",
+                vec![axis_x_unit(), lr.clone()],
+                0,
+            ),
+            (
+                "Revolute.axis",
+                "revolute",
+                vec![axis_z_unit(), ar.clone()],
+                0,
+            ),
+            (
+                "Cylindrical.axis",
+                "cylindrical",
+                vec![axis_z_unit(), lr.clone(), ar.clone()],
+                0,
+            ),
+            (
+                "Planar.axis_x",
+                "planar",
+                vec![
+                    axis_x_unit(),
+                    axis_y_unit(),
+                    lr.clone(),
+                    lr.clone(),
+                    ar.clone(),
+                ],
+                0,
+            ),
+            (
+                "Planar.axis_y",
+                "planar",
+                vec![
+                    axis_x_unit(),
+                    axis_y_unit(),
+                    lr.clone(),
+                    lr.clone(),
+                    ar.clone(),
+                ],
+                1,
+            ),
+        ];
+
+        for (field, builtin, args, axis_slot) in &cases {
+            // Leg 1 — dimensionless (what kinematic.ri now declares): the
+            // constructor yields a well-formed joint Map.
+            match eval_builtin(builtin, args) {
+                Value::Map(m) => assert_eq!(
+                    m.get(&Value::String("kind".to_string())),
+                    Some(&Value::String((*builtin).to_string())),
+                    "{field}: a dimensionless axis must construct a {builtin} joint Map"
+                ),
+                other => panic!(
+                    "{field}: a dimensionless axis must construct a joint Map, got {other:?}"
+                ),
+            }
+
+            // Leg 2 — identical numbers, LENGTH tag (what kinematic.ri used to
+            // declare): rejected outright.
+            let mut dimensioned = args.clone();
+            dimensioned[*axis_slot] = as_length_axis(&args[*axis_slot]);
+            assert!(
+                eval_builtin(builtin, &dimensioned).is_undef(),
+                "{field}: an axis carrying the SAME components with a LENGTH tag must \
+                 evaluate to Undef — this is the divergence task 5848's retype closes"
+            );
+        }
+    }
 }
