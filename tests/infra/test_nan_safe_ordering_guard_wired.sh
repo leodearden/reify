@@ -152,4 +152,319 @@ stage
 assert "gate does NOT flag a doc-comment mention of the hazard" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
+# ===========================================================================
+# hD — BRACE-DEPTH DRIFT in the production-code view (task 6031, porting the
+# lexer from task/5076:scripts/check-compute-trampoline-registration.sh).
+#
+# `depth` (which drives the #[cfg(test)] skipper) is counted from raw $0
+# today, never from a comment/string/char-literal-aware view. A brace that
+# exists only inside a comment, a string, a char literal or a raw string
+# therefore silently moves depth:
+#   POSITIVE drift (a stray `{`) over-extends the skipper, so a PRODUCTION
+#   hazard after the #[cfg(test)] module is silently skipped and never
+#   flagged (hD1/hD3a/hD4/hD5a/hD7).
+#   NEGATIVE drift (a stray `}`) releases the skipper EARLY, so a hazard that
+#   is legitimately inside the #[cfg(test)] module becomes visible to the
+#   hazard match and is FALSE-RED (hD2/hD3b/hD5b).
+#
+# What is live in THIS gate's 121-file scan set today (measured), vs. what is
+# defensive: braces inside STRING literals are rampant (173 in
+# compute_targets/elastic_static.rs alone, 26 in fdm_slice.rs, 16 in
+# membrane_load.rs) — hD1/hD2/hD6/hD7 are real shapes. Block comments appear
+# in 1 file — hD5a/hD5b are real shapes. Char literals with an unbalanced
+# brace (hD3a/hD3b) and raw strings (hD4) do NOT occur anywhere in this scan
+# set today (zero of each) — kept anyway because the lexer is a single
+# left-to-right state machine that must handle strings, char literals and raw
+# strings together or not at all, and because the scan set can grow. Do not
+# copy task/5076's live-shape citations: that gate's 562-file scan set is a
+# different tree.
+#
+# Same fixture harness as block (h) above (write_fixture / stage /
+# _exits_with): one file overwritten per case, EXACT exit codes only.
+# ===========================================================================
+echo ""
+echo "--- (hD): brace-depth drift from comments, strings and char literals ---"
+
+# hD1 — a stray '{' in a test-assertion STRING over-extends the #[cfg(test)]
+# skipper, silently swallowing the PRODUCTION hazard below the test module.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn renders_an_open_brace() {
+        assert_eq!(render(), "{ open brace in a string");
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD1: a '{' inside a test-assertion STRING does not hide the production hazard below the test module" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD2 — a stray '}' in a test-assertion STRING releases the skipper one line
+# early, so the SECOND test's legitimately-in-module hazard is wrongly seen
+# as production code and FALSE-REDs.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reports_an_unclosed_block() {
+        assert!(render_error().contains("expected }"));
+    }
+
+    #[test]
+    fn sorts_with_fallback() {
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hD2: a '}' inside a test-assertion STRING does not release the cfg(test) skipper early" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD3a — '{' CHAR LITERAL, positive drift: string blanking alone does not
+# cover char literals, so '{' inflates depth exactly like hD1's string brace.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    const OPEN: char = '{';
+
+    #[test]
+    fn notes_the_delimiter() {
+        assert_eq!(OPEN, '{');
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD3a: a '{' CHAR LITERAL does not hide the production hazard below the test module" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD3b — '}' CHAR LITERAL, negative drift, in the `rest.find([',', '}'])`
+# shape: releases the skipper early exactly like hD2's string brace.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_the_delimiter() {
+        let rest = "a,b";
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        assert!(end > 0);
+    }
+
+    #[test]
+    fn sorts_with_fallback() {
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hD3b: a '}' CHAR LITERAL does not release the cfg(test) skipper early" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD4 — multi-line RAW STRING: r#"..."# spans lines and honours no escapes,
+# so its unbalanced '{' must not hide the production hazard below it.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejects_an_unclosed_structure() {
+        let source = r#"pub structure Bolt {
+    diameter: 5mm
+"#;
+        assert!(parse(source).is_err());
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD4: a '{' inside a multi-line RAW STRING does not hide the production hazard below the test module" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD5a — '/* { */' BLOCK COMMENT, positive drift.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn documents_the_open_brace() {
+        /* { */
+        assert!(true);
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD5a: a '{' inside a /* */ BLOCK COMMENT does not hide the production hazard below the test module" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD5b — '/* } */' BLOCK COMMENT, negative drift, as the first statement of
+# the test module; the SECOND test's hazard is legitimately in the same
+# module.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn documents_the_close_brace() {
+        /* } */
+        assert!(true);
+    }
+
+    #[test]
+    fn sorts_with_fallback() {
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hD5b: a '}' inside a /* */ BLOCK COMMENT does not release the cfg(test) skipper early" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD6 — MUST STAY GREEN: forbids the naive "strip // comments first, THEN
+# count braces" reorder. A '//' inside a STRING is not a comment; truncating
+# there would lose the '{' that follows it and would release the skipper
+# early, false-REDing the SECOND test's legitimately-in-module hazard.
+write_fixture <<'RS'
+pub fn strip_comments(src: &str) -> String {
+    let mut out = String::new();
+    for line in src.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn skips_comment_lines() {
+        if "// not a comment".trim_start().starts_with("//") {
+            assert!(true);
+        }
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hD6: a '//' inside a STRING does not truncate the '{' after it (no false RED on a legitimate cfg(test) hazard)" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD7 — '#[cfg(test)]' and 'mod … {' tokens INSIDE STRINGS must not arm the
+# skipper. test_base would be 0, so a wrongly-armed skipper never releases
+# and swallows every production line after it, including the hazard.
+write_fixture <<'RS'
+pub const SCAFFOLD: [&str; 2] = [
+    "#[cfg(test)]",
+    "mod tests {",
+];
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD7: a '#[cfg(test)] mod … {' pair inside STRINGS does not arm the test-module skipper" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD8 — POSITIVE CONTROL for the whole hD block, so it cannot be satisfied by
+# the gate simply becoming unconditionally RED: every hostile shape above, in
+# ONE test module, with the hazard left legitimately inside it.
+write_fixture <<'RS'
+pub fn nothing() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_hostile_shape_at_once() {
+        assert_eq!(render(), "{ open brace in a string");
+        let close = '}';
+        let source = r#"pub structure Bolt {
+    diameter: 5mm
+"#;
+        /* } */
+        /* { */
+        if "// not a comment".starts_with("//") {
+            assert!(source.is_empty() || close == '}');
+        }
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hD8: every hostile shape at once, hazard legitimately inside the cfg(test) module — gate stays GREEN" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD9 — PORTABILITY (a real assertion, not decorative): the lexer must be
+# POSIX awk only (substr/index/length/match, extra params as locals, no
+# gensub), so the ported gate agrees under mawk as well as under the default
+# gawk. Re-runs hD1's and hD4's fixtures with `awk` PATH-shadowed to mawk.
+#
+# GUARD FORM MATTERS (mirrors tests/infra/test_occt_gated_scope.sh:246-254):
+# the skip is expressed OUTSIDE the assert, not as an in-body `exit 0` —
+# test_helpers.sh's assert() counts any zero-exit checker as a PASS, so an
+# in-body guard would still increment PASS while checking nothing. The
+# outside form makes a mawk-less host report an explicit SKIP instead.
+if command -v mawk >/dev/null 2>&1; then
+    MAWK_SHIM="$DET_TMP/mawk-shim"
+    mkdir -p "$MAWK_SHIM"
+    ln -s "$(command -v mawk)" "$MAWK_SHIM/awk"
+
+    write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn renders_an_open_brace() {
+        assert_eq!(render(), "{ open brace in a string");
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+    stage
+    assert "hD9: hD1's fixture agrees under PATH-shadowed mawk (POSIX-awk-only lexer)" \
+        _exits_with 1 env PATH="$MAWK_SHIM:$PATH" bash "$GATE" --repo-root "$FIX"
+
+    write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejects_an_unclosed_structure() {
+        let source = r#"pub structure Bolt {
+    diameter: 5mm
+"#;
+        assert!(parse(source).is_err());
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+    stage
+    assert "hD9: hD4's fixture agrees under PATH-shadowed mawk (POSIX-awk-only lexer)" \
+        _exits_with 1 env PATH="$MAWK_SHIM:$PATH" bash "$GATE" --repo-root "$FIX"
+else
+    echo "  SKIP: hD9 (mawk portability) — mawk is not on PATH on this host."
+fi
+
 test_summary
