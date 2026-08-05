@@ -85,13 +85,16 @@ mod tests {
     /// Asserts REMOVAL, not mere overwrite: `std` records an `env_remove` as a
     /// `(key, None)` pair in `get_envs()`, an assignment as `(key, Some(..))`.
     /// The command is shaped like a real caller here
-    /// (`orphan_audit::child_repo_root` — `.current_dir(..)`, no `-C`), and
-    /// needs neither a spawn nor `git` on `PATH`.
+    /// (`orphan_audit::child_repo_root` — `.current_dir(..)`, no `-C`), but is
+    /// never spawned: only `Command` metadata is inspected, so the working
+    /// directory is deliberately nonexistent and neither `git` on `PATH` nor a
+    /// real temporary directory is needed (same shape as
+    /// `orphan_audit::tests::build_audit_command_removes_every_repo_redirect_var`).
     #[test]
     fn sanitize_removes_every_repo_redirect_var() {
         let mut cmd = Command::new("git");
         cmd.args(["rev-parse", "--show-toplevel"])
-            .current_dir(std::env::temp_dir());
+            .current_dir(std::path::Path::new("/nonexistent/repo-root"));
 
         // The returned `&mut Command` must chain, so a caller needing a shape
         // other than `git -C <root>` can opt in mid-builder.

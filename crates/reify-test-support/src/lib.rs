@@ -22,6 +22,7 @@ pub mod values;
 
 pub use builders::*;
 pub use fixtures::*;
+pub use git_env::*;
 pub use helpers::*;
 pub use lsp_fixtures::*;
 pub use mocks::*;
