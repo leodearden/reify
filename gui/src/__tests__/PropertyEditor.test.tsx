@@ -4,6 +4,7 @@ import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
 import type { UnitLadderMap, ValueData } from '../types';
 import { loadUnitPreference, saveUnitPreference } from '../stores/unitPreferences';
+import { BASE_UNIT_LABELS, buildQuantityRe } from '../stores/unitLadder';
 
 function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueData {
   return {
@@ -687,9 +688,10 @@ describe('PropertyEditor quantity literal acceptance', () => {
   it.each([
     ['10xyz'],
     ['mm80'],
-    // Leading '+' rejected: QUANTITY_RE uses ^-? (minus-only), so '+10mm' fails even
-    // though the exponent group [eE][+-]? does accept '+' (e.g., '1e+3mm' is valid).
-    // This matches the .ri grammar which only defines unary minus for number literals.
+    // Leading '+' rejected: the numeric part of `buildQuantityRe` is `-?`
+    // (minus-only), so '+10mm' fails even though the exponent group [eE][+-]?
+    // does accept '+' (e.g., '1e+3mm' is valid). This matches the .ri grammar
+    // which only defines unary minus for number literals.
     ['+10mm'],
     ['mm'],
     ['deg'],
@@ -724,9 +726,9 @@ describe('PropertyEditor quantity literal acceptance', () => {
 
 describe('Design decision: whitespace between number and unit is rejected', () => {
   // The .ri grammar uses token.immediate to forbid whitespace between number and unit
-  // (see tree-sitter-reify/grammar.js:692-699). The frontend QUANTITY_RE enforces this
-  // stricter rule. The backend parse_value_string is more lenient (accepts '5 mm') but
-  // that is an incidental bug, not a design choice.
+  // (see tree-sitter-reify/grammar.js:692-699). The frontend's `buildQuantityRe`
+  // enforces this stricter rule. The backend parse_value_string is more lenient
+  // (accepts '5 mm') but that is an incidental bug, not a design choice.
 
   const values = EDITABLE_C1;
 
@@ -870,17 +872,24 @@ describe('PropertyEditor validation - valid sci-notation quantities still accept
 describe('PropertyEditor validation - quantity overflow rejection', () => {
   const values = EDITABLE_C1;
 
-  it('QUANTITY_RE accepts overflow strings but Number(strip) reveals Infinity — documents the gap', () => {
-    const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
+  it('the quantity regex accepts overflow strings but Number(group 1) reveals Infinity — documents the gap', () => {
+    // Built from the SINGLE definition of the quantity grammar
+    // (`buildQuantityRe` in ../stores/unitLadder, task #6028) rather than a
+    // local re-declaration. This test used to carry its own inline copy of
+    // both the regex and the unit alternation, which is precisely the drift
+    // risk #6028 removes: the grammar now has one definition in the repo.
+    const re = buildQuantityRe(BASE_UNIT_LABELS);
     // The regex happily accepts these — it has no numeric range check
-    expect(QUANTITY_RE.test('1e999mm')).toBe(true);
-    expect(QUANTITY_RE.test('-1e999deg')).toBe(true);
-    expect(QUANTITY_RE.test('1e999m')).toBe(true);
-    // But stripping the unit and converting via Number() reveals Infinity
-    const strip = (v: string) => Number(v.replace(/(mm|cm|deg|rad|m)$/, ''));
-    expect(Number.isFinite(strip('1e999mm'))).toBe(false);
-    expect(Number.isFinite(strip('-1e999deg'))).toBe(false);
-    expect(Number.isFinite(strip('1e999m'))).toBe(false);
+    expect(re.test('1e999mm')).toBe(true);
+    expect(re.test('-1e999deg')).toBe(true);
+    expect(re.test('1e999m')).toBe(true);
+    // But converting capture group 1 — the whole signed numeric literal —
+    // reveals Infinity. This is why the `Number.isFinite` guard in
+    // `isValidValue` is load-bearing and not redundant with the regex.
+    const numeric = (v: string) => Number(re.exec(v)![1]);
+    expect(Number.isFinite(numeric('1e999mm'))).toBe(false);
+    expect(Number.isFinite(numeric('-1e999deg'))).toBe(false);
+    expect(Number.isFinite(numeric('1e999m'))).toBe(false);
   });
 
   it("'1e999m' (overflow m) on Enter does NOT call onSetParameter and sets data-invalid", () => {
