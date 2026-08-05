@@ -491,23 +491,14 @@ fn compute_si_value(expr: &CompiledExpr) -> f64 {
     }
 }
 
-/// Extract the SI scalar magnitude from a dimensioned literal expression.
-/// Only accepts `Literal(Value::Scalar { si_value, .. })` directly.
-fn extract_scalar_si(expr: &CompiledExpr) -> f64 {
-    match &expr.kind {
-        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "extract_scalar_si: expected Literal(Value::Scalar), got: {:?}",
-            other
-        ),
-    }
-}
-
 /// Read a bare numeric literal, tolerating the three spellings a component of
 /// a DIMENSIONLESS vector literal can compile to. `vec3(0, 0, 1)` bakes
-/// `Value::Int`, not `Value::Scalar` — so [`extract_scalar_si`]'s strictness
-/// is right for a dimensioned literal and wrong for a dimensionless one
-/// (task 5848; mirrors the same split on the eval side's component readers).
+/// `Value::Int`, not `Value::Scalar`, so a reader that accepted only
+/// `Value::Scalar` — the right strictness for a *dimensioned* literal — is
+/// wrong for a dimensionless one (task 5848; mirrors the same split on the
+/// eval side's component readers). Dimensionality is not erased by this
+/// looseness: it is pinned separately, on the cell's `result_type`, by
+/// [`assert_scalar_default`] and by the param type table.
 fn extract_numeric_literal(expr: &CompiledExpr) -> f64 {
     match &expr.kind {
         CompiledExprKind::Literal(Value::Int(n)) => *n as f64,
