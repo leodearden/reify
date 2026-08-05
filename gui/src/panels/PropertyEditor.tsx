@@ -113,7 +113,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
    * DERIVED from the live ladders — i.e. from what the backend actually
    * advertises — over a static five-unit floor for when `get_unit_ladders`
    * has not resolved or has failed. Before this it was a hard-coded
-   * `(mm|cm|deg|rad|m)`, which rejected every unit the backend supports
+   * five-unit alternation, which rejected every unit the backend supports
    * beyond those five.
    *
    * Memoized so the regex is rebuilt only when the ladder map changes.

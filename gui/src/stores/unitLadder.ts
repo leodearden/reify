@@ -126,7 +126,7 @@ const QUANTITY_NUMBER = '-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?';
 /**
  * Build the typed-quantity regex for a unit alphabet (task #6028) — the ONE
  * definition of the quantity grammar in the frontend. Before this, the
- * `mm|cm|deg|rad|m` alternation was written four times across
+ * five-unit alternation was written four times across
  * `PropertyEditor.tsx` and `PropertyEditor.test.tsx`, each copy carrying its
  * own obligation to stay in sync.
  *

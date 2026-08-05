@@ -246,7 +246,7 @@ describe('quantityUnitAlphabet', () => {
 
 /**
  * Task #6028: the ONE definition of the typed-quantity grammar. Before this,
- * the `mm|cm|deg|rad|m` alternation was written FOUR times across
+ * the five-unit alternation was written FOUR times across
  * `PropertyEditor.tsx` (x2) and `PropertyEditor.test.tsx` (x2).
  */
 describe('buildQuantityRe', () => {
@@ -283,7 +283,7 @@ describe('buildQuantityRe', () => {
 
   // Capture group 1 is the FULL signed numeric literal — sign, mantissa and
   // exponent. That is what removes the need for a second regex (the old
-  // `value.replace(/(mm|cm|deg|rad|m)$/, '')` strip): the caller reads m[1]
+  // unit-suffix `value.replace(...)` strip): the caller reads m[1]
   // instead of re-declaring the alternation to strip the suffix.
   it.each([
     ['-1.5e-2deg', '-1.5e-2'],
