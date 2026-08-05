@@ -24,12 +24,27 @@
 //! wire-only tests were green while every DSL call failed. The
 //! `*_face_profile*` tests below close that hole by driving the op with the
 //! face the DSL actually produces.
+//!
+//! The `sweep_guided_rejects_*` cases cover the other two arguments as well as
+//! the profile: `path` and `guide` are wire-typed and get the same
+//! Reify-authored, argument-naming rejection, since a selector can hand any
+//! extracted sub-shape to either of them.
 
 #![cfg(has_occt)]
 
 use crate::common;
 use reify_kernel_occt::OcctKernel;
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{BRepKind, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+
+/// The label `wrap_occt_call` prefixes onto every diagnostic raised by the C++
+/// entry point behind `GeometryOp::SweepGuided`.
+///
+/// It is the wrapper symbol `make_pipe_shell`, not the `sweep_guided(...)` a
+/// DSL author actually wrote — promoting kernel diagnostics to DSL-level op
+/// names is tracked as #5895. The rejection assertions below reference this
+/// constant rather than spelling the symbol out, so that change is a one-line
+/// edit here instead of a rewrite of every test.
+const SWEEP_GUIDED_OP_LABEL: &str = "make_pipe_shell";
 
 /// Build a closed circular wire profile at z=0 of the given radius.
 fn make_circle_profile(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId {
@@ -42,6 +57,16 @@ fn make_circle_profile(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId
             axis: [0.0, 0.0, 1.0],
         })
         .expect("Arc (full circle) creation should succeed")
+        .id
+}
+
+/// Build the `CircleProfile` face the DSL's `circle(r)` lowers to.
+fn make_circle_face(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(radius),
+        })
+        .expect("CircleProfile should build")
         .id
 }
 
@@ -102,6 +127,59 @@ fn bbox_spans(kernel: &OcctKernel, id: GeometryHandleId) -> (f64, f64, f64) {
     bbox.spans()
 }
 
+/// Assert `id` is an open (un-capped) SHELL.
+///
+/// Both halves are load-bearing. `IsClosed` alone is too weak: `is_closed` in
+/// cpp/occt_wrapper.cpp short-circuits to `false` for anything that is not a
+/// SOLID, COMPSOLID or SHELL, so a lone `!closed` also passes for a COMPOUND or
+/// a stray FACE — precisely the degradation this assertion exists to catch. The
+/// kind half reads `repr_of`, which since this task stamps the result's real
+/// top-level type (not the default `BRepKind::Solid`) reports what the shape
+/// actually is.
+#[track_caller]
+fn assert_open_shell(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
+    match kernel
+        .query(&GeometryQuery::IsClosed(id))
+        .expect("IsClosed query should succeed")
+    {
+        Value::Bool(closed) => assert!(
+            !closed,
+            "{what} must sweep to an open (un-capped) shell; got a closed \
+             result, which means the face-only solidification gate has been \
+             widened to non-face profiles too"
+        ),
+        other => panic!("expected IsClosed Bool, got {:?}", other),
+    }
+    assert_eq!(
+        kernel.repr_of(id),
+        Some(BRepKind::Shell),
+        "{what} must sweep to a SHELL — an un-capped result that degraded to \
+         some other type would satisfy the IsClosed check vacuously"
+    );
+}
+
+/// Assert `id` is a closed SOLID — the declared result kind of
+/// `sweep_guided(profile: Surface, …) -> Solid`.
+#[track_caller]
+fn assert_closed_solid(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
+    match kernel
+        .query(&GeometryQuery::IsClosed(id))
+        .expect("IsClosed query should succeed")
+    {
+        Value::Bool(closed) => assert!(
+            closed,
+            "{what} must sweep to a closed (capped) result, got an open shell"
+        ),
+        other => panic!("expected IsClosed Bool, got {:?}", other),
+    }
+    assert_eq!(
+        kernel.repr_of(id),
+        Some(BRepKind::Solid),
+        "{what} must be registered as a Solid — the repr the declared \
+         signature promises and downstream sub-shape classification trusts"
+    );
+}
+
 /// Parse a JSON-encoded centroid string `{"x":…,"y":…,"z":…}` into (x, y, z).
 fn parse_centroid(s: &str) -> (f64, f64, f64) {
     let inner = s.trim_start_matches('{').trim_end_matches('}');
@@ -146,18 +224,7 @@ fn sweep_guided_produces_valid_shape() {
     // C++ to an unconditional `MakeSolid()` would pass every test in this
     // file. A wire section carries no enclosed region for end caps to close
     // over, so there is nothing to solidify.
-    match kernel
-        .query(&GeometryQuery::IsClosed(result.id))
-        .expect("IsClosed query should succeed")
-    {
-        Value::Bool(closed) => assert!(
-            !closed,
-            "a wire profile must sweep to an open (un-capped) shell; got a \
-             closed result, which means the face-only solidification gate has \
-             been widened to wire profiles too"
-        ),
-        other => panic!("expected IsClosed Bool, got {:?}", other),
-    }
+    assert_open_shell(&kernel, result.id, "a wire profile");
 }
 
 /// A `CircleProfile` face — the only profile a DSL `sweep_guided()` call can
@@ -173,12 +240,7 @@ fn sweep_guided_produces_valid_shape() {
 #[test]
 fn sweep_guided_accepts_circle_face_profile() {
     let mut kernel = OcctKernel::new();
-    let profile = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let profile = make_circle_face(&mut kernel, 0.02);
     let path = make_straight_path(&mut kernel, 0.1);
     let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
 
@@ -195,16 +257,7 @@ fn sweep_guided_accepts_circle_face_profile() {
     // free edges at both ends and reports false here. This distinguishes the
     // solidified face path from the raw-shell wire path without relying on a
     // volume magnitude.
-    match kernel
-        .query(&GeometryQuery::IsClosed(result.id))
-        .expect("IsClosed query should succeed")
-    {
-        Value::Bool(closed) => assert!(
-            closed,
-            "a face profile must sweep to a closed (capped) result, got an open shell"
-        ),
-        other => panic!("expected IsClosed Bool, got {:?}", other),
-    }
+    assert_closed_solid(&kernel, result.id, "a face profile");
 
     // Extents. The swept tube must be at least as wide as its own section
     // (2r = 0.04) on both transverse axes, and must follow the 0.1 m spine in
@@ -226,6 +279,58 @@ fn sweep_guided_accepts_circle_face_profile() {
     );
 }
 
+/// A VERTEX profile must clear Reify's section-profile contract.
+///
+/// `BRepFill_Section` stores a wire *or a vertex*, so `section_profile_to_wire`
+/// hands vertices through untouched, and both the header contract and the
+/// rejection message advertise Vertex as a supported profile kind — without
+/// this test that arm is asserted only by prose.
+///
+/// A *lone* vertex section is nevertheless refused DOWNSTREAM by OCCT itself:
+/// `BRepOffsetAPI_MakePipeShell` needs at least one non-punctual section and
+/// answers "OCCT make_pipe_shell: Wrong usage of punctual sections" (measured)
+/// when every section is a point. That is an OCCT constraint on the sweep, not
+/// a Reify contract violation, and the assertions below pin exactly that
+/// distinction: the diagnostic must keep the "OCCT <op>: " framing and must NOT
+/// be the "unsupported profile shape type 'Vertex'" rejection the helper would
+/// raise if the vertex arm regressed. An `Ok` is accepted too — a future OCCT
+/// that lifts the punctual-section restriction is not a regression here.
+///
+/// The building half of the vertex arm is covered by
+/// `loft_guided_accepts_vertex_section`, which pairs a vertex tip with a face
+/// section so the section set is not punctual-only.
+#[test]
+fn sweep_guided_vertex_profile_clears_the_section_contract() {
+    let mut kernel = OcctKernel::new();
+    let profile = kernel.store_vertex_at_for_test(0.0, 0.0, 0.0);
+    let path = make_straight_path(&mut kernel, 0.1);
+    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
+
+    match kernel.execute(&GeometryOp::SweepGuided {
+        profile,
+        path,
+        guide,
+    }) {
+        Ok(_) => {}
+        Err(GeometryError::OperationFailed(msg)) => {
+            assert!(
+                !msg.contains("unsupported profile shape type"),
+                "a vertex profile must clear section_profile_to_wire's type \
+                 contract — it is one of the two kinds BRepFill_Section stores; \
+                 got the unsupported-type rejection: {msg}"
+            );
+            assert!(
+                msg.starts_with("OCCT "),
+                "a vertex profile may only fail INSIDE OCCT (a punctual-section \
+                 sweep is degenerate), which wrap_occt_call frames as \
+                 \"OCCT <op>: …\"; a Reify-authored \"<op>: …\" diagnostic here \
+                 would mean the vertex arm regressed to a rejection: {msg}"
+            );
+        }
+        Err(other) => panic!("expected OperationFailed, got {:?}", other),
+    }
+}
+
 /// A face profile must sweep to an *enclosed solid*, at parity with plain
 /// `sweep()` — the declared stdlib signature is
 /// `sweep_guided(profile: Surface, path: Curve, guide: Curve) -> Solid`.
@@ -239,12 +344,7 @@ fn sweep_guided_accepts_circle_face_profile() {
 #[test]
 fn sweep_guided_face_profile_yields_solid_volume() {
     let mut kernel = OcctKernel::new();
-    let profile = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let profile = make_circle_face(&mut kernel, 0.02);
     let path = make_straight_path(&mut kernel, 0.1);
     let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
 
@@ -275,12 +375,7 @@ fn sweep_guided_face_profile_yields_solid_volume() {
 
     // (b) parity with plain Sweep, which OCCT already solidifies for a face
     // profile. Fresh inputs — MakePipeShell consumes the ones above.
-    let profile_plain = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let profile_plain = make_circle_face(&mut kernel, 0.02);
     let path_plain = make_straight_path(&mut kernel, 0.1);
     let plain = kernel
         .execute(&GeometryOp::Sweep {
@@ -303,8 +398,8 @@ fn sweep_guided_face_profile_yields_solid_volume() {
     );
 }
 
-/// Run a `SweepGuided` that must be rejected, and assert the diagnostic is
-/// Reify-authored.
+/// Run a `SweepGuided` with the given arguments and assert it is rejected with
+/// a Reify-authored contract diagnostic.
 ///
 /// `expected_fragment` is matched **verbatim and case-sensitively**, so callers
 /// pass the full distinguishing phrase (`"shape type 'Edge'"`, not `"Edge"`).
@@ -312,23 +407,14 @@ fn sweep_guided_face_profile_yields_solid_volume() {
 /// tail — "must be a Wire, a Vertex, or a Face" — already contains "wire",
 /// "vertex" and "face", so a lowercased substring test would pass for those
 /// three types no matter what the offending shape actually was.
-///
-/// The attribution assertion pins `make_pipe_shell`, the C++ wrapper entry
-/// point. That name is what distinguishes this op's diagnostics from
-/// `loft_guided_profiles`' (see loft_guided_integration.rs), which is why it is
-/// asserted. It is NOT the name a DSL author wrote — they typed
-/// `sweep_guided(...)` — so the string does leak an implementation symbol into
-/// user-facing text. Promoting these diagnostics to DSL-level op names needs
-/// display-name plumbing from the Rust dispatch layer into the C++ wrapper,
-/// which is beyond this task's scope; filed as follow-up work.
-fn assert_profile_rejected(
+#[track_caller]
+fn assert_sweep_rejected(
     kernel: &mut OcctKernel,
     profile: GeometryHandleId,
+    path: GeometryHandleId,
+    guide: GeometryHandleId,
     expected_fragment: &str,
-) -> String {
-    let path = make_straight_path(kernel, 0.1);
-    let guide = make_offset_guide(kernel, 0.05, 0.03, 0.1);
-
+) {
     match kernel.execute(&GeometryOp::SweepGuided {
         profile,
         path,
@@ -340,37 +426,48 @@ fn assert_profile_rejected(
                 "error must contain the distinguishing phrase \
                  {expected_fragment:?}, got: {msg}"
             );
+            // One assertion, two properties. `wrap_occt_call` renders a
+            // Reify-detected ContractViolation as "<op>: <message>" and
+            // reserves "OCCT <op>: unexpected: …" for genuine OCCT-originated
+            // failures, so a leading "<label>: " proves BOTH that the failure
+            // is attributed to this entry point (not to loft_guided_profiles,
+            // which shares the helper and MakePipeShell underneath) AND that it
+            // arrived through the ContractViolation catch arm rather than the
+            // broader std::exception one.
+            let prefix = format!("{SWEEP_GUIDED_OP_LABEL}: ");
             assert!(
-                msg.contains("make_pipe_shell"),
-                "error must attribute the failing op, got: {msg}"
+                msg.starts_with(&prefix),
+                "a Reify contract violation must surface as {prefix:?} + message \
+                 — no \"OCCT \" prefix, no \"unexpected\" framing; got: {msg}"
             );
             assert!(
                 !msg.contains("BRepFill_Section"),
                 "error must be a Reify diagnostic, not OCCT's opaque internal \
                  wording, got: {msg}"
             );
-            assert!(
-                !msg.to_lowercase().contains("unexpected"),
-                "a known contract violation must not be framed as an unexpected \
-                 OCCT exception, got: {msg}"
-            );
-            msg
         }
         Ok(_) => panic!("expected OperationFailed for {expected_fragment:?}, got Ok"),
         Err(other) => panic!("expected OperationFailed, got {:?}", other),
     }
 }
 
-/// Every profile type `BRepFill_Section` genuinely cannot take must be
+/// [`assert_sweep_rejected`] with a valid straight path and offset guide, for
+/// the cases where the *profile* is the argument under test.
+#[track_caller]
+fn assert_profile_rejected(
+    kernel: &mut OcctKernel,
+    profile: GeometryHandleId,
+    expected_fragment: &str,
+) {
+    let path = make_straight_path(kernel, 0.1);
+    let guide = make_offset_guide(kernel, 0.05, 0.03, 0.1);
+    assert_sweep_rejected(kernel, profile, path, guide, expected_fragment);
+}
+
+/// A SOLID profile — the classic wrong-dimensionality argument — must be
 /// rejected with a Reify-authored diagnostic naming the offending shape type.
-///
-/// Covers EDGE as well as SOLID: this fix narrowed a previously documented
-/// contract (the old comment claimed "profile may be an edge, wire, or face"),
-/// so the EDGE branch is exactly the one whose status changed and must be
-/// pinned.
 #[test]
-fn sweep_guided_rejects_unsupported_profile_type() {
-    // SOLID — the classic wrong-dimensionality profile.
+fn sweep_guided_rejects_solid_profile() {
     let mut kernel = OcctKernel::new();
     let solid = kernel
         .execute(&GeometryOp::Box {
@@ -381,16 +478,21 @@ fn sweep_guided_rejects_unsupported_profile_type() {
         .expect("Box should build")
         .id;
     assert_profile_rejected(&mut kernel, solid, "shape type 'Solid'");
+}
 
-    // EDGE — obtained by topology extraction from a circle profile face, the
-    // same route by which a selector can hand an edge handle to an op.
+/// An EDGE profile must be rejected too.
+///
+/// Split from the SOLID case above so neither arm can mask the other: this fix
+/// narrowed a previously documented contract (the old comment claimed "profile
+/// may be an edge, wire, or face"), so EDGE is exactly the branch whose status
+/// changed and it must report independently.
+///
+/// The edge is obtained by topology extraction from a circle profile face — the
+/// same route by which a selector can hand an edge handle to an op.
+#[test]
+fn sweep_guided_rejects_edge_profile() {
     let mut kernel = OcctKernel::new();
-    let face = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let face = make_circle_face(&mut kernel, 0.02);
     let edges = kernel
         .extract_edges(face)
         .expect("extract_edges on a circle face should succeed");
@@ -398,6 +500,55 @@ fn sweep_guided_rejects_unsupported_profile_type() {
         .first()
         .expect("a circle profile face has at least one edge");
     assert_profile_rejected(&mut kernel, edge, "shape type 'Edge'");
+}
+
+/// A non-wire PATH must be rejected by argument name.
+///
+/// The spine reaches `TopoDS::Wire(...)` the moment the maker is constructed,
+/// and that downcast raises OCCT's `Standard_TypeMismatch`, which names no
+/// argument (and frequently carries no message at all). A face handle is
+/// reachable here by exactly the route that makes a bad profile reachable —
+/// `CircleProfile` and `extract_faces` both mint `Surface`-typed handles — so
+/// the path argument gets the same contract treatment as the profile.
+#[test]
+fn sweep_guided_rejects_non_wire_path() {
+    let mut kernel = OcctKernel::new();
+    let profile = make_circle_face(&mut kernel, 0.02);
+    let path = make_circle_face(&mut kernel, 0.02); // a FACE, not a Curve
+    let guide = make_offset_guide(&mut kernel, 0.05, 0.03, 0.1);
+
+    assert_sweep_rejected(
+        &mut kernel,
+        profile,
+        path,
+        guide,
+        "sweep path has unsupported shape type 'Face'",
+    );
+}
+
+/// A non-wire GUIDE must be rejected by argument name, for the same reason as
+/// the path. Uses an extracted EDGE — the shape a `Curve`-typed selector result
+/// most plausibly is when it isn't a wire.
+#[test]
+fn sweep_guided_rejects_non_wire_guide() {
+    let mut kernel = OcctKernel::new();
+    let profile = make_circle_face(&mut kernel, 0.02);
+    let path = make_straight_path(&mut kernel, 0.1);
+    let face = make_circle_face(&mut kernel, 0.02);
+    let edges = kernel
+        .extract_edges(face)
+        .expect("extract_edges on a circle face should succeed");
+    let guide = *edges
+        .first()
+        .expect("a circle profile face has at least one edge");
+
+    assert_sweep_rejected(
+        &mut kernel,
+        profile,
+        path,
+        guide,
+        "sweep guide has unsupported shape type 'Edge'",
+    );
 }
 
 /// An UNBOUNDED face (zero wires) must be rejected by name.
@@ -473,11 +624,10 @@ fn sweep_guided_rejects_holed_face_profile() {
         })
         .expect("a tube has planar annular end faces");
 
-    let msg = assert_profile_rejected(&mut kernel, annulus, "1 inner wire(s)");
-    assert!(
-        msg.contains("discard"),
-        "diagnostic should explain that the hole(s) would be discarded, got: {msg}"
-    );
+    // The inner-wire COUNT is the semantic content worth pinning; the prose
+    // around it ("… would be silently discarded") is deliberately not asserted,
+    // so rewording the diagnostic is not a test-breaking change.
+    assert_profile_rejected(&mut kernel, annulus, "1 inner wire(s)");
 }
 
 #[test]

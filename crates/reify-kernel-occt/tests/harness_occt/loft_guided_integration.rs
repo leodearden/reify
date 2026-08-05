@@ -23,16 +23,32 @@
 //!   `CircleProfile` **faces** — the only section kind a DSL `loft_guided()`
 //!   call can produce — and pins the face → outer-wire → solid path.
 //!   `loft_guided_mixed_face_and_wire_sections_yield_shell` pins the third
-//!   branch (reduce the face, but do not solidify), and the two
+//!   branch (reduce the face, but do not solidify),
+//!   `loft_guided_accepts_vertex_section` pins the vertex passthrough, and the
 //!   `loft_guided_rejects_*` cases pin this entry point's own rejection
 //!   diagnostics — `sweep_guided_integration.rs` drives only
-//!   `GeometryOp::SweepGuided`, so it cannot cover them.
+//!   `GeometryOp::SweepGuided`, so it cannot cover them. That applies with most
+//!   force to `loft_guided_rejects_unbounded_face_section`: its guard is the
+//!   one whose regression is a SIGSEGV that would take the whole harness
+//!   binary down, not a bad message.
 
 #![cfg(has_occt)]
 
 use crate::common;
 use reify_kernel_occt::OcctKernel;
-use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{BRepKind, GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
+
+/// The label `wrap_occt_call` prefixes onto every diagnostic raised by the C++
+/// entry point behind `GeometryOp::LoftGuided`, and its `make_pipe_shell`
+/// counterpart — both ops share `section_profile_to_wire` and
+/// `BRepOffsetAPI_MakePipeShell` underneath, so the attribution assertions
+/// below check the loft label is present AND the sweep label is not.
+///
+/// Both are C++ wrapper symbols rather than the `loft_guided(...)` a DSL author
+/// wrote; promoting kernel diagnostics to DSL-level op names is tracked as
+/// #5895, which these constants reduce to a one-line edit per file.
+const LOFT_GUIDED_OP_LABEL: &str = "loft_guided_profiles";
+const SWEEP_GUIDED_OP_LABEL: &str = "make_pipe_shell";
 
 /// Build a closed circular wire profile of the given radius at the
 /// given z height, centred on the Z-axis.
@@ -81,6 +97,16 @@ fn bbox_spans(kernel: &OcctKernel, id: GeometryHandleId) -> (f64, f64, f64) {
     bbox.spans()
 }
 
+/// Build the `CircleProfile` face the DSL's `circle(r)` lowers to.
+fn make_circle_face(kernel: &mut OcctKernel, radius: f64) -> GeometryHandleId {
+    kernel
+        .execute(&GeometryOp::CircleProfile {
+            radius: Value::Real(radius),
+        })
+        .expect("CircleProfile should build")
+        .id
+}
+
 /// The core happy-path assertion: LoftGuided produces a finite,
 /// non-degenerate shape whose bounding box spans both profile z heights.
 #[test]
@@ -114,12 +140,20 @@ fn loft_guided_smooth_surface_between_profiles() {
     // solidification gate — the reason that gate is conditional at all.
     // Without this assertion, flipping the C++ to an unconditional
     // `MakeSolid()` would pass every test in this file.
-    assert_not_closed(&kernel, result.id, "an all-wire section set");
+    assert_open_shell(&kernel, result.id, "an all-wire section set");
 }
 
-/// Assert `id` is an open (un-capped) shell rather than a closed solid.
+/// Assert `id` is an open (un-capped) SHELL rather than a closed solid.
+///
+/// Both halves are load-bearing. `IsClosed` alone is too weak: `is_closed` in
+/// cpp/occt_wrapper.cpp short-circuits to `false` for anything that is not a
+/// SOLID, COMPSOLID or SHELL, so a lone `!closed` also passes for a COMPOUND or
+/// a stray FACE — precisely the degradation this assertion exists to catch. The
+/// kind half reads `repr_of`, which since this task stamps the result's real
+/// top-level type (not the default `BRepKind::Solid`) reports what the shape
+/// actually is.
 #[track_caller]
-fn assert_not_closed(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
+fn assert_open_shell(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
     match kernel
         .query(&GeometryQuery::IsClosed(id))
         .expect("IsClosed query should succeed")
@@ -132,28 +166,35 @@ fn assert_not_closed(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
         ),
         other => panic!("expected IsClosed Bool, got {:?}", other),
     }
+    assert_eq!(
+        kernel.repr_of(id),
+        Some(BRepKind::Shell),
+        "{what} must loft to a SHELL — an un-capped result that degraded to \
+         some other type would satisfy the IsClosed check vacuously"
+    );
 }
 
 /// Run a `LoftGuided` that must be rejected and assert the diagnostic is
-/// Reify-authored and attributed to `loft_guided_profiles` — NOT to
-/// `make_pipe_shell`, even though both entry points share
-/// `section_profile_to_wire` and `BRepOffsetAPI_MakePipeShell` underneath.
+/// Reify-authored and attributed to this entry point — NOT to `make_pipe_shell`,
+/// even though both share `section_profile_to_wire` and
+/// `BRepOffsetAPI_MakePipeShell` underneath.
 ///
 /// `expected_fragment` is matched verbatim and case-sensitively; see the note
-/// on `sweep_guided_integration::assert_profile_rejected` for why a bare type
-/// word would match vacuously, and for the standing caveat that
-/// `loft_guided_profiles` is the C++ wrapper name rather than the DSL-level
-/// `loft_guided(...)` the author actually wrote.
+/// on `sweep_guided_integration::assert_sweep_rejected` for why a bare type word
+/// would match vacuously.
+///
+/// `guides` lets a caller drive the guide-argument contract as well as the
+/// section one; pass a plain spine for section cases.
 #[track_caller]
-fn assert_section_rejected(
+fn assert_loft_rejected(
     kernel: &mut OcctKernel,
     sections: Vec<GeometryHandleId>,
+    guides: Vec<GeometryHandleId>,
     expected_fragment: &str,
-) -> String {
-    let spine = make_spine(kernel, 0.1);
+) {
     match kernel.execute(&GeometryOp::LoftGuided {
         profiles: sections,
-        guides: vec![spine],
+        guides,
     }) {
         Err(GeometryError::OperationFailed(msg)) => {
             assert!(
@@ -161,31 +202,43 @@ fn assert_section_rejected(
                 "error must contain the distinguishing phrase \
                  {expected_fragment:?}, got: {msg}"
             );
+            // One assertion, two properties — see the twin in
+            // sweep_guided_integration.rs: `wrap_occt_call` renders a
+            // Reify-detected ContractViolation as "<op>: <message>" and reserves
+            // "OCCT <op>: unexpected: …" for genuine OCCT-originated failures, so
+            // a leading "<label>: " proves both attribution and framing.
+            let prefix = format!("{LOFT_GUIDED_OP_LABEL}: ");
             assert!(
-                msg.contains("loft_guided_profiles"),
-                "error must attribute the loft entry point, not make_pipe_shell, \
-                 got: {msg}"
+                msg.starts_with(&prefix),
+                "a Reify contract violation must surface as {prefix:?} + message \
+                 — no \"OCCT \" prefix, no \"unexpected\" framing; got: {msg}"
             );
             assert!(
-                !msg.contains("make_pipe_shell"),
-                "error must not misattribute a loft failure to make_pipe_shell, \
-                 got: {msg}"
+                !msg.contains(SWEEP_GUIDED_OP_LABEL),
+                "error must not misattribute a loft failure to the sweep entry \
+                 point, got: {msg}"
             );
             assert!(
                 !msg.contains("BRepFill_Section"),
                 "error must be a Reify diagnostic, not OCCT's opaque internal \
                  wording, got: {msg}"
             );
-            assert!(
-                !msg.to_lowercase().contains("unexpected"),
-                "a known contract violation must not be framed as an unexpected \
-                 OCCT exception, got: {msg}"
-            );
-            msg
         }
         Ok(_) => panic!("expected OperationFailed for {expected_fragment:?}, got Ok"),
         Err(other) => panic!("expected OperationFailed, got {:?}", other),
     }
+}
+
+/// [`assert_loft_rejected`] with a valid straight spine, for the cases where a
+/// *section* is the argument under test.
+#[track_caller]
+fn assert_section_rejected(
+    kernel: &mut OcctKernel,
+    sections: Vec<GeometryHandleId>,
+    expected_fragment: &str,
+) {
+    let spine = make_spine(kernel, 0.1);
+    assert_loft_rejected(kernel, sections, vec![spine], expected_fragment);
 }
 
 /// `loft_guided_profiles` used to add each section with a bare
@@ -201,20 +254,10 @@ fn assert_section_rejected(
 #[test]
 fn loft_guided_accepts_circle_face_profiles() {
     let mut kernel = OcctKernel::new();
-    let p1 = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let p1 = make_circle_face(&mut kernel, 0.02);
     // CircleProfile always builds at z=0; lift the second section to z=0.1 so
     // the loft has non-zero Z extent.
-    let p2_flat = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.03),
-        })
-        .expect("CircleProfile (30mm) should build")
-        .id;
+    let p2_flat = make_circle_face(&mut kernel, 0.03);
     let p2 = kernel
         .execute(&GeometryOp::Translate {
             target: p2_flat,
@@ -251,10 +294,11 @@ fn loft_guided_accepts_circle_face_profiles() {
         );
     }
 
-    // All sections were faces, so the result must be a closed solid — the
-    // declared signature is `loft_guided(..) -> Solid` and the Rust layer
-    // registers it under the default `BRepKind::Solid` repr. An un-capped
-    // shell has free edges at both ends and reports false here.
+    // All sections were faces, so the result must be a closed SOLID — the
+    // declared signature is `loft_guided(..) -> Solid`. An un-capped shell has
+    // free edges at both ends and reports false here; the repr assertion pins
+    // that the kernel registers what it actually built, so a shell-valued
+    // result could not pass by being mislabelled Solid.
     match kernel
         .query(&GeometryQuery::IsClosed(result.id))
         .expect("IsClosed query should succeed")
@@ -265,6 +309,11 @@ fn loft_guided_accepts_circle_face_profiles() {
         ),
         other => panic!("expected IsClosed Bool, got {:?}", other),
     }
+    assert_eq!(
+        kernel.repr_of(result.id),
+        Some(BRepKind::Solid),
+        "an all-face section set must be registered as a Solid"
+    );
 
     // ...and enclose a positive volume in the neighbourhood of the conical
     // frustum through the two sections: V = (π·h/3)(r1² + r1·r2 + r2²).
@@ -286,6 +335,40 @@ fn loft_guided_accepts_circle_face_profiles() {
     );
 }
 
+/// A VERTEX section must be accepted — the loft-to-a-point (cone tip) case.
+///
+/// `BRepFill_Section` stores a wire *or a vertex*, so `section_profile_to_wire`
+/// passes vertices straight through; without this test that arm is asserted
+/// only by the header prose and by the rejection message's own "must be a Wire,
+/// a Vertex, or a Face". A vertex carries no enclosed region, so the section set
+/// is not all-faces and the result stays an un-capped shell.
+#[test]
+fn loft_guided_accepts_vertex_section() {
+    let mut kernel = OcctKernel::new();
+    let base = make_circle_face(&mut kernel, 0.02);
+    let tip = kernel.store_vertex_at_for_test(0.0, 0.0, 0.1);
+    let spine = make_spine(&mut kernel, 0.1);
+
+    let result = match kernel.execute(&GeometryOp::LoftGuided {
+        profiles: vec![base, tip],
+        guides: vec![spine],
+    }) {
+        Ok(r) => r,
+        Err(e) => panic!("LoftGuided with a vertex section must succeed, got: {e}"),
+    };
+
+    // The vertex really did terminate the loft at z=0.1 rather than being
+    // dropped: the shape spans both section planes.
+    let (_, _, z_span) = bbox_spans(&kernel, result.id);
+    assert!(
+        z_span > 0.09,
+        "vertex-terminated loft z-span should reach the tip plane (≥0.09), \
+         got {z_span}"
+    );
+
+    assert_open_shell(&kernel, result.id, "a face/vertex section set");
+}
+
 /// A MIXED section set — one face, one wire — must still be accepted (the face
 /// is reduced to its outer wire like any other), but must NOT be solidified.
 ///
@@ -299,12 +382,7 @@ fn loft_guided_accepts_circle_face_profiles() {
 fn loft_guided_mixed_face_and_wire_sections_yield_shell() {
     let mut kernel = OcctKernel::new();
     // Section 1: a CircleProfile FACE at z=0.
-    let face = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let face = make_circle_face(&mut kernel, 0.02);
     // Section 2: an Arc WIRE at z=0.1.
     let wire = make_circle_profile(&mut kernel, 0.01, 0.1);
     let spine = make_spine(&mut kernel, 0.1);
@@ -328,7 +406,7 @@ fn loft_guided_mixed_face_and_wire_sections_yield_shell() {
          got {z_span}"
     );
 
-    assert_not_closed(&kernel, result.id, "a mixed face/wire section set");
+    assert_open_shell(&kernel, result.id, "a mixed face/wire section set");
 }
 
 /// An unsupported SECTION type must be rejected through the loft entry point
@@ -385,21 +463,75 @@ fn loft_guided_rejects_holed_face_section() {
             )
         })
         .expect("a tube has planar annular end faces");
-    let ok_section = kernel
-        .execute(&GeometryOp::CircleProfile {
-            radius: Value::Real(0.02),
-        })
-        .expect("CircleProfile (20mm) should build")
-        .id;
+    let ok_section = make_circle_face(&mut kernel, 0.02);
 
-    let msg = assert_section_rejected(
+    // The inner-wire COUNT is the semantic content worth pinning; the prose
+    // around it ("… would be silently discarded") is deliberately not asserted,
+    // so rewording the diagnostic is not a test-breaking change.
+    assert_section_rejected(&mut kernel, vec![ok_section, annulus], "1 inner wire(s)");
+}
+
+/// An UNBOUNDED face (zero wires) section must be rejected through the loft
+/// entry point too.
+///
+/// This is the branch the C++ documents as a SIGSEGV crash guard rather than a
+/// politeness guard: `BRepTools::OuterWire` returns a NULL wire for a face with
+/// no bounding wire, and letting that reach `Add` dereferences it inside
+/// `BRepFill_Section` — a hard process kill, not a catchable `Standard_Failure`.
+/// A regression here would take down the whole harness binary, every other test
+/// with it, so the loft path needs its own coverage rather than inheriting
+/// `sweep_guided_rejects_unbounded_face_profile`'s: that test drives only
+/// `GeometryOp::SweepGuided`. The input is equally reachable from either op —
+/// `make_half_space` builds its boundary from a bare `gp_Pln`, and
+/// `extract_faces` mints that wire-less face as a `Surface`-typed handle.
+#[test]
+fn loft_guided_rejects_unbounded_face_section() {
+    let mut kernel = OcctKernel::new();
+    let half_space = kernel
+        .execute(&GeometryOp::HalfSpace {
+            px: Value::Real(0.0),
+            py: Value::Real(0.0),
+            pz: Value::Real(0.0),
+            nx: Value::Real(0.0),
+            ny: Value::Real(0.0),
+            nz: Value::Real(1.0),
+        })
+        .expect("HalfSpace should build")
+        .id;
+    let faces = kernel
+        .extract_faces(half_space)
+        .expect("extract_faces on a half-space should succeed");
+    let unbounded = *faces
+        .first()
+        .expect("a half-space has one (unbounded planar) face");
+    let ok_section = make_circle_face(&mut kernel, 0.02);
+
+    assert_section_rejected(
         &mut kernel,
-        vec![ok_section, annulus],
-        "1 inner wire(s)",
+        vec![ok_section, unbounded],
+        "no bounding wire",
     );
-    assert!(
-        msg.contains("discard"),
-        "diagnostic should explain that the hole(s) would be discarded, got: {msg}"
+}
+
+/// A non-wire SPINE (the first guide) must be rejected by role name.
+///
+/// The spine reaches `TopoDS::Wire(...)` when the maker is constructed, and
+/// that downcast raises OCCT's `Standard_TypeMismatch`, which names no argument.
+/// A `Surface`-typed handle is reachable here by the same selector route that
+/// makes a bad section reachable, so the guide list gets the same contract
+/// treatment as the sections.
+#[test]
+fn loft_guided_rejects_non_wire_spine() {
+    let mut kernel = OcctKernel::new();
+    let p1 = make_circle_face(&mut kernel, 0.02);
+    let p2 = make_circle_face(&mut kernel, 0.03);
+    let bad_spine = make_circle_face(&mut kernel, 0.02); // a FACE, not a Curve
+
+    assert_loft_rejected(
+        &mut kernel,
+        vec![p1, p2],
+        vec![bad_spine],
+        "loft spine (first guide) has unsupported shape type 'Face'",
     );
 }
 
