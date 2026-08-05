@@ -2012,11 +2012,38 @@ add_test_passes() {
     #     copy would cost another cold link for zero added coverage.
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses:
+    #     emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge gate), and
+    #     under NARROW_ACTIVE=1 only when reify-gui is in AFFECTED.  affected_crates()
+    #     is a REVERSE-dependency closure, so a change anywhere in reify-gui's
+    #     dependency graph puts reify-gui in the set — measured on this tree:
+    #     crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs both
+    #     yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
+    #     Emitting unconditionally made a `-p reify-doc` branch plan pay a full
+    #     tauri + webkit2gtk + OCCT feature-unification build (20m42s cold / ~137s
+    #     warm, and NOT shareable with any other pass's artifacts) that no reify-doc
+    #     change can regress — while that same plan already narrowed reify-gui's
+    #     UNGATED tests away, so running its gui-GATED ones would have been
+    #     incoherent.  Membership is the reverse closure rather than a hand-listed
+    #     trigger set (reify-gui/reify-eval/reify-mesh-morph) so a change to an
+    #     indirect dependency (reify-syntax, reify-ir, …) cannot silently fall out
+    #     of the trigger.
     #
-    # NOT reusing emit_nextest_pass: its command string has fixed interpolation slots
-    # and no --features parameter, and ~30 plan-shape tests assert against that single
-    # construction site.  The two arms below therefore mirror its nextest/cargo-test
-    # if/else by hand so this pass is shape-identical on a nextest-less host.
+    # NOT reusing emit_nextest_pass — nor extending it with an optional extra-flags
+    # parameter, which was considered and rejected.  Three structural mismatches, not
+    # one missing slot: (a) this pass is wrapped in an `if test -f …; then … fi` guard
+    # with a sidecar-placeholder prefix, so it needs a prefix AND a suffix hook, not a
+    # trailing-flags one; (b) emit_nextest_pass unconditionally interpolates
+    # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
+    # can emit an `-E` filterset — and an `-E` here would narrow away the very
+    # gui-gated tests this pass exists to run (asserted by (b8) in
+    # tests/infra/test_compute_trampoline_registration_wired.sh), so they would all
+    # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
+    # that single construction site.  The two arms below therefore mirror its
+    # nextest/cargo-test if/else by hand so this pass is shape-identical on a
+    # nextest-less host.  What IS shared with it is kept in lockstep deliberately and
+    # is individually asserted: the memoized _NEXTEST_CONFIG_FILE + its lazy init,
+    # the --test-threads fragment, and the trailing ` 9<&-`.
     #
     # Three non-obvious requirements, each pinned by a live guard:
     #  (i)  trailing ` 9<&-` — FD 9 is the held slot; tests/infra/test_verify_semaphore_
@@ -2043,8 +2070,34 @@ add_test_passes() {
     # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
+    local _emit_gui_feature_pass=0
     if [ "$DF_VERIFY_ROLE" != "offline" ]; then
+        if [ "$NARROW_ACTIVE" -eq 0 ]; then
+            _emit_gui_feature_pass=1
+        else
+            # Word-split $AFFECTED (safe: Rust crate names never contain spaces),
+            # matching the AFFECTED_ALL_FLAGS loop above.
+            # shellcheck disable=SC2086
+            for _gui_ac in $AFFECTED; do
+                if [ "$_gui_ac" = "reify-gui" ]; then
+                    _emit_gui_feature_pass=1
+                    break
+                fi
+            done
+        fi
+    fi
+    if [ "$_emit_gui_feature_pass" -eq 1 ]; then
         local _gui_feat_cmd
+        # --test-threads=N (task 5264) applies here for the SAME reason it applies
+        # to every other test pass: an explicit --test-threads caps test-execution
+        # parallelism, and this pass — a tauri + webkit2gtk + OCCT link inside the
+        # held slot — is the last one that should run uncapped while the workspace
+        # passes are capped.  Empty when the flag is unset, so the emitted line is
+        # byte-for-byte unchanged by default (the same empty-or-leading-space idiom
+        # emit_nextest_pass uses for _tt_flag).  The cargo-test arm below already
+        # honoured ${TEST_THREADS:-1}; the two arms are now consistent.
+        local _gui_tt_flag=""
+        [ -n "$TEST_THREADS" ] && _gui_tt_flag=" --test-threads=${TEST_THREADS}"
         if [ "$NEXTEST" -eq 1 ]; then
             local _gui_cfg_path
             if [ "$PRINT_PLAN" -eq 1 ]; then
@@ -2055,7 +2108,7 @@ add_test_passes() {
                 fi
                 _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
             fi
-            _gui_feat_cmd="${CARGO_PRIO}cargo nextest run -p reify-gui --features gui --config-file ${_gui_cfg_path}"
+            _gui_feat_cmd="${CARGO_PRIO}cargo nextest run -p reify-gui --features gui${_gui_tt_flag} --config-file ${_gui_cfg_path}"
         else
             _gui_feat_cmd="${CARGO_PRIO}cargo test -p reify-gui --features gui -- --test-threads=${TEST_THREADS:-1}"
         fi

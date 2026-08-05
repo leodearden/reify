@@ -35,8 +35,8 @@ reflect a real run on this host.
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
 | (a) docs-only | `docs/note.md` | — | 18 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 18 | 18 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 18 | 18 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 18 | 17 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 18 | 17 |
 | (d) gui-only | `gui/src/editor/foo.ts` | — | 18 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
@@ -47,8 +47,8 @@ below and replacing the counts; then re-run the test to confirm it passes.
 | shape | all | branch |
 |-------|-----|--------|
 | docs-only  | 18 |  0 |
-| reify-doc  | 18 | 18 |
-| reify-eval | 18 | 18 |
+| reify-doc  | 18 | 17 |
+| reify-eval | 18 | 17 |
 | gui-only   | 18 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
@@ -140,6 +140,29 @@ per profile — `--features` is a feature axis, not a profile axis — so
 `--profile both` does not double it; and it is skipped for
 `DF_VERIFY_ROLE=offline`, whose plan runs the heavy `#[ignore]` partition only,
 so neither of those shapes sees the +1._
+
+_Counts corrected 2026-08-05 (task 5076, review amendment): the gui-feature
+TEST-EXECUTION pass above is no longer emitted unconditionally. It is now
+narrowed on the same affected-crate axis every other narrowed pass uses —
+emitted whenever `NARROW_ACTIVE=0` (`scope=all`, i.e. the merge gate) and, under
+`NARROW_ACTIVE=1`, only when `reify-gui` is in `AFFECTED`. A `--features gui`
+build is a distinct feature-unification of the dependency graph, so it shares
+artifacts with no other pass and costs 20m42s cold / ~137s warm on its own; a
+`-p reify-doc` branch plan was paying that for code no reify-doc change can
+reach, while the SAME plan already narrowed reify-gui's ungated tests away.
+Membership is tested against `affected_crates()`'s REVERSE-dependency closure
+rather than a hand-listed trigger set, so a change to an indirect dependency
+(`reify-syntax`, `reify-ir`, …) cannot fall out of the trigger: measured on this
+tree, `crates/reify-eval/src/lib.rs` and `crates/reify-mesh-morph/src/lib.rs`
+both yield closures containing `reify-gui`, and `crates/reify-doc/src/lib.rs`
+does not. Net change: −1 non-comment plan line for the `scope=branch` cells of
+shapes (b) and (c), 18 → 17. **Both** of those cells move even though a real
+reify-eval change WOULD pull in reify-gui: `plan_for_shape_narrowed` drives them
+through `REIFY_AFFECTED_CRATES_OVERRIDE` with a literal single-crate list
+(`reify-eval`), not the real closure, so the fixture's `AFFECTED` is exactly
+`reify-eval` and lacks `reify-gui`. Every `scope=all` cell stays 18 (narrowing
+is structurally unreachable there), docs-only branch stays 0 and gui-only branch
+stays 3 (`RUN_RUST=0`). The table and the sentinel move in lockstep._
 
 ## Heavy-Work Narrowed Markers
 

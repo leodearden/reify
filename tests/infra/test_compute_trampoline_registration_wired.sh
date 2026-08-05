@@ -636,4 +636,69 @@ assert "b10: branch-scope plan capture is complete (structural markers present)"
 assert "b10: gui/src-tauri branch-scope plan STILL emits the gui-feature test pass" \
     bash -c 'printf "%s\n" "$BR_PLAN_OUT" | grep -E "cargo (test|nextest run)" | grep -F -- "-p reify-gui" | grep -qF -- "--features gui"'
 
+# -- (b11): NARROWED on the affected-crate axis --------------------------------
+# b10 above exercises the NARROW_ACTIVE=0 path only (the workspace-less fixture
+# makes affected_crates() return the ALL sentinel), so it cannot distinguish
+# "emitted because the change reaches reify-gui" from "emitted unconditionally".
+# REIFY_AFFECTED_CRATES_OVERRIDE drives the narrowed path hermetically, the same
+# knob test_verify_throughput.sh's plan_for_shape_narrowed uses.
+#
+# A `--features gui` build is a distinct feature-unification of the dependency
+# graph — it shares artifacts with no other pass and costs 20m42s cold / ~137s
+# warm on its own — so a branch plan narrowed to reify-doc must NOT pay it.
+# Conversely a plan whose affected closure reaches reify-gui must still emit it,
+# or the pass would be narrowed out of exactly the diffs that can break it.
+echo ""
+echo "--- (b11): emitted iff the affected-crate closure reaches reify-gui ---"
+
+# _narrowed_gui_pass_count <override> — gui-feature passes in a branch-scope
+# plan whose AFFECTED is exactly <override>.
+_narrowed_gui_pass_count() {
+    ( cd "$BR_FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$1" \
+        bash scripts/verify.sh test --profile debug --scope branch --include-infra --print-plan 2>/dev/null ) \
+        | grep -E 'cargo (test|nextest run)' \
+        | grep -F -- '-p reify-gui' \
+        | grep -cF -- '--features gui' || true
+}
+
+N_DOC="$(_narrowed_gui_pass_count "reify-doc")"
+N_GUI="$(_narrowed_gui_pass_count "reify-gui")"
+N_MIXED="$(_narrowed_gui_pass_count "reify-doc reify-gui")"
+N_MANY="$(_narrowed_gui_pass_count "reify-gui reify-eval reify-mesh-morph")"
+
+assert "b11: a branch plan narrowed to reify-doc does NOT emit the gui-feature pass (got $N_DOC)" \
+    test "$N_DOC" -eq 0
+assert "b11: a branch plan whose affected set contains reify-gui DOES emit it (got $N_GUI)" \
+    test "$N_GUI" -eq 1
+assert "b11: reify-gui anywhere in a multi-crate affected set is enough (got $N_MIXED)" \
+    test "$N_MIXED" -eq 1
+assert "b11: still emitted EXACTLY ONCE, not once per affected crate (got $N_MANY)" \
+    test "$N_MANY" -eq 1
+
+# -- (b12): --test-threads reaches the gui-feature pass ------------------------
+# `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test
+# fallback arm always honoured it; the nextest arm did not, so an explicit
+# --test-threads capped every workspace pass but left THIS pass — a tauri +
+# webkit2gtk + OCCT link inside the held semaphore slot — uncapped.
+echo ""
+echo "--- (b12): an explicit --test-threads=N reaches the gui-feature pass ---"
+TT_GUI_PASS="$(_gui_feature_pass_lines "$(bash "$REPO_ROOT/scripts/verify.sh" test --profile debug --scope all --include-infra --test-threads=3 --print-plan 2>/dev/null)")"
+export TT_GUI_PASS
+assert "gui-feature pass carries --test-threads=3 when verify.sh is given --test-threads=3" \
+    bash -c 'printf "%s\n" "$TT_GUI_PASS" | grep -qF -- "--test-threads=3"'
+
+# Default (flag unset) must stay byte-identical to before this amendment.  On
+# the nextest arm that means NO --test-threads fragment at all; the cargo-test
+# fallback arm always emits `-- --test-threads=1` (its OCCT serialization
+# guard), so the assertion is genuinely runner-specific and is guarded in the
+# skip-OUTSIDE-assert form (test_occt_gated_scope.sh:246-254).
+if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then
+    assert "gui-feature nextest pass carries NO --test-threads fragment when the flag is unset" \
+        bash -c '! printf "%s\n" "$GUI_PASS" | grep -qF -- "--test-threads"'
+else
+    echo "  SKIP: (b12) default-shape — the cargo-test fallback arm always carries"
+    echo "        '-- --test-threads=1' (its OCCT serialization guard), so 'no"
+    echo "        --test-threads by default' is a nextest-arm-only property."
+fi
+
 test_summary
