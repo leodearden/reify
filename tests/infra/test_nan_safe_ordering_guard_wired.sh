@@ -467,4 +467,76 @@ else
     echo "  SKIP: hD9 (mawk portability) — mawk is not on PATH on this host."
 fi
 
+# ===========================================================================
+# hE — the #[cfg(test)] skipper REQUIRES a `mod` (task 6031's second defect,
+# deliberately left unfixed by the lexer-only port above).
+#
+# A bare `#[cfg(test)] use …;` / `#[cfg(test)] fn …` declares no module and
+# opens no brace of its own, so `pending_test` stays armed until the NEXT
+# brace-opening line — which can be an unrelated PRODUCTION item, silently
+# skipped wholesale. Verified live in this gate's own scan set today: exactly
+# three files carry a bare non-`mod` `#[cfg(test)]` item —
+# crates/reify-eval/src/compute_targets/elastic_static.rs:4243
+# (`#[cfg(test)] pub(crate) fn extract_pressure_loads`),
+# crates/reify-solver-elastic/src/elements/degenerate_shell.rs:657
+# (`#[cfg(test)] fn degenerate_assumed_covariant_shear_b`), and
+# crates/reify-solver-elastic/src/shell_assembly.rs:1298
+# (`#[cfg(test)] pub(crate) fn tilted_q_for_shell_tests`).
+#
+# Same fixture harness as blocks (h)/(hD) above.
+# ===========================================================================
+echo ""
+echo "--- (hE): the #[cfg(test)] skipper requires a 'mod' ---"
+
+# hE1 — a bare '#[cfg(test)] use …;' arms the skipper, which then swallows
+# the NEXT brace-opening line wholesale — here an unrelated PRODUCTION fn.
+write_fixture <<'RS'
+#[cfg(test)]
+use std::cmp::Ordering;
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hE1: a bare '#[cfg(test)] use …;' does not swallow the next production item" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hE2 — SEMANTIC-NARROWING PIN: after this port only #[cfg(test)] mod BODIES
+# are exempt, so a hazard inside a bare #[cfg(test)] fn (no enclosing mod)
+# becomes visible. This is a DELIBERATE tightening, not a regression: verified
+# safe on the live tree — no such site exists there (the ported gate still
+# flags 0 of 121 files). `// nan-safe:allow — <reason>` is the sanctioned
+# relief valve should one ever appear legitimately. Pinned explicitly so a
+# future reader does not "fix" this back into an over-broad skipper.
+write_fixture <<'RS'
+pub fn nothing() {}
+
+#[cfg(test)]
+fn helper(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hE2: a hazard inside a bare #[cfg(test)] fn (no enclosing mod) is now visible (deliberate narrowing)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hE3 — CONTROL: the identical hazard inside a proper #[cfg(test)] mod stays
+# exempt. Without this, hE1/hE2 would be satisfiable by simply deleting the
+# test-module skipper outright, which would false-RED every legitimate test
+# module in the scan set.
+write_fixture <<'RS'
+pub fn nothing() {}
+
+#[cfg(test)]
+mod tests {
+    fn helper(v: &mut Vec<f64>) {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hE3: the identical hazard inside a proper #[cfg(test)] mod stays exempt" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
 test_summary
