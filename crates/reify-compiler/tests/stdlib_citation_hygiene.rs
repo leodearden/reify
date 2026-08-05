@@ -28,10 +28,7 @@ const STDLIB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
 /// This list only ever shrinks.  Each #5856 batch deletes its entries (RED),
 /// then sweeps those files (GREEN), so every intermediate commit stays green
 /// and each batch is independently bisectable and revertable.
-const PENDING_SWEEP: &[(&str, &str)] = &[
-    ("modal_analysis_fns.ri", "pending #5856 batch F sweep"),
-    ("modal_mechanism_fns.ri", "pending #5856 batch F sweep"),
-];
+const PENDING_SWEEP: &[(&str, &str)] = &[];
 
 /// Source-file extensions whose `:<line>` cites are forbidden.
 const CITED_EXTENSIONS: &[&str] = &[".rs:", ".ri:"];
