@@ -162,13 +162,22 @@
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
-#                                       correct stub sleep seconds (default 6;
-#                                       strictly ABOVE the retired 5 s bound,
-#                                       proving a bypass merely slow to START
-#                                       does not flip the verdict; task 6000)
+#                                       correct stub sleep seconds (default 1;
+#                                       proves a bypass merely slow to START
+#                                       does not flip the verdict; task 6000).
+#                                       Must stay strictly below
+#                                       REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S
+#                                       (below) or ROW4-BYPASS-VACUITY-2a fails
+#                                       by construction.
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S  ROW4-2/ROW4-3 anti-hang guard,
 #                                       never a discriminator (default 120;
-#                                       task 6000 T-treatment)
+#                                       task 6000 T-treatment). The
+#                                       ROW4-BYPASS-VACUITY-2d >=60s floor
+#                                       check applies ONLY to this built-in
+#                                       default: override it (e.g. a tighter
+#                                       CI budget) and 2d SKIPs rather than
+#                                       FAILs, since the floor regression-pins
+#                                       the default, not your override.
 #   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
 #   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
 #                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
@@ -2878,6 +2887,16 @@ fi
 #   rc is captured via `|| _rc=$?`, never `$(...)` command substitution: a
 #   bare substitution discards the child's exit status, and a caller relying
 #   on a genuine 124 (ROW4-BYPASS-VACUITY-2c) would silently see a false 0.
+#
+#   Explicitly neutralizes REIFY_CPU_ADMIT_DISABLE (forces it empty) instead
+#   of merely inheriting whatever the ambient environment happens to hold:
+#   cpu-admit.sh checks the break-glass disable branch (scripts/cpu-admit.sh,
+#   "(1) Break-glass bypass") BEFORE the merge-bypass branch ("(2) Merge
+#   bypass"), so an operator who has exported REIFY_CPU_ADMIT_DISABLE=1 --
+#   plausibly exactly when a host is heavily loaded, which is when this test
+#   is most likely to run -- would otherwise still see rc=0 (ROW4-2 passes)
+#   but stderr reading "disabled" instead of "bypass (role=merge)", a false
+#   RED on the ROW4-3 structural marker despite nothing being wrong.
 _row4_bypass_probe() {
     local admit_script="$1" psi_fixture="$2" timeout_s="$3" stderr_file="$4"
     local _rc=0
@@ -2886,6 +2905,7 @@ _row4_bypass_probe() {
             REIFY_CPU_ADMIT_PROC_PATH="$psi_fixture" \
             REIFY_CPU_ADMIT_MAX_WAIT=1 \
             REIFY_CPU_ADMIT_POLL=1 \
+            REIFY_CPU_ADMIT_DISABLE= \
         bash "$admit_script" admit \
         >/dev/null 2>"$stderr_file" || _rc=$?
     return "$_rc"
@@ -2950,21 +2970,21 @@ assert "ROW4-3: DF_VERIFY_ROLE=merge → cpu-admit stderr marks 'bypass (role=me
     bash -c 'grep -qF "bypass (role=merge)" "$1"' _ "$_ROW4_BYPASS_STDERR"
 
 # ── ROW4-BYPASS-VACUITY-1: the stderr marker DISCRIMINATES (task 6000) ─────
-# Drives a not-yet-defined `_row4_bypass_probe <admit_script> <psi_fixture>
-# <timeout_s> <stderr_file>` against two synthetic "admit" stub scripts
-# (never the real cpu-admit.sh), so this block is hermetic and needs no host
-# PSI/cgroup support. Proves the structural stderr marker that the live
-# ROW4-3 assertion (added once the helper exists) checks actually
-# DISCRIMINATES — i.e. that an rc-only check (today's ROW4-2 alone) is BLIND
-# to a cpu-admit that keeps returning 0 but stops emitting the marker.
+# Drives `_row4_bypass_probe` (defined above) against two synthetic "admit"
+# stub scripts (never the real cpu-admit.sh), so this block is hermetic and
+# needs no host PSI/cgroup support. Proves the structural stderr marker that
+# the live ROW4-3 assertion (above) checks actually DISCRIMINATES — i.e.
+# that an rc-only check (ROW4-2 alone) is BLIND to a cpu-admit that keeps
+# returning 0 but stops emitting the marker.
 #
 # Capture idiom: "_rc=0; _row4_bypass_probe ... || _rc=$?" — MUST NOT be a
 # bare "_x=\"\$(_row4_bypass_probe ...)\"" at top level. Under this file's
-# `set -euo pipefail` (line 176), calling a not-yet-defined function is
-# "command not found" (rc 127); inside an `||` arm that is a clean per-assert
-# FAIL, but unguarded at top level it would abort the ENTIRE suite instead —
-# same capture-idiom hazard flagged at the _row4_sample_host_avg10 comment
-# above (~line 2590).
+# `set -euo pipefail` (line 176), a helper that ever went missing again
+# (renamed/removed out from under this block) would surface as "command not
+# found" (rc 127); inside an `||` arm that is a clean per-assert FAIL, but
+# unguarded at top level it would abort the ENTIRE suite instead — same
+# capture-idiom hazard flagged at the _row4_sample_host_avg10 comment above
+# (~line 2590).
 _row4_bypass_faithful_stub="$(mktemp -p "$WORK" row4-bypass-stub-faithful.XXXXXX)"
 printf '#!/usr/bin/env bash\necho "cpu-admit: bypass (role=merge)" >&2\nexit 0\n' \
     > "$_row4_bypass_faithful_stub"
@@ -2985,12 +3005,11 @@ assert "ROW4-BYPASS-VACUITY-1b: faithful stub => captured stderr matches 'bypass
 # BEFORE probing: _row4_bypass_probe's own `2>"$stderr_file"` redirection
 # truncates it the instant the child is launched, so a correctly-behaving
 # probe always overwrites the seed with the mutant stub's REAL (empty)
-# stderr. But while the helper is still undefined (this RED step), the call
-# fails at shell command-lookup before any redirection in its body can run,
-# so the seed survives untouched — making the "must NOT match" assert below
-# correctly FAIL here too, instead of passing vacuously on an untouched empty
-# file. Same fail-vacuously hazard as the sampler capture idiom above, just
-# on the file side rather than the variable side.
+# stderr. The poison seed proves this rewrite actually happens: without it,
+# a broken redirect that left the file untouched would still pass the "must
+# NOT match" assert below vacuously against a pre-existing empty file, for
+# the wrong reason entirely. Same fail-vacuously hazard as the sampler
+# capture idiom above, just on the file side rather than the variable side.
 _row4_bypass_vacuity1c_stderr="$(mktemp -p "$WORK" row4-bypass-vacuity1c.XXXXXX)"
 printf 'bypass (role=merge)\n' > "$_row4_bypass_vacuity1c_stderr"
 _row4_bypass_vacuity1c_rc=0
@@ -3002,14 +3021,14 @@ assert "ROW4-BYPASS-VACUITY-1c: mutant stub => captured stderr does NOT match 'b
     bash -c '! grep -qF "bypass (role=merge)" "$1"' _ "$_row4_bypass_vacuity1c_stderr"
 
 # ── ROW4-BYPASS-VACUITY-2: the wall-clock T-treatment drivers (task 6000) ──
-# THE task-6000 defect: today's live budget (_ROW4_BYPASS_TIMEOUT_S, still
-# the RETIRED literal 5 as of this step) is only ~7x the measured real cost
-# (713 ms on a loadavg-~190/32-core box) -- a bypass that is merely slow to
-# START (process-spawn latency under load) can blow that budget and FAIL a
-# genuinely correct bypass. -2a/-2b drive that false-RED hermetically; -2c
-# proves the anti-hang guard this T-treatment keeps still fires on a real
-# hang; -2d pins that the live budget is generous enough to never
-# discriminate, once step-4 widens it.
+# THE task-6000 defect, now fixed: the RETIRED literal-5s budget was only
+# ~7x the measured real cost (713 ms on a loadavg-~190/32-core box) -- a
+# bypass that is merely slow to START (process-spawn latency under load)
+# could blow that budget and FAIL a genuinely correct bypass. -2a/-2b pin
+# that a slow-to-start-but-correct bypass now passes under the live,
+# knob-backed budget (_ROW4_BYPASS_TIMEOUT_S, default 120); -2c proves the
+# anti-hang guard this T-treatment keeps still fires on a real hang; -2d pins
+# that the built-in default stays generous enough to never discriminate.
 _ROW4_BYPASS_SLOW_S="${REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S:-6}"
 # Strictly greater than the RETIRED 5 s bound, so a bypass that is merely
 # slow to start (process-spawn latency on an oversubscribed host) is proven
