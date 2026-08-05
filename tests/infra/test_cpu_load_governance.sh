@@ -899,9 +899,9 @@ _row3_within_bound() {
 #   a quiet box must still hard-FAIL, so the #4415 regression this row
 #   exists to catch cannot recur).
 #
-#   The conjunction (breach AND contended) is not a new policy: ROW2-2 (line
-#   ~1569) already SKIPs on precisely "sub-90% completion AND
-#   _ROW23_CONTENDED" — this hedge follows the same precedent. contended
+#   The conjunction (breach AND contended) is not a new policy: ROW2-2 (see
+#   the ROW2-2 assert below) already SKIPs on precisely "sub-90% completion
+#   AND _ROW23_CONTENDED" — this hedge follows the same precedent. contended
 #   is a plain 0/1 flag; the live caller passes _row3_foreign_load's
 #   refined verdict below rather than _ROW23_CONTENDED directly (review-
 #   amendment: raw _ROW23_CONTENDED alone is neither immune to an
@@ -1179,7 +1179,7 @@ assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'una
 # STATUS as an explicit parameter because stdout alone cannot discriminate an
 # errored probe that still printed a plausible number from a genuine
 # measurement (case 2 below). Mirrors _row2_usage_fraction's
-# "unavailable"-sentinel-propagation shape (lines 693-706) -- same class of
+# "unavailable"-sentinel-propagation shape above -- same class of
 # defect (an unreadable/untrustworthy sample collapsing to a numeric that
 # reads as legitimate), same remedy.
 #
@@ -1189,7 +1189,7 @@ assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'una
 # Capture idiom: "$(_row3_probe_sample ... || true)" -- MUST be `|| true`, NOT
 # `|| echo unavailable`: an echo-unavailable fallback would make every case
 # below pass even while the helper is undefined and would destroy the RED
-# signal (lines 867-869 prohibition).
+# signal (same prohibition as _row2_usage_fraction's Capture idiom above).
 
 # (1) REGRESSION CRUX / #5999 replay: probe timed out (rc=124, no stdout) =>
 # propagate "unavailable", never the old collapse to "1".
@@ -1370,8 +1370,8 @@ assert "ROW3-1-BOUND-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 =
 # _row3_within_bound (step-9's definition), never a second copy of the bound.
 # SKIPs only on the conjunction NOT within_bound AND _ROW23_CONTENDED==1,
 # mirroring ROW2-2's existing "sub-90% completion AND _ROW23_CONTENDED =>
-# SKIP" conjunction (line ~1569) -- a precedent-following hedge, not new
-# policy.
+# SKIP" conjunction (see the ROW2-2 assert below) -- a precedent-following
+# hedge, not new policy.
 #
 # Pure shell, NO python3 needed, so always-on.
 
@@ -1727,9 +1727,10 @@ PROBE_PY
     #     `|| echo <sentinel>` fallback appears in this capture at all, which
     #     is strictly stronger than swapping the old numeric fallback for a
     #     string one and sidesteps the fallback class this file prohibits
-    #     (lines 867-869). _row3_probe_sample turns (rc, raw) into either the
-    #     literal "unavailable" or the genuine measurement — never a
-    #     manufactured "1" that reads as a legitimate 1-second baseline.
+    #     (see _row2_usage_fraction's Capture idiom comment above).
+    #     _row3_probe_sample turns (rc, raw) into either the literal
+    #     "unavailable" or the genuine measurement — never a manufactured
+    #     "1" that reads as a legitimate 1-second baseline.
     _T_BASE_RC=0
     _T_BASE_RAW="$(
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
