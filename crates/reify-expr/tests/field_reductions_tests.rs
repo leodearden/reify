@@ -473,9 +473,7 @@ fn argmax_sampled_field_1d_real_domain_returns_real_coord() {
 /// `Type::Int` (only `Type::Point { .. }` and `Type::Scalar { .. }` are
 /// handled), so this exercises the function's `_ => Value::Undef`
 /// catch-all directly — the same rejection the 2-D `Point<Int>` case
-/// reaches via `is_supported_scalar_quantity`. Pins the pre-existing
-/// end-to-end behaviour before the `wrap_scalar_coord` refactor in task
-/// 5996.
+/// reaches via `is_supported_scalar_quantity`.
 #[test]
 fn argmax_sampled_field_int_domain_returns_undef() {
     let sf = make_sampled_1d("f", vec![0.0, 1.0, 2.0], vec![1.0, 5.0, 3.0]);
@@ -671,9 +669,7 @@ fn argmin_sampled_field_2d_length_domain_returns_point2_at_min_index() {
 /// `Type::Scalar { .. }`): there is no precise integer round-trip from
 /// `axis_grids`' `f64` storage, so `wrap_coord_for_domain`'s `Type::Point`
 /// arm rejects it up front via its `is_supported_scalar_quantity` guard
-/// rather than silently coercing coords to Real. This pins the pre-existing
-/// end-to-end behaviour of that guard (previously untested) before the
-/// `wrap_scalar_coord` refactor in task 5996.
+/// rather than silently coercing coords to Real.
 #[test]
 fn argmax_sampled_field_point_int_domain_returns_undef() {
     let domain = Type::Point {
