@@ -6532,6 +6532,40 @@ describe('App buckling mode-shape-frame subscription (task 6035)', () => {
   });
 });
 
+// Deliberately a SIBLING describe, not a fourth `it` inside the block above:
+// this guard must observe the plain factory / global-beforeEach default, not
+// the describe-scoped capturing mockImplementation, so it exercises the real
+// initApp path.
+describe('App buckling mode-shape-frame subscription — stderr noise guard (task 6035)', () => {
+  it('initApp does not log a subscribeModeShapeFrames failure', async () => {
+    await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
+      await renderAndWaitForReady();
+
+      // Non-vacuity anchor: pin that initApp actually reached the subscription
+      // before asserting nothing was logged, so a guard that never runs the
+      // code path cannot pass by accident.
+      await waitFor(() =>
+        expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1),
+      );
+      await flushMacrotasks();
+
+      // Targeted regression guard. We do NOT use `not.toHaveBeenCalled()` here
+      // because unrelated code paths (subscription lifecycle, third-party libs)
+      // may legitimately emit console.error during an App mount — a blanket
+      // assertion would be flaky. The argument-matched form tolerates that
+      // incidental noise while still flagging any reintroduction of this exact
+      // log line, which appeared 148 times in a single App.test.tsx run before
+      // task 6035 added onModeShapeFrame to the bridge mock. Matches the
+      // sibling patterns at handleSave (~line 3330), setParameter (~1356) and
+      // re-evaluate (~1396).
+      expect(errorSpy).not.toHaveBeenCalledWith(
+        '[buckling] subscribeModeShapeFrames failed:',
+        expect.any(Error),
+      );
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // App hover sync wiring — Edge C (task-4209)
 // Edge C: editor cursor → createEditorHoverSync → store → DualViewport.hoveredEntity
