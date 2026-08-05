@@ -3106,6 +3106,28 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
 /// ruling carved out lives in [`merge_post_build_verdicts`], which upgrades
 /// `Indeterminate` verdicts and can never substitute or regress a definite one.)
 ///
+/// # Ordering: AUTHORITY, not chronology (and the two arms differ)
+///
+/// The seed list leads the output.  `cmd_check`'s two sub-paths seed it
+/// differently, deliberately, and neither ordering is chronological — recorded
+/// here rather than left to be rediscovered (reviewer_comprehensive
+/// `consistency` finding):
+///
+/// * Sub-path (b), no `--purpose`: seeded with `check()`'s list even though
+///   `build()` ran FIRST.  The lead position is an AUTHORITY signal — the
+///   verdict-bearing pass's diagnostics read before the realization-only
+///   extras — and it is what makes "check()'s list verbatim, in order" a
+///   property a reader can rely on.  Anti-chronological on purpose.
+/// * Sub-path (c), `--purpose`: seeded with `build()`'s list, because there the
+///   seed also has to absorb build's INTERNAL duplicates (the `mirror(...)`
+///   'ox' error twice) before check's entries merge in behind it.  That
+///   happens to coincide with chronology; the dedup requirement is the reason.
+///
+/// The asymmetry is stderr-ordering only: membership is identical either way
+/// (the merge is a union under the same key), so no invariant above depends on
+/// which list leads, and no exit code can move.  γ/#5403 unifies both arms onto
+/// one `Severity::Error` gate and is the natural point to pick one ordering.
+///
 /// # Dedup key
 ///
 /// A `HashSet<(Severity, Option<DiagnosticCode>, String)>` rather than a
@@ -5389,6 +5411,153 @@ mod merge_post_build_verdicts_tests {
             "the upgraded constraint's own indeterminacy warning is now false \
              and must be dropped, got {:?}",
             keys(&result.diagnostics)
+        );
+    }
+
+    /// UPGRADE-ONLY, the load-bearing half of design decision #7 (the
+    /// esc-5748-1 amendment).  A definite `check()` verdict must NEVER be
+    /// regressed by build()'s pre-`tessellate_realizations` copy — that copy is
+    /// genuinely stale on the RepresentationWithin/GD&T axis, and consulting it
+    /// at all is only safe because this guard exists.
+    ///
+    /// The stakes are an exit code, not just a printed line: `check` Satisfied
+    /// overwritten by build Violated makes `report_constraint_results` return a
+    /// violated outcome and `finish_check` return FAILURE, so a file that
+    /// legitimately exits 0 would start exiting 1.
+    #[test]
+    fn never_regresses_a_definite_check_verdict() {
+        let mut result = check_result(
+            vec![entry("Sphere", 0, None, Satisfaction::Satisfied)],
+            Vec::new(),
+        );
+        // build()'s copy is computed before tessellation, so its Violated here
+        // is exactly the stale verdict the upgrade-only rule must ignore.
+        let build = build_result(vec![entry("Sphere", 0, None, Satisfaction::Violated)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "check() is the source of record: build() may fill holes it left, \
+             never overwrite a verdict it already reached"
+        );
+    }
+
+    /// The upgrade target is DEFINITE, not "Satisfied".  Pins that a build
+    /// `Violated` is adopted too — an implementation that only ever upgraded to
+    /// `Satisfied` would pass every other test in this module while silently
+    /// swallowing real violations (and holding the exit code at 0).
+    #[test]
+    fn adopts_a_definite_violated_verdict() {
+        let mut result = check_result(
+            vec![entry("Foo", 0, None, Satisfaction::Indeterminate)],
+            vec![indeterminate_warning("Foo#constraint[0]", "Foo.centroid")],
+        );
+        let build = build_result(vec![entry("Foo", 0, None, Satisfaction::Violated)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Violated,
+            "a definite Violated resolves the indeterminacy just as a Satisfied does"
+        );
+        assert!(
+            result.diagnostics.is_empty(),
+            "the indeterminacy warning is false either way, got {:?}",
+            keys(&result.diagnostics)
+        );
+    }
+
+    /// An `Indeterminate` build verdict never overwrites, and the still-true
+    /// warning is KEPT — the entry remains unexplained-for-a-reason.
+    #[test]
+    fn indeterminate_build_verdict_never_overwrites() {
+        let warning = indeterminate_warning("Foo#constraint[0]", "Foo.x");
+        let mut result = check_result(
+            vec![entry("Foo", 0, None, Satisfaction::Indeterminate)],
+            vec![warning.clone()],
+        );
+        let build = build_result(vec![entry("Foo", 0, None, Satisfaction::Indeterminate)]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Indeterminate
+        );
+        assert_eq!(
+            keys(&result.diagnostics),
+            keys(&[warning]),
+            "nothing was upgraded, so the explanation must survive"
+        );
+    }
+
+    /// Matched by `id`, NEVER by position.  The two result vectors are built by
+    /// independent calls, so their orders need not agree; the single integration
+    /// test cannot see a positional bug because its fixture happens to align.
+    ///
+    /// The build list is deliberately REVERSED here, and the two verdicts are
+    /// distinguishable, so a positional implementation produces the exact
+    /// inverse assignment rather than an incidentally-correct one.
+    #[test]
+    fn entries_are_matched_by_id_not_position() {
+        let mut result = check_result(
+            vec![
+                entry("Foo", 0, None, Satisfaction::Indeterminate),
+                entry("Bar", 0, None, Satisfaction::Indeterminate),
+            ],
+            Vec::new(),
+        );
+        let build = build_result(vec![
+            entry("Bar", 0, None, Satisfaction::Satisfied),
+            entry("Foo", 0, None, Satisfaction::Violated),
+        ]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Violated,
+            "Foo#constraint[0] must take BAR-position build entry's id-match \
+             (Violated), not the positionally-aligned Satisfied"
+        );
+        assert_eq!(
+            result.constraint_results[1].satisfaction,
+            Satisfaction::Satisfied,
+            "Bar#constraint[0] must take its id-match (Satisfied), not Violated"
+        );
+    }
+
+    /// An id present ONLY in build()'s list is not inserted.  `check()` decides
+    /// which constraints exist; build() can only speak to ones it already named.
+    #[test]
+    fn an_id_only_in_the_build_list_is_not_inserted() {
+        let mut result = check_result(
+            vec![entry("Foo", 0, None, Satisfaction::Indeterminate)],
+            Vec::new(),
+        );
+        let build = build_result(vec![
+            entry("Foo", 0, None, Satisfaction::Satisfied),
+            entry("Ghost", 7, None, Satisfaction::Violated),
+        ]);
+
+        merge_post_build_verdicts(&mut result, Some(&build));
+
+        assert_eq!(
+            result.constraint_results.len(),
+            1,
+            "build() must not add constraint rows check() never reported, got {:?}",
+            result
+                .constraint_results
+                .iter()
+                .map(|e| e.id.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Satisfied
         );
     }
 

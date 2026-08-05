@@ -612,6 +612,23 @@ fn check_geometry_module_resolves_geometry_query_constraints() {
         status.success(),
         "reify check should exit 0 for m5_geometry_flange.ri.\nstdout: {stdout}\nstderr: {stderr}"
     );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Kernel-DEPENDENT below this line, unlike the exit-code assertion
+        // above: resolving `centroid`/`moment_of_inertia` needs the realization
+        // loop to actually produce a solid, which a stub build cannot do.  The
+        // cells stay `undef`, constraint[1] degrades to INDETERMINATE, and the
+        // command still exits 0 (indeterminate is not a failure — see
+        // `check_indeterminate_constraint_exits_success`), so only the content
+        // assertions have to be skipped.  Same C1 convention as the three
+        // sibling task-5748 tests in this file.
+        eprintln!(
+            "skipping geometry-query resolution assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
     assert!(
         stdout.contains("OK BoltFlange#constraint[1]"),
         "constraint[1] reads a geometry-query cell (moment_of_inertia); with geometry routing it \
