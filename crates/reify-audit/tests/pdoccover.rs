@@ -447,6 +447,72 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
     );
 }
 
+/// The `allow-missing-reason:` verdict SUBSUMES the fabrication verdict for the
+/// same name in the same file REGARDLESS OF LINE ORDER.
+///
+/// `fabrication_findings` dedupes per (file, name), so a category-blind dedup
+/// set would let whichever finding came first win. Mentions arrive in line
+/// order, so with the marker BELOW the plain mention the fabrication would be
+/// emitted first and the malformed marker would then be swallowed by the dedup
+/// set and never reported at all — a hole in PRD design decision 7's guarantee
+/// that the escape hatch can never become un-reviewable, opened purely by where
+/// the marker sits in the file.
+///
+/// `fabrication_lane_reports_names_that_exist_nowhere` only exercises the
+/// favourable order (its `sketchy_op` is mentioned once, on the marker line).
+/// This pins BOTH orders, and pins that the reported line is the MARKER's —
+/// the line the reader has to edit.
+#[test]
+fn reasonless_marker_wins_over_fabrication_in_either_line_order() {
+    for (label, chunk, plain_line, marker_line) in [
+        (
+            "marker BELOW the plain mention",
+            "# Stdlib\n\n- `ghost_op(x)` — plain mention, no marker.\n\n\
+             - `ghost_op(y)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+            3usize,
+            5usize,
+        ),
+        (
+            "marker ABOVE the plain mention",
+            "# Stdlib\n\n- `ghost_op(y)` <!-- pdoccover:allow -->\n\n\
+             - `ghost_op(x)` — plain mention, no marker.\n\
+             - `extrude(profile, height)` — real; keeps the omission lane quiet.\n",
+            5usize,
+            3usize,
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(
+            root,
+            FIX_UNITS,
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+        );
+        write_file(root, FIX_STDLIB_CHUNK, chunk);
+
+        let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+        let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+        let cats: Vec<&str> = findings.iter().map(finding_category).collect();
+        assert_eq!(
+            cats,
+            vec!["allow-missing-reason"],
+            "[{label}] exactly one finding, and it must be the malformed \
+             marker — the marker is the defect to fix and must never be \
+             invisible because a plain mention happened to come first. Got \
+             {findings:?}"
+        );
+        assert!(
+            findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:{marker_line}")),
+            "[{label}] the reported line must be the MARKER's ({marker_line}), \
+             not the plain mention's ({plain_line}) — that is the line the \
+             reader has to edit. Got {:?}",
+            findings[0].summary
+        );
+    }
+}
+
 /// The same fabricated name mentioned repeatedly in one chunk is ONE defect
 /// and one finding — otherwise a name documented in a table, a fence and a
 /// heading would cost three, and the ratchet count would track prose volume

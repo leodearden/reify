@@ -1366,29 +1366,50 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// first mention keeps the reported line stable as later mentions come and go.
 /// Dedup is per-file rather than global because each chunk that repeats a
 /// fabricated name needs its own edit.
+///
+/// A reasonless `pdoccover:allow` marker is reported INSTEAD of any fabrication
+/// verdict for the same name in the same file, and that precedence is
+/// LINE-ORDER-INDEPENDENT: a pre-pass collects every name carrying a reasonless
+/// marker anywhere in the file before the first finding is emitted. Resolving
+/// it inline instead would make the outcome depend on where the marker sits —
+/// a name mentioned plainly at line 10 and marked reasonlessly at line 50 would
+/// emit the fabrication first, and the dedup set would then swallow the
+/// malformed marker entirely. That is a hole in PRD design decision 7's
+/// guarantee that the escape hatch can never become un-reviewable: the marker
+/// would be invisible to the detector purely because of its position.
 fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
     let known = known_name_index(&load_oracle_sources(ctx, inputs));
 
     let mut out = Vec::new();
     for (path, content) in &inputs.chunk_sources {
         let lines: Vec<&str> = content.lines().collect();
+        let mentions = chunk_call_mentions(content);
+
+        // Pre-pass: name -> FIRST line in this file carrying a reasonless
+        // marker for it. Position-independent, so the marker always wins.
+        let mut reasonless: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for (name, line_no) in &mentions {
+            let line = lines.get(line_no - 1).copied().unwrap_or("");
+            if allow_marker_present(line) && allow_marker_reason(line).is_none() {
+                reasonless.entry(name.clone()).or_insert(*line_no);
+            }
+        }
+
         let mut seen: BTreeSet<String> = BTreeSet::new();
 
-        for (name, line_no) in chunk_call_mentions(content) {
-            let line = lines.get(line_no - 1).copied().unwrap_or("");
-
-            // A reasonless marker on the mentioning line suppresses nothing
-            // and is itself the defect — reported once per name per file, and
-            // reported INSTEAD of any fabrication verdict, so one malformed
-            // marker costs one finding.
-            if allow_marker_present(line) && allow_marker_reason(line).is_none() {
+        for (name, line_no) in mentions {
+            // A reasonless marker suppresses nothing and is itself the defect —
+            // reported once per name per file, and reported INSTEAD of any
+            // fabrication verdict, so one malformed marker costs one finding.
+            if let Some(&marker_line) = reasonless.get(&name) {
                 if seen.insert(name.clone()) {
                     out.push(keyed(
                         "allow-missing-reason",
                         &name,
                         path,
                         format!(
-                            "— `{ALLOW_TOKEN}` at {path}:{line_no} has no reason body, so it \
+                            "— `{ALLOW_TOKEN}` at {path}:{marker_line} has no reason body, so it \
                              grants no exemption; write `{ALLOW_TOKEN} — <reason>` or remove \
                              the claim",
                         ),
