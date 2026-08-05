@@ -2,7 +2,13 @@ import { type Component, createSignal, createMemo, createEffect, For, Show } fro
 import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
-import { convertToUnit, formatDisplayNumber, ladderForDimension } from '../stores/unitLadder';
+import {
+  buildQuantityRe,
+  convertToUnit,
+  formatDisplayNumber,
+  ladderForDimension,
+  quantityUnitAlphabet,
+} from '../stores/unitLadder';
 import { loadAllUnitPreferences, pruneUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
 
 /**
@@ -57,10 +63,11 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
   return groups;
 }
 
-// No whitespace allowed between number and unit — matches .ri grammar (token.immediate).
-// The backend parse_value_string is more lenient (accepts "5 mm") but the frontend
-// intentionally enforces the stricter grammar rule.
-const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
+// The typed-quantity grammar is defined ONCE, in `buildQuantityRe`
+// (`../stores/unitLadder`) — see `quantityRe` below. No whitespace is allowed
+// between number and unit, matching the .ri grammar (token.immediate); the
+// backend parse_value_string is more lenient (accepts "5 mm") but the frontend
+// intentionally enforces the stricter rule.
 const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
@@ -99,6 +106,26 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   // in-session picks made through THIS instance are unaffected, since those
   // always go through the always-fresh `selectedUnits` signal above.
   const persistedUnits = loadAllUnitPreferences();
+
+  /**
+   * The typed-quantity gate (task #6028). The accepted unit alphabet is
+   * DERIVED from the live ladders — i.e. from what the backend actually
+   * advertises — over a static five-unit floor for when `get_unit_ladders`
+   * has not resolved or has failed. Before this it was a hard-coded
+   * `(mm|cm|deg|rad|m)`, which rejected every unit the backend supports
+   * beyond those five.
+   *
+   * Memoized so the regex is rebuilt only when the ladder map changes.
+   *
+   * Accepted transient while task #5788 is unlanded: with ladders loaded,
+   * `L` passes this gate but the backend still answers
+   * `error: unknown unit: L` (#5788 is what adds `pub unit L : Volume`). That
+   * is benign — this gate is ADVISORY and the backend remains the validator,
+   * so the degradation is a backend diagnostic instead of an inline
+   * `data-invalid`. Special-casing it here would only have to be removed
+   * again when #5788 lands.
+   */
+  const quantityRe = createMemo(() => buildQuantityRe(quantityUnitAlphabet(props.unitLadders)));
 
   /**
    * The selectable unit ladder for a cell, or `undefined` when the cell has
@@ -290,12 +317,11 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     if (value === '') return false;
     // NUM_RE gates non-decimal literals; isFinite catches overflow (e.g. 1e999 → Infinity)
     if (NUM_RE.test(value) && Number.isFinite(Number(value))) return true;
-    if (QUANTITY_RE.test(value)) {
-      // Strip the unit suffix and check the numeric part for overflow.
-      // Unit alternation must stay in sync with QUANTITY_RE (longest-match-first: mm before m).
-      const numPart = value.replace(/(mm|cm|deg|rad|m)$/, '');
-      return Number.isFinite(Number(numPart));
-    }
+    // Group 1 is the whole signed numeric literal, so the overflow check reads
+    // it directly — no second regex re-declaring the unit alternation to strip
+    // the suffix, and so nothing left to keep in sync.
+    const m = quantityRe().exec(value);
+    if (m) return Number.isFinite(Number(m[1]));
     return false;
   }
 
