@@ -106,6 +106,55 @@ export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string
   return [...alphabet];
 }
 
+/**
+ * Escape every regex metacharacter in a unit label so it matches literally.
+ *
+ * `^` is the one that matters and the one that bites: inside an alternation
+ * branch an unescaped `^` is a START-OF-INPUT ANCHOR, so a `mm^3` branch would
+ * compile to "mm, then start-of-input, then 3" — a perfectly valid regex that
+ * can never match. Nothing throws and nothing warns; the gate just silently
+ * rejects every `mm^3` a user types. `/` matters too, for compound labels like
+ * `kg/m^3`.
+ */
+function escapeForRegex(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
+}
+
+/** The signed numeric literal of a quantity: sign, mantissa, optional exponent. */
+const QUANTITY_NUMBER = '-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?';
+
+/**
+ * Build the typed-quantity regex for a unit alphabet (task #6028) — the ONE
+ * definition of the quantity grammar in the frontend. Before this, the
+ * `mm|cm|deg|rad|m` alternation was written four times across
+ * `PropertyEditor.tsx` and `PropertyEditor.test.tsx`, each copy carrying its
+ * own obligation to stay in sync.
+ *
+ * **Capture group 1 is the whole signed numeric literal** — sign, mantissa and
+ * exponent. That is what collapses the old pair of regexes into one: the
+ * caller reads `m[1]` for the overflow check instead of re-declaring the
+ * alternation to strip the unit suffix.
+ *
+ * Labels are sorted longest-first with a lexicographic tiebreak purely for
+ * DETERMINISM — the output must not depend on ladder iteration order. Match
+ * correctness itself comes from the `$` anchor, not from branch order.
+ *
+ * Grammar notes, all deliberate and all inherited from the regex this
+ * replaces: no whitespace is allowed between the number and the unit,
+ * mirroring the .ri grammar's `token.immediate`
+ * (`tree-sitter-reify/grammar.js`) — the backend's `parse_value_string` is
+ * more lenient (it accepts `"5 mm"`) but the frontend intentionally enforces
+ * the stricter rule. A leading `+` is rejected because the grammar defines
+ * only unary minus for number literals, even though the exponent does accept
+ * a sign (`1e+3mm` is valid). There is no numeric range check, so callers must
+ * still guard with `Number.isFinite(Number(m[1]))`.
+ */
+export function buildQuantityRe(labels: readonly string[]): RegExp {
+  const ordered = [...labels].sort((a, b) => b.length - a.length || (a < b ? -1 : a > b ? 1 : 0));
+  const alternation = ordered.map(escapeForRegex).join('|');
+  return new RegExp(`^(${QUANTITY_NUMBER})(?:${alternation})$`);
+}
+
 /** Look up the selectable unit ladder for a canonical dimension name. */
 export function ladderForDimension(
   map: UnitLadderMap,
