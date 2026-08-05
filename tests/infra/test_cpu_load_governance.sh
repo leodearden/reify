@@ -3075,6 +3075,64 @@ assert "ROW4-BYPASS-VACUITY-2c: hanging stub (sleep 30) under an explicit tiny 1
 assert "ROW4-BYPASS-VACUITY-2d: live budget (_ROW4_BYPASS_TIMEOUT_S=${_ROW4_BYPASS_TIMEOUT_S}) is generously >= 60s -- >= 84x the measured 713ms real cost, so it cannot discriminate pass/fail" \
     test "$_ROW4_BYPASS_TIMEOUT_S" -ge 60
 
+# ── ROW4-BYPASS-VACUITY-3: the 2d floor's SKIP-vs-ASSERT decision (task 6000
+# review fix, blocking issue) ──────────────────────────────────────────────
+# THE DEFECT: the knob header above (:172-180) documents that overriding
+# REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S makes ROW4-BYPASS-VACUITY-2d SKIP
+# rather than FAIL -- but the live 2d assert above is unconditional: it
+# asserts >=60s against the RESOLVED value with no SKIP branch. A blessed
+# override (e.g. REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S=30, a tighter CI
+# budget) turns this ALWAYS-ON hermetic cycle RED in a merge-gate suite for a
+# configuration the header explicitly blesses.
+#
+# Drives a not-yet-defined `_row4_bypass_floor_applies <raw_knob_value>`:
+# returns 0 (floor APPLIES -> 2d asserts) iff <raw_knob_value> is empty --
+# i.e. the operator has NOT overridden the budget knob and the live value is
+# therefore the BUILT-IN DEFAULT the floor pins. Returns EXACTLY 1 (floor
+# SKIPs) for any non-empty override, whatever its magnitude -- the
+# discriminator is "was it overridden", never "is the value large".
+#
+# Capture idiom: "_rc=0; _row4_bypass_floor_applies ... || _rc=$?" -- MUST
+# NOT be invoked bare at top level. Under this file's `set -euo pipefail`
+# (line 193), a `1` verdict (floor SKIPs) would abort the ENTIRE suite
+# instead of producing a clean per-assert FAIL -- same capture-idiom hazard
+# flagged at the _row4_sample_host_avg10 (~line 2603) and _row4_bypass_probe
+# (~line 2980) comments.
+#
+# 3b/3c assert the EXACT skip verdict `-eq 1`, never `-ne 0`: with the
+# predicate still undefined here the rc is 127, which SATISFIES `-ne 0` --
+# written that way 3b/3c would pass VACUOUSLY in this very RED step, losing
+# the signal for exactly the two review-fix cases. Same fail-vacuously
+# hazard the file already guards against with the VACUITY-1c poison seed
+# above (~line 3004). 3a's `-eq 0` correctly FAILs at 127.
+
+# (3a) The regression-pin arm stays REACHABLE on the default path: the new
+# SKIP branch must not swallow the pin entirely. One input, two real
+# scenarios collapse to it -- the knob unset AND an explicitly-empty
+# override -- because the call site expands
+# "${REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S:-}" and the budget expands
+# "${...:-120}"; both map either scenario to the built-in default, which is
+# exactly what the floor pins.
+_row4_bypass_vacuity3a_rc=0
+_row4_bypass_floor_applies "" || _row4_bypass_vacuity3a_rc=$?
+assert "ROW4-BYPASS-VACUITY-3a: unset/empty override => floor APPLIES (got rc=${_row4_bypass_vacuity3a_rc}, want 0)" \
+    test "$_row4_bypass_vacuity3a_rc" -eq 0
+
+# (3b) THE review-fix driver: the documented, supported tighter-CI-budget
+# override must no longer reach the floor assert.
+_row4_bypass_vacuity3b_rc=0
+_row4_bypass_floor_applies "30" || _row4_bypass_vacuity3b_rc=$?
+assert "ROW4-BYPASS-VACUITY-3b: tight blessed override (30) => floor SKIPs (got rc=${_row4_bypass_vacuity3b_rc}, want EXACTLY 1)" \
+    test "$_row4_bypass_vacuity3b_rc" -eq 1
+
+# (3c) Pins that the discriminator is "was it overridden", never "is the
+# value large" -- blocks a later "simplification" into a value comparison,
+# which would silently re-open 3b's false RED while leaving 3a/3b green.
+_row4_bypass_vacuity3c_rc=0
+_row4_bypass_floor_applies "240" || _row4_bypass_vacuity3c_rc=$?
+assert "ROW4-BYPASS-VACUITY-3c: generous override (240) => floor STILL SKIPs (got rc=${_row4_bypass_vacuity3c_rc}, want EXACTLY 1)" \
+    test "$_row4_bypass_vacuity3c_rc" -eq 1
+
 # ============================================================================
 # Cycle CLASSIFY — run_all.sh classification-manifest self-check (H5, task
 # 4926; always-on, hermetic — no host/PSI/cgroup precondition, pure file
