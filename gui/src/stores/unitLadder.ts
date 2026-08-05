@@ -62,6 +62,50 @@ export function normalizeUnitLabel(label: string): string {
   return label.replace(/²/g, '^2').replace(/³/g, '^3');
 }
 
+/**
+ * The unit labels the typed-quantity gate accepts when no ladder data is
+ * available (task #6028) — the five that were hard-coded into
+ * `PropertyEditor`'s `QUANTITY_RE` before the alphabet became ladder-derived.
+ *
+ * This is a FLOOR, not the alphabet: `get_unit_ladders` is a best-effort
+ * one-shot fetch that can fail (`App.test.tsx` pins a toast for that path),
+ * and validation must not silently narrow when it does. Keeping exactly these
+ * five also keeps every ladder-less caller byte-identical to the pre-#6028
+ * behaviour.
+ */
+export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad'];
+
+/**
+ * The unit alphabet the typed-quantity gate accepts, derived from the LIVE
+ * ladders unioned with {@link BASE_UNIT_LABELS} (task #6028).
+ *
+ * WHY derived rather than a hand-written mirror of the Rust curated table: a
+ * TS copy would be a FIFTH curated label table, which is the exact drift
+ * defect task #5788 decision D6 exists to prevent. Deriving it from the data
+ * the backend already advertises means this needs no follow-up edit when
+ * #5788 relabels — the alphabet just follows.
+ *
+ * WHY the labels are normalized here: the typed-input gate should accept what
+ * the **.ri grammar** accepts, and superscript spellings have never been
+ * parseable (task #5788 probe evidence). So `mm^3` becomes accepted while
+ * `mm³` stays rejected, in both the pre- and post-#5788 eras.
+ *
+ * Note the accepted transient while #5788 is unlanded: with ladders loaded,
+ * `L` passes this gate but the backend still answers `error: unknown unit: L`
+ * (#5788 is what adds `pub unit L : Volume`). The gate is advisory — the
+ * backend remains the validator — so the degradation is a backend diagnostic
+ * instead of an inline `data-invalid`.
+ */
+export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string[] {
+  const alphabet = new Set<string>(BASE_UNIT_LABELS);
+  for (const options of Object.values(ladders ?? {})) {
+    for (const opt of options) {
+      alphabet.add(normalizeUnitLabel(opt.label));
+    }
+  }
+  return [...alphabet];
+}
+
 /** Look up the selectable unit ladder for a canonical dimension name. */
 export function ladderForDimension(
   map: UnitLadderMap,
