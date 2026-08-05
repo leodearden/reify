@@ -19,18 +19,17 @@
 //! **Resolved non-central case:** `reify-test-support`'s
 //! `scripts/audit-orphan-producers.sh` spawn
 //! (`crates/reify-test-support/src/orphan_audit.rs`) sanitizes the same
-//! [`REPO_REDIRECT_VARS`] set via its own local `REPO_REDIRECT_VARS` const
-//! and `sanitize` fn, rather than calling [`sanitize`] here directly: the
-//! dependency edge runs `reify-audit` -> `reify-test-support`, so
-//! `reify-test-support` cannot depend on `reify-audit` without inverting it.
-//! That local copy is a deliberate duplicate, not an independent judgment
-//! call — and unlike a comment-only "keep in sync" note, the duplication is
-//! now pinned by test:
-//! `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` below
-//! asserts the two lists stay equal, so a divergence fails `cargo test`
-//! rather than drifting silently. Without the sanitization, the script's
-//! first action, `REPO_ROOT="$(git rev-parse --show-toplevel)"`, would have
-//! been vulnerable to exactly the failure mode documented below: an ambient
+//! [`REPO_REDIRECT_VARS`] set. It reaches the sanitizer directly rather than
+//! calling into this crate, because the dependency edge runs `reify-audit` ->
+//! `reify-test-support` and cannot be inverted. **As of task 5657** that is no
+//! longer a duplication at all: the const and the fn were moved DOWN into
+//! `reify_test_support::git_env`, the workspace's single definition, and this
+//! module re-exports them. `orphan_audit.rs` and [`command`] therefore share
+//! ONE sanitizer, with no drift surface left to pin — the duplicate copy and
+//! the test that held the two lists equal are both gone. Without the
+//! sanitization, the script's first action,
+//! `REPO_ROOT="$(git rev-parse --show-toplevel)"`, would have been vulnerable
+//! to exactly the failure mode documented below: an ambient
 //! `GIT_DIR`/`GIT_WORK_TREE` beats BOTH cwd and `-C` (measured:
 //! `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C /tmp/gwt_b
 //! rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the two vars
@@ -40,7 +39,7 @@
 //! been an orphan audit silently enumerating the wrong tree rather than
 //! erroring.
 //!
-//! **As of task 5698**, the local copy sanitizes a SECOND `orphan_audit.rs`
+//! **As of task 5698**, the shared sanitizer covers a SECOND `orphan_audit.rs`
 //! site too: `child_repo_root`, a `git rev-parse --show-toplevel` probe run
 //! against the caller-supplied `repo_root` before the script spawn. Where the
 //! sanitization above stops an ambient redirect var from overriding an
@@ -68,9 +67,10 @@
 //! fixture helper that shells `git init` into a tempdir" is literally the
 //! example the rule at the top of this module names). Neither is a
 //! `--version` probe, so neither qualifies for the carve-out above; both are
-//! legitimate because both are routed through `orphan_audit.rs`'s own local
-//! `sanitize` copy, for the same dependency-direction reason the script spawn
-//! is (see "Resolved non-central case" above). Every OTHER repo-targeting
+//! legitimate because both are routed through the shared
+//! [`reify_test_support::git_env::sanitize`] — the same one [`sanitize`] here
+//! re-exports — for the same dependency-direction reason the script spawn is
+//! (see "Resolved non-central case" above). Every OTHER repo-targeting
 //! *git* site — the three `RealGitOps` methods (`spawn_once`,
 //! `is_gitignored`, `is_ancestor`) and the six fixture helpers in
 //! `tests/cli.rs` and `tests/real_git_ops.rs` — is routed through here. The
@@ -114,47 +114,22 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Git environment variables that redirect *which repository* a command
-/// operates on, and therefore can silently override an explicit `-C <root>`.
+/// The sanitized variable set and the sanitizer itself, re-exported from
+/// `reify_test_support::git_env`.
 ///
-/// Removed — not overwritten — by [`sanitize`]. The unit test pins the three
-/// hook-exported vars (`GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE`) as a
-/// containment FLOOR, so this list may grow without a lockstep test edit.
-pub const REPO_REDIRECT_VARS: &[&str] = &[
-    // Exported by git into a hook's process tree — the observed failure.
-    "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_WORK_TREE",
-    // Same class: each redirects part of "which repository / which objects".
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_NAMESPACE",
-    "GIT_PREFIX",
-];
-
-/// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment.
+/// The definitions live one crate DOWN because the dependency edge runs
+/// `reify-audit` -> `reify-test-support` (see this crate's `Cargo.toml`), and
+/// `reify-test-support`'s own `orphan_audit` spawn needs the same sanitizer —
+/// so only that direction lets both sides share one item without inverting the
+/// edge. The re-export keeps `reify_audit::git_env::{REPO_REDIRECT_VARS,
+/// sanitize, command}` intact for every caller above it, and [`command`] below
+/// builds the `git -C <root>` shape on top.
 ///
-/// Returns `&mut Command` so callers that need a shape other than
-/// `git -C <root>` can still chain off it.
-///
-/// Removal (`env_remove`) rather than assignment is deliberate: there is no
-/// correct value to assign, and an inherited-but-empty var is not the same as
-/// an absent one to git.
-///
-/// Currently the only non-test caller is [`command`], because every
-/// repo-targeting call site in this workspace wants the `git -C <root>` shape.
-/// It stays public anyway: a caller needing another shape (e.g. a
-/// `.current_dir()`-based invocation) must be able to reach the sanitizer
-/// rather than re-derive [`REPO_REDIRECT_VARS`] by hand, which is exactly how
-/// this class of bug reaches a new helper.
-// G-allow: public opt-in for non-`-C` call sites; only non-test caller today is command() — see doc above; behaviour pinned by the git_env unit tests.
-pub fn sanitize(cmd: &mut Command) -> &mut Command {
-    for var in REPO_REDIRECT_VARS {
-        cmd.env_remove(var);
-    }
-    cmd
-}
+/// See `reify_test_support::git_env` for why removal rather than assignment,
+/// and why an enumerated set rather than a wholesale `GIT_*` clear. The
+/// deletion guard for the set (`repo_redirect_vars_covers_the_removal_floor`)
+/// stays in this module's tests below.
+pub use reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize};
 
 /// A pre-sanitized `git -C <root>` command.
 ///
