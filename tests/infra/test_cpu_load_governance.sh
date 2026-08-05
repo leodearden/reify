@@ -62,7 +62,7 @@
 # governance break). Two structural fixes, both SKIP-direction only — neither
 # ever converts a would-be PASS into a SKIP, nor loosens the anti-runaway
 # (#4415) hard assert on a genuinely quiet box:
-#   - _row3_base_sample takes the probe's EXIT STATUS as an explicit
+#   - _row3_probe_sample takes the probe's EXIT STATUS as an explicit
 #     parameter, not just its stdout, because stdout ALONE cannot
 #     discriminate an errored probe that still printed a plausible number
 #     from a genuine 1-second measurement — the exit status is the only
@@ -760,8 +760,25 @@ _row2_usage_fraction() {
         'BEGIN{ if (b+0<=0) {print "0"} else {printf "%.6f", d/b} }'
 }
 
-# _row3_base_sample <rc> <raw>
-#   Baseline-probe normalizer for ROW3-1 (task 5999, #5999 false-RED): the
+# _row3_sample_usable <value>
+#   Shared numeric-usability predicate (task 5999 review-amendment,
+#   reviewer_comprehensive/duplication): a value is usable iff it is numeric
+#   (float-permissive, file's `case ''|*[!0-9.]*)` idiom) AND strictly
+#   positive by awk. Extracted so _row3_probe_sample and
+#   _row3_measurement_unusable cannot silently drift apart on what counts as
+#   a usable sample — two independently-editable copies of the identical
+#   case+awk triad is exactly the G7 no-lockstep-duplication shape
+#   _row3_within_bound was already extracted below to avoid. The literal
+#   "unavailable" sentinel needs no separate case: it already fails the
+#   numeric guard. Returns 0 (usable) / 1 (not usable).
+_row3_sample_usable() {
+    local v="$1"
+    case "$v" in ''|*[!0-9.]*) return 1 ;; esac
+    awk -v x="$v" 'BEGIN{ exit !((x+0) > 0) }'
+}
+
+# _row3_probe_sample <rc> <raw>
+#   Probe-sample normalizer for ROW3-1 (task 5999, #5999 false-RED): the
 #   live T_base capture used to collapse a timed-out (rc 124) or errored
 #   (rc != 0) probe to a literal "1" via `|| echo "1"` plus a rescue
 #   `[ -z "${_T_BASE}" ] || [ "${_T_BASE}" = "0" ] && _T_BASE="1"` — which
@@ -770,43 +787,47 @@ _row2_usage_fraction() {
 #   fixes). Mirrors _row2_usage_fraction's sentinel-propagation shape above:
 #   an unreadable/untrustworthy sample must propagate the literal
 #   "unavailable" sentinel rather than collapse to a numeric that reads as
-#   legitimate.
+#   legitimate. Despite the historical name, this normalizer is probe-
+#   agnostic (review-amendment: the T_mix capture had the SAME
+#   stdout-only-collapse defect, asymmetrically left unfixed — see the T_mix
+#   live capture below), so it is called for BOTH T_base and T_mix.
 #
 #   Takes the probe's EXIT STATUS as an explicit first parameter because
 #   stdout ALONE cannot discriminate an errored probe that still printed a
-#   plausible number (e.g. a partial "1.000000") from a genuine 1-second
-#   measurement — the exit status is the only honest discriminator.
+#   plausible number (e.g. a partial "1.000000") from a genuine measurement
+#   — the exit status is the only honest discriminator.
 #
-#   Echoes "unavailable" when: rc is non-zero or non-numeric; OR raw is
-#   empty/non-numeric (file's `case ''|*[!0-9.]*)` idiom, float-permissive
-#   like _row2_band_inconclusive's avg10/usage_fraction guards); OR raw is
-#   <= 0 (degenerate divisor — a zero or negative baseline can never be a
-#   real wall-clock measurement). Otherwise echoes raw verbatim.
-_row3_base_sample() {
+#   Echoes "unavailable" when: rc is non-zero or non-numeric; OR raw fails
+#   _row3_sample_usable (empty/non-numeric/<= 0 — a degenerate divisor or
+#   probe-work-time can never be a real wall-clock measurement). Otherwise
+#   echoes raw verbatim.
+_row3_probe_sample() {
     local rc="$1" raw="$2"
     case "$rc" in ''|*[!0-9]*) echo unavailable; return 0 ;; esac
     [ "$rc" -ne 0 ] && { echo unavailable; return 0; }
-    case "$raw" in ''|*[!0-9.]*) echo unavailable; return 0 ;; esac
-    awk -v v="$raw" 'BEGIN{ exit !((v+0) > 0) }' || { echo unavailable; return 0; }
+    _row3_sample_usable "$raw" || { echo unavailable; return 0; }
     echo "$raw"
 }
 
 # _row3_measurement_unusable <t_base> <t_mix>
 #   ROW3-1 measurement-usability predicate (task 5999): both T_base and
-#   T_mix must be usable numeric samples before the slowdown ratio
-#   (T_mix/T_base) means anything. Subsumes the pre-existing inline
-#   `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only hatch and
-#   closes the missing T_base arm — the #5999 defect WAS this asymmetry:
-#   T_mix got a guard (`|| echo "0"` plus this hatch), T_base got an
-#   ungarded `|| echo "1"` and no hatch at all. Both arguments run through
-#   the SAME loop so the symmetry is structural, not two independently
-#   driftable branches.
+#   T_mix must be usable numeric samples (_row3_sample_usable) before the
+#   slowdown ratio (T_mix/T_base) means anything. Subsumes the pre-existing
+#   inline `awk -v m="${_T_MIX:-0}" 'BEGIN{exit !(m+0 <= 0)}'` T_mix-only
+#   hatch and closes the missing T_base arm — the #5999 defect WAS this
+#   asymmetry: T_mix got a guard (`|| echo "0"` plus this hatch), T_base got
+#   an ungarded `|| echo "1"` and no hatch at all. Both arguments run
+#   through the SAME loop AND the SAME usability predicate _row3_probe_sample
+#   itself uses on its raw value, so the symmetry is structural on two axes
+#   (T_base/T_mix, and capture-time normalization/here) rather than
+#   conventional.
 #
-#   Returns 0 (unusable -> caller SKIPs) iff EITHER argument is the literal
-#   "unavailable", empty/non-numeric (file's `case ''|*[!0-9.]*)` idiom,
-#   float-permissive), or <= 0 by awk (a degenerate/negative divisor or
-#   probe-work-time can never be real). Returns 1 (usable -> the hard assert
-#   stays reachable) only when BOTH arguments pass all three checks.
+#   Returns 0 (unusable -> caller SKIPs) iff EITHER argument fails
+#   _row3_sample_usable — which already covers the literal "unavailable"
+#   sentinel (it fails that predicate's numeric guard), empty/non-numeric,
+#   and <= 0 (a degenerate/negative divisor or probe-work-time can never be
+#   real). Returns 1 (usable -> the hard assert stays reachable) only when
+#   BOTH arguments pass.
 #
 #   Fails SAFE toward SKIP (rc 0) on a non-numeric/unavailable input — the
 #   OPPOSITE direction from _row1_stall_contended/_row1_measurement_inactive/
@@ -819,9 +840,7 @@ _row3_measurement_unusable() {
     local t_base="$1" t_mix="$2"
     local v
     for v in "$t_base" "$t_mix"; do
-        case "$v" in unavailable) return 0 ;; esac
-        case "$v" in ''|*[!0-9.]*) return 0 ;; esac
-        awk -v x="$v" 'BEGIN{ exit !((x+0) > 0) }' || return 0
+        _row3_sample_usable "$v" || return 0
     done
     return 1
 }
@@ -1106,7 +1125,7 @@ assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'una
 # errored probe to a literal "1" (`|| echo "1"` plus a
 # `[ -z ] || [ = "0" ]` rescue), which reads as a legitimate 1.000000-second
 # baseline and, divided into a real T_mix, manufactures an inflated slowdown
-# ratio -- the false RED. _row3_base_sample <rc> <raw> takes the probe's EXIT
+# ratio -- the false RED. _row3_probe_sample <rc> <raw> takes the probe's EXIT
 # STATUS as an explicit parameter because stdout alone cannot discriminate an
 # errored probe that still printed a plausible number from a genuine
 # measurement (case 2 below). Mirrors _row2_usage_fraction's
@@ -1117,14 +1136,14 @@ assert "ROW2-1-USAGE-FRACTION-VACUITY-5: END-TO-END FAIL-SAFE -- propagated 'una
 # Pure shell+awk, NO python3 needed, so always-on -- same wider-coverage
 # rationale as ROW2-1-USAGE-FRACTION-VACUITY above.
 #
-# Capture idiom: "$(_row3_base_sample ... || true)" -- MUST be `|| true`, NOT
+# Capture idiom: "$(_row3_probe_sample ... || true)" -- MUST be `|| true`, NOT
 # `|| echo unavailable`: an echo-unavailable fallback would make every case
 # below pass even while the helper is undefined and would destroy the RED
 # signal (lines 867-869 prohibition).
 
 # (1) REGRESSION CRUX / #5999 replay: probe timed out (rc=124, no stdout) =>
 # propagate "unavailable", never the old collapse to "1".
-_row3_bsv1="$(_row3_base_sample 124 "" 2>/dev/null || true)"
+_row3_bsv1="$(_row3_probe_sample 124 "" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-1: REGRESSION CRUX -- timed-out probe (rc=124, raw='') => 'unavailable' (never the old '1')" \
     test "$_row3_bsv1" = "unavailable"
 
@@ -1132,22 +1151,22 @@ assert "ROW3-1-BASE-SAMPLE-VACUITY-1: REGRESSION CRUX -- timed-out probe (rc=124
 # cannot discriminate this from a genuine 1-second baseline; the EXIT STATUS
 # is the only honest discriminator, so rc=1 must still sentinel even though
 # raw looks legitimate.
-_row3_bsv2="$(_row3_base_sample 1 "1.000000" 2>/dev/null || true)"
+_row3_bsv2="$(_row3_probe_sample 1 "1.000000" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-2: errored probe (rc=1) with plausible stdout ('1.000000') => 'unavailable' (a failed probe must never be laundered into a legitimate-looking baseline)" \
     test "$_row3_bsv2" = "unavailable"
 
 # (3) rc=0 but empty stdout => unavailable.
-_row3_bsv3="$(_row3_base_sample 0 "" 2>/dev/null || true)"
+_row3_bsv3="$(_row3_probe_sample 0 "" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-3: rc=0 with empty stdout => 'unavailable'" \
     test "$_row3_bsv3" = "unavailable"
 
 # (4) rc=0, degenerate divisor "0.000000" => unavailable.
-_row3_bsv4="$(_row3_base_sample 0 "0.000000" 2>/dev/null || true)"
+_row3_bsv4="$(_row3_probe_sample 0 "0.000000" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-4: rc=0 with degenerate divisor ('0.000000') => 'unavailable'" \
     test "$_row3_bsv4" = "unavailable"
 
 # (5) rc=0, non-numeric stdout => unavailable.
-_row3_bsv5="$(_row3_base_sample 0 "abc" 2>/dev/null || true)"
+_row3_bsv5="$(_row3_probe_sample 0 "abc" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-5: rc=0 with non-numeric stdout ('abc') => 'unavailable'" \
     test "$_row3_bsv5" = "unavailable"
 
@@ -1155,9 +1174,24 @@ assert "ROW3-1-BASE-SAMPLE-VACUITY-5: rc=0 with non-numeric stdout ('abc') => 'u
 # verbatim, asserted NUMERICALLY via awk (locale-proof, mirrors
 # ROW2-1-USAGE-FRACTION-VACUITY-3) -- sentinelling a GOOD baseline would make
 # ROW3-1 SKIP unconditionally, which is vacuous.
-_row3_bsv6="$(_row3_base_sample 0 "2.750000" 2>/dev/null || true)"
+_row3_bsv6="$(_row3_probe_sample 0 "2.750000" 2>/dev/null || true)"
 assert "ROW3-1-BASE-SAMPLE-VACUITY-6: NON-VACUITY CRUX -- rc=0 with genuine baseline ('2.750000') passes through (got ${_row3_bsv6})" \
     awk -v v="$_row3_bsv6" 'BEGIN{ exit !((v+0) > 2.74 && (v+0) < 2.76) }'
+
+# (7)/(8) task 5999 review-amendment (reviewer_comprehensive/test-coverage):
+# the rc guard (case ''|*[!0-9]*)) is not reachable from the only production
+# call site, which always assigns rc from a literal "0" or a captured "$?"
+# (always numeric 0-255) -- but it was also previously unverified by any
+# case here. Pin it directly rather than dropping it: dropping would leave
+# `[ "$rc" -ne 0 ]` to run on a raw empty/non-numeric rc, which errors under
+# `set -e` instead of returning false.
+_row3_bsv7="$(_row3_probe_sample "" "2.0" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-7: rc='' (empty, non-numeric) => 'unavailable' even with a plausible raw value" \
+    test "$_row3_bsv7" = "unavailable"
+
+_row3_bsv8="$(_row3_probe_sample "abc" "2.0" 2>/dev/null || true)"
+assert "ROW3-1-BASE-SAMPLE-VACUITY-8: rc='abc' (non-numeric) => 'unavailable' even with a plausible raw value" \
+    test "$_row3_bsv8" = "unavailable"
 
 # Non-vacuity guard for the NEW ROW3-1 measurement-usability predicate (task
 # 5999): both T_base and T_mix must be usable numeric samples before ROW3-1's
@@ -1217,17 +1251,17 @@ assert "ROW3-1-UNUSABLE-VACUITY-6: NON-VACUITY CRUX -- t_base=3.0, t_mix=9.0 (bo
 # produced t_base=1 (usable) => slowdown 9.0/1=9.0 > K*floor=6.0 (K=4,
 # floor=1.5 defaults) => the false RED this task fixes; the fix instead SKIPs
 # as inconclusive.
-_row3_muv7_tb="$(_row3_base_sample 124 "" 2>/dev/null || true)"
-assert "ROW3-1-UNUSABLE-VACUITY-7: END-TO-END COMPOSE / #5999 false-RED replay -- timed-out probe -> _row3_base_sample -> t_base=${_row3_muv7_tb}, t_mix=9.000000 => unusable (SKIP; OLD collapse made t_base=1 => usable => slowdown 9.0/1=9.0 > K*floor=6.0 => the false RED)" \
+_row3_muv7_tb="$(_row3_probe_sample 124 "" 2>/dev/null || true)"
+assert "ROW3-1-UNUSABLE-VACUITY-7: END-TO-END COMPOSE / #5999 false-RED replay -- timed-out probe -> _row3_probe_sample -> t_base=${_row3_muv7_tb}, t_mix=9.000000 => unusable (SKIP; OLD collapse made t_base=1 => usable => slowdown 9.0/1=9.0 > K*floor=6.0 => the false RED)" \
     _row3_measurement_unusable "$_row3_muv7_tb" "9.000000"
 
 # (8) COMPOSE CRUX counterpart: a genuine baseline through the step-2 helper
 # must NOT blanket-SKIP ROW3-1 -- real slowdown 9.0/3.0=3.0 is inside the
 # bound and must still be evaluated.
-_row3_muv8_tb="$(_row3_base_sample 0 "3.000000" 2>/dev/null || true)"
+_row3_muv8_tb="$(_row3_probe_sample 0 "3.000000" 2>/dev/null || true)"
 _row3_muv8_rc=0
 _row3_measurement_unusable "$_row3_muv8_tb" "9.000000" || _row3_muv8_rc=$?
-assert "ROW3-1-UNUSABLE-VACUITY-8: COMPOSE CRUX counterpart -- genuine probe -> _row3_base_sample -> t_base=${_row3_muv8_tb}, t_mix=9.000000 => NOT unusable (the fix must not blanket-SKIP; real slowdown 9.0/3.0=3.0 must still be evaluated)" \
+assert "ROW3-1-UNUSABLE-VACUITY-8: COMPOSE CRUX counterpart -- genuine probe -> _row3_probe_sample -> t_base=${_row3_muv8_tb}, t_mix=9.000000 => NOT unusable (the fix must not blanket-SKIP; real slowdown 9.0/3.0=3.0 must still be evaluated)" \
     test "$_row3_muv8_rc" -ne 0
 
 # Non-vacuity guard for the NEW ROW3-1 bound predicate (task 5999): the
@@ -1588,7 +1622,7 @@ PROBE_PY
     #     `|| echo <sentinel>` fallback appears in this capture at all, which
     #     is strictly stronger than swapping the old numeric fallback for a
     #     string one and sidesteps the fallback class this file prohibits
-    #     (lines 867-869). _row3_base_sample turns (rc, raw) into either the
+    #     (lines 867-869). _row3_probe_sample turns (rc, raw) into either the
     #     literal "unavailable" or the genuine measurement — never a
     #     manufactured "1" that reads as a legitimate 1-second baseline.
     _T_BASE_RC=0
@@ -1597,7 +1631,7 @@ PROBE_PY
         timeout 30 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
         python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
     )" || _T_BASE_RC=$?
-    _T_BASE="$(_row3_base_sample "$_T_BASE_RC" "$_T_BASE_RAW")"
+    _T_BASE="$(_row3_probe_sample "$_T_BASE_RC" "$_T_BASE_RAW")"
 
     # (b) Launch mix: _MIX_N task-role + 1 merge-role, each through composed
     #     wrappers (γ cpu-governed-exec → β agent-bin/cargo shim → α
@@ -1662,13 +1696,22 @@ PROBE_PY
     _ROW23_USAGE_FRACTION="$(_row2_usage_fraction "$_ROW23_USAGE_BEFORE" "$_ROW23_USAGE_AFTER" "$_ROW23_USAGE_BUDGET")"
 
     # (d) Timed work-based probe under the mix, CONFINED+PINNED → T_mix
-    #     (Row 3 slowdown).
-    _T_MIX="$(
+    #     (Row 3 slowdown). Mirrors the T_base capture above (task 5999
+    #     review-amendment, reviewer_comprehensive/correctness-symmetry): the
+    #     previous `|| echo "0"` + `[ -z ] && _T_MIX="0"` pair discarded the
+    #     probe's exit status exactly like the old T_base collapse did — an
+    #     errored probe (rc!=0) that still printed a partial/plausible
+    #     elapsed value would be accepted as a genuine measurement. Routes
+    #     through the SAME _row3_probe_sample normalizer so both probes share
+    #     one usability rule; _row3_measurement_unusable already handles the
+    #     "unavailable" sentinel on either arm, so no other change is needed.
+    _T_MIX_RC=0
+    _T_MIX_RAW="$(
         REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
         timeout 60 taskset -c "$_ROW4_CONFINE_CPUS" bash "$CPU_GOV_EXEC" --role task -- \
-        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null || echo "0"
-    )"
-    [ -z "${_T_MIX}" ] && _T_MIX="0"
+        python3 "$WORK/row23_probe.py" "$_PROBE_ITERS" 2>/dev/null
+    )" || _T_MIX_RC=$?
+    _T_MIX="$(_row3_probe_sample "$_T_MIX_RC" "$_T_MIX_RAW")"
 
     # (e) Wait for mix to finish (natural completion or timeout).
     for _mpid in $_MIX_PIDS; do
