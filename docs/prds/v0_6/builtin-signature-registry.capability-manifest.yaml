@@ -1,0 +1,287 @@
+prd: docs/prds/v0_6/builtin-signature-registry.md
+schema_version: 1
+tasks:
+- label: alpha
+  task_id: 6001
+  title: reify-builtins crate + registry! macro + BuiltinId + lookup + seed families
+    (parse, analysis)
+  capabilities:
+  - name: seed-families-registered-today
+    binding: wired — grep:crates/reify-compiler/src/parse_signatures.rs:22 PARSE_FN_NAMES
+      + crates/reify-stdlib/src/parse.rs:17 eval arm + crates/reify-compiler/src/analysis_signatures.rs:38
+      ANALYSIS_FN_NAMES; regression fixture tests/prd-gate/fixtures/parse_length_match_resolves.ri
+      is NON-probative for registration (D3 adversary vacuity finding 2026-08-04 —
+      check exits 0 on unregistered names)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum BuiltinId
+      paths:
+      - crates/reify-builtins
+      expect: present
+  - name: row-without-eval-arm-fails-build
+    binding: producer (this leaf) — negative recipe, doc-comment form per registry_drift_tests
+      precedent
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: build-failure recipe is demonstrated by temporary mutation in the task
+        and kept as a doc-comment; not expressible as a stable grep
+- label: beta
+  task_id: 6002
+  title: compiler consumes registry ahead of legacy arms; CompiledExpr carries BuiltinId
+  capabilities:
+  - name: compiled-expr-shape-known
+    binding: wired — grep:crates/reify-types/src/expr.rs FunctionCall kind; content-hash
+      excludes result_type (crates/reify-compiler/src/expr.rs:3587-3594)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: BuiltinId
+      paths:
+      - crates/reify-types/src
+      - crates/reify-compiler/src/expr.rs
+      expect: present
+- label: tau1
+  task_id: 6003
+  title: numeric family — floor/ceil/round dual-form, sinh/cosh/tanh, log10, mod/remap
+  capabilities:
+  - name: numeric-eval-arms-exist
+    binding: wired — grep:crates/reify-stdlib/src/numeric.rs:37-42 (floor/ceil/round
+      -> Int, log10 -> Real) + crates/reify-stdlib/src/trig.rs:38-40 (sinh/cosh/tanh)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: also drift to the first-arg default
+      paths:
+      - crates/reify-compiler/src/math_signatures.rs
+      expect: absent
+  - name: dimensioned-silent-accept-pre-state
+    binding: fixtures tests/prd-gate/fixtures/numeric_floor_dimensioned_silent_accept.ri
+      + numeric_sinh_dimensioned_silent_accept.ri (check exit 0 today, D3-verified);
+      probe floor(2.5mm) -> Int(0) (2026-08-03 sweep)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: post-state flips these fixtures to diagnostics; the task's own tests
+        assert the new E codes — rejection is asserted there, not by pattern absence
+        here
+  - name: two-arg-floor-syntax-parses
+    binding: grammar-fixture:tests/prd-gate/fixtures/numeric_floor_two_arg_parses.ri
+      parses (0 ERROR nodes, D3-verified)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: floor
+      paths:
+      - crates/reify-builtins
+      expect: present
+- label: tau2
+  task_id: 6004
+  title: orientation/frames family — absorb 5344 rows; AxisAngle/Twist structures
+    (folds 5380)
+  capabilities:
+  - name: orientation-frame-eval-arms-exist
+    binding: wired — grep:crates/reify-stdlib/src/orientation.rs orient_* arms + crates/reify-stdlib/src/geometry.rs:512
+      frame_to_frame
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: frame_to_frame
+      paths:
+      - crates/reify-builtins
+      expect: present
+  - name: orientation-ctor-registrations-upstream
+    binding: producer:task-5344 upstream — hard add_dependency edge wired at decompose
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: dependency edge, checked by the scheduler, not a source pattern
+  - name: nominal-over-map-precedent
+    binding: wired — grep:crates/reify-compiler/src/joint_signatures.rs joint_ctor_result_type
+      types Map-valued joint builtins as StructureRef
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: precedent citation; the new AxisAngle/Twist structures are this leaf's
+        deliverable
+- label: tau3
+  task_id: 6005
+  title: joints family migration
+  capabilities:
+  - name: joint-arms-and-table-exist
+    binding: wired — grep:crates/reify-stdlib/src/joints.rs:193-719 + crates/reify-compiler/src/joint_signatures.rs:69
+      (17 names)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: transform_at
+      paths:
+      - crates/reify-builtins
+      expect: present
+- label: tau4
+  task_id: 6006
+  title: FEA/flexures/stackup/dfm/tolerancing/supports/loads/tensegrity family migration
+  capabilities:
+  - name: family-eval-arms-exist
+    binding: wired — grep:crates/reify-stdlib/src/fea.rs:47-102, flexures/*.rs, stackup.rs:17-21,
+      dfm.rs:32, tolerancing.rs:18-19, supports.rs:116-134, loads.rs:134, tensegrity.rs:22-23
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: envelope_max
+      paths:
+      - crates/reify-builtins
+      expect: present
+- label: tau5
+  task_id: 6007
+  title: mechanism/snapshot/sweep/dynamics/trajectory family migration
+  capabilities:
+  - name: family-eval-arms-exist
+    binding: wired — grep:crates/reify-stdlib/src/mechanism.rs:42, snapshot.rs:449-481,
+      sweep.rs:141, dynamics/eval.rs:160-164, trajectory/mod.rs:70-104
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: transform_of
+      paths:
+      - crates/reify-builtins
+      expect: present
+  - name: piecewise-polynomial-stub-ledgered
+    binding: wired (as stub) — grep:crates/reify-stdlib/src/trajectory/mod.rs:104
+      always-Undef; INV-SF-5 requires the row to carry a live PTODO cite
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: PTODO citation validity is enforced by the reify-audit PTODO hard gate,
+        not this sidecar
+- label: tau6
+  task_id: 6008
+  title: complex family + re/im + math_signatures residue migration
+  capabilities:
+  - name: complex-arms-exist
+    binding: wired — grep:crates/reify-stdlib/src/complex.rs:65-272 (re/im aliases
+      + complex_* ops)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: complex_sqrt
+      paths:
+      - crates/reify-builtins
+      expect: present
+- label: tau7
+  task_id: 6009
+  title: datums/affine/list-helpers/field-ops migration; drop compose from FIELD_OP_NAMES
+  capabilities:
+  - name: compose-is-ri-owned
+    binding: wired — grep:crates/reify-compiler/stdlib/fields.ri:118 typed generic
+      decl (task 4224); fixtures compose_fn_field_resolves.ri + compose_one_arg_rejected.ri
+      + compose_middle_type_mismatch_rejected.ri (D3-verified)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"compose"'
+      paths:
+      - crates/reify-compiler/src/units.rs
+      expect: absent
+- label: tau8
+  task_id: 6010
+  title: geometry queries/topology selectors/kinematics migration (EnginePostProcess
+    kind)
+  capabilities:
+  - name: eval-consumer-maps-exist
+    binding: wired — grep:crates/reify-eval/src/geometry_ops.rs:3856 is_geometry_query_call
+      + :5314-5352 selector map; validator crates/reify-eval/src/registry_drift_tests.rs
+      (task 5055)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: closest_point
+      paths:
+      - crates/reify-builtins
+      expect: present
+- label: tau9
+  task_id: 6011
+  title: relations/markers/geometry-ops migration (CompileOnly + GeometryOp kinds)
+    + descriptor-table bridge
+  capabilities:
+  - name: geometryop-descriptor-table-exists
+    binding: wired — grep:crates/reify-ir/src/geometry.rs:569 strum discriminants
+      (dispatch-registry program 4670-4675)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: GeometryOp
+      paths:
+      - crates/reify-builtins
+      expect: present
+- label: pi
+  task_id: 6012
+  title: LSP signatures generated from registry (subsumes 5704/5707/5922 signature
+    halves)
+  capabilities:
+  - name: lsp-table-to-replace-exists
+    binding: wired — grep:crates/reify-lsp/src/completion.rs:314 BUILTIN_FUNCTIONS
+      (~95 prose entries; 35 contradict compiler per 2026-08-03 enumeration)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: BuiltinId
+      paths:
+      - crates/reify-lsp/src
+      expect: present
+- label: psi
+  task_id: 6013
+  title: registry-driven executed static-vs-runtime parity harness
+  capabilities:
+  - name: value-kind-check-primitive-exists
+    binding: wired — grep:crates/reify-eval/src/lib.rs:307-333 value_type_kind_matches;
+      reify-eval deps reify-compiler + reify-stdlib (Cargo.toml)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: value_type_kind_matches
+      paths:
+      - crates/reify-eval/src
+      expect: present
+- label: omega
+  task_id: 6014
+  title: delete terminal first-arg fallback + 5371 interim allowlist family
+  capabilities:
+  - name: fallback-site-and-pre-state
+    binding: wired — grep:crates/reify-compiler/src/expr.rs:3568-3584 terminal else;
+      baseline fixture tests/prd-gate/fixtures/unknown_fn_silent_accept_baseline.ri
+      (check exit 0 today, verified 2026-08-04); Error severity upstream producer:task-5997
+      (hard edge)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: cannot infer return type of zero-arg function
+      paths:
+      - crates/reify-compiler/src/expr.rs
+      expect: absent
+- label: lambda
+  task_id: 6015
+  title: integration gate — PRD §8 boundary rows green in CI on one commit
+  capabilities:
+  - name: boundary-rows-are-deliverables
+    binding: producer (this leaf) — §8 table is the signal source; disjointness-test
+      deletion + drift-test retirement confirmed here
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: CI-run assertion set; not a single stable pattern
+- label: rho
+  task_id: 6016
+  title: docs-truth leaves — best-practices exemplar + cheatsheet index + discoverability
+  capabilities:
+  - name: exemplar-gate-exists
+    binding: wired — grep:crates/reify-compiler/tests/examples_smoke.rs auto-compile
+      gate; examples/best_practices/INDEX.md present
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: floor
+      paths:
+      - examples/best_practices
+      expect: present

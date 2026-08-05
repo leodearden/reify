@@ -1,0 +1,11 @@
+// Fixture (builtin-signature-registry leaf omega): PRE-STATE BASELINE for
+// the hole the registry closes. `line` is a genuinely nonexistent builtin
+// (zero compiler/eval registrations), yet this file passes `reify check`
+// exit 0 with ZERO diagnostics — the terminal first-arg fallback types it
+// silently (expr.rs:3568-3584; task 5371 observation). After omega lands
+// (fallback deleted), this fixture MUST fail check with E_UnresolvedFunction.
+module unknown_fn_silent_accept_baseline
+
+structure def UnknownFnSilentAccept {
+    let l = line(point3(0mm, 0mm, 0mm), point3(10mm, 0mm, 0mm))
+}
