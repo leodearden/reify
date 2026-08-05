@@ -102,14 +102,10 @@
 //!
 //! # Why an enumerated set, not a wholesale `GIT_*` clear
 //!
-//! [`REPO_REDIRECT_VARS`] has a crisp defining criterion: these are exactly
-//! the vars that answer *"which repository am I operating on"* — the question
-//! `-C <root>` is supposed to answer authoritatively. Clearing all `GIT_*`
-//! would additionally drop `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/
-//! `GIT_CONFIG_NOSYSTEM` (which a harness may set precisely to *increase*
-//! isolation), `GIT_TRACE*` (debuggability) and `GIT_AUTHOR_*`/
-//! `GIT_COMMITTER_*` (commit determinism) — strictly more collateral for no
-//! gain against the failure above. Those are left untouched.
+//! Argued once, on [`REPO_REDIRECT_VARS`]'s own doc in
+//! `reify_test_support::git_env` — the crate that now defines it. Restating it
+//! here would rebuild, in prose, exactly the drift surface task 5657 removed
+//! for the constant itself.
 
 use std::path::Path;
 use std::process::Command;
@@ -128,7 +124,10 @@ use std::process::Command;
 /// See `reify_test_support::git_env` for why removal rather than assignment,
 /// and why an enumerated set rather than a wholesale `GIT_*` clear. The
 /// deletion guard for the set (`repo_redirect_vars_covers_the_removal_floor`)
-/// stays in this module's tests below.
+/// lives there too, next to the definition it guards. What stays in this
+/// module's tests below is what is genuinely local to this crate: the
+/// `git -C <root>` shape [`command`] builds, and the real-git behavioural test
+/// that proves the sanitization actually beats an ambient redirect var.
 pub use reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize};
 
 /// A pre-sanitized `git -C <root>` command.
@@ -149,43 +148,6 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
     use std::process::Command;
-
-    /// Every var the design intends [`sanitize`] to remove, paired with the
-    /// reason it qualifies as *"which repository am I operating on"*.
-    ///
-    /// Asserted by CONTAINMENT (floor ⊆ [`REPO_REDIRECT_VARS`]), so the
-    /// sanitized set may still GROW without a lockstep edit here — but an
-    /// entry cannot be silently DELETED from [`REPO_REDIRECT_VARS`] without a
-    /// deliberate edit to this list too. Forcing that second edit is the whole
-    /// point: a self-referential test that only checks "the code removes what
-    /// the same constant lists" stays green through a deletion.
-    const REMOVAL_FLOOR: &[(&str, &str)] = &[
-        ("GIT_DIR", "names the repository directly"),
-        (
-            "GIT_INDEX_FILE",
-            "names the index `add`/`ls-files` read and write",
-        ),
-        ("GIT_WORK_TREE", "names the working tree"),
-        (
-            "GIT_OBJECT_DIRECTORY",
-            "redirects where new objects are written",
-        ),
-        (
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "adds foreign object stores to reads",
-        ),
-        (
-            "GIT_COMMON_DIR",
-            "redirects the shared dir a worktree resolves against",
-        ),
-        ("GIT_NAMESPACE", "changes which ref namespace is visible"),
-        ("GIT_PREFIX", "changes how relative pathspecs resolve"),
-    ];
-
-    /// The subset git exports into a hook's ENTIRE process tree — the sharpest
-    /// case, and exactly what the integration-test replay harness poisons with
-    /// (`tests/common/git_env.rs::hook_git_env`).
-    const HOOK_EXPORTED_FLOOR: &[&str] = &["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"];
 
     /// Collect the vars a `Command` has marked for REMOVAL. `std` encodes an
     /// `env_remove` as a `(key, None)` pair in `get_envs()`; an overwrite would
@@ -218,7 +180,15 @@ mod tests {
     /// same removals. One test rather than two: `command` is a two-line
     /// wrapper around `sanitize`, so a second near-identical test adds no
     /// independent signal beyond "sanitize is reachable directly", which this
-    /// one covers by running both through the same loop.
+    /// one covers by running both through the same loop. That reachability is
+    /// the part this test contributes now that the items are re-exported: it
+    /// fails to compile if the re-export stops carrying either name.
+    ///
+    /// Self-referential by construction — it asserts the code removes exactly
+    /// what the same constant lists, so it stays green through a DELETION from
+    /// [`REPO_REDIRECT_VARS`]. The guard against that is
+    /// `repo_redirect_vars_covers_the_removal_floor`, which lives with the
+    /// definition in `reify_test_support::git_env`.
     #[test]
     fn both_entry_points_remove_every_repo_redirect_var() {
         // A caller that needs a non-`-C` shape can still opt in.
@@ -238,34 +208,6 @@ mod tests {
                      merely overwrite it; removals seen: {removed:?}"
                 );
             }
-        }
-    }
-
-    /// The deletion guard. `both_entry_points_remove_every_repo_redirect_var`
-    /// is self-referential — it asserts the code removes exactly what the same
-    /// constant lists, so dropping an entry from [`REPO_REDIRECT_VARS`] would
-    /// keep it green. This test names each var independently, so a deletion
-    /// has to be argued for here too.
-    #[test]
-    fn repo_redirect_vars_covers_the_removal_floor() {
-        for (var, why) in REMOVAL_FLOOR {
-            assert!(
-                REPO_REDIRECT_VARS.contains(var),
-                "REPO_REDIRECT_VARS must contain `{var}` — it {why}, which is the \
-                 question `-C <root>` is supposed to answer authoritatively. If \
-                 removing it is genuinely correct, delete it from REMOVAL_FLOOR in \
-                 the same change and say why. Current set: {REPO_REDIRECT_VARS:?}"
-            );
-        }
-
-        // Keep the two test-side lists from drifting apart.
-        for var in HOOK_EXPORTED_FLOOR {
-            assert!(
-                REMOVAL_FLOOR.iter().any(|(v, _)| v == var),
-                "HOOK_EXPORTED_FLOOR entry `{var}` must also appear in \
-                 REMOVAL_FLOOR; the hook-exported set is a subset of the \
-                 repo-redirect set by construction"
-            );
         }
     }
 
@@ -371,16 +313,6 @@ mod tests {
             canonical(target.path()),
             "sanitize() must make `-C <root>` authoritative against real git, not \
              merely record removals on the Command"
-        );
-    }
-
-    #[test]
-    fn sanitize_returns_the_command_for_chaining() {
-        let mut cmd = Command::new("git");
-        let chained = sanitize(&mut cmd).arg("status");
-        assert_eq!(
-            chained.get_args().collect::<Vec<_>>(),
-            vec![OsStr::new("status")]
         );
     }
 }
