@@ -37,6 +37,31 @@ export function convertToUnit(siValue: number, siScale: number): number {
   return siValue / siScale;
 }
 
+/**
+ * The ASCII normal form of a CURATED unit label (task #6028).
+ *
+ * Rewrites the two superscript exponent glyphs that appear in the curated
+ * ladder tables — U+00B2 -> `^2`, U+00B3 -> `^3` — and touches nothing else.
+ *
+ * WHY it exists: task #5788 relabels the curated tables from the superscript
+ * spelling (`mm³`) to the ASCII spelling (`mm^3`) per its contract C2 —
+ * "accept what we cannot enumerate; normalize what we curate". A label
+ * compared by raw string equality across that relabel stops matching, so a
+ * user's persisted unit preference would silently snap back to the ladder
+ * default. Normalizing BOTH sides before comparing makes the comparison
+ * survive the relabel in EITHER direction, which is what lets #6028 land
+ * before or after #5788 without an ordering hazard.
+ *
+ * It deliberately does NOT touch the `×10ⁿ` engineering-notation superscript
+ * digits produced by `reify-ir`'s value formatting (task #5788 PRD §10 /
+ * addendum L3): those format the MAGNITUDE, not the unit, and are explicitly
+ * out of scope. This is a pure glyph substitution with no exceptions, so it
+ * must only ever be handed a unit label.
+ */
+export function normalizeUnitLabel(label: string): string {
+  return label.replace(/²/g, '^2').replace(/³/g, '^3');
+}
+
 /** Look up the selectable unit ladder for a canonical dimension name. */
 export function ladderForDimension(
   map: UnitLadderMap,
