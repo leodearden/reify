@@ -69,10 +69,16 @@
 #     honest discriminator. An unusable T_base or T_mix
 #     (_row3_measurement_unusable) SKIPs rather than manufacturing a ratio
 #     from noise.
-#   - _row3_slowdown_inconclusive SKIPs a bound-breaching slowdown IFF the
-#     task slice's own avg10 is ALSO >= 90 (_ROW23_CONTENDED) — the same
-#     conjunction ROW2-2 already uses, not a new policy. A breach on an
-#     UNCONTENDED (quiet) slice still hard-FAILs, so #4415 cannot recur.
+#   - _row3_slowdown_inconclusive SKIPs a bound-breaching slowdown IFF
+#     _row3_foreign_load reports a GENUINE foreign-load reading — avg10 >= 90
+#     from an actual PSI read (not the "99" default an unreadable PSI file
+#     produces) AND the slice is starved rather than self-inflicting the
+#     load (review-amendment: raw avg10 >= 90 alone is neither immune to an
+#     unreadable-PSI false positive nor independent of the over-admission
+#     failure this row exists to catch). The bound-breach + contended
+#     conjunction itself is the same shape ROW2-2 already uses, not a new
+#     policy. A breach on an UNCONTENDED (quiet) slice still hard-FAILs, so
+#     #4415 cannot recur.
 #
 # Design decisions honored here:
 #   G6 CRUX: all bounds PSI-relative/ratio/self-relative with a STATED
@@ -895,10 +901,13 @@ _row3_within_bound() {
 #
 #   The conjunction (breach AND contended) is not a new policy: ROW2-2 (line
 #   ~1569) already SKIPs on precisely "sub-90% completion AND
-#   _ROW23_CONTENDED" — this hedge follows the same precedent. contended is
-#   consumed as _ROW23_CONTENDED verbatim (avg10 >= 90 on the task slice's
-#   own cpu.pressure, computed at the ROW2/3 measurement site) — no new
-#   sample, threshold, or env knob is introduced.
+#   _ROW23_CONTENDED" — this hedge follows the same precedent. contended
+#   is a plain 0/1 flag; the live caller passes _row3_foreign_load's
+#   refined verdict below rather than _ROW23_CONTENDED directly (review-
+#   amendment: raw _ROW23_CONTENDED alone is neither immune to an
+#   unreadable-PSI false positive nor independent of this row's own failure
+#   mode — see _row3_foreign_load's docstring) — no new sample, threshold,
+#   or env knob is introduced beyond what _row3_foreign_load documents.
 #
 #   Fails SAFE toward "hard assert stays reachable" (rc 1) on a non-numeric
 #   slowdown — the SAME direction as _row3_within_bound's own fail-safe
@@ -917,6 +926,47 @@ _row3_slowdown_inconclusive() {
     else
         return 0
     fi
+}
+
+# _row3_foreign_load <contended> <avg10_rc> <usage_fraction>
+#   ROW3-1 review-amendment (task 5999, reviewer_comprehensive/robustness +
+#   /test-quality): refines the raw _ROW23_CONTENDED signal before it may
+#   license _row3_slowdown_inconclusive's SKIP. Reads the starvation floor
+#   internally from REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR (default 0.85)
+#   — the SAME knob _row2_band_inconclusive already reads for the identical
+#   starved-vs-saturating distinction — fresh at call time.
+#
+#   Closes two gaps a genuine over-admission regression (#4415) could
+#   otherwise exploit to launder itself into a green ROW3-1 run:
+#     1. avg10_rc must be "0" (a genuine PSI read): _ROW23_CONTENDED is "1"
+#        whenever avg10 >= 90, but the live capture defaults avg10 to "99"
+#        when the PSI read itself FAILS (an unreadable cpu.pressure file,
+#        not genuine contention) — the same "unreadable sample collapsing to
+#        a numeric that reads as legitimate" defect class _row3_probe_sample
+#        exists to eliminate, reintroduced on the contention axis. avg10_rc
+#        carries whether the read actually succeeded, so an unreadable PSI
+#        file can no longer manufacture contended=1.
+#     2. the slice must be STARVED (usage_fraction < floor), mirroring
+#        _row2_band_inconclusive's own starved-vs-saturating discriminator:
+#        a genuine over-admission regression drives too many governed
+#        sources into the SAME task slice, which self-inflicts high avg10 on
+#        that slice WHILE the slice keeps consuming its own cpu.pressure
+#        budget (NOT starved) — so avg10 alone cannot distinguish foreign
+#        load from the exact failure this row exists to catch; a saturating
+#        slice must still hard-FAIL.
+#
+#   Echoes "1" iff contended="1" AND avg10_rc="0" AND usage_fraction is
+#   numeric AND usage_fraction < floor; "0" otherwise — including a
+#   non-numeric usage_fraction (fail-safe: an unreadable STARVATION signal
+#   must not license a SKIP either).
+_row3_foreign_load() {
+    local contended="$1" avg10_rc="$2" usage_fraction="$3"
+    local floor="${REIFY_CPU_GOV_TEST_ROW1_SATURATION_FLOOR:-0.85}"
+    [ "$contended" = "1" ] || { echo 0; return 0; }
+    [ "$avg10_rc" = "0" ] || { echo 0; return 0; }
+    case "$usage_fraction" in ''|*[!0-9.]*) echo 0; return 0 ;; esac
+    awk -v u="$usage_fraction" -v f="$floor" 'BEGIN{ exit !((u+0) < (f+0)) }' || { echo 0; return 0; }
+    echo 1
 }
 
 # Non-vacuity guard (always-on, no cgroup needed): proves the saturation
@@ -1364,6 +1414,59 @@ _row3_slowdown_inconclusive abc 4 1.5 1 || _row3_civ6_rc=$?
 assert "ROW3-1-CONTENDED-VACUITY-6: FAIL-SAFE -- s=abc (non-numeric) k=4 floor=1.5 contended=1 => NOT inconclusive (unreadable measurement never masked)" \
     test "$_row3_civ6_rc" -ne 0
 
+# Non-vacuity guard for the NEW ROW3-1 contention-refinement predicate (task
+# 5999 review-amendment, reviewer_comprehensive/robustness + /test-quality):
+# _row3_foreign_load <contended> <avg10_rc> <usage_fraction> is what the live
+# caller now feeds into _row3_slowdown_inconclusive's <contended> argument
+# instead of raw _ROW23_CONTENDED, closing two gaps: (1) an unreadable PSI
+# read defaults avg10 to "99" (>= 90), which would otherwise manufacture
+# contended=1 with zero genuine evidence; (2) avg10 >= 90 alone is not
+# independent of the failure ROW3-1 exists to catch, since a genuine
+# over-admission regression self-inflicts pressure on its OWN slice -- so a
+# starved-vs-saturating check (mirroring _row2_band_inconclusive) is
+# required too.
+#
+# Pure shell+awk, NO python3 needed, so always-on.
+
+# (1) FOREIGN LOAD CONFIRMED: contended, a genuine PSI read (avg10_rc=0),
+# and the slice is STARVED (0.5 < default floor 0.85) => foreign load.
+_row3_flv1="$(_row3_foreign_load 1 0 0.5 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-1: contended=1 avg10_rc=0 usage_fraction=0.5 (starved) => '1' (got '${_row3_flv1}')" \
+    test "$_row3_flv1" = "1"
+
+# (2) NON-VACUITY CRUX (self-inflicted / SATURATING): same contended+genuine
+# signal, but usage_fraction=0.95 is AT/ABOVE the floor -- the slice is
+# saturating its OWN budget, exactly the over-admission regression this row
+# exists to catch, so foreign load must NOT be reported.
+_row3_flv2="$(_row3_foreign_load 1 0 0.95 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-2: NON-VACUITY CRUX -- contended=1 avg10_rc=0 usage_fraction=0.95 (saturating, not starved) => '0' (got '${_row3_flv2}')" \
+    test "$_row3_flv2" = "0"
+
+# (3) UNREADABLE PSI: avg10_rc != 0 means _ROW23_AVG10 was the manufactured
+# "99" fallback, not a genuine reading -- must not license a SKIP.
+_row3_flv3="$(_row3_foreign_load 1 1 0.5 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-3: contended=1 avg10_rc=1 (PSI read failed) usage_fraction=0.5 => '0' (got '${_row3_flv3}')" \
+    test "$_row3_flv3" = "0"
+
+# (4) NOT CONTENDED at all (avg10 genuinely < 90).
+_row3_flv4="$(_row3_foreign_load 0 0 0.5 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-4: contended=0 avg10_rc=0 usage_fraction=0.5 => '0' (got '${_row3_flv4}')" \
+    test "$_row3_flv4" = "0"
+
+# (5) FAIL-SAFE: non-numeric/unavailable usage_fraction must not license a
+# SKIP either -- an unreadable starvation signal is not evidence of foreign
+# load.
+_row3_flv5="$(_row3_foreign_load 1 0 unavailable 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-5: FAIL-SAFE -- contended=1 avg10_rc=0 usage_fraction=unavailable => '0' (got '${_row3_flv5}')" \
+    test "$_row3_flv5" = "0"
+
+# (6) BOUNDARY: usage_fraction exactly AT the default floor (0.85) is NOT
+# starved -- pins the strict '<', same convention _row2_band_inconclusive
+# uses for the identical starvation check.
+_row3_flv6="$(_row3_foreign_load 1 0 0.85 2>/dev/null || true)"
+assert "ROW3-1-FOREIGN-LOAD-VACUITY-6: BOUNDARY -- contended=1 avg10_rc=0 usage_fraction=0.85 (== floor) => '0' (got '${_row3_flv6}')" \
+    test "$_row3_flv6" = "0"
+
 if ! host_supports_governance; then
     echo "  SKIP ROW1-1: host does not support cgroup governance"
 elif ! command -v taskset >/dev/null 2>&1; then
@@ -1522,7 +1625,9 @@ fi
 #     1. either probe unusable (_row3_measurement_unusable)         → SKIP
 #     2. slowdown < fair_share_floor(active, confine-cores)         → SKIP
 #     3. slowdown breaches [.., K·floor] AND < 10 (_row3_within_bound)
-#        AND the task slice's own avg10 >= 90 (_ROW23_CONTENDED)    → SKIP
+#        AND the task slice has a GENUINE foreign-load reading
+#        (_row3_foreign_load: avg10 >= 90 from an actual PSI read, AND
+#        the slice is starved rather than self-inflicting the load)  → SKIP
 #     4. otherwise → hard assert: slowdown within [fair_share_floor,
 #        K·floor] AND < 10 (the anti-runaway guarantee; #4415 cannot recur).
 # Every real assertion carries a measurement-integrity SKIP fallback (never a
@@ -1678,7 +1783,18 @@ PROBE_PY
     # (c) Warm-up window then sample the TASK SLICE's OWN cpu.pressure
     #     avg10 (Row 2 PSI measurement — per-cgroup, H5).
     sleep "$_ROW23_WARMUP_S"
-    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null || echo "99")"
+    # Captures the read's exit status alongside the existing "99" fallback
+    # (task 5999 review-amendment, reviewer_comprehensive/robustness):
+    # _ROW23_AVG10 keeps its EXACT pre-existing value/semantics in every case
+    # (ROW2-1/ROW2-2 below are unaffected), but _ROW23_AVG10_RC now lets the
+    # ROW3-1 hedge (_row3_foreign_load below) tell a genuine 99+ reading
+    # apart from a defaulted-because-unreadable one.
+    _ROW23_AVG10_RC=0
+    _ROW23_AVG10="$(python3 "$INSTRUMENT" psi-avg10 "$_ROW23_TASK_PRESSURE_PATH" 2>/dev/null)" || _ROW23_AVG10_RC=$?
+    # Rescue on RC, not emptiness: a read that fails AFTER printing a
+    # plausible partial value must not keep that value, same "stdout alone
+    # cannot discriminate" principle as the T_base capture above.
+    [ "$_ROW23_AVG10_RC" -ne 0 ] && _ROW23_AVG10="99"
 
     # AFTER bracket, same point the avg10 sample above is taken.
     _ROW23_USAGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW23_TASK_SLICE_REL" \
@@ -1741,6 +1857,12 @@ PROBE_PY
         }' 2>/dev/null; then
         _ROW23_CONTENDED=1
     fi
+
+    # Refined foreign-load verdict for ROW3-1's hedge ONLY (task 5999
+    # review-amendment, reviewer_comprehensive/robustness + /test-quality;
+    # see _row3_foreign_load's docstring above) — ROW2-1/ROW2-2 below keep
+    # consuming raw _ROW23_CONTENDED unchanged.
+    _ROW23_FOREIGN_LOAD="$(_row3_foreign_load "${_ROW23_CONTENDED}" "${_ROW23_AVG10_RC}" "${_ROW23_USAGE_FRACTION}")"
 
     # ── Row 2 assertions ──
     # ROW2-1: after warm-up, the TASK SLICE's OWN cpu.pressure avg10 (H5:
@@ -1807,8 +1929,8 @@ sys.exit(0 if v < t else 1)
         echo "  SKIP ROW3-1: baseline or mix probe unusable (T_base=${_T_BASE}, T_mix=${_T_MIX}) — inconclusive"
     elif awk -v s="${_ROW3_SLOWDOWN:-0}" -v f="${_ROW3_FLOOR:-0}" 'BEGIN{exit !(s+0 < f+0)}'; then
         echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} below fair-share floor=${_ROW3_FLOOR} — inconclusive (cpu-admit's own admission staggering at confined scale, not all active_sources concurrently contending; anti-runaway guarantee below is unaffected)"
-    elif _row3_slowdown_inconclusive "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}" "${_ROW23_CONTENDED}"; then
-        echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} exceeds bound(K=${_SLOWDOWN_K},floor=${_ROW3_FLOOR}) but the task slice's own avg10 (${_ROW23_AVG10}) >= 90 — foreign load on the pinned CPUs inflated it, inconclusive"
+    elif _row3_slowdown_inconclusive "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}" "${_ROW23_FOREIGN_LOAD}"; then
+        echo "  SKIP ROW3-1: slowdown=${_ROW3_SLOWDOWN} exceeds bound(K=${_SLOWDOWN_K},floor=${_ROW3_FLOOR}) but the task slice's own avg10 (${_ROW23_AVG10}) >= 90 with a genuine PSI read and usage_fraction=${_ROW23_USAGE_FRACTION} < floor (starved, not self-inflicted) — foreign load on the pinned CPUs inflated it, inconclusive"
     else
         assert "ROW3-1: slowdown=${_ROW3_SLOWDOWN} within_bound(floor=${_ROW3_FLOOR},K=${_SLOWDOWN_K}) [confined+pinned]" \
             _row3_within_bound "${_ROW3_SLOWDOWN}" "${_SLOWDOWN_K}" "${_ROW3_FLOOR}"
