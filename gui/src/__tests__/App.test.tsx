@@ -151,6 +151,7 @@ vi.mock('../bridge', () => ({
   onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
+  onModeShapeFrame: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
   syncObservedDemand: vi.fn().mockResolvedValue(undefined),
   ask: vi.fn().mockResolvedValue(false),
@@ -230,6 +231,7 @@ beforeEach(() => {
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
   vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onModeShapeFrame).mockResolvedValue(() => {});
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
