@@ -19,6 +19,27 @@
 //! this same `harness_units.rs` root, so μ should add its module here rather than create
 //! a second unit-subsystem harness.
 //!
+//! Routing vs. the sibling `harness_units_materials.rs` root — read this before adding a
+//! unit test. The two unit-flavoured roots exist by concurrent construction, not by design:
+//! task #5284 (leaf CMP-2, compiler test-harness consolidation batch 2 of 6) swept the
+//! pre-existing `unit_declaration_tests.rs` / `unit_registry_tests.rs` into
+//! `harness_units_materials.rs`, a separate root, because this file did not exist at that
+//! batch's fork base — #5786 created it on main while the sweep was in flight. The line
+//! between the two roots is subsystem, not filename prefix:
+//!   - THIS root is the angle-units cluster-C home, bound by
+//!     `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md` §C3. It pins
+//!     the stdlib unit *surface* — which symbols `stdlib/units.ri` ships (θ's `Nm`), and how
+//!     the four display-label surfaces round-trip (#5789, pre-bound to
+//!     `harness_units/unit_label_round_trip.rs`).
+//!   - `harness_units_materials.rs` holds the compiler-side unit *machinery* —
+//!     `UnitEntry` / `UnitRegistry`, the `unit`-declaration pre-pass, dimension resolution —
+//!     beside the materials / money / cost / affine clusters it was swept with.
+//! The "μ should add its module here rather than create a second unit-subsystem harness"
+//! steer above is scoped to #5789's angle-units work only — it is NOT an invitation to move
+//! `unit_declaration_tests.rs` / `unit_registry_tests.rs` (or any future compiler-machinery
+//! test) here. Do NOT fold the two roots together: #5789's M1 binding and this root's
+//! `harness_units` delivered_check both require this file to keep existing.
+//!
 //! Explicit `#[path]` is required: this harness root is an integration-test crate root,
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_units/` subdir. The shared `common` helper module is declared here (via
