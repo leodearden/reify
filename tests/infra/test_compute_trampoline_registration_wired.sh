@@ -419,6 +419,329 @@ assert "h6: --repo-root pointing at a non-git dir exits 2" \
     _exits_with 2 bash "$GATE" --repo-root "$NONGIT"
 
 # ===========================================================================
+# hD — BRACE-DEPTH DRIFT in the shared production-code view.
+#
+# The `#[cfg(test)] mod` skipper and the definition-file `in_bundler` skipper
+# are both driven by `depth`.  `depth` must therefore be counted from the
+# PRODUCTION-CODE view — never from the raw line — or a brace that exists only
+# inside a comment, a string literal, a char literal or a raw string silently
+# moves it.  Both drift directions defeat the gate:
+#
+#   POSITIVE drift (a stray `{`) over-extends `in_test`, so real production
+#   code after the test module is `next`ed and the fourth-bundler pass goes
+#   BLIND — hazard (3) unguarded (hD2/hD3a/hD4/hD5a/hD7).
+#   NEGATIVE drift (a stray `}`) clears `in_test` EARLY, so #[cfg(test)] code
+#   becomes visible to `_code_has` and the per-site VARIANT pin goes VACUOUS —
+#   hazard (2) unguarded (hD1/hD3b/hD5b).  This is the h2b scenario the file
+#   already claims to pin; h2b passes only because its fixture happens to be
+#   brace-balanced.
+#
+# Every shape below is drawn from the LIVE scan set, not invented: unbalanced
+# brace char literals at crates/reify-kernel-occt/src/lib.rs:4930,4948,9167 and
+# crates/reify-test-support/src/orphan_audit.rs:778 (four today, drifting the
+# gate's own view NEGATIVE by 3 and 1); raw strings in 277 scan-set files
+# (crates/reify-compiler/src/expr.rs:7389, crates/reify-lsp/src/hover.rs:460,
+# crates/reify-compiler/src/geometry.rs:3146); a `#[cfg(test)]`-carrying string
+# at crates/reify-audit/src/jcodemunch_client.rs:1299; and the
+# `starts_with("//") {` shape at crates/reify-audit/src/ptodo.rs:90,111,
+# p2_consumer_stub.rs:54,137 and pdssentinel.rs:141.
+#
+# Same fixture harness as the h-block above (write_baseline / stage /
+# _exits_with): one file overwritten per case, EXACT exit codes only.
+# ===========================================================================
+echo ""
+echo "--- (hD): brace-depth drift from comments, strings and char literals ---"
+
+# hD1 — VARIANT PIN GOES VACUOUS via a stray `}` in a test-assertion string.
+# Same production flip as h2b, but the test module's first assertion carries
+# `"expected }"`, which decrements depth below test_base and releases the
+# skipper one line early — so the SECOND test's MorphRegistration::Enabled(
+# becomes visible and satisfies the production pin.
+write_baseline
+cat > "$FIX/gui/src-tauri/src/engine.rs" <<'RS'
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn reports_an_unclosed_block() {
+        let msg = render_error();
+        assert!(msg.contains("expected }"));
+    }
+
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+stage
+assert "hD1: a '}' inside a test-assertion STRING does not release the cfg(test) skipper (variant pin stays live)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD2 — FOURTH-BUNDLER DETECTION GOES BLIND via a stray `{` in a test string.
+# Same body as h3 (which the gate flags), with a #[cfg(test)] module ABOVE it
+# whose assertion carries `"{ open brace in a string"`.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn renders_an_open_brace() {
+        assert_eq!(render(), "{ open brace in a string");
+    }
+}
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hD2: a '{' inside a test-assertion STRING does not hide the production fourth bundler below it" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD3a — CHAR LITERAL, positive drift.  String blanking does not cover char
+# literals, so `'{'` inflates depth exactly like the string brace in hD2.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+#[cfg(test)]
+mod tests {
+    const OPEN: char = '{';
+
+    #[test]
+    fn notes_the_delimiter() {
+        assert_eq!(OPEN, '{');
+    }
+}
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hD3a: a '{' CHAR LITERAL does not hide the production fourth bundler below the test module" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD3b — CHAR LITERAL, negative drift, in the shape the live scan set already
+# carries (`rest.find([',', '}'])`).  Asserted through the POSITIVE pass because
+# that is where an early skipper release is silent: the production arm is
+# flipped to Unavailable and only the test module names Enabled(.
+write_baseline
+cat > "$FIX/gui/src-tauri/src/engine.rs" <<'RS'
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_the_delimiter() {
+        let rest = "a,b";
+        let end = rest.find([',', '}']).unwrap_or(rest.len());
+        assert!(end > 0);
+    }
+
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+stage
+assert "hD3b: a '}' CHAR LITERAL does not release the cfg(test) skipper (variant pin stays live)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD4 — MULTI-LINE RAW STRING.  `r#"…"#` spans lines and honours no escapes, so
+# its body must be blanked with cross-line state; an unbalanced `{` inside one
+# is the live shape at crates/reify-compiler/src/expr.rs:7389.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejects_an_unclosed_structure() {
+        let source = r#"pub structure Bolt {
+    diameter: 5mm
+"#;
+        assert!(parse(source).is_err());
+    }
+}
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hD4: a '{' inside a multi-line RAW STRING does not hide the production fourth bundler" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD5a — BLOCK COMMENT, positive drift (`/* { */`).
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn documents_the_open_brace() {
+        /* { */
+        assert!(true);
+    }
+}
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hD5a: a '{' inside a /* */ BLOCK COMMENT does not hide the production fourth bundler" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD5b — BLOCK COMMENT, negative drift (`/* } */`), asserted through the
+# positive pass for the same reason as hD3b.
+write_baseline
+cat > "$FIX/gui/src-tauri/src/engine.rs" <<'RS'
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn documents_the_close_brace() {
+        /* } */
+        assert!(true);
+    }
+
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+stage
+assert "hD5b: a '}' inside a /* */ BLOCK COMMENT does not release the cfg(test) skipper" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD6 — MUST STAY GREEN: no new drift in the FALSE-RED direction.  This is the
+# case that forbids "just strip comments first, then count": a `//` inside a
+# STRING is not a comment, and truncating there loses the `{` that follows it.
+# Eleven lines in the live 562-file scan set change their brace balance under
+# that naive truncation (crates/reify-audit/src/ptodo.rs:90,111 among them), so
+# a comment-strip-first ordering trades the reported drift for a new one — here,
+# releasing the skipper early and FALSE-REDing a legitimate test-module call.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn strip_comments(src: &str) -> String {
+    let mut out = String::new();
+    for line in src.lines() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn skips_comment_lines() {
+        if "// not a comment".trim_start().starts_with("//") {
+            assert!(true);
+        }
+        if "//x".starts_with("//") {
+            assert!(true);
+        }
+        let mut engine = reify_eval::Engine::new();
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+stage
+assert "hD6: a '//' inside a STRING does not truncate the '{' after it (no false RED on a cfg(test) call)" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD7 — `#[cfg(test)]` and `mod … {` INSIDE A STRING must not arm the skipper.
+# Live shape: crates/reify-audit/src/jcodemunch_client.rs:1278 and :1455 both
+# carry a `"#[cfg(test)]"` source-fragment string inside an array of Rust source
+# lines.  Here the fragment array sits at module scope, so test_base is 0 and
+# the wrongly-armed skipper never releases — every production line below it,
+# including both half-calls, is swallowed.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub const SCAFFOLD: [&str; 2] = [
+    "#[cfg(test)]",
+    "mod tests {",
+];
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hD7: a '#[cfg(test)] mod … {' inside a STRING does not arm the test-module skipper" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD8 — POSITIVE CONTROL for the whole hD block, so it cannot be satisfied by
+# the gate simply becoming unconditionally RED: every hostile shape above, in
+# ONE test module, with the half-calls left legitimately INSIDE it and
+# engine.rs's production arm correct.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn nothing() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_hostile_shape_at_once() {
+        assert_eq!(render(), "{ open brace in a string");
+        let close = '}';
+        let source = r#"pub structure Bolt {
+    diameter: 5mm
+"#;
+        /* } */
+        /* { */
+        if "// not a comment".starts_with("//") {
+            assert!(source.is_empty() || close == '}');
+        }
+        let mut engine = reify_eval::Engine::new();
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+stage
+assert "hD8: every hostile shape at once, half-calls inside the cfg(test) module — gate stays GREEN" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# ===========================================================================
 # Part B — verify.sh's TEST plan EXECUTES the gui-feature-gated suite.
 #
 # The static gate above (Part A) pins gui/src-tauri/src/engine.rs's
