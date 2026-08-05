@@ -51,12 +51,12 @@ structure def Contributor {
 //
 //   stackup_worst_case → nominal_gap / worst_case_min / worst_case_max
 //                        (no rss_sigma — `stackup_worst_case` in
-//                        reify-stdlib/src/stackup.rs inserts only nominal_gap /
+//                        reify-stdlib/src/stackup.rs inserts nominal_gap /
 //                        worst_case_band / worst_case_max / worst_case_min)
 //   stackup_rss        → nominal_gap / rss_sigma
 //                        (no worst_case_min / worst_case_max — `stackup_rss`
-//                        inserts only nominal_gap / rss_band / rss_max /
-//                        rss_min / rss_sigma)
+//                        inserts nominal_gap / rss_band / rss_max / rss_min /
+//                        rss_sigma / sigma_level)
 //
 // IMPORTANT: this is an AGGREGATE authoring view. No single T1 builtin result
 // Map satisfies all four fields simultaneously — worst_case and rss results

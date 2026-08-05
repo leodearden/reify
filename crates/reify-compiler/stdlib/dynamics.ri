@@ -29,8 +29,8 @@
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures — the Reify
 //      DSL enum grammar has NO payload-carrying variants
-//      (`TsParser::lower_enum_variant` in crates/reify-syntax/src/ts_parser.rs
-//      collects bare identifiers only), so the PRD's "tagged union" is expressed
+//      (enum-variant lowering: `TsParser::lower_enum_variant` in
+//      crates/reify-syntax/src/ts_parser.rs), so the PRD's "tagged union" is expressed
 //      as a trait + 6 concrete structure_defs. This is the established stdlib
 //      idiom used by trajectory.ri (BoundaryCondition / Shaper).
 //   2. Multi-component force payloads (CylForce/PlanarForce/SphereForce) are
@@ -100,8 +100,8 @@ structure def MassProperties {
 // uses to dispatch on `PointLoad` vs `FixedSupport`.
 //
 // TAGGED-UNION NOTE: the Reify DSL enum grammar has NO payload-carrying
-// variants (`TsParser::lower_enum_variant` in
-// crates/reify-syntax/src/ts_parser.rs collects bare identifiers only). This
+// variants (enum-variant lowering: `TsParser::lower_enum_variant` in
+// crates/reify-syntax/src/ts_parser.rs). This
 // marker-trait + refining-structure_defs pattern is the established stdlib
 // idiom for sum types (trajectory.ri BoundaryCondition/Shaper, modal_analysis
 // ForcingFunction). The PRD's "tagged union" is expressed here.

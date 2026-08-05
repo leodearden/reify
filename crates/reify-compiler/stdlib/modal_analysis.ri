@@ -466,12 +466,12 @@ trait ForcingFunction { }
 //                genuinely dimensionless). Encoded as
 //                `Vector3<Dimensionless>` per the
 //                `ModalOptions.reference_direction : Vector3<Dimensionless>`
-//                precedent (declared below in this file). The
+//                precedent (declared above in this file). The
 //                `direction.norm() > 0`
 //                invariant is NOT expressible in Reify's constraint grammar
 //                (method-call on Vector3, not a scalar predicate; same limit
 //                as `reference_direction.norm() > 0` deferred in
-//                `ModalOptions`' "NOT constrained" note below).
+//                `ModalOptions`' "NOT constrained" note above).
 //   magnitude  — positive scalar force size. By convention, `direction`
 //                carries the sign (via the unit vector) and `magnitude`
 //                carries the positive size. The `constraint magnitude > 0N`
@@ -496,11 +496,11 @@ structure def StepForce : ForcingFunction {
     // is the sign-carrying unit vector. Declaring the lower bound at the
     // structure-def level makes the contract explicit in production code
     // rather than relying solely on test coverage (task-2544 convention,
-    // mirroring `ModalOptions.n_modes > 0` below and
+    // mirroring `ModalOptions.n_modes > 0` above and
     // `PiecewisePolynomialProfile.waypoints.count > 0` in trajectory.ri).
     // Dimensioned literal `0N` (= 0 newtons in SI) is required to keep
     // eval_cmp dim-equality matching at runtime; a bare `0` would yield
-    // `Indeterminate` per task #3115 esc-3115-112 (structural_physical.ri).
+    // `Indeterminate` per task #3115 esc-3115-112.
     constraint magnitude > 0N
 
     // NOTE — explicitly NOT constrained:
@@ -620,7 +620,7 @@ structure def HarmonicForce : ForcingFunction {
     // the lower bound at the structure-def level follows the task-2544
     // explicit-contract convention (same rationale as `StepForce.magnitude
     // > 0N` and `ModalOptions.n_modes > 0`). Dimensioned literal `0N`
-    // required per structural_physical.ri (esc-3115-112).
+    // required per task #3115 esc-3115-112.
     constraint amplitude > 0N
 
     // A zero-frequency "harmonic" is a DC offset (degenerate as a sinusoid);
@@ -799,7 +799,7 @@ structure def ForcingTimeHistory {
 //                  count and each inner length equals `t_samples.count`. Encoded
 //                  as `List<List<Real>>` — a nested-generic list, valid per the
 //                  `Tensegrity.struts : List<List<Int>>` (tensegrity.ri) and
-//                  `MotionEnvelope.nominal_pose : List<List<Pose3>>`
+//                  `EndEffectorTrack.nominal_pose : List<List<Pose3>>`
 //                  (trajectory.ri) precedents. `Real` (not a dimensioned
 //                  scalar) because a mass-normalized modal coordinate ξ_i carries
 //                  units of √mass·length (the dual of `Mode.shape`'s 1/√mass

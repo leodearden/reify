@@ -484,8 +484,8 @@ pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length {
 // Kept empty by design: each variant carries its own per-strategy fields;
 // the trait exists only to give the `shaper` param on the `input_shape`
 // dispatcher a single nominal type so the SIR-α nominal type-tag dispatches
-// correctly. Same marker-trait discipline as `trait Profile { }` (:68) and
-// `trait BoundaryCondition { }` (:83).
+// correctly. Same marker-trait discipline as `trait Profile { }` and
+// `trait BoundaryCondition { }` (both declared above in this file).
 trait Shaper { }
 
 // ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
@@ -496,7 +496,7 @@ trait Shaper { }
 //   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion PRD's Joint type. Same
 //                          encoding as `PiecewisePolynomialProfile.mechanism :
-//                          Real` (:211, TODO(mechanism-type)) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          Real` (its TODO(mechanism-type) note) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion-PRD-owned types that have not
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
@@ -641,7 +641,7 @@ structure def TOTSShaper : Shaper {
 // ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────
 //
 // δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
-// refining the `trait Shaper { }` marker declared above (:322).
+// refining the `trait Shaper { }` marker declared above.
 // Type/encoding rationale is documented per-structure below; see ZVShaper for
 // the canonical type-decision commentary (Frequency dim, 0Hz constraint, etc.).
 
@@ -721,7 +721,7 @@ structure def ZVDShaper : Shaper {
 //                                        (degenerate). Two scalar predicates
 //                                        because Reify's constraint grammar has
 //                                        no interval form — same decomposition
-//                                        as TOTSShaper (:450-451).
+//                                        as `TOTSShaper.vibration_tolerance`.
 //
 // Constraints:
 //   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
@@ -746,7 +746,7 @@ structure def EIShaper : Shaper {
 // identity (convolving with nothing = no shaping), so no `shapers.count > 0`
 // constraint is declared. Collection invariants (e.g. non-empty, compatible
 // frequencies) are deferred to the ε consumer, matching the TOTSShaper.modes /
-// actuator_limits discipline (:461-465).
+// actuator_limits discipline (TOTSShaper's "NOT constrained" note above).
 //
 // Fields:
 //   - shapers : List<Shaper>  — the ordered sequence of shapers to cascade.
@@ -800,7 +800,7 @@ structure def KlipperDialect : GcodeDialect { }
 //
 // `source` is the raw g-code text. `dialect : GcodeDialect` selects the parser
 // (`MarlinDialect` / `KlipperDialect`) via the SIR-α nominal type-tag — the same
-// marker-trait dispatch `evaluate_profile(p: Profile, …)` (:368) uses to accept
+// marker-trait dispatch `evaluate_profile(p: Profile, …)` uses to accept
 // any concrete variant. The result is one `Profile` per contiguous motion
 // segment: non-motion commands (temperature/fan/extruder M-codes,
 // SET_VELOCITY_LIMIT, INPUT_SHAPER) split the motion run, while G92 set-position
