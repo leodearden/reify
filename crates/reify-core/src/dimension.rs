@@ -556,9 +556,8 @@ pub const FORCE: DimensionVector = {
 /// AFTER the canonical row it shares a vector with, so `canonical_name()` keeps
 /// returning the canonical name while the alias name still resolves in the
 /// name→dim direction. Inserting one BEFORE its canonical row would silently
-/// change every reverse-lookup consumer's output. (`Torque` was such an alias
-/// row prior to task #5799, which gave rotational stiffness its own vector;
-/// see the `TORQUE` row comment below — it is no longer an alias.)
+/// change every reverse-lookup consumer's output. (`Torque` is no longer an
+/// alias — see the `DimensionVector::TORQUE` docs.)
 ///
 /// **`DIMENSIONLESS` is intentionally excluded.** `canonical_name` returns `None` for
 /// `DIMENSIONLESS` via the search-miss path (the existing contract), while `resolve_dimension_type`
