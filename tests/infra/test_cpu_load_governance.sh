@@ -161,6 +161,11 @@
 #                                       ROW4 default warmup+measure+4 if unset)
 #   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
+#   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
+#                                       correct stub sleep seconds (default 6;
+#                                       strictly ABOVE the retired 5 s bound,
+#                                       proving a bypass merely slow to START
+#                                       does not flip the verdict; task 6000)
 #   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
 #   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
 #                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
@@ -2975,6 +2980,61 @@ assert "ROW4-BYPASS-VACUITY-1c: mutant stub (no marker, still exits 0) => probe 
     test "$_row4_bypass_vacuity1c_rc" -eq 0
 assert "ROW4-BYPASS-VACUITY-1c: mutant stub => captured stderr does NOT match 'bypass (role=merge)' (the discriminator the new live ROW4-3 assertion exists to catch)" \
     bash -c '! grep -qF "bypass (role=merge)" "$1"' _ "$_row4_bypass_vacuity1c_stderr"
+
+# ── ROW4-BYPASS-VACUITY-2: the wall-clock T-treatment drivers (task 6000) ──
+# THE task-6000 defect: today's live budget (_ROW4_BYPASS_TIMEOUT_S, still
+# the RETIRED literal 5 as of this step) is only ~7x the measured real cost
+# (713 ms on a loadavg-~190/32-core box) -- a bypass that is merely slow to
+# START (process-spawn latency under load) can blow that budget and FAIL a
+# genuinely correct bypass. -2a/-2b drive that false-RED hermetically; -2c
+# proves the anti-hang guard this T-treatment keeps still fires on a real
+# hang; -2d pins that the live budget is generous enough to never
+# discriminate, once step-4 widens it.
+_ROW4_BYPASS_SLOW_S="${REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S:-6}"
+# Strictly greater than the RETIRED 5 s bound, so a bypass that is merely
+# slow to start (process-spawn latency on an oversubscribed host) is proven
+# not to flip the verdict.
+_row4_bypass_slow_stub="$(mktemp -p "$WORK" row4-bypass-stub-slow.XXXXXX)"
+printf '#!/usr/bin/env bash\nsleep "%s"\necho "cpu-admit: bypass (role=merge)" >&2\nexit 0\n' \
+    "$_ROW4_BYPASS_SLOW_S" > "$_row4_bypass_slow_stub"
+
+_row4_bypass_hanging_stub="$(mktemp -p "$WORK" row4-bypass-stub-hang.XXXXXX)"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$_row4_bypass_hanging_stub"
+
+# (2a) THE task-6000 driver: the SLOW-but-correct stub probed under the LIVE
+# budget. RED after step-2 (budget=5 < sleep=6 => timeout kills it => 124);
+# GREEN once step-4 widens the budget past the sleep.
+_row4_bypass_vacuity2_stderr="$(mktemp -p "$WORK" row4-bypass-vacuity2.XXXXXX)"
+_row4_bypass_vacuity2_rc=0
+_row4_bypass_probe "$_row4_bypass_slow_stub" "$_ROW4_PSI_FIXTURE" "$_ROW4_BYPASS_TIMEOUT_S" "$_row4_bypass_vacuity2_stderr" \
+    || _row4_bypass_vacuity2_rc=$?
+assert "ROW4-BYPASS-VACUITY-2a: slow-but-correct stub (sleeps ${_ROW4_BYPASS_SLOW_S}s) under the LIVE budget (_ROW4_BYPASS_TIMEOUT_S=${_ROW4_BYPASS_TIMEOUT_S}) => probe rc is 0 (got ${_row4_bypass_vacuity2_rc}; a too-tight budget false-REDs a merely-slow-to-start bypass)" \
+    test "$_row4_bypass_vacuity2_rc" -eq 0
+
+# (2b) Same run: once it is allowed to finish, its stderr still carries the
+# marker -- the slowness was ONLY in starting, never in what it reports.
+assert "ROW4-BYPASS-VACUITY-2b: slow-but-correct stub => captured stderr matches 'bypass (role=merge)' once given enough budget to finish" \
+    bash -c 'grep -qF "bypass (role=merge)" "$1"' _ "$_row4_bypass_vacuity2_stderr"
+
+# (2c) The anti-hang guard stays REAL: a genuinely hanging admit, probed with
+# a deliberately tiny EXPLICIT timeout (never the live budget), still gets
+# killed. Permanently green -- pins that widening the live budget (step-4)
+# never disables the guard itself, per the T-treatment
+# (docs/prds/infra-test-wallclock-deflake.md:33). Costs ~1s.
+_row4_bypass_vacuity2c_stderr="$(mktemp -p "$WORK" row4-bypass-vacuity2c.XXXXXX)"
+_row4_bypass_vacuity2c_rc=0
+_row4_bypass_probe "$_row4_bypass_hanging_stub" "$_ROW4_PSI_FIXTURE" 1 "$_row4_bypass_vacuity2c_stderr" \
+    || _row4_bypass_vacuity2c_rc=$?
+assert "ROW4-BYPASS-VACUITY-2c: hanging stub (sleep 30) under an explicit tiny 1s timeout => probe rc is 124 (got ${_row4_bypass_vacuity2c_rc}; the anti-hang guard still fires on a real hang)" \
+    test "$_row4_bypass_vacuity2c_rc" -eq 124
+
+# (2d) The budget cannot discriminate: generously above the measured real
+# cost (713 ms on a loadavg-~190/32-core box), so it is >= 84x that cost and
+# can never decide pass/fail -- an anti-hang ceiling only (T-treatment).
+# RED after step-2 (still the retired literal 5); GREEN once step-4 widens
+# it to the knob-backed 120 default.
+assert "ROW4-BYPASS-VACUITY-2d: live budget (_ROW4_BYPASS_TIMEOUT_S=${_ROW4_BYPASS_TIMEOUT_S}) is generously >= 60s -- >= 84x the measured 713ms real cost, so it cannot discriminate pass/fail" \
+    test "$_ROW4_BYPASS_TIMEOUT_S" -ge 60
 
 # ============================================================================
 # Cycle CLASSIFY — run_all.sh classification-manifest self-check (H5, task
