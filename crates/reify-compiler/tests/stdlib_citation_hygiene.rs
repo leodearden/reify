@@ -10,25 +10,16 @@
 //! file path and dropping only the `:<line>` suffix.  See ports_thermal.ri,
 //! ports_fluid.ri, and ports_mechanical.ri for live exemplars.
 //!
-//! `PENDING_SWEEP` is a **shrinking ratchet**, not a permanent allowlist: it
-//! names the files #5856 has not swept yet, and is emptied and deleted by that
-//! task's final step.  Nothing may ever be added back to it.
+//! #5856 swept the last of them, so this guard now covers every `stdlib/*.ri`
+//! with no exemptions.  It was introduced behind a shrinking `PENDING_SWEEP`
+//! ratchet that each batch narrowed; that ratchet is gone and must not come
+//! back — a new violation is a defect to fix, not a file to exempt.
 
 use std::path::{Path, PathBuf};
 
 /// Absolute path to this crate's `stdlib/` directory, resolved at compile time
 /// from the manifest directory.
 const STDLIB_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/stdlib");
-
-/// Files not yet swept by #5856.  Each entry is `(basename, reason)`; the
-/// reason is mandatory — the `(&str, &str)` tuple shape (copied from
-/// `examples_smoke.rs::SKIP_SET`) forces every entry to carry a one-line
-/// human-readable justification, making exemptions auditable at review time.
-///
-/// This list only ever shrinks.  Each #5856 batch deletes its entries (RED),
-/// then sweeps those files (GREEN), so every intermediate commit stays green
-/// and each batch is independently bisectable and revertable.
-const PENDING_SWEEP: &[(&str, &str)] = &[];
 
 /// Source-file extensions whose `:<line>` cites are forbidden.
 const CITED_EXTENSIONS: &[&str] = &[".rs:", ".ri:"];
@@ -91,7 +82,7 @@ fn discover_stdlib_ri_files() -> Vec<PathBuf> {
     paths
 }
 
-/// Basename of `path` as a `&str`, for matching against `PENDING_SWEEP`.
+/// Basename of `path` as an owned `String`, for violation messages.
 fn basename(path: &Path) -> String {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -105,9 +96,6 @@ fn stdlib_ri_comments_cite_symbols_not_source_lines() {
 
     for path in discover_stdlib_ri_files() {
         let name = basename(&path);
-        if PENDING_SWEEP.iter().any(|(f, _)| *f == name) {
-            continue;
-        }
         let src = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read '{}': {}", path.display(), e));
         for (line_no, text) in find_hard_cites(&src) {
@@ -127,26 +115,17 @@ fn stdlib_ri_comments_cite_symbols_not_source_lines() {
     );
 }
 
+/// Liveness check for the guard above: a green result must mean "scanned the
+/// stdlib and found nothing", never "scanned nothing". Without this, moving or
+/// renaming `stdlib/` would silently turn the citation guard into a no-op that
+/// still reports success.
 #[test]
-fn pending_sweep_entries_all_name_a_real_stdlib_file() {
-    let present: Vec<String> = discover_stdlib_ri_files()
-        .iter()
-        .map(|p| basename(p))
-        .collect();
-
-    let stale: Vec<&str> = PENDING_SWEEP
-        .iter()
-        .map(|(f, _)| *f)
-        .filter(|f| !present.iter().any(|p| p == f))
-        .collect();
-
+fn stdlib_discovery_finds_ri_files_to_scan() {
+    let found = discover_stdlib_ri_files();
     assert!(
-        stale.is_empty(),
-        "PENDING_SWEEP names {} file(s) absent from {}: {:?}\n\
-         A rename or deletion must not silently drop a file out of the guard's \
-         coverage — remove the stale entry, or re-point it at the new basename.",
-        stale.len(),
+        !found.is_empty(),
+        "no *.ri files discovered under {} — the citation guard would pass \
+         vacuously.  If stdlib/ moved, re-point STDLIB_DIR.",
         STDLIB_DIR,
-        stale,
     );
 }

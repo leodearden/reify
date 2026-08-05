@@ -37,10 +37,11 @@
 // λ₀ = k/m (closed-form exact for a diagonal system), returned as
 // f = √λ₀/(2π) Hz.
 //
-// Mirrors the Mechanism-param precedent from dynamics.ri:256-257:
+// Mirrors the Mechanism-param precedent from `inverse_dynamics` in dynamics.ri:
 //   @optimized("dynamics::inverse_dynamics")
 //   pub fn inverse_dynamics(mechanism: Mechanism, ...) -> ...
-// and the placeholder-ctor body pattern from modal_analysis_fns.ri:51-60:
+// and the placeholder-ctor body pattern from `modal_analysis` in
+// modal_analysis_fns.ri:
 //   ModalResult() placeholder body — dispatch replaces the body once the
 //   trampoline is registered (task 4271 step-6), so ModalResult() is never
 //   evaluated from a body-inline path.
