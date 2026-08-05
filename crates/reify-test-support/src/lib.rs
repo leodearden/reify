@@ -6,6 +6,7 @@
 
 pub mod builders;
 pub mod fixtures;
+pub mod git_env;
 pub mod helpers;
 pub mod ignore_hygiene;
 pub mod kernel_assertions;

@@ -294,27 +294,6 @@ mod tests {
         }
     }
 
-    /// `reify-test-support` cannot depend on this crate (the dependency edge
-    /// runs `reify-audit` -> `reify-test-support`), so
-    /// `crates/reify-test-support/src/orphan_audit.rs` keeps its own copy of
-    /// [`REPO_REDIRECT_VARS`] to sanitize its `audit-orphan-producers.sh`
-    /// script spawn (see this module's "Resolved non-central case" doc
-    /// above) rather than calling [`sanitize`] here. This test is what keeps
-    /// that copy honest: it fails `cargo test` the moment the two lists
-    /// diverge, instead of resting on the doc comment in either file.
-    #[test]
-    fn repo_redirect_vars_matches_reify_test_support_orphan_audit_copy() {
-        assert_eq!(
-            REPO_REDIRECT_VARS,
-            reify_test_support::orphan_audit::REPO_REDIRECT_VARS,
-            "crates/reify-test-support/src/orphan_audit.rs's REPO_REDIRECT_VARS \
-             copy has drifted from this crate's copy — update both lists \
-             together (reify-test-support cannot depend on reify-audit to \
-             reuse this const directly, so the two copies must be edited in \
-             lockstep)"
-        );
-    }
-
     /// Close the loop on REAL git behaviour rather than on `Command` metadata.
     ///
     /// Every other test here inspects what [`sanitize`] *records*. That is
