@@ -177,7 +177,9 @@
 #                                       default: override it (e.g. a tighter
 #                                       CI budget) and 2d SKIPs rather than
 #                                       FAILs, since the floor regression-pins
-#                                       the default, not your override.
+#                                       the default, not your override. Gated
+#                                       by _row4_bypass_floor_applies (grep
+#                                       doc -> code).
 #   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
 #   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
 #                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
@@ -2911,6 +2913,22 @@ _row4_bypass_probe() {
     return "$_rc"
 }
 
+# _row4_bypass_floor_applies <raw_knob_value>
+#   Returns 0 (the >=60s floor APPLIES) iff <raw_knob_value> is empty --
+#   i.e. the operator has NOT overridden
+#   REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S and the live budget is
+#   therefore the BUILT-IN DEFAULT the floor pins (task 6000 review fix).
+#   Returns exactly 1 (floor SKIPs) for any non-empty value, whatever its
+#   magnitude: the discriminator is "was it overridden", never "is it big"
+#   (ROW4-BYPASS-VACUITY-3c). Unset and explicitly-empty are deliberately
+#   identical -- the call site's `${KNOB:-}` and the budget's `${KNOB:-120}`
+#   both resolve either to the default.
+#   MUST be called only in `if` / `|| _rc=$?` context: under this file's
+#   `set -euo pipefail` a bare call on the skip verdict (1) aborts the suite.
+_row4_bypass_floor_applies() {
+    [ -z "${1:-}" ]
+}
+
 # ============================================================================
 # Cycle ROW4-BYPASS — §8 row-9 merge-bypass smoke (always-on, hermetic).
 # DF_VERIFY_ROLE=merge + high-PSI fixture → cpu-admit.sh admit exits 0 fast
@@ -3067,13 +3085,24 @@ _row4_bypass_probe "$_row4_bypass_hanging_stub" "$_ROW4_PSI_FIXTURE" 1 "$_row4_b
 assert "ROW4-BYPASS-VACUITY-2c: hanging stub (sleep 30) under an explicit tiny 1s timeout => probe rc is 124 (got ${_row4_bypass_vacuity2c_rc}; the anti-hang guard still fires on a real hang)" \
     test "$_row4_bypass_vacuity2c_rc" -eq 124
 
-# (2d) The budget cannot discriminate: generously above the measured real
-# cost (713 ms on a loadavg-~190/32-core box), so it is >= 84x that cost and
-# can never decide pass/fail -- an anti-hang ceiling only (T-treatment).
-# RED after step-2 (still the retired literal 5); GREEN once step-4 widens
-# it to the knob-backed 120 default.
-assert "ROW4-BYPASS-VACUITY-2d: live budget (_ROW4_BYPASS_TIMEOUT_S=${_ROW4_BYPASS_TIMEOUT_S}) is generously >= 60s -- >= 84x the measured 713ms real cost, so it cannot discriminate pass/fail" \
-    test "$_ROW4_BYPASS_TIMEOUT_S" -ge 60
+# (2d) A SOURCE-LEVEL regression pin on the built-in default constant --
+# literal-vs-literal at runtime BY DESIGN, not a check of any SUT behaviour.
+# The cycle's actual SUT-behaviour discriminators are ROW4-2 (rc), ROW4-3
+# (structural stderr marker), and 2a/2b/2c (the slow-start / real-hang
+# drivers above); this pin exists only so a future edit cannot silently
+# retighten _ROW4_BYPASS_TIMEOUT_S's built-in default back toward a value
+# that could discriminate. It must NOT fire against a deliberate operator
+# override, so it is gated behind _row4_bypass_floor_applies (defined above,
+# alongside _row4_bypass_probe) -- ROW4-BYPASS-VACUITY-3a..c hermetically
+# pin that gate's SKIP-vs-ASSERT decision in both directions, which matters
+# here because a single straight-line run can only ever execute ONE arm of
+# this `if`.
+if _row4_bypass_floor_applies "${REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S:-}"; then
+    assert "ROW4-BYPASS-VACUITY-2d: live budget (_ROW4_BYPASS_TIMEOUT_S=${_ROW4_BYPASS_TIMEOUT_S}) is generously >= 60s -- >= 84x the measured 713ms real cost, so it cannot discriminate pass/fail" \
+        test "$_ROW4_BYPASS_TIMEOUT_S" -ge 60
+else
+    echo "  SKIP ROW4-BYPASS-VACUITY-2d: budget overridden (${_ROW4_BYPASS_TIMEOUT_S}s) -- the >=60s floor regression-pins the built-in default, not an operator override"
+fi
 
 # ── ROW4-BYPASS-VACUITY-3: the 2d floor's SKIP-vs-ASSERT decision (task 6000
 # review fix, blocking issue) ──────────────────────────────────────────────
