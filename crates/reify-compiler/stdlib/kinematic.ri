@@ -33,7 +33,7 @@
 //
 // Module placement: registered last in `stdlib_loader.rs` after `std.stackup`.
 // Hard dependencies:
-//   - `std.trajectory` (for Vec3 and JointValue aliases — trajectory.ri:76,96)
+//   - `std.trajectory` (for the `Vec3` and `JointValue` aliases — trajectory.ri)
 //   - `std.units` (Bool, Int, Real)
 //
 // Encoding notes:
@@ -308,7 +308,7 @@ structure def Mechanism {
 // Snapshot — a single kinematic configuration of a Mechanism (PRD §7.1).
 //
 //   free_values  : List<JointValue>  — per-DOF generalized coordinates
-//                                      (JointValue = Real alias, trajectory.ri:76)
+//                                      (`pub type JointValue = Real`, trajectory.ri)
 //   is_singular  : Bool              — true if the configuration is at a singularity
 structure def Snapshot {
     param free_values : List<JointValue>
