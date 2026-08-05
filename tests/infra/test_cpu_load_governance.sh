@@ -2846,6 +2846,40 @@ sys.exit(0 if ok else 1)
     fi
 fi
 
+# _row4_bypass_probe <admit_script> <psi_fixture> <timeout_s> <stderr_file>
+#   Runs cpu-admit's `admit` subcommand under DF_VERIFY_ROLE=merge against a
+#   synthetic PSI fixture, captures the child's stderr into <stderr_file>,
+#   and RETURNS the child's rc (task 6000). Keeps the exact env set the live
+#   ROW4-2/ROW4-3 checks below have always used (REIFY_CPU_ADMIT_PROC_PATH/
+#   MAX_WAIT/POLL) — factored out so both the live cpu-admit.sh path and the
+#   hermetic ROW4-BYPASS-VACUITY-1/2 stub scripts drive the identical
+#   invocation shape.
+#
+#   <timeout_s> is an ANTI-HANG guard ONLY (T-treatment,
+#   docs/prds/infra-test-wallclock-deflake.md:33) — it must never be sized to
+#   discriminate pass/fail. The verdict is the rc (ROW4-2) plus the
+#   structural stderr marker (ROW4-3); the timeout exists solely so a
+#   genuinely hung admit cannot hang this suite forever. A caller that needs
+#   to prove the guard still fires on a real hang (ROW4-BYPASS-VACUITY-2c)
+#   passes a deliberately tiny explicit value here rather than mutating the
+#   live budget.
+#
+#   rc is captured via `|| _rc=$?`, never `$(...)` command substitution: a
+#   bare substitution discards the child's exit status, and a caller relying
+#   on a genuine 124 (ROW4-BYPASS-VACUITY-2c) would silently see a false 0.
+_row4_bypass_probe() {
+    local admit_script="$1" psi_fixture="$2" timeout_s="$3" stderr_file="$4"
+    local _rc=0
+    timeout "$timeout_s" \
+        env DF_VERIFY_ROLE=merge \
+            REIFY_CPU_ADMIT_PROC_PATH="$psi_fixture" \
+            REIFY_CPU_ADMIT_MAX_WAIT=1 \
+            REIFY_CPU_ADMIT_POLL=1 \
+        bash "$admit_script" admit \
+        >/dev/null 2>"$stderr_file" || _rc=$?
+    return "$_rc"
+}
+
 # ============================================================================
 # Cycle ROW4-BYPASS — §8 row-9 merge-bypass smoke (always-on, hermetic).
 # DF_VERIFY_ROLE=merge + high-PSI fixture → cpu-admit.sh admit exits 0 fast.
@@ -2859,20 +2893,36 @@ _ROW4_PSI_FIXTURE="$WORK/row4_psi_fixture"
 printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
     > "$_ROW4_PSI_FIXTURE"
 
+# ROW4-2/ROW4-3 anti-hang guard (T-treatment). Currently the RETIRED literal
+# 5 -- a pure rename with ZERO behaviour change (task 6000 step-2); widened to
+# a knob-backed generous budget in step-4 once ROW4-BYPASS-VACUITY-2 pins why
+# 5 is too tight (a merge bypass that is merely slow to START -- process-spawn
+# latency on an oversubscribed host -- must not flip the verdict). Named now,
+# ahead of that widening, so the RED test added next can reference it under
+# `set -euo pipefail` without an unbound-variable abort.
+_ROW4_BYPASS_TIMEOUT_S=5
+
 # ROW4-2: DF_VERIFY_ROLE=merge bypasses PSI → cpu-admit admit exits 0 fast.
+_ROW4_BYPASS_STDERR="$(mktemp -p "$WORK" row4-bypass-stderr.XXXXXX)"
 _ROW4_BYPASS_START=$(date +%s)
 _ROW4_BYPASS_RC=0
-timeout 5 \
-    env DF_VERIFY_ROLE=merge \
-        REIFY_CPU_ADMIT_PROC_PATH="$_ROW4_PSI_FIXTURE" \
-        REIFY_CPU_ADMIT_MAX_WAIT=1 \
-        REIFY_CPU_ADMIT_POLL=1 \
-    bash "$CPU_ADMIT" admit \
-    >/dev/null 2>&1 || _ROW4_BYPASS_RC=$?
+_row4_bypass_probe "$CPU_ADMIT" "$_ROW4_PSI_FIXTURE" "$_ROW4_BYPASS_TIMEOUT_S" "$_ROW4_BYPASS_STDERR" \
+    || _ROW4_BYPASS_RC=$?
 _ROW4_BYPASS_END=$(date +%s)
 _ROW4_BYPASS_ELAPSED=$(( _ROW4_BYPASS_END - _ROW4_BYPASS_START ))
 assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 fast (rc=${_ROW4_BYPASS_RC}, elapsed=${_ROW4_BYPASS_ELAPSED}s)" \
     test "${_ROW4_BYPASS_RC}" -eq 0
+
+# ROW4-3: structural discriminator (task 6000, porting the #4844 treatment
+# from test_cpu_admit.sh:255-258 Cycle D). rc alone cannot tell a genuine
+# merge bypass apart from a cpu-admit that keeps returning 0 while silently
+# no longer taking the bypass path (ROW4-BYPASS-VACUITY-1c pins this
+# hermetically) -- the stderr marker is what actually discriminates.
+# grep -qF (fixed-string): the marker contains literal parens, and matches
+# BOTH cpu-admit.sh branches (bare, and the " — timestamp bumped" variant at
+# cpu-admit.sh:226).
+assert "ROW4-3: DF_VERIFY_ROLE=merge → cpu-admit stderr marks 'bypass (role=merge)' (structural discriminator; see test_cpu_admit.sh Cycle D / task 4844)" \
+    bash -c 'grep -qF "bypass (role=merge)" "$1"' _ "$_ROW4_BYPASS_STDERR"
 
 # ── ROW4-BYPASS-VACUITY-1: the stderr marker DISCRIMINATES (task 6000) ─────
 # Drives a not-yet-defined `_row4_bypass_probe <admit_script> <psi_fixture>
