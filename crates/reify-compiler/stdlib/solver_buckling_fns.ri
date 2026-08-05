@@ -17,7 +17,7 @@
 //   By the time `phase_functions` processes this file, `BucklingResult`, `BucklingMode`,
 //   and `BucklingOptions` are all in the prelude template registry and field
 //   access resolves correctly.  This mirrors the `std.flexures.types` /
-//   `std.flexures` split (stdlib_loader.rs:118-130).
+//   `std.flexures` split (`stdlib_loader::stdlib_sources`).
 
 // ── solve_buckling ────────────────────────────────────────────────────────────
 
@@ -94,7 +94,8 @@ pub fn safety_factor_buckling(
 //
 // Returns `result.modes[n].mode_shape`. For task ε this is `Undef`
 // per the tet-result convention (Undef must remain accepted for Field
-// params; see solver_elastic.ri:280-284). Displaced-position population
+// params; see the `ElasticResult.frame` Undef-for-absent-field convention in
+// solver_elastic.ri). Displaced-position population
 // is task ι/3458 (GUI animator).
 pub fn mode_shape(
     result : BucklingResult,

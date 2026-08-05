@@ -28,8 +28,9 @@
 //
 // Encoding notes:
 //   1. `JointForceValue` is a marker trait + refining structures — the Reify
-//      DSL enum grammar has NO payload-carrying variants (ts_parser.rs:472
-//      collects bare identifiers only), so the PRD's "tagged union" is expressed
+//      DSL enum grammar has NO payload-carrying variants
+//      (enum-variant lowering: `TsParser::lower_enum_variant` in
+//      crates/reify-syntax/src/ts_parser.rs), so the PRD's "tagged union" is expressed
 //      as a trait + 6 concrete structure_defs. This is the established stdlib
 //      idiom used by trajectory.ri (BoundaryCondition / Shaper).
 //   2. Multi-component force payloads (CylForce/PlanarForce/SphereForce) are
@@ -99,9 +100,10 @@ structure def MassProperties {
 // uses to dispatch on `PointLoad` vs `FixedSupport`.
 //
 // TAGGED-UNION NOTE: the Reify DSL enum grammar has NO payload-carrying
-// variants (ts_parser.rs:472 collects bare identifiers only). This marker-
-// trait + refining-structure_defs pattern is the established stdlib idiom for
-// sum types (trajectory.ri BoundaryCondition/Shaper, modal_analysis
+// variants (enum-variant lowering: `TsParser::lower_enum_variant` in
+// crates/reify-syntax/src/ts_parser.rs). This
+// marker-trait + refining-structure_defs pattern is the established stdlib
+// idiom for sum types (trajectory.ri BoundaryCondition/Shaper, modal_analysis
 // ForcingFunction). The PRD's "tagged union" is expressed here.
 trait JointForceValue { }
 
@@ -251,8 +253,8 @@ pub fn inverse_dynamics_at_snapshot(mechanism: Mechanism, snapshot: Snapshot, q_
 // cache + cooperative cancellation, reify-eval/src/dynamics_ops.rs) rather than
 // body-inlining. The `{ inverse_dynamics_lower(...) }` body stays as the
 // unregistered fallback: with no trampoline registered the engine inlines it
-// (bit-identical result), exactly the modal_analysis_fns.ri:52 /
-// solver_buckling_fns.ri:49 pattern.
+// (bit-identical result), exactly the `modal_analysis()` (modal_analysis_fns.ri)
+// / `solve_buckling()` (solver_buckling_fns.ri) pattern.
 @optimized("dynamics::inverse_dynamics")
 pub fn inverse_dynamics(mechanism: Mechanism, trajectory: MotionTrajectory) -> List<List<JointForce>> { inverse_dynamics_lower(mechanism, trajectory) }
 

@@ -61,7 +61,7 @@
 //      `constraint` grammar (method-call on Vector3, not a scalar predicate)
 //      and is deferred to the runtime trampoline (future task ζ), mirroring
 //      `BucklingOptions.mode` allowlist-deferral precedent
-//      (solver_buckling.ri:97-107).
+//      (solver_buckling.ri).
 
 // ── DampingDescriptor (marker trait) ─────────────────────────────────────────
 
@@ -122,8 +122,8 @@ structure def NoDamping : DampingDescriptor { }
 // but physically meaningful at zero ("stiffness-only" damping with α=0; or
 // "mass-only" damping with β=0). Imposing `alpha >= 0` or `beta >= 0` at
 // the structure-def level would forbid these special cases, so the contract
-// stays open here. Mirrors solver_buckling.ri:97-107 "sigma is explicitly
-// NOT constrained" discipline.
+// stays open here. Mirrors `BucklingOptions.sigma`'s "explicitly NOT
+// constrained" discipline in solver_buckling.ri.
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
 structure def RayleighDamping : DampingDescriptor {
@@ -177,7 +177,8 @@ structure def RayleighDamping : DampingDescriptor {
 //                        : Field<Point3<Length>, Vector3<Length>>` where
 //                        the Length parameterization is a typing
 //                        convention, not a dimensional claim; see
-//                        solver_buckling.ri:127-145 dimensionality note.)
+//                        the `BucklingMode.mode_shape` dimensionality note
+//                        in solver_buckling.ri.)
 //   participation_mass — effective modal mass projected along the user-
 //                        supplied reference_direction (PRD §4.3
 //                        ModalOptions.reference_direction). Used to rank
@@ -188,7 +189,8 @@ structure def RayleighDamping : DampingDescriptor {
 //                        named-scalar `Scalar<X>` alias has not landed
 //                        anywhere in the stdlib yet. Same placeholder
 //                        convention as `Load.force : Real` waiting for
-//                        `Vector3<Force>` in `fea_multi_case.ri:269-296`.
+//                        `Vector3<Force>` (`PointLoad.force` in
+//                        `fea_multi_case.ri`).
 //                        (`Mode.frequency` shared this convention until it was
 //                        tightened to `Frequency` in task 4548.)
 //   damping_ratio      — ζ_i for this mode. Equals 0 for an undamped solve
@@ -228,7 +230,7 @@ structure def Part { }
 // which Reify's `constraint` grammar cannot express (it admits only scalar
 // predicates over same-scope cells). These are producer-enforced by the
 // future `modal_analysis` runtime trampoline (task ζ), mirroring the
-// `BucklingResult.modes` discipline at solver_buckling.ri:196-205.
+// `BucklingResult.modes` discipline in solver_buckling.ri.
 //
 // Field semantics (PRD §4.1):
 //   part                 — the analysed part. Typed `Part` (declared in this
@@ -269,7 +271,7 @@ structure def ModalResult {
     //                                          scalar predicates, not
     //                                          collection invariants. Mirrors
     //                                          BucklingResult.modes discipline
-    //                                          (solver_buckling.ri:196-205).
+    //                                          (solver_buckling.ri).
     //   boundary_conditions : List<Support> — collection of trait objects; no
     //                                          scalar invariant expressible.
     //   damping             : DampingDescriptor — trait-typed; not scalar-
@@ -313,7 +315,7 @@ structure def ModalResult {
 //                          (added later) encoded as the decimal literal
 //                          `0.000000001` — Reify's number grammar has no
 //                          scientific notation (same convention as
-//                          solver_buckling.ri:60-64).
+//                          `BucklingOptions.tol` in solver_buckling.ri).
 //   max_iters           — upper bound on total solver iterations across
 //                          restarts. Default 200 (added later) per PRD §4.3
 //                          (NOT 1000 — modal converges faster than buckling).
@@ -336,14 +338,15 @@ structure def ModalResult {
 //                          a scalar predicate) and is deferred to the runtime
 //                          trampoline (future task ζ), mirroring
 //                          `BucklingOptions.mode` allowlist-deferral
-//                          (solver_buckling.ri:97-107). See plan
+//                          (solver_buckling.ri). See plan
 //                          design-decision-4.
 //
 // Defaults (PRD §4.3) — literal-valued only, per plan design-decision-5:
 //   (a) `tol = 0.000000001` is the decimal spelling of 1e-9. Reify's
 //       number-literal grammar has no scientific notation, so the value is
-//       written out long-hand (same convention as solver_buckling.ri:60-64
-//       where `tol = 0.00000001` spells 1e-8). Strict-equality safe: the
+//       written out long-hand (same convention as `BucklingOptions.tol`
+//       in solver_buckling.ri, where `tol = 0.00000001` spells 1e-8).
+//       Strict-equality safe: the
 //       IEEE-754 round-to-nearest of this exact decimal literal is
 //       deterministic.
 //   (b) `boundary_conditions`, `damping`, `reference_direction` are LEFT
@@ -411,7 +414,7 @@ structure def ModalOptions {
     //                          runtime trampoline (future task ζ) per plan
     //                          design-decision-4, mirroring the
     //                          `BucklingOptions.mode` allowlist-deferral
-    //                          precedent (solver_buckling.ri:97-107).
+    //                          precedent (solver_buckling.ri).
     //   damping             : DampingDescriptor     — trait-typed; not
     //                          scalar-predicable.
     //   boundary_conditions : List<Support>         — collection of trait
@@ -435,7 +438,7 @@ structure def ModalOptions {
 // `Type::List(Box::new(Type::TraitObject("ForcingFunction")))` at compile
 // time and the eval-time dispatch matches via the SIR-α nominal type-tag.
 //
-// Same marker-trait pattern as `trait DampingDescriptor { }` (line 82) and
+// Same marker-trait pattern as `trait DampingDescriptor { }` (this file) and
 // `trait Support { }` (fea_types.ri).
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
@@ -463,11 +466,12 @@ trait ForcingFunction { }
 //                genuinely dimensionless). Encoded as
 //                `Vector3<Dimensionless>` per the
 //                `ModalOptions.reference_direction : Vector3<Dimensionless>`
-//                precedent (modal_analysis.ri:358). The `direction.norm() > 0`
+//                precedent (declared above in this file). The
+//                `direction.norm() > 0`
 //                invariant is NOT expressible in Reify's constraint grammar
 //                (method-call on Vector3, not a scalar predicate; same limit
 //                as `reference_direction.norm() > 0` deferred in
-//                modal_analysis.ri:382-389).
+//                `ModalOptions`' "NOT constrained" note above).
 //   magnitude  — positive scalar force size. By convention, `direction`
 //                carries the sign (via the unit vector) and `magnitude`
 //                carries the positive size. The `constraint magnitude > 0N`
@@ -492,11 +496,11 @@ structure def StepForce : ForcingFunction {
     // is the sign-carrying unit vector. Declaring the lower bound at the
     // structure-def level makes the contract explicit in production code
     // rather than relying solely on test coverage (task-2544 convention,
-    // mirroring `ModalOptions.n_modes > 0` at modal_analysis.ri:365 and
-    // `PiecewisePolynomialProfile.waypoints.count > 0` at trajectory.ri:230).
+    // mirroring `ModalOptions.n_modes > 0` above and
+    // `PiecewisePolynomialProfile.waypoints.count > 0` in trajectory.ri).
     // Dimensioned literal `0N` (= 0 newtons in SI) is required to keep
     // eval_cmp dim-equality matching at runtime; a bare `0` would yield
-    // `Indeterminate` per task #3115 esc-3115-112 (structural_physical.ri:67-68).
+    // `Indeterminate` per task #3115 esc-3115-112.
     constraint magnitude > 0N
 
     // NOTE — explicitly NOT constrained:
@@ -506,7 +510,7 @@ structure def StepForce : ForcingFunction {
     //                method-call on Vector3, not a scalar predicate; NOT
     //                expressible in Reify's constraint grammar (same limit as
     //                `reference_direction.norm() > 0` deferred in
-    //                modal_analysis.ri:382-389).
+    //                `ModalOptions`' "NOT constrained" note above).
     //   start_time : Time — any real time is valid; negative values support
     //                pre-loaded-history simulations where the force has been
     //                applied before t=0.
@@ -581,8 +585,9 @@ structure def ImpulseForce : ForcingFunction {
 //               `ModalOptions.reference_direction` precedent. Direction carries
 //               the sign; amplitude carries the positive peak size.
 //   amplitude — peak force magnitude (must be strictly positive). Encoded as
-//               `Force` (bare dimension name per `io.ri:77` precedent). The
-//               PRD §5.1 user-observable signal example explicitly states
+//               `Force` (bare dimension name per the `Buy.unit_cost : Money`
+//               precedent in `io.ri`). The PRD §5.1 user-observable signal
+//               example explicitly states
 //               `HarmonicForce(amplitude: -1N, ...)` should produce a
 //               constraint-violation diagnostic — the `constraint amplitude > 0N`
 //               is the production-code manifestation of that signal.
@@ -594,9 +599,9 @@ structure def ImpulseForce : ForcingFunction {
 //               literal) per PRD §5.1 "default: 0". The canonical zero-Angle
 //               default `= 0deg` (not bare `= 0`) is required because a bare `0`
 //               yields `Type::Real` which is dim-incompatible with `Type::Scalar
-//               { ANGLE }` per task #3115 esc-3115-112 (structural_physical.ri:
-//               67-68 documents the same reasoning). Choice of `deg` over `rad`
-//               follows `tolerancing.ri:113` precedent and is more user-intuitive
+//               { ANGLE }` per task #3115 esc-3115-112. Choice of `deg` over `rad`
+//               follows the `Angularity.nominal_angle : Angle = 0deg`
+//               precedent in `tolerancing.ri` and is more user-intuitive
 //               for the typical 0/90/180 phase-offset workflow. Any real phase
 //               value is physically valid (phase is modular 2π), so phase is NOT
 //               constrained.
@@ -615,7 +620,7 @@ structure def HarmonicForce : ForcingFunction {
     // the lower bound at the structure-def level follows the task-2544
     // explicit-contract convention (same rationale as `StepForce.magnitude
     // > 0N` and `ModalOptions.n_modes > 0`). Dimensioned literal `0N`
-    // required per structural_physical.ri:67-68.
+    // required per task #3115 esc-3115-112.
     constraint amplitude > 0N
 
     // A zero-frequency "harmonic" is a DC offset (degenerate as a sinusoid);
@@ -652,14 +657,16 @@ structure def HarmonicForce : ForcingFunction {
 //                  carries the sign; force_samples carry the positive scalar
 //                  magnitudes.
 //   time_samples — non-uniform time stamps at which force is specified.
-//                  `List<Time>` (bare dimension name `Time` per `io.ri:77`
-//                  precedent). Must be non-empty (empty ≡ degenerate, no force
+//                  `List<Time>` (bare dimension name `Time` per the
+//                  `Buy.lead_time : Time` precedent in `io.ri`).
+//                  Must be non-empty (empty ≡ degenerate, no force
 //                  data); the constraint `time_samples.count > 0` lands in
 //                  step-18. The `count` method on `List` is recognised in
-//                  constraint position per `reify-expr/src/lib.rs:1349`
+//                  constraint position per the `"count"` arm of
+//                  `eval_method_call` in `crates/reify-expr/src/lib.rs`
 //                  evaluator arm; precedent:
 //                  `PiecewisePolynomialProfile.constraint waypoints.count > 0`
-//                  (trajectory.ri:230).
+//                  (trajectory.ri).
 //   force_samples — force magnitudes at the corresponding time stamps.
 //                  `List<Force>`. Must be non-empty (same rationale).
 //
@@ -680,8 +687,9 @@ structure def SampledForce : ForcingFunction {
     // from zero samples. Declared at structure-def level to catch the failure
     // at construction rather than waiting for the transient_response trampoline
     // (task θ). Mirrors `PiecewisePolynomialProfile.constraint waypoints.count
-    // > 0` (trajectory.ri:230). The `.count` method on `List` is recognised in
-    // constraint position per `reify-expr/src/lib.rs:1349` evaluator arm.
+    // > 0` (trajectory.ri). The `.count` method on `List` is recognised in
+    // constraint position per the `"count"` arm of `eval_method_call` in
+    // `crates/reify-expr/src/lib.rs`.
     constraint time_samples.count > 0
 
     // Same rationale as time_samples.count > 0 above. An empty force_samples
@@ -715,7 +723,7 @@ structure def SampledForce : ForcingFunction {
 //             `List<ForcingFunction>` which resolves at compile time to
 //             `Type::List(Box::new(Type::TraitObject("ForcingFunction")))` —
 //             same shape as `ModalResult.boundary_conditions : List<Support>`
-//             (modal_analysis.ri:243) which resolves to
+//             (declared above in this file) which resolves to
 //             `Type::List(Box::new(Type::TraitObject("Support")))`. The
 //             `constraint sources.count > 0` lands in step-22; an empty
 //             sources list corresponds to the PRD §1 `E_TransientForcingMissing`
@@ -740,7 +748,7 @@ structure def ForcingTimeHistory {
     // task 3540, already landed) rather than waiting for the transient_response
     // trampoline (task θ) to flag it. Follows the task-2544 explicit-contract
     // convention, mirroring `PiecewisePolynomialProfile.constraint
-    // waypoints.count > 0` (trajectory.ri:230) and
+    // waypoints.count > 0` (trajectory.ri) and
     // `SampledForce.constraint time_samples.count > 0` above.
     constraint sources.count > 0
 
@@ -790,14 +798,14 @@ structure def ForcingTimeHistory {
 //                  inner index = timestep), so the outer length equals the modal
 //                  count and each inner length equals `t_samples.count`. Encoded
 //                  as `List<List<Real>>` — a nested-generic list, valid per the
-//                  `Tensegrity.struts : List<List<Int>>` (tensegrity.ri:76) and
-//                  `MotionEnvelope.nominal_pose : List<List<Pose3>>`
-//                  (trajectory.ri:322) precedents. `Real` (not a dimensioned
+//                  `Tensegrity.struts : List<List<Int>>` (tensegrity.ri) and
+//                  `EndEffectorTrack.nominal_pose : List<List<Pose3>>`
+//                  (trajectory.ri) precedents. `Real` (not a dimensioned
 //                  scalar) because a mass-normalized modal coordinate ξ_i carries
 //                  units of √mass·length (the dual of `Mode.shape`'s 1/√mass
 //                  components), not expressible in Reify's dimension grammar —
 //                  the same unrepresentable-SI-root limitation `Mode.shape`
-//                  documents (modal_analysis.ri:155-165).
+//                  documents (`Mode.shape` above in this file).
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.2.
 structure def DisplacementTimeHistory {
@@ -815,5 +823,5 @@ structure def DisplacementTimeHistory {
     //                                 scalar predicates only); producer-enforced
     //                                 by the transient_response trampoline
     //                                 (task ι), mirroring the ModalResult.modes
-    //                                 discipline (modal_analysis.ri:248-258).
+    //                                 discipline (`ModalResult.modes` above).
 }

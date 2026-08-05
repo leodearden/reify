@@ -33,7 +33,7 @@
 //
 // Module placement: registered last in `stdlib_loader.rs` after `std.stackup`.
 // Hard dependencies:
-//   - `std.trajectory` (for Vec3 and JointValue aliases — trajectory.ri:76,96)
+//   - `std.trajectory` (for the `Vec3` and `JointValue` aliases — trajectory.ri)
 //   - `std.units` (Bool, Int, Real)
 //
 // Encoding notes:
@@ -125,9 +125,10 @@ trait HasMotion {
 // evaluated to `Value::Undef` while these fields still declared `Vec3<Length>`.
 // The retype removes that decl/runtime divergence.
 //
-// Magnitude is separately unread — the eval layer normalizes: joints.rs:28-29
-// (`transform_at` normalizes the stored raw axis) and joints.rs:93-94
-// (`unit_normalize` for the Planar pair) — so the retype is behaviour-preserving.
+// Magnitude is separately unread — the eval layer normalizes: the `"prismatic"`
+// arm of `eval_joints` in reify-stdlib/src/joints.rs (`transform_at` normalizes
+// the stored raw axis) and that function's `"planar"` arm (`unit_normalize` for
+// the Planar pair) — so the retype is behaviour-preserving.
 
 // Prismatic — translational sliding joint (1 translational DOF).
 // `axis` is the translation direction in the parent body frame.
@@ -308,7 +309,7 @@ structure def Mechanism {
 // Snapshot — a single kinematic configuration of a Mechanism (PRD §7.1).
 //
 //   free_values  : List<JointValue>  — per-DOF generalized coordinates
-//                                      (JointValue = Real alias, trajectory.ri:76)
+//                                      (`pub type JointValue = Real`, trajectory.ri)
 //   is_singular  : Bool              — true if the configuration is at a singularity
 structure def Snapshot {
     param free_values : List<JointValue>

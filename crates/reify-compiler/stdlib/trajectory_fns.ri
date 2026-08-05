@@ -19,7 +19,7 @@
 //   `EndEffectorTrack`, `Profile`, and `ModalResult` are all in the prelude
 //   template registry and the ctor resolves. Same split + rationale as the
 //   `std.modal.analysis` / `std.modal.analysis.fns` split
-//   (modal_analysis_fns.ri:6-20, esc-3851-32).
+//   (modal_analysis_fns.ri "WHY this is a separate module" note, esc-3851-32).
 
 // ── simulate_trajectory ───────────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@
 //     which is loaded AFTER `std.trajectory(.fns)` in the prelude sequence and
 //     so is unavailable here. Uses the bare `Real` placeholder, the uniform
 //     convention across this module (`PiecewisePolynomialProfile.mechanism :
-//     Real`, `EndEffectorTrack.mechanism : Real` — trajectory.ri:261,319).
+//     Real`, `EndEffectorTrack.mechanism : Real` — both in trajectory.ri).
 //     TODO(mechanism-type): tighten to `Mechanism` once the kinematic- // ptodo:allow type-placeholder awaiting future type-system PRD
 //     completion PRD lands.
 //   `modal : ModalResult` — in-prelude (`std.modal.analysis` loads earlier).

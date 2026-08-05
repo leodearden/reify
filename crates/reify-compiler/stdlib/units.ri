@@ -84,7 +84,8 @@ pub unit USD : Money
 
 // ── Physical Constants ──────────────────────────────────────────────────────
 // Dimensionful physical constants. Exposed as zero-arg `pub fn` because Reify
-// lacks top-level `const` (see `standard_stock.ri:5`); migrate when added.
+// lacks top-level `const` (see the `standard_stock.ri` module header note);
+// migrate when added.
 //
 // Helper type aliases: the grammar's `type_expr` rule (used for function
 // return types) admits `identifier | parameterized_type` only — binary
