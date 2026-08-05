@@ -49,9 +49,13 @@
 #
 # EXCLUDED:
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
-#   - test code: `tests/` dirs (by path) and `#[cfg(test)]` modules (brace-depth
-#     tracked, best-effort) — a synthetic negative-example fixture asserting the
-#     old panic-prone behavior is thus permitted;
+#   - test code: `tests/` dirs (by path) and `#[cfg(test)] mod` BODIES
+#     (brace-depth tracked, best-effort; the opening line must declare a
+#     `mod`, so a bare `#[cfg(test)] fn` or `#[cfg(test)] use …;` is NOT
+#     exempt) — a synthetic negative-example fixture asserting the old
+#     panic-prone behavior is thus permitted inside a real test module. A
+#     legitimate test-only helper that is not in a `mod` needs the
+#     `// nan-safe:allow` escape below instead;
 #   - escaped sites: any line carrying the inline escape
 #         // nan-safe:allow — <reason>
 #     mirroring reify-audit's `// ptodo:allow` convention (§6.8). Annotate a
@@ -115,11 +119,13 @@ done < <(git -C "$REPO_ROOT" ls-files -z -- "${SCOPE_PATHSPECS[@]}" 2>/dev/null)
 # skipper — from THAT view, never from the raw line. See PRODUCTION-CODE VIEW
 # above.
 #
-# The skipper's arming is UNCHANGED from before this port: any #[cfg(test)]
-# line arms it, and the next brace-opening line becomes the skipped module
-# regardless of whether it declares `mod`. Only the arming's INPUT moves here,
-# from raw $0 to the lexed `code` — task 6031 step-4 tightens the arming
-# itself to require `mod`.
+# The `#[cfg(test)]` skipper additionally requires the opening line to declare
+# a `mod`. Without that requirement a bare `#[cfg(test)] use …;` or
+# `#[cfg(test)] fn` leaves the skipper armed until the NEXT brace-opening
+# line, which can be an unrelated production item, silently swallowing it.
+# This guard's lexer is shared with the INV-FEA-1 trampoline-registration
+# guard (scripts/check-compute-trampoline-registration.sh), kept in sync BY
+# HAND until the two can be factored into a shared lib.
 #
 # The prologue is assembled through a quoted heredoc rather than a
 # single-quoted assignment so the lexer can contain apostrophes (it must
@@ -239,23 +245,37 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     if (carried_in && code == "") next
 
     # Brace counts on the LEXED view, never on $0 (throwaway copies so `code`
-    # stays intact).
+    # stays intact). Counting the raw line would let a brace that exists only
+    # inside a comment, a string, a char literal or a raw string move `depth`,
+    # which silently mis-drives the skipper below — see PRODUCTION-CODE VIEW
+    # above.
     c = code; n_open  = gsub(/[{]/, "x", c)
     c = code; n_close = gsub(/[}]/, "x", c)
 
-    # --- #[cfg(test)] module skipping (best-effort brace tracking) ---
+    # --- #[cfg(test)] MODULE skipping (best-effort brace tracking) ---
     if (in_test) {
         depth += n_open - n_close
         if (depth <= test_base) in_test = 0
         next
     }
-    if (code ~ /#\[cfg\(test\)\]/) pending_test = 1
+    if (code ~ /#\[cfg\(test\)\]/) {
+        pending_test = 1
+    } else if (pending_test) {
+        # The pending gate survives only across blank lines, further attributes
+        # and comments; any other non-mod line disarms it. A comment-only line
+        # lexes to the empty string, so `t == ""` already covers it.
+        t = code; sub(/^[ \t]+/, "", t)
+        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/)) pending_test = 0
+    }
     if (pending_test && n_open > 0) {
-        in_test = 1
-        test_base = depth        # depth BEFORE this block opened
-        depth += n_open - n_close
-        pending_test = 0
-        next
+        if (code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+            in_test = 1
+            test_base = depth        # depth BEFORE this block opened
+            depth += n_open - n_close
+            pending_test = 0
+            next
+        }
+        pending_test = 0             # cfg(test) on a fn/field/use, not a module
     }
     depth += n_open - n_close
 }
