@@ -6463,6 +6463,73 @@ describe('App SolverProgressOverlay integration', () => {
   });
 });
 
+// ── Buckling mode-shape-frame subscription (task 6035) ─────────────────────
+//
+// Covers the App-level buckling wiring end-to-end: initApp -> subscribeModeShapeFrames
+// -> bucklingStore.ingestFrame -> the <Show> gate that mounts BucklingPanel -> the
+// onCleanup detach. Before task 6035 the `../bridge` mock factory omitted
+// `onModeShapeFrame`, so subscribeModeShapeFrames threw on every mount and initApp's
+// catch swallowed it — leaving this whole path dead under App.test.tsx.
+
+describe('App buckling mode-shape-frame subscription (task 6035)', () => {
+  let modeShapeCallback: ((f: any) => void) | undefined;
+  let modeShapeUnlisten: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    modeShapeCallback = undefined;
+    modeShapeUnlisten = vi.fn();
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(
+      async (cb: (f: any) => void) => {
+        modeShapeCallback = cb;
+        return modeShapeUnlisten;
+      },
+    );
+  });
+
+  it('(a) initApp establishes the mode-shape-frame subscription', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+    expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) emitted mode-shape frames route into the buckling store and reveal BucklingPanel', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+
+    // Gate is closed until the store has ingested at least one frame.
+    expect(screen.queryByTestId('buckling-panel')).toBeNull();
+
+    // Same fixture vectors + phase convention as bucklingStore.test.ts (BASE/PEAK):
+    // phase < 0.5 -> base frame, phase >= 0.5 -> peak frame for that mode index.
+    modeShapeCallback!({ mode_index: 0, phase: 0.0, displaced_positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] });
+    modeShapeCallback!({
+      mode_index: 0,
+      phase: 1.0,
+      displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      eigenvalue: 1000,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('buckling-panel')).toBeTruthy();
+      expect(screen.getByTestId('buckling-mode-row-0')).toBeTruthy();
+    });
+  });
+
+  it('(c) unmount detaches the mode-shape-frame listener', async () => {
+    const { unmount } = await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+    // The unsub is assigned one microtask after the callback is captured; let
+    // initApp's await settle so we assert against the live subscription.
+    await flushMacrotasks();
+
+    expect(modeShapeUnlisten).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(modeShapeUnlisten).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // App hover sync wiring — Edge C (task-4209)
 // Edge C: editor cursor → createEditorHoverSync → store → DualViewport.hoveredEntity
