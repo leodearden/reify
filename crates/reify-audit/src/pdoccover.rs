@@ -592,9 +592,27 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
         // `=`) or on a following line (the line-broken header form, possibly
         // with doc-comment or attribute lines between). Scan forward a bounded
         // distance so a malformed declaration cannot run away over the file.
+        //
+        // The scan must ALSO stop when this declaration has no bracketed
+        // literal at all — the alias form `pub const A_NAMES: &[&str] =
+        // B_NAMES;`. Without a stop condition the lookahead latches onto the
+        // NEXT declaration's `&[`, which is doubly wrong: the following real
+        // registry's entries are harvested under the alias's `const_name` and
+        // provenance line, and the real registry itself is then skipped
+        // wholesale by `i = j + 1` — a name silently leaving the census, which
+        // is exactly the false-clean mode the floor guards exist to prevent
+        // (the guard cannot catch it: the mis-bound registry is non-empty).
+        // Two stops, both cheap:
+        //   - a `;` reached before any `[` ends the initialiser; and
+        //   - a following line that is itself a registry header.
+        // On either, `open` stays `None`, `i += 1`, and the next declaration is
+        // re-examined normally under its own name.
         const HEADER_LOOKAHEAD: usize = 4;
         let mut open = None;
         for (k, code) in code_lines.iter().enumerate().skip(i).take(HEADER_LOOKAHEAD) {
+            if k > i && registry_header(code).is_some() {
+                break;
+            }
             // On the header line, only look after the `=` — the `&[&str]` type
             // annotation's own brackets are not the registry's opening bracket.
             let hay = if k == i {
@@ -605,8 +623,16 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
             } else {
                 code.as_str()
             };
-            if hay.contains('[') {
+            let bracket = hay.find('[');
+            let terminator = hay.find(';');
+            if bracket.is_some_and(|b| terminator.is_none_or(|e| b < e)) {
+                // Bracket first (or no terminator at all) — the literal opens here.
                 open = Some(k);
+                break;
+            }
+            if terminator.is_some() {
+                // Terminator first, or terminator with no bracket — the
+                // initialiser is complete and holds no slice literal.
                 break;
             }
         }
@@ -2084,6 +2110,55 @@ pub const AFTER_NAMES: &[&str] = &["sphere"];
             "a bracket beyond HEADER_LOOKAHEAD is silently dropped — pinned \
              here as a known, bounded limit rather than left to be discovered \
              by a future silent-false-clean census"
+        );
+    }
+
+    /// A `*_NAMES` const with NO bracketed literal — the alias form
+    /// `pub const A_NAMES: &[&str] = B_NAMES;` — must yield no registry, and
+    /// must not consume the declaration that follows it.
+    ///
+    /// The lookahead's failure mode here is not a missing finding but a
+    /// MIS-ATTRIBUTED one: latching onto the next declaration's `&[` harvests
+    /// that registry's entries under the alias's name and line, and then
+    /// `i = j + 1` skips the real declaration entirely — a name leaving the
+    /// census silently, which no floor guard can catch (assertion (ii) there
+    /// only rejects EMPTY registries, and the mis-bound one is non-empty).
+    /// `units.rs` has no alias-form const today; this pins the behaviour before
+    /// one arrives.
+    #[test]
+    fn extract_registries_alias_form_yields_nothing_and_consumes_nothing() {
+        let src = "\
+pub const ALIAS_NAMES: &[&str] = OTHER_NAMES;
+pub const REAL_NAMES: &[&str] = &[
+    \"real_one\",
+    \"real_two\",
+];
+";
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec!["REAL_NAMES"],
+            "the alias must contribute no registry AND must not swallow the \
+             next declaration; got: {regs:?}"
+        );
+        assert_eq!(
+            entry_pairs(&regs[0]),
+            vec![("real_one", 3), ("real_two", 4)],
+            "the following registry keeps its own name, entries and \
+             provenance lines; got: {:?}",
+            regs[0].entries
+        );
+
+        // Same shape with the alias LAST — nothing to latch onto, still no
+        // registry, and the real one ahead of it is unaffected.
+        let trailing = "\
+pub const REAL_NAMES: &[&str] = &[\"real_one\"];
+pub const ALIAS_NAMES: &[&str] = OTHER_NAMES;
+";
+        assert_eq!(
+            const_names(&extract_registries(trailing)),
+            vec!["REAL_NAMES"],
+            "a trailing alias declares no names of its own"
         );
     }
 
