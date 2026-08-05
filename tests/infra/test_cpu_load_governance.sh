@@ -166,6 +166,9 @@
 #                                       strictly ABOVE the retired 5 s bound,
 #                                       proving a bypass merely slow to START
 #                                       does not flip the verdict; task 6000)
+#   REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S  ROW4-2/ROW4-3 anti-hang guard,
+#                                       never a discriminator (default 120;
+#                                       task 6000 T-treatment)
 #   REIFY_CPU_GOV_TEST_SHARE_TOL        ROW4 merge-share variance budget (default 0.10)
 #   REIFY_CPU_GOV_TEST_CONFINE_CORES    confined-cgroup-quota footprint size in cores
 #                                       (default 2 -> parent CPUQuota=200%; H5/task 4926;
@@ -1974,7 +1977,10 @@ fi
 #
 # Merge-bypass smoke (Cycle ROW4-BYPASS, §8 row 9 echo):
 #   DF_VERIFY_ROLE=merge + avg10=99 PSI fixture → cpu-admit.sh admit exits 0
-#   fast.  Hermetic (synthetic PSI fixture), always-on, no cgroup required.
+#   fast AND marks its stderr with the structural 'bypass (role=merge)'
+#   marker -- rc (ROW4-2) + marker (ROW4-3) are the verdict; the wall-clock
+#   is a generous anti-hang guard only (task 6000 T-treatment). Hermetic
+#   (synthetic PSI fixture), always-on, no cgroup required.
 # ============================================================================
 echo ""
 echo "--- Cycle ROW4: §8 Row 4 (merge-favored share, private slices) ---"
@@ -2887,7 +2893,11 @@ _row4_bypass_probe() {
 
 # ============================================================================
 # Cycle ROW4-BYPASS — §8 row-9 merge-bypass smoke (always-on, hermetic).
-# DF_VERIFY_ROLE=merge + high-PSI fixture → cpu-admit.sh admit exits 0 fast.
+# DF_VERIFY_ROLE=merge + high-PSI fixture → cpu-admit.sh admit exits 0 fast
+# AND marks its stderr with the structural 'bypass (role=merge)' marker.
+# ROW4-2 (rc) + ROW4-3 (marker) are the verdict; the wall-clock is an
+# anti-hang guard only -- T-treatment, docs/prds/infra-test-wallclock-
+# deflake.md:33.
 # Uses a synthetic /proc/pressure/cpu fixture (no real PSI needed).
 # ============================================================================
 echo ""
@@ -2898,14 +2908,21 @@ _ROW4_PSI_FIXTURE="$WORK/row4_psi_fixture"
 printf 'some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' \
     > "$_ROW4_PSI_FIXTURE"
 
-# ROW4-2/ROW4-3 anti-hang guard (T-treatment). Currently the RETIRED literal
-# 5 -- a pure rename with ZERO behaviour change (task 6000 step-2); widened to
-# a knob-backed generous budget in step-4 once ROW4-BYPASS-VACUITY-2 pins why
-# 5 is too tight (a merge bypass that is merely slow to START -- process-spawn
-# latency on an oversubscribed host -- must not flip the verdict). Named now,
-# ahead of that widening, so the RED test added next can reference it under
-# `set -euo pipefail` without an unbound-variable abort.
-_ROW4_BYPASS_TIMEOUT_S=5
+# ROW4-2/ROW4-3 anti-hang guard ONLY (T-treatment,
+# docs/prds/infra-test-wallclock-deflake.md:33) -- NEVER a discriminator. The
+# verdict is the rc (ROW4-2 below) plus the structural stderr marker
+# (ROW4-3); this timeout exists solely so a genuinely hung admit cannot hang
+# this suite forever. ROW4-2 is the same merge-bypass case #4844
+# (test_cpu_admit.sh Cycle D) converted to this treatment there -- this row
+# was missed at the time and is what task 6000 closes.
+#
+# 120s is generous, not a tuned guess: the real merge bypass was MEASURED at
+# 713 ms on a loadavg-~190/32-core box, so 120s is ~170x the observed cost.
+# It also mirrors the budget tests/infra/test_cpu_load_governance_deflake.sh:115
+# already grants to an ENTIRE run of this SUT. ROW4-BYPASS-VACUITY-2d pins
+# that this floor stays generous enough to never discriminate; -2c pins that
+# the guard still fires on a genuine hang regardless of how generous it is.
+_ROW4_BYPASS_TIMEOUT_S="${REIFY_CPU_GOV_TEST_ROW4_BYPASS_TIMEOUT_S:-120}"
 
 # ROW4-2: DF_VERIFY_ROLE=merge bypasses PSI → cpu-admit admit exits 0 fast.
 _ROW4_BYPASS_STDERR="$(mktemp -p "$WORK" row4-bypass-stderr.XXXXXX)"
@@ -2914,6 +2931,9 @@ _ROW4_BYPASS_RC=0
 _row4_bypass_probe "$CPU_ADMIT" "$_ROW4_PSI_FIXTURE" "$_ROW4_BYPASS_TIMEOUT_S" "$_ROW4_BYPASS_STDERR" \
     || _ROW4_BYPASS_RC=$?
 _ROW4_BYPASS_END=$(date +%s)
+# DIAGNOSTIC-ONLY: kept in the assert description below purely for
+# debuggability. MUST NOT become a discriminator -- the two verdicts are the
+# rc (this assert) and the ROW4-3 structural marker below.
 _ROW4_BYPASS_ELAPSED=$(( _ROW4_BYPASS_END - _ROW4_BYPASS_START ))
 assert "ROW4-2: DF_VERIFY_ROLE=merge + avg10=99 PSI → cpu-admit admit exits 0 fast (rc=${_ROW4_BYPASS_RC}, elapsed=${_ROW4_BYPASS_ELAPSED}s)" \
     test "${_ROW4_BYPASS_RC}" -eq 0
