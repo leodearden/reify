@@ -898,6 +898,140 @@ describe('PropertyEditor validation - quantity overflow rejection', () => {
   });
 });
 
+describe('PropertyEditor quantity literal acceptance with a live unit ladder (task #6028)', () => {
+  function tankValues(): Record<string, ValueData> {
+    return {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'capacity',
+        entity_path: 'Tank.capacity',
+        value: '7045002.24',
+        dimension: 'Volume',
+        si_value: 0.00704500224,
+      }),
+    };
+  }
+
+  /** Type `literal` into the c1 row and report whether it was accepted. */
+  function typeInto(
+    literal: string,
+    unitLadders?: UnitLadderMap,
+  ): { accepted: boolean; onSetParam: ReturnType<typeof vi.fn> } {
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={tankValues()}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={unitLadders}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: literal } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    const invalid = input.hasAttribute('data-invalid');
+    const called = onSetParam.mock.calls.length > 0;
+    // The two signals must never disagree — an accepted literal is submitted
+    // verbatim and clears data-invalid; a rejected one does neither.
+    expect(called).toBe(!invalid);
+    if (called) expect(onSetParam).toHaveBeenCalledWith('c1', literal);
+    return { accepted: called, onSetParam };
+  }
+
+  // The SAME curated ladders in both spellings. Every case below runs against
+  // both, so this block is agnostic to whether task #5788's relabel has landed
+  // — and its addendum L5 fixture sweep cannot turn these red.
+  const LADDERS_BY_SPELLING: Array<[string, UnitLadderMap]> = [
+    [
+      'superscript spelling (pre-#5788)',
+      {
+        Volume: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'cm³', si_scale: 1e-6, is_default: false },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+          { label: 'm³', si_scale: 1.0, is_default: false },
+        ],
+        Density: [
+          { label: 'kg/m³', si_scale: 1.0, is_default: true },
+          { label: 'g/cm³', si_scale: 1000.0, is_default: false },
+        ],
+      },
+    ],
+    [
+      'ASCII spelling (post-#5788)',
+      {
+        Volume: [
+          { label: 'mm^3', si_scale: 1e-9, is_default: true },
+          { label: 'cm^3', si_scale: 1e-6, is_default: false },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+          { label: 'm^3', si_scale: 1.0, is_default: false },
+        ],
+        Density: [
+          { label: 'kg/m^3', si_scale: 1.0, is_default: true },
+          { label: 'g/cm^3', si_scale: 1000.0, is_default: false },
+        ],
+      },
+    ],
+  ];
+
+  describe.each(LADDERS_BY_SPELLING)('against the %s', (_spelling, ladders) => {
+    // Today every one of these is rejected: the alphabet was five hard-coded
+    // units. The gate is global rather than per-dimension — the backend still
+    // validates the cell's actual dimension.
+    it.each([
+      ['5mm^3'],
+      ['5cm^3'],
+      ['5m^3'],
+      ['7.8kg/m^3'],
+      ['7.8g/cm^3'],
+      ['5L'],
+      // The baseline floor is still in the alphabet alongside the ladders.
+      ['80mm'],
+      ['90deg'],
+    ])('accepts the ASCII-spelled literal %s', (literal) => {
+      expect(typeInto(literal, ladders).accepted).toBe(true);
+    });
+
+    // Superscript spellings have never been .ri-parseable, in either era — so
+    // normalizing the ladder labels into the alphabet must not smuggle them in.
+    it.each([
+      ['5mm³'],
+      ['5cm³'],
+      ['5m³'],
+      ['7.8kg/m³'],
+    ])('still rejects the superscript-spelled literal %s', (literal) => {
+      expect(typeInto(literal, ladders).accepted).toBe(false);
+    });
+
+    // Widening the alphabet must not weaken any other rule.
+    it.each([
+      ['10xyz'],
+      ['+10mm'],
+      ['mm^3'],
+      ['5 mm^3'],
+      ['1e999L'],
+      ['5kPa'],
+    ])('still rejects %s', (literal) => {
+      expect(typeInto(literal, ladders).accepted).toBe(false);
+    });
+  });
+
+  // The guard: the ladder-less path has not moved. The widening is scoped to
+  // exactly what the backend advertises, and the static floor is intact — this
+  // is what keeps every pre-existing validation test byte-identical.
+  describe('without unitLadders (fetch not resolved / failed)', () => {
+    it.each([['5mm^3'], ['5L'], ['7.8kg/m^3']])('rejects %s', (literal) => {
+      expect(typeInto(literal, undefined).accepted).toBe(false);
+    });
+
+    it.each([['80mm'], ['90deg'], ['1.5m'], ['100cm'], ['1rad']])('accepts %s', (literal) => {
+      expect(typeInto(literal, undefined).accepted).toBe(true);
+    });
+  });
+});
+
 describe('PropertyEditor data-invalid recovery', () => {
   const values = EDITABLE_C1;
   let input: HTMLInputElement;
