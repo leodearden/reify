@@ -56,6 +56,46 @@ const CLEARANCE_ORACLE_PATH: &str = concat!(
     "/../../examples/best_practices/clearance_oracle.ri"
 );
 
+/// Shared scaffolding for the real-OCCT pin tests in this module: reads
+/// `path`, asserts it compiles cleanly — this half runs unconditionally, so
+/// a missing fixture or a grammar/compile regression fails on every runner,
+/// OCCT or not — then either builds it with a real OCCT kernel and returns
+/// the `BuildResult`, or, when OCCT is not available, emits the standard
+/// skip line and returns `None`.
+///
+/// Extracted so `intersects_smoke_evals_expected_booleans` and
+/// `clearance_oracle_evals_expected_fouls_and_gap` cannot drift against each
+/// other on the skip/build scaffolding — the piece most likely to diverge
+/// silently under copy-paste.
+fn compile_and_build_with_occt(path: &str, what: &str) -> Option<reify_eval::BuildResult> {
+    // Read the fixture unconditionally so a missing file is caught even on
+    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("{what} should exist at {path}: {e}"));
+
+    // Validate fixture compilation unconditionally — a grammar/compile regression
+    // should fail on every runner.
+    let compiled = parse_and_compile_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "{what} should compile with no error-severity diagnostics, got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // Skip the OCCT-dependent kernel build if OCCT is not built.
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping real-OCCT assertions: OCCT not available");
+        return None;
+    }
+
+    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
+    let checker = SimpleConstraintChecker;
+    let mut planner = reify_geometry::SingleKernelHolder::new();
+    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    Some(engine.build(&compiled, ExportFormat::Step))
+}
+
 /// Pins the user-observable signal for KGQ-γ: `intersects(Geometry, Geometry)`
 /// on two 10 mm boxes must evaluate to `Value::Bool(true)` when the boxes have
 /// positive-volume overlap, and `Value::Bool(false)` when they are well apart.
@@ -67,33 +107,12 @@ const CLEARANCE_ORACLE_PATH: &str = concat!(
 /// Skips cleanly (via early return) when OCCT is not available.
 #[test]
 fn intersects_smoke_evals_expected_booleans() {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(INTERSECTS_SMOKE_PATH)
-        .expect("examples/kernel_queries/intersects_smoke.ri should exist (task 3612 pre-1)");
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // (e.g. `intersects` signature change) should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/kernel_queries/intersects_smoke.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // Skip the OCCT-dependent kernel build/bool assertions if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    let Some(result) = compile_and_build_with_occt(
+        INTERSECTS_SMOKE_PATH,
+        "examples/kernel_queries/intersects_smoke.ri",
+    ) else {
         return;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
+    };
 
     // Helper: assert a Bool cell on IntersectsSmoke equals the expected value.
     let assert_bool = |cell_name: &str, expected: bool| {
@@ -148,35 +167,12 @@ fn intersects_smoke_evals_expected_booleans() {
 /// `cli_vc_clearance.rs`, `kinematic_examples_e2e.rs`).
 #[test]
 fn clearance_oracle_evals_expected_fouls_and_gap() {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(CLEARANCE_ORACLE_PATH)
-        .expect("examples/best_practices/clearance_oracle.ri should exist (task 5389)");
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // should fail on every runner, matching the coverage
-    // examples_smoke.rs::all_examples_parse_and_compile_with_stdlib already gives
-    // every example under examples/.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "examples/best_practices/clearance_oracle.ri should compile with no \
-         error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // Skip the OCCT-dependent kernel build/value assertions if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions: OCCT not available");
+    let Some(result) = compile_and_build_with_occt(
+        CLEARANCE_ORACLE_PATH,
+        "examples/best_practices/clearance_oracle.ri",
+    ) else {
         return;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    let result = engine.build(&compiled, ExportFormat::Step);
+    };
 
     let fouls_cell = ValueCellId::new("ClearanceOracle", "fouls");
     let fouls_actual = result.values.get(&fouls_cell);
