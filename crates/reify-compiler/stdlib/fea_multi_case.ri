@@ -524,7 +524,7 @@ structure def Gravity : Load {
 //
 // task 3549 (SIR-β-mlcfea) pins `LoadCase` and `MultiCaseResult` as
 // `Value::StructureInstance` producers via the `structure def` path declared
-// above (lines 75-105 and 247-254). No Rust-side builtin retirement was needed:
+// above. No Rust-side builtin retirement was needed:
 // `crates/reify-stdlib/src/` carries no `fea_multi_case.rs` — the ctors were
 // never name-dispatched, so SIR-α (task 3540) introduced both as `structure def`s
 // from the start.

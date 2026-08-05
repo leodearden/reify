@@ -8,16 +8,17 @@
 // WHY this is a separate module (prelude-ordering constraint — same root cause
 // as esc-3851-32 / the std.modal.analysis / std.modal.analysis.fns split):
 //   This function takes a `mechanism : Mechanism` parameter. `Mechanism` is
-//   declared in `std.kinematic` (stdlib_loader.rs line 233). The existing
-//   `std.modal.analysis.fns` (modal_analysis_fns.ri) is registered at line 157,
-//   BEFORE `std.kinematic`, so `Mechanism` is not yet in the growing sequential
+//   declared in `std.kinematic` (its entry in `stdlib_sources()`,
+//   stdlib_loader.rs). The existing `std.modal.analysis.fns`
+//   (modal_analysis_fns.ri) is registered BEFORE the `std.kinematic` entry
+//   there, so `Mechanism` is not yet in the growing sequential
 //   prelude when modal_analysis_fns.ri compiles. Adding `mechanism_modal_analysis`
 //   there would produce an unresolved-type error on `mechanism : Mechanism`.
 //
-//   Tail placement after `std.dynamics` (line 277) puts BOTH required types in
+//   Tail placement after the `std.dynamics` entry puts BOTH required types in
 //   the prelude:
-//     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis` (line 147)
-//     - `Mechanism` from `std.kinematic` (line 233)
+//     - `ModalOptions` / `ModalResult` / `Mode` from `std.modal.analysis`
+//     - `Mechanism` from `std.kinematic`
 //   This is the canonical fix for the prelude-ordering constraint; it exactly
 //   mirrors the rationale that forced the `std.modal.analysis` /
 //   `std.modal.analysis.fns` split in the first place.

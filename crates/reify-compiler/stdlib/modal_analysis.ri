@@ -438,7 +438,7 @@ structure def ModalOptions {
 // `Type::List(Box::new(Type::TraitObject("ForcingFunction")))` at compile
 // time and the eval-time dispatch matches via the SIR-α nominal type-tag.
 //
-// Same marker-trait pattern as `trait DampingDescriptor { }` (line 82) and
+// Same marker-trait pattern as `trait DampingDescriptor { }` (this file) and
 // `trait Support { }` (fea_types.ri).
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §5.1.
@@ -599,8 +599,7 @@ structure def ImpulseForce : ForcingFunction {
 //               literal) per PRD §5.1 "default: 0". The canonical zero-Angle
 //               default `= 0deg` (not bare `= 0`) is required because a bare `0`
 //               yields `Type::Real` which is dim-incompatible with `Type::Scalar
-//               { ANGLE }` per task #3115 esc-3115-112 (structural_physical.ri:
-//               67-68 documents the same reasoning). Choice of `deg` over `rad`
+//               { ANGLE }` per task #3115 esc-3115-112. Choice of `deg` over `rad`
 //               follows the `Angularity.nominal_angle : Angle = 0deg`
 //               precedent in `tolerancing.ri` and is more user-intuitive
 //               for the typical 0/90/180 phase-offset workflow. Any real phase
