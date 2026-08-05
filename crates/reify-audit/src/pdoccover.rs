@@ -53,31 +53,36 @@
 //! finding, while a false POSITIVE accuses a working builtin and makes the
 //! lane untrustworthy. When the two trade off, take the miss.
 //!
-//! ### Known imprecision — measured, not theoretical
+//! ### Known imprecision — the mention side, not the oracle
 //!
-//! The oracle is broad but the *mention* side is not selective, and on the
-//! real corpus that is where the noise is: of the 11 `fabricated-name:`
-//! findings on the current base, NOT ONE is a genuine fabrication. All 11 are
-//! call-shaped text that was never an API claim — user-defined names inside
-//! example source (`compute_moi(...)`, `fn lateral_area(self)`, `purpose
-//! manufacturing_ready(...)`), grammar metavariables (`predicate(x)`,
-//! `primitive(...)`, `Trait::fn(args)`), and non-function call-shaped syntax
-//! (`auto(free)`, `@region(...)`). Narrowing this needs a mention-side
-//! heuristic — skipping declaration keywords, and prose vs. example-source
-//! context — which is deliberately NOT in this task: it is **#5647**. Two
-//! cheap filters named there (skip a name preceded by a `.ri` declaration
-//! keyword; skip [`RI_DECL_KEYWORDS`] members themselves) would remove 6 of
-//! the 11 — the five `fn`/`purpose` declaration sites plus `Trait::fn` —
-//! without any context modelling. Until #5647 lands, the omission lane is the
-//! trustworthy half, which is one more reason the CLI arm is opt-in.
+//! The oracle is broad, but the *mention* side is only syntactically
+//! selective, and that is where the residual noise lives. Two syntactic
+//! filters are applied in [`chunk_call_mentions`] — a name that IS a
+//! [`RI_DECL_KEYWORDS`] member (`Trait::fn(args)`), and the name a `.ri`
+//! declaration line introduces (`fn lateral_area(self)`, `purpose
+//! manufacturing_ready(…)`) — because each is decidable from the line alone
+//! and each can only REMOVE an accusation, never add one.
 //!
-//! **#5647's problem statement is stale and reads one worse than reality.**
-//! It was measured at branch base `72740a7af7`, where the corpus still held
-//! `offset_surface` at `chunks/stdlib.md:29` — a genuine fabrication, and the
-//! 12th finding. That name is gone from the chunk corpus at this branch's
-//! base, so the lane's measured precision is now 0/11, not 1/12: today it
-//! catches no true positive at all. An implementer picking up #5647 should
-//! re-measure rather than go looking for `offset_surface`.
+//! What survives them needs prose-vs-example-source context, which this
+//! detector deliberately does not model: grammar metavariables
+//! (`predicate(x)`), user-defined names CALLED inside example source
+//! (`Defaultable::make_default()` — note the declaration filter is
+//! declaration-site-scoped, so a name declared and then called in the same
+//! chunk survives on the call), and non-function call-shaped syntax
+//! (`auto(free)`, `@region(…)`). Narrowing THAT is **#5647**. Until it lands
+//! the omission lane is the trustworthy half, which is one more reason the CLI
+//! arm is opt-in.
+//!
+//! **No residual count is pinned in this comment.** It would be wrong within a
+//! chunk edit, and there is no test behind it (the floor guards deliberately
+//! assert floors, never exact counts — see below). The same caution applies in
+//! the other direction to #5647's own problem statement, whose numbers predate
+//! this filter and whose named example has since left the corpus. Re-measure:
+//!
+//! ```text
+//! reify-audit --pattern PDOCCOVER --project-root . --no-jcodemunch \
+//!             --tasks-file <file holding []> --runs-db <scratch path>
+//! ```
 //!
 //! ## Finding categories
 //!
@@ -115,10 +120,10 @@
 //! `run_pdoccover` in `bin/reify-audit.rs` uses `is_some_and`, so PDOCCOVER
 //! runs only under an explicit `--pattern PDOCCOVER`. Its two structural
 //! siblings PTODO and PDSSENTINEL use `is_none_or` and ride the default sweep;
-//! the difference is severity plus backlog. These findings are High, the exit
-//! code is the High-severity count, and the real tree currently reports 79
-//! (68 `undocumented-name:` + 11 `fabricated-name:`), so joining the default
-//! sweep today would turn every audit run non-zero.
+//! the difference is severity plus backlog. These findings are High and the
+//! exit code is the High-severity count, so with an unseeded baseline and a
+//! documentation backlog still to work through, joining the default sweep
+//! today would turn every audit run non-zero.
 //! It joins when #5480 seeds the baseline and the residual reaches zero — the
 //! warn-first-then-ratchet path PTODO took.
 //!
@@ -955,12 +960,33 @@ fn in_oracle_scope(path: &str) -> bool {
 /// stays visible so the caller can report the malformed marker rather than
 /// silently honour it (PRD design decision 7).
 ///
-/// **Precision is deliberately deferred.** This extractor admits every
-/// `ident(` on a non-suppressed line, including declaration sites in example
-/// `.ri` source and grammar metavariables — measured 0/11 precision on the real
-/// corpus (module header, "Known imprecision"). Narrowing it is **#5647**, not
-/// this function's contract today. Do not add a filter here without updating
-/// that task and the floor guard's anchor set.
+/// ## Declaration sites are not claims
+///
+/// Two filters, both syntactic, neither modelling context:
+///
+/// 1. a name that IS a [`RI_DECL_KEYWORDS`] member — `Trait::fn(args)` in
+///    prose about static dispatch reads as a call to `fn`, and no keyword is
+///    ever a builtin;
+/// 2. the name a line DECLARES, per [`ri_declared_name`] — `fn
+///    lateral_area(self)` or `purpose manufacturing_ready(subject)` inside
+///    example source defines a name, it does not claim the compiler provides
+///    one. Only the declared name is dropped, so a real call in the same line's
+///    body (`fn area(self) { rect_area(w, h) }`) is still a claim.
+///
+/// Both can only REMOVE accusations, never add one, which is the safe
+/// direction for this lane (module header, "the existence oracle is
+/// deliberately asymmetric"). Filter 2 reuses `ri_declared_name` — the oracle
+/// lane's own grammar — rather than re-deriving one, so `pub fn`, `purpose`
+/// and the two-word `structure def` / `occurrence def` forms are all covered
+/// by a function that already has tests.
+///
+/// **Precision beyond that is deliberately deferred.** What remains needs
+/// prose-vs-example-source context — a metavariable (`predicate(x)` in a
+/// grammar production), a user-defined name in an example body
+/// (`compute_moi(...)`), non-function call-shaped syntax (`auto(free)`,
+/// `@region(...)`). That is **#5647**, not this function's contract today. Do
+/// not add a context-modelling filter here without updating that task and the
+/// floor guard's anchor set.
 ///
 /// Line numbers are 1-based over `str::lines()`, which strips a trailing `\r`,
 /// so CRLF chunks behave identically to LF ones.
@@ -973,6 +999,8 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
         if allow_marker_reason(line).is_some() {
             continue;
         }
+        // The name this line declares, if it is a `.ri` declaration at all.
+        let declared = ri_declared_name(line);
         let bytes = line.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
@@ -995,9 +1023,16 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
                 continue;
             }
             let name = &line[start..end];
-            if is_identifier_shaped(name) {
-                out.push((name.to_string(), idx + 1));
+            if !is_identifier_shaped(name) {
+                continue;
             }
+            // A declaration keyword is never a builtin (`Trait::fn(args)`), and
+            // the name a declaration line introduces is defined here, not
+            // claimed of the compiler.
+            if RI_DECL_KEYWORDS.contains(&name) || declared == Some(name) {
+                continue;
+            }
+            out.push((name.to_string(), idx + 1));
         }
     }
     out
@@ -2632,6 +2667,80 @@ See the section on booleans (union, difference) below.
         assert!(
             hits.is_empty(),
             "a leading `.` marks member access, not a builtin; got {hits:?}"
+        );
+    }
+
+    /// A declaration KEYWORD is never a builtin. `Trait::fn(args)` is the real
+    /// `traits.md` shape for explaining static dispatch, and read naively it is
+    /// a call to `fn` — which the lane then accused the compiler of not
+    /// providing.
+    #[test]
+    fn mentions_ignore_declaration_keywords_as_names() {
+        let content = "\
+**Static dispatch** — `Trait::fn(args)`: calls a trait-static function.
+A `type(x)` or `unit(y)` in prose is grammar, not a call.
+";
+        assert!(
+            chunk_call_mentions(content).is_empty(),
+            "no RI_DECL_KEYWORDS member is a builtin name; got {:?}",
+            chunk_call_mentions(content)
+        );
+    }
+
+    /// A `.ri` declaration line DEFINES a name; it does not claim the compiler
+    /// provides one. Example source in a chunk is full of them, and every one
+    /// was an accusation against a name the example itself introduced.
+    ///
+    /// Scoped to the DECLARED name only: a real call inside the declaration's
+    /// body is still a claim.
+    #[test]
+    fn mentions_ignore_the_name_a_declaration_line_introduces() {
+        for (label, line) in [
+            ("plain fn", "    fn lateral_area(self) -> Scalar<Area>"),
+            ("pub fn", "pub fn loss_factor(self) -> Real"),
+            (
+                "purpose",
+                "purpose manufacturing_ready(subject : Structure) {",
+            ),
+            ("structure def", "structure def bracket(w : Length) {"),
+        ] {
+            let hits = chunk_call_mentions(&format!("{line}\n"));
+            assert!(
+                hits.is_empty(),
+                "[{label}] a declaration site introduces the name, it does not \
+                 claim it exists; got {hits:?}"
+            );
+        }
+
+        // Only the DECLARED name is dropped — the body's call still counts.
+        let hits = chunk_call_mentions("fn area(self) -> Real { rect_area(w, h) }\n");
+        assert_eq!(
+            hits,
+            vec![("rect_area".to_string(), 1)],
+            "the declared name goes, the call in its body stays"
+        );
+    }
+
+    /// The declaration filter is DECLARATION-SITE-scoped, not name-scoped: the
+    /// same name called elsewhere is still a claim.
+    ///
+    /// This is why the filter removes fewer distinct names than a count of
+    /// declaration sites suggests — `make_default` and `scaled` are declared in
+    /// `traits.md`'s example trait and then CALLED a few lines further down, so
+    /// they survive on the call site. Narrowing that is #5647's prose-vs-
+    /// example-source problem, not a keyword one.
+    #[test]
+    fn mentions_keep_a_declared_name_when_it_is_also_called() {
+        let content = "\
+    fn make_default() -> Length { 10mm }
+
+let gap : Length = Defaultable::make_default()
+";
+        assert_eq!(
+            chunk_call_mentions(content),
+            vec![("make_default".to_string(), 3)],
+            "the declaration at line 1 is dropped; the call at line 3 remains a \
+             claim, reported at its own line"
         );
     }
 

@@ -504,7 +504,9 @@ fn reasonless_marker_wins_over_fabrication_in_either_line_order() {
              {findings:?}"
         );
         assert!(
-            findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:{marker_line}")),
+            findings[0]
+                .summary
+                .contains(&format!("{FIX_STDLIB_CHUNK}:{marker_line}")),
             "[{label}] the reported line must be the MARKER's ({marker_line}), \
              not the plain mention's ({plain_line}) — that is the line the \
              reader has to edit. Got {:?}",
