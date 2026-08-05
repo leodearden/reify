@@ -936,8 +936,11 @@ std::unique_ptr<OcctShape> make_pipe(const OcctShape& profile, const OcctShape& 
 /// is rejected too: a holed face (>1 wire) has no single-wire representation
 /// and dropping the holes would silently produce the wrong part, while an
 /// unbounded face (0 wires, as from make_half_space) has no bounding wire to
-/// sweep at all. The result follows BRepOffsetAPI_MakePipe's convention: a
-/// face profile yields a SOLID, a wire profile a SHELL.
+/// sweep at all. `spine` and `guide` must each be a Wire; both are checked by
+/// role up front so a mistyped handle is diagnosed by name instead of through
+/// OCCT's argument-less TopoDS::Wire downcast failure. The result follows
+/// BRepOffsetAPI_MakePipe's convention: a face profile yields a SOLID, a wire
+/// profile a SHELL.
 std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
                                            const OcctShape& spine,
                                            const OcctShape& guide);
@@ -950,10 +953,11 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
 ///
 /// Each profile is normalized to a section wire before `Add` (a face is
 /// reduced to its outer wire; a holed or unbounded face is rejected), since
-/// BRepFill_Section accepts only a wire or a vertex. As in make_pipe_shell the
-/// result is solidified when every section was a face, and left as the raw
-/// SHELL for mixed or all-wire section sets. Rejection diagnostics are
-/// attributed to `loft_guided_profiles`, not to make_pipe_shell.
+/// BRepFill_Section accepts only a wire or a vertex. Each guide must be a Wire
+/// and is checked by role, as in make_pipe_shell. As there, the result is
+/// solidified when every section was a face, and left as the raw SHELL for
+/// mixed or all-wire section sets. Rejection diagnostics are attributed to
+/// `loft_guided_profiles`, not to make_pipe_shell.
 std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
                                                 const OcctShapeVec& guides);
 

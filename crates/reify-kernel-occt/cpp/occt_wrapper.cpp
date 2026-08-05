@@ -313,6 +313,29 @@ static TopoDS_Shape section_profile_to_wire(const TopoDS_Shape& profile) {
     }
 }
 
+/// Downcast a spine/guide argument to `TopoDS_Wire`, rejecting anything else
+/// with a Reify-authored diagnostic that names the offending type.
+///
+/// `BRepOffsetAPI_MakePipeShell` takes its spine — and the auxiliary wire given
+/// to `SetMode` — as a `TopoDS_Wire`. A bare `TopoDS::Wire(shape)` downcast on
+/// anything else raises OCCT's `Standard_TypeMismatch`, whose text names no
+/// argument and frequently carries no message at all. These arguments are
+/// reachable with the wrong type by exactly the route that makes a bad profile
+/// reachable: `extract_edges` / `extract_faces` mint `Curve`/`Surface`-typed
+/// handles a selector can hand to any op, so they get the same contract
+/// treatment as the section profile.
+///
+/// `role` names the argument as the DSL author wrote it (e.g. "sweep path"),
+/// not as the C++ parameter is spelled.
+static TopoDS_Wire require_wire(const TopoDS_Shape& shape, const char* role) {
+    if (shape.ShapeType() != TopAbs_WIRE) {
+        throw ContractViolation(
+            std::string(role) + " has unsupported shape type '"
+            + topabs_name(shape.ShapeType()) + "'; it must be a Wire");
+    }
+    return TopoDS::Wire(shape);
+}
+
 } // anonymous namespace
 
 // --- Foundation constants ---
@@ -3540,12 +3563,18 @@ std::unique_ptr<OcctShape> make_pipe_shell(const OcctShape& profile,
         // Spine and guide must both be wires. The profile must be a wire, a
         // vertex, or a face (reduced to its outer wire below) — an EDGE is
         // NOT accepted, since BRepFill_Section holds only a wire or a vertex.
+        //
+        // Both wire arguments are checked UP FRONT, before the maker is built,
+        // so each is diagnosed by its DSL-level role name rather than through
+        // an opaque TopoDS::Wire downcast failure at the point of use.
+        const TopoDS_Wire spine_wire = require_wire(spine.shape, "sweep path");
+        const TopoDS_Wire guide_wire = require_wire(guide.shape, "sweep guide");
         const bool profile_was_face = (profile.shape.ShapeType() == TopAbs_FACE);
-        BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(spine.shape));
+        BRepOffsetAPI_MakePipeShell maker(spine_wire);
         maker.Add(section_profile_to_wire(profile.shape));
         // SetMode(auxWire, KeepContact) — KeepContact=false keeps the
         // section's centre free while using the guide to bias orientation.
-        maker.SetMode(TopoDS::Wire(guide.shape), Standard_False);
+        maker.SetMode(guide_wire, Standard_False);
         maker.Build();
         if (!maker.IsDone()) {
             throw std::runtime_error("BRepOffsetAPI_MakePipeShell failed");
@@ -3590,7 +3619,12 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
         // The first guide is the spine; each profile is added as a
         // section. An optional second guide provides auxiliary
         // orientation via SetMode(aux, /*KeepContact=*/false).
-        BRepOffsetAPI_MakePipeShell maker(TopoDS::Wire(guides.shapes[0]));
+        //
+        // Both guides are wire-checked by role for the same reason as
+        // make_pipe_shell's spine/guide: a mistyped handle otherwise surfaces
+        // as OCCT's argument-less TopoDS::Wire downcast failure.
+        BRepOffsetAPI_MakePipeShell maker(
+            require_wire(guides.shapes[0], "loft spine (first guide)"));
         bool all_sections_were_faces = true;
         for (const auto& profile : profiles.shapes) {
             if (profile.ShapeType() != TopAbs_FACE) {
@@ -3599,7 +3633,9 @@ std::unique_ptr<OcctShape> loft_guided_profiles(const OcctShapeVec& profiles,
             maker.Add(section_profile_to_wire(profile));
         }
         if (guides.shapes.size() >= 2) {
-            maker.SetMode(TopoDS::Wire(guides.shapes[1]), Standard_False);
+            maker.SetMode(
+                require_wire(guides.shapes[1], "loft auxiliary guide (second guide)"),
+                Standard_False);
         }
         maker.Build();
         if (!maker.IsDone()) {
