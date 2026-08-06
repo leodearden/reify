@@ -99,7 +99,18 @@ vi.mock('../editor/FileTabs', () => ({
   },
 }));
 
-// Mock bridge functions
+// --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
+//
+// STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
+// bridgeMockCoverage.test.ts's `omissions` allowlist with the reason it is
+// unreachable from a rendered <App />. Do NOT convert this factory to
+// importOriginal / a partial mock.
+//
+// bridgeMockCoverage.test.ts is both the mechanical detector and the single
+// source of truth for the rules above, for why an omitted key fails SILENTLY
+// rather than loudly, and for the measured truth table that makes the beforeEach
+// restore below load-bearing rather than cosmetic. Deliberately not restated
+// here: unlike the key sets, prose has nothing to detect it going stale.
 const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
@@ -125,6 +136,13 @@ vi.mock('../bridge', () => ({
   onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFeaDiagnosticsChanged: vi.fn().mockResolvedValue(() => {}),
   onFeaConvergenceChanged: vi.fn().mockResolvedValue(() => {}),
+  // Not reached by <App /> today (onDiagnostics has no caller; the two FEA-case
+  // entries are Viewport-only and ../viewport is mocked wholesale). Mocked
+  // anyway rather than allowlisted: one line each is cheaper than a premise the
+  // coverage guard cannot check, and either could become reachable silently.
+  onDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  setActiveFeaCase: vi.fn().mockResolvedValue(undefined),
+  subscribeFeaCaseToStore: vi.fn().mockResolvedValue(() => {}),
   onTensegrityWiresUpdate: vi.fn().mockResolvedValue(() => {}),
   onTensegritySurfacesUpdate: vi.fn().mockResolvedValue(() => {}),
   onDisplayPanesUpdate: vi.fn().mockResolvedValue(() => {}),
@@ -137,6 +155,7 @@ vi.mock('../bridge', () => ({
   claudeSendMessage: vi.fn().mockResolvedValue(undefined),
   claudeAbort: vi.fn().mockResolvedValue(undefined),
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
+  claudePermissionDecision: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
   onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
@@ -227,6 +246,7 @@ beforeEach(() => {
   vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
   vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
+  vi.mocked(bridge.claudePermissionDecision).mockResolvedValue(undefined);
   vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
   // Persistence module mocks
@@ -242,6 +262,24 @@ beforeEach(() => {
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
   vi.mocked((bridge as any).ask).mockResolvedValue(false);
+  // Below: names some test overrides persistently but nothing used to restore,
+  // so the override leaked into every later test (truth table row 3). Added
+  // with task 6053's check (d), which fails on any override without a restore.
+  // setParameter/updateSource really return Promise<GuiState>, but the factory
+  // default resolves undefined. Restoring to that exact default (via the file's
+  // usual `bridge as any` spelling) keeps behaviour identical; substituting
+  // emptyState here would quietly change what every test sees.
+  vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).updateSource).mockResolvedValue(undefined);
+  vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+  vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+  vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
+  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(emptyState);
+  vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
+  vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
+  vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).onAutoResolveStart).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onAutoResolveComplete).mockResolvedValue(() => {});
 });
 
 afterEach(() => {

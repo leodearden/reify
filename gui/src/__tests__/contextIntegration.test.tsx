@@ -45,7 +45,18 @@ vi.mock('../editor/FileTabs', () => ({
   },
 }));
 
-// Mock bridge functions
+// --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
+//
+// STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
+// bridgeMockCoverage.test.ts's `omissions` allowlist with the reason it is
+// unreachable from a rendered <App />. Do NOT convert this factory to
+// importOriginal / a partial mock.
+//
+// bridgeMockCoverage.test.ts is both the mechanical detector and the single
+// source of truth for the rules above, for why an omitted key fails SILENTLY
+// rather than loudly, and for the measured truth table that makes the beforeEach
+// restore below load-bearing rather than cosmetic. Deliberately not restated
+// here: unlike the key sets, prose has nothing to detect it going stale.
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -54,6 +65,7 @@ vi.mock('../bridge', () => ({
   pickSavePath: vi.fn().mockResolvedValue('/path.step'),
   pickOpenPath: vi.fn().mockResolvedValue(null),
   updateSource: vi.fn().mockResolvedValue(undefined),
+  saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
   openFileEngine: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
@@ -66,20 +78,51 @@ vi.mock('../bridge', () => ({
   onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
+  onTessellationDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  onFeaDiagnosticsChanged: vi.fn().mockResolvedValue(() => {}),
+  onFeaConvergenceChanged: vi.fn().mockResolvedValue(() => {}),
+  // Not reached by <App /> today (onDiagnostics has no caller; the two FEA-case
+  // entries are Viewport-only and ../viewport is mocked wholesale). Mocked
+  // anyway rather than allowlisted: one line each is cheaper than a premise the
+  // coverage guard cannot check, and either could become reachable silently.
+  onDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  setActiveFeaCase: vi.fn().mockResolvedValue(undefined),
+  subscribeFeaCaseToStore: vi.fn().mockResolvedValue(() => {}),
+  onTensegrityWiresUpdate: vi.fn().mockResolvedValue(() => {}),
+  onTensegritySurfacesUpdate: vi.fn().mockResolvedValue(() => {}),
+  onDisplayPanesUpdate: vi.fn().mockResolvedValue(() => {}),
+  onDisplayAppearanceUpdate: vi.fn().mockResolvedValue(() => {}),
   onFileChanged: vi.fn().mockResolvedValue(() => {}),
+  onFileRemoved: vi.fn().mockResolvedValue(() => {}),
+  onSerializationError: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
+  onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
   getContainingDefinition: vi.fn().mockResolvedValue(null),
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] }),
+  readViewSidecar: vi.fn().mockResolvedValue(null),
+  writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
   getUnitLadders: vi.fn().mockResolvedValue([]),
   onFocusEntity: vi.fn().mockResolvedValue(() => {}),
   onNavigateToSource: vi.fn().mockResolvedValue(() => {}),
+  claudeSendMessage: vi.fn().mockResolvedValue(undefined),
+  claudeAbort: vi.fn().mockResolvedValue(undefined),
+  claudeClearSession: vi.fn().mockResolvedValue(undefined),
+  claudePermissionDecision: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveStart: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
+  onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
+  onSolverProgress: vi.fn().mockResolvedValue(() => {}),
+  cancelSolve: vi.fn().mockResolvedValue(undefined),
   syncObservedDemand: vi.fn().mockResolvedValue(undefined),
+  syncDemand: vi.fn().mockResolvedValue(undefined),
+  ask: vi.fn().mockResolvedValue(false),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';
@@ -323,18 +366,24 @@ describe('App wiring', () => {
   });
 
   it('mounting App does not log missing bridge-mock export errors', async () => {
-    // Regression guard for the defect class fixed above (onModeShapeFrame and
-    // the 6 other exports added alongside it): App.tsx's initApp() — and
-    // engineStore's syncObservedDemand — wrap each bridge subscription/call in
-    // try/catch and only console.error or console.warn on failure (e.g.
+    // Regression guard for ONE channel of the missing-export defect class:
+    // exports consumed directly by an initApp() block, where the surrounding
+    // try/catch routes the failure to console.error or console.warn (e.g.
     // engineStore.ts's syncObservedDemand explicitly routes its catch through
-    // console.warn as an "observational side-channel"), so a
-    // vi.mock('../bridge') factory that omits an export App.tsx needs fails
-    // silently from an assertion's point of view — every other test in this
-    // file would still pass against a partially-degraded App. Both channels
-    // are spied so this single check covers every current and future
-    // missing-export case instead of one name (or one console method) at a
-    // time.
+    // console.warn as an "observational side-channel"). Nothing there fails an
+    // assertion, so without this spy every other test in the file would still
+    // pass against a partially-degraded App. Both console methods are spied, so
+    // this covers that channel whichever one a given call site uses.
+    //
+    // What it does NOT catch — measured, not assumed (task 6053): this test was
+    // green, with ZERO missing-export output on either console channel, while
+    // 25 reachable exports were absent from this file's ../bridge factory. An
+    // export consumed by engineStore.subscribeToEvents throws while the
+    // Promise.allSettled argument array is still being built, so every
+    // engineStore subscription dies at once and allSettled's per-listener
+    // console.warn is never reached — there is no stderr to observe. That half
+    // is covered structurally instead, by bridgeMockCoverage.test.ts diffing
+    // this factory's keys against bridge.ts's runtime exports.
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
