@@ -549,10 +549,10 @@ export function Editor(props: EditorProps) {
           const pos = update.state.selection.main.head;
           const line = update.state.doc.lineAt(pos);
           // Emit 1-based column to match the backend convention required by
-          // getEntityAtSourceLocation (engine.rs:2227, documented 1-based at
-          // engine.rs:2208) and getContainingDefinition (engine.rs:2153,
-          // documented 1-based at engine.rs:2134). CodeMirror's `pos - line.from`
-          // is 0-based; adding 1 converts to 1-based codepoint offset.
+          // `get_entity_at_source_location` and `get_containing_definition`
+          // (both in gui/src-tauri/src/engine.rs), which document their line/col
+          // arguments as 1-based. CodeMirror's `pos - line.from` is 0-based;
+          // adding 1 converts to 1-based codepoint offset.
           props.store.setCursorPosition(line.number, pos - line.from + 1);
         }
       }),
