@@ -945,7 +945,14 @@ const App: Component = () => {
   // behind phase==='idle' (PRD §12 Q3): enforcement must update the instant a
   // body is hidden so the next interactive edit_param prunes its cells. `ghost`
   // and `show` stay demanded; only `hidden` prunes (PRD §12 Q4).
-  createSelectiveDemandSync(engineStore, viewStateStore);
+  //
+  // `treeGeneration` is passed to satisfy the tree-readiness contract documented
+  // on `createSelectiveDemandSync`'s `treeGeneration` @param (task #6052): without
+  // a readiness source the effect's first tracked run hits `getAllEffective`'s
+  // empty-tree short-circuit, subscribes to nothing, and the first post-mount
+  // toggle is silently lost. Same readiness dependency the sibling 4532
+  // `syncObservedDemand` effect above gets via the `effectiveVisibility` memo.
+  createSelectiveDemandSync(engineStore, viewStateStore, treeGeneration);
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the
