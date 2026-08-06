@@ -598,14 +598,23 @@ structure def FEABodyMultiCase {
 ///
 /// Mirrors the identically-named helper in `fdm_stdlib_compile.rs:502` — a
 /// `vec3(...)` default's components lower to `Literal(Int | Real | Scalar)`
-/// depending on how the source spelled them.
+/// depending on how the source spelled them — and additionally unwraps a
+/// leading unary negation. There is no negative-literal token: `-1.0` lowers to
+/// `UnOp { op: Neg, operand: Literal(Real(1.0)) }`. The fdm.ri precedent never
+/// needed this because its default (`vec3(0, 0, 1)`) has no negative component;
+/// the −Z load defaults here do.
 fn extract_numeric_literal(expr: &CompiledExpr) -> f64 {
     match &expr.kind {
         CompiledExprKind::Literal(Value::Int(n)) => *n as f64,
         CompiledExprKind::Literal(Value::Real(r)) => *r,
         CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => *si_value,
+        CompiledExprKind::UnOp {
+            op: UnOp::Neg,
+            operand,
+        } => -extract_numeric_literal(operand),
         other => panic!(
-            "extract_numeric_literal: expected Literal(Int|Real|Scalar), got: {:?}",
+            "extract_numeric_literal: expected Literal(Int|Real|Scalar) or a \
+             negated one, got: {:?}",
             other
         ),
     }
