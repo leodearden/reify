@@ -45,7 +45,37 @@ vi.mock('../editor/FileTabs', () => ({
   },
 }));
 
-// Mock bridge functions
+// --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
+//
+// Measured truth table, for a bridge export this file's <App /> actually reaches:
+//   factory key + beforeEach restore -> green (correct)
+//   factory MISSING, beforeEach present -> ALL tests FAIL loudly, before any test
+//       body runs (vi.mocked(undefined).mockResolvedValue throws)
+//   factory present, beforeEach MISSING -> green, but a per-test
+//       mockImplementation override leaks into every later test
+//   BOTH missing -> SILENT. This is the 6035/6039/6045 defect class.
+//
+// Mechanism: because the factory is not a partial mock, an omitted key makes
+// vitest throw `No "X" export is defined on the "../bridge" mock` SYNCHRONOUSLY
+// at property access. initApp's run of sibling try/catch blocks then gives the
+// SAME defect two opposite signatures:
+//   - export consumed by engineStore.subscribeToEvents -> a DOM toast and ZERO
+//     stderr. The throw fires while the Promise.allSettled argument array is
+//     still being built, so every engineStore subscription dies at once and
+//     allSettled's per-listener console.warn is never reached.
+//   - export consumed directly by an initApp block -> an stderr flood, with
+//     every test still green.
+// Neither signature fails an assertion, which is why three separate tasks fixed
+// this defect one export name at a time.
+//
+// bridgeMockCoverage.test.ts is the mechanical detector. STANDING RULE: a new
+// bridge.ts runtime export gets a factory key here, OR an entry in that file's
+// DELIBERATE_OMISSIONS with the reason it is unreachable from a rendered <App />.
+//
+// Do NOT convert this factory to importOriginal / a partial mock. That would
+// evaluate the real bridge.ts — its @tauri-apps/api and @tauri-apps/plugin-dialog
+// imports and every real implementation — inside the most load-bearing mock in
+// this file.
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -348,18 +378,24 @@ describe('App wiring', () => {
   });
 
   it('mounting App does not log missing bridge-mock export errors', async () => {
-    // Regression guard for the defect class fixed above (onModeShapeFrame and
-    // the 6 other exports added alongside it): App.tsx's initApp() — and
-    // engineStore's syncObservedDemand — wrap each bridge subscription/call in
-    // try/catch and only console.error or console.warn on failure (e.g.
+    // Regression guard for ONE channel of the missing-export defect class:
+    // exports consumed directly by an initApp() block, where the surrounding
+    // try/catch routes the failure to console.error or console.warn (e.g.
     // engineStore.ts's syncObservedDemand explicitly routes its catch through
-    // console.warn as an "observational side-channel"), so a
-    // vi.mock('../bridge') factory that omits an export App.tsx needs fails
-    // silently from an assertion's point of view — every other test in this
-    // file would still pass against a partially-degraded App. Both channels
-    // are spied so this single check covers every current and future
-    // missing-export case instead of one name (or one console method) at a
-    // time.
+    // console.warn as an "observational side-channel"). Nothing there fails an
+    // assertion, so without this spy every other test in the file would still
+    // pass against a partially-degraded App. Both console methods are spied, so
+    // this covers that channel whichever one a given call site uses.
+    //
+    // What it does NOT catch — measured, not assumed (task 6053): this test was
+    // green, with ZERO missing-export output on either console channel, while
+    // 25 reachable exports were absent from this file's ../bridge factory. An
+    // export consumed by engineStore.subscribeToEvents throws while the
+    // Promise.allSettled argument array is still being built, so every
+    // engineStore subscription dies at once and allSettled's per-listener
+    // console.warn is never reached — there is no stderr to observe. That half
+    // is covered structurally instead, by bridgeMockCoverage.test.ts diffing
+    // this factory's keys against bridge.ts's runtime exports.
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
