@@ -61,30 +61,34 @@
 //!   e2e_result_fallback_ok_with_stdlib  †  0mm                    `{ dflt }`
 //!   e2e_result_is_ok_err_with_stdlib       Bool(true)             `{ true }`
 //!   e2e_result_is_err_err_with_stdlib      Bool(false)            `{ false }`
-//!   e2e_result_or_else_err_with_stdlib  †  Err{error:"e"}         `{ o }`
+//!   e2e_result_or_else_err_with_stdlib  †  Err{error:"e"}         `{ r }`
 //!   e2e_map_err_err_with_stdlib            Err{error:3mm}         `{ r }`
 //!   e2e_ok_or_some_with_stdlib             String("e")            `{ err }`
 //!   e2e_ok_or_none_with_stdlib             String("e")            `{ err }`
 //!   e2e_get_or_absent_key_with_stdlib      0mm                    `{ dflt }`  <-- PASSES
 //!
-//! † THE MATCHED CANDIDATE IS option_recovery.ri's OPTION OVERLOAD, NOT
-//! result.ri's. `unwrap_or`, `or_else` and `fallback` are each declared in BOTH
-//! stdlib files, and these three fixtures' `arg[0].result_type` is
-//! `Enum("Result")` — which never exact-equals result.ri's
-//! `Applied{name:"Result", args:[T,E]}`, so pass 1 of
-//! `find_matching_compiled_function` misses both candidates and pass 2's
-//! wildcard takes the first in table order. `std.option_recovery` loads before
-//! `std.result`, so the Option overload wins. MEASURED: matched
-//! `params[0] == Option(TypeParam("T"))` for all three; result.ri's own
-//! `unwrap_or`/`or_else`/`fallback` placeholders are never the selected
-//! candidate anywhere in this suite. The `from` column above is therefore the
-//! Option overload's body, and the observable value only coincides with
-//! result.ri's because each overload pair returns the same positional argument.
-//! Full statement: the OVERLOAD NOTE in
-//! crates/reify-expr/tests/result_combinator_eval_tests.rs. This is pre-existing
-//! reify-expr resolution behaviour, out of scope for #5593, and is pinned below
-//! by `census_pins_which_overload_the_matcher_selects` so a future resolver
-//! change flips a test RED instead of silently rewriting what this table means.
+//! † THE MATCHED CANDIDATE IS result.ri's RESULT OVERLOAD. `unwrap_or`,
+//! `or_else` and `fallback` are each declared in BOTH stdlib files, and these
+//! three fixtures' `arg[0].result_type` is `Enum("Result")` — the erased form
+//! variant construction produces, which never exact-equals result.ri's
+//! `Applied{name:"Result", args:[T,E]}`. Before #5685 that made pass 1 miss
+//! both candidates and left the wildcard pass to take the first in table order
+//! — option_recovery.ri's `Option<T>` overload, since `std.option_recovery`
+//! loads before `std.result`. #5685 gave the eval matcher the constructor-head
+//! narrowing tier the compile side already had, so the erased subject now
+//! selects result.ri's signature. Full statement: the OVERLOAD NOTE in
+//! crates/reify-expr/tests/result_combinator_eval_tests.rs. Pinned per row
+//! below by `census_pins_which_overload_the_matcher_selects` so a future
+//! resolver change flips a test RED instead of silently rewriting what this
+//! table means.
+//!
+//! The observed-value column above is unmoved by that reselection, and the
+//! `from` column only partly: `unwrap_or` and `fallback` ship the SAME
+//! `{ dflt }` body in both stdlib files, and `or_else` returns its subject
+//! either way — result.ri's `{ r }` where option_recovery.ri has `{ o }`. Both
+//! members of each pair return the same positional argument, which is why the
+//! reselection is value-invisible and why the census below pins the selected
+//! candidate directly rather than inferring it from an evaluated value.
 //!
 //! TWO OF THE 17 GUARDS ARE COINCIDENCE-LIMITED even under this harness —
 //! `e2e_get_or_absent_key_with_stdlib` (the one that PASSES above) and the `v`
@@ -117,13 +121,14 @@ fn val_5mm() -> Value {
 /// (b) under `prelude_backed_functions(&module)` it yields 5mm, which is
 ///     `through`'s `.ri` body `{ x }` having genuinely run.
 ///
-/// Dispatch works because `find_matching_compiled_function`
-/// (reify-expr/src/lib.rs:1533-1574) is a two-pass resolver: pass 1 requires
-/// exact `Type` equality; pass 2, gated on `!f.type_params.is_empty()`, treats
-/// any param carrying a type/dim param as an unconditional wildcard. That
-/// second pass is what lets the generic `through<T>(x: T)` signature bind a
-/// concrete `Scalar[m]` argument — and it is the mechanism this whole harness
-/// depends on.
+/// Dispatch works because the broadest tier of `find_matching_compiled_function`
+/// — the wildcard pass, gated on `!f.type_params.is_empty()` — treats any param
+/// carrying a type/dim param as a wildcard, where the exact-equality tier ahead
+/// of it cannot bind anything generic. That is what lets the generic
+/// `through<T>(x: T)` signature bind a concrete `Scalar[m]` argument, and it is
+/// the mechanism this whole harness depends on. (The full tier list and their
+/// ordering live on `find_matching_compiled_function`'s own doc comment; this
+/// harness only depends on the wildcard tier existing.)
 ///
 /// If a future change regresses the guards back to a user-source-only table,
 /// half (b) breaks loudly here rather than silently degrading the 17
@@ -232,9 +237,10 @@ const CENSUS: &[CensusRow] = &[
         pair: "fallback/2",
         guard: "e2e_result_fallback_ok_with_stdlib",
         source: "structure S { let v = fallback(Ok { value: 5mm }, 0mm) }",
-        // MEASURED mis-resolution: the subject is `Enum("Result")` but the
-        // selected candidate is option_recovery.ri's `fallback<T>(Option<T>, T)`.
-        matched_family: "Option",
+        // MEASURED: the `Enum("Result")` subject selects result.ri's
+        // `fallback<T, E>(Result<T, E>, T)`. Was "Option" until #5685 gave the
+        // eval matcher the constructor-head narrowing tier.
+        matched_family: "Result",
     },
     CensusRow {
         pair: "is_ok/1",
@@ -271,22 +277,28 @@ const CENSUS: &[CensusRow] = &[
 /// The census pairs whose selected candidate does NOT belong to the same
 /// overload family as the call site's own subject — MEASURED, exhaustive.
 ///
-/// Only `fallback/2` qualifies in the census, because it is the one row here
+/// EMPTY since #5685. `fallback/2` was the sole entry: it is the one census row
 /// whose fixture has a `Result` subject AND a same-name/arity Option overload
-/// ahead of it in table order. The two other guards in that position —
-/// `e2e_result_unwrap_or_ok_with_stdlib` and `e2e_result_or_else_err_with_stdlib`
-/// — are represented in the census by their OPTION-subject siblings, so the
-/// census cannot observe them; the module-doc table's `†` rows record them.
-const OVERLOAD_MISRESOLVED: &[&str] = &["fallback/2"];
+/// ahead of it in table order, so before the head-narrowing tier the wildcard
+/// pass took the Option candidate on table order alone. It now selects
+/// result.ri's, so every census row's selected overload agrees with its
+/// subject's family.
+///
+/// Kept (rather than deleted along with its last entry) as a standing
+/// two-directional pin: a future resolver change that reintroduces a
+/// family-crossing selection anywhere in the census fails here by name.
+const OVERLOAD_MISRESOLVED: &[&str] = &[];
 
 /// Collapse a `Type` to the OVERLOAD FAMILY that decides which stdlib module's
 /// candidate ought to win: `Option`, `Result`, `Map`, …
 ///
 /// `Enum("Result")` — how an `Ok{..}`/`Err{..}` literal's `result_type` is
 /// spelled at a call site — and `Applied{name:"Result", ..}` — how result.ri's
-/// signatures spell it — are the SAME family here. That they are not `==` is
-/// exactly why pass 1 of `find_matching_compiled_function` can never resolve a
-/// Result subject, which is what makes the `fallback/2` mis-resolution possible.
+/// signatures spell it — are the SAME family here. Collapsing them is what lets
+/// this test compare a call site's subject against the selected candidate's
+/// `params[0]` at all: they are never `==`, so the exact-equality tier of
+/// `find_matching_compiled_function` can never resolve a Result subject, and
+/// which candidate wins is decided further down the tier list.
 fn overload_family(t: &reify_core::Type) -> String {
     use reify_core::Type;
     match t {
@@ -461,26 +473,27 @@ fn stdlib_placeholders_are_live_candidates_under_the_prelude_backed_table() {
 /// the prove-more-than-you-measure failure #5593 exists to eliminate, so the
 /// selected overload is pinned rather than left implicit.
 ///
-/// MEASURED, and the reason `matched_family` is a per-row constant rather than
-/// something derived from the fixture: `fallback/2`'s subject is `Enum("Result")`
-/// yet the selected candidate is option_recovery.ri's
-/// `fallback<T>(Option<T>, T)`. Pass 1 of `find_matching_compiled_function`
-/// requires exact `Type` equality and `Enum("Result")` never equals
-/// `Applied{name:"Result", args:[T,E]}`, so BOTH candidates miss it; pass 2's
-/// wildcard then takes the first in table order, and `std.option_recovery` loads
-/// before `std.result`. Pre-existing reify-expr resolution behaviour, out of
-/// scope for #5593 — see the OVERLOAD NOTE in
-/// crates/reify-expr/tests/result_combinator_eval_tests.rs, and task #5685,
-/// which is fixing it. This test pins the CURRENT behaviour, so #5685 landing
-/// turns it RED by design: that is the notification, and the assertion message
-/// below says what to update.
+/// `matched_family` stays a per-row MEASURED constant rather than something
+/// derived from the fixture, because the derivation would beg the question this
+/// test exists to answer. `fallback/2` is the row that proves it: its subject is
+/// `Enum("Result")`, and which of the two same-name/arity candidates that erased
+/// subject selects is decided entirely inside the resolver's tier ordering — it
+/// selected option_recovery.ri's `fallback<T>(Option<T>, T)` until #5685 added
+/// the constructor-head narrowing tier, and result.ri's
+/// `fallback<T, E>(Result<T, E>, T)` since. A derived expectation would have
+/// silently tracked that flip; a pinned one reports it, which is what happened
+/// when #5685 landed and this test went RED by design.
 ///
-/// The mis-resolution is BENIGN for the guards (each overload pair returns the
-/// same positional argument, so the observable placeholder value is identical),
-/// which is exactly why it needs a test: nothing else would go RED if the
-/// resolution flipped. This test fails in BOTH directions — if the matcher
-/// starts preferring result.ri, `matched_family` mismatches; if the
-/// mis-resolution is fixed, `OVERLOAD_MISRESOLVED` no longer matches.
+/// Pinning is the ONLY thing that reports such a flip, because it is BENIGN for
+/// the guards: each overload pair returns the same positional argument, so the
+/// observable placeholder value is identical either way and no `e2e_*` guard
+/// moves. See the OVERLOAD NOTE in
+/// crates/reify-expr/tests/result_combinator_eval_tests.rs.
+///
+/// The test fails in BOTH directions: `matched_family` mismatches if any row's
+/// selected overload moves, and `OVERLOAD_MISRESOLVED` mismatches if the set of
+/// rows whose selection crosses their subject's family changes — in either
+/// direction, so a regression back to family-crossing selection is caught too.
 #[test]
 fn census_pins_which_overload_the_matcher_selects() {
     let mut failures: Vec<String> = Vec::new();
@@ -541,9 +554,11 @@ fn census_pins_which_overload_the_matcher_selects() {
     assert_eq!(
         observed_misresolved, OVERLOAD_MISRESOLVED,
         "the set of census pairs whose selected overload does NOT match their \
-         subject's family changed. This is the pre-existing reify-expr \
-         Option-before-Result resolution behaviour; if it was deliberately fixed, \
-         update OVERLOAD_MISRESOLVED and the `†` footnote in this file's module \
-         doc, and re-measure the guards' placeholder values"
+         subject's family changed. Empty since #5685 gave the eval matcher the \
+         constructor-head narrowing tier; a NON-empty left side means the \
+         resolver regressed to picking a candidate from the wrong stdlib module \
+         on table order alone. If the change was deliberate, update \
+         OVERLOAD_MISRESOLVED and the `†` footnote in this file's module doc, \
+         and re-measure the guards' placeholder values"
     );
 }
