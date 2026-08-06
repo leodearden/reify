@@ -126,8 +126,11 @@ done < <(git -C "$REPO_ROOT" ls-files -z -- "${SCOPE_PATHSPECS[@]}" 2>/dev/null)
 # `#[cfg(test)] fn` leaves the skipper armed until the NEXT brace-opening
 # line, which can be an unrelated production item, silently swallowing it.
 # This guard's lexer is shared with the INV-FEA-1 trampoline-registration
-# guard (scripts/check-compute-trampoline-registration.sh), kept in sync BY
-# HAND until the two can be factored into a shared lib.
+# guard (scripts/check-compute-trampoline-registration.sh — lands as part of
+# task/5076, branch tip 627badfa04 as of this writing; NOT yet on main, so
+# this path does not resolve in this tree today), kept in sync BY HAND until
+# the two can be factored into a shared lib (follow-up filed: see task
+# tracker for "extract scripts/lib_rust_production_view.awk").
 #
 # The prologue is assembled through a quoted heredoc rather than a
 # single-quoted assignment so the lexer can contain apostrophes (it must
