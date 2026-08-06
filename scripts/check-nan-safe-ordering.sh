@@ -71,7 +71,7 @@
 # Exit codes:
 #   0  clean — no unguarded matches
 #   1  at least one unguarded match (each printed as file:line: <source>)
-#   2  usage / not-a-git-work-tree error
+#   2  usage / not-a-git-work-tree error, or an awk failure while scanning
 
 set -euo pipefail
 
@@ -305,7 +305,14 @@ AWK_PROLOGUE
 #   2. flag the unwrap_or(…Ordering::Equal…) fragment as file:line: <source>.
 all=""
 for f in "${_files[@]}"; do
-    out="$(awk "$_AWK_PRODUCTION_PROLOGUE"'
+    # Checked explicitly (rather than left to `set -e`) so a failing awk gets
+    # a diagnostic and the documented exit 2 (usage/internal error) — under
+    # plain `set -e` propagation a failing `out="$(awk ...)"` would abort the
+    # script with awk's own exit status, which for some awk failure modes is
+    # 1, indistinguishable from "found a violation" (verified: PATH-shadowing
+    # awk to a stub that always exits 1 makes the pre-fix gate exit 1 on a
+    # CLEAN fixture, silently, with nothing printed).
+    if ! out="$(awk "$_AWK_PRODUCTION_PROLOGUE"'
         {
             # --- inline escape (same-line), mirrors ptodo:allow §6.8 ---
             # RAW $0 on purpose: the escape lives in a `//` comment, which the
@@ -319,7 +326,10 @@ for f in "${_files[@]}"; do
                 printf "%s:%d: %s\n", FILENAME, FNR, $0
             }
         }
-    ' "$REPO_ROOT/$f")"
+    ' "$REPO_ROOT/$f")"; then
+        echo "ERROR: awk failed while scanning $f" >&2
+        exit 2
+    fi
     [[ -n "$out" ]] && all+="$out"$'\n'
 done
 

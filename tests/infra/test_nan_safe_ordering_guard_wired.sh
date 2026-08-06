@@ -584,4 +584,29 @@ stage
 assert "hE5: a self-terminating 'mod tests;' (external file, no local body) does not swallow the next unrelated production item" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
+# ===========================================================================
+# hF — an awk failure mid-scan surfaces as the documented exit 2
+# (usage/internal error), never conflated with exit 1 (violation found).
+#
+# Under `set -euo pipefail`, a plain `out="$(awk ...)"` left unchecked lets
+# `set -e` abort the script with awk's OWN exit status on failure, which for
+# some failure modes (verified: PATH-shadowing awk to a stub that always
+# exits 1) is 1 — silently indistinguishable from "found a violation", with
+# nothing printed and files after the failing one never scanned.
+# ===========================================================================
+echo ""
+echo "--- (hF): an awk failure mid-scan is exit 2, not silently conflated with exit 1 ---"
+write_fixture <<'RS'
+pub fn nothing() {}
+RS
+stage
+AWK_FAIL_SHIM="$DET_TMP/awk-fail-shim"
+mkdir -p "$AWK_FAIL_SHIM"
+printf '#!/bin/sh\nexit 1\n' > "$AWK_FAIL_SHIM/awk"
+chmod +x "$AWK_FAIL_SHIM/awk"
+assert "hF1: an awk failure while scanning a CLEAN fixture is surfaced as exit 2, not exit 1" \
+    _exits_with 2 env PATH="$AWK_FAIL_SHIM:$PATH" bash "$GATE" --repo-root "$FIX"
+assert "hF1: the awk-failure path prints a diagnostic naming the file being scanned" \
+    bash -c "env PATH='$AWK_FAIL_SHIM:$PATH' bash '$GATE' --repo-root '$FIX' 2>&1 | grep -q 'ERROR: awk failed while scanning'"
+
 test_summary
