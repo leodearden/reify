@@ -21,6 +21,27 @@
 //! invoke `compile_source_with_stdlib`; `language_chunks::get_chunk` is
 //! unreachable from here in turn, so the chunk is read by path — the same
 //! cross-crate placement #5347 and #5364 arrived at independently.
+//!
+//! # Coverage boundary
+//!
+//! What is pinned against the real compiler/evaluator here:
+//!
+//! - every fenced example the section serves compiles with zero `Error`
+//!   diagnostics (`option_section_fences_compile_clean`);
+//! - the scraped example's own evaluated values, on BOTH the `some(x)` and the
+//!   `none` path (`option_section_example_evaluates_to_documented_values`);
+//! - the section's combinator table rows that the scraped example does not
+//!   itself exercise — `or_default`, `fallback`, `is_none`, `ok_or` — plus the
+//!   "an `undef` subject propagates `undef` through every combinator" claim
+//!   (`option_combinator_table_rows_hold_as_documented`,
+//!   `undef_subject_propagates_through_every_documented_combinator`);
+//! - the two failure modes the "Do not `match` an Option" warning states
+//!   (`option_payload_binding_pattern_still_fails_to_parse`,
+//!   `binderless_option_match_still_evaluates_to_undef`).
+//!
+//! What is NOT pinned: the section's prose *wording*, and its citations to
+//! stdlib/PRD/example paths. Those are read by humans and agents, not executed;
+//! a reader must not assume every sentence in the section is under test.
 
 use reify_core::ModulePath;
 use reify_core::dimension::DimensionVector;
@@ -218,6 +239,39 @@ fn assert_bool(actual: &Value, expected: bool, label: &str) {
     );
 }
 
+/// Assert `actual` is a `Result` enum of variant `variant` carrying exactly one
+/// payload field named `field`.
+///
+/// The field NAME is asserted, not just the variant: the section tells readers
+/// `ok_or` yields "a `Result` you *can* match on", and a named-field pattern
+/// (`Ok { value: v }`) only matches if the payload key is what the table says.
+#[track_caller]
+fn assert_result_variant(actual: &Value, variant: &str, field: &str, label: &str) {
+    assert!(
+        !matches!(actual, Value::Undef),
+        "{label}: evaluated to `undef` — the documented form was accepted but \
+         produced no value"
+    );
+    match actual {
+        Value::Enum {
+            type_name,
+            variant: got_variant,
+            payload,
+        } => {
+            assert_eq!(type_name, "Result", "{label}: expected a Result");
+            assert_eq!(got_variant, variant, "{label}: wrong Result variant");
+            let keys: Vec<&str> = payload.iter().map(|(k, _)| k.as_str()).collect();
+            assert_eq!(
+                keys,
+                vec![field],
+                "{label}: expected payload field `{field}` (the name a \
+                 `{variant} {{ {field}: v }}` pattern binds against)"
+            );
+        }
+        other => panic!("{label}: expected `Result::{variant}`, got {other:?}"),
+    }
+}
+
 /// How the section's example declares its present `Option` subject, and the
 /// same declaration with the subject absent.
 ///
@@ -321,6 +375,131 @@ fn option_section_example_evaluates_to_documented_values() {
         1.0,
         "none-path `total` = map_or(none, base, ...) returns base without applying f",
     );
+}
+
+// --- The rest of the section's combinator table ------------------------------
+//
+// The scraped example exercises four of the section's six table rows —
+// `unwrap_or`, `or_else`, `is_some`, `map_or`. The remaining rows
+// (`or_default`/`fallback` as aliases of `unwrap_or`, `is_none`, `ok_or`) and
+// the "an `undef` subject propagates `undef` through every combinator" sentence
+// are normative claims the section makes on its own authority, and nothing
+// scraped from the chunk pins them. Curated-claim-diverges-from-behaviour is
+// precisely the drift class task #6047 exists to close, so they are pinned here
+// too — against the same stdlib-aware pipeline, just with fixtures rather than
+// scraped source, since the section states them in prose rather than in code.
+
+/// Every `## Option Type` table row the scraped example does not itself
+/// exercise, on both the `some(x)` and the `none` path.
+#[test]
+fn option_combinator_table_rows_hold_as_documented() {
+    let result = eval_module(
+        r#"structure def Table {
+  param present : Option<Length> = some(0.25mm)
+  param absent  : Option<Length> = none
+
+  let or_default_present = or_default(present, 7mm)
+  let or_default_absent  = or_default(absent, 7mm)
+  let fallback_present   = fallback(present, 7mm)
+  let fallback_absent    = fallback(absent, 7mm)
+  let is_none_present    = is_none(present)
+  let is_none_absent     = is_none(absent)
+  let ok_or_present      = ok_or(present, "no coating")
+  let ok_or_absent       = ok_or(absent, "no coating")
+}"#,
+    );
+
+    // Row: `or_default(o, dflt)`, `fallback(o, dflt)` — documented as aliases of
+    // `unwrap_or`, i.e. `x` / `dflt`.
+    for name in ["or_default", "fallback"] {
+        assert_length_mm(
+            &cell_value(&result, "Table", &format!("{name}_present")),
+            0.25,
+            &format!("`{name}(some(0.25mm), 7mm)` — documented as an alias of unwrap_or"),
+        );
+        assert_length_mm(
+            &cell_value(&result, "Table", &format!("{name}_absent")),
+            7.0,
+            &format!("`{name}(none, 7mm)` — documented as an alias of unwrap_or"),
+        );
+    }
+
+    // Row: `is_none(o)` — `false` / `true`.
+    assert_bool(
+        &cell_value(&result, "Table", "is_none_present"),
+        false,
+        "`is_none(some(0.25mm))`",
+    );
+    assert_bool(
+        &cell_value(&result, "Table", "is_none_absent"),
+        true,
+        "`is_none(none)`",
+    );
+
+    // Row: `ok_or(o, err)` — the Option→Result bridge, documented as producing
+    // `Ok { value: x }` / `Err { error: err }`. Those exact field names are what
+    // make the section's "a Result you *can* match on" claim usable: a reader
+    // writes `Ok { value: v }` in a pattern, so the payload key must be `value`.
+    assert_result_variant(
+        &cell_value(&result, "Table", "ok_or_present"),
+        "Ok",
+        "value",
+        "`ok_or(some(0.25mm), \"no coating\")`",
+    );
+    assert_result_variant(
+        &cell_value(&result, "Table", "ok_or_absent"),
+        "Err",
+        "error",
+        "`ok_or(none, \"no coating\")`",
+    );
+}
+
+/// The section's closing claim about `undef`: "An `undef` subject propagates
+/// `undef` through every combinator (Kleene three-valued)."
+///
+/// "Every" is the load-bearing word, so every combinator the section's table
+/// names is checked — including `map_or`, which is evaluated by a separate
+/// ctx-aware branch rather than by the pure `option_recovery` dispatcher and so
+/// could regress independently of the rest. Upstream contract: INV-2 in
+/// `crates/reify-expr/src/option_recovery.rs`.
+#[test]
+fn undef_subject_propagates_through_every_documented_combinator() {
+    let result = eval_module(
+        r#"structure def Undefs {
+  param base   : Length = 1mm
+  param broken : Option<Length> = undef
+
+  let via_unwrap_or  = unwrap_or(broken, 9mm)
+  let via_or_default = or_default(broken, 9mm)
+  let via_fallback   = fallback(broken, 9mm)
+  let via_or_else    = or_else(broken, some(9mm))
+  let via_is_some    = is_some(broken)
+  let via_is_none    = is_none(broken)
+  let via_map_or     = map_or(broken, base, |c: Length| base + c)
+  let via_ok_or      = ok_or(broken, "no coating")
+}"#,
+    );
+
+    for combinator in [
+        "unwrap_or",
+        "or_default",
+        "fallback",
+        "or_else",
+        "is_some",
+        "is_none",
+        "map_or",
+        "ok_or",
+    ] {
+        assert_eq!(
+            cell_value(&result, "Undefs", &format!("via_{combinator}")),
+            Value::Undef,
+            "`{combinator}` must propagate an `undef` subject as `undef` (Kleene \
+             three-valued, option_recovery.rs INV-2). It now recovers instead — the \
+             `## Option Type` section in crates/reify-mcp/src/tools/chunks/enums.md \
+             claims propagation holds for EVERY combinator, so that sentence must be \
+             rewritten in this same diff."
+        );
+    }
 }
 
 // --- Two-way ratchet: pin the compiler behaviour the chunk's warning asserts ---
