@@ -8023,6 +8023,133 @@ mod tests {
         assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
     }
 
+    // ── task 5905: `direction` retyped to Vector3<Dimensionless> ─────────────
+
+    /// Build a `PointLoad` whose `direction` field is the supplied `Value`
+    /// verbatim, so a test can vary the outer Value variant (List vs Vector).
+    fn point_load_with_direction_value(force: f64, direction: Value) -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [
+            ("force".to_string(), Value::Real(force)),
+            ("direction".to_string(), direction),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PointLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// Build a `Gravity` whose `direction` field is the supplied `Value`
+    /// verbatim (`magnitude` is a dimensioned `Value::Scalar`, as always).
+    fn gravity_with_direction_value(magnitude_si: f64, direction: Value) -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [
+            (
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: magnitude_si,
+                    dimension: DimensionVector::ACCELERATION,
+                },
+            ),
+            ("direction".to_string(), direction),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Gravity".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// task 5905: `PointLoad.direction` is declared `Vector3<Dimensionless>`, so
+    /// a `.ri`-authored `vec3(...)` materialises as `Value::Vector`, NOT
+    /// `Value::List`.  The reader must accept it.
+    ///
+    /// This is the one failure mode no other gate catches: a `Value::Vector`
+    /// that falls through to the `_ => [0.0, 0.0, -1.0]` arm produces a
+    /// perfectly plausible -Z load with NO diagnostic anywhere, silently
+    /// discarding the author's direction.
+    ///
+    /// RED before the reader learns `Value::Vector`: a +X direction is read as
+    /// the -Z fallback, so `fz` is -1000 instead of `fx`.
+    #[test]
+    fn extract_loads_accepts_vector_direction_for_point_load() {
+        let dir = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let loads = Value::List(vec![point_load_with_direction_value(1000.0, dir)]);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0).unwrap();
+        assert!(
+            (fx - 1000.0).abs() < 1e-9,
+            "Value::Vector direction [1,0,0] with force 1000 should give \
+             fx=1000, got {fx} (fell through to the -Z fallback?)"
+        );
+        assert!((fy).abs() < 1e-9, "expected fy≈0, got {fy}");
+        assert!(
+            (fz).abs() < 1e-9,
+            "expected fz≈0, got {fz} — a non-zero fz means the +X direction \
+             was silently replaced by the -Z fallback"
+        );
+    }
+
+    /// task 5905, Gravity arm: same contract as the PointLoad arm above — a
+    /// `Value::Vector` direction must reach `body_force`, not the -Z fallback.
+    ///
+    /// ρ=2000, magnitude=10, direction=[1,0,0] → body_force=[20000, 0, 0].
+    #[test]
+    fn extract_loads_accepts_vector_direction_for_gravity() {
+        let dir = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let loads = Value::List(vec![gravity_with_direction_value(10.0, dir)]);
+        let (_, _, [bx, by, bz]) = extract_loads(&loads, 2000.0).unwrap();
+        assert!(
+            (bx - 20000.0).abs() < 1e-6,
+            "Value::Vector direction [1,0,0] with ρ=2000, m=10 should give \
+             body_force x=20000, got {bx} (fell through to the -Z fallback?)"
+        );
+        assert!((by).abs() < 1e-9, "expected body_force y≈0, got {by}");
+        assert!(
+            (bz).abs() < 1e-9,
+            "expected body_force z≈0, got {bz} — a non-zero z means the +X \
+             direction was silently replaced by the -Z fallback"
+        );
+    }
+
+    /// task 5905, component spelling: a `Vector3<Dimensionless>` default
+    /// declared in `.ri` can materialise with dimensionless `Value::Scalar`
+    /// components rather than bare `Value::Real` (the same split
+    /// `extract_loads_direction_scalar_elements_handled` covers for the List
+    /// encoding).  Both spellings must read identically inside a
+    /// `Value::Vector`.
+    #[test]
+    fn extract_loads_accepts_vector_direction_with_scalar_components() {
+        let dir = Value::Vector(
+            [0.0_f64, 1.0_f64, 0.0_f64]
+                .iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                })
+                .collect(),
+        );
+        let loads = Value::List(vec![point_load_with_direction_value(750.0, dir)]);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0).unwrap();
+        assert!((fx).abs() < 1e-9, "expected fx≈0, got {fx}");
+        assert!(
+            (fy - 750.0).abs() < 1e-9,
+            "Value::Vector of dimensionless Value::Scalar components [0,1,0] \
+             with force 750 should give fy=750, got {fy}"
+        );
+        assert!(
+            (fz).abs() < 1e-9,
+            "expected fz≈0, got {fz} — a non-zero fz means the +Y direction \
+             was silently replaced by the -Z fallback"
+        );
+    }
+
     /// amendment (task 4245 esc): malformed `direction` values silently fall back
     /// to `[0, 0, -1]` — this is the intentional forward-compatibility contract
     /// (design_decision[4] in plan.json).  This test pins the contract so the
