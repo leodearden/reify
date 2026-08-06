@@ -9,6 +9,9 @@ import {
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
 import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+// Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
+// App-level buckling assertions pin the rendered payload rather than a literal.
+import { formatEigenvalue } from '../panels/BucklingPanel';
 import { createEditorStore } from '../stores/editorStore';
 import { createViewportStore } from '../stores/viewportStore';
 
@@ -151,6 +154,7 @@ vi.mock('../bridge', () => ({
   onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveComplete: vi.fn().mockResolvedValue(() => {}),
   onSolverProgress: vi.fn().mockResolvedValue(() => {}),
+  onModeShapeFrame: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
   syncObservedDemand: vi.fn().mockResolvedValue(undefined),
   ask: vi.fn().mockResolvedValue(false),
@@ -230,6 +234,7 @@ beforeEach(() => {
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
   vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onModeShapeFrame).mockResolvedValue(() => {});
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
@@ -6460,6 +6465,195 @@ describe('App SolverProgressOverlay integration', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── Buckling mode-shape-frame subscription (task 6035) ─────────────────────
+//
+// Covers the App-level buckling wiring end-to-end: initApp -> subscribeModeShapeFrames
+// -> bucklingStore.ingestFrame -> the <Show> gate that mounts BucklingPanel -> the
+// onCleanup detach. Before task 6035 the `../bridge` mock factory omitted
+// `onModeShapeFrame`, so subscribeModeShapeFrames threw on every mount and initApp's
+// catch swallowed it — leaving this whole path dead under App.test.tsx.
+
+describe('App buckling mode-shape-frame subscription (task 6035)', () => {
+  let modeShapeCallback: ((f: any) => void) | undefined;
+  let modeShapeUnlisten: ReturnType<typeof vi.fn>;
+  // Structural type: `ReturnType<typeof vi.spyOn>` erases the generic to
+  // `unknown` args and does not accept the HTMLCanvasElement.getContext
+  // overload set. We only ever call mockRestore on it.
+  let getContextSpy: { mockRestore: () => void } | undefined;
+
+  /**
+   * Force `canvas.getContext` to return null for the remainder of the current
+   * test. Only case (b) mounts BucklingPanel, whose onMount probes getContext
+   * to decide whether a WebGL path is available; jsdom has no canvas backend,
+   * so it returns null *and* emits a multi-line "Not implemented:
+   * HTMLCanvasElement.prototype.getContext" jsdomError to stderr. Returning
+   * null explicitly takes the identical guard branch (hasWebGL === false ->
+   * early return, no three.js work) with no log.
+   *
+   * Installed per-test rather than in `beforeEach` so cases (a), (c) and (d) —
+   * none of which mount BucklingPanel — run against the unmodified canvas
+   * prototype instead of forcing a null-context branch on every other
+   * component the App mounts. Restored in `afterEach` so it cannot leak.
+   */
+  function stubNullCanvasContext() {
+    getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  }
+
+  beforeEach(() => {
+    modeShapeCallback = undefined;
+    modeShapeUnlisten = vi.fn();
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation(
+      async (cb: (f: any) => void) => {
+        modeShapeCallback = cb;
+        return modeShapeUnlisten;
+      },
+    );
+  });
+
+  afterEach(() => {
+    getContextSpy?.mockRestore();
+    getContextSpy = undefined;
+  });
+
+  it('(a) initApp establishes the mode-shape-frame subscription', async () => {
+    await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+    expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) emitted mode-shape frames route into the buckling store and reveal BucklingPanel', async () => {
+    stubNullCanvasContext();
+    await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+
+    // Gate is closed until the store has ingested at least one frame.
+    expect(screen.queryByTestId('buckling-panel')).toBeNull();
+
+    // Same fixture vectors + phase convention as bucklingStore.test.ts (BASE/PEAK):
+    // phase < 0.5 -> base frame, phase >= 0.5 -> peak frame for that mode index.
+    modeShapeCallback!({ mode_index: 0, phase: 0.0, displaced_positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] });
+    modeShapeCallback!({
+      mode_index: 0,
+      phase: 1.0,
+      displaced_positions: [0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0],
+      eigenvalue: 1000,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('buckling-panel')).toBeTruthy();
+      expect(screen.getByTestId('buckling-mode-row-0')).toBeTruthy();
+    });
+
+    // Payload fidelity, not just frame arrival. Row existence alone is carried
+    // by the phase-0 base frame (it opens the <Show> gate on state.base), so
+    // without these two the peak frame's own fields would go unobserved:
+    //   - eigenvalue: rendered as `λ = <formatted>` (same assertion shape as
+    //     BucklingPanel.test.tsx case (g)); a wiring bug that dropped it would
+    //     render the '—' placeholder and still keep the row present.
+    //   - thumbnail: computeModeThumbnail only returns non-null when BOTH the
+    //     base and the peak displaced_positions arrays are present and
+    //     non-empty, so its presence pins that both frames' geometry landed.
+    // Mutation-checked: forcing `eigenvalue: null` in bucklingStore.ingestFrame
+    // renders 'Mode 1 · λ = —' and fails the first assertion; removing the
+    // App-level subscribe wiring fails both.
+    const modeRow = screen.getByTestId('buckling-mode-row-0');
+    expect(modeRow.textContent).toContain(formatEigenvalue(1000));
+    expect(within(modeRow).getByTestId('buckling-mode-thumbnail-0')).toBeTruthy();
+  });
+
+  it('(c) unmount detaches the mode-shape-frame listener', async () => {
+    const { unmount } = await renderAndWaitForReady();
+    await waitFor(() => expect(modeShapeCallback).toBeDefined());
+    // The unsub is assigned one microtask after the callback is captured; let
+    // initApp's await settle so we assert against the live subscription.
+    await flushMacrotasks();
+
+    expect(modeShapeUnlisten).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(modeShapeUnlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it('(d) unmounting while the subscription is still in flight still detaches the late listener', async () => {
+    // Case (c) covers the settled subscription, where onCleanup detaches via
+    // the assigned `bucklingFrameUnsub`. This case covers the race the other
+    // side of that assignment: if the component unmounts while
+    // `await subscribeModeShapeFrames(...)` is still pending, the assignment
+    // never happens, so onCleanup has nothing to call — initApp's own
+    // `if (!alive) { unlistenBuckling(); return; }` guard (App.tsx:1673-1676)
+    // is the ONLY thing that can detach it. Deleting that guard leaks a live
+    // Tauri listener per mount, and case (c) would not notice.
+    const gate = deferred<() => void>();
+    vi.mocked((bridge as any).onModeShapeFrame).mockImplementation((cb: (f: any) => void) => {
+      modeShapeCallback = cb;
+      return gate.promise;
+    });
+
+    // NOT renderAndWaitForReady(): initApp parks on the pending subscribe
+    // promise, so setInitPhase('ready') (App.tsx:1706) is downstream of the
+    // very await this case suspends and `app-layout` would never appear.
+    // Waiting on the subscribe call itself is the correct sync point here.
+    const { unmount } = render(() => <App />);
+    await waitFor(() =>
+      expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1),
+    );
+
+    // Unmount with the subscribe promise deliberately still pending.
+    unmount();
+    expect(modeShapeUnlisten).not.toHaveBeenCalled();
+
+    // Now let the subscription land, too late to be stored.
+    gate.resolve(modeShapeUnlisten);
+    await flushMacrotasks();
+
+    expect(modeShapeUnlisten).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Deliberately a SIBLING describe, not a fifth `it` inside the block above:
+// this case must observe the plain factory / global-beforeEach default rather
+// than the describe-scoped capturing mockImplementation, because it installs a
+// rejecting implementation of its own.
+describe('App buckling mode-shape-frame subscription — failure path (task 6035)', () => {
+  it('a rejected subscription degrades gracefully: App still reaches ready, no BucklingPanel', async () => {
+    // Positive assertion on the catch arm at App.tsx:1678-1680. The buckling
+    // subscription is best-effort: a bridge that cannot deliver mode-shape
+    // frames must not abort initApp or wedge the App short of ready.
+    //
+    // Deliberately NOT written as a negative match on the console.error
+    // wording (`not.toHaveBeenCalledWith('[buckling] subscribeModeShapeFrames
+    // failed:', ...)`). That shape is unfalsifiable on a reword of the log
+    // literal — it would keep reporting green while asserting nothing — and it
+    // is already subsumed by case (a): if `onModeShapeFrame` is ever dropped
+    // from the `../bridge` mock factory again (the original task-6035 defect,
+    // which emitted this stderr line 148 times in one App.test.tsx run), the
+    // global beforeEach's `mockResolvedValue` throws on `undefined` before any
+    // test in this file runs.
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      vi.mocked((bridge as any).onModeShapeFrame).mockRejectedValue(
+        new Error('mode-shape channel unavailable'),
+      );
+
+      await renderAndWaitForReady();
+
+      // Non-vacuity anchor: the rejecting path really was exercised.
+      await waitFor(() =>
+        expect(vi.mocked((bridge as any).onModeShapeFrame)).toHaveBeenCalledTimes(1),
+      );
+      await flushMacrotasks();
+
+      // initApp swallowed the rejection and carried on past the buckling block:
+      // the App is mounted and the later init work still ran.
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+      expect(vi.mocked(bridge.isDebugEnabled)).toHaveBeenCalled();
+
+      // …and with no frames ever ingested the <Show> gate stays shut.
+      expect(screen.queryByTestId('buckling-panel')).toBeNull();
+    });
   });
 });
 
