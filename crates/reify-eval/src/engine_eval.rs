@@ -1899,10 +1899,6 @@ fn build_dependent_cells(
 ///
 /// Returns a `BTreeSet` so the rendered diagnostic is order-stable (PRD §3
 /// decision 8).
-// Wired into the single-scope and merged-cluster emission sites by steps 10/12;
-// until then the unit tests below are its only callers, and those do not count
-// as uses for the non-test lib target.
-#[allow(dead_code)]
 fn objective_auto_reach(
     objective: &ObjectiveSet,
     dependent_cells: &[(ValueCellId, CompiledExpr)],
@@ -1943,6 +1939,145 @@ fn objective_auto_reach(
     }
 
     reached
+}
+
+/// Render the sense shared by an objective set's terms, for a diagnostic
+/// message. Falls back to the neutral word when a set mixes senses.
+///
+/// Mirrors `reify_compiler`'s `objective_sense_word` (the compile half's
+/// `E_OBJECTIVE_INERT` renderer) so the two halves of DIC γ say `minimize` /
+/// `maximize` the same way. That function is private to its crate, and this is
+/// a two-arm word choice rather than a contract, so the duplication carries no
+/// drift risk worth a shared crate.
+fn objective_sense_word(objective: &ObjectiveSet) -> &'static str {
+    let mut senses = objective.terms.iter().map(|t| t.sense);
+    match senses.next() {
+        Some(first) if senses.all(|s| s == first) => match first {
+            ObjectiveSense::Minimize => "minimize",
+            ObjectiveSense::Maximize => "maximize",
+        },
+        _ => "objective",
+    }
+}
+
+/// Render `E_OBJECTIVE_UNCONSUMED` — the runtime half of DIC γ (task #5417,
+/// PRD `docs/prds/v0_6/declared-intent-consumption-accounting.md` §3/§4.2).
+///
+/// ONE diagnostic per objective declaration, naming the FULL `unconsumed` set —
+/// never one per component, per auto, or per trial. That is the #5014
+/// collateral-observability aggregation rule, and it is why this is a function
+/// over the whole set rather than a per-id push at the call site.
+///
+/// **Extracted deliberately.** The single-scope (`eval`) and merged-cluster
+/// (`dispatch_merged_cluster_solve`) paths both call it, following the same
+/// extract-once discipline as [`merged_cluster_left_unresolved_warning`], so
+/// the two sites provably cannot drift apart in wording.
+fn objective_unconsumed_diagnostic(
+    scope: &str,
+    objective: &ObjectiveSet,
+    unconsumed: &BTreeSet<ValueCellId>,
+) -> Diagnostic {
+    let sense = objective_sense_word(objective);
+    // `unconsumed` is a BTreeSet, so this list is order-stable across runs
+    // (PRD §3 decision 8).
+    let cells = unconsumed
+        .iter()
+        .map(|id| format!("`{id}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (noun, verb) = if unconsumed.len() == 1 {
+        ("auto param", "was")
+    } else {
+        ("auto params", "were")
+    };
+
+    Diagnostic::error(format!(
+        "E_OBJECTIVE_UNCONSUMED: the `{sense}` declared in `{scope}` reached the \
+         solver but no component consumed it — the {noun} {cells} it governs {verb} \
+         left unsolved, so the declaration had no effect on this run. Add a \
+         constraint relating {cells} to the rest of the scope so the decomposition \
+         builds a component for the objective to attach to, or remove the objective."
+    ))
+    .with_code(DiagnosticCode::ObjectiveUnconsumed)
+}
+
+/// The full `E_OBJECTIVE_UNCONSUMED` gate: `Some(diagnostic)` exactly when this
+/// scope declared an objective that the solver silently discarded.
+///
+/// Shared verbatim by the single-scope and merged-cluster sites (steps 10/12) so
+/// the *decision*, not just the wording, is one source.
+///
+/// All four conditions are necessary:
+///
+/// 1. `declared.is_some()` — a **user-declared** objective. A synthesised
+///    Chebyshev-centre scope has `template.objective == None` at compile time
+///    (it is recorded in `centrality_synthesized_scopes` instead), so this is
+///    the exact structural test for task 4013's exemption: γ reports *declared*
+///    intent the engine dropped, and there is no declaration to drop here.
+/// 2. [`reify_constraints::objective_consumption`] says zero components took the
+///    objective. Calling the registry's own classifier — rather than
+///    re-deriving the verdict — is what makes the reported fact and the
+///    routing that produced it one source (G7).
+/// 3. The objective actually reaches an auto param ([`objective_auto_reach`]).
+///    An objective that reaches none is the *compile* half's business
+///    (`E_OBJECTIVE_INERT`), and firing here too would double-report it.
+/// 4. At least one reached auto is still unbound. This is the **O2
+///    vacuous-healthy** rule: connector-pinned autos are already partitioned out
+///    of `problem.auto_params` upstream, and solver-bound autos land in
+///    `resolved_params`, so an instantiation whose every objective-reachable
+///    auto is concretely bound this run stays quiet without a parallel ledger.
+///    It is load-bearing, not belt-and-braces: a let-indirected objective over a
+///    solved auto classifies as `FallbackComponentZero` (the registry matches
+///    the objective's DIRECT refs, which name only the let), so condition 2 does
+///    not fire and this is the sole thing keeping a healthy model quiet.
+///
+/// `bound_this_run` is the scope's `resolved_params` map. An `Undef` entry does
+/// not count as bound — the solver can write one for an auto it failed to pin,
+/// and treating that as success would silence the very case γ exists to report.
+fn objective_unconsumed_finding(
+    scope: &str,
+    declared: Option<&ObjectiveSet>,
+    problem: &ResolutionProblem,
+    bound_this_run: &HashMap<ValueCellId, Value>,
+) -> Option<Diagnostic> {
+    // (1) user-declared only.
+    declared?;
+
+    // (2) the registry dropped it. `Consumed` and `NoObjective` are the quiet
+    // verdicts; the other three are the documented drop sites.
+    let consumption = reify_constraints::objective_consumption(problem);
+    if !matches!(
+        consumption,
+        reify_constraints::ObjectiveConsumption::NoAutoParams
+            | reify_constraints::ObjectiveConsumption::NoComponents
+            | reify_constraints::ObjectiveConsumption::FallbackComponentZero
+    ) {
+        return None;
+    }
+
+    // The effective objective the solver actually saw — which is what
+    // `objective_consumption` just classified. It can differ from `declared`
+    // under §6.1 objective inheritance; reach must follow the one that was
+    // dropped.
+    let objective = problem.objective.as_ref()?;
+
+    // (3) it reaches a real solver variable.
+    let reach = objective_auto_reach(objective, &problem.dependent_cells, &problem.auto_params);
+
+    // (4) at least one of those is still unbound.
+    let unconsumed: BTreeSet<ValueCellId> = reach
+        .into_iter()
+        .filter(|id| {
+            !bound_this_run
+                .get(id)
+                .is_some_and(|v| !matches!(v, Value::Undef))
+        })
+        .collect();
+    if unconsumed.is_empty() {
+        return None;
+    }
+
+    Some(objective_unconsumed_diagnostic(scope, objective, &unconsumed))
 }
 
 /// Structure name → its SINGLE non-collection instance path, for the
@@ -5379,6 +5514,31 @@ impl Engine {
                         ))
                         .with_code(DiagnosticCode::SolverOptimalityUnproven),
                     );
+                }
+
+                // DIC γ (task #5417): surface E_OBJECTIVE_UNCONSUMED when this
+                // scope declared an objective the registry then dropped.
+                //
+                // Placed here — after the `match solve_result` — for two
+                // reasons: `resolved_params` has by now absorbed everything
+                // this scope's solve bound (condition 4 needs that), and this
+                // is the one point every solve outcome (Solved / Infeasible /
+                // NoProgress) converges on, so the report does not depend on
+                // which arm ran. Its sibling #4804 warning above shares the
+                // position for the same reason.
+                //
+                // The zero-constraint fixture the PRD measured
+                // (`dic_min_unconstrained.ri`) DOES reach here: an auto exists,
+                // so `build_solver_problem` returns Some and the solver is
+                // called; it is the *decomposition* that builds no component,
+                // which is precisely what `objective_consumption` reports.
+                if let Some(diag) = objective_unconsumed_finding(
+                    &template.name,
+                    template.objective.as_ref(),
+                    &problem,
+                    &resolved_params,
+                ) {
+                    diagnostics.push(diag);
                 }
             }
         }

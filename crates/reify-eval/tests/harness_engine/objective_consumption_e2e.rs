@@ -209,27 +209,39 @@ structure DicGoverning {
 /// An objective whose reachable autos are all concretely bound this run has
 /// nothing left to optimise, and saying so would be noise on a healthy model.
 ///
-/// The auto here is pinned by two mutually-tight inequalities, so it resolves to
-/// a single value: the reach is non-empty, but the *unbound* remainder is empty.
-/// **Open at step-9 (for the step-10 implementer).** This case is RED on its
-/// *premise*, not on the missing feature: neither `constraint w == 25mm` nor
-/// the mutually-tight bracket below actually binds `w` under
-/// `SolverRegistry::production()` — both leave it undef, so the anti-vacuity
-/// guard trips before the rule is ever consulted. Step-10 must supply a pin
-/// shape that genuinely binds (and record which one does); do NOT resolve this
-/// by deleting the guard, or the case degenerates into "nothing solved, so of
-/// course nothing was reported" and would keep passing even if the rule were
-/// rewritten to fire on everything.
+/// The reach here spans BOTH an auto (`w`) and a concrete param (`base`), which
+/// is what distinguishes this case from
+/// `let_indirected_objective_over_a_solved_auto_reports_nothing` above: it pins
+/// that the unbound-remainder test intersects with `auto_params` per id, so
+/// `base` never enters the set and cannot keep the diagnostic alive once `w` is
+/// bound. Consumption is `FallbackComponentZero` (the registry matches the
+/// objective's DIRECT refs, which name only `total`), so condition 2 does not
+/// fire — the vacuous-healthy rule is the sole reason this stays quiet.
+///
+/// **Pin-shape note (resolved in step-10).** The shape step-9 first wrote here —
+/// `w` pinned by two mutually-tight inequalities — is RED on its *premise*, not
+/// on the rule. Probing `SolverRegistry::production()` directly, none of
+/// `constraint w == 25mm`, `w >= 25mm` + `w <= 25mm`, or `w == base` binds `w`
+/// at all: each reports `constraints could not be satisfied (max absolute
+/// residual: 5.00e-7)` and leaves the cell undef, so the anti-vacuity guard
+/// tripped before the rule was ever consulted. The same probe found that
+/// multi-auto shapes (two bracketed autos, autos coupled by an equality, or a
+/// shared `w + h` bracket) also leave every auto undef. What DOES bind under the
+/// production registry is a SINGLE auto with a two-sided inequality bracket,
+/// which is the shape used here. That is a pre-existing solver characteristic,
+/// independent of DIC γ — γ adds a diagnostic, it does not change what solves.
 #[test]
 fn objective_whose_autos_are_all_bound_reports_nothing() {
     let source = "\
 module dic_vacuous
 
 structure DicVacuous {
+    param base : Length = 4mm
     param w : Length = auto
-    constraint w >= 25mm
-    constraint w <= 25mm
-    minimize w
+    constraint w >= 10mm
+    constraint w <= 50mm
+    let total = w + base
+    minimize total
 }
 ";
     let result = eval_with_solver(source);
