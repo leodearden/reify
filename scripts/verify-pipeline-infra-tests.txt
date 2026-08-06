@@ -58,6 +58,16 @@ scripts/warm-lane-gc-sweep.sh        tests/infra/test_warm_lane_gc_sweep.sh
 # new ARTIFACTS.
 scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc.sh
 scripts/lib_live_refs.sh             tests/infra/test_warm_lane_gc_sweep.sh
+# Task 5823: thin-warm-lane.sh gained the same live-reference gate (T4), making
+# it lib_live_refs.sh's THIRD consumer -- hence the third lib row, per the
+# one-row-per-consumer rule stated above. The thin row is its SECOND: the only
+# existing one (task 5176, below) points at the sizing-lifecycle suite, so a
+# task-scope edit to thin selected no fail-fast pole over thin's OWN suite --
+# the one that holds the gate's coverage (Block F), where the characteristic
+# regression is SILENT (the gate stops firing and thin rm -rf's a live build's
+# target/, exactly as before the gate existed).
+scripts/thin-warm-lane.sh            tests/infra/test_thin_warm_lane.sh
+scripts/lib_live_refs.sh             tests/infra/test_thin_warm_lane.sh
 # Task 5672: scripts/lib_lane_x_flock.sh is a shared lock-acquire lib sourced
 # TRANSITIVELY by tests/infra/run_all.sh under --scope host-infra; without
 # this row a task-scope diff touching only the lib selects zero infra tests,
