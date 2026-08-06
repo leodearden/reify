@@ -8,7 +8,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
-import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections, makeNode } from './test-utils';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -6825,17 +6825,71 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
     expect([...payload].sort()).toEqual(['Bracket#realization[0]', 'Bracket#realization[1]']);
   });
 
-  // A planned case (b) — "hiding a realization via the eye icon prunes it from
-  // the next payload while a sibling realization survives" — was deliberately
-  // NOT landed here: it fails against current production code. Root cause
-  // (esc-6045-1): `createSelectiveDemandSync`'s `on()` selector reads
+  // Case (b) was authored under task 6045 (commit 72951c2d9f) and then dropped
+  // as out-of-scope there: it failed against production code for a live-code
+  // reason, not a mock-factory one. Root cause (esc-6045-1):
+  // `createSelectiveDemandSync`'s `on()` selector read
   // `viewStateStore.getAllEffective()`, which hits the same
   // `nodeByPath.size === 0` short-circuit as case (a) above while the entity
-  // tree is still loading, so the effect never subscribes to `state.explicit`
-  // and a plain post-mount visibility toggle never reaches `bridge.syncDemand`.
-  // A live-code gap, out of this file's scope — tracked as task #6052. The
-  // App-level regression test for case (b) is reusable verbatim from commit
-  // 72951c2d9f once that task lands.
+  // tree is still loading — so the effect subscribed to `state.explicit` for
+  // nothing and a plain post-mount visibility toggle never reached
+  // `bridge.syncDemand`. Restored and re-attributed to task #6052, which fixes
+  // that gap by threading tree-readiness into the selector.
+  it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
+    });
+    // Unlike case (a), this case needs a POPULATED tree: the eye icon must
+    // render, and effective visibility must resolve per node rather than via
+    // the empty-tree short-circuit. `defaultVisibilityFor` returns 'show' for a
+    // plain realization node, so both start visible and the sibling genuinely
+    // survives the pruning assertion below.
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode({ entity_path: 'Bracket#realization[0]', kind: 'realization', has_mesh: true }),
+      makeNode({ entity_path: 'Bracket#realization[1]', kind: 'realization', has_mesh: true }),
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Bracket#realization[0]')).toBeTruthy());
+
+    // Let the initial 0 -> N mesh-set sync land...
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+    // ...and THEN wait for quiescence before snapshotting the baseline. Do not
+    // "simplify" this wait away: there are two distinct mount-time triggers
+    // (meshes 0->N, then the tree-ready readiness change) which may or may not
+    // coalesce inside the 150ms debounce. Snapshotting between them would let
+    // the all-visible tree-ready payload satisfy the `count > before` anchor
+    // below and then fail the pruning assertion — a flake, not a real signal.
+    await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    // cycleCascading: show -> ghost -> hidden (viewStateStore.ts:307-312).
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    // DesignTree renders aria-label from App's `effectiveVisibility` memo, so
+    // this also proves the click actually reached the view-state store.
+    expect(
+      screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
+    ).toBe('hidden');
+
+    // One waitFor over the LAST payload, so the assertion is order-robust
+    // rather than dependent on exactly one trailing call.
+    await waitFor(
+      () => {
+        expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBeGreaterThan(before);
+        const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+        expect(payload).not.toContain('Bracket#realization[0]');
+        // Non-vacuity anchor: an implementation that pushed an EMPTY demand set
+        // would satisfy the exclusion above on its own.
+        expect(payload).toContain('Bracket#realization[1]');
+      },
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+  });
 });
 
 // Deliberately a SIBLING describe, not a third `it` inside the block above:
