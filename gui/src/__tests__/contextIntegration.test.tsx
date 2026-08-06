@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-// Mock Viewport + DualViewport
+// Mock Viewport + DualViewport + MultiViewport
 vi.mock('../viewport', () => ({
   Viewport: (props: any) => {
     const el = document.createElement('div');
@@ -21,6 +21,13 @@ vi.mock('../viewport', () => ({
   DualViewport: (props: any) => {
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'dual-viewport');
+    if (props.fitToViewRef) props.fitToViewRef(() => {});
+    if (props.flyToEntityRef) props.flyToEntityRef(() => {});
+    return el;
+  },
+  MultiViewport: (props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'multi-viewport');
     if (props.fitToViewRef) props.fitToViewRef(() => {});
     if (props.flyToEntityRef) props.flyToEntityRef(() => {});
     return el;
