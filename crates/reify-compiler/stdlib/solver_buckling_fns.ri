@@ -106,7 +106,7 @@ pub fn safety_factor_buckling(
 pub fn mode_shape(
     result : BucklingResult,
     n      : Int
-) -> Field<Point3<Length>, Vector3<Length>> {
+) -> Field<Point3<Length>, Vector3<Dimensionless>> {
     result.modes[n].mode_shape
 }
 

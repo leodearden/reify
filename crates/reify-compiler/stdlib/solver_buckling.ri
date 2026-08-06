@@ -31,8 +31,9 @@
 //      `W_BucklingOptionUnsupported` Warning when any of them is set to a non-default
 //      value; the solve proceeds with kernel defaults. Reify `constraint` clauses
 //      cannot express string-set membership, so no allowlist check is declared here.
-//   3. `BucklingMode.mode_shape` uses the precise `Field<Point3<Length>, Vector3<Length>>`
-//      type rather than a `Real` placeholder. Task 3117 landed; the
+//   3. `BucklingMode.mode_shape` uses the precise
+//      `Field<Point3<Length>, Vector3<Dimensionless>>` type rather than a `Real`
+//      placeholder. Task 3117 landed; the
 //      `resolve_parameterized_builtin_type` resolver arm
 //      (crates/reify-compiler/src/type_resolution.rs) accepts `Field<D, C>`
 //      in `param`
@@ -147,35 +148,41 @@ structure def BucklingOptions {
 //                pair `(K + λ K_g) φ = 0`, this is λ; the critical load is
 //                `λ × reference_load_magnitude` (computed by the stdlib
 //                helper `critical_load`, PRD §13 task ε).
-//   mode_shape — eigenvector reshaped as a per-node displacement-shaped
-//                Field over the mesh. Precise `Field<Point3<Length>,
-//                Vector3<Length>>` type per the `ElasticResult.displacement`
-//                precedent (task 3117 landed; PRD §4's "Real-placeholder
-//                per #3117 workaround" footnote is stale — see plan.json
-//                design-decision-1).
+//   mode_shape — eigenvector reshaped as a per-node mode-shape Field over
+//                the mesh. Precise `Field<Point3<Length>,
+//                Vector3<Dimensionless>>` type (task 3117 landed; PRD §4's
+//                "Real-placeholder per #3117 workaround" footnote is stale —
+//                see plan.json design-decision-1).
 //
-//                ⚠ DIMENSIONALITY NOTE — `Vector3<Length>` inherits Length
-//                units by convention for parallelism with displacement
-//                fields, but a buckling eigenvector is mathematically only
-//                defined up to scalar multiplication: the linear-buckling
-//                eigenproblem `(K + λ K_g) φ = 0` determines φ only up to
-//                a scaling. The FEA convention is to normalize the
-//                eigenvector (e.g., to unit `||φ||_M = 1` or `||φ||_∞ = 1`)
-//                and treat the result as dimensionless. The Length unit
-//                here is a typing convention only, NOT a physical claim;
-//                callers must not add a `mode_shape` to a real
+//                ⚠ DIMENSIONALITY NOTE — the codomain is DIMENSIONLESS, and
+//                that is a physical claim, not a convention. A buckling
+//                eigenvector is mathematically defined only up to scalar
+//                multiplication: the linear-buckling eigenproblem
+//                `(K + λ K_g) φ = 0` determines φ only up to a scaling. The
+//                FEA convention is to normalize the eigenvector (e.g. to
+//                unit `||φ||_M = 1` or `||φ||_∞ = 1`), so what it denotes is
+//                a direction field, not a displacement — and under the
+//                RULING at trajectory.ri's Vec3<Q> header (task 5848) a
+//                direction takes a dimensionless slot while a position or
+//                displacement takes Length. This retired the former hedge
+//                here, which spelled the codomain `Vector3<Length>` "for
+//                parallelism with displacement fields" and named
+//                `Vector3<Real>` as a merely-hypothetical rigorous encoding;
+//                copying a neighbour's spelling instead of reading what the
+//                field denotes is exactly what the ruling retired.
+//                The `domain` deliberately KEEPS Length: it indexes sample
+//                positions, and a position is not a direction. In-repo
+//                precedent for a dimensionless Field codomain:
+//                `curl : Field<Point3<Length>, Vector3<Dimensionless>>` in
+//                solver_elastic.ri.
+//                Callers still must not add a `mode_shape` to a real
 //                `displacement` Field as if the two were comparable
-//                quantities. A more rigorous future encoding could retype
-//                this as `Field<Point3<Length>, Vector3<Real>>` to make
-//                the dimensionlessness explicit, but the precedent
-//                established by `ElasticResult.displacement` is followed
-//                here to keep all per-node vector-field types uniform
-//                across the solver result containers.
+//                quantities — now the type system says so too.
 //
 // PRD reference: docs/prds/v0_5/buckling-eigensolver.md §4.
 structure def BucklingMode {
     param eigenvalue : Real
-    param mode_shape : Field<Point3<Length>, Vector3<Length>>
+    param mode_shape : Field<Point3<Length>, Vector3<Dimensionless>>
 }
 
 // ── BucklingResult ───────────────────────────────────────────────────────────
