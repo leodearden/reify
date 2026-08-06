@@ -6476,6 +6476,10 @@ describe('App SolverProgressOverlay integration', () => {
 describe('App buckling mode-shape-frame subscription (task 6035)', () => {
   let modeShapeCallback: ((f: any) => void) | undefined;
   let modeShapeUnlisten: ReturnType<typeof vi.fn>;
+  // Structural type: `ReturnType<typeof vi.spyOn>` erases the generic to
+  // `unknown` args and does not accept the HTMLCanvasElement.getContext
+  // overload set. We only ever call mockRestore on it.
+  let getContextSpy: { mockRestore: () => void };
 
   beforeEach(() => {
     modeShapeCallback = undefined;
@@ -6486,6 +6490,19 @@ describe('App buckling mode-shape-frame subscription (task 6035)', () => {
         return modeShapeUnlisten;
       },
     );
+    // Test (b) is the first thing in this file to actually mount BucklingPanel,
+    // whose onMount probes canvas.getContext to decide whether a WebGL path is
+    // available. jsdom has no canvas backend, so it returns null *and* emits a
+    // multi-line "Not implemented: HTMLCanvasElement.prototype.getContext"
+    // jsdomError to stderr. Returning null explicitly takes the identical
+    // guard branch (hasWebGL === false -> early return, no three.js work) with
+    // no log — keeping this file's output clean, which is half the point of
+    // task 6035. Restored in afterEach so the spy cannot leak.
+    getContextSpy = vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    getContextSpy.mockRestore();
   });
 
   it('(a) initApp establishes the mode-shape-frame subscription', async () => {
