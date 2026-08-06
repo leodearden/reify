@@ -1,6 +1,8 @@
 # PRD: Data-Carrying Enums (Algebraic Data Types)
 
-Status: deferred (spec-gap batch `spec-gap-2026-05-27`, cluster `data-carrying-enums`). Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27.
+**Status:** **SHIPPED (v0.6)** — all decomposition leaves (3936/3938/3940/3942/3944/3946/3949/3951) **landed**; runnable end-to-end example `examples/m6_data_carrying_enum.ri`. Mirrors spec §18 roadmap row 6, "Realized (v0.6)". Originally filed as `deferred` in spec-gap batch `spec-gap-2026-05-27`, cluster `data-carrying-enums`. Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27; shipped-status recorded 2026-08-06.
+
+**The body below is the AS-AUTHORED design record.** The §4.x "grammar reality check" tables and the §8 decomposition metadata (including `grammar_confirmed=false`) are dated 2026-05-27 *pre-implementation* measurements, retained as provenance for why the decomposition was shaped the way it was — they are not current statements of fact about the language. §10 remains a live statement of what is still out of scope.
 
 Resolves spec §18.6 roadmap item 6 ("Data-carrying enums — algebraic data types with associated values"). Extends the existing `match` seam (spec §5.10 expr / §6.4 decl-level) for payload binding.
 
