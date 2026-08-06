@@ -62,6 +62,7 @@ vi.mock('../bridge', () => ({
   onValueUpdate: vi.fn().mockResolvedValue(() => {}),
   onConstraintUpdate: vi.fn().mockResolvedValue(() => {}),
   onEvaluationStatus: vi.fn().mockResolvedValue(() => {}),
+  onModeShapeFrame: vi.fn().mockResolvedValue(() => {}),
   onMeshRemoved: vi.fn().mockResolvedValue(() => {}),
   onValueRemoved: vi.fn().mockResolvedValue(() => {}),
   onConstraintRemoved: vi.fn().mockResolvedValue(() => {}),
@@ -73,6 +74,12 @@ vi.mock('../bridge', () => ({
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] }),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
+  getUnitLadders: vi.fn().mockResolvedValue([]),
+  onFocusEntity: vi.fn().mockResolvedValue(() => {}),
+  onNavigateToSource: vi.fn().mockResolvedValue(() => {}),
+  subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
+  subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
+  syncObservedDemand: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';
@@ -123,11 +130,17 @@ beforeEach(() => {
   vi.mocked(bridge.onValueUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintUpdate).mockResolvedValue(() => {});
   vi.mocked(bridge.onEvaluationStatus).mockResolvedValue(() => {});
+  vi.mocked(bridge.onModeShapeFrame).mockResolvedValue(() => {});
   vi.mocked(bridge.onMeshRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onValueRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
+  vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
+  vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
+  vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
+  vi.mocked(bridge.subscribeToSidecarCrashed).mockResolvedValue(() => {});
+  vi.mocked(bridge.getUnitLadders).mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -307,5 +320,33 @@ describe('App wiring', () => {
     // Click again to show
     fireEvent.click(screen.getByTestId('claude-status'));
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
+  });
+
+  it('mounting App does not log missing bridge-mock export errors', async () => {
+    // Regression guard for the defect class fixed above (onModeShapeFrame and
+    // the 6 other exports added alongside it): App.tsx's initApp() — and
+    // engineStore's syncObservedDemand — wrap each bridge subscription/call in
+    // try/catch and only console.error or console.warn on failure (e.g.
+    // engineStore.ts's syncObservedDemand explicitly routes its catch through
+    // console.warn as an "observational side-channel"), so a
+    // vi.mock('../bridge') factory that omits an export App.tsx needs fails
+    // silently from an assertion's point of view — every other test in this
+    // file would still pass against a partially-degraded App. Both channels
+    // are spied so this single check covers every current and future
+    // missing-export case instead of one name (or one console method) at a
+    // time.
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await renderAndWaitForReady();
+      const missingExportErrors = [...consoleErrorSpy.mock.calls, ...consoleWarnSpy.mock.calls]
+        .flat()
+        .map((arg) => (arg instanceof Error ? arg.message : String(arg)))
+        .filter((text) => /No ".*" export is defined on the "\.\.\/bridge" mock/.test(text));
+      expect(missingExportErrors).toEqual([]);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    }
   });
 });
