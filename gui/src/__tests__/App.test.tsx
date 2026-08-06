@@ -8,7 +8,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
-import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections } from './test-utils';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -6786,7 +6786,7 @@ describe('App buckling mode-shape-frame subscription — failure path (task 6035
 // initApp -> createSelectiveDemandSync -> engineStore.syncDemand ->
 // bridge.syncDemand. Before task 6045 the `../bridge` mock factory carried
 // the passive-measurement `syncObservedDemand` but omitted the distinct,
-// genuine `syncDemand` export (bridge.ts:101), so any test that let the
+// genuine `syncDemand` export (`bridge.ts`), so any test that let the
 // 150ms debounce elapse threw "No 'syncDemand' export is defined" — 5 times
 // across a full App.test.tsx run — leaving this whole enforcement path
 // unexercised.
@@ -6807,9 +6807,9 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
       ],
     });
     // getEntityTree stays at the factory default `[]`: with an empty tree,
-    // viewStateStore.getEffectiveVisibility short-circuits to 'show' for
-    // every path (viewStateStore.ts:120-121), so the payload below is a pure
-    // function of engineStore's '#realization[' key filter.
+    // viewStateStore's `nodeByPath.size === 0` short-circuit makes
+    // `getEffectiveVisibility` return 'show' for every path, so the payload
+    // below is a pure function of engineStore's '#realization[' key filter.
 
     await renderAndWaitForReady();
 
@@ -6827,62 +6827,71 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
 
   // A planned case (b) — "hiding a realization via the eye icon prunes it from
   // the next payload while a sibling realization survives" — was deliberately
-  // NOT landed here. It fails against current production code, and the root
-  // cause is a live-code gap outside this file's scope (esc-6045-1): the
-  // `on(...)` selector in `createSelectiveDemandSync` (engineStore.ts) reads
-  // `viewStateStore.getAllEffective()`, which short-circuits to `{}` without
-  // touching any reactive `state.explicit` key while `nodeByPath` is still
-  // empty (viewStateStore.ts:120-121, :141-143). On a normal App mount the
-  // one guaranteed selector re-run — the `state.meshes` 0 -> N change — happens
-  // before the entity-tree fetch can populate `nodeByPath` (App.tsx
-  // `onEngineReinitialized` is called from the tail of `initFromState`, after
-  // its own `setState({meshes,...})`), so the effect never subscribes to
-  // `state.explicit` and a plain post-mount visibility toggle never reaches
-  // `bridge.syncDemand`. The sibling task-4532 `syncObservedDemand` effect
-  // already solves this via the `treeGeneration`-tracking `effectiveVisibility`
-  // memo (App.tsx:786-792). The production fix — and the App-level regression
-  // test for the plain post-mount toggle — is tracked as its own task; this
-  // one is scoped to App.test.tsx only.
+  // NOT landed here: it fails against current production code. Root cause
+  // (esc-6045-1): `createSelectiveDemandSync`'s `on()` selector reads
+  // `viewStateStore.getAllEffective()`, which hits the same
+  // `nodeByPath.size === 0` short-circuit as case (a) above while the entity
+  // tree is still loading, so the effect never subscribes to `state.explicit`
+  // and a plain post-mount visibility toggle never reaches `bridge.syncDemand`.
+  // A live-code gap, out of this file's scope — tracked as task #6052. The
+  // App-level regression test for case (b) is reusable verbatim from commit
+  // 72951c2d9f once that task lands.
 });
 
 // Deliberately a SIBLING describe, not a third `it` inside the block above:
 // this case must observe the plain factory / global-beforeEach default
 // rather than a describe-scoped mockImplementation, because it installs a
-// rejecting implementation of its own (same precedent as task 6035,
-// App.test.tsx:6737-6740 above).
+// rejecting implementation of its own (same precedent as the task-6035
+// sibling failure-path describe above).
 describe('App selective-demand enforcement sync — failure path (task 6045)', () => {
   it('a rejected sync degrades gracefully: App stays healthy, no unhandled rejection', async () => {
-    // Positive assertion on the catch arm at engineStore.ts:553-557. The
-    // enforcement sync is best-effort: a bridge that cannot accept a demand
-    // update must not abort initApp or wedge the App short of ready.
+    // The enforcement sync runs on createSelectiveDemandSync's own debounced
+    // timer, strictly after renderAndWaitForReady() (and initApp) has already
+    // resolved — unlike task 6035's onModeShapeFrame subscription, this
+    // rejection is never on initApp's own await chain, so it cannot abort
+    // init. What this test verifies is narrower and downstream of that: the
+    // catch arm in engineStore.syncDemand consumes the rejection, so it never
+    // escapes as a genuine unhandled promise rejection (asserted for real by
+    // expectNoUnhandledRejections below, not merely suppressed) and is logged
+    // rather than silently dropped.
     //
-    // Deliberately NOT written as a negative match on the console.warn
-    // wording — see the design decision recorded for this task: that shape
-    // is unfalsifiable on a reword of the log literal and is already
-    // subsumed by (i) case (a) above, which fails outright if
+    // Deliberately NOT asserted via a match on the console.warn wording — see
+    // the design decision recorded for this task: an argument-matched
+    // assertion is unfalsifiable on a reword of the log literal and is
+    // already subsumed by (i) case (a) above, which fails outright if
     // `syncDemand` is missing from the factory, and (ii) the
     // global-beforeEach `mockResolvedValue`, which throws before any test in
     // this file runs if the factory entry is ever dropped again.
-    await withSuppressedRejectionsAndWarnSpy(async () => {
-      vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
-      vi.mocked(bridge.getInitialState).mockResolvedValue({
-        ...emptyState,
-        meshes: [makeMesh('Bracket#realization[0]')],
-      });
+    await expectNoUnhandledRejections(async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
+        vi.mocked(bridge.getInitialState).mockResolvedValue({
+          ...emptyState,
+          meshes: [makeMesh('Bracket#realization[0]')],
+        });
 
-      await renderAndWaitForReady();
+        await renderAndWaitForReady();
 
-      // Non-vacuity anchor: the rejecting path really was exercised.
-      await waitFor(
-        () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
-        { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
-      );
-      await flushMacrotasks();
+        // Non-vacuity anchor: the rejecting path really was exercised.
+        await waitFor(
+          () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+          { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+        );
+        await flushMacrotasks();
 
-      // engineStore.ts:553-557 swallowed the rejection: the App is mounted
-      // and later init work still ran past the sync.
-      expect(screen.getByTestId('app-layout')).toBeTruthy();
-      expect(vi.mocked(bridge.isDebugEnabled)).toHaveBeenCalled();
+        // Positive assertion that the catch arm actually ran — existence
+        // only, not a match on the log wording (see above). Deleting the
+        // catch arm would make this fail (nothing left to log) as well as
+        // trip expectNoUnhandledRejections above.
+        expect(warnSpy).toHaveBeenCalled();
+
+        // Sanity: the render tree is still mounted after the rejection
+        // resolved.
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });
