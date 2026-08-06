@@ -4,17 +4,17 @@
 
 **The body below is the AS-AUTHORED design record.** The §4.x grammar/fixture ERROR-node tables and the §8 decomposition metadata are dated 2026-05-27 *pre-implementation* measurements, retained as provenance for why the decomposition was shaped the way it was — they are not current statements of fact about the language. §10 remains a live statement of what is still out of scope.
 
-Resolves spec §18.4 roadmap item 4 ("`Result<T>` or `fallback` expressions — language-level error handling"). Today (spec §9.6) Reify has **no `Result` type, no `try`/`catch`, no language-level error propagation**: computation failures are eval-**graph** events (`Freshness::Failed { error: ErrorRef }`, `EventKind::Failed`), surfaced through diagnostics, never reified as a language value an `.ri` author can branch on. This PRD designs the language-level error-handling surface.
+Resolves spec §18.4 roadmap item 4 ("`Result<T>` or `fallback` expressions — language-level error handling"). **Before this PRD landed**, Reify had no `Result` type and no language-level error handling at all: computation failures were eval-**graph** events (`Freshness::Failed { error: ErrorRef }`, `EventKind::Failed`), surfaced through diagnostics, never reified as a language value an `.ri` author can branch on. This PRD designed that surface, and **both layers shipped in v0.6**: `Result<T, E>` now exists as a generic data-carrying prelude enum and combinator-based recovery/propagation is available. What **remains deferred** is `try`/`catch` and the postfix `?`-propagation operator (fork F-Question, §10). Genuine computation failures still stay graph-`Failed` and uncatchable from `.ri` — that orthogonality (D1) is exactly what shipped, not a gap.
 
 **Layering decision (resolved this session, see §5 D0):** error handling ships in **two independently-valuable layers**, not one monolith:
 - **Layer A — `fallback` + recovery combinators over the *existing* `Option<T>`.** Generic free functions (`unwrap_or`, `or_else`, `or_default`, `map_or`, `is_some`/`is_none`) plus a user-facing `fallback` surface. **Needs no new grammar** (verified §4.4) and **no dependency on data-carrying-enums**. Independently shippable; covers the dominant "absent / lookup-miss / parse-miss → default" use case.
-- **Layer B — `Result<T,E>` as a generic data-carrying enum.** `enum Result<T,E> { Ok { value: T }, Err { error: E } }`. This is **built ON the data-carrying-enums feature** (named-field payload) **plus generic enum type parameters** (which DCE explicitly defers — see §6). Carries an error *payload*, where Layer A's `Option` carries only presence/absence. **Hard cross-PRD dependency**; lands later.
+- **Layer B — `Result<T,E>` as a generic data-carrying enum.** `enum Result<T,E> { Ok { value: T }, Err { error: E } }`. This is **built ON the data-carrying-enums feature** (named-field payload) **plus generic enum type parameters** (owned by the sibling `generic-data-carrying-enums.md` PRD — see §6). Carries an error *payload*, where Layer A's `Option` carries only presence/absence. **Hard cross-PRD dependency — satisfied:** both substrates landed, and Layer B shipped on top of them.
 
 The two layers share the §5 graph-vs-language orthogonality rule (D1) and the §7 recovery-combinator contract. **Fork F1 RESOLVED 2026-05-27 (Leo): Layer B IS built — generic data-carrying enums are now real work** (`docs/prds/v0_6/generic-data-carrying-enums.md`, cluster `generic-data-carrying-enums`, tasks 4029–4034), so Layer B's substrate exists. Layer B is decomposed in this PRD (§8.B), filed as `layer:"B"` tasks 4035–4040, each `depends_on` the relevant generic-enum tasks (hard cross-cluster dep) and Layer-A combinator tasks. Layer A remains fully decomposable on existing `Option` substrate; Layer B chains onto the generic-enum landing.
 
 ## §1 — Goal & observable surface
 
-What a user can do when **Layer A** lands (the primary observable surface — needs no new grammar):
+What a user can do today with **Layer A** (the primary observable surface — needs no new grammar) — shipped, mirrored by `examples/m6_fallback_recovery.ri`:
 
 ```reify
 structure def Mount {
@@ -36,7 +36,7 @@ structure def Mount {
 
 `reify eval mount.ri` reports `bore = 12 mm`, `pin = 12 mm`, `has_bore = true`. Change `raw = "garbage"` → `parse_length` yields `none` → `bore = 6 mm`, `pin = 4 mm`, `has_bore = false`. The key behavioural difference from today: a recoverable miss becomes a **language value the model branches on**, instead of an uncatchable `Freshness::Failed` node (§5 D1). That is the Layer-A end-to-end signal.
 
-What a user can do when **Layer B** lands (now decomposed here, §8.B — built on generic data-carrying enums, tasks 4029–4034):
+What a user can do today with **Layer B** (decomposed here, §8.B — built on generic data-carrying enums, tasks 4029–4034) — shipped, mirrored by `examples/m6_result_recovery.ri`:
 
 ```reify
 // Result carries an ERROR PAYLOAD that Option cannot.
