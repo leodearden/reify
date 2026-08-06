@@ -946,18 +946,13 @@ const App: Component = () => {
   // body is hidden so the next interactive edit_param prunes its cells. `ghost`
   // and `show` stay demanded; only `hidden` prunes (PRD §12 Q4).
   //
-  // The `effectiveVisibility` memo is passed rather than letting the effect call
-  // `viewStateStore.getAllEffective()` itself (task #6052, root-caused as
-  // esc-6045-1). That store getter short-circuits on `nodeByPath.size === 0` and
-  // reads NO reactive key in that branch, and `initFromState` populates
-  // `state.meshes` BEFORE `onEngineReinitialized` triggers `refreshEntityTree` —
-  // so the effect's first tracked run structurally precedes tree population and
-  // would subscribe to nothing, silently losing the first post-mount toggle.
-  // The memo tracks `treeGeneration`, bumped after `regenerateAutoViews` rebuilds
-  // the tree maps, so the selector re-runs once the tree is ready and subscribes
-  // per live path on that run. This is the same readiness dependency the sibling
-  // 4532 `syncObservedDemand` effect above already uses.
-  createSelectiveDemandSync(engineStore, viewStateStore, effectiveVisibility);
+  // `treeGeneration` is passed to satisfy the tree-readiness contract documented
+  // on `createSelectiveDemandSync`'s `treeGeneration` @param (task #6052): without
+  // a readiness source the effect's first tracked run hits `getAllEffective`'s
+  // empty-tree short-circuit, subscribes to nothing, and the first post-mount
+  // toggle is silently lost. Same readiness dependency the sibling 4532
+  // `syncObservedDemand` effect above gets via the `effectiveVisibility` memo.
+  createSelectiveDemandSync(engineStore, viewStateStore, treeGeneration);
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the

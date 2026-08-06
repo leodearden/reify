@@ -6825,16 +6825,13 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
     expect([...payload].sort()).toEqual(['Bracket#realization[0]', 'Bracket#realization[1]']);
   });
 
-  // Case (b) was authored under task 6045 (commit 72951c2d9f) and then dropped
-  // as out-of-scope there: it failed against production code for a live-code
-  // reason, not a mock-factory one. Root cause (esc-6045-1):
-  // `createSelectiveDemandSync`'s `on()` selector read
-  // `viewStateStore.getAllEffective()`, which hits the same
-  // `nodeByPath.size === 0` short-circuit as case (a) above while the entity
-  // tree is still loading — so the effect subscribed to `state.explicit` for
-  // nothing and a plain post-mount visibility toggle never reached
-  // `bridge.syncDemand`. Restored and re-attributed to task #6052, which fixes
-  // that gap by threading tree-readiness into the selector.
+  // Case (b) was authored under task 6045 (commit 72951c2d9f) and dropped as
+  // out-of-scope there: it failed for a live-code reason, not a mock-factory
+  // one — the demand-sync selector took its first tracked read before the entity
+  // tree loaded, hitting the same empty-tree short-circuit case (a) relies on,
+  // and so subscribed to nothing (esc-6045-1). Restored and re-attributed to task
+  // #6052, which threads tree-readiness into the selector; the full rationale is
+  // the `treeGeneration` @param on `createSelectiveDemandSync`.
   it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
     vi.mocked(bridge.getInitialState).mockResolvedValue({
       ...emptyState,
@@ -6867,7 +6864,7 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
     await flushMacrotasks(SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 50);
     const before = vi.mocked(bridge.syncDemand).mock.calls.length;
 
-    // cycleCascading: show -> ghost -> hidden (viewStateStore.ts:307-312).
+    // viewStateStore's `cycleCascading`: show -> ghost -> hidden.
     fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
     fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
     // DesignTree renders aria-label from App's `effectiveVisibility` memo, so

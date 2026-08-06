@@ -8,7 +8,7 @@
  *     realization mesh keys (`show` + `ghost`, EXCLUDING `hidden`) to the new
  *     bridge `syncDemand` command — reusing the exact filter the 4532
  *     `syncObservedDemand` uses;
- *   - `createSelectiveDemandSync(engineStore, viewStateStore, effectiveVisibility, { debounceMs })`
+ *   - `createSelectiveDemandSync(engineStore, viewStateStore, treeGeneration, { debounceMs })`
  *     wires a DEBOUNCED, NON-idle-gated effect that fires that sync whenever
  *     effective visibility changes via `viewStateStore.setVisibility` /
  *     `cycleCascading`, coalescing a rapid toggle burst into a single backend
@@ -19,7 +19,7 @@
  * `createSelectiveDemandSync`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createRoot, createSignal, createMemo } from 'solid-js';
+import { createRoot, createSignal } from 'solid-js';
 import type { MeshData, EntityTreeNode, VisibilityState } from '../types';
 
 // Mock the bridge — engineStore imports the full event/command surface at module
@@ -77,6 +77,12 @@ const R0 = 'S#realization[0]';
 const R1 = 'S#realization[1]';
 const R2 = 'S#realization[2]';
 
+// Readiness accessor for the cases that populate the tree BEFORE wiring: the
+// effect's first tracked run already sees a non-empty `nodeByPath`, so the
+// readiness contract is satisfied on arrival and a never-changing accessor is
+// the honest input. Case (d) is the one that exercises the contract for real.
+const TREE_POPULATED_BEFORE_WIRING = () => 0;
+
 describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -131,10 +137,7 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             view.setVisibility(R0, 'show');
             view.setVisibility(R1, 'show');
 
-            // `setTree` already ran, so a plain getter read inside the tracked
-            // selector subscribes to `state.explicit` per live path — readiness
-            // is not at issue in this case (see case (d) for the case where it is).
-            createSelectiveDemandSync(engine, view, () => view.getAllEffective(), {
+            createSelectiveDemandSync(engine, view, TREE_POPULATED_BEFORE_WIRING, {
               debounceMs: 150,
             });
 
@@ -195,8 +198,7 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             view.setTree([realizationNode(R0)]);
             view.setVisibility(R0, 'show');
 
-            // As in case (b): `setTree` already ran, so a plain getter suffices here.
-            createSelectiveDemandSync(engine, view, () => view.getAllEffective(), {
+            createSelectiveDemandSync(engine, view, TREE_POPULATED_BEFORE_WIRING, {
               debounceMs: 150,
             });
 
@@ -250,22 +252,15 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
 
   // (d) BOOTSTRAP-ORDERING REGRESSION (task #6052, root-caused as esc-6045-1).
   //
-  // Invariant under test: the demand-sync effect must subscribe to
-  // `state.explicit` on a tracked run that happens AFTER `nodeByPath` has been
-  // populated. Both `getAllEffective` and `getEffectiveVisibility` take a
-  // `nodeByPath.size === 0` short-circuit (viewStateStore.ts:120-121, :141-143)
-  // that reads NO reactive key at all, so a first tracked run against an empty
-  // tree establishes ZERO subscriptions on the visibility store. `nodeByPath`
-  // is a plain non-reactive Map, so populating it notifies nothing and the
-  // effect never gets a second chance to subscribe.
+  // Invariant under test: the demand-sync effect must subscribe on a tracked run
+  // that happens AFTER `nodeByPath` is populated, because `getAllEffective`'s
+  // empty-tree short-circuit reads no reactive key and so subscribes to nothing.
+  // Full rationale is the `treeGeneration` @param on `createSelectiveDemandSync`
+  // — deliberately not restated here.
   //
-  // Cases (b)/(c) above call `view.setTree(...)` BEFORE wiring, which is
-  // exactly why they miss this bug. App's real ordering is the opposite:
-  // `initFromState` sets `state.meshes` and only THEN triggers
-  // `refreshEntityTree` (App.tsx:452-461), so the one guaranteed selector
-  // re-run structurally precedes tree population. This case mirrors that
-  // ordering, and reproduces App's readiness pattern (the `treeGeneration`
-  // signal + `effectiveVisibility` memo, App.tsx:685/:789-792) locally.
+  // Cases (b)/(c) above call `view.setTree(...)` BEFORE wiring, which is exactly
+  // why they miss this bug. App's real ordering is the opposite — meshes set
+  // first, tree fetch triggered only after — and this case mirrors it.
   it('(d) bootstrap ordering: the FIRST visibility toggle after a tree populated AFTER wiring still reaches sync_demand', async () => {
     // Mirrors case (b)'s createRoot + detached-async-IIFE settle pattern so a
     // throw fails FAST instead of hanging to the timeout.
@@ -281,17 +276,13 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             // effect first tracks, which is what App does at mount.
             const view = createViewStateStore();
 
-            // App's readiness pattern, reproduced locally. The memo is required:
-            // `setTree`/`rebuildTreeMaps` mutate plain non-reactive Maps and
-            // notify nothing on their own, so an explicit generation bump is the
-            // only thing that can re-run a tracked read after the tree lands.
+            // App's readiness pattern, reproduced locally. An explicit generation
+            // bump is the only thing that can re-run a tracked read after the tree
+            // lands: `setTree`/`rebuildTreeMaps` mutate plain non-reactive Maps
+            // and notify nothing on their own.
             const [treeGeneration, setTreeGeneration] = createSignal(0);
-            const effectiveVisibility = createMemo(() => {
-              void treeGeneration();
-              return view.getAllEffective();
-            });
 
-            createSelectiveDemandSync(engine, view, effectiveVisibility, { debounceMs: 150 });
+            createSelectiveDemandSync(engine, view, treeGeneration, { debounceMs: 150 });
 
             // Flush the deferred effect's initial tracking run (same rationale as
             // case (c)): it must complete, against the still-empty tree, before

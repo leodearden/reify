@@ -605,12 +605,16 @@ interface DemandSyncEngine {
 }
 
 /** Minimal view-state-store surface the demand-sync effect reads.
- *  Deliberately does NOT include `getAllEffective`: the effect must not read
- *  effective visibility out of the store itself (see the readiness contract on
- *  `createSelectiveDemandSync`'s `effectiveVisibility` parameter, task #6052).
- *  `getEffectiveVisibility` stays — the debounced callback hands it to
- *  `syncDemand` at fire time, outside any tracking scope. */
+ *  BOTH visibility reads live here on purpose (task #6052): the TRACKED read
+ *  (`getAllEffective`, inside the selector, which is what subscribes the effect
+ *  per live path) and the FIRE-TIME payload read (`getEffectiveVisibility`,
+ *  handed to `syncDemand` outside any tracking scope) must describe the SAME
+ *  store, or the effect wakes on one store's toggles and pushes another's
+ *  visibility. Taking both off one object makes that structural rather than a
+ *  caller convention. Readiness — the separate concern of WHEN the tracked read
+ *  is first taken — is the `treeGeneration` parameter below. */
 interface DemandSyncViewState {
+  getAllEffective: () => Record<string, VisibilityState>;
   getEffectiveVisibility: (path: string) => VisibilityState;
 }
 
@@ -629,52 +633,68 @@ interface DemandSyncViewState {
  * hidden: the first mesh-set change (0 -> N on file load) is itself a
  * genuine change, so an ordinary open already pushes the all-visible set
  * and leaves demand selective (`is_full_scope() == false`) with nothing
- * pruned. A cold `eval()` resets full_scope to true (`Engine::eval`,
- * engine_eval.rs:5301). Selectivity is restored the next time this effect
- * fires — but `on()` performs no equality check, so the mesh COUNT above
- * is only the callback's `input` argument, never a change filter; the
- * effect re-runs whenever any tracked source notifies. That includes any
- * effective-visibility change reported by the injected `effectiveVisibility`
- * getter, a wholesale `state.meshes` replacement (`initFromState`)
- * even at unchanged cardinality, and any add or remove of a mesh key:
- * `Object.keys()` subscribes to the meshes object's own `$SELF` node
- * (created with `equals: false`), which every add/remove pings regardless
- * of the resulting count, so even a same-size key-set swap re-fires. The
- * one write that does NOT re-fire is an in-place update of an EXISTING
- * mesh key via `applyMeshUpdate` (`setState('meshes', path, mesh)`):
+ * pruned. A cold `eval()` resets full_scope to true (`Engine::eval` calls
+ * `set_full_scope(true)`). Selectivity is restored the next time this
+ * effect fires — but `on()` performs no equality check, so the mesh COUNT
+ * above is only the callback's `input` argument, never a change filter; the
+ * effect re-runs whenever ANY tracked source notifies. Those sources are:
+ * `treeGeneration` (every entity-tree rebuild); effective visibility per
+ * live path, via `getAllEffective`; and the `state.meshes` key set — a
+ * wholesale replacement (`initFromState`) even at unchanged cardinality, and
+ * any add or remove of a mesh key, because `Object.keys()` subscribes to the
+ * meshes object's own `$SELF` node (created with `equals: false`), which
+ * every add/remove pings regardless of the resulting count, so even a
+ * same-size key-set swap re-fires.
+ *
+ * The one write invisible to that LAST source is an in-place update of an
+ * EXISTING mesh key via `applyMeshUpdate` (`setState('meshes', path, mesh)`):
  * Solid's store merges a write when both the previous and new values are
- * wrappable objects, so it lands on that mesh's own nodes and never
- * touches the container's `$SELF`. Consequently, a re-eval that only
- * re-tessellates the same body set (the streamed `onMeshUpdate` path)
- * leaves the backend full-scope until the next visibility change, mesh
- * add/remove, or full-state reload (safe: over-evaluates, never
- * mis-prunes).
+ * wrappable objects, so it lands on that mesh's own nodes and never touches
+ * the container's `$SELF`. Under App's production wiring that no longer
+ * leaves demand stale, because `treeGeneration` covers it: App re-fetches the
+ * entity tree on every non-idle -> idle transition and bumps the generation
+ * unconditionally after `regenerateAutoViews`, so a re-eval that only
+ * re-tessellates the same body set (the streamed `onMeshUpdate` path) still
+ * re-fires this sync and restores selectivity after the cold pass.
+ *
+ * The cost of that coverage is one extra debounced `sync_demand` per eval
+ * cycle, and it is deliberately NOT optimised away with a "skip the push when
+ * the visible set equals the last one pushed" guard: the client's last
+ * payload is not the backend's state. `Engine::eval` resets the registry to
+ * full scope underneath us, so an UNCHANGED payload is precisely the case
+ * that must still be re-pushed — suppressing it would strand the backend
+ * full-scope after every cold pass (silently over-evaluating forever) to save
+ * one cheap debounced IPC. Any future de-duplication has to be keyed on
+ * observed backend demand state, not on the client's last payload.
  *
  * Distinct from the idle-gated `syncObservedDemand` measurement effect (task
  * 4532), which is left intact. Must be called within a reactive root (createRoot
  * / component scope); the effect's lifetime is tied to the enclosing owner.
  *
- * @param effectiveVisibility READINESS-TRACKING getter for the effective
- * visibility map — it MUST re-evaluate once the entity tree has been populated,
- * not merely once per visibility toggle. This is a real contract, not a
- * convenience: `viewStateStore.getAllEffective` / `getEffectiveVisibility`
- * short-circuit on `nodeByPath.size === 0` (viewStateStore.ts:120-121,
- * :141-143) and read NO reactive key in that branch, so a tracked read taken
- * before the tree loads subscribes to NOTHING. `nodeByPath` is a plain
- * non-reactive Map, so populating it notifies nothing and the effect never gets
- * a second chance to subscribe. Because App sets `state.meshes` before it
- * triggers the tree fetch, the one guaranteed selector re-run structurally
- * precedes tree population — so a bare `() => viewStateStore.getAllEffective()`
- * does NOT satisfy this contract at mount, and the first post-mount toggle is
- * silently lost. Pass a getter that tracks a tree-generation signal bumped
- * after the tree is rebuilt (App's `effectiveVisibility` memo). Required, not
- * optional-with-a-fallback, so `tsc` gates every call site.
+ * CANONICAL EXPLANATION of the tree-readiness contract — the call sites and
+ * the covering tests point here rather than restating it:
+ *
+ * @param treeGeneration READINESS accessor. Any reactive read whose value
+ * CHANGES once the entity tree has been populated, and on each later rebuild;
+ * its value is never used, only tracked. App passes its `treeGeneration`
+ * signal, bumped right after `regenerateAutoViews` rebuilds the tree maps.
+ *
+ * This is a real contract, not a convenience. `getAllEffective` and
+ * `getEffectiveVisibility` both short-circuit on an EMPTY `nodeByPath` and
+ * read NO reactive key in that branch, so a tracked read taken before the tree
+ * loads subscribes to NOTHING. `nodeByPath` is a plain non-reactive Map, so
+ * populating it notifies nothing by itself and the effect would never get a
+ * second chance to subscribe. Because App sets `state.meshes` BEFORE it
+ * triggers the tree fetch, the one otherwise-guaranteed selector re-run
+ * structurally precedes tree population — so without a readiness source the
+ * first post-mount visibility toggle is silently lost. Required rather than
+ * optional-with-a-fallback so `tsc` gates every call site.
  * Root-caused as esc-6045-1; fixed under task #6052.
  */
 export function createSelectiveDemandSync(
   engineStore: DemandSyncEngine,
   viewStateStore: DemandSyncViewState,
-  effectiveVisibility: () => Record<string, VisibilityState>,
+  treeGeneration: () => unknown,
   options?: { debounceMs?: number },
 ): void {
   const debounceMs = options?.debounceMs ?? SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS;
@@ -682,12 +702,12 @@ export function createSelectiveDemandSync(
   createEffect(
     on(
       () => {
-        // Track the reactive demand inputs synchronously: effective visibility
-        // (via the caller-injected READINESS-TRACKING getter — see the @param
-        // note above; reading the store's getAllEffective directly here would
-        // subscribe to nothing at all when the tree has not loaded yet) and the
-        // realization mesh set.
-        effectiveVisibility();
+        // Track the reactive demand inputs synchronously. Readiness FIRST: it
+        // is what makes the `getAllEffective` read below land on a POPULATED
+        // tree and so actually subscribe per live path (see @param
+        // treeGeneration). Then the realization mesh set.
+        treeGeneration();
+        viewStateStore.getAllEffective();
         return Object.keys(engineStore.state.meshes).length;
       },
       () => {
