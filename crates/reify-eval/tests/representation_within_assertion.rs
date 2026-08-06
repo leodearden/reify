@@ -289,13 +289,39 @@ structure SphereCheck {
 /// below the `1mm` (1e-3 m) bound (1.61x inside) → used by BT7 to verify
 /// `Satisfied`.
 ///
-/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper
-/// to tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves
-/// with machine load) and still passes, as do both its measured
-/// neighbours (0.25mm → 5.198e-4 m, 0.35mm → 7.271e-4 m), so there is no
-/// sawtooth cliff within ±17%. The deviation is a SAWTOOTH in `#precision`
-/// (integer segment counts inside OCCT's mesher) and must never be
-/// interpolated — see BT7's band assertion for the re-measurement recipe.
+/// **Single source of truth for these numbers.** The other sites that depend on
+/// them — `crates/reify-cli/tests/fixtures/representation_within_satisfied.ri`
+/// and its gate `crates/reify-cli/tests/harness_cli/cli_determinacy_gate.rs` —
+/// point here rather than restating the digits, so retuning this constant cannot
+/// leave a stale copy behind. BT7's pre-condition below is the only
+/// machine-checked copy.
+///
+/// Measured achieved facet-chord deviation on the 1 m sphere, by requested
+/// deflection (each value reproduced on a second independent run):
+///
+/// ```text
+///   0.10mm → 2.078e-4    0.35mm → 7.271e-4    0.49mm → 1.013e-3  VIOLATES
+///   0.25mm → 5.198e-4    0.48mm → 9.988e-4    0.50mm → 3.807e-4  (off-trend)
+///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
+/// ```
+///
+/// Every point except 0.50mm sits at 2.067x-2.081x the requested deflection — a
+/// 0.65% spread, i.e. very close to LINEAR. (An earlier revision of this doc
+/// called the curve a "sawtooth" that swings ~3x between adjacent values; no
+/// measurement here supports that, and it is corrected rather than repeated.)
+/// The linear trend puts the 1e-3 m bound crossing at ~0.4815mm, which is what
+/// makes 0.49mm and 0.51mm violate. 0.50mm is the one measured exception at
+/// 0.76x; OCCT meshes each edge into an INTEGER segment count, so isolated steps
+/// like it are possible and linearity is not guaranteed outside the measured
+/// range — re-measure rather than extrapolate far. BT7's pre-condition carries
+/// the recipe.
+///
+/// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
+/// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
+/// machine load) and still passes, as do both its measured neighbours, so there
+/// is no cliff within ±17%. The faster 0.48mm/0.50mm were rejected: 0.48mm clears
+/// the bound by only 0.12%, and 0.50mm passes only as an isolated off-trend point
+/// with violations on both sides.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
@@ -372,10 +398,14 @@ fn bt6_coarse_sphere_tight_bound_yields_violated() {
 
 // ── BT7/C3: fine sphere + tight bound → Satisfied ────────────────────────────
 
-/// BT7 / C3: a sphere tessellated at fine precision (0.3 mm deflection) has
-/// sampled deviation 6.202e-4 m, below the 1 mm (1e-3 m) bound, so
+/// BT7 / C3: a sphere tessellated at fine precision (`OCCT_SOURCE_FINE`, 0.3 mm
+/// deflection) has sampled deviation below the 1 mm (1e-3 m) bound, so
 /// `RepresentationWithin(subject, 1mm)` is **Satisfied** after the full
 /// pipeline.
+///
+/// The measured deviation, the full precision→deviation sweep and the
+/// precision-choice rationale live on `OCCT_SOURCE_FINE`. The pre-condition
+/// below is the only machine-checked copy of that number.
 #[test]
 fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -391,18 +421,37 @@ fn bt7_fine_sphere_tight_bound_yields_satisfied() {
     let achieved = engine
         .achieved_repr_tol("Sphere#realization[0]")
         .expect("BT7: fine sphere must have Some achieved_repr_tol after tessellate_realizations");
+    // Only the CEILING is asserted. It is the half that carries contract
+    // information: 8e-4 is strictly below the 1e-3 assertion bound, so clearing it
+    // IMPLIES the `Satisfied` verdict asserted below, and a future OCCT build
+    // eroding the 1.61x margin fails here loudly — naming the measured value —
+    // instead of silently flipping to a mysterious `Violated`.
+    //
+    // The low side is a DIAGNOSTIC, not an assertion: a build that meshes FINER
+    // than when this was tuned still yields the correct verdict, so failing the
+    // gate on it would turn a fully-correct environment red for no contractual
+    // reason. (An earlier revision asserted a two-sided [4e-4, 8e-4] band and did
+    // exactly that.)
+    if achieved < 4e-4 {
+        eprintln!(
+            "BT7 note: fine sphere deviation ({achieved:.3e} m) is well below the \
+             6.202e-4 m measured for #precision(0.3mm) on a 1 m sphere. NOT a failure \
+             — the verdict is still Satisfied — but this OCCT build meshes finer than \
+             when the value was tuned, so re-measure OCCT_SOURCE_FINE's sweep before \
+             relying on its numbers."
+        );
+    }
     assert!(
-        (4e-4..8e-4).contains(&achieved),
-        "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must sit in the \
-         measured [4e-4, 8e-4] m band for #precision(0.3mm) on a 1 m sphere \
-         (measured 6.202e-4 m). Deviation is a SAWTOOTH in #precision — OCCT meshes \
-         each edge into an INTEGER segment count, so adjacent precision values swing \
-         ~3x. A value outside this band means the OCCT build's sawtooth moved: \
-         re-measure before widening (hold #precision, tighten the assertion bound to \
-         0.01mm to force the violation, then read the achieved value off the \
-         `sampled facet deviation <X> m exceeds bound` message). The band's upper \
-         edge (8e-4) is strictly below the 1e-3 assertion bound, so staying in band \
-         implies Satisfied."
+        achieved < 8e-4,
+        "BT7 pre-condition: fine sphere deviation ({achieved:.3e} m) must stay under \
+         the 8e-4 m ceiling measured for #precision(0.3mm) on a 1 m sphere (measured \
+         6.202e-4 m — 1.61x inside the 1e-3 m assertion bound). Exceeding it means \
+         this OCCT build meshes coarser than when the value was tuned and the margin \
+         is eroding toward a Violated verdict. Re-measure before widening: hold \
+         #precision, tighten the assertion bound to 0.01mm to force a violation, then \
+         read the achieved value off the `sampled facet deviation <X> m exceeds bound` \
+         message. Never widen this ceiling to or past 1e-3 — it must stay strictly \
+         below the assertion bound so that clearing it implies Satisfied."
     );
 
     let result = engine.check(&compiled);
