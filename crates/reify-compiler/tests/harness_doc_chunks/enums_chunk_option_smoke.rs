@@ -22,6 +22,7 @@
 //! unreachable from here in turn, so the chunk is read by path — the same
 //! cross-crate placement #5347 and #5364 arrived at independently.
 
+use reify_core::ModulePath;
 use reify_core::dimension::DimensionVector;
 use reify_ir::Value;
 use reify_test_support::{
@@ -218,20 +219,34 @@ fn assert_bool(actual: &Value, expected: bool, label: &str) {
 }
 
 /// How the section's example declares its present `Option` subject, and the
-/// literal that swaps it for the absent one.
-const SOME_SUBJECT: &str = "some(0.25mm)";
-const NONE_SUBJECT: &str = "none";
+/// same declaration with the subject absent.
+///
+/// Anchored to the WHOLE `param` declaration rather than to a bare
+/// `some(0.25mm)` literal: the example also passes `some(0.05mm)` to `or_else`,
+/// and a future edit could easily make the first textual occurrence of the
+/// present-subject literal something other than the subject declaration (an
+/// `or_else` alternative, a `let` above the param). A bare-literal swap would
+/// then rewrite the wrong occurrence, leaving the "none path" module still
+/// carrying a present subject — assertions that fail confusingly, or worse,
+/// pass by coincidence.
+const SOME_SUBJECT_DECL: &str = "param coating : Option<Length> = some(0.25mm)";
+const NONE_SUBJECT_DECL: &str = "param coating : Option<Length> = none";
 
 /// The section's own fence with its `Option` subject swapped to `none`, so both
 /// arms of every combinator are exercised against the SAME documented source.
 fn none_path_variant(fence: &str) -> String {
-    let swapped = fence.replacen(SOME_SUBJECT, NONE_SUBJECT, 1);
-    assert_ne!(
-        swapped, *fence,
-        "the `{SECTION_HEADING}` example no longer declares its Option subject as \
-         `{SOME_SUBJECT}`, so the none-path assertions would silently re-test the \
-         some path. Re-point SOME_SUBJECT at the example's new subject."
+    assert_eq!(
+        fence.matches(SOME_SUBJECT_DECL).count(),
+        1,
+        "the `{SECTION_HEADING}` example must declare its Option subject exactly once as \
+         `{SOME_SUBJECT_DECL}`; found {} occurrence(s), so the none-path rewrite would \
+         either be a no-op (silently re-testing the some path) or ambiguous. Re-point \
+         SOME_SUBJECT_DECL at the example's new subject declaration.\n\
+         --- fence source ---\n{fence}",
+        fence.matches(SOME_SUBJECT_DECL).count()
     );
+    let swapped = fence.replace(SOME_SUBJECT_DECL, NONE_SUBJECT_DECL);
+    assert_ne!(swapped, *fence, "none-path rewrite was a no-op");
     swapped
 }
 
@@ -245,6 +260,19 @@ fn none_path_variant(fence: &str) -> String {
 #[test]
 fn option_section_example_evaluates_to_documented_values() {
     let fences = option_section_fences();
+    // `option_section_fences_compile_clean` iterates every fence, but the
+    // evaluation assertions below are written against exactly one example. If
+    // the section ever grows a second fence (e.g. some-path and none-path shown
+    // separately), pinning only fence #0 would silently drop half the
+    // evaluation truth — and evaluation truth is this module's whole thesis,
+    // since binder-less arms compile clean and still yield `undef`.
+    assert_eq!(
+        fences.len(),
+        1,
+        "the `{SECTION_HEADING}` section grew a second fenced example; extend the \
+         evaluation assertions to cover it rather than leaving fence #0 the only one \
+         pinned against the evaluator"
+    );
     let fence = &fences[0].1;
 
     // --- subject = some(0.25mm), base = 1mm ---
@@ -318,23 +346,54 @@ fn option_section_example_evaluates_to_documented_values() {
 /// **If this test goes RED, F4 landed.** Rewrite the `## Option Type` warning in
 /// `crates/reify-mcp/src/tools/chunks/enums.md` in the same diff.
 ///
-/// Uses the non-panicking `_allow_parse_errors` variant deliberately: the plain
-/// `compile_source_with_stdlib` panics on parse errors, so a negative test must
-/// observe the diagnostics rather than die on them.
+/// The assertions are deliberately specific to the PARSE layer. A bare
+/// "some `Severity::Error` was produced" check would be satisfied by any error
+/// from any layer — a future typing error on `param c : Option<Length>`, a
+/// resolution error on the wrapper, or a partially-closed F4 in which `some(v)`
+/// *parses* and the arm is rejected downstream for an unrelated reason — and so
+/// could hold this ratchet green past the very event it exists to catch. The
+/// chunk's warning says specifically "`some(c) => ...` is a **parse error**", so
+/// that is what gets pinned: `parsed.errors` (the parse layer by construction,
+/// no message-shape guessing), naming the offending arm.
+///
+/// The final assertion uses the non-panicking `_allow_parse_errors` variant
+/// deliberately: the plain `compile_source_with_stdlib` panics on parse errors,
+/// so a negative test must observe the diagnostics rather than die on them.
 #[test]
 fn option_payload_binding_pattern_still_fails_to_parse() {
     let source = "structure def D {\n\
                   param c : Option<Length> = some(3mm)\n\
                   let m = match c { some(v) => v, none => 0mm }\n\
                   }";
-    let compiled = compile_source_with_stdlib_allow_parse_errors(source);
-    let errors = errors_only(&compiled);
+
+    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
+    let messages: Vec<&str> = parsed.errors.iter().map(|e| e.message.as_str()).collect();
     assert!(
-        !errors.is_empty(),
-        "`some(v) => ...` is expected to be rejected (data-carrying-enums.md §10 / \
-         fork F4 leave the positional-pattern gap open), but it compiled clean. \
-         If F4 has landed, the `## Option Type` warning in enums.md must be \
-         rewritten in this same diff."
+        !parsed.errors.is_empty(),
+        "`some(v) => ...` is expected to be rejected AT THE PARSE LAYER \
+         (data-carrying-enums.md §10 / fork F4 leave the positional-pattern gap open, \
+         and `tree-sitter-reify/grammar.js` `match_pattern` has no positional \
+         production), but the source parsed clean. If F4 has landed, the \
+         `## Option Type` warning in enums.md must be rewritten in this same diff."
+    );
+    assert!(
+        parsed
+            .errors
+            .iter()
+            .any(|e| e.message.contains("some(v)") || e.message.contains("match")),
+        "the parse error must be about the payload-binding match arm, not some \
+         unrelated part of the wrapper — the sibling positive tests already prove \
+         `param c : Option<Length> = ...` parses and compiles clean. \
+         Parse errors seen: {messages:#?}"
+    );
+
+    // And that rejection must survive into the compiled module's diagnostics as
+    // a Severity::Error, i.e. a reader who runs this source actually sees it.
+    let compiled = compile_source_with_stdlib_allow_parse_errors(source);
+    assert!(
+        !errors_only(&compiled).is_empty(),
+        "the parse error must reach the caller as a Severity::Error diagnostic; \
+         parse errors seen: {messages:#?}"
     );
 }
 
@@ -352,6 +411,17 @@ fn option_payload_binding_pattern_still_fails_to_parse() {
 /// Both subjects are checked: a `some(x)` subject yields `undef` just as a
 /// `none` subject does, so a passing-looking spot check on one path cannot
 /// mislead.
+///
+/// The compile/eval pipeline is spelled out inline rather than routed through
+/// `eval_module` (or `parse_and_compile_with_stdlib`), both of which abort on
+/// ANY diagnostic with a generic `compile errors: {..}` / `eval-phase errors:
+/// {..}` panic. The most likely first step toward closing this gap is exactly
+/// that the compiler or evaluator starts *diagnosing* a binder-less arm over an
+/// `Option` scrutinee — in which case those generic panics would fire and say
+/// nothing about enums.md, defeating the doc-pointing failure messages this
+/// ratchet exists to deliver. Each of the section's three claims — compiles
+/// clean, yields `undef`, emits no diagnostic ("silently") — therefore gets its
+/// own assertion and its own message.
 #[test]
 fn binderless_option_match_still_evaluates_to_undef() {
     for subject in ["some(3mm)", "none"] {
@@ -361,7 +431,24 @@ fn binderless_option_match_still_evaluates_to_undef() {
              let m = match c {{ some => 111mm, none => 222mm }}\n\
              }}"
         );
-        let result = eval_module(&source);
+
+        // `compile_source_with_stdlib` panics only on PARSE errors, which is the
+        // right precondition here: this form is documented as one that *parses*.
+        let compiled = compile_source_with_stdlib(&source);
+        let compile_errors = errors_only(&compiled);
+        assert!(
+            compile_errors.is_empty(),
+            "binder-less `some`/`none` arms over subject `{subject}` are expected to \
+             compile clean — the chunk's warning calls this failure mode `silent`. The \
+             compiler now diagnoses it: {compile_errors:#?}\n\
+             That is an improvement, but the `## Option Type` warning in \
+             crates/reify-mcp/src/tools/chunks/enums.md must be rewritten in this same \
+             diff to stop claiming the form is accepted without complaint."
+        );
+
+        let mut engine = make_engine();
+        let result = engine.eval(&compiled);
+
         assert_eq!(
             cell_value(&result, "D", "m"),
             Value::Undef,
@@ -369,6 +456,17 @@ fn binderless_option_match_still_evaluates_to_undef() {
              evaluate to undef (Option is Value::Option, not Value::Enum). If this \
              now yields a real value, the `## Option Type` warning in enums.md must \
              be rewritten in this same diff."
+        );
+
+        let eval_errors = collect_errors(&result.diagnostics);
+        assert!(
+            eval_errors.is_empty(),
+            "binder-less `some`/`none` arms over subject `{subject}` are expected to \
+             yield undef *silently* — that word in the `## Option Type` warning is why \
+             this form is worse than the loud parse error. The evaluator now diagnoses \
+             it: {eval_errors:#?}\n\
+             Rewrite the warning in crates/reify-mcp/src/tools/chunks/enums.md in this \
+             same diff."
         );
     }
 }
@@ -382,6 +480,16 @@ fn binderless_option_match_still_evaluates_to_undef() {
 /// here would collide with that leaf and drag ~111 schematic fences into this
 /// task's review. Tagging the fence this task authors is mechanical, and leaves
 /// β's sweep with one section already correct.
+///
+/// **Delete this test when β lands.** β's `fence_gate.rs` enforces exactly this
+/// property repo-wide, including this fence, at which point the assertion would
+/// live in two places — and this module's section-local fence parser
+/// (`option_section_lines` / `option_section_fences`) would duplicate β's
+/// line-level one. The right move in β's diff is to drop this test and, if the
+/// scrapers are still wanted here, take them from β's shared helper rather than
+/// keeping a second copy. The rest of this module — which pins evaluated VALUES,
+/// not fence syntax — stays: β's gate is a compile check and cannot see the
+/// `undef` failure mode.
 #[test]
 fn option_section_fences_are_reify_tagged() {
     for (ordinal, (tag, _body)) in option_section_fences().iter().enumerate() {
