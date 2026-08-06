@@ -198,6 +198,28 @@ assert "A10: --reseed without --base exits 2" test "$RC" -eq 2
 run_helper /tmp --base
 assert "A11: --base with no value exits 2" test "$RC" -eq 2
 
+# A12: a MISSING sibling scripts/lib_live_refs.sh is a fail-LOUD wiring error
+# (task 5823). The whole point of the gate is that the liveness check must never
+# be silently absent, so the guard that enforces its presence cannot itself be
+# untested. Technique copied from tests/infra/test_warm_lane_gc.sh A9: the script
+# is copied ALONE into a temp dir — no sibling lib — and invoked with --help,
+# which normally exits 0 (A4 above), so a 2 here also pins that the guard fires
+# BEFORE argv is parsed. Exit 2, not 1: an incomplete deployment is a WIRING
+# error, matching this script's own exit-code table and gc.sh's identical choice.
+# It matters at the dark-factory seam too — _run_thin_warm_lane logs rc=2 at
+# WARNING, so a broken deployment is loud rather than silently fail-open.
+A12_DIR="$(mktemp -d /tmp/test-thin-warm-lane-a12-XXXXXX)"
+_TMPDIRS+=("$A12_DIR")
+cp "$SCRIPT" "$A12_DIR/thin-warm-lane.sh"
+assert "A12: fixture — the copy really has no sibling lib_live_refs.sh" \
+    bash -c '[ ! -e "$1/lib_live_refs.sh" ]' _ "$A12_DIR"
+A12_RC=0
+A12_ERR="$(bash "$A12_DIR/thin-warm-lane.sh" --help 2>&1 >/dev/null)" || A12_RC=$?
+assert "A12: missing sibling lib_live_refs.sh exits 2 (wiring error, not runtime 1)" \
+    test "$A12_RC" -eq 2
+assert "A12: stderr names the missing library (fail LOUD, not silent)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "lib_live_refs.sh not found"' _ "$A12_ERR"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — precondition-refusal + T3 flock guard
 # ──────────────────────────────────────────────────────────────────────────────
