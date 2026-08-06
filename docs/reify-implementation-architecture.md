@@ -1593,10 +1593,10 @@ Four-level priority ordering for constraint system implementation (applies broad
 | 1 | Default robustness objective | v0.1.1 | Mechanism depends on constraint solver internals |
 | 2 | Rich structural query/traversal (`children`, `members` pseudo-collection) | v0.2 | |
 | 3 | Geometry selector strengthening | v0.2 | |
-| 4 | `Result<T>` or `fallback` expressions | v0.2 | |
+| 4 | `Result<T>` or `fallback` expressions | Realized (v0.6) | Layer A — `Option` recovery combinators (`unwrap_or`/`or_else`/`or_default`/`map_or`/`is_some`/`is_none`/`get_or`, plus the `fallback` alias of `unwrap_or`) shipped in v0.6, orthogonal to graph-`Failed` (§9.1 D1). Layer B — `Result<T,E>` error-handling shipped in v0.6 as a generic data-carrying prelude enum (`enum Result<T, E> { Ok { value: T }, Err { error: E } }`) with `Ok`/`Err` construction, match-on-`Result` payload binding, and the Result-specialized recovery combinators `unwrap_or`/`or_else`/`fallback`/`is_ok`/`is_err`/`map_err`/`ok_or` (the `Option`→`Result` bridge). `try`/`catch` and the postfix `?`-propagation operator (fork F-Question) remain deferred. See docs/prds/v0_6/result-and-fallback.md, docs/prds/v0_6/data-carrying-enums.md, and docs/prds/v0_6/generic-data-carrying-enums.md; runnable example `examples/m6_result_recovery.ri`. |
 | 5 | Associated `fn` in traits | v0.2+ | |
 | 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
-| 7 | Tolerance stack-up analysis (RSS, worst-case, Monte Carlo) | v0.2 | Requires assembly graph + statistical computation |
+| 7 | Tolerance stack-up analysis (RSS, worst-case, Monte Carlo) | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Field-valued material properties | v0.2 | |
 | 9 | Warm-start tier 2 (closest parameter set per node) | Future | Protocol supports without modification |
 | 10 | Warm-start tier 3 (type-level cache across instances) | Future | Protocol supports without modification |
