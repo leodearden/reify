@@ -88,6 +88,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=scripts/lib_live_refs.sh
+source "$SCRIPT_DIR/lib_live_refs.sh"
+
 # ── log helpers (all write to stderr) ────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
@@ -203,11 +208,11 @@ if [ -n "$RESEED" ] && [ -z "$BASE_TARGET_DIR" ]; then
     exit 2
 fi
 
-# Default --seed-script: sibling scripts/seed-warm-lane.sh, resolved via
-# BASH_SOURCE so this script works when invoked via a relative/symlinked path.
+# Default --seed-script: sibling scripts/seed-warm-lane.sh, resolved via the
+# SCRIPT_DIR hoisted at the top (itself BASH_SOURCE-derived, so this script works
+# when invoked via a relative/symlinked path). One definition, not two.
 if [ -z "$SEED_SCRIPT" ]; then
-    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    SEED_SCRIPT="$_script_dir/seed-warm-lane.sh"
+    SEED_SCRIPT="$SCRIPT_DIR/seed-warm-lane.sh"
 fi
 
 # ── lane_dir existence guard ───────────────────────────────────────────────────
@@ -273,6 +278,55 @@ if ! flock -n 9; then
     exit 75
 fi
 # FD 9 stays open (lock held) for the rest of the run; bash releases it on exit.
+
+# ── T4: live-process-reference gate (task 5823) ───────────────────────────────
+# The flock above proves no consumer is mid-ACQUIRE; it does NOT prove no
+# consumer is mid-BUILD. The inv.2 lane lock is a reseed MUTEX, not a liveness
+# oracle: it is held only across the acquire reseed (task 5354) and across
+# dark-factory's run_scoped_verification (DF 3027), NEVER across the implement
+# phase, where an agent runs cargo build/test for tens of minutes (esc-5334-6;
+# earlier instances esc-5375-1, esc-5236/5069/5275/5062). So `flock -n 9` above
+# is blind for most of an ASSIGNED lane's life. Before freeing, ask /proc
+# directly: does any live process reference this lane dir or anything under it
+# (cwd / open fd / mmap)?
+#
+# Placement is load-bearing on three axes (mirrors warm-lane-gc.sh L570-593):
+#   - AFTER the flock acquire, so a flock-held lane keeps its own distinct
+#     diagnostic — the two exit-75 reasons must stay distinguishable in
+#     dark-factory's logs — and is spared the ~1.9s O(processes × fds) walk. Do
+#     NOT read that as the cost being small: on the RELEASE path the flock is
+#     normally FREE, so thin pays the full walk (and a negative verdict, the
+#     common one there, cannot short-circuit).
+#   - IMMEDIATELY BEFORE the destructive rm, never as an up-front snapshot: a
+#     verdict computed earlier and consumed later IS the TOCTOU this gate exists
+#     to close.
+#   - Sitting before the rm therefore ALSO covers the --reseed branch below for
+#     free: a refusal exits before the free, before the seed call, and before
+#     the post-abort discard of an uncertified clone (§9.5 inv.13), so no
+#     destructive path can bypass it.
+#
+# Bias toward OVER-preserving: a genuinely FREE lane has no referencing process,
+# and preserving is TEMPORARY — acquire_lane always re-seeds target/ from base
+# (D10), so a preserved divergent target/ is never reused as warm cache; it is
+# reclaimed by the next release-thin or gc pass once the reference clears.
+# Under-preserving corrupts a live build. A truly ORPHANED reference (a leaked
+# test binary holding an fd) would shield a lane indefinitely; that is owned by
+# the orphaned-test-binary reaper (docs/notes/orphaned-test-binary-reaper.md),
+# not worked around here.
+#
+# SKIP, not defer: thin is a one-shot primitive holding ${LANE_DIR}.lock on FD 9,
+# so a retry/sleep loop here would hold that lock across an unbounded wait —
+# blocking the very acquire_lane reseed the lock exists to serialise (§9.5
+# inv.11) and turning a benign skip into a pool-wide stall.
+#
+# The gate's /proc mechanism is NOT restated here — it is recorded once in
+# docs/prds/warm-lane-pool-space-safety.md §8.4.
+if live_ref_present "$LANE_DIR"; then
+    exec 9>&-
+    err "Live process reference at or under the lane (cwd / open fd / mmap): $_rp_lane_dir"
+    err "Refusing to thin a lane with a live consumer build; preserving target/ (retry next cycle)."
+    exit 75
+fi
 
 # ── FREE-FIRST reclaim (T1/T2): only target/ is ever removed ──────────────────
 # Mirrors warm-lane-gc.sh's disk-pressure fast-path (L521-539): rm-stderr
