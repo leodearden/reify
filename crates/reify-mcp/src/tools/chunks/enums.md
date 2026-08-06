@@ -111,7 +111,31 @@ no `enum` declaration and no variants you can match on. An `Option` is read with
 param base : Length = 1mm
 param coating : Option<Length> = some(0.25mm)
 
-let bare = unwrap_or(coating, 0mm)
-let has  = is_some(coating)
-let alt  = or_else(coating, some(0.05mm))
+let bare  = unwrap_or(coating, 0mm)
+let has   = is_some(coating)
+let alt   = or_else(coating, some(0.05mm))
+let total = map_or(coating, base, |c: Length| base + c)
 ```
+That evaluates to `bare = 0.25mm`, `has = true`, `alt = some(0.25mm)`,
+`total = 1.25mm`. With `coating = none` the same source gives `bare = 0mm`,
+`has = false`, `alt = some(0.05mm)`, `total = 1mm`.
+
+Recovery is driven by the **subject** — the first argument:
+
+| Combinator | subject `some(x)` | subject `none` |
+|---|---|---|
+| `unwrap_or(o, dflt)` | `x` | `dflt` |
+| `or_default(o, dflt)`, `fallback(o, dflt)` | `x` | `dflt` (aliases of `unwrap_or`) |
+| `or_else(o, alt)` | `o`, intact | `alt` |
+| `is_some(o)` / `is_none(o)` | `true` / `false` | `false` / `true` |
+| `map_or(o, dflt, \|x: T\| ...)` | `f(x)` | `dflt` |
+| `ok_or(o, err)` | `Ok { value: x }` | `Err { error: err }` |
+
+`map_or` is the **only** combinator that binds the payload to a name, so it is what
+replaces a `some(c) => ...` match arm. `ok_or` bridges an `Option` into a `Result`
+you *can* match on. An `undef` subject propagates `undef` through every combinator
+(Kleene three-valued).
+
+Declared in `crates/reify-compiler/stdlib/option_recovery.ri` (`ok_or` in
+`crates/reify-compiler/stdlib/result.ri`); runnable examples
+`examples/m6_fallback_recovery.ri` and `examples/option_map_or.ri`.
