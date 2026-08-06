@@ -1,6 +1,6 @@
 // Stdlib: Rigid-Body Dynamics  (`std.dynamics`)
 //
-// PRD: docs/prds/v0_3/rbd-dynamics.md  Phase-1 (RBD-α task 3822).
+// PRD: docs/prds/v0_3/rigid-body-dynamics.md  Phase-1 (RBD-α task 3822).
 //
 // Provides the named-type substrate for the v0.3 RBD dynamics PRD —
 // every consumer task (β / η) depends on the trait, structure_def, and
@@ -27,12 +27,15 @@
 // (for the `JointValue` alias used by TrajectorySample).
 //
 // Encoding notes:
-//   1. `JointForceValue` is a marker trait + refining structures — the Reify
-//      DSL enum grammar has NO payload-carrying variants
-//      (enum-variant lowering: `TsParser::lower_enum_variant` in
-//      crates/reify-syntax/src/ts_parser.rs), so the PRD's "tagged union" is expressed
-//      as a trait + 6 concrete structure_defs. This is the established stdlib
-//      idiom used by trajectory.ri (BoundaryCondition / Shaper).
+//   1. `JointForceValue` is a marker trait + refining structures. This is NOT
+//      because the grammar lacks payload-carrying variants — it does not:
+//      `TsParser::lower_enum_variant` (crates/reify-syntax/src/ts_parser.rs)
+//      lowers named-field variants to `VariantPayload::Named`, and the stdlib
+//      already ships two data-carrying enums (DCE): `Result<T,E>`
+//      (result.ri) and `ConvergenceStatus` (solver_elastic.ri). The marker
+//      trait is a deliberate encoding choice for THIS family — see the
+//      TAGGED-UNION NOTE above `trait JointForceValue` for why — and is the
+//      same stdlib idiom used by trajectory.ri (BoundaryCondition / Shaper).
 //   2. Multi-component force payloads (CylForce/PlanarForce/SphereForce) are
 //      typed `List<Real>`. Fixed-array syntax `[Real;N]` is not supported in
 //      the grammar. Per PRD §4.2, arity is shape-validated by the η dispatcher.
