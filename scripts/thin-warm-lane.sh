@@ -90,6 +90,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared live-reference /proc scanner (live_ref_present). Fail LOUDLY if it is
+# missing: a silently-absent liveness guard is precisely the failure mode task
+# 5823 exists to remove. Exit 2 (usage/WIRING), not 1 (runtime) — an incomplete
+# deployment, in the same class as an unknown flag; see the exit-code table.
+# Sited BEFORE _usage and argv parsing so even --help trips it (pinned by A12),
+# and using `echo >&2` rather than err() because err() is defined below.
+if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
+    echo "thin-warm-lane.sh: ERROR — scripts/lib_live_refs.sh not found next to thin-warm-lane.sh" >&2
+    exit 2
+fi
 # shellcheck source=scripts/lib_live_refs.sh
 source "$SCRIPT_DIR/lib_live_refs.sh"
 
