@@ -55,8 +55,30 @@ import { extractBridgeFactoryKeys, missingFactoryKeys, staleOmissions } from './
  */
 const RUNTIME_EXPORTS = Object.keys(bridge);
 
-const APP_TEST_SOURCE = readFileSync(join(__dirname, 'App.test.tsx'), 'utf-8');
-const appFactoryKeys = extractBridgeFactoryKeys(APP_TEST_SOURCE);
+/**
+ * Files subject to the full-coverage contract.
+ *
+ * MEMBERSHIP CRITERION: this file renders `<App />`, so the whole App component
+ * tree — `initApp`, `engineStore.subscribeToEvents`, `createClaudeStore` — reads
+ * the mocked namespace, and ANY gap degrades it silently. That, not "the file
+ * mocks ../bridge", is the test for adding a row here.
+ *
+ * Deliberately an explicit table rather than a glob for `vi.mock('../bridge'`.
+ * Four other test files (engineStore.test.ts, observedDemand.test.ts,
+ * selectiveDemand.test.ts, sidecarPersistence.test.ts) carry deliberately narrow,
+ * subject-scoped bridge factories — correct for a focused unit test — and
+ * viewport/Viewport.test.tsx uses a different specifier ('../../bridge').
+ * Globbing would force them to full coverage or bloat DELIBERATE_OMISSIONS with
+ * 30+ meaningless entries, destroying its signal.
+ *
+ * `minFactoryKeys` is a per-target non-vacuity floor, not a target size: it is a
+ * little below each factory's current key count, so a parser that silently
+ * stopped short trips check (a) instead of making check (b) pass vacuously.
+ */
+const TARGETS = [
+  { file: 'App.test.tsx', minFactoryKeys: 50 },
+  { file: 'contextIntegration.test.tsx', minFactoryKeys: 30 },
+] as const;
 
 /**
  * Runtime exports a target factory may legitimately omit, each with the reason
@@ -88,33 +110,43 @@ const DELIBERATE_OMISSIONS: Record<string, string> = {
   validatePayload: "called only from bridge.ts's own claude/sidecar listeners",
 };
 
-describe('bridge-mock coverage: bridge.ts runtime exports ↔ App.test.tsx vi.mock factory', () => {
-  it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
-    // Without this, a parser that silently returned [] would make (b) pass.
-    expect(RUNTIME_EXPORTS.length).toBeGreaterThanOrEqual(60);
-    for (const name of ['getInitialState', 'onModeShapeFrame', 'syncDemand', 'claudePermissionDecision']) {
-      expect(RUNTIME_EXPORTS, `bridge.ts must export '${name}'`).toContain(name);
-    }
+describe.each(TARGETS)(
+  'bridge-mock coverage: bridge.ts runtime exports ↔ $file vi.mock factory',
+  ({ file, minFactoryKeys }) => {
+    const factoryKeys = extractBridgeFactoryKeys(readFileSync(join(__dirname, file), 'utf-8'));
 
-    expect(appFactoryKeys.length).toBeGreaterThanOrEqual(50);
-    expect(appFactoryKeys).toContain('getInitialState');
-    expect(appFactoryKeys).toContain('onMeshUpdate');
-    // A doubled factory entry is a merge artefact, not a covered export.
-    expect(new Set(appFactoryKeys).size).toBe(appFactoryKeys.length);
-    // Catches a parser that leaked the inner keys of a nested object literal
-    // (`file_path`, `meshes`, ...) — and a factory key that is no longer an
-    // export at all.
-    const notExports = appFactoryKeys.filter((k) => !RUNTIME_EXPORTS.includes(k));
-    expect(notExports).toStrictEqual([]);
-  });
+    it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
+      // Without this, a parser that silently returned [] would make (b) pass.
+      expect(RUNTIME_EXPORTS.length).toBeGreaterThanOrEqual(60);
+      for (const name of [
+        'getInitialState',
+        'onModeShapeFrame',
+        'syncDemand',
+        'claudePermissionDecision',
+      ]) {
+        expect(RUNTIME_EXPORTS, `bridge.ts must export '${name}'`).toContain(name);
+      }
 
-  it('(b) every bridge.ts runtime export is mocked or documented as omitted', () => {
-    expect(missingFactoryKeys(RUNTIME_EXPORTS, appFactoryKeys, DELIBERATE_OMISSIONS)).toStrictEqual(
-      [],
-    );
-  });
+      expect(factoryKeys.length).toBeGreaterThanOrEqual(minFactoryKeys);
+      expect(factoryKeys).toContain('getInitialState');
+      expect(factoryKeys).toContain('onMeshUpdate');
+      // A doubled factory entry is a merge artefact, not a covered export.
+      expect(new Set(factoryKeys).size).toBe(factoryKeys.length);
+      // Catches a parser that leaked the inner keys of a nested object literal
+      // (`file_path`, `meshes`, ...) — and a factory key that is no longer an
+      // export at all.
+      const notExports = factoryKeys.filter((k) => !RUNTIME_EXPORTS.includes(k));
+      expect(notExports).toStrictEqual([]);
+    });
 
-  it('(c) the allowlist is self-checking — no entry has rotted', () => {
-    expect(staleOmissions(RUNTIME_EXPORTS, appFactoryKeys, DELIBERATE_OMISSIONS)).toStrictEqual([]);
-  });
-});
+    it('(b) every bridge.ts runtime export is mocked or documented as omitted', () => {
+      expect(missingFactoryKeys(RUNTIME_EXPORTS, factoryKeys, DELIBERATE_OMISSIONS)).toStrictEqual(
+        [],
+      );
+    });
+
+    it('(c) the allowlist is self-checking — no entry has rotted', () => {
+      expect(staleOmissions(RUNTIME_EXPORTS, factoryKeys, DELIBERATE_OMISSIONS)).toStrictEqual([]);
+    });
+  },
+);
