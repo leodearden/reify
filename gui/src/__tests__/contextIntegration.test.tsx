@@ -321,4 +321,32 @@ describe('App wiring', () => {
     fireEvent.click(screen.getByTestId('claude-status'));
     expect(screen.getByTestId('chat-panel')).toBeTruthy();
   });
+
+  it('mounting App does not log missing bridge-mock export errors', async () => {
+    // Regression guard for the defect class fixed above (onModeShapeFrame and
+    // the 6 other exports added alongside it): App.tsx's initApp() — and
+    // engineStore's syncObservedDemand — wrap each bridge subscription/call in
+    // try/catch and only console.error or console.warn on failure (e.g.
+    // engineStore.ts's syncObservedDemand explicitly routes its catch through
+    // console.warn as an "observational side-channel"), so a
+    // vi.mock('../bridge') factory that omits an export App.tsx needs fails
+    // silently from an assertion's point of view — every other test in this
+    // file would still pass against a partially-degraded App. Both channels
+    // are spied so this single check covers every current and future
+    // missing-export case instead of one name (or one console method) at a
+    // time.
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await renderAndWaitForReady();
+      const missingExportErrors = [...consoleErrorSpy.mock.calls, ...consoleWarnSpy.mock.calls]
+        .flat()
+        .map((arg) => (arg instanceof Error ? arg.message : String(arg)))
+        .filter((text) => /No ".*" export is defined on the "\.\.\/bridge" mock/.test(text));
+      expect(missingExportErrors).toEqual([]);
+    } finally {
+      consoleErrorSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    }
+  });
 });
