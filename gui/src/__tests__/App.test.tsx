@@ -137,6 +137,7 @@ vi.mock('../bridge', () => ({
   claudeSendMessage: vi.fn().mockResolvedValue(undefined),
   claudeAbort: vi.fn().mockResolvedValue(undefined),
   claudeClearSession: vi.fn().mockResolvedValue(undefined),
+  claudePermissionDecision: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
   onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
@@ -227,6 +228,7 @@ beforeEach(() => {
   vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
   vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
   vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
+  vi.mocked(bridge.claudePermissionDecision).mockResolvedValue(undefined);
   vi.mocked((bridge as any).subscribeToSidecarCrashed).mockResolvedValue(() => {});
   vi.mocked(bridge.pickSavePath).mockResolvedValue('/user/chosen/path.step');
   // Persistence module mocks
