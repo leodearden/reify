@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
-// Mock Viewport + DualViewport
+// Mock Viewport + DualViewport + MultiViewport
 vi.mock('../viewport', () => ({
   Viewport: (props: any) => {
     const el = document.createElement('div');
@@ -23,6 +23,19 @@ vi.mock('../viewport', () => ({
     el.setAttribute('data-testid', 'dual-viewport');
     if (props.fitToViewRef) props.fitToViewRef(() => {});
     if (props.flyToEntityRef) props.flyToEntityRef(() => {});
+    return el;
+  },
+  // No test in this file currently drives the multi-pane branch (the bridge
+  // mocks below return empty meshes, so hasModelPanes() stays false and App
+  // always renders the DualViewport fallback) — this stub exists so the
+  // factory remains a complete stand-in for the '../viewport' module surface
+  // App.tsx imports (App.tsx imports MultiViewport eagerly). Do not delete as
+  // dead code. Unlike Viewport/DualViewport above, MultiViewportProps has no
+  // top-level fitToViewRef/flyToEntityRef (those live per-pane on PaneConfig,
+  // forwarded by MultiViewport itself), so this stub takes no refs to invoke.
+  MultiViewport: (props: any) => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'multi-viewport');
     return el;
   },
 }));
