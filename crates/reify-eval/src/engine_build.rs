@@ -3930,6 +3930,34 @@ impl Engine {
         self.build_with_geometry_output(module, format, true)
     }
 
+    /// Realize geometry WITHOUT the trailing Phase-B product export — the
+    /// entry point for `reify check` (task 5748, esc-5748-6).
+    ///
+    /// Everything [`Self::build`] does *except* serializing the product bodies:
+    /// realization, `Value::GeometryHandle` hydration, `realization_handles`
+    /// population, `run_post_processes` (the geometry-query value cells —
+    /// `centroid`, `moment_of_inertia`, …) and the task-4229 post-realization
+    /// constraint re-check all run identically, because every one of them
+    /// sequences before or after the `emit_geometry_output` branch rather than
+    /// inside it.
+    ///
+    /// `check` needs this rather than [`Self::build`] because the Phase-B export
+    /// walk emits EXPORT-ONLY diagnostics ("all realized bodies are aux; no
+    /// product geometry to export", "export error: …", "compound assembly
+    /// error: …"). `reify check` writes no artifact, so surfacing those to the
+    /// user is a false error — and once leaf γ (#5403) gates the exit code on
+    /// `Severity::Error` over that same set, a false EXIT. `build()` discarded
+    /// its whole `BuildResult` before task 5748, which is why the leak only
+    /// appears now that the diagnostics are merged.
+    ///
+    /// Same reasoning and same mechanism as [`Self::build_outputs_with_result`],
+    /// which passes `false` here to avoid a redundant serialization.
+    pub fn realize_for_check(&mut self, module: &CompiledModule) -> BuildResult {
+        // `format` is irrelevant when `emit_geometry_output == false`: it is
+        // consumed only by the skipped export arm.
+        self.build_with_geometry_output(module, ExportFormat::Step, false)
+    }
+
     /// Internal realization worker shared by [`Self::build`] and
     /// [`Self::build_outputs`] (io-export δ).
     ///

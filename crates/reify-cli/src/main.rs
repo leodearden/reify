@@ -883,7 +883,16 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // post-realization verdicts available on this path, and the
                 // merge below adopts them where — and only where — check() had
                 // nothing better. See `merge_post_build_verdicts`.
-                build_result = Some(engine.build(&compiled, ExportFormat::Step));
+                //
+                // `realize_for_check`, NOT `build()` (esc-5748-6): `build()`
+                // additionally runs the Phase-B product-export walk, whose
+                // EXPORT-ONLY diagnostics ("all realized bodies are aux; no
+                // product geometry to export", "export error: …", "compound
+                // assembly error: …") were harmless while the whole
+                // `BuildResult` was discarded, but reach stderr for every
+                // geometry-bearing module now that the merge below is live.
+                // `check` exports nothing, so those are false errors.
+                build_result = Some(engine.realize_for_check(&compiled));
             }
             if has_representation_within {
                 // Populate `achieved_repr_tol`. Does not touch
@@ -975,14 +984,28 @@ fn cmd_check(args: &[String]) -> ExitCode {
         );
 
         // Both ad-hoc escalations below read the MERGED set, not check()'s alone
-        // (PRD D2). Safe in both directions: merged ⊇ check()'s set, so nothing
-        // that fails today can start passing; and the entries build() adds are
-        // realization-only (`compile_geometry_op` / kernel dispatch), carrying
-        // neither `DiagnosticCode::GdtIllegalModifier` nor an `E_DFM_` message
-        // prefix, so nothing that passes today starts failing. Leaf γ (#5403)
-        // replaces both predicates with a single general `Severity::Error` gate
-        // over this same merged set — feeding one set to both reporting and the
-        // exit decision here is what keeps γ's diff small.
+        // (PRD D2). merged ⊇ check()'s set, so nothing that fails today can
+        // start passing.
+        //
+        // The reverse direction is NOT the blanket "build adds nothing these two
+        // predicates match" this comment used to claim — that was wrong twice
+        // over. `realize_for_check` retires the first half (esc-5748-6): it
+        // skips the Phase-B export walk, so export-only diagnostics can no
+        // longer reach this set at all. The second half is REAL and open:
+        // `check_constraints_post_geometry` appends `dfm_build_diags` to the
+        // realization's diagnostics unconditionally (engine_build.rs), and
+        // `E_DFM_BUILD_VOLUME` (reify-stdlib dfm.rs) is always `Severity::Error`
+        // and carries the very `E_DFM_` prefix `dfm_has_error_diagnostic`
+        // matches. So for a `has_dfm_rule` module, an `E_DFM_` error present in
+        // the post-geometry harvest but absent from the authoritative check()
+        // list CAN flip this exit 0 → FAILURE. That is a behaviour change this
+        // leaf does not attempt to adjudicate; it is tracked as a reviewer
+        // suggestion on this task, not fixed here.
+        //
+        // Leaf γ (#5403) replaces both predicates with a single general
+        // `Severity::Error` gate over this same merged set — which subsumes the
+        // open question above. Feeding one set to both reporting and the exit
+        // decision here is what keeps γ's diff small.
         //
         // Escalate to FAILURE when a GdtIllegalModifier error is present.
         // Scoped strictly to this code so non-GD&T modules are byte-identical.
@@ -1057,7 +1080,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
         let used_build = module_has_geometry(&compiled);
         let (values, front_end_diagnostics, mut engine) = if used_build {
             let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
-            let r = engine.build(&compiled, ExportFormat::Step);
+            // `realize_for_check`, not `build()` — same esc-5748-6 reason as
+            // sub-path (b) above: `check` writes no artifact, so the Phase-B
+            // export walk's diagnostics would be user-visible false errors.
+            let r = engine.realize_for_check(&compiled);
             (r.values, r.diagnostics, engine)
         } else {
             let mut engine = reify_eval::Engine::new(Box::new(checker), None);

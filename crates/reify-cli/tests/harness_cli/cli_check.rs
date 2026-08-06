@@ -979,3 +979,84 @@ fn check_purpose_does_not_contradict_definite_verdicts() {
         );
     }
 }
+
+/// esc-5748-6 regression lock: `reify check` must not print EXPORT-ONLY errors.
+///
+/// D2 merges the realization's diagnostics into `check`'s reported set. While
+/// `cmd_check` obtained those via `engine.build(...)`, the merge also picked up
+/// the trailing Phase-B PRODUCT EXPORT walk's diagnostics — `"all realized
+/// bodies are aux; no product geometry to export"`, `"export error: …"`,
+/// `"compound assembly error: …"` (reify-eval `engine_build.rs`). Those were
+/// invisible before this task only because the whole `BuildResult` was
+/// discarded.
+///
+/// `reify check` writes no artifact, so "cannot export" is not a fact about the
+/// design — it is a FALSE error, and precisely the class of untruthful output
+/// PRD `check-diagnostic-truthfulness.md` exists to remove. It is also a
+/// forward landmine: leaf γ (#5403) replaces the two ad-hoc escalations with a
+/// general `Severity::Error` gate over this same merged set, at which point a
+/// leaked export error makes `reify check` EXIT 1 on a perfectly valid design.
+///
+/// Fix: `cmd_check` calls `Engine::realize_for_check` (realization with the
+/// Phase-B export disabled) instead of `Engine::build`. Both `cmd_check`
+/// sub-paths use it — the kernel-backed arm and the `--purpose` arm.
+///
+/// Measured on `fixtures/aux_only_geometry.ri` (geometry-bearing, but every
+/// realized body is `aux`, so the export walk finds zero product bodies):
+///   - `reify build <f> -o out.step` → `error: all realized bodies are aux; no
+///     product geometry to export`, exit 1. CORRECT: build was asked to write.
+///   - `reify check <f>` BEFORE the fix → that same `error:` line on stderr,
+///     printed directly alongside "All constraints satisfied.", exit 0.
+///   - `reify check <f>` AFTER the fix → stdout "  OK AuxOnly#constraint[0]" /
+///     "All constraints satisfied.", no export error, exit 0.
+#[test]
+fn check_does_not_surface_export_only_diagnostics() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("check", &common::fixture_path("aux_only_geometry.ri"));
+
+    assert!(
+        status.success(),
+        "the aux-only fixture's constraints are trivially satisfied — `check` \
+         must exit 0.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        // Whether the realization loop (and hence the export walk that would
+        // leak these lines) is reached at all under a stub build is not
+        // measured here; follow the same C1 convention as the sibling tests
+        // above and skip the content assertions rather than guess.
+        eprintln!(
+            "skipping export-only-diagnostic assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // The load-bearing assertion. This exact line is what `build -o` prints for
+    // this fixture, so its absence here is the whole contract.
+    assert!(
+        !stderr.contains("no product geometry to export"),
+        "`reify check` writes no artifact, so an export-only diagnostic is a \
+         FALSE error — `cmd_check` must realize via `realize_for_check` (Phase-B \
+         export disabled), never `build()`. Leaf γ (#5403) turns this leak into \
+         a false EXIT 1.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The other two export-only producers on the same walk.
+    for leaked in ["export error:", "compound assembly error:"] {
+        assert!(
+            !stderr.contains(leaked),
+            "`{leaked}` is emitted only by the Phase-B product-export walk, \
+             which `reify check` must never run.\nstdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+
+    // Guard against the test passing for the wrong reason: if the fixture ever
+    // stops being geometry-bearing, `check` would take the lightweight arm and
+    // the assertions above would hold vacuously.
+    assert!(
+        stdout.contains("AuxOnly#constraint[0]"),
+        "fixture must still report its constraint, else this lock is \
+         vacuous.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+}
