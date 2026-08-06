@@ -79,6 +79,16 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * The unit alphabet the typed-quantity gate accepts, derived from the LIVE
  * ladders unioned with {@link BASE_UNIT_LABELS} (task #6028).
  *
+ * THE CANONICAL RATIONALE FOR THE WHOLE SEAM LIVES HERE. Callers
+ * (`quantityReFor` in `../panels/PropertyEditor.tsx`, the `App.test.tsx`
+ * block "ladder-derived units the backend cannot parse") point at this block
+ * rather than restating it — three copies of the same argument, each naming
+ * its own Rust line numbers, was three sets of rot sites with no gate to catch
+ * them. For the same reason everything below names Rust SYMBOLS, never line
+ * numbers, and describes sets by RULE, never by enumeration: a hand-mirrored
+ * snapshot of the curated table in comment form is the very drift defect this
+ * function exists to avoid in data.
+ *
  * WHY derived rather than a hand-written mirror of the Rust curated table: a
  * TS copy would be a FIFTH curated label table, which is the exact drift
  * defect task #5788 decision D6 exists to prevent. Deriving it from the data
@@ -90,31 +100,36 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * parseable (task #5788 probe evidence). So `mm^3` becomes accepted while
  * `mm³` stays rejected, in both the pre- and post-#5788 eras.
  *
- * WHAT "advertised" DOES NOT MEAN. The ladders are the curated DISPLAY table
- * (`unit_ladders()`, crates/reify-core/src/display_units.rs), which is a
+ * WHAT "ADVERTISED" DOES NOT MEAN — the accepted degradation. The ladders are
+ * the curated DISPLAY table (`reify_core::display_units::unit_ladders`), a
  * strictly LARGER set than what the commit path can input-parse. That path —
  * `handleSetParameter` (App.tsx) -> `bridge.setParameter` ->
- * `EngineSession::set_parameter` (gui/src-tauri/src/engine.rs:2051-2057) ->
- * `parse_value_string` (:5932) — matches only `UNIT_TABLE` (:5918-5924), a
- * hard-coded five-entry suffix table (`deg`, `rad`, `mm`, `cm`, `m`) built
- * from neither the .ri unit registry nor `unit_ladders()`. So deriving the
- * alphabet from the ladders deliberately admits 19 labels the backend then
- * refuses — `in`, `mm^2`, `cm^2`, `m^2`, `mm^3`, `cm^3`, `L`, `m^3`, `g`,
- * `kg`, `Pa`, `kPa`, `MPa`, `GPa`, `kg/m^3`, `g/cm^3`, `N`, `J`, `W` — with
- * `Cannot parse value '<input>'` (engine.rs:5973), not the .ri compiler's
- * unknown-unit diagnostic (a different subsystem this path never reaches).
+ * `EngineSession::set_parameter` -> `parse_value_string` (both in
+ * gui/src-tauri/src/engine.rs) — matches only `UNIT_TABLE`, a hard-coded
+ * five-entry suffix table built from neither the .ri unit registry nor
+ * `unit_ladders`. Its five entries are exactly {@link BASE_UNIT_LABELS}; the
+ * rule, therefore, is that EVERY curated ladder label outside that floor is
+ * admitted by this gate and then refused on commit, with the message
+ * `Cannot parse value '<input>'` — not the .ri compiler's unknown-unit
+ * diagnostic, which belongs to a different subsystem this path never reaches
+ * (it short-circuits before `edit_check`).
  *
- * The user-visible cost is that the typed text is discarded and an async
- * error toast replaces the inline `data-invalid` that used to preserve it for
- * correction. Accepted, and pinned end-to-end by the `App.test.tsx` block
- * "ladder-derived units the backend cannot parse"; the caller-side rationale
- * lives on `quantityRe` in `../panels/PropertyEditor.tsx`. Task #5757 widens
- * `UNIT_TABLE` but is necessary-not-sufficient — it reconciles against
- * `reify_core::units::unit_symbol_to_si` (crates/reify-core/src/units.rs:24-51),
- * 13 BARE symbols with no compound units — so the compound half is filed as
- * an agent-followup ticket spawned from #6028 naming #5757 as its sibling.
- * Task #5788 fixes none of it: it touches the compiler's stdlib registry, not
- * `gui/src-tauri`.
+ * The user-visible cost is that the typed text is discarded and an async error
+ * toast replaces the inline `data-invalid` that used to preserve it for
+ * correction. It is bounded twice over: callers scope the alphabet to the
+ * cell's own dimension, so only that dimension's labels can reach the gate;
+ * and the whole contract is pinned end-to-end by the `App.test.tsx` block
+ * named above, which is the ready-made failing assertion for the fix to flip.
+ *
+ * Accepted because narrowing the gate to what the backend can PARSE needs a
+ * surface the frontend cannot see. Task #5757 widens `UNIT_TABLE` but is
+ * necessary-not-sufficient — it reconciles against
+ * `reify_core::units::unit_symbol_to_si`, which holds only BARE symbols, so
+ * compound labels stay rejected: the .ri grammar composes them as EXPRESSIONS
+ * while `parse_value_string` is a flat suffix matcher that cannot compose.
+ * That compound half is filed as an agent-followup ticket spawned from #6028
+ * naming #5757 as its sibling. Task #5788 fixes none of it: it touches the
+ * compiler's stdlib registry, not `gui/src-tauri`.
  */
 export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string[] {
   const alphabet = new Set<string>(BASE_UNIT_LABELS);

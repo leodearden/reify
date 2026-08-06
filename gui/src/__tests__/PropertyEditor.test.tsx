@@ -910,6 +910,11 @@ describe('PropertyEditor validation - quantity overflow rejection', () => {
 });
 
 describe('PropertyEditor quantity literal acceptance with a live unit ladder (task #6028)', () => {
+  /**
+   * Four cells covering every branch of the per-cell alphabet resolution:
+   * a Volume cell and a Density cell (both covered by the ladder map), a cell
+   * whose dimension the map does NOT cover, and a dimensionless cell.
+   */
   function tankValues(): Record<string, ValueData> {
     return {
       c1: makeValue({
@@ -920,13 +925,36 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
         dimension: 'Volume',
         si_value: 0.00704500224,
       }),
+      c2: makeValue({
+        cell_id: 'c2',
+        name: 'material_density',
+        entity_path: 'Tank.material_density',
+        value: '7.8',
+        dimension: 'Density',
+        si_value: 7800,
+      }),
+      c3: makeValue({
+        cell_id: 'c3',
+        name: 'preload',
+        entity_path: 'Tank.preload',
+        value: '12',
+        dimension: 'Torque',
+        si_value: 12,
+      }),
+      c4: makeValue({
+        cell_id: 'c4',
+        name: 'ratio',
+        entity_path: 'Tank.ratio',
+        value: '3',
+      }),
     };
   }
 
-  /** Type `literal` into the c1 row and report whether it was accepted. */
+  /** Type `literal` into `cellId` (default: the Volume cell) and report acceptance. */
   function typeInto(
     literal: string,
     unitLadders?: UnitLadderMap,
+    cellId = 'c1',
   ): { accepted: boolean; onSetParam: ReturnType<typeof vi.fn> } {
     const onSetParam = vi.fn();
     render(() => (
@@ -937,7 +965,7 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
         unitLadders={unitLadders}
       />
     ));
-    const row = screen.getByTestId('prop-row-c1');
+    const row = screen.getByTestId(`prop-row-${cellId}`);
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     fireEvent.focus(input);
     fireEvent.input(input, { target: { value: literal } });
@@ -947,7 +975,7 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
     // The two signals must never disagree — an accepted literal is submitted
     // verbatim and clears data-invalid; a rejected one does neither.
     expect(called).toBe(!invalid);
-    if (called) expect(onSetParam).toHaveBeenCalledWith('c1', literal);
+    if (called) expect(onSetParam).toHaveBeenCalledWith(cellId, literal);
     return { accepted: called, onSetParam };
   }
 
@@ -988,32 +1016,52 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
   ];
 
   describe.each(LADDERS_BY_SPELLING)('against the %s', (_spelling, ladders) => {
-    // Today every one of these is rejected: the alphabet was five hard-coded
-    // units. The gate is global rather than per-dimension — the backend still
-    // validates the cell's actual dimension.
+    // Before #6028 every one of these was rejected: the alphabet was five
+    // hard-coded units. The cell's OWN dimension supplies the widening.
     it.each([
       ['5mm^3'],
       ['5cm^3'],
       ['5m^3'],
-      ['7.8kg/m^3'],
-      ['7.8g/cm^3'],
       ['5L'],
       // The baseline floor is still in the alphabet alongside the ladders.
       ['80mm'],
       ['90deg'],
-    ])('accepts the ASCII-spelled literal %s', (literal) => {
+    ])('accepts the ASCII-spelled literal %s on the Volume cell', (literal) => {
       expect(typeInto(literal, ladders).accepted).toBe(true);
+    });
+
+    it.each([
+      ['7.8kg/m^3'],
+      ['7.8g/cm^3'],
+      ['80mm'],
+      ['90deg'],
+    ])('accepts the ASCII-spelled literal %s on the Density cell', (literal) => {
+      expect(typeInto(literal, ladders, 'c2').accepted).toBe(true);
+    });
+
+    // PER-CELL SCOPING. The alphabet is the static floor plus just the ladder
+    // the cell's own dimension advertises — not the union over all dimensions.
+    // A cross-dimension literal is rejected inline, with the typed text kept
+    // for correction, instead of being committed and then refused by the
+    // backend on the worst-feedback path (typed text discarded, async toast).
+    it.each([
+      ['7.8kg/m^3', 'c1', 'a Density literal on the Volume cell'],
+      ['7.8g/cm^3', 'c1', 'a Density literal on the Volume cell'],
+      ['5mm^3', 'c2', 'a Volume literal on the Density cell'],
+      ['5L', 'c2', 'a Volume literal on the Density cell'],
+    ])('rejects %s on %s — %s', (literal, cellId) => {
+      expect(typeInto(literal, ladders, cellId).accepted).toBe(false);
     });
 
     // Superscript spellings have never been .ri-parseable, in either era — so
     // normalizing the ladder labels into the alphabet must not smuggle them in.
     it.each([
-      ['5mm³'],
-      ['5cm³'],
-      ['5m³'],
-      ['7.8kg/m³'],
-    ])('still rejects the superscript-spelled literal %s', (literal) => {
-      expect(typeInto(literal, ladders).accepted).toBe(false);
+      ['5mm³', 'c1'],
+      ['5cm³', 'c1'],
+      ['5m³', 'c1'],
+      ['7.8kg/m³', 'c2'],
+    ])('still rejects the superscript-spelled literal %s', (literal, cellId) => {
+      expect(typeInto(literal, ladders, cellId).accepted).toBe(false);
     });
 
     // Widening the alphabet must not weaken any other rule.
@@ -1026,6 +1074,22 @@ describe('PropertyEditor quantity literal acceptance with a live unit ladder (ta
       ['5kPa'],
     ])('still rejects %s', (literal) => {
       expect(typeInto(literal, ladders).accepted).toBe(false);
+    });
+
+    // The fallback branches. A cell whose dimension the ladder map does not
+    // cover, and a cell with no dimension at all, have no ladder to scope to —
+    // so they fall back to the union rather than narrowing to the bare floor.
+    // Non-narrowing is the deliberate choice: it keeps the ladders-absent
+    // behaviour byte-identical to pre-#6028 for every such cell.
+    it.each([
+      ['5mm^3', 'c3', 'an uncovered dimension'],
+      ['7.8kg/m^3', 'c3', 'an uncovered dimension'],
+      ['5mm^3', 'c4', 'no dimension'],
+      ['7.8kg/m^3', 'c4', 'no dimension'],
+      ['80mm', 'c3', 'an uncovered dimension'],
+      ['80mm', 'c4', 'no dimension'],
+    ])('falls back to the union for %s on cell %s, which has %s', (literal, cellId) => {
+      expect(typeInto(literal, ladders, cellId).accepted).toBe(true);
     });
   });
 

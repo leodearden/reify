@@ -1730,31 +1730,22 @@ describe('App handleSetParameter error handling', () => {
 });
 
 /**
- * CHARACTERIZATION PIN — green on arrival (task #6028).
+ * CHARACTERIZATION PIN — green on arrival (task #6028). This block changes no
+ * behaviour; it makes an already-shipped, deliberately accepted degradation
+ * executable rather than folklore, and is the ready-made failing assertion for
+ * the backend fix to flip.
  *
- * This block changes no behaviour. It makes an already-shipped, DELIBERATELY
- * ACCEPTED degradation executable rather than folklore.
+ * WHY the gate admits units the backend then refuses, and why that is
+ * accepted: see the canonical rationale on `quantityUnitAlphabet` in
+ * gui/src/stores/unitLadder.ts. In one line — the unit ladders are the curated
+ * DISPLAY table, while the commit path parses against its own hard-coded
+ * suffix table, so advertised is a strictly larger set than parseable.
  *
- * #6028 widened PropertyEditor's typed-quantity gate to the alphabet the unit
- * ladders advertise. But `get_unit_ladders` serves the curated DISPLAY table,
- * while the parameter-commit path (`handleSetParameter` -> `bridge.setParameter`
- * -> `EngineSession::set_parameter`, gui/src-tauri/src/engine.rs:2051-2057)
- * lands in `parse_value_string` (:5932), which matches only `UNIT_TABLE`
- * (:5918-5924) — a hard-coded five-entry suffix table (`deg rad mm cm m`) that
- * consults neither the display table nor the .ri unit registry. Advertised is
- * therefore a strictly larger set than parseable, and every ladder label
- * beyond those five commits and then fails in the backend.
- *
- * The user-visible shape of that failure is what these tests pin: the gate
+ * What these tests pin is the user-visible SHAPE of that failure: the gate
  * accepts, `submitValue` exits edit mode, the typed text is REPLACED by the
  * prop-derived display value, and an async `Parameter update failed: ...`
  * toast arrives — where before #6028 the same input was held in place with an
  * inline `data-invalid` for correction. Clause (d) is that regression.
- *
- * The eventual fix flips these assertions, and is backend work: #5757 widens
- * `UNIT_TABLE`, but only as far as bare symbols; the compound labels are
- * filed separately. See the doc blocks in gui/src/panels/PropertyEditor.tsx
- * and gui/src/stores/unitLadder.ts for the full account.
  */
 describe('App parameter input: ladder-derived units the backend cannot parse (task #6028)', () => {
   /** The task #5199 Volume-ladder cell, rebuilt per test so no case can mutate another's fixture. */
@@ -1796,10 +1787,10 @@ describe('App parameter input: ladder-derived units the backend cannot parse (ta
   ])('accepts %s, discards the typed text, and surfaces the backend parse failure as a toast', async (typed) => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
       // The REAL failure string is the tail of `parse_value_string`
-      // (gui/src-tauri/src/engine.rs:5973) — NOT the .ri compiler's
-      // unknown-unit diagnostic, which is a different subsystem. This path
-      // fails at engine.rs:2057 and `?` short-circuits before `edit_check`, so
-      // it never reaches the compiler at all.
+      // (gui/src-tauri/src/engine.rs) — NOT the .ri compiler's unknown-unit
+      // diagnostic, which is a different subsystem: `set_parameter`
+      // short-circuits on the parse error before `edit_check`, so this path
+      // never reaches the compiler at all.
       vi.mocked(bridge.setParameter).mockRejectedValue(
         new Error(`Cannot parse value '${typed}'`),
       );

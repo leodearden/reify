@@ -110,55 +110,46 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const persistedUnits = loadAllUnitPreferences();
 
   /**
-   * The typed-quantity gate (task #6028). The accepted unit alphabet is
-   * DERIVED from the live ladders — see `quantityUnitAlphabet` — over a static
-   * five-unit floor for when `get_unit_ladders` has not resolved or has
-   * failed. Before this it was a hard-coded five-unit alternation, which
-   * rejected every unit the backend supports beyond those five.
+   * The typed-quantity gate (task #6028), resolved PER CELL: the accepted unit
+   * alphabet is the static floor unioned with just the ladder the cell's own
+   * dimension advertises — so a Length cell takes the Length rungs and refuses
+   * a Density literal, and a Volume cell the reverse. Before this it was a
+   * hard-coded five-unit alternation that rejected every unit the backend
+   * supports beyond those five; widening it to the union over ALL dimensions
+   * would instead have let any cell accept any other dimension's literal, which
+   * the backend then refuses on the worst-feedback path (see below).
    *
-   * Memoized so the regex is rebuilt only when the ladder map changes.
+   * Cells with no dimension, and dimensions the ladder map does not cover,
+   * fall back to the union — the non-narrowing choice, and byte-identical to
+   * the pre-#6028 behaviour whenever the ladders are absent.
    *
-   * ACCEPTED DEGRADATION — this gate admits more than the commit path can
-   * parse. Commit runs `handleSetParameter` (App.tsx) -> `bridge.setParameter`
-   * -> `EngineSession::set_parameter` (gui/src-tauri/src/engine.rs:2051-2057)
-   * -> `parse_value_string` (:5932), and `parse_value_string` matches ONLY
-   * `UNIT_TABLE` (:5918-5924): a hard-coded five-entry suffix table — `deg`,
-   * `rad`, `mm`, `cm`, `m` — built from neither the .ri unit registry nor
-   * `unit_ladders()`. `get_unit_ladders` serves the curated DISPLAY table, so
-   * advertised is a strictly LARGER set than input-parseable, and "scoped to
-   * what the backend advertises" does not imply "scoped to what it accepts".
+   * Memoized so the alphabets and their regexes are rebuilt only when the
+   * ladder map changes; the returned resolver caches per dimension, so a panel
+   * of N cells over K dimensions builds at most K+1 regexes.
    *
-   * So all 19 curated labels beyond those five are admitted here and refused
-   * on commit — `in`, `mm^2`, `cm^2`, `m^2`, `mm^3`, `cm^3`, `L`, `m^3`, `g`,
-   * `kg`, `Pa`, `kPa`, `MPa`, `GPa`, `kg/m^3`, `g/cm^3`, `N`, `J`, `W` — with
-   * the message `Cannot parse value '<input>'` (engine.rs:5973). Emphatically
-   * NOT the .ri compiler's unknown-unit diagnostic, which this doc block used
-   * to claim: that is a different subsystem, and this path short-circuits
-   * before `edit_check` so it never reaches the compiler at all.
-   *
-   * User-visible shape: the gate accepts, `submitValue` exits edit mode, the
-   * typed text is replaced by the prop-derived display value, and an async
-   * `Parameter update failed: ...` toast lands — where the same input used to
-   * be held in place with an inline `data-invalid` for correction. That is a
-   * regression in feedback quality for exactly the units this change exists to
-   * enable, and it is pinned end-to-end by the `App.test.tsx` block
-   * "ladder-derived units the backend cannot parse".
-   *
-   * Accepted anyway because narrowing the gate to what the backend can PARSE
-   * needs a surface the frontend cannot see; the in-scope alternatives are a
-   * hand-written TS label table (the drift defect task #5788 decision D6
-   * forbids) or reverting the widening. Task #5757 widens `UNIT_TABLE`, but is
-   * necessary-not-sufficient: it reconciles against
-   * `reify_core::units::unit_symbol_to_si` (crates/reify-core/src/units.rs:24-51),
-   * 13 BARE symbols with no compound units, so it admits `in`/`g`/`kg` and
-   * still leaves every compound label rejected — the .ri grammar composes
-   * `mm^3` and `kg/m^3` as EXPRESSIONS, while `parse_value_string` is a flat
-   * suffix matcher that cannot compose. That compound half is filed as an
-   * agent-followup ticket spawned from #6028, naming #5757 as its sibling.
-   * Note #5788 does NOT fix any of this: it adds `pub unit L : Volume` to the
-   * compiler's stdlib registry and touches no `gui/src-tauri` source.
+   * ACCEPTED DEGRADATION: this gate still admits more than the commit path can
+   * parse, because the ladders are the curated DISPLAY table while the commit
+   * path has its own hard-coded suffix table. Per-cell scoping shrinks that
+   * gap; it does not close it. The full account — cause, user-visible shape,
+   * why it is accepted, and who owns the fix — is on `quantityUnitAlphabet` in
+   * `../stores/unitLadder`, and it is pinned end-to-end by the `App.test.tsx`
+   * block "ladder-derived units the backend cannot parse".
    */
-  const quantityRe = createMemo(() => buildQuantityRe(quantityUnitAlphabet(props.unitLadders)));
+  const quantityReFor = createMemo(() => {
+    const ladders = props.unitLadders;
+    const unionRe = buildQuantityRe(quantityUnitAlphabet(ladders));
+    const byDimension = new Map<string, RegExp>();
+    return (dimension: string | undefined): RegExp => {
+      if (dimension === undefined) return unionRe;
+      const cached = byDimension.get(dimension);
+      if (cached !== undefined) return cached;
+      const ladder = ladderForDimension(ladders ?? {}, dimension);
+      if (ladder === undefined) return unionRe;
+      const re = buildQuantityRe(quantityUnitAlphabet({ [dimension]: ladder }));
+      byDimension.set(dimension, re);
+      return re;
+    };
+  });
 
   /**
    * The selectable unit ladder for a cell, or `undefined` when the cell has
@@ -381,14 +372,19 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setEditValue(input.value);
   }
 
-  function isValidValue(value: string): boolean {
+  /**
+   * Whether `value` is an acceptable literal for the cell `cellId`. The cell is
+   * load-bearing, not decoration: the accepted unit alphabet is scoped to that
+   * cell's dimension (see `quantityReFor`).
+   */
+  function isValidValue(value: string, cellId: string): boolean {
     if (value === '') return false;
     // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity)
     if (NUMBER_RE.test(value) && Number.isFinite(Number(value))) return true;
     // Group 1 is the whole signed numeric literal, so the overflow check reads
     // it directly — no second regex re-declaring the unit alternation to strip
     // the suffix, and so nothing left to keep in sync.
-    const m = quantityRe().exec(value);
+    const m = quantityReFor()(props.values[cellId]?.dimension).exec(value);
     if (m) return Number.isFinite(Number(m[1]));
     return false;
   }
@@ -396,7 +392,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   /** Trim, validate, submit. Returns true on success. */
   function submitValue(cellId: string, rawValue: string, input: HTMLInputElement): boolean {
     const trimmed = rawValue.trim();
-    if (!isValidValue(trimmed)) {
+    if (!isValidValue(trimmed, cellId)) {
       return false;
     }
     input.removeAttribute('data-invalid');
