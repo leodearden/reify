@@ -4026,6 +4026,45 @@ fn extract_density(val: &Value) -> f64 {
     }
 }
 
+/// Read a load's `direction` field into `[f64; 3]`, falling back to `[0, 0, -1]`
+/// (−Z) when the field is absent or mis-shaped.
+///
+/// Shared by the `PointLoad` and `Gravity` arms of [`extract_loads`], whose
+/// `direction` params are both declared `Vector3<Dimensionless>` in
+/// `fea_multi_case.ri` (task 5905, under trajectory.ri's direction-field rule).
+///
+/// **Both** `Value::Vector` and `Value::List` are accepted, deliberately —
+/// mirroring `modal_ops::read_vec3`, the landed analogue serving the modal
+/// `Vector3<Dimensionless>` direction fields:
+///
+/// - `Value::Vector` is what a `.ri` `vec3(...)` materialises as, i.e. every
+///   call site once the param is declared `Vector3<Dimensionless>`.
+/// - `Value::List` is retained because compile-time conformance only guards
+///   `.ri` call sites. Rust-constructed `StructureInstance` fixtures bypass it
+///   entirely and legitimately build a `Value::List` direction; a Vector-only
+///   reader would send every one of those silently down the −Z fallback, which
+///   is the exact silent-corruption failure this reader exists to close.
+///
+/// Per-component reads delegate to [`dimensionless_component`], so a component
+/// spelled `Value::Scalar` (dimensionless), `Value::Real` or `Value::Int` all
+/// read alike; a genuinely non-numeric component contributes `0.0`.
+///
+/// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is
+/// intentional forward-compatibility contract, pinned by
+/// `extract_loads_malformed_direction_defaults_to_neg_z`.
+fn read_direction_or_neg_z(direction: Option<&Value>) -> [f64; 3] {
+    match direction {
+        Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
+            let mut d = [0.0f64; 3];
+            for (slot, e) in d.iter_mut().zip(elems.iter()) {
+                *slot = dimensionless_component(e).unwrap_or(0.0);
+            }
+            d
+        }
+        _ => [0.0, 0.0, -1.0],
+    }
+}
+
 /// `(tip_force, pressures, body_force)` — see [`extract_loads`].
 type ExtractedLoads = ([f64; 3], Vec<PressureSpec>, [f64; 3]);
 
@@ -4066,25 +4105,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
                 if let Some(Value::Real(f)) = data.fields.get("force") {
-                    let dir = match data.fields.get("direction") {
-                        Some(Value::List(elems)) if elems.len() == 3 => {
-                            let mut d = [0.0f64; 3];
-                            for (i, e) in elems.iter().enumerate() {
-                                // List<Real> elements materialize as either
-                                // `Value::Real` (scene literals) or dimensionless
-                                // `Value::Scalar` (structure-def default values),
-                                // mirroring the `magnitude` parse below. Handle
-                                // both so the default [0,0,-1] is honoured.
-                                match e {
-                                    Value::Real(v) => d[i] = *v,
-                                    Value::Scalar { si_value, .. } => d[i] = *si_value,
-                                    _ => {}
-                                }
-                            }
-                            d
-                        }
-                        _ => [0.0, 0.0, -1.0],
-                    };
+                    let dir = read_direction_or_neg_z(data.fields.get("direction"));
                     for axis in 0..3 {
                         tip_force_vec[axis] += f * dir[axis];
                     }
@@ -4100,20 +4121,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
                     Some(Value::Scalar { si_value, .. }) => *si_value,
                     _ => continue,
                 };
-                let dir = match data.fields.get("direction") {
-                    Some(Value::List(elems)) if elems.len() == 3 => {
-                        let mut d = [0.0f64; 3];
-                        for (i, e) in elems.iter().enumerate() {
-                            match e {
-                                Value::Real(v) => d[i] = *v,
-                                Value::Scalar { si_value, .. } => d[i] = *si_value,
-                                _ => {}
-                            }
-                        }
-                        d
-                    }
-                    _ => [0.0, 0.0, -1.0],
-                };
+                let dir = read_direction_or_neg_z(data.fields.get("direction"));
                 for axis in 0..3 {
                     body_force[axis] += density * magnitude * dir[axis];
                 }
