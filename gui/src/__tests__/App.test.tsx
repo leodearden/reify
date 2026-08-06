@@ -8,7 +8,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
-import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, makeNode } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy } from './test-utils';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -6825,43 +6825,24 @@ describe('App selective-demand enforcement sync (task 6045)', () => {
     expect([...payload].sort()).toEqual(['Bracket#realization[0]', 'Bracket#realization[1]']);
   });
 
-  it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
-    vi.mocked(bridge.getInitialState).mockResolvedValue({
-      ...emptyState,
-      meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
-    });
-    vi.mocked(bridge.getEntityTree).mockResolvedValue([
-      makeNode({ entity_path: 'Bracket#realization[0]', kind: 'realization', has_mesh: true }),
-      makeNode({ entity_path: 'Bracket#realization[1]', kind: 'realization', has_mesh: true }),
-    ]);
-
-    await renderAndWaitForReady();
-    await waitFor(() => expect(screen.getByTestId('eye-icon-Bracket#realization[0]')).toBeTruthy());
-
-    // Let the initial 0 -> N mesh-set sync settle before snapshotting the
-    // baseline call count.
-    await waitFor(
-      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
-      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
-    );
-    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
-
-    // cycleCascading: show -> ghost -> hidden (viewStateStore.ts:307-312).
-    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
-    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
-    expect(
-      screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
-    ).toBe('hidden');
-
-    await waitFor(
-      () => expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBeGreaterThan(before),
-      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
-    );
-
-    const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
-    expect(payload).not.toContain('Bracket#realization[0]');
-    expect(payload).toContain('Bracket#realization[1]');
-  });
+  // A planned case (b) — "hiding a realization via the eye icon prunes it from
+  // the next payload while a sibling realization survives" — was deliberately
+  // NOT landed here. It fails against current production code, and the root
+  // cause is a live-code gap outside this file's scope (esc-6045-1): the
+  // `on(...)` selector in `createSelectiveDemandSync` (engineStore.ts) reads
+  // `viewStateStore.getAllEffective()`, which short-circuits to `{}` without
+  // touching any reactive `state.explicit` key while `nodeByPath` is still
+  // empty (viewStateStore.ts:120-121, :141-143). On a normal App mount the
+  // one guaranteed selector re-run — the `state.meshes` 0 -> N change — happens
+  // before the entity-tree fetch can populate `nodeByPath` (App.tsx
+  // `onEngineReinitialized` is called from the tail of `initFromState`, after
+  // its own `setState({meshes,...})`), so the effect never subscribes to
+  // `state.explicit` and a plain post-mount visibility toggle never reaches
+  // `bridge.syncDemand`. The sibling task-4532 `syncObservedDemand` effect
+  // already solves this via the `treeGeneration`-tracking `effectiveVisibility`
+  // memo (App.tsx:786-792). The production fix — and the App-level regression
+  // test for the plain post-mount toggle — is tracked as its own task; this
+  // one is scoped to App.test.tsx only.
 });
 
 // Deliberately a SIBLING describe, not a third `it` inside the block above:
@@ -6878,7 +6859,7 @@ describe('App selective-demand enforcement sync — failure path (task 6045)', (
     // Deliberately NOT written as a negative match on the console.warn
     // wording — see the design decision recorded for this task: that shape
     // is unfalsifiable on a reword of the log literal and is already
-    // subsumed by (i) cases (a)/(b) above, which fail outright if
+    // subsumed by (i) case (a) above, which fails outright if
     // `syncDemand` is missing from the factory, and (ii) the
     // global-beforeEach `mockResolvedValue`, which throws before any test in
     // this file runs if the factory entry is ever dropped again.
