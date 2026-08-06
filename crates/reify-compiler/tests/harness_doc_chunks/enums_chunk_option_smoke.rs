@@ -25,7 +25,8 @@
 use reify_core::dimension::DimensionVector;
 use reify_ir::Value;
 use reify_test_support::{
-    cell_value, collect_errors, compile_source_with_stdlib, errors_only, make_engine,
+    cell_value, collect_errors, compile_source_with_stdlib,
+    compile_source_with_stdlib_allow_parse_errors, errors_only, make_engine,
     parse_and_compile_with_stdlib,
 };
 
@@ -66,24 +67,25 @@ fn option_section_lines() -> Vec<&'static str> {
     rest[..end].to_vec()
 }
 
-/// The bodies of every fenced code block inside the `## Option Type` section,
-/// in document order. A fence delimiter is a line whose trimmed form starts
-/// with three backticks; the opening delimiter may carry any info string.
+/// Every fenced code block inside the `## Option Type` section, in document
+/// order, as `(info string, body)`. A fence delimiter is a line whose trimmed
+/// form starts with three backticks; the opening delimiter may carry any info
+/// string (which is what `option_section_fences_are_reify_tagged` inspects).
 ///
 /// Panics if the section contains no fence at all, so a section that loses its
 /// example does not silently pass.
-fn option_section_fences() -> Vec<String> {
-    let mut fences: Vec<String> = Vec::new();
-    let mut open: Option<Vec<&str>> = None;
+fn option_section_fences() -> Vec<(String, String)> {
+    let mut fences: Vec<(String, String)> = Vec::new();
+    let mut open: Option<(String, Vec<&str>)> = None;
     for line in option_section_lines() {
-        if line.trim_start().starts_with("```") {
+        if let Some(info) = line.trim_start().strip_prefix("```") {
             match open.take() {
                 // Closing delimiter: emit the accumulated body.
-                Some(body) => fences.push(body.join("\n")),
-                // Opening delimiter: start accumulating.
-                None => open = Some(Vec::new()),
+                Some((tag, body)) => fences.push((tag, body.join("\n"))),
+                // Opening delimiter: record its info string, start accumulating.
+                None => open = Some((info.trim().to_string(), Vec::new())),
             }
-        } else if let Some(body) = open.as_mut() {
+        } else if let Some((_, body)) = open.as_mut() {
             body.push(line);
         }
     }
@@ -117,7 +119,7 @@ fn as_module(fence: &str) -> String {
 /// pre-fix failure surfaces as a parse-error panic naming the snippet.
 #[test]
 fn option_section_fences_compile_clean() {
-    for (ordinal, fence) in option_section_fences().iter().enumerate() {
+    for (ordinal, (_tag, fence)) in option_section_fences().iter().enumerate() {
         let compiled = compile_source_with_stdlib(&as_module(fence));
         let errors = errors_only(&compiled);
         assert!(
@@ -243,7 +245,7 @@ fn none_path_variant(fence: &str) -> String {
 #[test]
 fn option_section_example_evaluates_to_documented_values() {
     let fences = option_section_fences();
-    let fence = &fences[0];
+    let fence = &fences[0].1;
 
     // --- subject = some(0.25mm), base = 1mm ---
     let present = eval_module(&as_module(fence));
@@ -291,4 +293,103 @@ fn option_section_example_evaluates_to_documented_values() {
         1.0,
         "none-path `total` = map_or(none, base, ...) returns base without applying f",
     );
+}
+
+// --- Two-way ratchet: pin the compiler behaviour the chunk's warning asserts ---
+//
+// The `## Option Type` section now warns that `match` cannot read an `Option`
+// payload in EITHER form. The two tests below make that warning executable, so
+// the doc and the compiler cannot drift apart in either direction: if the
+// grammar/eval gap ever closes, these flip RED and force the warning to be
+// rewritten in the SAME diff, rather than leaving the chunk asserting a
+// restriction that no longer exists.
+
+/// `some(v) => ...` — a positional payload-binding pattern — must still fail to
+/// parse.
+///
+/// Authority for the gap being open and DELIBERATE:
+/// `docs/prds/v0_6/data-carrying-enums.md` §10 and design fork **F4**, which
+/// records the `some(IDENT)`/`none` parse gap as explicitly not closed by that
+/// PRD and reserves the decision ("Recommend Leo decide"). Mechanically, the
+/// grammar has no positional production at all — `tree-sitter-reify/grammar.js`
+/// `match_pattern` is `variant_binding_pattern | identifier ('|' identifier)* |
+/// '_'`, and `variant_binding_pattern` is brace-only.
+///
+/// **If this test goes RED, F4 landed.** Rewrite the `## Option Type` warning in
+/// `crates/reify-mcp/src/tools/chunks/enums.md` in the same diff.
+///
+/// Uses the non-panicking `_allow_parse_errors` variant deliberately: the plain
+/// `compile_source_with_stdlib` panics on parse errors, so a negative test must
+/// observe the diagnostics rather than die on them.
+#[test]
+fn option_payload_binding_pattern_still_fails_to_parse() {
+    let source = "structure def D {\n\
+                  param c : Option<Length> = some(3mm)\n\
+                  let m = match c { some(v) => v, none => 0mm }\n\
+                  }";
+    let compiled = compile_source_with_stdlib_allow_parse_errors(source);
+    let errors = errors_only(&compiled);
+    assert!(
+        !errors.is_empty(),
+        "`some(v) => ...` is expected to be rejected (data-carrying-enums.md §10 / \
+         fork F4 leave the positional-pattern gap open), but it compiled clean. \
+         If F4 has landed, the `## Option Type` warning in enums.md must be \
+         rewritten in this same diff."
+    );
+}
+
+/// Binder-less `some`/`none` match arms must still evaluate to `undef`.
+///
+/// This is the pin that makes "binder-less arms are not a workaround" an
+/// executable fact rather than a claim, and it is why the chunk documents the
+/// recovery combinators instead. `Option` is intrinsic — `Value::Option`, not
+/// `Value::Enum` — and eval's match-arm selection is gated exclusively on
+/// `Value::Enum` (`reify-expr/src/lib.rs:635`), so an `Option` scrutinee falls
+/// through to the `Value::Undef` catch-all (`:663-670`). The compiler does not
+/// diagnose it either, so the arms compile clean and silently produce nothing —
+/// strictly worse for a reader than the loud parse error above.
+///
+/// Both subjects are checked: a `some(x)` subject yields `undef` just as a
+/// `none` subject does, so a passing-looking spot check on one path cannot
+/// mislead.
+#[test]
+fn binderless_option_match_still_evaluates_to_undef() {
+    for subject in ["some(3mm)", "none"] {
+        let source = format!(
+            "structure def D {{\n\
+             param c : Option<Length> = {subject}\n\
+             let m = match c {{ some => 111mm, none => 222mm }}\n\
+             }}"
+        );
+        let result = eval_module(&source);
+        assert_eq!(
+            cell_value(&result, "D", "m"),
+            Value::Undef,
+            "binder-less `some`/`none` arms over subject `{subject}` are expected to \
+             evaluate to undef (Option is Value::Option, not Value::Enum). If this \
+             now yields a real value, the `## Option Type` warning in enums.md must \
+             be rewritten in this same diff."
+        );
+    }
+}
+
+/// Every fence in the `## Option Type` section must carry the `reify` info
+/// string.
+///
+/// Scoped deliberately to this one section: the repo-wide retag sweep is #5477
+/// leaf β's explicitly-scoped deliverable (PRD
+/// `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §Sketch (a)), and doing it
+/// here would collide with that leaf and drag ~111 schematic fences into this
+/// task's review. Tagging the fence this task authors is mechanical, and leaves
+/// β's sweep with one section already correct.
+#[test]
+fn option_section_fences_are_reify_tagged() {
+    for (ordinal, (tag, _body)) in option_section_fences().iter().enumerate() {
+        assert_eq!(
+            tag, "reify",
+            "`{SECTION_HEADING}` fence #{ordinal} must open with a ```reify info \
+             string so the fence gate (#5477 leaf β) can tell compilable Reify \
+             source from schematic notation; found info string {tag:?}"
+        );
+    }
 }
