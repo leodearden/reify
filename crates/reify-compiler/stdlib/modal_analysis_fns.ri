@@ -27,15 +27,15 @@
 //
 // Signature deviation from PRD §1 `(part, opts)`:
 //   There is no Part→trampoline geometry channel: `Part` (see `structure def
-//   Part` in modal_analysis.ri, task 4578 per PRD §12 OQ3) is a minimal opaque
-//   marker, not yet grown into a full geometry+material+topology structure, so
-//   it carries nothing for the trampoline to reconstruct a mesh from. So —
-//   exactly like `solve_buckling` — the @optimized trampoline receives flat
-//   value_inputs and reconstructs the beam mesh from length/width/height.
-//   `boundary_conditions`, `damping`, `n_modes`, `tol`, `max_iters`, `sigma`,
-//   and `reference_direction` are read from the single `options : ModalOptions`
-//   StructureInstance (matching the PRD §1 example, which bundles the BCs
-//   inside ModalOptions). See plan design-decision-1.
+//   Part` in modal_analysis.ri, task 4578) carries no geometry for the
+//   trampoline to reconstruct a mesh from — see that declaration for the
+//   opaque-marker rationale. So — exactly like `solve_buckling` — the
+//   @optimized trampoline receives flat value_inputs and reconstructs the
+//   beam mesh from length/width/height. `boundary_conditions`, `damping`,
+//   `n_modes`, `tol`, `max_iters`, `sigma`, and `reference_direction` are
+//   read from the single `options : ModalOptions` StructureInstance
+//   (matching the PRD §1 example, which bundles the BCs inside
+//   ModalOptions). See plan design-decision-1.
 //
 // Signature notes:
 //   `material : ElasticMaterial` (the trait from std.materials.fea):
