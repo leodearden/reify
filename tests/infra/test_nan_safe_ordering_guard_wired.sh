@@ -467,6 +467,75 @@ else
     echo "  SKIP: hD9 (mawk portability) — mawk is not on PATH on this host."
 fi
 
+# hD10/hD11/hD12 — the char-literal-vs-lifetime branch is the lexer's most
+# heuristic code (the escape-length cap and the one-char lookahead). The
+# header claims &'static str / <'a, 'b> / '\x41' / '\u{7f}' are all handled,
+# but until now only plain '{' / '}' (hD3a/hD3b) exercised it. None of these
+# three shapes are live in this gate's scan set today; they pin the claim so
+# a future tweak to the cap or the lookahead regresses loudly, not silently
+# (a lifetime misparsed as an unterminated char literal is exactly the
+# state-desync that fails toward GREEN — see hG above).
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    struct P<'a, 'b> {
+        x: &'a str,
+        y: &'b str,
+    }
+
+    fn h<'a>() -> &'static str {
+        "ok"
+    }
+
+    #[test]
+    fn uses_lifetimes() {
+        let _p = P { x: "a", y: "b" };
+        assert_eq!(h(), "ok");
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD10: lifetimes (<'a, 'b>, &'static str) are not mistaken for char literals and do not hide the hazard below" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn brace_escape() {
+        let brace = '\u{7b}';
+        assert!(brace.is_ascii());
+    }
+}
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hD11: a '\\u{7b}' UNICODE-ESCAPE char literal's own brace does not hide the hazard below the test module" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn escaped_quote() {
+        let q = '\'';
+        assert_eq!(q, '\'');
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hD12: an escaped self-quote char literal ('\\'') does not desync the lexer; hazard legitimately inside stays exempt" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
 # ===========================================================================
 # hE — the #[cfg(test)] skipper REQUIRES a `mod` (task 6031's second defect,
 # deliberately left unfixed by the lexer-only port above).
