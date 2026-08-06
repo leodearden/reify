@@ -220,7 +220,7 @@ pub struct EnumDef {
 
 > **Dropped — `E_ENUM_TYPE_ARG_UNRESOLVED`** (was: "a param undetermined by inference and unpinned by annotation at a site that needs it concrete"). Under D1 erasure there is **no v1 site that requires an enum value's type arg to be concrete**: conservative inference (INV-3) leaves an unmentioned param **permanently unbound as a legal state**, and the erased `Value::Enum` is type-arg-agnostic at eval, so no construction / match / combinator site forces a param concrete (verified against the full `result-and-fallback.md` Layer B set, tasks 4035–4040). Minting it would be untested, dead code (PDEAD/PUNTESTED). **It is removed, not deferred** — there is no honest owner under erasure. Its precondition is a future PRD that **reverses erasure** (F-Mono-b / runtime type-arg reflection, §10) or adds **type-directed dispatch on enum params**; that PRD owns minting it. (Ratified `esc-4031-50`, 2026-06-30.)
 
-## §8 — Decomposition plan (DAG; not yet filed) — Greek labels; real IDs at decompose
+## §8 — Decomposition plan (DAG; filed and completed) — Greek labels below; filed as **4029 / 4030 / 4031 / 4032 / 4033 / 4034**, all `done` and merged on `main`
 
 **B + H.** Grammar leaf first (the one net-new grammar gap owned here, gated on DCE's named-field grammar), then IR widening, then construction-inference + pattern-typing seam sides, then the end-to-end consumer leaf (integration gate), then the spec companion. All leaves `depends_on` the relevant DCE leaves (the named-field substrate).
 
