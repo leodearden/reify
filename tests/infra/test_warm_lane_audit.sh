@@ -2914,4 +2914,165 @@ assert "R21e: a DANGLING plan symlink is neither replaced nor materialized" \
         [ "$(readlink "$1")" = "$2" ] || exit 1
         exit 0' _ "$R21_MOUNT/_lane-ro-dangling/.task/plan.json" "$R21_LINK_BEFORE"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block S — shared stash stack observability (task 5981)
+#
+# refs/stash is ONE ref in the shared .git — git treats only HEAD,
+# refs/worktree/*, refs/bisect/* and refs/rewritten/* as per-worktree — so the
+# figure is HOST-SCOPED, not per-lane: one query answers for the whole pool. It
+# is the BACKSTOP that makes a disarmed hooks/reference-transaction guard
+# visible (Claude Code's worktree feature clobbers core.hooksPath on every
+# worktree enter, CLAUDE.md "Landing on main"), and it is deliberately
+# NON-GATING — advisory only, like every other field this script emits.
+#
+# HERMETICITY IS MANDATORY: every `git stash` below runs against a make_lane-
+# minted fixture repo under an mktemp mount. The REAL repository's stash stack
+# is live (1 entry measured while planning this task); reading it would flake
+# these counts and touching it would destroy another task's recoverable WIP.
+# The REIFY_WARM_LANE_AUDIT_STASH_REPO knob (S9) is the seam that makes that
+# isolation possible, which is why it is asserted directly rather than only
+# relied upon.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block S: shared stash stack observability ---"
+
+S_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-s-XXXXXX)"
+_TMPDIRS+=("$S_MOUNT")
+make_lane "$S_MOUNT/_lane-s1" task/5981
+S_LANE="$S_MOUNT/_lane-s1"
+
+# s_push MSG — dirty the lane's tracked README and stash it, inside the fixture
+# repo only. Never the real repo, never a real warm lane.
+s_push() {
+    printf 'wip %s\n' "$RANDOM" > "$S_LANE/README.md"
+    git -C "$S_LANE" stash push -q -m "$1"
+}
+
+# -- S1 (a): an EMPTY stack still emits the field and the block ----------------
+# Zeros included, stable grep shape — the same rule the PINNED line follows: "no
+# stashes" must read as a value an operator can see, never as an absent line.
+run_helper --mount "$S_MOUNT"
+assert "S1: exit 0 with an empty stash stack" test "$RC" -eq 0
+assert "S1: HEADROOM carries stash_entries=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S1: the STASH block is emitted with a zero total" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0( |$)"' _ "$OUT"
+assert "S1: an empty stack emits no per-entry detail lines" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "^STASH entry ")" = "0" ]' _ "$OUT"
+
+# -- populate the fixture lane's own stack ------------------------------------
+# Three entries with deliberately awkward messages: an embedded newline (S4) and
+# a double-quote + backslash (S5) exercise the one-line text contract and the
+# JSON escaper respectively.
+s_push "alpha wip one"
+s_push "$(printf 'beta wip\ntwo')"
+s_push 'gamma "quoted" and back\slash'
+
+# -- S2 (b): the count ---------------------------------------------------------
+S_LIST_BEFORE="$(git -C "$S_LANE" stash list)"
+S_FILES_BEFORE="$(find "$S_LANE" | sort)"
+run_helper --mount "$S_MOUNT"
+assert "S2: exit 0 with a non-empty stash stack" test "$RC" -eq 0
+assert "S2: HEADROOM carries stash_entries=3" \
+    bash -c '[ "$1" = "3" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S2: the STASH block total agrees" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=3( |$)"' _ "$OUT"
+
+# -- S3 (c): per-entry detail — ref, branch, message ---------------------------
+# Asserted on the MESSAGES, so this cannot pass on a count-only implementation.
+assert "S3: one detail line per entry" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "^STASH entry ")" = "3" ]' _ "$OUT"
+assert "S3: a detail line carries the entry ref" \
+    bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "ref=stash@{0}"' _ "$OUT"
+assert "S3: a detail line carries the branch the entry was taken on" \
+    bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "branch=task/5981"' _ "$OUT"
+assert "S3: the first entry's message is reported" \
+    bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "alpha wip one"' _ "$OUT"
+assert "S3: the third entry's message is reported" \
+    bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -qF "gamma \"quoted\" and back\\slash"' _ "$OUT"
+
+# -- S4 (d): one output line per entry, even for a multi-line message ----------
+assert "S4: a message with an embedded newline still yields exactly ONE line" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "beta wip")" = "1" ]' _ "$OUT"
+assert "S4: ...and that line carries the whole message, flattened" \
+    bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "beta wip two"' _ "$OUT"
+
+# -- S8 (h): READ-ONLY (invariant A1) -----------------------------------------
+# Asserted immediately after the runs above, before any further invocation.
+assert "S8: the audit did not mutate the lane's stash stack" \
+    bash -c '[ "$(git -C "$1" stash list)" = "$2" ]' _ "$S_LANE" "$S_LIST_BEFORE"
+assert "S8: the audit created no new files in the lane" \
+    bash -c '[ "$(find "$1" | sort)" = "$2" ]' _ "$S_LANE" "$S_FILES_BEFORE"
+
+# -- S6 (f): APPEND-NEVER-INTERPOSE -------------------------------------------
+# Every pre-existing HEADROOM field keeps its position and value; stash_entries
+# is appended AFTER plan_mismatch, so a consumer matching the old fixed field
+# order keeps working (the runbook convention).
+assert "S6: HEADROOM keeps its field order with stash_entries appended LAST" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM resident=[0-9]+ live=[0-9]+ pinned=[0-9]+ quarantined=[0-9]+ free=[0-9]+ assigned=[0-9]+ state_unknown=[0-9]+ reclaimable=[0-9]+ leaked=[0-9]+ leak_unknown=[0-9]+ divergent_gib=[0-9]+ free_gib=[0-9]+ budget_gib=[0-9]+ plan_stranded=[0-9]+ plan_unknown=[0-9]+ plan_rewritten=[0-9]+ plan_mismatch=[0-9]+ stash_entries=[0-9]+$"' _ "$OUT"
+
+# -- S5 (e): JSON parity -------------------------------------------------------
+S_PY_JSON="$(mktemp /tmp/test-warm-lane-audit-s-json-XXXXXX.py)"
+_TMPDIRS+=("$S_PY_JSON")
+cat > "$S_PY_JSON" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+assert data["headroom"]["stash_entries"] == 3, data["headroom"]
+stack = data["stash_stack"]
+assert isinstance(stack, list) and len(stack) == 3, stack
+for obj in stack:
+    assert {"ref", "branch", "message"}.issubset(obj.keys()), obj
+    assert obj["branch"] == "task/5981", obj
+msgs = [obj["message"] for obj in stack]
+assert 'gamma "quoted" and back\\slash' in msgs, msgs
+assert "alpha wip one" in msgs, msgs
+# The count lives in exactly one place: headroom.stash_entries. The array must
+# not repeat it (a second copy of a number that must agree).
+assert "stash_entries" not in {k for obj in stack for k in obj}, stack
+PYEOF
+run_helper --mount "$S_MOUNT" --format json
+assert "S5: json output parses (python3 json.load)" \
+    bash -c 'printf "%s" "$1" | python3 -c "import json,sys; json.load(sys.stdin)"' _ "$OUT"
+assert "S5: json carries headroom.stash_entries plus a sibling per-entry array" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$S_PY_JSON"
+
+# -- S9 (i): the REIFY_WARM_LANE_AUDIT_STASH_REPO seam -------------------------
+# The knob's repo WINS over the default (first resident lane that resolves as a
+# git worktree). Asserted with a DIFFERENT count on each side so the assertion
+# cannot pass by coincidence.
+S_ALT="$(mktemp -d /tmp/test-warm-lane-audit-s-alt-XXXXXX)"
+_TMPDIRS+=("$S_ALT")
+make_lane "$S_ALT/repo" task/9999
+printf 'alt wip\n' > "$S_ALT/repo/README.md"
+git -C "$S_ALT/repo" stash push -q -m "alt-only entry"
+REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_ALT/repo" run_helper --mount "$S_MOUNT"
+assert "S9: exit 0 with the knob set" test "$RC" -eq 0
+assert "S9: the knob's repo is what gets queried (1, not the lane's 3)" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S9: the knob's entry message is what is reported" \
+    bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "alt-only entry"' _ "$OUT"
+
+# -- S7 (g): FAIL-OPEN, NEVER GATING (inv.12 / A3-style degradation) -----------
+# A stash query that cannot resolve or fails degrades to 0 with a stderr note
+# and exit 0. An advisory reader must never abort — and must never gate — on a
+# figure it could not collect.
+S_NOTGIT="$(mktemp -d /tmp/test-warm-lane-audit-s-notgit-XXXXXX)"
+_TMPDIRS+=("$S_NOTGIT")
+REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_NOTGIT" run_helper --mount "$S_MOUNT"
+assert "S7: a non-git stash repo still exits 0" test "$RC" -eq 0
+assert "S7: stash_entries degrades to 0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S7: the STASH block is still emitted (stable shape under degradation)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0( |$)"' _ "$OUT"
+assert "S7: a stderr note explains the degradation" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+# ...and an empty mount (no resident lane to resolve a default from) degrades
+# the same way rather than erroring.
+S_EMPTY="$(mktemp -d /tmp/test-warm-lane-audit-s-empty-XXXXXX)"
+_TMPDIRS+=("$S_EMPTY")
+run_helper --mount "$S_EMPTY"
+assert "S7: an empty mount (nothing to resolve) still exits 0" test "$RC" -eq 0
+assert "S7: an empty mount reports stash_entries=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+
 test_summary
