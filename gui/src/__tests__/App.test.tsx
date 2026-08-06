@@ -1729,6 +1729,135 @@ describe('App handleSetParameter error handling', () => {
   });
 });
 
+/**
+ * CHARACTERIZATION PIN — green on arrival (task #6028).
+ *
+ * This block changes no behaviour. It makes an already-shipped, DELIBERATELY
+ * ACCEPTED degradation executable rather than folklore.
+ *
+ * #6028 widened PropertyEditor's typed-quantity gate to the alphabet the unit
+ * ladders advertise. But `get_unit_ladders` serves the curated DISPLAY table,
+ * while the parameter-commit path (`handleSetParameter` -> `bridge.setParameter`
+ * -> `EngineSession::set_parameter`, gui/src-tauri/src/engine.rs:2051-2057)
+ * lands in `parse_value_string` (:5932), which matches only `UNIT_TABLE`
+ * (:5918-5924) — a hard-coded five-entry suffix table (`deg rad mm cm m`) that
+ * consults neither the display table nor the .ri unit registry. Advertised is
+ * therefore a strictly larger set than parseable, and every ladder label
+ * beyond those five commits and then fails in the backend.
+ *
+ * The user-visible shape of that failure is what these tests pin: the gate
+ * accepts, `submitValue` exits edit mode, the typed text is REPLACED by the
+ * prop-derived display value, and an async `Parameter update failed: ...`
+ * toast arrives — where before #6028 the same input was held in place with an
+ * inline `data-invalid` for correction. Clause (d) is that regression.
+ *
+ * The eventual fix flips these assertions, and is backend work: #5757 widens
+ * `UNIT_TABLE`, but only as far as bare symbols; the compound labels are
+ * filed separately. See the doc blocks in gui/src/panels/PropertyEditor.tsx
+ * and gui/src/stores/unitLadder.ts for the full account.
+ */
+describe('App parameter input: ladder-derived units the backend cannot parse (task #6028)', () => {
+  /** The task #5199 Volume-ladder cell, rebuilt per test so no case can mutate another's fixture. */
+  function capacityState(): GuiState {
+    return { fea_convergence: null,
+      meshes: [],
+      values: [
+        {
+          cell_id: 'Tank.capacity',
+          name: 'capacity',
+          value: '7045002.24',
+          unit: 'mm³',
+          determinacy: 'determined',
+          entity_path: 'Tank.capacity',
+          kind: 'let',
+          freshness: 'final',
+          dimension: 'Volume',
+          si_value: 0.00704500224,
+        },
+      ],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+      tensegrity_surfaces: [],
+      display_panes: [],
+      display_appearance: [],
+      fea_diagnostics: []
+    };
+  }
+
+  // `mm^3` is the ASCII spelling of the ladder's own default rung; `L` is the
+  // second rung. Both are advertised by `get_unit_ladders`, so both pass the
+  // widened gate — and neither is in `UNIT_TABLE`, so both are refused on commit.
+  it.each([
+    ['5mm^3'],
+    ['5L'],
+  ])('accepts %s, discards the typed text, and surfaces the backend parse failure as a toast', async (typed) => {
+    await withSuppressedRejectionsAndErrorSpy(async () => {
+      // The REAL failure string is the tail of `parse_value_string`
+      // (gui/src-tauri/src/engine.rs:5973) — NOT `unknown unit: ...`, which is
+      // the .ri compiler's diagnostic for a different subsystem. This path
+      // fails at engine.rs:2057 and `?` short-circuits before `edit_check`, so
+      // it never reaches the compiler at all.
+      vi.mocked(bridge.setParameter).mockRejectedValue(
+        new Error(`Cannot parse value '${typed}'`),
+      );
+      vi.mocked(bridge.getInitialState).mockResolvedValue(capacityState());
+      vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+        {
+          dimension: 'Volume',
+          units: [
+            { label: 'mm³', si_scale: 1e-9, is_default: true },
+            { label: 'L', si_scale: 1e-3, is_default: false },
+          ],
+        },
+      ]);
+
+      render(() => <App />);
+
+      // The picker only renders once the ladder fetch resolves, so waiting on
+      // it also proves the widened (ladder-derived) alphabet is live here
+      // rather than the static five-unit floor.
+      await waitFor(() => {
+        expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+      });
+
+      const row = screen.getByTestId('prop-row-Tank.capacity');
+      const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+      expect(input).toBeTruthy();
+      expect(input.value).toBe('7045002.24');
+
+      fireEvent.focus(input);
+      fireEvent.input(input, { target: { value: typed } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      // (a) the frontend gate ACCEPTED it — no inline invalid marker.
+      expect(input.hasAttribute('data-invalid')).toBe(false);
+
+      // (b) it was submitted to the backend verbatim.
+      expect(bridge.setParameter).toHaveBeenCalledWith('Tank.capacity', typed);
+
+      // (c) the backend's refusal arrives asynchronously, as a toast.
+      await waitFor(() => {
+        const toast = screen.getByTestId('toast');
+        expect(toast.dataset.type).toBe('error');
+        expect(toast.textContent).toContain(
+          `Parameter update failed: Cannot parse value '${typed}'`,
+        );
+      });
+
+      // (d) THE TYPED TEXT IS GONE. `submitValue` cleared `data-invalid`, called
+      // `onSetParameter` and `setEditingCellId(null)`, so the input reverted to
+      // the prop-derived display value — the user's rejected input is not
+      // preserved for correction. This is the accepted regression in feedback
+      // quality, and the clause the eventual `UNIT_TABLE` fix must flip.
+      expect(input.value).not.toBe(typed);
+      expect(input.value).toBe('7045002.24');
+    });
+  });
+});
+
 describe('App re-evaluate error toast', () => {
   it('shows error toast when re-evaluate (F5) fails', async () => {
     await withSuppressedRejectionsAndErrorSpy(async (errorSpy) => {
