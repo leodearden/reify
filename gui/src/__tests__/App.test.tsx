@@ -1796,8 +1796,8 @@ describe('App parameter input: ladder-derived units the backend cannot parse (ta
   ])('accepts %s, discards the typed text, and surfaces the backend parse failure as a toast', async (typed) => {
     await withSuppressedRejectionsAndErrorSpy(async () => {
       // The REAL failure string is the tail of `parse_value_string`
-      // (gui/src-tauri/src/engine.rs:5973) — NOT `unknown unit: ...`, which is
-      // the .ri compiler's diagnostic for a different subsystem. This path
+      // (gui/src-tauri/src/engine.rs:5973) — NOT the .ri compiler's
+      // unknown-unit diagnostic, which is a different subsystem. This path
       // fails at engine.rs:2057 and `?` short-circuits before `edit_check`, so
       // it never reaches the compiler at all.
       vi.mocked(bridge.setParameter).mockRejectedValue(

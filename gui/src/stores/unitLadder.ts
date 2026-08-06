@@ -90,11 +90,31 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
  * parseable (task #5788 probe evidence). So `mm^3` becomes accepted while
  * `mm³` stays rejected, in both the pre- and post-#5788 eras.
  *
- * Note the accepted transient while #5788 is unlanded: with ladders loaded,
- * `L` passes this gate but the backend still answers `error: unknown unit: L`
- * (#5788 is what adds `pub unit L : Volume`). The gate is advisory — the
- * backend remains the validator — so the degradation is a backend diagnostic
- * instead of an inline `data-invalid`.
+ * WHAT "advertised" DOES NOT MEAN. The ladders are the curated DISPLAY table
+ * (`unit_ladders()`, crates/reify-core/src/display_units.rs), which is a
+ * strictly LARGER set than what the commit path can input-parse. That path —
+ * `handleSetParameter` (App.tsx) -> `bridge.setParameter` ->
+ * `EngineSession::set_parameter` (gui/src-tauri/src/engine.rs:2051-2057) ->
+ * `parse_value_string` (:5932) — matches only `UNIT_TABLE` (:5918-5924), a
+ * hard-coded five-entry suffix table (`deg`, `rad`, `mm`, `cm`, `m`) built
+ * from neither the .ri unit registry nor `unit_ladders()`. So deriving the
+ * alphabet from the ladders deliberately admits 19 labels the backend then
+ * refuses — `in`, `mm^2`, `cm^2`, `m^2`, `mm^3`, `cm^3`, `L`, `m^3`, `g`,
+ * `kg`, `Pa`, `kPa`, `MPa`, `GPa`, `kg/m^3`, `g/cm^3`, `N`, `J`, `W` — with
+ * `Cannot parse value '<input>'` (engine.rs:5973), not the .ri compiler's
+ * unknown-unit diagnostic (a different subsystem this path never reaches).
+ *
+ * The user-visible cost is that the typed text is discarded and an async
+ * error toast replaces the inline `data-invalid` that used to preserve it for
+ * correction. Accepted, and pinned end-to-end by the `App.test.tsx` block
+ * "ladder-derived units the backend cannot parse"; the caller-side rationale
+ * lives on `quantityRe` in `../panels/PropertyEditor.tsx`. Task #5757 widens
+ * `UNIT_TABLE` but is necessary-not-sufficient — it reconciles against
+ * `reify_core::units::unit_symbol_to_si` (crates/reify-core/src/units.rs:24-51),
+ * 13 BARE symbols with no compound units — so the compound half is filed as
+ * an agent-followup ticket spawned from #6028 naming #5757 as its sibling.
+ * Task #5788 fixes none of it: it touches the compiler's stdlib registry, not
+ * `gui/src-tauri`.
  */
 export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string[] {
   const alphabet = new Set<string>(BASE_UNIT_LABELS);

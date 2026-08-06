@@ -110,21 +110,52 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   /**
    * The typed-quantity gate (task #6028). The accepted unit alphabet is
-   * DERIVED from the live ladders — i.e. from what the backend actually
-   * advertises — over a static five-unit floor for when `get_unit_ladders`
-   * has not resolved or has failed. Before this it was a hard-coded
-   * five-unit alternation, which rejected every unit the backend supports
-   * beyond those five.
+   * DERIVED from the live ladders — see `quantityUnitAlphabet` — over a static
+   * five-unit floor for when `get_unit_ladders` has not resolved or has
+   * failed. Before this it was a hard-coded five-unit alternation, which
+   * rejected every unit the backend supports beyond those five.
    *
    * Memoized so the regex is rebuilt only when the ladder map changes.
    *
-   * Accepted transient while task #5788 is unlanded: with ladders loaded,
-   * `L` passes this gate but the backend still answers
-   * `error: unknown unit: L` (#5788 is what adds `pub unit L : Volume`). That
-   * is benign — this gate is ADVISORY and the backend remains the validator,
-   * so the degradation is a backend diagnostic instead of an inline
-   * `data-invalid`. Special-casing it here would only have to be removed
-   * again when #5788 lands.
+   * ACCEPTED DEGRADATION — this gate admits more than the commit path can
+   * parse. Commit runs `handleSetParameter` (App.tsx) -> `bridge.setParameter`
+   * -> `EngineSession::set_parameter` (gui/src-tauri/src/engine.rs:2051-2057)
+   * -> `parse_value_string` (:5932), and `parse_value_string` matches ONLY
+   * `UNIT_TABLE` (:5918-5924): a hard-coded five-entry suffix table — `deg`,
+   * `rad`, `mm`, `cm`, `m` — built from neither the .ri unit registry nor
+   * `unit_ladders()`. `get_unit_ladders` serves the curated DISPLAY table, so
+   * advertised is a strictly LARGER set than input-parseable, and "scoped to
+   * what the backend advertises" does not imply "scoped to what it accepts".
+   *
+   * So all 19 curated labels beyond those five are admitted here and refused
+   * on commit — `in`, `mm^2`, `cm^2`, `m^2`, `mm^3`, `cm^3`, `L`, `m^3`, `g`,
+   * `kg`, `Pa`, `kPa`, `MPa`, `GPa`, `kg/m^3`, `g/cm^3`, `N`, `J`, `W` — with
+   * the message `Cannot parse value '<input>'` (engine.rs:5973). Emphatically
+   * NOT the .ri compiler's unknown-unit diagnostic, which this doc block used
+   * to claim: that is a different subsystem, and this path short-circuits
+   * before `edit_check` so it never reaches the compiler at all.
+   *
+   * User-visible shape: the gate accepts, `submitValue` exits edit mode, the
+   * typed text is replaced by the prop-derived display value, and an async
+   * `Parameter update failed: ...` toast lands — where the same input used to
+   * be held in place with an inline `data-invalid` for correction. That is a
+   * regression in feedback quality for exactly the units this change exists to
+   * enable, and it is pinned end-to-end by the `App.test.tsx` block
+   * "ladder-derived units the backend cannot parse".
+   *
+   * Accepted anyway because narrowing the gate to what the backend can PARSE
+   * needs a surface the frontend cannot see; the in-scope alternatives are a
+   * hand-written TS label table (the drift defect task #5788 decision D6
+   * forbids) or reverting the widening. Task #5757 widens `UNIT_TABLE`, but is
+   * necessary-not-sufficient: it reconciles against
+   * `reify_core::units::unit_symbol_to_si` (crates/reify-core/src/units.rs:24-51),
+   * 13 BARE symbols with no compound units, so it admits `in`/`g`/`kg` and
+   * still leaves every compound label rejected — the .ri grammar composes
+   * `mm^3` and `kg/m^3` as EXPRESSIONS, while `parse_value_string` is a flat
+   * suffix matcher that cannot compose. That compound half is filed as an
+   * agent-followup ticket spawned from #6028, naming #5757 as its sibling.
+   * Note #5788 does NOT fix any of this: it adds `pub unit L : Volume` to the
+   * compiler's stdlib registry and touches no `gui/src-tauri` source.
    */
   const quantityRe = createMemo(() => buildQuantityRe(quantityUnitAlphabet(props.unitLadders)));
 
