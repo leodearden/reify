@@ -74,6 +74,12 @@ vi.mock('../bridge', () => ({
   getEntityAtSourceLocation: vi.fn().mockResolvedValue(null),
   getDefPreview: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [] }),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
+  getUnitLadders: vi.fn().mockResolvedValue([]),
+  onFocusEntity: vi.fn().mockResolvedValue(() => {}),
+  onNavigateToSource: vi.fn().mockResolvedValue(() => {}),
+  subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
+  subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
+  syncObservedDemand: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { ChatPanel } from '../panels/ChatPanel';
@@ -130,6 +136,11 @@ beforeEach(() => {
   vi.mocked(bridge.onConstraintRemoved).mockResolvedValue(() => {});
   vi.mocked(bridge.onFileChanged).mockResolvedValue(() => {});
   vi.mocked(bridge.getEntityTree).mockResolvedValue([]);
+  vi.mocked(bridge.onFocusEntity).mockResolvedValue(() => {});
+  vi.mocked(bridge.onNavigateToSource).mockResolvedValue(() => {});
+  vi.mocked(bridge.subscribeToClaudeEvents).mockResolvedValue(() => {});
+  vi.mocked(bridge.subscribeToSidecarCrashed).mockResolvedValue(() => {});
+  vi.mocked(bridge.getUnitLadders).mockResolvedValue([]);
 });
 
 afterEach(() => {
