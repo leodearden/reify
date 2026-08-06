@@ -1298,7 +1298,10 @@ select_harness_kloc_guard() {
         # Ordered classification — harness_*/* MUST come first: a bash `case`
         # glob's `*` matches `/`, so this one arm covers arbitrary nesting
         # depth under a harness_<subsystem>/ module dir (same gotcha
-        # documented at tests/infra/harness-layout-lib.sh:86-89). harness_*.rs
+        # documented in harness_layout_in_scope_standalone's header comment
+        # in tests/infra/harness-layout-lib.sh — cited by function name, not
+        # line range, since a line-range cite into another file re-rots on
+        # every edit to that file). harness_*.rs
         # (a root has no slash, so neither prior arm can catch it) is checked
         # after the generic */* reject. harness_*.rs and harness_*/* both
         # accept A or M (see the block header for why the nested arm's A|M is
