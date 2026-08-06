@@ -159,16 +159,49 @@ mod tests {
         }
     }
 
-    /// The one part of [`sanitize`]'s contract no caller in this crate
-    /// exercises: the `&mut Command` return. All three in-crate call sites
-    /// (`orphan_audit`'s `build_audit_command`, `child_repo_root` and the
-    /// `git init` fixture) discard it in statement position, so without this
-    /// the chaining shape would rest entirely on a reverse dependency.
+    /// [`sanitize`]'s core behaviour, asserted in the module that DEFINES it:
+    /// every [`REPO_REDIRECT_VARS`] entry is marked for REMOVAL rather than
+    /// overwritten or left inherited. `std` encodes an `env_remove` as a
+    /// `(key, None)` pair in `get_envs()`; an overwrite would be
+    /// `(key, Some(value))`.
     ///
-    /// The removal behaviour itself is deliberately NOT re-asserted here —
-    /// `orphan_audit::tests::build_audit_command_removes_every_repo_redirect_var`
-    /// already drives it through this very fn in-crate, and
-    /// `repo_redirect_vars_covers_the_removal_floor` above guards the set.
+    /// Self-referential by construction — it asserts the fn removes exactly
+    /// what the same constant lists, so it stays green through a DELETION from
+    /// [`REPO_REDIRECT_VARS`]; `repo_redirect_vars_covers_the_removal_floor`
+    /// above is the guard against that, not this. What this contributes is
+    /// that the defining module covers its own core behaviour directly,
+    /// instead of borrowing that coverage from consumers whose spawns may be
+    /// refactored away without anything here announcing the loss.
+    #[test]
+    fn sanitize_removes_every_repo_redirect_var() {
+        let mut cmd = Command::new("git");
+        sanitize(&mut cmd);
+
+        let removed: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+
+        for var in REPO_REDIRECT_VARS {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "sanitize() must REMOVE `{var}` (env_remove -> `(key, None)`), \
+                 not merely overwrite it or leave it inherited; removals seen: \
+                 {removed:?}"
+            );
+        }
+    }
+
+    /// The part of [`sanitize`]'s contract no caller in this crate exercises:
+    /// the `&mut Command` return. In-crate call sites discard it in statement
+    /// position, so this is the only in-crate exercise of the chaining shape —
+    /// without it that half of the contract would rest entirely on a reverse
+    /// dependency.
+    ///
+    /// The removal half is covered by
+    /// `sanitize_removes_every_repo_redirect_var` above, and the set itself by
+    /// `repo_redirect_vars_covers_the_removal_floor`.
     #[test]
     fn sanitize_returns_the_command_for_chaining() {
         let mut cmd = Command::new("git");
