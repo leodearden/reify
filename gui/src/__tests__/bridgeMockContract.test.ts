@@ -18,8 +18,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   extractBridgeFactoryKeys,
+  extractBridgeMockOverrides,
   missingFactoryKeys,
   staleOmissions,
+  unrestoredOverrides,
 } from './bridgeMockContract';
 
 describe('extractBridgeFactoryKeys', () => {
@@ -243,5 +245,135 @@ describe('staleOmissions', () => {
 
   it('returns [] for an empty allowlist', () => {
     expect(staleOmissions(runtimeExports, ['ask'], {})).toStrictEqual([]);
+  });
+});
+
+describe('extractBridgeMockOverrides', () => {
+  it('splits persistent assignments by whether a beforeEach re-establishes them', () => {
+    const source = `
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
+});
+
+it('a test', () => {
+  vi.mocked(bridge.onMeshUpdate).mockResolvedValue(() => {});
+  vi.mocked(bridge.saveFile).mockRejectedValue(new Error('disk full'));
+});
+`;
+    expect(extractBridgeMockOverrides(source)).toStrictEqual({
+      restored: ['onMeshUpdate'],
+      overridden: ['onMeshUpdate', 'saveFile'],
+    });
+  });
+
+  it('recognises the `(bridge as any).NAME` spelling both targets also use', () => {
+    const source = `
+beforeEach(() => {
+  vi.mocked((bridge as any).onFileRemoved).mockResolvedValue(() => {});
+});
+it('a test', () => {
+  vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
+});
+`;
+    expect(extractBridgeMockOverrides(source)).toStrictEqual({
+      restored: ['onFileRemoved'],
+      overridden: ['getMechanismDescriptors'],
+    });
+  });
+
+  it('ignores *Once setters and mockClear — neither can leak', () => {
+    const source = `
+it('a test', () => {
+  vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '', content: '' });
+  vi.mocked(bridge.pickSavePath).mockRejectedValueOnce(new Error('x'));
+  vi.mocked(bridge.setParameter).mockClear();
+  expect(vi.mocked(bridge.saveFile).mock.calls).toHaveLength(0);
+});
+`;
+    expect(extractBridgeMockOverrides(source)).toStrictEqual({ restored: [], overridden: [] });
+  });
+
+  it('counts a mock set inside a nested-brace body of a beforeEach as restored', () => {
+    // Brace matching, not a line scan: an object literal or arrow body inside
+    // the hook must not end the span early.
+    const source = `
+beforeEach(() => {
+  vi.mocked(bridge.getInitialState).mockResolvedValue({ meshes: [], files: [] });
+  vi.mocked(bridge.onMeshUpdate).mockImplementation(() => {
+    return () => {};
+  });
+  vi.mocked(bridge.ask).mockResolvedValue(false);
+});
+`;
+    expect(extractBridgeMockOverrides(source).restored).toStrictEqual([
+      'ask',
+      'getInitialState',
+      'onMeshUpdate',
+    ]);
+    expect(extractBridgeMockOverrides(source).overridden).toStrictEqual([]);
+  });
+
+  it('handles several beforeEach blocks, including one inside a nested describe', () => {
+    const source = `
+beforeEach(() => {
+  vi.mocked(bridge.getInitialState).mockResolvedValue(null);
+});
+describe('nested', () => {
+  beforeEach(() => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '', content: '' });
+  });
+  it('a test', () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/x', content: 'y' });
+    vi.mocked(bridge.updateSource).mockResolvedValue(undefined);
+  });
+});
+`;
+    expect(extractBridgeMockOverrides(source)).toStrictEqual({
+      restored: ['getInitialState', 'openFile'],
+      overridden: ['openFile', 'updateSource'],
+    });
+  });
+
+  it('returns empty sets for a source with no bridge mock assignments at all', () => {
+    // The consumer asserts a floor on `restored` for exactly this reason: a
+    // regex that stopped matching empties BOTH sets, which would otherwise make
+    // the derived check pass vacuously.
+    expect(extractBridgeMockOverrides('const x = 1;\n')).toStrictEqual({
+      restored: [],
+      overridden: [],
+    });
+  });
+});
+
+describe('unrestoredOverrides', () => {
+  it('reports only the names no beforeEach restores, sorted', () => {
+    expect(
+      unrestoredOverrides({
+        restored: ['onMeshUpdate', 'getInitialState'],
+        overridden: ['updateSource', 'onMeshUpdate', 'claudeAbort'],
+      }),
+    ).toStrictEqual(['claudeAbort', 'updateSource']);
+  });
+
+  it('returns [] when every override has a restore', () => {
+    expect(
+      unrestoredOverrides({ restored: ['a', 'b'], overridden: ['b', 'a'] }),
+    ).toStrictEqual([]);
+  });
+
+  it('fires for the leak shape the truth table names: factory key present, beforeEach missing', () => {
+    // A test persistently swaps in a rejecting saveFile; nothing puts the
+    // resolving default back, so every later test in the file runs against it.
+    const source = `
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(bridge.getInitialState).mockResolvedValue(null);
+});
+it('save error path', () => {
+  vi.mocked(bridge.saveFile).mockRejectedValue(new Error('disk full'));
+});
+`;
+    expect(unrestoredOverrides(extractBridgeMockOverrides(source))).toStrictEqual(['saveFile']);
   });
 });

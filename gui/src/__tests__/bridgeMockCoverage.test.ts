@@ -33,7 +33,8 @@
  *   factory present, beforeEach MISSING -> green, but a per-test
  *       `mockImplementation` override leaks into every later test
  *   BOTH missing -> SILENT. This is the 6035/6039/6045 defect class.
- * Checks (a)-(c) below cover the factory column of that table.
+ * Checks (a)-(c) below cover the factory column of that table; check (d) covers
+ * the beforeEach one.
  *
  * ── Standing rules for the target files ─────────────────────────────────────
  * 1. A new bridge.ts runtime export gets a factory key in every target, OR an
@@ -74,7 +75,13 @@ import { join } from 'node:path';
 // REAL module (the three mocks above only stub its Tauri dependencies).
 import * as bridge from '../bridge';
 
-import { extractBridgeFactoryKeys, missingFactoryKeys, staleOmissions } from './bridgeMockContract';
+import {
+  extractBridgeFactoryKeys,
+  extractBridgeMockOverrides,
+  missingFactoryKeys,
+  staleOmissions,
+  unrestoredOverrides,
+} from './bridgeMockContract';
 
 /**
  * Authoritative export list. `Object.keys` on the real ESM namespace needs no
@@ -162,7 +169,8 @@ const TARGETS = [
 describe.each(TARGETS)(
   'bridge-mock coverage: bridge.ts runtime exports ↔ $file vi.mock factory',
   ({ file, minFactoryKeys, omissions }) => {
-    const factoryKeys = extractBridgeFactoryKeys(readFileSync(join(__dirname, file), 'utf-8'));
+    const source = readFileSync(join(__dirname, file), 'utf-8');
+    const factoryKeys = extractBridgeFactoryKeys(source);
 
     it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
       // Without this, a parser that silently returned [] would make (b) pass.
@@ -194,6 +202,28 @@ describe.each(TARGETS)(
 
     it('(c) the allowlist is self-checking — no entry has rotted', () => {
       expect(staleOmissions(RUNTIME_EXPORTS, factoryKeys, omissions)).toStrictEqual([]);
+    });
+
+    it('(d) every persistently overridden bridge mock is restored in a beforeEach', () => {
+      // The truth table's third row, which (a)-(c) cannot see: a factory key
+      // with no beforeEach restore is green, but any test that overrides it
+      // leaks that override into every later test — vi.clearAllMocks() resets
+      // call history, not implementations.
+      //
+      // The check is deliberately narrow: it requires a restore only for names
+      // some test actually overrides, NOT for every factory key. A key nobody
+      // overrides cannot leak, so demanding a restore for it would mean ~45
+      // dead lines per target and an allowlist with no signal.
+      const overrides = extractBridgeMockOverrides(source);
+
+      // Non-vacuity: both sets come from one regex, so a parse that broke would
+      // empty them together and pass silently.
+      expect(
+        overrides.restored.length,
+        `no vi.mocked(bridge.X) restores parsed out of ${file} — the parser, not the file, is probably wrong`,
+      ).toBeGreaterThanOrEqual(10);
+
+      expect(unrestoredOverrides(overrides)).toStrictEqual([]);
     });
   },
 );

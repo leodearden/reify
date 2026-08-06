@@ -196,6 +196,105 @@ export function extractBridgeFactoryKeys(source: string): string[] {
 }
 
 /**
+ * Vitest methods that install a PERSISTENT implementation on a mock — one that
+ * outlives the test that set it, because `vi.clearAllMocks()` (what both
+ * targets' `beforeEach` calls) resets call history only, not implementations.
+ *
+ * The `*Once` variants are deliberately absent: they consume themselves, so
+ * they cannot leak. `mockClear` / `mockReset` likewise install nothing.
+ */
+const PERSISTENT_SETTERS = new Set([
+  'mockImplementation',
+  'mockResolvedValue',
+  'mockRejectedValue',
+  'mockReturnValue',
+]);
+
+/**
+ * Matches both override spellings the targets use:
+ *   `vi.mocked(bridge.NAME).mockX(`  and  `vi.mocked((bridge as any).NAME).mockX(`
+ */
+const MOCK_SETTER_RE =
+  /vi\.mocked\(\s*\(?\s*bridge(?:\s+as\s+[A-Za-z_$][\w$]*)?\s*\)?\s*\.\s*([A-Za-z_$][\w$]*)\s*\)\s*\.\s*([A-Za-z_$][\w$]*)/g;
+
+export interface BridgeMockOverrides {
+  /** Names given a persistent implementation inside some `beforeEach` block. */
+  restored: string[];
+  /** Names given a persistent implementation outside every `beforeEach` block. */
+  overridden: string[];
+}
+
+/** Spans of every `beforeEach(...)` callback body in `source`, as [open, close]. */
+function beforeEachSpans(source: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  for (let at = source.indexOf('beforeEach('); at !== -1; at = source.indexOf('beforeEach(', at + 1)) {
+    let i = source.indexOf('{', at);
+    if (i === -1) break;
+    let depth = 0;
+    while (i < source.length) {
+      const ch = source[i];
+      if (ch === '"' || ch === "'" || ch === '`') {
+        i = skipString(source, i);
+        continue;
+      }
+      if (ch === '/' && (source.startsWith('//', i) || source.startsWith('/*', i))) {
+        i = skipTrivia(source, i);
+        continue;
+      }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+      i += 1;
+    }
+    spans.push([source.indexOf('{', at), i]);
+  }
+  return spans;
+}
+
+/**
+ * Split a target file's persistent bridge-mock implementation assignments into
+ * those a `beforeEach` re-establishes and those only a test body installs.
+ *
+ * This covers the truth table's third row, which the factory-key checks cannot
+ * see: a key present in the factory but absent from `beforeEach` is green, yet
+ * any test that overrides it leaks that override into every later test.
+ *
+ * DELIBERATELY FILE-LEVEL, not describe-scoped: a restore in a nested
+ * `describe`'s `beforeEach` only protects tests in that describe, but is
+ * counted here as restoring the name file-wide. That makes the derived check
+ * UNDER-report (a missed leak stays silent) rather than false-alarm, which is
+ * the right direction for a guard nobody should have to argue with. Both sets
+ * come from the same regex, so a parse that breaks empties BOTH — assert a
+ * floor on `restored` to keep the consumer's check non-vacuous.
+ */
+export function extractBridgeMockOverrides(source: string): BridgeMockOverrides {
+  const spans = beforeEachSpans(source);
+  const restored = new Set<string>();
+  const overridden = new Set<string>();
+
+  MOCK_SETTER_RE.lastIndex = 0;
+  for (let m = MOCK_SETTER_RE.exec(source); m !== null; m = MOCK_SETTER_RE.exec(source)) {
+    const [, name, setter] = m;
+    if (!PERSISTENT_SETTERS.has(setter)) continue;
+    const inBeforeEach = spans.some(([open, close]) => m!.index > open && m!.index < close);
+    (inBeforeEach ? restored : overridden).add(name);
+  }
+
+  return { restored: [...restored].sort(), overridden: [...overridden].sort() };
+}
+
+/**
+ * Names some test persistently overrides that no `beforeEach` restores — the
+ * leak surface. Sorted.
+ */
+export function unrestoredOverrides({ restored, overridden }: BridgeMockOverrides): string[] {
+  const safe = new Set(restored);
+  return overridden.filter((n) => !safe.has(n)).sort();
+}
+
+/**
  * Runtime exports covered by neither the factory nor the allowlist — i.e. the
  * gaps. Sorted, so a failure message reads as a stable list.
  *

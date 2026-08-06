@@ -262,6 +262,24 @@ beforeEach(() => {
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
   vi.mocked((bridge as any).ask).mockResolvedValue(false);
+  // Below: names some test overrides persistently but nothing used to restore,
+  // so the override leaked into every later test (truth table row 3). Added
+  // with task 6053's check (d), which fails on any override without a restore.
+  // setParameter/updateSource really return Promise<GuiState>, but the factory
+  // default resolves undefined. Restoring to that exact default (via the file's
+  // usual `bridge as any` spelling) keeps behaviour identical; substituting
+  // emptyState here would quietly change what every test sees.
+  vi.mocked((bridge as any).setParameter).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).updateSource).mockResolvedValue(undefined);
+  vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+  vi.mocked(bridge.exportGeometry).mockResolvedValue(undefined);
+  vi.mocked(bridge.pickOpenPath).mockResolvedValue(null);
+  vi.mocked((bridge as any).openFileEngine).mockResolvedValue(emptyState);
+  vi.mocked((bridge as any).getSourceLocation).mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 });
+  vi.mocked((bridge as any).getEntityAtSourceLocation).mockResolvedValue(null);
+  vi.mocked(bridge.claudeAbort).mockResolvedValue(undefined);
+  vi.mocked((bridge as any).onAutoResolveStart).mockResolvedValue(() => {});
+  vi.mocked((bridge as any).onAutoResolveComplete).mockResolvedValue(() => {});
 });
 
 afterEach(() => {
