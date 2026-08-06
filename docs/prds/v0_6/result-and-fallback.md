@@ -212,7 +212,7 @@ For every recovery combinator `C(subject, …)`:
 
 ## §8 — Decomposition plan (DAG; filed and completed) — Layer A, filed as **3979–3989**, all `done` and merged on `main`; §8.B below covers Layer B (**4035–4040**, likewise landed)
 
-**B + H.** Layer A introduces no novel grammar (G3 clear), so there is no grammar-prerequisite phase. The shape is: combinator library → compiler resolution/type-check → eval → end-to-end consumer leaf (integration gate) → companion docs. Greek labels; real IDs at decompose. **All Layer-A leaves `grammar_confirmed=true`.**
+**B + H.** Layer A introduces no novel grammar (G3 clear), so there is no grammar-prerequisite phase. The shape is: combinator library → compiler resolution/type-check → eval → end-to-end consumer leaf (integration gate) → companion docs. Greek labels below; the filed IDs are **3979–3989**, all `done` and merged on `main`. **All Layer-A leaves `grammar_confirmed=true`.**
 
 ### Phase 1 — Combinator library + resolution (intermediate)
 
@@ -245,7 +245,7 @@ For every recovery combinator `C(subject, …)`:
 ### Phase 5 — Companion corrections (doc; independent)
 
 - **Task ε — Spec §9.6 / §18.4 update for Layer A + the D1 orthogonality rule.**
-  - Update §9.6: add the orthogonality rule (graph-`Failed` and language `Option`-recovery are distinct layers, D1); state that fallible *language* ops return `Option` and recover via combinators while *computation* failures stay graph-`Failed`. Update §18.4 item 4: Layer A (Option-recovery / `fallback`) **landed**; `Result<T,E>` (Layer B) **deferred to a follow-up PRD gated on generic data-carrying enums**. Cross-reference DCE for the planned Layer B.
+  - Update §9.6: add the orthogonality rule (graph-`Failed` and language `Option`-recovery are distinct layers, D1); state that fallible *language* ops return `Option` and recover via combinators while *computation* failures stay graph-`Failed`. Update §18.4 item 4: Layer A (Option-recovery / `fallback`) **landed**; ~~`Result<T,E>` (Layer B) **deferred to a follow-up PRD gated on generic data-carrying enums**. Cross-reference DCE for the planned Layer B.~~ — **SUPERSEDED as-authored instruction:** the F1 flip (resolved the same day, see the fork record below) put Layer B in *this* PRD (§8.B, tasks 4035–4040) rather than a follow-up, and task B-ζ 4040 carried the Layer-B half of this same spec update. Spec §18 row 4 accordingly reads "Realized (v0.6)" for **both** layers, with only `try`/`catch` and postfix `?` (fork F-Question) still deferred.
   - **Observable signal:** `docs/reify-language-spec.md` updated; the `raf-*` recovery fixtures referenced; no code change; doc lint passes.
   - **Crates:** none (docs). **Prereqs:** δ.
 
