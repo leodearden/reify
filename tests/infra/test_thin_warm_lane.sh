@@ -278,12 +278,77 @@ assert "B3: stderr mentions the lock/live-consumer refusal" \
 # Inverse of Block F's F4 (task 5823). BOTH refusals exit 75, so the stderr
 # reason is the only thing that tells them apart in dark-factory's logs — and it
 # has to be pinned in both directions or a single shared message would keep each
-# one-sided assert green. F4 pins that a process-reference refusal never names
-# the flock reason; this pins that a flock-held lane never names the
-# process-reference reason. It also pins the ORDERING: the flock gate fires
-# FIRST, so a flock-held lane is refused before the ~1.9s /proc walk is ever run.
-assert "B3: stderr does NOT name the live-process-reference refusal (the two exit-75 reasons stay distinguishable; task 5823)" \
-    bash -c '! printf "%s\n" "$1" | grep -qi "live process reference"' _ "$ERR_OUT"
+# one-sided assert green. F4 pins that a process-reference refusal never carries
+# the lock-contention token; this pins that a flock-held lane never carries the
+# process-reference one.
+#
+# Pin the machine-greppable TOKEN, not the English prose. Task 5568 ratified
+# that discriminant for seed-warm-lane.sh's identical exit-75-overload problem
+# (cow-seeding §9.5 inv.11, "Refusal signal"), and thin reuses ITS literal
+# LANE_LOCK_CONTENDED: for the flock arm so one grep separates lock contention
+# across both scripts. Prose is free to be reworded; the token is the contract.
+#
+# NOTE the scope of this arm: it pins NON-MISATTRIBUTION only. It does NOT pin
+# gate ORDERING — B3_LANE is a fresh mktemp dir and this holder's cwd is the
+# suite's cwd, so B3_LANE has no live process reference at all; with the two
+# gates in the opposite order the T4 check would simply pass, the flock check
+# would still refuse, and this assert would stay green. B3b below is the fixture
+# in which the ordering is actually observable.
+assert "B3: stderr carries the LANE_LOCK_CONTENDED token (task 5568 discriminant)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "LANE_LOCK_CONTENDED:"' _ "$ERR_OUT"
+assert "B3: stderr does NOT carry the LANE_LIVE_REF token (the two exit-75 reasons stay distinguishable; task 5823)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "LANE_LIVE_REF"' _ "$ERR_OUT"
+
+# ── B3b: BOTH gates armed at once — the flock gate must fire FIRST ────────────
+# The claim B3 cannot make. Here the SAME holder both holds <lane>.lock AND has
+# its cwd inside <lane>/target, so T3 and T4 would each independently refuse.
+# Only the evaluation ORDER decides which token reaches stderr, which makes this
+# the one fixture where "flock first" is falsifiable: swap the two gates in
+# thin-warm-lane.sh and this arm goes red while every other assert in the file
+# stays green.
+#
+# Ordering is not cosmetic. It is what spares a flock-held (ASSIGNED, mid-
+# acquire-reseed) lane the ~1.9s O(processes × fds) /proc walk on the hot path,
+# and what keeps dark-factory's operator-facing attribution stable for the
+# common case.
+B3B_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-b3b-XXXXXX)"
+_TMPDIRS+=("$B3B_ROOT")
+B3B_LANE="$B3B_ROOT/_lane-b3b"
+mkdir -p "$B3B_LANE/target"
+touch "$B3B_LANE/target/MARKER"
+B3B_LOCK="${B3B_LANE}.lock"
+touch "$B3B_LOCK"
+B3B_READY="$B3B_ROOT/holder.ready"
+
+# cd into <lane>/target BEFORE touching READY, and acquire the flock on FD 9 of
+# the same process, so by the time thin runs BOTH references are provably live.
+# `exec sleep` keeps the tracked PID the one owning the cwd and the lock.
+( cd "$B3B_LANE/target" && flock -x 9 && touch "$B3B_READY" && exec sleep 300 ) 9>"$B3B_LOCK" &
+B3B_PID=$!
+_BGPIDS+=("$B3B_PID")
+_wait_for_reader_lock "$B3B_READY" 30
+
+# Fixture non-vacuity: both references really are established, so a green
+# result below cannot come from a fixture that armed only one gate. (Same
+# discipline as Block F's F-fd1/F-fd2 fixture asserts.)
+assert "B3b-fixture: the holder's cwd really is under <lane>/target (T4 would fire)" \
+    bash -c 'case "$(readlink -f /proc/$1/cwd)/" in "$(readlink -f "$2")"/*) exit 0;; *) exit 1;; esac' \
+    _ "$B3B_PID" "$B3B_LANE"
+assert "B3b-fixture: the lane flock really is held (T3 would fire)" \
+    bash -c '! flock -n 9 2>/dev/null' _ 9<"$B3B_LOCK"
+
+run_helper "$B3B_LANE"
+assert "B3b: a lane that is BOTH flock-held and live-referenced exits 75" \
+    test "$RC" -eq 75
+assert "B3b: target/ byte-intact (neither gate frees anything)" \
+    test -f "$B3B_LANE/target/MARKER"
+assert "B3b: ORDERING — the flock gate fires first, so stderr carries LANE_LOCK_CONTENDED" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "LANE_LOCK_CONTENDED:"' _ "$ERR_OUT"
+assert "B3b: ORDERING — the T4 walk is never reached, so stderr carries no LANE_LIVE_REF" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "LANE_LIVE_REF"' _ "$ERR_OUT"
+
+kill "$B3B_PID" 2>/dev/null || true
+wait "$B3B_PID" 2>/dev/null || true
 
 kill "$B3_LOCK_PID" 2>/dev/null || true
 wait "$B3_LOCK_PID" 2>/dev/null || true
@@ -710,13 +775,19 @@ assert "F2: <lane>/target still exists (nothing was freed)" \
     test -d "$F_LANE/target"
 assert "F2: target/DIVERGENT_MARKER byte-intact (the live build's cache is untouched)" \
     test -f "$F_LANE/target/DIVERGENT_MARKER"
-assert "F3: stderr names the PROCESS-REFERENCE refusal" \
-    bash -c 'printf "%s\n" "$1" | grep -qi "live process reference"' _ "$ERR_OUT"
+# Pin the machine-greppable TOKEN, not the English prose. dark-factory's rc=75
+# log line names the flock as the cause unconditionally, so on the (b) path the
+# operator-facing text is an outright misattribution until that string is
+# widened DF-side; `grep LANE_LIVE_REF` on thin's own stderr is what recovers
+# the true cause meanwhile. Token convention ratified by task 5568 for
+# seed-warm-lane.sh (cow-seeding §9.5 inv.11, "Refusal signal").
+assert "F3: stderr carries the LANE_LIVE_REF token (the PROCESS-REFERENCE refusal)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "LANE_LIVE_REF:"' _ "$ERR_OUT"
 # The mirror of the B3 assert added above: with every lock in this block FREE,
-# naming the flock reason here would be a misattribution — and would mean the
-# refusal came from the wrong gate entirely. Mirrors gc's P7.
-assert "F4: stderr does NOT name the flock refusal (no misattribution; every lock in Block F is FREE)" \
-    bash -c '! printf "%s\n" "$1" | grep -q "flock -n failed"' _ "$ERR_OUT"
+# carrying the lock-contention token here would be a misattribution — and would
+# mean the refusal came from the wrong gate entirely. Mirrors gc's P7.
+assert "F4: stderr does NOT carry LANE_LOCK_CONTENDED (no misattribution; every lock in Block F is FREE)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "LANE_LOCK_CONTENDED"' _ "$ERR_OUT"
 assert "F5: seed-script log is EMPTY (the refusal precedes any work)" \
     bash -c '[ ! -s "$1" ]' _ "$F_SEED_LOG"
 

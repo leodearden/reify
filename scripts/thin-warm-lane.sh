@@ -83,11 +83,30 @@
 #         routes every OTHER non-zero rc to WARNING. A separate code for (b)
 #         would therefore turn every lingering-reference release-thin into a
 #         false fault and would require a cross-repo change to silence; reusing
-#         75 needs ZERO dark-factory change, which is the strongest form of the
-#         "reify ships the primitive, dark-factory wires the invocation" seam.
-#         The two reasons stay ATTRIBUTABLE through distinct stderr diagnostics
-#         ("flock -n failed" vs "Live process reference"), pinned in both
-#         directions by tests/infra/test_thin_warm_lane.sh (F3/F4 and B3).
+#         75 needs ZERO dark-factory change to ROUTE correctly, which is the
+#         strongest form of the "reify ships the primitive, dark-factory wires
+#         the invocation" seam.
+#
+#         The two reasons stay ATTRIBUTABLE through a machine-greppable stderr
+#         TOKEN prefixed on each refusal's first line, NOT through free-form
+#         English: `LANE_LOCK_CONTENDED:` for (a) and `LANE_LIVE_REF:` for (b).
+#         That follows the discriminant convention task 5568 ratified for
+#         seed-warm-lane.sh's identical problem — see the normative "Refusal
+#         signal" clause under docs/prds/warm-lane-pool-cow-seeding.md §9.5
+#         inv.11 — and reuses ITS literal token for (a), so one
+#         `grep LANE_LOCK_CONTENDED` separates lock contention across both
+#         scripts. Both tokens are UNCONDITIONAL (never flag-gated): a token
+#         that stays dark until a fleet is patched is dark for exactly the
+#         window most likely to need triage. Pinned in both directions by
+#         tests/infra/test_thin_warm_lane.sh (F3/F4, B3, and B3b's ordering arm).
+#
+#         KNOWN DF-side text drift (routing is correct, WORDING is not):
+#         dark-factory's rc=75 arm logs the fixed string "lane %s already
+#         re-acquired (rc=75, flock held) — benign skip", which MISNAMES the
+#         cause for (b). Harmless to behaviour, wrong for an operator reading
+#         the log. The token above is what makes the true cause recoverable
+#         from thin's own stderr until that string is widened DF-side; filed
+#         as a cross-repo follow-up.
 #
 #   The exit code tracks whether the lane is left SAFE, not whether the re-seed
 #   succeeded: a re-seed that failed but whose clone was discarded leaves exactly
@@ -138,6 +157,20 @@
 #        a truly ORPHANED reference (a leaked test binary still holding an fd)
 #        shields its lane indefinitely — that is owned by the orphaned-test-
 #        binary reaper, docs/notes/orphaned-test-binary-reaper.md.
+#
+#        UNDISCHARGED CROSS-REPO SYNC, recorded rather than silently carried:
+#        dark-factory resolves the warm-lane scripts through a two-candidate
+#        preference order (GitOps._resolve_warm_lane_script) — FIRST
+#        <project_root>/scripts/<name>, THEN its own copy under
+#        orchestrator/scripts/warm-lane/. For reify the project copy (this file)
+#        always exists and always wins, so T4 is live in production here. But
+#        DF's copy of THIS script carries no T4 gate, so any project resolving
+#        through the FALLBACK candidate gets a thin that fails OPEN into exactly
+#        the `rm -rf <lane>/target`-under-a-live-build this gate closes. Task
+#        5572 discharged the equivalent sync for warm-lane-gc.sh (DF's copy has
+#        the gate); the thin half is NOT discharged. Porting it is a
+#        dark-factory change and is out of scope for a reify task — filed as a
+#        cross-repo follow-up rather than attempted from here.
 #
 #        MEASURED COST (this host, 2026-08-06: 1306 live processes, 13328 fd+cwd
 #        symlinks): one live_ref_present call returning the NEGATIVE verdict
@@ -229,7 +262,10 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
           because dark-factory logs rc=75 at DEBUG as a benign skip and every
           other non-zero rc at WARNING — a distinct code would report each
           lingering-reference release-thin as a false fault. The two reasons
-          stay attributable via their distinct stderr diagnostics.
+          stay attributable via an unconditional machine-greppable stderr
+          token on the first line of each refusal: \`LANE_LOCK_CONTENDED:\`
+          for (a) — the same literal seed-warm-lane.sh emits — and
+          \`LANE_LIVE_REF:\` for (b).
 EOF
 }
 
@@ -356,7 +392,7 @@ LANE_LOCK="${LANE_DIR}.lock"
 exec 9>"$LANE_LOCK"
 if ! flock -n 9; then
     exec 9>&-
-    err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+    err "LANE_LOCK_CONTENDED: Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
     err "Refusing to thin an ASSIGNED lane (inv.2: one consumer per lane at a time)."
     exit 75
 fi
@@ -376,7 +412,11 @@ fi
 # Placement is load-bearing on three axes (mirrors warm-lane-gc.sh L570-593):
 #   - AFTER the flock acquire, so a flock-held lane keeps its own distinct
 #     diagnostic — the two exit-75 reasons must stay distinguishable in
-#     dark-factory's logs — and is spared the ~1.9s O(processes × fds) walk. Do
+#     dark-factory's logs, which is what the LANE_LOCK_CONTENDED: /
+#     LANE_LIVE_REF: stderr tokens deliver (see the exit-code table; convention
+#     ratified by task 5568 for seed-warm-lane.sh) — and is spared the ~1.9s
+#     O(processes × fds) walk. This ordering is pinned by B3b, whose lane is
+#     BOTH flock-held AND live-referenced. Do
 #     NOT read that as the cost being small: on the RELEASE path the flock is
 #     normally FREE, so thin pays the full walk (and a negative verdict, the
 #     common one there, cannot short-circuit).
@@ -406,7 +446,7 @@ fi
 # docs/prds/warm-lane-pool-space-safety.md §8.4.
 if live_ref_present "$LANE_DIR"; then
     exec 9>&-
-    err "Live process reference at or under the lane (cwd / open fd / mmap): $_rp_lane_dir"
+    err "LANE_LIVE_REF: Live process reference at or under the lane (cwd / open fd / mmap): $_rp_lane_dir"
     err "Refusing to thin a lane with a live consumer build; preserving target/ (retry next cycle)."
     exit 75
 fi
