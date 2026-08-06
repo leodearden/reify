@@ -352,9 +352,11 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 
 ### η — 5785 · `Torque` named dimension
 
+*Every row below was measured at decompose time, **before** η ran, and is retained verbatim as provenance. η itself then deleted the `pub type Torque` alias from `crates/reify-compiler/stdlib/ports_mechanical.ri` and replaced it with a `NAMED_DIMENSIONS` registry row (`crates/reify-core/src/dimension.rs:640`, re-measured 2026-08-03) — so wherever a row below says "the alias", it names a thing that no longer exists. The verdicts still stand: re-probed 2026-08-03 at HEAD, `param t : Torque = 5N*m/rad` still checks clean (exit 0), now resolving via the registry and needing no `import std.ports.mechanical`.*
+
 | Capability | Evidence | Verdict |
 |---|---|---|
-| `Torque` exists today only as a stdlib alias | `grep:crates/reify-compiler/stdlib/ports_mechanical.ri:29`; header rationale `:9-11` | PASS |
+| `Torque` exists today only as a stdlib alias | `grep:crates/reify-compiler/stdlib/ports_mechanical.ri:29`; header rationale `:9-11` | PASS (pre-η; alias since deleted by η — see section note) |
 | the alias is the live consumer to retire | `probe: reify check <param t : Torque = 5N*m/rad>` → exit 0; `reify eval` → `5 m^2·kg·s^-2·rad^-1` | PASS |
 | `ROTATIONAL_STIFFNESS` is bit-identical to TORQUE | `grep:crates/reify-core/src/dimension.rs:275-276` exps `[(0,2),(1,1),(2,-2),(7,-1)]`; row `:572` | PASS |
 | appending after `:572` is inert | `grep:dimension.rs:358-372` `canonical_name` = forward first-match; no test pins `NAMED_DIMENSIONS.len()`; no VARIANT_COUNT backstop; all 4 consumers forward/table-derived. Alias-row precedents `Curvature`/`AbsorptionCoeff` `:576-583`, `Momentum`/`Impulse` `:585-594` | PASS |
