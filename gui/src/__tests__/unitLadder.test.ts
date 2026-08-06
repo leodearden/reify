@@ -8,6 +8,7 @@ import {
   quantityUnitAlphabet,
   BASE_UNIT_LABELS,
   buildQuantityRe,
+  NUMBER_RE,
 } from '../stores/unitLadder';
 
 describe('formatDisplayNumber', () => {
@@ -269,6 +270,62 @@ describe('quantityUnitAlphabet', () => {
       ],
     };
     expect(quantityUnitAlphabet(bothSpellings).filter((u) => u === 'm^3')).toHaveLength(1);
+  });
+});
+
+/**
+ * Task #6028: the ONE definition of the bare-numeric grammar, shared with the
+ * quantity grammar's numeric part. `PropertyEditor.tsx` and
+ * `PropertyEditor.test.tsx` each used to carry a byte-for-byte copy.
+ */
+describe('NUMBER_RE', () => {
+  it.each([
+    ['80', 'plain integer'],
+    ['0', 'zero'],
+    ['-10', 'negative integer'],
+    ['1.5', 'decimal'],
+    ['1.', 'trailing dot'],
+    ['.5', 'leading dot'],
+    ['1e3', 'exponent'],
+    ['1e+3', 'signed exponent'],
+    ['-1.5E-2', 'negative mantissa, negative exponent, uppercase E'],
+  ])('accepts %s (%s)', (literal) => {
+    expect(NUMBER_RE.test(literal)).toBe(true);
+  });
+
+  it.each([
+    ['', 'empty'],
+    ['+10', 'leading plus — the grammar defines only unary minus'],
+    ['.', 'bare dot'],
+    ['1e', 'dangling exponent'],
+    ['abc', 'not a number'],
+    ['80mm', 'a quantity, not a bare number'],
+    ['mm', 'a bare unit'],
+    [' 80', 'leading whitespace'],
+    ['80 ', 'trailing whitespace'],
+    ['Infinity', 'the JS literal — Number() would accept it, the grammar does not'],
+  ])('rejects %s (%s)', (literal) => {
+    expect(NUMBER_RE.test(literal)).toBe(false);
+  });
+
+  // The anti-drift property, and the whole reason this is exported rather than
+  // restated at the call site: the bare-number path and the quantity path use
+  // the SAME numeric form, so a future change to one cannot silently miss the
+  // other. Every literal NUMBER_RE accepts is exactly what a quantity's capture
+  // group 1 yields when that literal is suffixed with a unit.
+  it.each([['80'], ['-10'], ['.5'], ['1.'], ['1e+3'], ['-1.5E-2'], ['1e999']])(
+    'agrees with buildQuantityRe capture group 1 on %s',
+    (literal) => {
+      expect(NUMBER_RE.test(literal)).toBe(true);
+      expect(buildQuantityRe(['mm']).exec(`${literal}mm`)![1]).toBe(literal);
+    },
+  );
+
+  // Same contract as buildQuantityRe: syntax only, no range check. The
+  // `Number.isFinite` guard in `isValidValue` is load-bearing on BOTH paths.
+  it('accepts an overflowing literal, leaving the range check to the caller', () => {
+    expect(NUMBER_RE.test('1e999')).toBe(true);
+    expect(Number.isFinite(Number('1e999'))).toBe(false);
   });
 });
 

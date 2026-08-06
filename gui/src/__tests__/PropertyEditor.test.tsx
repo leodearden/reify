@@ -4,7 +4,7 @@ import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
 import type { UnitLadderMap, ValueData } from '../types';
 import { loadUnitPreference, saveUnitPreference } from '../stores/unitPreferences';
-import { BASE_UNIT_LABELS, buildQuantityRe } from '../stores/unitLadder';
+import { BASE_UNIT_LABELS, buildQuantityRe, NUMBER_RE } from '../stores/unitLadder';
 
 function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueData {
   return {
@@ -797,10 +797,12 @@ describe('PropertyEditor validation - Infinity rejection', () => {
     expect(input.hasAttribute('data-invalid')).toBe(true);
   });
 
-  it('dual-guard: 1e999 passes NUM_RE but fails isFinite, proving both checks are necessary', () => {
-    // Verify the regex alone would accept '1e999' — it's syntactically valid
-    const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
-    expect(NUM_RE.test('1e999')).toBe(true);
+  it('dual-guard: 1e999 passes NUMBER_RE but fails isFinite, proving both checks are necessary', () => {
+    // Verify the regex alone would accept '1e999' — it's syntactically valid.
+    // Built from the SINGLE definition of the numeric grammar (`NUMBER_RE` in
+    // ../stores/unitLadder, task #6028) rather than a local re-declaration:
+    // this test used to carry its own byte-for-byte copy.
+    expect(NUMBER_RE.test('1e999')).toBe(true);
     // But Number('1e999') overflows to Infinity, which isFinite rejects
     expect(Number.isFinite(Number('1e999'))).toBe(false);
 

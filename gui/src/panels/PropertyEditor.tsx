@@ -8,6 +8,7 @@ import {
   formatDisplayNumber,
   ladderForDimension,
   normalizeUnitLabel,
+  NUMBER_RE,
   quantityUnitAlphabet,
 } from '../stores/unitLadder';
 import { loadAllUnitPreferences, pruneUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
@@ -64,12 +65,12 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
   return groups;
 }
 
-// The typed-quantity grammar is defined ONCE, in `buildQuantityRe`
-// (`../stores/unitLadder`) — see `quantityRe` below. No whitespace is allowed
-// between number and unit, matching the .ri grammar (token.immediate); the
-// backend parse_value_string is more lenient (accepts "5 mm") but the frontend
-// intentionally enforces the stricter rule.
-const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+// Both halves of the accepted input grammar — the bare number (`NUMBER_RE`)
+// and the number-plus-unit quantity (`buildQuantityRe`) — are defined ONCE, in
+// `../stores/unitLadder`, and share their numeric form. No whitespace is
+// allowed between number and unit, matching the .ri grammar (token.immediate);
+// the backend parse_value_string is more lenient (accepts "5 mm") but the
+// frontend intentionally enforces the stricter rule.
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
@@ -382,8 +383,8 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   function isValidValue(value: string): boolean {
     if (value === '') return false;
-    // NUM_RE gates non-decimal literals; isFinite catches overflow (e.g. 1e999 → Infinity)
-    if (NUM_RE.test(value) && Number.isFinite(Number(value))) return true;
+    // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity)
+    if (NUMBER_RE.test(value) && Number.isFinite(Number(value))) return true;
     // Group 1 is the whole signed numeric literal, so the overflow check reads
     // it directly — no second regex re-declaring the unit alternation to strip
     // the suffix, and so nothing left to keep in sync.

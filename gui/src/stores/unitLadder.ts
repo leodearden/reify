@@ -152,6 +152,23 @@ function escapeForRegex(literal: string): string {
 const QUANTITY_NUMBER = '-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?';
 
 /**
+ * A bare numeric literal — the same grammar as a quantity's numeric part, with
+ * no unit suffix (task #6028).
+ *
+ * Built from {@link QUANTITY_NUMBER} rather than restated, so the unit-less and
+ * unit-suffixed input paths cannot diverge: a future decision about the numeric
+ * form (accept a leading `+`, accept digit separators, …) is made once and
+ * lands on both. `PropertyEditor` used to carry a byte-for-byte copy of this
+ * regex next to its quantity check, which is the same sync obligation #6028
+ * removed from the unit alternation.
+ *
+ * As with {@link buildQuantityRe} there is no numeric range check, so callers
+ * must still guard with `Number.isFinite(Number(value))` — `1e999` matches and
+ * converts to `Infinity`.
+ */
+export const NUMBER_RE = new RegExp(`^(${QUANTITY_NUMBER})$`);
+
+/**
  * Build the typed-quantity regex for a unit alphabet (task #6028) — the ONE
  * definition of the quantity grammar in the frontend. Before this, the
  * five-unit alternation was written four times across
