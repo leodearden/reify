@@ -297,6 +297,21 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     }
     depth += n_open - n_close
 }
+
+# Self-consistency check: a lexer state left unbalanced at EOF (an
+# unterminated string/raw-string/block-comment, or a brace depth that never
+# returns to 0) means every line after the desync point lexed wrong — and,
+# per the `carried_in && code == ""` skip above, likely went entirely
+# unscanned. That fails SILENTLY toward GREEN (an unscanned line cannot be
+# flagged), so it is surfaced here rather than left to discover itself.
+# Verdict-neutral (a warning, not a failure): this gate's own 121-file scan
+# set measurably ends every file balanced today (see PRODUCTION-CODE VIEW
+# above), so promoting this to a hard failure once that is trusted tree-wide
+# is a follow-up, not a day-one behavior change.
+END {
+    if (in_str || in_raw || in_block > 0 || depth != 0)
+        printf "WARN: %s: lexer state unbalanced at EOF (str=%d raw=%d block=%d depth=%d)\n", FILENAME, in_str, in_raw, in_block, depth > "/dev/stderr"
+}
 AWK_PROLOGUE
 )"
 

@@ -609,4 +609,30 @@ assert "hF1: an awk failure while scanning a CLEAN fixture is surfaced as exit 2
 assert "hF1: the awk-failure path prints a diagnostic naming the file being scanned" \
     bash -c "env PATH='$AWK_FAIL_SHIM:$PATH' bash '$GATE' --repo-root '$FIX' 2>&1 | grep -q 'ERROR: awk failed while scanning'"
 
+# ===========================================================================
+# hG — lexer end-of-file self-consistency: an unbalanced state (unterminated
+# string/raw-string/block-comment, or a brace depth that never returns to 0)
+# fails SILENTLY toward GREEN today — every line past a desync lexes to the
+# empty string and is dropped by `carried_in && code == "" next`, so the
+# rest of the file goes unscanned while the gate still exits 0. Surfaced as
+# a WARN on stderr (verdict-neutral: exit code is unaffected either way, so
+# this cannot regress detection or the live tree's exit-0 verdict).
+# ===========================================================================
+echo ""
+echo "--- (hG): lexer state left unbalanced at EOF is a loud WARN, not a silent pass ---"
+
+write_fixture <<'RS'
+pub fn nothing() {
+RS
+stage
+assert "hG1: an unbalanced brace at EOF stays exit 0 (verdict-neutral — no hazard in this fixture)" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+assert "hG1: ...and prints a WARN naming the unbalanced state to stderr" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 1>/dev/null | grep -q 'WARN:.*lexer state unbalanced at EOF'"
+
+# Control: the live tree (all 121 in-scope files) has zero EOF drift
+# (measured in the plan) — the WARN must not fire spuriously there.
+assert "hG2: the WARN does not fire on the live, balanced tree" \
+    bash -c "! bash '$GATE' --repo-root '$REPO_ROOT' 2>&1 1>/dev/null | grep -q 'WARN:.*lexer state unbalanced'"
+
 test_summary
