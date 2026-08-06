@@ -265,8 +265,7 @@ fn a_freshly_spawned_thread_starts_from_a_zero_count() {
         .join()
         .expect("reader thread must not panic");
     assert_eq!(
-        observed,
-        0,
+        observed, 0,
         "a freshly spawned thread starts from its own zero count, so the 1 \
          boolean pass performed on the test thread must not be visible there"
     );
