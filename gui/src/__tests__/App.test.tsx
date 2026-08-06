@@ -8,7 +8,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
-import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, withSuppressedRejectionsAndWarnSpy, makeNode } from './test-utils';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -184,6 +184,7 @@ import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
+import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
@@ -6773,6 +6774,132 @@ describe('App buckling mode-shape-frame subscription — failure path (task 6035
 
       // …and with no frames ever ingested the <Show> gate stays shut.
       expect(screen.queryByTestId('buckling-panel')).toBeNull();
+    });
+  });
+});
+
+// ── App selective-demand enforcement sync (task 6045) ───────────────────────
+//
+// Covers the App-level selective-demand ENFORCEMENT wiring end-to-end:
+// initApp -> createSelectiveDemandSync -> engineStore.syncDemand ->
+// bridge.syncDemand. Before task 6045 the `../bridge` mock factory carried
+// the passive-measurement `syncObservedDemand` but omitted the distinct,
+// genuine `syncDemand` export (bridge.ts:101), so any test that let the
+// 150ms debounce elapse threw "No 'syncDemand' export is defined" — 5 times
+// across a full App.test.tsx run — leaving this whole enforcement path
+// unexercised.
+
+// waitFor's default budget already covers the debounce with margin; naming
+// the wait timeout off the exported constant ties correctness to the real
+// debounce value instead of a hardcoded guess that could silently drift.
+const DEMAND_SYNC_WAIT_TIMEOUT_MS = SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 850;
+
+describe('App selective-demand enforcement sync (task 6045)', () => {
+  it('(a) the visible-realization set is synced to bridge.syncDemand, excluding non-realization mesh keys', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [
+        makeMesh('Bracket#realization[0]'),
+        makeMesh('Bracket#realization[1]'),
+        makeMesh('Bracket.geometry'),
+      ],
+    });
+    // getEntityTree stays at the factory default `[]`: with an empty tree,
+    // viewStateStore.getEffectiveVisibility short-circuits to 'show' for
+    // every path (viewStateStore.ts:120-121), so the payload below is a pure
+    // function of engineStore's '#realization[' key filter.
+
+    await renderAndWaitForReady();
+
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+
+    // Non-realization exclusion is the non-vacuity anchor: a regression that
+    // echoed the whole mesh key set would satisfy a realizations-only
+    // membership assertion but fails this exact-set assertion.
+    const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+    expect([...payload].sort()).toEqual(['Bracket#realization[0]', 'Bracket#realization[1]']);
+  });
+
+  it('(b) hiding a realization via the eye icon prunes it from the next payload while a sibling realization survives', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [makeMesh('Bracket#realization[0]'), makeMesh('Bracket#realization[1]')],
+    });
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([
+      makeNode({ entity_path: 'Bracket#realization[0]', kind: 'realization', has_mesh: true }),
+      makeNode({ entity_path: 'Bracket#realization[1]', kind: 'realization', has_mesh: true }),
+    ]);
+
+    await renderAndWaitForReady();
+    await waitFor(() => expect(screen.getByTestId('eye-icon-Bracket#realization[0]')).toBeTruthy());
+
+    // Let the initial 0 -> N mesh-set sync settle before snapshotting the
+    // baseline call count.
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+    const before = vi.mocked(bridge.syncDemand).mock.calls.length;
+
+    // cycleCascading: show -> ghost -> hidden (viewStateStore.ts:307-312).
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    fireEvent.click(screen.getByTestId('eye-icon-Bracket#realization[0]'));
+    expect(
+      screen.getByTestId('eye-icon-Bracket#realization[0]').getAttribute('aria-label'),
+    ).toBe('hidden');
+
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand).mock.calls.length).toBeGreaterThan(before),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+
+    const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+    expect(payload).not.toContain('Bracket#realization[0]');
+    expect(payload).toContain('Bracket#realization[1]');
+  });
+});
+
+// Deliberately a SIBLING describe, not a third `it` inside the block above:
+// this case must observe the plain factory / global-beforeEach default
+// rather than a describe-scoped mockImplementation, because it installs a
+// rejecting implementation of its own (same precedent as task 6035,
+// App.test.tsx:6737-6740 above).
+describe('App selective-demand enforcement sync — failure path (task 6045)', () => {
+  it('a rejected sync degrades gracefully: App stays healthy, no unhandled rejection', async () => {
+    // Positive assertion on the catch arm at engineStore.ts:553-557. The
+    // enforcement sync is best-effort: a bridge that cannot accept a demand
+    // update must not abort initApp or wedge the App short of ready.
+    //
+    // Deliberately NOT written as a negative match on the console.warn
+    // wording — see the design decision recorded for this task: that shape
+    // is unfalsifiable on a reword of the log literal and is already
+    // subsumed by (i) cases (a)/(b) above, which fail outright if
+    // `syncDemand` is missing from the factory, and (ii) the
+    // global-beforeEach `mockResolvedValue`, which throws before any test in
+    // this file runs if the factory entry is ever dropped again.
+    await withSuppressedRejectionsAndWarnSpy(async () => {
+      vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
+      vi.mocked(bridge.getInitialState).mockResolvedValue({
+        ...emptyState,
+        meshes: [makeMesh('Bracket#realization[0]')],
+      });
+
+      await renderAndWaitForReady();
+
+      // Non-vacuity anchor: the rejecting path really was exercised.
+      await waitFor(
+        () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+        { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+      );
+      await flushMacrotasks();
+
+      // engineStore.ts:553-557 swallowed the rejection: the App is mounted
+      // and later init work still ran past the sync.
+      expect(screen.getByTestId('app-layout')).toBeTruthy();
+      expect(vi.mocked(bridge.isDebugEnabled)).toHaveBeenCalled();
     });
   });
 });
