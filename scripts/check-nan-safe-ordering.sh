@@ -50,12 +50,14 @@
 # EXCLUDED:
 #   - comments and string literals, per the PRODUCTION-CODE VIEW above;
 #   - test code: `tests/` dirs (by path) and `#[cfg(test)] mod` BODIES
-#     (brace-depth tracked, best-effort; the opening line must declare a
-#     `mod`, so a bare `#[cfg(test)] fn` or `#[cfg(test)] use …;` is NOT
-#     exempt) — a synthetic negative-example fixture asserting the old
-#     panic-prone behavior is thus permitted inside a real test module. A
-#     legitimate test-only helper that is not in a `mod` needs the
-#     `// nan-safe:allow` escape below instead;
+#     (brace-depth tracked, best-effort; a `mod IDENT` declaration must be
+#     seen before the block's opening brace — not necessarily on the same
+#     line, e.g. `mod tests` then `{` on the next line is honored too — so a
+#     bare `#[cfg(test)] fn` or `#[cfg(test)] use …;` is NOT exempt) — a
+#     synthetic negative-example fixture asserting the old panic-prone
+#     behavior is thus permitted inside a real test module. A legitimate
+#     test-only helper that is not in a `mod` needs the `// nan-safe:allow`
+#     escape below instead;
 #   - escaped sites: any line carrying the inline escape
 #         // nan-safe:allow — <reason>
 #     mirroring reify-audit's `// ptodo:allow` convention (§6.8). Annotate a
@@ -260,22 +262,38 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     }
     if (code ~ /#\[cfg\(test\)\]/) {
         pending_test = 1
+        pending_mod = 0
     } else if (pending_test) {
         # The pending gate survives only across blank lines, further attributes
         # and comments; any other non-mod line disarms it. A comment-only line
         # lexes to the empty string, so `t == ""` already covers it.
+        #
+        # A `mod IDENT` line that opens no brace of its own — e.g. `mod tests`
+        # with the `{` on the NEXT line, legal Rust and this repo has no
+        # rustfmt gate forcing brace-on-same-line (CLAUDE.md) — sets
+        # `pending_mod` so that later brace-opening line can still arm the
+        # skipper below, even though *that* line's own text says nothing
+        # about `mod`. Guarded to n_open==0 and no same-line `;` so a
+        # self-terminating `mod tests;` (external file, no local body) does
+        # NOT leave `pending_mod` armed for some unrelated later brace.
         t = code; sub(/^[ \t]+/, "", t)
-        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/)) pending_test = 0
+        if (t ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/ && n_open == 0 && t !~ /;/) pending_mod = 1
+        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/ || (pending_mod && n_open > 0))) {
+            pending_test = 0
+            pending_mod = 0
+        }
     }
     if (pending_test && n_open > 0) {
-        if (code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+        if (pending_mod || code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
             in_test = 1
             test_base = depth        # depth BEFORE this block opened
             depth += n_open - n_close
             pending_test = 0
+            pending_mod = 0
             next
         }
         pending_test = 0             # cfg(test) on a fn/field/use, not a module
+        pending_mod = 0
     }
     depth += n_open - n_close
 }

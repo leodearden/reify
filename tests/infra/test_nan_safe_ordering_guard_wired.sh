@@ -539,4 +539,49 @@ stage
 assert "hE3: the identical hazard inside a proper #[cfg(test)] mod stays exempt" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
+# hE4 — REGRESSION PIN (amendment): `mod tests` with the `{` on the NEXT
+# line, not the same line. Legal Rust, and this repo has no rustfmt gate
+# forcing brace-on-same-line (CLAUDE.md: ~5913 unformatted hunks across 685
+# files). Before this amendment the arming check only ever looked at the
+# CURRENT line's own text for `mod IDENT`, so a brace-only continuation line
+# never re-declared `mod` and was wrongly treated as ordinary production
+# code — a false RED. Verified empirically against the pre-amendment gate:
+# exit 1 (should be 0).
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests
+{
+    #[test]
+    fn sorts_with_fallback() {
+        let mut v = Vec::<f64>::new();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+RS
+stage
+assert "hE4: '#[cfg(test)] / mod tests / {' (brace on its own line) still arms the skipper" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hE5 — REGRESSION PIN (amendment): guards the fix above against its own
+# obvious failure mode. `mod tests;` is a COMPLETE, self-terminating
+# declaration (an external module in another file) with no local body to
+# skip. A naive "remember we saw `mod IDENT` and let some later brace arm
+# the skipper" fix — without also recognizing the statement-terminating `;`
+# — would leave that memory dangling and wrongly swallow the NEXT unrelated
+# production brace as if it were the (nonexistent) local body. Verified this
+# fixture would regress to exit 0 (swallowed) under such a naive fix, even
+# though the pre-amendment gate already gets this right (exit 1) since it
+# never remembers `mod` across lines at all.
+write_fixture <<'RS'
+#[cfg(test)]
+mod tests;
+
+pub fn sort_all(v: &mut Vec<f64>) {
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+}
+RS
+stage
+assert "hE5: a self-terminating 'mod tests;' (external file, no local body) does not swallow the next unrelated production item" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
 test_summary
