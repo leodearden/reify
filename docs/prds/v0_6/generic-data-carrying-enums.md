@@ -4,11 +4,11 @@
 
 **The body below is the AS-AUTHORED design record.** The §4.x grammar/fixture ERROR-node tables and the §8 decomposition metadata (including `grammar_confirmed=false`) are dated 2026-05-27 *pre-implementation* measurements, retained as provenance for why the decomposition was shaped the way it was — they are not current statements of fact about the language. §10 remains a live statement of what is still out of scope.
 
-Resolves the **explicitly-deferred** scope item of `docs/prds/v0_6/data-carrying-enums.md` §10 ("Generic / type-parameterized variant payloads … a separate future PRD; v1 payloads are concrete types") and spec §3.8's note that recursive ADTs ("variant type base case", §8.9) build on the non-generic data-carrying-enums feature. **Leo decided 2026-05-27: add generic enums + `Result<T,E>`.** This PRD owns the generic-enum substrate; `docs/prds/v0_6/result-and-fallback.md` Layer B (a sibling-batch follow-up) consumes it to build `Result<T,E>`.
+Resolves the **explicitly-deferred** scope item of `docs/prds/v0_6/data-carrying-enums.md` §10 ("Generic / type-parameterized variant payloads … a separate future PRD; v1 payloads are concrete types") and spec §3.8's note that recursive ADTs ("variant type base case", §8.9) build on the non-generic data-carrying-enums feature. **Leo decided 2026-05-27: add generic enums + `Result<T,E>`.** This PRD owns the generic-enum substrate; `docs/prds/v0_6/result-and-fallback.md` Layer B (a sibling-batch follow-up) consumes it to build `Result<T,E>`. Layer B is **built**: the prelude enum `enum Result<T, E> { Ok { value: T }, Err { error: E } }` lives at `crates/reify-compiler/stdlib/result.ri` and shipped in v0.6 on this substrate.
 
-**This PRD is a thin extension, not a new generics system.** Reify already has type parameters + `auto`-resolution for structures, occurrences, traits, and free functions (spec §3.9; `crates/reify-compiler/src/auto_type_param.rs`; `reify-core/src/ty.rs` `Type::TypeParam`; IR `reify-ir/src/traits.rs` `TypeParam`; grammar `type_parameters` / `type_parameter` rules). The work here is **plugging `enum` declarations + their named-field variant payloads into that existing machinery** — exactly as `structure_definition`, `occurrence_definition`, `trait_declaration`, and `function_definition` already carry `optional($.type_parameters)`. `enum_declaration` is the one major declaration form that does NOT (verified 2026-05-27, §4.4). Reuse-not-reinvent is the load-bearing discipline.
+**This PRD is a thin extension, not a new generics system.** Reify already has type parameters + `auto`-resolution for structures, occurrences, traits, and free functions (spec §3.9; `crates/reify-compiler/src/auto_type_param.rs`; `reify-core/src/ty.rs` `Type::TypeParam`; IR `reify-ir/src/traits.rs` `TypeParam`; grammar `type_parameters` / `type_parameter` rules). The work here is **plugging `enum` declarations + their named-field variant payloads into that existing machinery** — exactly as `structure_definition`, `occurrence_definition`, `trait_declaration`, and `function_definition` already carry `optional($.type_parameters)`. `enum_declaration` was the one major declaration form that did NOT (verified 2026-05-27, §4.4) — **that is the gap this PRD closed**: `enum_declaration` now carries `optional($.type_parameters)` in `tree-sitter-reify/grammar.js`, mirrored by `TypeParameters?` on `EnumDeclaration` in `gui/src/editor/reify.grammar`. Reuse-not-reinvent is the load-bearing discipline.
 
-**Hard dependency on the non-generic feature.** Generic enums are built on the named-field-payload data-carrying-enums (DCE) feature, which is itself deferred in the same batch (`cluster:"data-carrying-enums"`, tasks 3936/3938/3940/3942/3944/3946/3949/3951). Every leaf here `depends_on` the relevant DCE leaves (named-field decl grammar, IR payload slot, pattern grammar, pattern compile, payload-binding eval). These intra-batch edges are wired (the DCE tasks now exist). See §6.
+**Hard dependency on the non-generic feature — satisfied.** Generic enums are built on the named-field-payload data-carrying-enums (DCE) feature, filed in the same batch (`cluster:"data-carrying-enums"`, tasks 3936/3938/3940/3942/3944/3946/3949/3951). Every leaf here `depends_on` the relevant DCE leaves (named-field decl grammar, IR payload slot, pattern grammar, pattern compile, payload-binding eval). Those DCE leaves have all **landed**, so the dependency is discharged. See §6.
 
 ## §1 — Goal & observable surface
 
@@ -29,7 +29,7 @@ enum Tree<T> {
 }
 ```
 
-What a user can do when this lands (the observable surface):
+What a user can do today (the observable surface) — this is the shipped surface, mirrored by `examples/m6_generic_enum.ri`:
 
 ```reify
 structure def Demo {
