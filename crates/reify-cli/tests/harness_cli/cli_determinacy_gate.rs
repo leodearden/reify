@@ -19,8 +19,8 @@
 //! and asserting `exit 0` + `no "VIOLATED"` in stdout.
 //!
 //! The assertion is dual-mode-robust:
-//! - Under OCCT: `#precision(0.3mm)` sphere deviation 6.202e-4 m, below the `1mm`
-//!   bound → Satisfied → exit 0.
+//! - Under OCCT: `#precision(0.3mm)` sphere deviation below the `1mm` bound →
+//!   Satisfied → exit 0.
 //! - Without OCCT: realization cannot run → `achieved_repr_tol` map stays empty →
 //!   Indeterminate (C1 graceful degradation) → exit 0.
 //!
@@ -33,14 +33,17 @@ use crate::common;
 /// must not print "VIOLATED" in stdout.
 ///
 /// This is the missing consumer-boundary half of the Satisfied branch:
-/// - Under OCCT: `#precision(0.3mm)` sphere → sampled deviation 6.202e-4 m, below the
-///   1 mm bound → Satisfied → exit 0.
+/// - Under OCCT: `#precision(0.3mm)` sphere → sampled deviation below the 1 mm
+///   bound → Satisfied → exit 0.
 /// - Under stub (no OCCT): realization cannot run → Indeterminate (C1) → exit 0.
 ///
 /// Numbers (`1 m` sphere, `0.3mm` deflection, `1mm` bound) mirror the shipped,
 /// passing engine test `bt7_fine_sphere_tight_bound_yields_satisfied` in
 /// `crates/reify-eval/tests/representation_within_assertion.rs`, so the numeric
 /// premise is grounded in a validated reference result, not a guessed threshold.
+/// That test's `OCCT_SOURCE_FINE` doc owns the measured deviation and the
+/// precision-choice rationale, and its pre-condition is the machine-checked copy;
+/// this file deliberately does not restate the digits.
 ///
 /// RED until step-2 creates `fixtures/representation_within_satisfied.ri` — without
 /// it `reify check` cannot load the file and exits non-zero, failing the assertion.
@@ -54,12 +57,24 @@ fn check_representation_within_satisfied_exits_zero() {
         "BT7: reify check representation_within_satisfied.ri should exit 0.\n\
          Under OCCT: fine precision → deviation below 1mm → Satisfied → exit 0.\n\
          Under stub: no realization → Indeterminate (C1) → exit 0.\n\
+         DIAGNOSIS: the fixture's #precision(0.3mm) is tuned so the achieved \
+         deviation clears the 1mm bound with noticeably less headroom than the \
+         0.1mm it replaced. If stdout shows a VIOLATED RepresentationWithin, this \
+         is most likely OCCT numeric drift rather than a regression in \
+         RepresentationWithin itself — the measured deviation and the \
+         re-measurement recipe live on `bt7_fine_sphere_tight_bound_yields_satisfied` \
+         / `OCCT_SOURCE_FINE` in \
+         crates/reify-eval/tests/representation_within_assertion.rs, whose \
+         pre-condition should fail alongside this one and will name the value.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
         !stdout.contains("VIOLATED"),
         "BT7: stdout must not contain 'VIOLATED' (fine precision → Satisfied or \
-         Indeterminate, never Violated).\nstdout: {stdout}"
+         Indeterminate, never Violated).  A VIOLATED here most likely means OCCT \
+         numeric drift pushed the achieved deviation past the 1mm bound — see \
+         `OCCT_SOURCE_FINE` in crates/reify-eval/tests/representation_within_assertion.rs \
+         for the measured value and the re-measurement recipe.\nstdout: {stdout}"
     );
 
     // Mode-gated assertion: confirm the RepresentationWithin constraint was
@@ -72,7 +87,7 @@ fn check_representation_within_satisfied_exits_zero() {
     // fixture, there would be no Indeterminate entry and "INDETERMINATE" would
     // not appear — so this assertion catches that regression.
     //
-    // Under OCCT: fine-precision sphere deviation 6.202e-4 m, below 1 mm → Satisfied.
+    // Under OCCT: fine-precision sphere deviation stays below 1 mm → Satisfied.
     // `reify check` prints "All constraints satisfied." in the summary line.
     if reify_kernel_occt::OCCT_AVAILABLE {
         assert!(

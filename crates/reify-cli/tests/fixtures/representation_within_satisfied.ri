@@ -6,17 +6,21 @@
 // `bt7_fine_sphere_tight_bound_yields_satisfied` in
 // `crates/reify-eval/tests/representation_within_assertion.rs` (OCCT_SOURCE_FINE):
 //
-//   #precision(0.3mm) — fine deflection; sampled facet-chord deviation 6.202e-4 m
+//   #precision(0.3mm) — fine deflection
 //   sphere(1000mm)    — 1 m radius
 //   bound 1mm         — assertion bound = 1e-3 m
 //
-// The deviation is a SAWTOOTH in #precision (OCCT meshes each edge into an INTEGER
-// segment count, so adjacent precision values swing ~3x) — do NOT interpolate it to
-// retune this value; re-measure instead.
+// The achieved deviation is measured and pinned by that engine test (see its
+// OCCT_SOURCE_FINE doc for the value, the full precision→deviation sweep and the
+// re-measurement recipe).  It is deliberately NOT restated here, so retuning the
+// precision cannot leave a stale number behind in this file.  What matters for
+// this fixture: 0.3mm clears the 1mm bound with noticeably less headroom than the
+// 0.1mm it replaced, so a failure here is more likely OCCT numeric drift than a
+// regression in RepresentationWithin itself.
 //
 // Under OCCT: tessellate_realizations populates achieved_repr_tol["Sphere#realization[0]"]
-// with 6.202e-4 m, below the 1mm (1e-3 m) bound — 1.61x inside → RepresentationWithin
-// → Satisfied → `reify check` exits 0.
+// below the 1mm (1e-3 m) bound → RepresentationWithin → Satisfied → `reify check`
+// exits 0.
 //
 // Under stub (no OCCT): realization cannot run → achieved_repr_tol map stays empty →
 // RepresentationWithin → Indeterminate (C1 graceful degradation) → `reify check` exits 0.
@@ -26,8 +30,9 @@
 #precision(0.3mm)
 
 // Sphere: 1 m-radius sphere realized at fine precision.
-// At #precision(0.3mm) (3e-4 m deflection) the sampled facet-chord deviation
-// on a sphere of radius 1 m is 6.202e-4 m, below the 1 mm (1e-3 m) bound.
+// At #precision(0.3mm) (3e-4 m deflection) the sampled facet-chord deviation on a
+// sphere of radius 1 m stays below the 1 mm (1e-3 m) bound; the exact value is
+// measured and pinned by bt7_fine_sphere_tight_bound_yields_satisfied.
 structure Sphere {
     let r = sphere(1000mm)
 }
