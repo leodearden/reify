@@ -1595,7 +1595,7 @@ Four-level priority ordering for constraint system implementation (applies broad
 | 3 | Geometry selector strengthening | v0.2 | |
 | 4 | `Result<T>` or `fallback` expressions | v0.2 | |
 | 5 | Associated `fn` in traits | v0.2+ | |
-| 6 | Data-carrying enums | v0.2+ | v0.1 enums are C-style (no associated data) |
+| 6 | Data-carrying enums | Realized (v0.6) | Algebraic data types with named-field payload variants (named-field only; no positional/tuple) shipped in v0.6. See docs/prds/v0_6/data-carrying-enums.md. |
 | 7 | Tolerance stack-up analysis (RSS, worst-case, Monte Carlo) | v0.2 | Requires assembly graph + statistical computation |
 | 8 | Field-valued material properties | v0.2 | |
 | 9 | Warm-start tier 2 (closest parameter set per node) | Future | Protocol supports without modification |
