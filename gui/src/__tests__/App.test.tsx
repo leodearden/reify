@@ -130,7 +130,7 @@ vi.mock('../editor/FileTabs', () => ({
 // evaluate the real bridge.ts — its @tauri-apps/api and @tauri-apps/plugin-dialog
 // imports and every real implementation — inside the most load-bearing mock in
 // this file.
-const emptyState: GuiState ={ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
+const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
   getEntityTree: vi.fn().mockResolvedValue([]),
@@ -155,6 +155,13 @@ vi.mock('../bridge', () => ({
   onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFeaDiagnosticsChanged: vi.fn().mockResolvedValue(() => {}),
   onFeaConvergenceChanged: vi.fn().mockResolvedValue(() => {}),
+  // Not reached by <App /> today (onDiagnostics has no caller; the two FEA-case
+  // entries are Viewport-only and ../viewport is mocked wholesale). Mocked
+  // anyway rather than allowlisted: one line each is cheaper than a premise the
+  // coverage guard cannot check, and either could become reachable silently.
+  onDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  setActiveFeaCase: vi.fn().mockResolvedValue(undefined),
+  subscribeFeaCaseToStore: vi.fn().mockResolvedValue(() => {}),
   onTensegrityWiresUpdate: vi.fn().mockResolvedValue(() => {}),
   onTensegritySurfacesUpdate: vi.fn().mockResolvedValue(() => {}),
   onDisplayPanesUpdate: vi.fn().mockResolvedValue(() => {}),

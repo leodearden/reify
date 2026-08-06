@@ -20,7 +20,14 @@
  * (same convention as `debugBridgeTestHelpers.ts`).
  */
 
-const BRIDGE_MOCK_MARKERS = [`vi.mock('../bridge'`, `vi.mock("../bridge")`, `vi.mock("../bridge"`];
+// One entry per quote style. A form with the closing paren included would be
+// dead: `vi.mock("../bridge")` is a strict extension of `vi.mock("../bridge"`,
+// so it can never be the earliest match.
+const BRIDGE_MOCK_MARKERS = [
+  `vi.mock('../bridge'`,
+  `vi.mock("../bridge"`,
+  'vi.mock(`../bridge`',
+];
 
 /** True for a character that may start a JS identifier key. */
 function isIdentStart(ch: string): boolean {

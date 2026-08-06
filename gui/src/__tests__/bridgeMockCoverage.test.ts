@@ -56,6 +56,46 @@ import { extractBridgeFactoryKeys, missingFactoryKeys, staleOmissions } from './
 const RUNTIME_EXPORTS = Object.keys(bridge);
 
 /**
+ * Runtime exports a factory may legitimately omit, each with the reason it is
+ * unreachable from a rendered `<App />` THROUGH THE MOCKED NAMESPACE. Check (c)
+ * keeps every entry honest in the two directions it can: allowlisting a name
+ * bridge.ts no longer exports, or one the factory in fact mocks, fails.
+ *
+ * TWO GRADES OF JUSTIFICATION — know which one you are relying on:
+ *   MECHANISM (cannot rot): the only caller is inside bridge.ts itself. A
+ *     same-module call resolves against the real binding, never the mocked
+ *     namespace, so no edit to App.tsx or a component can make it reachable.
+ *   PREMISE (can rot silently): "no non-test importer today". Nothing here
+ *     checks that, so if a component starts importing the name, check (c) stays
+ *     green — it only detects the two rot conditions above. Re-verify the
+ *     importer set when you touch one of these, and prefer just adding the key
+ *     to both factories when the export is function-shaped: three entries that
+ *     rested on a premise about ../viewport being mocked were retired that way,
+ *     because one line in each factory beats a premise the guard cannot check.
+ *     The four PREMISE entries that remain are the ones where a `vi.fn()` stub
+ *     would be an active lie: two are data constants (a fake value could be
+ *     silently asserted against, whereas the missing-export throw is loud and
+ *     names itself), and two have no non-test caller at all.
+ *
+ * The bar for adding an entry is "no non-test importer can reach it through the
+ * mocked namespace", NOT "adding the key is inconvenient". `claudePermissionDecision`
+ * is deliberately NOT here: App.tsx imports it and calls it in `createClaudeStore`'s
+ * `onPermissionDecision` handler, so it is genuinely reachable.
+ */
+const BRIDGE_INTERNAL_OMISSIONS: Record<string, string> = {
+  BUILD_CONTEXT_HANDLED_FIELDS:
+    'PREMISE — const array; only importers are __tests__/types.typecheck.ts and __tests__/claudeBridge.test.ts (the ChatPanel.tsx hit is a comment)',
+  MESSAGE_CONTEXT_FIELD_MAP:
+    'MECHANISM — const map iterated by mapContextToWire inside bridge.ts (the ChatPanel.tsx hit is a comment)',
+  lspRequest:
+    'PREMISE — no non-test importer at all; editor/lspClient.ts declares its OWN local lspRequest and calls invoke directly',
+  mapContextToWire: 'MECHANISM — called only by claudeSendMessage within bridge.ts',
+  onFeaCaseChanged: 'MECHANISM — called only by subscribeFeaCaseToStore within bridge.ts',
+  refreshFullState: 'PREMISE — test-only; sole importer is __tests__/bridge.test.ts',
+  validatePayload: "MECHANISM — called only from bridge.ts's own claude/sidecar listeners",
+};
+
+/**
  * Files subject to the full-coverage contract.
  *
  * MEMBERSHIP CRITERION: this file renders `<App />`, so the whole App component
@@ -68,51 +108,30 @@ const RUNTIME_EXPORTS = Object.keys(bridge);
  * selectiveDemand.test.ts, sidecarPersistence.test.ts) carry deliberately narrow,
  * subject-scoped bridge factories — correct for a focused unit test — and
  * viewport/Viewport.test.tsx uses a different specifier ('../../bridge').
- * Globbing would force them to full coverage or bloat DELIBERATE_OMISSIONS with
- * 30+ meaningless entries, destroying its signal.
+ * Globbing would force them to full coverage or bloat the allowlist with 30+
+ * meaningless entries, destroying its signal.
  *
- * `minFactoryKeys` is a per-target non-vacuity floor, not a target size: it is a
- * little below each factory's current key count, so a parser that silently
- * stopped short trips check (a) instead of making check (b) pass vacuously.
+ * `omissions` is per-row, not global, because check (c) fails an entry that the
+ * factory DOES mock: a single shared table therefore forces every target to
+ * carry the same key set. Both rows point at the same table today because both
+ * factories are complete in the same way; a future target with a legitimately
+ * narrower factory gets its own table rather than making this one lie.
+ *
+ * `minFactoryKeys` is a per-target non-vacuity floor. It does NOT protect check
+ * (b) — under-parsing makes (b) report MORE gaps, not fewer, so (b) already
+ * fails loudly on any under-capture. What the floor buys is a clearer failure
+ * for the one case (b) words badly: a mis-targeted or renamed path, where the
+ * parser finds no factory at all and (b) would otherwise dump the entire
+ * 68-name export list as "missing".
  */
 const TARGETS = [
-  { file: 'App.test.tsx', minFactoryKeys: 50 },
-  { file: 'contextIntegration.test.tsx', minFactoryKeys: 30 },
+  { file: 'App.test.tsx', minFactoryKeys: 55, omissions: BRIDGE_INTERNAL_OMISSIONS },
+  { file: 'contextIntegration.test.tsx', minFactoryKeys: 55, omissions: BRIDGE_INTERNAL_OMISSIONS },
 ] as const;
-
-/**
- * Runtime exports a target factory may legitimately omit, each with the reason
- * it is unreachable from a rendered `<App />`. Check (c) keeps every entry
- * honest: allowlisting a name that bridge.ts no longer exports, or that the
- * factory in fact mocks, fails.
- *
- * The bar for adding an entry is "no non-test importer can reach it through the
- * mocked namespace", NOT "adding the key is inconvenient". `claudePermissionDecision`
- * is deliberately NOT here: App.tsx imports it and calls it in `createClaudeStore`'s
- * `onPermissionDecision` handler, so it is genuinely reachable.
- */
-const DELIBERATE_OMISSIONS: Record<string, string> = {
-  BUILD_CONTEXT_HANDLED_FIELDS:
-    'const array; only importers are __tests__/types.typecheck.ts and __tests__/claudeBridge.test.ts (the ChatPanel.tsx hit is a comment)',
-  MESSAGE_CONTEXT_FIELD_MAP:
-    'const map iterated by mapContextToWire inside bridge.ts; no non-test importer (the ChatPanel.tsx hit is a comment)',
-  lspRequest:
-    'no non-test importer at all — editor/lspClient.ts declares its OWN local lspRequest and calls invoke directly',
-  mapContextToWire:
-    'called only by claudeSendMessage within bridge.ts; a same-module call never goes through the mocked namespace',
-  onDiagnostics: 'zero references repo-wide',
-  onFeaCaseChanged: 'called only by subscribeFeaCaseToStore within bridge.ts',
-  refreshFullState: 'test-only — sole importer is __tests__/bridge.test.ts',
-  setActiveFeaCase:
-    'sole importer is viewport/Viewport.tsx, reachable only through the ../viewport barrel which every target mocks wholesale — unmocking ../viewport flips this to reachable',
-  subscribeFeaCaseToStore:
-    'sole importer is viewport/Viewport.tsx, reachable only through the ../viewport barrel which every target mocks wholesale — unmocking ../viewport flips this to reachable',
-  validatePayload: "called only from bridge.ts's own claude/sidecar listeners",
-};
 
 describe.each(TARGETS)(
   'bridge-mock coverage: bridge.ts runtime exports ↔ $file vi.mock factory',
-  ({ file, minFactoryKeys }) => {
+  ({ file, minFactoryKeys, omissions }) => {
     const factoryKeys = extractBridgeFactoryKeys(readFileSync(join(__dirname, file), 'utf-8'));
 
     it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
@@ -140,13 +159,11 @@ describe.each(TARGETS)(
     });
 
     it('(b) every bridge.ts runtime export is mocked or documented as omitted', () => {
-      expect(missingFactoryKeys(RUNTIME_EXPORTS, factoryKeys, DELIBERATE_OMISSIONS)).toStrictEqual(
-        [],
-      );
+      expect(missingFactoryKeys(RUNTIME_EXPORTS, factoryKeys, omissions)).toStrictEqual([]);
     });
 
     it('(c) the allowlist is self-checking — no entry has rotted', () => {
-      expect(staleOmissions(RUNTIME_EXPORTS, factoryKeys, DELIBERATE_OMISSIONS)).toStrictEqual([]);
+      expect(staleOmissions(RUNTIME_EXPORTS, factoryKeys, omissions)).toStrictEqual([]);
     });
   },
 );
