@@ -945,7 +945,7 @@ const App: Component = () => {
   // behind phase==='idle' (PRD §12 Q3): enforcement must update the instant a
   // body is hidden so the next interactive edit_param prunes its cells. `ghost`
   // and `show` stay demanded; only `hidden` prunes (PRD §12 Q4).
-  createSelectiveDemandSync(engineStore, viewStateStore);
+  createSelectiveDemandSync(engineStore, viewStateStore, () => viewStateStore.getAllEffective());
 
   // Re-fetch entity tree on transitions from any non-idle phase back to 'idle'.
   // prevPhase starts as undefined so the first effect run (which just reads the

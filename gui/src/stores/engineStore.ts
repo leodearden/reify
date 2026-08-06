@@ -604,9 +604,13 @@ interface DemandSyncEngine {
   syncDemand: (getEffectiveVisibility: (path: string) => VisibilityState) => Promise<void> | void;
 }
 
-/** Minimal view-state-store surface the demand-sync effect reads. */
+/** Minimal view-state-store surface the demand-sync effect reads.
+ *  Deliberately does NOT include `getAllEffective`: the effect must not read
+ *  effective visibility out of the store itself (see the readiness contract on
+ *  `createSelectiveDemandSync`'s `effectiveVisibility` parameter, task #6052).
+ *  `getEffectiveVisibility` stays — the debounced callback hands it to
+ *  `syncDemand` at fire time, outside any tracking scope. */
 interface DemandSyncViewState {
-  getAllEffective: () => Record<string, VisibilityState>;
   getEffectiveVisibility: (path: string) => VisibilityState;
 }
 
@@ -630,8 +634,8 @@ interface DemandSyncViewState {
  * fires — but `on()` performs no equality check, so the mesh COUNT above
  * is only the callback's `input` argument, never a change filter; the
  * effect re-runs whenever any tracked source notifies. That includes any
- * effective-visibility change (`getAllEffective` tracks `state.explicit`
- * per path), a wholesale `state.meshes` replacement (`initFromState`)
+ * effective-visibility change reported by the injected `effectiveVisibility`
+ * getter, a wholesale `state.meshes` replacement (`initFromState`)
  * even at unchanged cardinality, and any add or remove of a mesh key:
  * `Object.keys()` subscribes to the meshes object's own `$SELF` node
  * (created with `equals: false`), which every add/remove pings regardless
@@ -649,10 +653,28 @@ interface DemandSyncViewState {
  * Distinct from the idle-gated `syncObservedDemand` measurement effect (task
  * 4532), which is left intact. Must be called within a reactive root (createRoot
  * / component scope); the effect's lifetime is tied to the enclosing owner.
+ *
+ * @param effectiveVisibility READINESS-TRACKING getter for the effective
+ * visibility map — it MUST re-evaluate once the entity tree has been populated,
+ * not merely once per visibility toggle. This is a real contract, not a
+ * convenience: `viewStateStore.getAllEffective` / `getEffectiveVisibility`
+ * short-circuit on `nodeByPath.size === 0` (viewStateStore.ts:120-121,
+ * :141-143) and read NO reactive key in that branch, so a tracked read taken
+ * before the tree loads subscribes to NOTHING. `nodeByPath` is a plain
+ * non-reactive Map, so populating it notifies nothing and the effect never gets
+ * a second chance to subscribe. Because App sets `state.meshes` before it
+ * triggers the tree fetch, the one guaranteed selector re-run structurally
+ * precedes tree population — so a bare `() => viewStateStore.getAllEffective()`
+ * does NOT satisfy this contract at mount, and the first post-mount toggle is
+ * silently lost. Pass a getter that tracks a tree-generation signal bumped
+ * after the tree is rebuilt (App's `effectiveVisibility` memo). Required, not
+ * optional-with-a-fallback, so `tsc` gates every call site.
+ * Root-caused as esc-6045-1; fixed under task #6052.
  */
 export function createSelectiveDemandSync(
   engineStore: DemandSyncEngine,
   viewStateStore: DemandSyncViewState,
+  effectiveVisibility: () => Record<string, VisibilityState>,
   options?: { debounceMs?: number },
 ): void {
   const debounceMs = options?.debounceMs ?? SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS;
@@ -661,9 +683,11 @@ export function createSelectiveDemandSync(
     on(
       () => {
         // Track the reactive demand inputs synchronously: effective visibility
-        // (getAllEffective reads state.explicit for every tree path → re-fires on
-        // any setVisibility/cycleCascading toggle) and the realization mesh set.
-        viewStateStore.getAllEffective();
+        // (via the caller-injected READINESS-TRACKING getter — see the @param
+        // note above; reading the store's getAllEffective directly here would
+        // subscribe to nothing at all when the tree has not loaded yet) and the
+        // realization mesh set.
+        effectiveVisibility();
         return Object.keys(engineStore.state.meshes).length;
       },
       () => {

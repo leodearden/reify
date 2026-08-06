@@ -8,7 +8,7 @@
  *     realization mesh keys (`show` + `ghost`, EXCLUDING `hidden`) to the new
  *     bridge `syncDemand` command — reusing the exact filter the 4532
  *     `syncObservedDemand` uses;
- *   - `createSelectiveDemandSync(engineStore, viewStateStore, { debounceMs })`
+ *   - `createSelectiveDemandSync(engineStore, viewStateStore, effectiveVisibility, { debounceMs })`
  *     wires a DEBOUNCED, NON-idle-gated effect that fires that sync whenever
  *     effective visibility changes via `viewStateStore.setVisibility` /
  *     `cycleCascading`, coalescing a rapid toggle burst into a single backend
@@ -131,7 +131,12 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             view.setVisibility(R0, 'show');
             view.setVisibility(R1, 'show');
 
-            createSelectiveDemandSync(engine, view, { debounceMs: 150 });
+            // `setTree` already ran, so a plain getter read inside the tracked
+            // selector subscribes to `state.explicit` per live path — readiness
+            // is not at issue in this case (see case (d) for the case where it is).
+            createSelectiveDemandSync(engine, view, () => view.getAllEffective(), {
+              debounceMs: 150,
+            });
 
             // Rapid burst of toggles, each inside the 150ms debounce window.
             view.setVisibility(R1, 'ghost'); // toggle 1
@@ -190,7 +195,10 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             view.setTree([realizationNode(R0)]);
             view.setVisibility(R0, 'show');
 
-            createSelectiveDemandSync(engine, view, { debounceMs: 150 });
+            // As in case (b): `setTree` already ran, so a plain getter suffices here.
+            createSelectiveDemandSync(engine, view, () => view.getAllEffective(), {
+              debounceMs: 150,
+            });
 
             // Flush the deferred effect's initial tracking run so it captures
             // 'show' as the baseline state. After this point the effect has
