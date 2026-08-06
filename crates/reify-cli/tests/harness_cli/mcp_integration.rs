@@ -5,7 +5,8 @@ use std::time::Duration;
 
 /// Helper: spawn `reify mcp-server` with the given args, send JSON-RPC lines,
 /// close stdin, and read all stdout. Returns parsed JSON lines.
-/// Times out after 10 seconds to prevent CI deadlocks.
+/// Times out after 30 seconds (see the ceiling's own comment below) to prevent
+/// CI deadlocks. Every panic path here carries the child's stderr.
 fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
         .arg("mcp-server")
@@ -63,13 +64,20 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // performance, so a wider ceiling is safe.
     let timeout = Duration::from_secs(30);
     let start = std::time::Instant::now();
+    // The timeout does not panic in place: every failure this helper can report
+    // is more diagnosable with the child's stderr attached (a panic message, a
+    // backtrace, an MCP startup error), and stderr is only available once the
+    // reader threads are joined -- which is only safe after the child is gone.
+    // So the loop records the verdict, and the panic happens below the joins.
+    let mut timed_out = false;
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => break,
             Ok(None) => {
                 if start.elapsed() > timeout {
                     child.kill().ok();
-                    panic!("mcp_roundtrip: child process timed out after {timeout:?}");
+                    timed_out = true;
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -84,19 +92,29 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
         .join()
         .expect("stdout reader thread panicked")
         .expect("failed to read stdout from reify mcp-server");
-    let _stderr_bytes = stderr_reader
+    let stderr_bytes = stderr_reader
         .join()
         .expect("stderr reader thread panicked")
         .expect("failed to read stderr from reify mcp-server");
 
     let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+
+    if timed_out {
+        panic!(
+            "mcp_roundtrip: child process timed out after {timeout:?}\
+             \n--- child stderr ---\n{stderr}"
+        );
+    }
 
     // Parse each non-empty line as JSON
     stdout
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON line: {e}\nline: {l}"))
+            serde_json::from_str(l).unwrap_or_else(|e| {
+                panic!("bad JSON line: {e}\nline: {l}\n--- child stderr ---\n{stderr}")
+            })
         })
         .collect()
 }
