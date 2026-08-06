@@ -21,6 +21,22 @@ enum Shape {
 }
 ```
 
+Generic payloads — an `enum` may take type parameters, and payload field types may
+reference them. Type arguments are inferred from the payload at construction:
+```
+enum Result<T, E> {
+    Ok { value: T },
+    Err { error: E },
+}
+
+param r : Result<Length, String> = Ok { value: 5mm }
+```
+`Ok { value: 5mm }` infers `T = Length`. Recursive generic ADTs are legal too —
+`enum Tree<T> { Leaf { value: T }, Node { left: Tree<T>, right: Tree<T> } }`.
+`Result<T, E>` is a prelude enum (`crates/reify-compiler/stdlib/result.ri`); see
+`docs/prds/v0_6/generic-data-carrying-enums.md` and the runnable example
+`examples/m6_generic_enum.ri`.
+
 ## Usage
 
 Enum values are accessed with dot notation:
@@ -31,15 +47,18 @@ param direction : Directionality
 
 ## Match Expressions
 
-Pattern matching on enums with exhaustiveness checking:
+Pattern matching on enums with exhaustiveness checking. Patterns name the variant
+**unqualified** — `FitType.Clearance` is how a *value* is written (see Usage above), but
+`FitType.Clearance =>` as a *pattern* is a parse error:
 ```
 let clearance = match fit_type {
-    FitType.Clearance => 0.1mm
-    FitType.Transition => 0.02mm
-    FitType.Interference => -0.05mm
+    Clearance => 0.1mm,
+    Transition => 0.02mm,
+    Interference => -0.05mm
 }
 ```
 
+- Patterns are unqualified variant names; arms are comma-separated
 - Exhaustiveness enforced — must cover all variants or use `_` wildcard
 - Multiple variants with `|`: `Socket | Button => recessed_drive`
 - No fall-through
@@ -61,17 +80,27 @@ let area = match outline {
 
 ## Payload limits
 
-Payloads shipped in v0.6; three bounds apply to the v1 surface.
+Payloads shipped in v0.6; these bounds apply to the current surface.
 
 - **Construction payload values must be compile-time literals.** A param reference or other
   non-literal value in a payload field is a hard error:
   `non-constant payload value for field 'radius' of variant 'Circle' is not yet supported`.
 - **Payload fields are readable only through a `match` binder.** Dot access does not reach
   into a payload — `outline.width` reports `member access not yet supported: .width`.
-- **Not supported in v1:** positional/tuple payloads (`ScalarForce(Real)` — named-field is
-  the sole form), empty-brace construction (`Point {}`), partial binding
-  (`Rect { width: w, .. }`), nested patterns, and pipe-alternation across payload-binding
-  arms. Authority: `docs/prds/v0_6/data-carrying-enums.md` §10.
+- **Payload construction names the variant unqualified.** Type qualification
+  (`FitType.Clearance`) is the form for a bare-variant *value* only; a payload construction
+  may not be qualified — `Shape.Circle { radius: 2mm }` fails to parse
+  (`Parse error: invalid param: ...`). Write `Circle { radius: 2mm }`. Match *patterns* are
+  likewise always unqualified (see Match Expressions above).
+- **Empty-brace construction does not parse.** `Point {}` reports
+  `Parse error: syntax error: {}` — write the bare variant as `Point`. This is a
+  grammar-level restriction rather than a PRD-deferred item.
+- **Not supported:** positional/tuple payloads (`ScalarForce(Real)` — named-field is the
+  sole form), partial binding (`Rect { width: w, .. }`), nested destructuring within one
+  pattern (`Rect { width: Circle { ... } }`), payload-value guards, and pipe-alternation
+  across payload-binding arms. Authority for these five:
+  `docs/prds/v0_6/data-carrying-enums.md` §10. That §10 also defers generic payloads —
+  superseded: generics shipped in v0.6 (see Declaration above).
 
 ## Option Type
 
