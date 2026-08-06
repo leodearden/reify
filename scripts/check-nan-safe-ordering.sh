@@ -150,6 +150,13 @@ _AWK_PRODUCTION_PROLOGUE="$(cat <<'AWK_PROLOGUE'
 # locals, no gensub), so the gate is not silently gawk-only.
 function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     carried_in = (in_block > 0 || in_str || in_raw)
+    # The dropped `//…` tail (if any) is stashed here, so a caller can match
+    # an escape token against the REAL comment text rather than raw $0 —
+    # $0 also contains any string/char-literal content on the line, so a
+    # token that merely APPEARS inside a string must not count as the
+    # escape. Reset unconditionally (including on the fast path below) so a
+    # PRIOR line's tail never leaks onto a line with no comment at all.
+    comment_tail = ""
     n = length(line)
     # Fast path: nothing here can open a comment, a string or a char literal.
     # (A bare `/` is division or a path; only `//` and `/*` matter.)
@@ -194,7 +201,10 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
 
         ch = substr(line, i, 1)
         if (ch == "/") {
-            if (substr(line, i, 2) == "//") break   # //… tail: drop it entirely
+            if (substr(line, i, 2) == "//") {       # //… tail: drop it, but keep
+                comment_tail = substr(line, i)      # it for the escape check
+                break
+            }
             in_block++                              # /*: enter (nesting) comment
             i += 2
             continue
@@ -333,9 +343,16 @@ for f in "${_files[@]}"; do
     if ! out="$(awk "$_AWK_PRODUCTION_PROLOGUE"'
         {
             # --- inline escape (same-line), mirrors ptodo:allow §6.8 ---
-            # RAW $0 on purpose: the escape lives in a `//` comment, which the
-            # lexer drops, so matching `code` here would silently kill it.
-            if ($0 ~ /nan-safe:allow/) next
+            # Matched against comment_tail (the dropped `//…` text that
+            # _strip_line stashed), NOT `code` and NOT raw $0. `code` is
+            # wrong because the escape lives in a `//` comment, which the
+            # lexer drops — matching `code` would silently kill every
+            # escape. Raw $0 is wrong the OTHER way: it also contains any
+            # string/char-literal content on the line, so a token that
+            # merely *appears inside a string* — e.g. `let _m =
+            # "nan-safe:allow";` — would wrongly suppress a real hazard on
+            # that same line.
+            if (comment_tail ~ /nan-safe:allow/) next
 
             if (code ~ /unwrap_or\([^)]*Ordering::Equal/) {
                 # RAW $0 on purpose: this is human-readable violation output,

@@ -704,4 +704,33 @@ assert "hG1: ...and prints a WARN naming the unbalanced state to stderr" \
 assert "hG2: the WARN does not fire on the live, balanced tree" \
     bash -c "! bash '$GATE' --repo-root '$REPO_ROOT' 2>&1 1>/dev/null | grep -q 'WARN:.*lexer state unbalanced'"
 
+# ===========================================================================
+# hH — the `nan-safe:allow` escape must come from a real `//` comment, not
+# merely APPEAR anywhere on the line. Matching raw $0 (as before this
+# amendment) also matches inside a string or char literal, so a hazard on
+# the same line as an unrelated string containing the token was wrongly
+# suppressed — a false-GREEN vector in a gate whose whole value is that it
+# cannot be talked out of a RED. Verified empirically against the
+# pre-amendment gate: exit 0 (should be 1).
+# ===========================================================================
+echo ""
+echo "--- (hH): the nan-safe:allow escape only counts from a real comment ---"
+
+write_fixture <<'RS'
+pub fn sort_all(v: &mut Vec<f64>) { let _m = "nan-safe:allow"; v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); }
+RS
+stage
+assert "hH1: a 'nan-safe:allow' token inside a STRING literal does not suppress a real hazard on the same line" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# Control: the real, documented `//` comment form must keep working exactly
+# as block (h) above already proves — re-asserted here for locality with
+# the string-literal negative case.
+write_fixture <<'RS'
+fn s(v: &mut Vec<f64>) { v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); } // nan-safe:allow — guarded upstream
+RS
+stage
+assert "hH2: CONTROL — a real trailing '// nan-safe:allow' comment still clears the site" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
 test_summary
