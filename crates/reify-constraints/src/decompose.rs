@@ -580,13 +580,17 @@ mod tests {
         )
     }
 
-    /// The α fixture: `let s = a + b`, `let d = a - b`, and two constraints
-    /// that read ONLY the lets.
-    fn alpha_fixture() -> (
+    /// Owned forms of the three slices `decompose_into_components` takes:
+    /// auto params, `(id, expr)` constraints, `(id, expr)` dependent cells.
+    type AlphaFixture = (
         Vec<AutoParam>,
         Vec<(ConstraintNodeId, CompiledExpr)>,
         Vec<(ValueCellId, CompiledExpr)>,
-    ) {
+    );
+
+    /// The α fixture: `let s = a + b`, `let d = a - b`, and two constraints
+    /// that read ONLY the lets.
+    fn alpha_fixture() -> AlphaFixture {
         let params = vec![alpha_auto("S", "a"), alpha_auto("S", "b")];
         let constraints = vec![
             (ConstraintNodeId::new("S", 0), eq_lit(alpha_vref("S", "s"), 10.0)),
