@@ -71,7 +71,8 @@
 # Exit codes:
 #   0  clean — no unguarded matches
 #   1  at least one unguarded match (each printed as file:line: <source>)
-#   2  usage / not-a-git-work-tree error, or an awk failure while scanning
+#   2  usage / not-a-git-work-tree error, an empty scan set (SCOPE_PATHSPECS
+#      matched nothing), or an awk failure while scanning
 
 set -euo pipefail
 
@@ -115,6 +116,15 @@ while IFS= read -r -d '' _f; do
     esac
     _files+=("$_f")
 done < <(git -C "$REPO_ROOT" ls-files -z -- "${SCOPE_PATHSPECS[@]}" 2>/dev/null)
+
+# An empty scan set (a crate rename, a module move, a repo reorg that no
+# longer matches SCOPE_PATHSPECS) must fail loudly, not exit 0 vacuously —
+# a gate that scans nothing looks identical, from the caller's side, to a
+# gate that scanned everything and found it clean.
+if [[ ${#_files[@]} -eq 0 ]]; then
+    echo "ERROR: no tracked .rs files matched SCOPE_PATHSPECS — scope is stale?" >&2
+    exit 2
+fi
 
 # ── Shared awk prologue: lex each line down to its PRODUCTION code in `code`,
 # and count the braces that drive `depth` — and so the #[cfg(test)] module

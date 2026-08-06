@@ -733,4 +733,32 @@ stage
 assert "hH2: CONTROL — a real trailing '// nan-safe:allow' comment still clears the site" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
+# ===========================================================================
+# hI — an EMPTY scan set (no tracked .rs file matches any SCOPE_PATHSPECS —
+# a crate rename, a module move, a repo reorg) must fail loudly, not exit 0
+# vacuously: from the caller's side, "scanned nothing" and "scanned
+# everything and found it clean" look identical unless the gate says so.
+# Pre-existing (not introduced by this task's port), but this amendment
+# pass is specifically a hardening sweep on this gate's failure modes.
+#
+# Uses its OWN throwaway repo, not the write_fixture/FIX harness above:
+# write_fixture always targets crates/reify-fdm (a COVERED path), so an
+# empty scan set needs a repo with no covered crate at all.
+# ===========================================================================
+echo ""
+echo "--- (hI): an empty scan set is a loud error, not a silent vacuous pass ---"
+EMPTY_FIX="$DET_TMP/empty-fixture"
+mkdir -p "$EMPTY_FIX/crates/reify-unrelated-crate/src"
+git -C "$EMPTY_FIX" init -q
+git -C "$EMPTY_FIX" config user.email test@invalid.local
+git -C "$EMPTY_FIX" config user.name test
+cat > "$EMPTY_FIX/crates/reify-unrelated-crate/src/lib.rs" <<'RS'
+pub fn nothing() {}
+RS
+git -C "$EMPTY_FIX" add -A
+assert "hI1: a repo with no tracked .rs file matching SCOPE_PATHSPECS exits 2, not a silent 0" \
+    _exits_with 2 bash "$GATE" --repo-root "$EMPTY_FIX"
+assert "hI1: ...and prints a diagnostic naming the stale scope" \
+    bash -c "bash '$GATE' --repo-root '$EMPTY_FIX' 2>&1 | grep -q 'ERROR: no tracked .rs files matched SCOPE_PATHSPECS'"
+
 test_summary
