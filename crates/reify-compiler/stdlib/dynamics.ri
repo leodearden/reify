@@ -102,12 +102,43 @@ structure def MassProperties {
 // SIR-α nominal type-tag — exactly the same mechanism `solve_elastic_static`
 // uses to dispatch on `PointLoad` vs `FixedSupport`.
 //
-// TAGGED-UNION NOTE: the Reify DSL enum grammar has NO payload-carrying
-// variants (enum-variant lowering: `TsParser::lower_enum_variant` in
-// crates/reify-syntax/src/ts_parser.rs). This
-// marker-trait + refining-structure_defs pattern is the established stdlib
-// idiom for sum types (trajectory.ri BoundaryCondition/Shaper, modal_analysis
-// ForcingFunction). The PRD's "tagged union" is expressed here.
+// TAGGED-UNION NOTE: payload-carrying ("data-carrying", DCE) enum variants
+// ARE supported end-to-end — grammar (`variant_field_decl`), lowering
+// (`TsParser::lower_enum_variant` in crates/reify-syntax/src/ts_parser.rs →
+// `VariantPayload::Named`), resolution (`resolve_enum_variant_payloads` in
+// crates/reify-compiler/src/compile_builder/enums_phase.rs), construction
+// (`compile_variant_construct` in
+// crates/reify-compiler/src/variant_construct.rs), and eval. The stdlib
+// already ships two: `Result<T,E>` (result.ri) and `ConvergenceStatus`
+// (solver_elastic.ri).
+//
+// The marker trait stays for THIS family anyway — two decisive blockers:
+//   - Runtime-computed payloads are not constructible.
+//     `compile_variant_construct` accepts only compile-time-literal payload
+//     fields and rejects anything else ("non-constant payload value ... is
+//     not yet supported"). Joint forces are computed by the η dispatcher at
+//     eval time (crates/reify-stdlib/src/dynamics/eval.rs,
+//     crates/reify-eval/src/dynamics_ops.rs), so `ScalarTorque { magnitude:
+//     <computed τ> }` cannot be written.
+//   - Payload fields are unreadable outside a `match` binder. `Type::Enum`
+//     falls through to the residual member-access arm in
+//     crates/reify-compiler/src/expr.rs, yielding "member access not yet
+//     supported" — but every current consumer reads the force by nominal
+//     type name (crates/reify-stdlib/src/dynamics/eval.rs mints
+//     ScalarForce/ScalarTorque/CylForce/PlanarForce/SphereForce/ZeroForce
+//     instances and field-accesses them directly).
+//   - Weaker, third reason: the PRD's own sketch
+//     (docs/prds/v0_3/rigid-body-dynamics.md §4.2) is POSITIONAL
+//     (`ScalarForce(Real)`, `CylForce([Real;2])`) — positional/tuple
+//     payloads and `[T;N]` arrays are still unsupported, so even a DCE
+//     could not reproduce the PRD's literal shape.
+//
+// This marker-trait + refining-structure_defs pattern is the established
+// stdlib idiom for sum types (trajectory.ri BoundaryCondition/Shaper,
+// modal_analysis ForcingFunction) and is how the PRD's "tagged union" is
+// expressed here. Revisit the encoding if non-constant payload construction
+// and payload member access both land — until then this is a deliberate
+// choice, not a grammar workaround.
 trait JointForceValue { }
 
 // ── JointForceValue variants ──────────────────────────────────────────────
