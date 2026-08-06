@@ -383,9 +383,12 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
 /// `freshness_pending_compute_dispatch.rs:31` idiom): this static is touched
 /// exclusively by `probe_fn`, registered only by
 /// [`edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization`].
-/// A second test in this binary registering a trampoline that calls it would
-/// silently corrupt the count. Reset at test entry as belt-and-braces against
-/// the cargo-test process being reused.
+/// A second test in THIS MODULE registering a trampoline that calls it would
+/// silently corrupt the count. Module privacy is what bounds that risk to this
+/// file: `harness_kernel_realization` is a shared compile unit whose sibling
+/// modules run in the same process, but neither this static nor `probe_fn` is
+/// `pub`, so no sibling can reach either. Reset at test entry as
+/// belt-and-braces against the cargo-test process being reused.
 static PROBE_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// Trivial synthetic `ComputeFn` — counts its invocations and returns a
