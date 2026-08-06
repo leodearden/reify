@@ -126,7 +126,7 @@
 The PRD explicitly defers these (out-of-scope, §"Out of scope"); they are not classified as gaps:
 
 - Same-name decls from non-`match` mutually-exclusive guards (e.g. negation pairs).
-- Pattern-matching with payload-bound names (v0.1 enums are C-style).
+- Pattern-matching with payload-bound names — the payload-binding grammar and binding semantics are owned by `docs/prds/v0_6/data-carrying-enums.md` and **shipped in v0.6** (`docs/reify-language-spec.md:2910` marks the feature Realized). What remains out of scope *here* is wiring those binders into this PRD's same-name-group machinery for decl-level (§6.4) `match` arms — data-carrying-enums §10 explicitly defers that half back to this PRD. (This line previously read "v0.1 enums are C-style" — superseded now that data-carrying enums shipped in v0.6.)
 - Cross-arm unification for differently-named decls.
 
 ## Cross-PRD breadcrumbs
