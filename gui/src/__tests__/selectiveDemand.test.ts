@@ -19,7 +19,7 @@
  * `createSelectiveDemandSync`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createRoot } from 'solid-js';
+import { createRoot, createSignal, createMemo } from 'solid-js';
 import type { MeshData, EntityTreeNode, VisibilityState } from '../types';
 
 // Mock the bridge — engineStore imports the full event/command surface at module
@@ -235,6 +235,90 @@ describe('selective-demand ENFORCEMENT sync (task 4737 α)', () => {
             reject(err);
           }
           // dispose() was already called above — do not call again in finally.
+        })();
+      });
+    });
+  });
+
+  // (d) BOOTSTRAP-ORDERING REGRESSION (task #6052, root-caused as esc-6045-1).
+  //
+  // Invariant under test: the demand-sync effect must subscribe to
+  // `state.explicit` on a tracked run that happens AFTER `nodeByPath` has been
+  // populated. Both `getAllEffective` and `getEffectiveVisibility` take a
+  // `nodeByPath.size === 0` short-circuit (viewStateStore.ts:120-121, :141-143)
+  // that reads NO reactive key at all, so a first tracked run against an empty
+  // tree establishes ZERO subscriptions on the visibility store. `nodeByPath`
+  // is a plain non-reactive Map, so populating it notifies nothing and the
+  // effect never gets a second chance to subscribe.
+  //
+  // Cases (b)/(c) above call `view.setTree(...)` BEFORE wiring, which is
+  // exactly why they miss this bug. App's real ordering is the opposite:
+  // `initFromState` sets `state.meshes` and only THEN triggers
+  // `refreshEntityTree` (App.tsx:452-461), so the one guaranteed selector
+  // re-run structurally precedes tree population. This case mirrors that
+  // ordering, and reproduces App's readiness pattern (the `treeGeneration`
+  // signal + `effectiveVisibility` memo, App.tsx:685/:789-792) locally.
+  it('(d) bootstrap ordering: the FIRST visibility toggle after a tree populated AFTER wiring still reaches sync_demand', async () => {
+    // Mirrors case (b)'s createRoot + detached-async-IIFE settle pattern so a
+    // throw fails FAST instead of hanging to the timeout.
+    await new Promise<void>((resolve, reject) => {
+      createRoot((dispose) => {
+        void (async () => {
+          try {
+            const engine = createEngineStore();
+            engine.applyMeshUpdate(mesh(R0));
+            engine.applyMeshUpdate(mesh(R1));
+
+            // Deliberately NO setTree yet — `nodeByPath` must be EMPTY when the
+            // effect first tracks, which is what App does at mount.
+            const view = createViewStateStore();
+
+            // App's readiness pattern, reproduced locally. The memo is required:
+            // `setTree`/`rebuildTreeMaps` mutate plain non-reactive Maps and
+            // notify nothing on their own, so an explicit generation bump is the
+            // only thing that can re-run a tracked read after the tree lands.
+            const [treeGeneration, setTreeGeneration] = createSignal(0);
+            const effectiveVisibility = createMemo(() => {
+              void treeGeneration();
+              return view.getAllEffective();
+            });
+
+            createSelectiveDemandSync(engine, view, effectiveVisibility, { debounceMs: 150 });
+
+            // Flush the deferred effect's initial tracking run (same rationale as
+            // case (c)): it must complete, against the still-empty tree, before
+            // the tree is populated below.
+            await Promise.resolve();
+
+            // Now populate the tree the way App does, then bump the generation.
+            view.setTree([realizationNode(R0), realizationNode(R1)]);
+            setTreeGeneration((v) => v + 1);
+            await vi.advanceTimersByTimeAsync(300);
+
+            // NON-VACUITY ANCHOR: with the fix, the tree-ready readiness change
+            // is itself a tracked change, so one all-visible sync has fired.
+            // Without it, nothing has fired at all — the effect holds no
+            // subscription on the visibility store and `defer: true` already
+            // consumed the only mesh-set run (which happened before wiring).
+            const before = mockSyncDemand.mock.calls.length;
+            expect(before).toBeGreaterThan(0);
+
+            // The first post-mount toggle must reach the backend.
+            view.setVisibility(R0, 'hidden');
+            await vi.advanceTimersByTimeAsync(300);
+
+            expect(mockSyncDemand.mock.calls.length).toBeGreaterThan(before);
+            // R0 is pruned; the sibling R1 survives — an implementation that
+            // pushed an empty demand set would satisfy the exclusion alone.
+            const payload = mockSyncDemand.mock.calls.at(-1)![0];
+            expect(new Set(payload)).toEqual(new Set([R1]));
+
+            resolve();
+          } catch (err) {
+            reject(err);
+          } finally {
+            dispose();
+          }
         })();
       });
     });
