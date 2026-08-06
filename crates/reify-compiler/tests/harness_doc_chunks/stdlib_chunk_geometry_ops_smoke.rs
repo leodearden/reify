@@ -1572,7 +1572,7 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
 /// The floor is deliberately well under the live count so ordinary chunk
 /// editing does not trip it, but well over half of it so a genuinely gutted
 /// scan cannot slip through: the section carries 50 forms across ~43 distinct
-/// names today (measured, task 5583 — it was 33 before task 5675 documented 15
+/// names today (measured, task #5583 — it was 33 before task 5675 documented 15
 /// further ops).
 fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
     assert!(
@@ -1624,7 +1624,7 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
 
 /// Every documented FORM in the real chunk must be exercised by the real
 /// fixture at that exact arity — the doc → fixture direction at FORM
-/// granularity (task 5583), closing the gap
+/// granularity (task #5583), closing the gap
 /// `every_documented_geometry_op_name_is_exercised_by_the_fixture` leaves
 /// open (see the module doc).
 ///
@@ -1650,7 +1650,7 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
         unmirrored.is_empty(),
         "stdlib.md documents geometry-op FORM(s) with no compiling instance at that exact \
          arity in tests/fixtures/stdlib_geometry_ops_smoke.ri — a documented overload can go \
-         unmirrored even when its NAME is exercised, just at a different arity (task 5583). \
+         unmirrored even when its NAME is exercised, just at a different arity (task #5583). \
          Remediation: add a call at that arity to \
          crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri, or correct the \
          signature in crates/reify-mcp/src/tools/chunks/stdlib.md if the compiler does not \
