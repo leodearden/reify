@@ -1,6 +1,8 @@
 # PRD: Result<T,E> / fallback — language-level error handling
 
-Status: deferred (spec-gap batch `spec-gap-2026-05-27`, cluster `result-and-fallback`). Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27.
+**Status:** **SHIPPED (v0.6) — both layers.** Layer A (`Option` recovery combinators, tasks 3979–3989) and Layer B (`Result<T,E>` prelude enum + Result-specialized combinators, tasks 4035–4040) have all **landed**; runnable end-to-end examples `examples/m6_fallback_recovery.ri` (Layer A) and `examples/m6_result_recovery.ri` (Layer B). Mirrors spec §18 roadmap row 4 and the §9.6 note, both "Realized (v0.6)". **Still deferred:** `try`/`catch` and the postfix `?`-propagation operator (fork F-Question) — see §10. Originally filed as `deferred` in spec-gap batch `spec-gap-2026-05-27`, cluster `result-and-fallback`. Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27; shipped-status recorded 2026-08-06.
+
+**The body below is the AS-AUTHORED design record.** The §4.x grammar/fixture ERROR-node tables and the §8 decomposition metadata are dated 2026-05-27 *pre-implementation* measurements, retained as provenance for why the decomposition was shaped the way it was — they are not current statements of fact about the language. §10 remains a live statement of what is still out of scope.
 
 Resolves spec §18.4 roadmap item 4 ("`Result<T>` or `fallback` expressions — language-level error handling"). Today (spec §9.6) Reify has **no `Result` type, no `try`/`catch`, no language-level error propagation**: computation failures are eval-**graph** events (`Freshness::Failed { error: ErrorRef }`, `EventKind::Failed`), surfaced through diagnostics, never reified as a language value an `.ri` author can branch on. This PRD designs the language-level error-handling surface.
 
