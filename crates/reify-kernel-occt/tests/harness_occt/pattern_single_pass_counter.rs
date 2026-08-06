@@ -219,6 +219,84 @@ fn circular_pattern_is_one_pass() {
     });
 }
 
+/// Boolean passes performed on ANOTHER thread must not leak INTO this thread's
+/// open reset→operate→read window: the counter is per-thread, so this thread
+/// observes only the single pass it performed itself.
+#[test]
+fn boolean_work_on_another_thread_stays_out_of_this_threads_window() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real fuse
+
+    reset_boolean_pass_count();
+
+    // Three real boolean passes on a FOREIGN thread, performed entirely inside
+    // this thread's now-open window.  `OcctKernel` is `!Send` (it holds
+    // `cxx::UniquePtr`), so the worker's kernel is constructed INSIDE the
+    // closure and never captured across the thread boundary.
+    //
+    // The `join()` before this thread touches OCCT again is load-bearing, not
+    // incidental: src/handle.rs documents concurrent OCCT access from multiple
+    // threads as undefined behaviour (which is why `OcctKernelHandle` exists),
+    // so the two threads must never be inside OCCT at the same time.  A
+    // sequential handoff still reproduces the defect exactly — the failure is a
+    // foreign increment landing inside this thread's open window, and
+    // sequencing changes nothing about that.
+    std::thread::spawn(|| {
+        let mut worker_kernel = OcctKernel::new();
+        let wa = unit_box(&mut worker_kernel);
+        let wb = translated_x(&mut worker_kernel, wa, 0.5);
+        for _ in 0..3 {
+            worker_kernel
+                .execute(&GeometryOp::Union {
+                    left: wa,
+                    right: wb,
+                })
+                .expect("worker-thread union must succeed");
+        }
+    })
+    .join()
+    .expect("worker thread must not panic");
+
+    kernel
+        .execute(&GeometryOp::Union { left: a, right: b })
+        .expect("binary union must succeed");
+    assert_eq!(
+        boolean_pass_count(),
+        1,
+        "the boolean-pass count is per-thread: this thread performed exactly 1 \
+         pass, so the 3 passes performed on the worker thread must not be \
+         visible from here"
+    );
+}
+
+/// The per-thread contract holds in the other direction too: passes performed
+/// on THIS thread must not leak OUT into a freshly spawned thread's count.
+#[test]
+fn a_freshly_spawned_thread_starts_from_a_zero_count() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real fuse
+
+    reset_boolean_pass_count();
+    kernel
+        .execute(&GeometryOp::Union { left: a, right: b })
+        .expect("binary union must succeed");
+    // This thread now stands at exactly 1.
+
+    // The reader thread performs no OCCT work at all — it only reads the
+    // counter — so this test adds no concurrent-OCCT exposure.
+    let observed = std::thread::spawn(boolean_pass_count)
+        .join()
+        .expect("reader thread must not panic");
+    assert_eq!(
+        observed,
+        0,
+        "a freshly spawned thread starts from its own zero count, so the 1 \
+         boolean pass performed on the test thread must not be visible there"
+    );
+}
+
 /// An `ArbitraryPattern` with 2 transforms (≥2 instances) must be ONE pass.
 #[test]
 fn arbitrary_pattern_is_one_pass() {
