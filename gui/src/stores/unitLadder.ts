@@ -119,8 +119,16 @@ export const BASE_UNIT_LABELS: readonly string[] = ['mm', 'cm', 'm', 'deg', 'rad
 export function quantityUnitAlphabet(ladders: UnitLadderMap | undefined): string[] {
   const alphabet = new Set<string>(BASE_UNIT_LABELS);
   for (const options of Object.values(ladders ?? {})) {
-    for (const opt of options) {
-      alphabet.add(normalizeUnitLabel(opt.label));
+    // `options` and `opt.label` are typed non-null/string, but this data
+    // crosses an IPC boundary (`get_unit_ladders`), so the types are a claim
+    // about the backend's serde shape rather than a runtime guarantee. Before
+    // #6028 a malformed payload could only degrade the unit PICKER — the
+    // label lookup simply missed. Now the same payload feeds typed-value
+    // validation, so an unguarded `label.replace` would throw out of the
+    // `quantityRe` memo on EVERY Enter/blur in the panel, for every cell.
+    // Skipping the bad entry keeps the blast radius where it was.
+    for (const opt of options ?? []) {
+      if (typeof opt?.label === 'string') alphabet.add(normalizeUnitLabel(opt.label));
     }
   }
   return [...alphabet];

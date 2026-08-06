@@ -233,6 +233,34 @@ describe('quantityUnitAlphabet', () => {
     expect(alphabet.filter((u) => u === 'mm')).toHaveLength(1);
   });
 
+  // (e) Malformed ladder data must not escalate from "the picker looks wrong"
+  // to "typed-value validation throws". This payload crosses an IPC boundary,
+  // so `UnitOption.label: string` is a claim about the backend's serde shape,
+  // not a runtime guarantee — and this alphabet feeds `isValidValue`, which
+  // runs on every Enter/blur in the panel.
+  it('skips ladder entries whose label is not a string, without throwing', () => {
+    const malformed = {
+      Volume: [
+        { label: 'mm^3', si_scale: 1e-9, is_default: true },
+        { label: undefined, si_scale: 1e-6, is_default: false },
+        { label: null, si_scale: 1e-3, is_default: false },
+        { label: 42, si_scale: 1.0, is_default: false },
+      ],
+    } as unknown as UnitLadderMap;
+    expect(() => quantityUnitAlphabet(malformed)).not.toThrow();
+    expect(new Set(quantityUnitAlphabet(malformed))).toEqual(
+      new Set(['mm', 'cm', 'm', 'deg', 'rad', 'mm^3']),
+    );
+  });
+
+  it('tolerates a dimension whose option list is missing entirely', () => {
+    const malformed = { Volume: undefined } as unknown as UnitLadderMap;
+    expect(() => quantityUnitAlphabet(malformed)).not.toThrow();
+    expect(new Set(quantityUnitAlphabet(malformed))).toEqual(
+      new Set(['mm', 'cm', 'm', 'deg', 'rad']),
+    );
+  });
+
   it('collapses two spellings of the same label into one entry', () => {
     const bothSpellings: UnitLadderMap = {
       Volume: [

@@ -212,9 +212,14 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   function chosenOptionFor(val: ValueData, ladder: UnitOption[]): UnitOption {
     const label = selectedUnits()[val.cell_id] ?? persistedUnits[val.cell_id] ?? undefined;
     let found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
-    if (found === undefined && label !== undefined) {
+    if (found === undefined && typeof label === 'string') {
+      // Both sides are typed `string` but neither is guaranteed at runtime:
+      // `label` is parsed out of localStorage and `u.label` arrives over IPC.
+      // The exact-equality attempt above tolerates a non-string on either side
+      // (it just misses); the normalized attempt would throw, so it is guarded
+      // rather than trading a silent miss for a render-time crash.
       const normalized = normalizeUnitLabel(label);
-      found = ladder.find((u) => normalizeUnitLabel(u.label) === normalized);
+      found = ladder.find((u) => typeof u.label === 'string' && normalizeUnitLabel(u.label) === normalized);
     }
     return found ?? ladder.find((u) => u.is_default) ?? ladder[0];
   }

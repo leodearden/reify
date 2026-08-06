@@ -1893,4 +1893,23 @@ describe('PropertyEditor persisted unit preference survives the curated-label re
     renderWith(ladders);
     expect(loadUnitPreference('c1')).toBe(stored);
   });
+
+  it('resolves against a ladder carrying a non-string label without throwing', () => {
+    // `UnitOption.label: string` is a claim about the backend's serde shape,
+    // not a runtime guarantee — this data crosses the `get_unit_ladders` IPC
+    // boundary. The exact-equality attempt tolerated a malformed entry by
+    // simply missing it; the normalized attempt must not turn that silent miss
+    // into a render-time crash.
+    const malformed = {
+      Volume: [
+        { label: 'mm³', si_scale: 1e-9, is_default: true },
+        { label: undefined, si_scale: 1e-6, is_default: false },
+        { label: 'm³', si_scale: 1.0, is_default: false },
+      ],
+    } as unknown as UnitLadderMap;
+    saveUnitPreference('c1', 'm^3');
+    const { select, input } = renderWith(malformed);
+    expect(select.value).toBe('m³');
+    expect(input.value).toBe(M3_RUNG_MAGNITUDE);
+  });
 });
