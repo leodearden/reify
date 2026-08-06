@@ -8,7 +8,7 @@ import {
   SAVE_CONFLICT_RELOAD_LABEL,
   SAVE_CONFLICT_OVERWRITE_LABEL,
 } from '../editor/messages';
-import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy } from './test-utils';
+import { flushMacrotasks, deferred, withSuppressedRejections, withSuppressedRejectionsAndErrorSpy, expectNoUnhandledRejections } from './test-utils';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
@@ -157,6 +157,7 @@ vi.mock('../bridge', () => ({
   onModeShapeFrame: vi.fn().mockResolvedValue(() => {}),
   cancelSolve: vi.fn().mockResolvedValue(undefined),
   syncObservedDemand: vi.fn().mockResolvedValue(undefined),
+  syncDemand: vi.fn().mockResolvedValue(undefined),
   ask: vi.fn().mockResolvedValue(false),
 }));
 
@@ -184,6 +185,7 @@ import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
+import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
@@ -235,6 +237,7 @@ beforeEach(() => {
   vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
   vi.mocked((bridge as any).onModeShapeFrame).mockResolvedValue(() => {});
+  vi.mocked(bridge.syncDemand).mockResolvedValue(undefined);
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
@@ -6773,6 +6776,122 @@ describe('App buckling mode-shape-frame subscription — failure path (task 6035
 
       // …and with no frames ever ingested the <Show> gate stays shut.
       expect(screen.queryByTestId('buckling-panel')).toBeNull();
+    });
+  });
+});
+
+// ── App selective-demand enforcement sync (task 6045) ───────────────────────
+//
+// Covers the App-level selective-demand ENFORCEMENT wiring end-to-end:
+// initApp -> createSelectiveDemandSync -> engineStore.syncDemand ->
+// bridge.syncDemand. Before task 6045 the `../bridge` mock factory carried
+// the passive-measurement `syncObservedDemand` but omitted the distinct,
+// genuine `syncDemand` export (`bridge.ts`), so any test that let the
+// 150ms debounce elapse threw "No 'syncDemand' export is defined" — 5 times
+// across a full App.test.tsx run — leaving this whole enforcement path
+// unexercised.
+
+// waitFor's default budget already covers the debounce with margin; naming
+// the wait timeout off the exported constant ties correctness to the real
+// debounce value instead of a hardcoded guess that could silently drift.
+const DEMAND_SYNC_WAIT_TIMEOUT_MS = SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS + 850;
+
+describe('App selective-demand enforcement sync (task 6045)', () => {
+  it('(a) the visible-realization set is synced to bridge.syncDemand, excluding non-realization mesh keys', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue({
+      ...emptyState,
+      meshes: [
+        makeMesh('Bracket#realization[0]'),
+        makeMesh('Bracket#realization[1]'),
+        makeMesh('Bracket.geometry'),
+      ],
+    });
+    // getEntityTree stays at the factory default `[]`: with an empty tree,
+    // viewStateStore's `nodeByPath.size === 0` short-circuit makes
+    // `getEffectiveVisibility` return 'show' for every path, so the payload
+    // below is a pure function of engineStore's '#realization[' key filter.
+
+    await renderAndWaitForReady();
+
+    await waitFor(
+      () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+      { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+    );
+
+    // Non-realization exclusion is the non-vacuity anchor: a regression that
+    // echoed the whole mesh key set would satisfy a realizations-only
+    // membership assertion but fails this exact-set assertion.
+    const payload = vi.mocked(bridge.syncDemand).mock.calls.at(-1)![0];
+    expect([...payload].sort()).toEqual(['Bracket#realization[0]', 'Bracket#realization[1]']);
+  });
+
+  // A planned case (b) — "hiding a realization via the eye icon prunes it from
+  // the next payload while a sibling realization survives" — was deliberately
+  // NOT landed here: it fails against current production code. Root cause
+  // (esc-6045-1): `createSelectiveDemandSync`'s `on()` selector reads
+  // `viewStateStore.getAllEffective()`, which hits the same
+  // `nodeByPath.size === 0` short-circuit as case (a) above while the entity
+  // tree is still loading, so the effect never subscribes to `state.explicit`
+  // and a plain post-mount visibility toggle never reaches `bridge.syncDemand`.
+  // A live-code gap, out of this file's scope — tracked as task #6052. The
+  // App-level regression test for case (b) is reusable verbatim from commit
+  // 72951c2d9f once that task lands.
+});
+
+// Deliberately a SIBLING describe, not a third `it` inside the block above:
+// this case must observe the plain factory / global-beforeEach default
+// rather than a describe-scoped mockImplementation, because it installs a
+// rejecting implementation of its own (same precedent as the task-6035
+// sibling failure-path describe above).
+describe('App selective-demand enforcement sync — failure path (task 6045)', () => {
+  it('a rejected sync degrades gracefully: App stays healthy, no unhandled rejection', async () => {
+    // The enforcement sync runs on createSelectiveDemandSync's own debounced
+    // timer, strictly after renderAndWaitForReady() (and initApp) has already
+    // resolved — unlike task 6035's onModeShapeFrame subscription, this
+    // rejection is never on initApp's own await chain, so it cannot abort
+    // init. What this test verifies is narrower and downstream of that: the
+    // catch arm in engineStore.syncDemand consumes the rejection, so it never
+    // escapes as a genuine unhandled promise rejection (asserted for real by
+    // expectNoUnhandledRejections below, not merely suppressed) and is logged
+    // rather than silently dropped.
+    //
+    // Deliberately NOT asserted via a match on the console.warn wording — see
+    // the design decision recorded for this task: an argument-matched
+    // assertion is unfalsifiable on a reword of the log literal and is
+    // already subsumed by (i) case (a) above, which fails outright if
+    // `syncDemand` is missing from the factory, and (ii) the
+    // global-beforeEach `mockResolvedValue`, which throws before any test in
+    // this file runs if the factory entry is ever dropped again.
+    await expectNoUnhandledRejections(async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        vi.mocked(bridge.syncDemand).mockRejectedValue(new Error('demand channel unavailable'));
+        vi.mocked(bridge.getInitialState).mockResolvedValue({
+          ...emptyState,
+          meshes: [makeMesh('Bracket#realization[0]')],
+        });
+
+        await renderAndWaitForReady();
+
+        // Non-vacuity anchor: the rejecting path really was exercised.
+        await waitFor(
+          () => expect(vi.mocked(bridge.syncDemand)).toHaveBeenCalled(),
+          { timeout: DEMAND_SYNC_WAIT_TIMEOUT_MS },
+        );
+        await flushMacrotasks();
+
+        // Positive assertion that the catch arm actually ran — existence
+        // only, not a match on the log wording (see above). Deleting the
+        // catch arm would make this fail (nothing left to log) as well as
+        // trip expectNoUnhandledRejections above.
+        expect(warnSpy).toHaveBeenCalled();
+
+        // Sanity: the render tree is still mounted after the rejection
+        // resolved.
+        expect(screen.getByTestId('app-layout')).toBeTruthy();
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 });
