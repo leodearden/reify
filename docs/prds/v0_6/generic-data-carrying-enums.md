@@ -1,6 +1,8 @@
 # PRD: Generic Data-Carrying Enums (type-parameterized ADTs)
 
-Status: deferred (spec-gap batch `spec-gap-2026-05-27`, cluster `generic-data-carrying-enums`). Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27.
+**Status:** **SHIPPED (v0.6)** — all decomposition leaves (4029/4030/4031/4032/4033/4034) **landed**; runnable end-to-end example `examples/m6_generic_enum.ri` (including the recursive `Tree<T>`). The **D1 / F-Mono type-erasure** resolution is what shipped — type args are erased at runtime, pinned by `crates/reify-expr/tests/generic_enum_erasure_tests.rs`. Originally filed as `deferred` in spec-gap batch `spec-gap-2026-05-27`, cluster `generic-data-carrying-enums`. Decomposition style **B + H** (design-first contract + boundary tests) per `preferences_implementation_chain_portfolio`. Authored 2026-05-27; shipped-status recorded 2026-08-06.
+
+**The body below is the AS-AUTHORED design record.** The §4.x grammar/fixture ERROR-node tables and the §8 decomposition metadata (including `grammar_confirmed=false`) are dated 2026-05-27 *pre-implementation* measurements, retained as provenance for why the decomposition was shaped the way it was — they are not current statements of fact about the language. §10 remains a live statement of what is still out of scope.
 
 Resolves the **explicitly-deferred** scope item of `docs/prds/v0_6/data-carrying-enums.md` §10 ("Generic / type-parameterized variant payloads … a separate future PRD; v1 payloads are concrete types") and spec §3.8's note that recursive ADTs ("variant type base case", §8.9) build on the non-generic data-carrying-enums feature. **Leo decided 2026-05-27: add generic enums + `Result<T,E>`.** This PRD owns the generic-enum substrate; `docs/prds/v0_6/result-and-fallback.md` Layer B (a sibling-batch follow-up) consumes it to build `Result<T,E>`.
 
