@@ -104,12 +104,14 @@ Payloads shipped in v0.6; these bounds apply to the current surface.
 
 ## Option Type
 
-`Option<T>` with `some(value)` / `none` is compiler-intrinsic, not an enum:
+`Option<T>` with `some(value)` / `none` is compiler-intrinsic, not an enum — it has
+no `enum` declaration and no variants you can match on. An `Option` is read with the
+**recovery combinators**, which are prelude-registered (no import needed):
 ```
-param coating : Option<CoatingSpec> = none
+param base : Length = 1mm
+param coating : Option<Length> = some(0.25mm)
 
-let total = match coating {
-    some(c) => base + c.thickness
-    none => base
-}
+let bare = unwrap_or(coating, 0mm)
+let has  = is_some(coating)
+let alt  = or_else(coating, some(0.05mm))
 ```
