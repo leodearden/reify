@@ -123,11 +123,11 @@ use std::process::Command;
 ///
 /// See `reify_test_support::git_env` for why removal rather than assignment,
 /// and why an enumerated set rather than a wholesale `GIT_*` clear. The
-/// deletion guard for the set (`repo_redirect_vars_covers_the_removal_floor`)
-/// lives there too, next to the definition it guards. What stays in this
-/// module's tests below is what is genuinely local to this crate: the
-/// `git -C <root>` shape [`command`] builds, and the real-git behavioural test
-/// that proves the sanitization actually beats an ambient redirect var.
+/// deletion guard for the set lives there too, in that module's tests, next to
+/// the definition it guards. What stays in this module's tests below is what is
+/// genuinely local to this crate: the `git -C <root>` shape [`command`] builds,
+/// and the real-git behavioural test that proves the sanitization actually
+/// beats an ambient redirect var.
 pub use reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize};
 
 /// A pre-sanitized `git -C <root>` command.
@@ -186,9 +186,8 @@ mod tests {
     ///
     /// Self-referential by construction — it asserts the code removes exactly
     /// what the same constant lists, so it stays green through a DELETION from
-    /// [`REPO_REDIRECT_VARS`]. The guard against that is
-    /// `repo_redirect_vars_covers_the_removal_floor`, which lives with the
-    /// definition in `reify_test_support::git_env`.
+    /// [`REPO_REDIRECT_VARS`]. The guard against that lives with the
+    /// definition, in `reify_test_support::git_env`'s tests.
     #[test]
     fn both_entry_points_remove_every_repo_redirect_var() {
         // A caller that needs a non-`-C` shape can still opt in.

@@ -40,9 +40,9 @@ use std::process::Command;
 /// each entry independently as a containment FLOOR, so this list may still GROW
 /// without a lockstep test edit, but an entry cannot be silently DELETED from
 /// it. That guard sits next to the definition it guards on purpose: every other
-/// test of this set iterates the set itself (this module's sanitizer tests and
-/// `orphan_audit`'s `build_audit_command_removes_every_repo_redirect_var`), so
-/// all of them stay green through a deletion.
+/// test of this set — here and above the dependency edge — iterates the set
+/// itself to assert the code removes what it lists, so all of them stay green
+/// through a deletion.
 pub const REPO_REDIRECT_VARS: &[&str] = &[
     // Exported by git into a hook's process tree — the observed failure.
     "GIT_DIR",
@@ -119,23 +119,21 @@ mod tests {
 
     /// The subset git exports into a hook's ENTIRE process tree — the sharpest
     /// case, and exactly what `reify-audit`'s integration-test replay harness
-    /// poisons with (`crates/reify-audit/tests/common/git_env.rs::hook_git_env`,
-    /// which independently asserts its own three vars are contained in
+    /// poisons with (`crates/reify-audit/tests/common/git_env.rs`, which
+    /// independently asserts its own poison set is contained in
     /// [`REPO_REDIRECT_VARS`] from the other side of the dependency edge).
     const HOOK_EXPORTED_FLOOR: &[&str] = &["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"];
 
     /// The deletion guard for [`REPO_REDIRECT_VARS`], and the only test of that
     /// set anywhere that is NOT self-referential.
     ///
-    /// Every other test of it — this crate's
-    /// `orphan_audit::tests::build_audit_command_removes_every_repo_redirect_var`
-    /// and `reify_audit::git_env`'s
-    /// `both_entry_points_remove_every_repo_redirect_var` — iterates the same
-    /// constant to assert the code removes what it lists, so dropping an entry
-    /// keeps them all green. This test names each var independently, so a
-    /// deletion has to be argued for here too. It lives in the crate that
-    /// DEFINES the constant so an editor working only in `reify-test-support`
-    /// gets that signal locally rather than from a reverse dependency.
+    /// Every other test of it — in this crate and above the dependency edge —
+    /// iterates the same constant to assert the code removes what it lists, so
+    /// dropping an entry keeps them all green. This test names each var
+    /// independently, so a deletion has to be argued for here too. It lives in
+    /// the crate that DEFINES the constant so an editor working only in
+    /// `reify-test-support` gets that signal locally rather than from a reverse
+    /// dependency.
     #[test]
     fn repo_redirect_vars_covers_the_removal_floor() {
         for (var, why) in REMOVAL_FLOOR {

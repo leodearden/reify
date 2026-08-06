@@ -766,10 +766,9 @@ mod tests {
 
     /// Pins `orphan_audit.rs`'s `EXCLUDE_CRATES` const against
     /// `scripts/audit-orphan-producers.sh`'s own `EXCLUDE_CRATES = {...}`
-    /// declaration (the source of truth for SET MEMBERSHIP) — the same
-    /// duplication-pinning pattern `crates/reify-audit/src/git_env.rs`'s
-    /// `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` uses
-    /// one layer out, rather than resting on a "keep in sync" comment.
+    /// declaration (the source of truth for SET MEMBERSHIP) — the
+    /// duplication-pinning pattern this codebase reaches for across a
+    /// language boundary, rather than resting on a "keep in sync" comment.
     ///
     /// Pins ONLY the set's *contents* — NOT [`scope_is_excluded_crate`]'s
     /// matching *rule*. The script's own `discover_sources` excludes a
@@ -954,8 +953,7 @@ mod tests {
         );
     }
 
-    /// Mirrors `reify-audit`'s
-    /// `git_env.rs::both_entry_points_remove_every_repo_redirect_var`, from
+    /// Mirrors the sanitization tests in `reify-audit`'s `git_env.rs`, from
     /// the other side of the dependency edge: asserts the constructed
     /// script-spawn `Command` records a removal (`env_remove` -> `(key, None)`
     /// in `get_envs()`) for every [`crate::git_env::REPO_REDIRECT_VARS`]
