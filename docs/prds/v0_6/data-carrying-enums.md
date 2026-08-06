@@ -10,9 +10,11 @@ Resolves spec §18.6 roadmap item 6 ("Data-carrying enums — algebraic data typ
 
 ## §1 — Goal
 
-Today Reify enums are C-style bare variants only: `enum Directionality { In, Out, Bidi }` (spec §3.8, §4.5; grammar `enum_declaration` = identifiers; `EnumDef.variants: Vec<String>`; runtime `Value::Enum { type_name, variant }` with no payload slot). This PRD adds **associated data to variants** plus **pattern matching that binds the payloads**, turning enums into algebraic data types.
+**Before this PRD landed**, Reify enums were C-style bare variants only: `enum Directionality { In, Out, Bidi }` (spec §3.8, §4.5; grammar `enum_declaration` = identifiers; `EnumDef.variants: Vec<String>`; runtime `Value::Enum { type_name, variant }` with no payload slot). This PRD added **associated data to variants** plus **pattern matching that binds the payloads**, turning enums into algebraic data types.
 
-What a user can do when this lands (the observable surface):
+**As shipped (v0.6):** variants carry named-field payloads — `enum_declaration` accepts `Name { field: Type, ... }` (`tree-sitter-reify/grammar.js`), `EnumDef.variants: Vec<EnumVariantDef>` with `VariantPayload::{Unit, Named}` (`crates/reify-ir/src/traits.rs`), and the runtime value carries a payload slot, `Value::Enum { type_name, variant, payload: Vec<(String, Value)> }` (`crates/reify-ir/src/value.rs`), empty for bare variants.
+
+What a user can do today (the observable surface) — this is the shipped surface, mirrored by `examples/m6_data_carrying_enum.ri`:
 
 ```reify
 enum Shape {
