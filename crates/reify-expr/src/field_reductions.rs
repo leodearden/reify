@@ -1260,7 +1260,10 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
 /// - `Type::Point { quantity }` where `quantity` is `Type::Int` (or
 ///   any other non-Real / non-Scalar type) — same rationale.
 /// - `Type::Point { n: 0, .. }` — a zero-dimensional point is degenerate
-///   and rejected regardless of `quantity`.
+///   and rejected regardless of `quantity`. Defensive, not a live case:
+///   every current call site already derives `n` from a source that
+///   guarantees `n >= 1` (a `SampledField`'s axis count, or a
+///   `domain_dim` result pre-filtered by `Some(n) if n > 0`).
 /// - Mismatches between `coords_si.len()` and the domain's expected
 ///   dimensionality (e.g., 3-D grid wrapped as a 1-D-domain field, or
 ///   vice versa) — user-driven via field type/source mistypes.
@@ -1271,9 +1274,13 @@ fn decompose_index(linear: usize, axis_lengths: &[usize]) -> [usize; MAX_AXES] {
 /// `sampled::wrap_result` conventions.
 fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
     match domain_type {
-        // `n > 0` excludes the degenerate zero-dimensional Point up
-        // front: with `n == 0`, `coords_si` is empty and
-        // `collect::<Option<Vec<_>>>()` over an empty iterator yields
+        // Defense-in-depth, not a live defect: every current call site
+        // (`arg_coord_from_index`'s `sf.axis_grids.len()`, and
+        // `compute_bounded_extremum`/`compute_bounded_argextremum`'s
+        // `domain_dim(..)` already filtered by `Some(n) if n > 0`)
+        // guarantees `n >= 1`, so `n == 0` cannot reach here today. The
+        // guard excludes it anyway: with `n == 0`, `coords_si` is empty
+        // and `collect::<Option<Vec<_>>>()` over an empty iterator yields
         // `Some(vec![])` regardless of `quantity`, which would otherwise
         // produce `Value::Point([])` instead of `Value::Undef`.
         Type::Point { n, quantity } if *n > 0 && coords_si.len() == *n => coords_si
@@ -1283,12 +1290,13 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
             .map_or(Value::Undef, Value::Point),
         // 1-D scalar/dimensionless domain: single coord. This arm's guard
         // (`Type::Scalar { .. }`) never matches `Type::Int` — Int falls
-        // through to the outer `_ => Value::Undef` arm below instead. By
-        // construction `domain_type` is always a supported quantity here,
-        // so this calls the infallible helper directly instead of
-        // routing through `wrap_scalar_coord`'s `Option`.
+        // through to the outer `_ => Value::Undef` arm below instead. The
+        // `.unwrap_or(Value::Undef)` here is defensive: by construction
+        // `domain_type` is always `Type::Scalar` in this arm, so
+        // `wrap_scalar_coord` (gated by `is_supported_scalar_quantity`)
+        // never actually returns `None` from this call site.
         Type::Scalar { .. } if coords_si.len() == 1 => {
-            wrap_scalar_coord_unchecked(coords_si[0], domain_type)
+            wrap_scalar_coord(coords_si[0], domain_type).unwrap_or(Value::Undef)
         }
         _ => Value::Undef,
     }
@@ -1303,20 +1311,6 @@ fn wrap_coord_for_domain(coords_si: &[f64], domain_type: &Type) -> Value {
 /// `f64` storage).
 fn is_supported_scalar_quantity(ty: &Type) -> bool {
     matches!(ty, Type::Scalar { .. })
-}
-
-/// Wrap a single SI coord per a scalar quantity type, assuming `quantity`
-/// is already known to be supported. Callers that have not pre-filtered
-/// `quantity` via [`is_supported_scalar_quantity`] must use
-/// [`wrap_scalar_coord`] instead.
-fn wrap_scalar_coord_unchecked(coord_si: f64, quantity: &Type) -> Value {
-    match quantity {
-        Type::Scalar { dimension } if !dimension.is_dimensionless() => Value::Scalar {
-            si_value: coord_si,
-            dimension: *dimension,
-        },
-        _ => Value::Real(coord_si),
-    }
 }
 
 /// Wrap a single SI coord per a scalar quantity type.
@@ -1337,7 +1331,13 @@ fn wrap_scalar_coord(coord_si: f64, quantity: &Type) -> Option<Value> {
     if !is_supported_scalar_quantity(quantity) {
         return None;
     }
-    Some(wrap_scalar_coord_unchecked(coord_si, quantity))
+    match quantity {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(Value::Scalar {
+            si_value: coord_si,
+            dimension: *dimension,
+        }),
+        _ => Some(Value::Real(coord_si)),
+    }
 }
 
 /// Wrap an SI f64 in the field's codomain shape.
@@ -1453,30 +1453,25 @@ mod tests {
         assert_eq!(wrap_coord_for_domain(&[1.0, 2.0], &domain), Value::Undef);
     }
 
-    /// `Type::Point { n: 0, quantity: Int }` with empty `coords_si` is
-    /// `Value::Undef` via the arm guard's `*n > 0` check, before the
-    /// quantity is even inspected.
+    /// `Type::Point { n: 0, .. }` with empty `coords_si` is `Value::Undef`
+    /// regardless of `quantity` — the arm guard's `*n > 0` check rejects a
+    /// zero-dimensional Point before `quantity` is even inspected, so an
+    /// unsupported (`Int`) and a supported (`dimensionless_scalar`)
+    /// quantity are rejected identically. Defensive (see the arm's
+    /// comment above): no current call site can produce `n == 0`.
     #[test]
-    fn wrap_coord_for_domain_point_zero_int_quantity_empty_coords_returns_undef() {
-        let domain = Type::Point {
-            n: 0,
-            quantity: Box::new(Type::Int),
-        };
-        assert_eq!(wrap_coord_for_domain(&[], &domain), Value::Undef);
-    }
-
-    /// Sibling of the above with a *supported* quantity: `Point { n: 0,
-    /// quantity: dimensionless_scalar }` is `Value::Undef` too — the arm
-    /// guard's `*n > 0` check rejects any zero-dimensional Point
-    /// uniformly, regardless of `quantity`, so this is not a special case
-    /// of the `Int` rejection above.
-    #[test]
-    fn wrap_coord_for_domain_point_zero_dimensionless_quantity_empty_coords_returns_undef() {
-        let domain = Type::Point {
-            n: 0,
-            quantity: Box::new(Type::dimensionless_scalar()),
-        };
-        assert_eq!(wrap_coord_for_domain(&[], &domain), Value::Undef);
+    fn wrap_coord_for_domain_point_zero_quantity_empty_coords_returns_undef() {
+        for quantity in [Type::Int, Type::dimensionless_scalar()] {
+            let domain = Type::Point {
+                n: 0,
+                quantity: Box::new(quantity.clone()),
+            };
+            assert_eq!(
+                wrap_coord_for_domain(&[], &domain),
+                Value::Undef,
+                "quantity = {quantity:?}"
+            );
+        }
     }
 
     /// 1-D `Type::Scalar` domain (dimensioned) wraps to a dimensioned
