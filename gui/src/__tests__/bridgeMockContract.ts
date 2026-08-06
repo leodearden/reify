@@ -1,16 +1,7 @@
 /**
- * Pure helpers for the bridge-mock coverage contract.
- *
- * INVARIANT ENFORCED (by the consumer, `bridgeMockCoverage.test.ts`):
- * every runtime export of `../bridge` is either a key of a target test file's
- * `vi.mock('../bridge', () => ({ ... }))` factory, or carries a documented
- * entry in that guard's `DELIBERATE_OMISSIONS` allowlist. The factory is a
- * NON-partial mock, so a missing key makes vitest throw
- * `No "X" export is defined on the "../bridge" mock` synchronously at property
- * access — which, depending on which `initApp` try/catch swallows it, surfaces
- * either as an stderr flood with every test still green, or as nothing at all.
- * Tasks 6035, 6039 and 6045 each fixed one name of this class by hand; this
- * module exists so the whole class is detected mechanically instead.
+ * Pure helpers for the bridge-mock coverage contract. The invariant they exist
+ * to enforce, and why a gap in it fails silently, are documented once in the
+ * consumer — `bridgeMockCoverage.test.ts`. Not restated here.
  *
  * Deliberately free of `node:fs` and of any vitest import: everything here is a
  * pure function over plain data, so the fragile half (source parsing) is

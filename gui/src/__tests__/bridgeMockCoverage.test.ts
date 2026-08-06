@@ -3,16 +3,46 @@
  * runtime exports of bridge.ts ↔ keys of a target test file's
  * `vi.mock('../bridge', () => ({ ... }))` factory.
  *
- * Invariant: every runtime export of `../bridge` is either mocked by the target
- * factory or carries a documented entry in `DELIBERATE_OMISSIONS`. The factory
- * is a NON-partial mock, so an omitted export makes vitest throw
+ * SINGLE SOURCE OF TRUTH for the bridge-mock contract. The target files carry a
+ * two-line pointer here rather than a copy: this narrative is normative prose
+ * about a vitest mechanism, and four lockstep copies would rot three at a time
+ * with nothing to detect it — unlike the key sets below, which are checked.
+ *
+ * ── Invariant ────────────────────────────────────────────────────────────────
+ * Every runtime export of `../bridge` is either mocked by the target factory or
+ * carries a documented entry in that target's `omissions` allowlist.
+ *
+ * ── Why an omitted key is dangerous rather than merely wrong ─────────────────
+ * The factory is a NON-partial mock, so an omitted export makes vitest throw
  * `No "X" export is defined on the "../bridge" mock` SYNCHRONOUSLY at property
- * access — and `initApp`'s run of sibling try/catch blocks makes that same
- * defect surface with opposite signatures: an export consumed by
- * `engineStore.subscribeToEvents` yields a DOM toast and ZERO stderr, while one
- * consumed directly by an `initApp` block yields an stderr flood with every
- * test still green. Tasks 6035, 6039 and 6045 each fixed one name of this class
- * by hand, one export at a time; this guard detects the whole class.
+ * access. `initApp`'s run of sibling try/catch blocks then gives that ONE defect
+ * two opposite signatures, neither of which fails an assertion:
+ *   - export consumed by `engineStore.subscribeToEvents` -> a DOM toast and ZERO
+ *     stderr. The throw fires while the `Promise.allSettled` argument array is
+ *     still being built, so every engineStore subscription dies at once and
+ *     allSettled's per-listener `console.warn` is never reached.
+ *   - export consumed directly by an `initApp` block -> an stderr flood, with
+ *     every test still green.
+ * Tasks 6035, 6039 and 6045 each fixed one name of this class by hand, one
+ * export at a time. This guard detects the whole class.
+ *
+ * ── Measured truth table, for an export the target's <App /> actually reaches ─
+ *   factory key + beforeEach restore   -> green (correct)
+ *   factory MISSING, beforeEach present -> ALL tests FAIL loudly, before any
+ *       test body runs (`vi.mocked(undefined).mockResolvedValue` throws)
+ *   factory present, beforeEach MISSING -> green, but a per-test
+ *       `mockImplementation` override leaks into every later test
+ *   BOTH missing -> SILENT. This is the 6035/6039/6045 defect class.
+ * Checks (a)-(c) below cover the factory column of that table.
+ *
+ * ── Standing rules for the target files ─────────────────────────────────────
+ * 1. A new bridge.ts runtime export gets a factory key in every target, OR an
+ *    entry in that target's `omissions` with the reason it is unreachable from
+ *    a rendered <App />.
+ * 2. Do NOT convert a target factory to `importOriginal` / a partial mock. That
+ *    would evaluate the real bridge.ts — its `@tauri-apps/api` and
+ *    `@tauri-apps/plugin-dialog` imports and every real implementation — inside
+ *    the most load-bearing mock in the file.
  *
  * Shape mirrors `debugParity.test.ts` — the house pattern for "two artifacts
  * must stay in lockstep, with documented legitimate asymmetries": mock the

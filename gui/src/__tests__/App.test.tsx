@@ -101,35 +101,16 @@ vi.mock('../editor/FileTabs', () => ({
 
 // --- Mock bridge functions: a NON-partial factory; every key here is load-bearing ---
 //
-// Measured truth table, for a bridge export this file's <App /> actually reaches:
-//   factory key + beforeEach restore -> green (correct)
-//   factory MISSING, beforeEach present -> ALL tests FAIL loudly, before any test
-//       body runs (vi.mocked(undefined).mockResolvedValue throws)
-//   factory present, beforeEach MISSING -> green, but a per-test
-//       mockImplementation override leaks into every later test
-//   BOTH missing -> SILENT. This is the 6035/6039/6045 defect class.
+// STANDING RULE: a new bridge.ts runtime export gets a key here, OR an entry in
+// bridgeMockCoverage.test.ts's `omissions` allowlist with the reason it is
+// unreachable from a rendered <App />. Do NOT convert this factory to
+// importOriginal / a partial mock.
 //
-// Mechanism: because the factory is not a partial mock, an omitted key makes
-// vitest throw `No "X" export is defined on the "../bridge" mock` SYNCHRONOUSLY
-// at property access. initApp's run of sibling try/catch blocks then gives the
-// SAME defect two opposite signatures:
-//   - export consumed by engineStore.subscribeToEvents -> a DOM toast and ZERO
-//     stderr. The throw fires while the Promise.allSettled argument array is
-//     still being built, so every engineStore subscription dies at once and
-//     allSettled's per-listener console.warn is never reached.
-//   - export consumed directly by an initApp block -> an stderr flood, with
-//     every test still green.
-// Neither signature fails an assertion, which is why three separate tasks fixed
-// this defect one export name at a time.
-//
-// bridgeMockCoverage.test.ts is the mechanical detector. STANDING RULE: a new
-// bridge.ts runtime export gets a factory key here, OR an entry in that file's
-// DELIBERATE_OMISSIONS with the reason it is unreachable from a rendered <App />.
-//
-// Do NOT convert this factory to importOriginal / a partial mock. That would
-// evaluate the real bridge.ts — its @tauri-apps/api and @tauri-apps/plugin-dialog
-// imports and every real implementation — inside the most load-bearing mock in
-// this file.
+// bridgeMockCoverage.test.ts is both the mechanical detector and the single
+// source of truth for the rules above, for why an omitted key fails SILENTLY
+// rather than loudly, and for the measured truth table that makes the beforeEach
+// restore below load-bearing rather than cosmetic. Deliberately not restated
+// here: unlike the key sets, prose has nothing to detect it going stale.
 const emptyState: GuiState = { fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] };
 vi.mock('../bridge', () => ({
   getInitialState: vi.fn().mockResolvedValue({ meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }),
