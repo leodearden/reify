@@ -210,7 +210,7 @@ For every recovery combinator `C(subject, …)`:
 | `E_FALLBACK_ARITY` | wrong arg count to a combinator | compiler (existing fn-arity path) |
 | (existing) graph `Failed` | a kernel/eval computation failure | eval graph (unchanged, D1) — NOT a combinator concern |
 
-## §8 — Decomposition plan (DAG; not yet filed) — Layer A only (default fork F1)
+## §8 — Decomposition plan (DAG; filed and completed) — Layer A, filed as **3979–3989**, all `done` and merged on `main`; §8.B below covers Layer B (**4035–4040**, likewise landed)
 
 **B + H.** Layer A introduces no novel grammar (G3 clear), so there is no grammar-prerequisite phase. The shape is: combinator library → compiler resolution/type-check → eval → end-to-end consumer leaf (integration gate) → companion docs. Greek labels; real IDs at decompose. **All Layer-A leaves `grammar_confirmed=true`.**
 
@@ -295,8 +295,8 @@ No leaf asserts an accuracy bound, closed-form reproduction, or a capability own
 
 ## §10 — Out of scope for this PRD
 
-- **`Result<T,E>` decomposition (Layer B), under the default fork F1.** Layer B is fully *specified* (§4.3, §5 D5, §6, §7.1 generalization) but **not decomposed/filed here** — it depends on generic data-carrying enums, which do not exist and are DCE-deferred. A follow-up PRD owns Layer B once the generic-DCE substrate is authored. (Flip F1 to include it here only if Leo wants the DCE + generic-enum prerequisites wired now.)
-- **Generic / type-parameterized enums (`enum Result<T,E> {…}`).** The substrate for Layer B; owned by neither this PRD nor DCE today. Must be authored as a generic-data-carrying-enums PRD before Layer B lands.
+- ~~**`Result<T,E>` decomposition (Layer B), under the default fork F1.**~~ **No longer out of scope.** F1 was flipped the day this PRD was authored: Layer B **is** decomposed here (§8.B), filed as tasks 4035–4040, and **shipped in v0.6** on the generic-DCE substrate.
+- ~~**Generic / type-parameterized enums (`enum Result<T,E> {…}`).**~~ **No longer out of scope / no longer an ownership gap.** The substrate was authored as `docs/prds/v0_6/generic-data-carrying-enums.md` (tasks 4029–4034) and **shipped in v0.6**; that PRD owns it.
 - **`?`-style error propagation / early return.** `parse(s)?` (verified no grammar, §4.4 raf-3) — exception-style unwinding is a much larger control-flow change; deferred. Recovery is explicit-combinator only.
 - **`try`/`catch` / exception unwinding.** Not added; inconsistent with the pure-functional eval model (§9.6's premise).
 - **Catching graph-level `Freshness::Failed` into a language `Result`/`Option` (the bridge intrinsic).** Default: NOT added (D1 orthogonality). A `catch_failed(expr) -> Option<T>` / `try_eval` bridge that reifies a graph-`Failed` into a language value is **DESIGN FORK F3** — deferred unless Leo opts in. It is the larger, riskier semantic change (makes every kernel failure catchable).
