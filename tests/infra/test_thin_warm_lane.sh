@@ -20,6 +20,10 @@
 #   E — seed fail-closed abort ⇒ the caller DISCARDS the uncertified
 #       <lane>/target it aborted onto (task 5635; PRD
 #       docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.13 caller obligation)
+#   F — live-process-reference gate: a lane whose target/ is referenced by a
+#       live process (cwd / open fd / mmap) is PRESERVED even when its flock is
+#       free (task 5823; the flock is a reseed mutex, not a liveness oracle —
+#       esc-5334-6)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -249,6 +253,15 @@ assert "B3: target/ byte-intact under lock contention (T3)" \
     test -f "$B3_LANE/target/MARKER"
 assert "B3: stderr mentions the lock/live-consumer refusal" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer|assigned"' _ "$ERR_OUT"
+# Inverse of Block F's F4 (task 5823). BOTH refusals exit 75, so the stderr
+# reason is the only thing that tells them apart in dark-factory's logs — and it
+# has to be pinned in both directions or a single shared message would keep each
+# one-sided assert green. F4 pins that a process-reference refusal never names
+# the flock reason; this pins that a flock-held lane never names the
+# process-reference reason. It also pins the ORDERING: the flock gate fires
+# FIRST, so a flock-held lane is refused before the ~1.9s /proc walk is ever run.
+assert "B3: stderr does NOT name the live-process-reference refusal (the two exit-75 reasons stay distinguishable; task 5823)" \
+    bash -c '! printf "%s\n" "$1" | grep -qi "live process reference"' _ "$ERR_OUT"
 
 kill "$B3_LOCK_PID" 2>/dev/null || true
 wait "$B3_LOCK_PID" 2>/dev/null || true
@@ -608,6 +621,82 @@ if [ "$(id -u)" -ne 0 ]; then
 else
     echo "  SKIP: E3 discard-failure asserts (running as uid 0; DAC write checks are bypassed)"
 fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — live-process-reference gate (task 5823)
+#
+# ROOT CAUSE (esc-5334-6, 2026-07-26): the lane flock is a reseed MUTEX, not a
+# liveness oracle. <lane>.lock is held only across the ACQUIRE reseed (task 5354)
+# and across dark-factory's run_scoped_verification (DF 3027) — NEVER across the
+# implement phase, where an agent runs cargo build/test for tens of minutes. So
+# Block B's `flock -n 9` gate is BLIND for most of an ASSIGNED lane's life, and
+# thin would happily `rm -rf <lane>/target` out from under a live build (the
+# _lane-5 218-target "No such file or directory" storm of 2026-07-25, on the
+# sibling gc path task 5572 closed).
+#
+# Every lane in this block therefore has a FREE flock — no holder is started
+# anywhere in Block F — so the existing T3 gate cannot account for ANY refusal
+# observed here. The only thing that can is the /proc live-reference check.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: live-process-reference gate (task 5823) ---"
+
+# --seed-script stub: records invocations, so "the refusal precedes any work" is
+# observable rather than assumed. Same shape as Block C's stub.
+F_SEED_LOG="$(mktemp /tmp/test-thin-warm-lane-f-seedlog-XXXXXX)"
+_TMPDIRS+=("$F_SEED_LOG")
+F_SEED_STUB="$(mktemp /tmp/test-thin-warm-lane-f-seedstub-XXXXXX)"
+_TMPDIRS+=("$F_SEED_STUB")
+cat > "$F_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+exit 0
+STUB_EOF
+chmod +x "$F_SEED_STUB"
+export SEED_LOG="$F_SEED_LOG"
+
+# ── F-cwd: a live helper whose CWD is <lane>/target ───────────────────────────
+# The exact build-cwd shape a cargo/rustc process holds. Mirrors
+# tests/infra/test_warm_lane_gc.sh's P-basic fixture (:1520-1557).
+F_ROOT="$(mktemp -d /tmp/test-thin-warm-lane-f-XXXXXX)"
+_TMPDIRS+=("$F_ROOT")
+F_LANE="$F_ROOT/_lane-f"
+mkdir -p "$F_LANE/target"
+touch "$F_LANE/target/DIVERGENT_MARKER"
+# The lane lock exists (pool acquire/release convention, inv.2) and is FREE.
+touch "${F_LANE}.lock"
+
+# The helper touches READY only AFTER cd'ing in, so _wait_for_reader_lock proves
+# the cwd is established before thin runs (causal ordering, technique R — never a
+# fixed sleep). `exec sleep` so the tracked PID is the one holding the cwd.
+F_READY="$F_ROOT/helper.ready"
+( cd "$F_LANE/target" && touch "$F_READY" && exec sleep 300 ) &
+F_HELPER_PID=$!
+_BGPIDS+=("$F_HELPER_PID")
+_wait_for_reader_lock "$F_READY" 30
+
+run_helper "$F_LANE" --seed-script "$F_SEED_STUB"
+
+# 75 (EX_TEMPFAIL) SPECIFICALLY, not merely non-zero: dark-factory's
+# _run_thin_warm_lane logs rc=75 at DEBUG as a benign skip ("release-thin is not
+# an escalation/fault", §9.5 inv.11) and EVERY other non-zero rc at WARNING, so a
+# code that merely refuses would turn each lingering-reference release into a
+# false fault in the operator's log.
+assert "F1: a live-cwd-referenced lane exits 75 (EX_TEMPFAIL), with the flock FREE" \
+    test "$RC" -eq 75
+assert "F2: <lane>/target still exists (nothing was freed)" \
+    test -d "$F_LANE/target"
+assert "F2: target/DIVERGENT_MARKER byte-intact (the live build's cache is untouched)" \
+    test -f "$F_LANE/target/DIVERGENT_MARKER"
+assert "F3: stderr names the PROCESS-REFERENCE refusal" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "live process reference"' _ "$ERR_OUT"
+# The mirror of the B3 assert added above: with every lock in this block FREE,
+# naming the flock reason here would be a misattribution — and would mean the
+# refusal came from the wrong gate entirely. Mirrors gc's P7.
+assert "F4: stderr does NOT name the flock refusal (no misattribution; every lock in Block F is FREE)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "flock -n failed"' _ "$ERR_OUT"
+assert "F5: seed-script log is EMPTY (the refusal precedes any work)" \
+    bash -c '[ ! -s "$1" ]' _ "$F_SEED_LOG"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately
