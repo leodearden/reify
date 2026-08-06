@@ -231,6 +231,13 @@ fn joint_force_value_is_empty_marker_trait() {
     );
 }
 
+// Closed-set pin only: per-structure trait-bound conformance is already
+// asserted individually by the sibling tests below (e.g.
+// `scalar_force_has_one_real_param_and_refines_joint_force_value`); this
+// test's sole new signal is that the refinement set is closed at exactly
+// six members. The scan is deliberately scoped to std/dynamics only (via
+// `load_stdlib_module()`) — a refiner declared in another stdlib module
+// would not be caught here.
 #[test]
 fn joint_force_value_refinement_set_is_exactly_six_structures() {
     let module = load_stdlib_module();
