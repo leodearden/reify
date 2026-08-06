@@ -107,7 +107,7 @@ Payloads shipped in v0.6; these bounds apply to the current surface.
 `Option<T>` with `some(value)` / `none` is compiler-intrinsic, not an enum — it has
 no `enum` declaration and no variants you can match on. An `Option` is read with the
 **recovery combinators**, which are prelude-registered (no import needed):
-```
+```reify
 param base : Length = 1mm
 param coating : Option<Length> = some(0.25mm)
 
@@ -139,3 +139,30 @@ you *can* match on. An `undef` subject propagates `undef` through every combinat
 Declared in `crates/reify-compiler/stdlib/option_recovery.ri` (`ok_or` in
 `crates/reify-compiler/stdlib/result.ri`); runnable examples
 `examples/m6_fallback_recovery.ri` and `examples/option_map_or.ri`.
+
+### Do not `match` an Option
+
+`match` **cannot** read an `Option` payload — in either form. Both failure modes
+are measured:
+
+- **`some(c) => ...` is a parse error.** The pattern grammar has no positional
+  form at all (`match_pattern` is
+  `variant_binding_pattern | identifier ('|' identifier)* | '_'`), so a payload
+  binder can only ever be written as named fields — and `Option` has no fields to
+  name.
+- **Binder-less `some => ... , none => ...` arms parse but silently evaluate to
+  `undef`** — for a `some(x)` subject just as much as for a `none` subject, with
+  no diagnostic. `Option` is intrinsic (`Value::Option`), not a `Value::Enum`, and
+  match-arm selection fires only on `Value::Enum`. **Do not use this form**: it is
+  the quieter, worse version of the same mistake.
+
+Use the recovery combinators above instead; `map_or` is the payload-binding one.
+The gap is open and deliberate — authority:
+`docs/prds/v0_6/data-carrying-enums.md` §10 and design fork **F4**.
+
+Contrast: `Result<T, E>` **is** a real prelude enum
+(`crates/reify-compiler/stdlib/result.ri`), so its `Ok { value: v }` /
+`Err { error: e }` patterns fit the named-field grammar and match normally —
+whereas `Option` has no `EnumDef` at all. That asymmetry is exactly why the two
+types differ here, and why `ok_or` (which bridges `Option` into `Result`) is the
+route to a genuine `match`.
