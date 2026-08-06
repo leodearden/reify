@@ -5801,6 +5801,18 @@
         step_handles: &'static [GeometryHandleId],
     }
 
+    /// Substrings every WRONG-TYPE rejection must carry, minted by
+    /// `ArgRejection::message` from `length_spec()` — the type name AND the
+    /// migration hint that tells the author what to write instead. Kept
+    /// disjoint from [`NON_FINITE_WORDING`] on purpose (see
+    /// [`assert_length_gated`]).
+    const WRONG_TYPE_WORDING: &[&str] =
+        &["expects Length", "pass a dimensioned length such as `5mm`"];
+
+    /// Substring a NON-FINITE rejection must carry. The value IS a Length here,
+    /// so the wrong-dimension wording would misdescribe it.
+    const NON_FINITE_WORDING: &[&str] = &["non-finite Length"];
+
     /// The rejection half of the units gate, asserted once per GATED POSITION
     /// of one builtin — the contract every R1 family shares (task 5623).
     ///
@@ -5823,6 +5835,15 @@
     /// — each position is a separate read, so a single-position test would not
     /// notice the others regressing to the bare-accepting `eval_named_arg_f64`
     /// path.
+    ///
+    /// Each arm asserts the REASON, not merely that the word `Length` occurs:
+    /// the wrong-type wording (`expects Length`, plus the migration hint) and
+    /// the non-finite wording (`non-finite Length`) are mutually exclusive
+    /// substrings, so an arm cannot be satisfied by the other arm's diagnostic.
+    /// Distinguishing them is the whole point of the table — a regression that
+    /// lost the [`ArgRejection`](crate::arg_acceptance::ArgRejection) path (and
+    /// with it the `5mm` migration hint) by classifying a bare `Real` as
+    /// non-finite would otherwise still pass every arm.
     fn assert_length_gated(case: LengthGateCase) {
         let LengthGateCase {
             label,
@@ -5835,27 +5856,27 @@
 
         for (position, &name) in gated.iter().enumerate() {
             for (arm, bad, expect) in [
-                ("bare Real", literal_f64(filler), "Length"),
+                ("bare Real", literal_f64(filler), WRONG_TYPE_WORDING),
                 (
                     "ANGLE Scalar",
                     literal_scalar(0.35, reify_core::DimensionVector::ANGLE),
-                    "Length",
+                    WRONG_TYPE_WORDING,
                 ),
                 (
                     "dimensionless Scalar",
                     literal_scalar(0.02, reify_core::DimensionVector::DIMENSIONLESS),
-                    "Length",
+                    WRONG_TYPE_WORDING,
                 ),
-                ("NaN Length", literal_length(f64::NAN), "non-finite Length"),
+                ("NaN Length", literal_length(f64::NAN), NON_FINITE_WORDING),
                 (
                     "+inf Length",
                     literal_length(f64::INFINITY),
-                    "non-finite Length",
+                    NON_FINITE_WORDING,
                 ),
                 (
                     "-inf Length",
                     literal_length(f64::NEG_INFINITY),
-                    "non-finite Length",
+                    NON_FINITE_WORDING,
                 ),
             ] {
                 // Exactly one position is bad; every other one is a finite
@@ -5881,15 +5902,85 @@
                     result
                 );
                 assert!(
-                    diagnostics
-                        .iter()
-                        .any(|d| d.message.contains(name) && d.message.contains(expect)),
+                    diagnostics.iter().any(|d| d.message.contains(name)
+                        && expect.iter().all(|want| d.message.contains(want))),
                     "the diagnostic for a {arm} in {label}'s '{name}' must name the \
-                     arg and say '{expect}'; got: {:?}",
+                     arg and carry every one of {expect:?}; got: {:?}",
                     diagnostics
                 );
             }
         }
+    }
+
+    /// ALL FAILURES AT ONCE, asserted on the FULLY BARE group — the case
+    /// `required_length_args` exists for, and the one [`assert_length_gated`]
+    /// structurally cannot see (it makes exactly ONE position bad per
+    /// iteration).
+    ///
+    /// A coordinate group is written as one gesture, so a bare group is usually
+    /// bare in EVERY member: `line_segment(0, 0, 0, 10, 0, 0)` is the headline
+    /// case. Reporting one member per build would cost the author six
+    /// edit-build cycles to fix one line.
+    ///
+    /// The count assertion is the load-bearing half. Splitting a builtin's
+    /// single N-name `required_length_args` call into several chained calls —
+    /// or re-introducing a `?` between them — still names the FIRST group's
+    /// members, so a names-only check would stay green while the reported set
+    /// silently halved. Asserting `== gated.len()` catches that, because the
+    /// all-at-once guarantee holds only WITHIN one call.
+    fn assert_every_bare_position_reported(case: LengthGateCase) {
+        let LengthGateCase {
+            label,
+            build,
+            gated,
+            filler,
+            step_handles,
+        } = case;
+        let values = ValueMap::new();
+
+        // EVERY gated position bare — the un-gated neighbours are supplied by
+        // the builder and stay bare by design.
+        let components: Vec<reify_ir::CompiledExpr> =
+            gated.iter().map(|_| literal_f64(filler)).collect();
+        let op = build(&components);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "a fully bare {label} must drop the op, got: {:?}",
+            result
+        );
+
+        for name in gated {
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(name)
+                    && d.message.contains("expects Length")),
+                "a fully bare {label} must report '{name}' in the SAME build as \
+                 every other bare position; got: {:?}",
+                diagnostics
+            );
+        }
+        let reported = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("expects Length"))
+            .count();
+        assert_eq!(
+            reported,
+            gated.len(),
+            "a fully bare {label} must report each of its {} gated positions \
+             exactly once — no short-circuit, no duplicate; got: {:?}",
+            gated.len(),
+            diagnostics
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -5913,15 +6004,18 @@
         }
     }
 
+    /// `translate`'s row in the shared gate table.
+    const TRANSLATE_GATE: LengthGateCase = LengthGateCase {
+        label: "translate",
+        build: translate_with_components,
+        gated: &["dx", "dy", "dz"],
+        filler: 0.0,
+        step_handles: &[GeometryHandleId(42)],
+    };
+
     #[test]
     fn compile_geometry_op_translate_length_gate_rejects_every_component() {
-        assert_length_gated(LengthGateCase {
-            label: "translate",
-            build: translate_with_components,
-            gated: &["dx", "dy", "dz"],
-            filler: 0.0,
-            step_handles: &[GeometryHandleId(42)],
-        });
+        assert_length_gated(TRANSLATE_GATE);
     }
 
     /// The clean path: dimensioned components are accepted and reach the IR in SI
@@ -6014,15 +6108,18 @@
         }
     }
 
+    /// `rotate_around`'s row in the shared gate table — the PIVOT only.
+    const ROTATE_AROUND_GATE: LengthGateCase = LengthGateCase {
+        label: "rotate_around",
+        build: rotate_around_with_point,
+        gated: &["px", "py", "pz"],
+        filler: 0.0,
+        step_handles: &[GeometryHandleId(42)],
+    };
+
     #[test]
     fn compile_geometry_op_rotate_around_length_gate_rejects_every_component() {
-        assert_length_gated(LengthGateCase {
-            label: "rotate_around",
-            build: rotate_around_with_point,
-            gated: &["px", "py", "pz"],
-            filler: 0.0,
-            step_handles: &[GeometryHandleId(42)],
-        });
+        assert_length_gated(ROTATE_AROUND_GATE);
     }
 
     /// Locks the split AND the scope boundary: a `Length` pivot with a BARE
@@ -6116,15 +6213,18 @@
         }
     }
 
+    /// `revolve`'s row in the shared gate table — the axis ORIGIN only.
+    const REVOLVE_GATE: LengthGateCase = LengthGateCase {
+        label: "revolve",
+        build: revolve_with_origin,
+        gated: &["ox", "oy", "oz"],
+        filler: 0.0,
+        step_handles: &[GeometryHandleId(42)],
+    };
+
     #[test]
     fn compile_geometry_op_revolve_length_gate_rejects_every_component() {
-        assert_length_gated(LengthGateCase {
-            label: "revolve",
-            build: revolve_with_origin,
-            gated: &["ox", "oy", "oz"],
-            filler: 0.0,
-            step_handles: &[GeometryHandleId(42)],
-        });
+        assert_length_gated(REVOLVE_GATE);
     }
 
     /// Locks the split AND the scope boundary: a `Length` origin with a BARE
@@ -6282,15 +6382,20 @@
         }
     }
 
+    /// `line_segment`'s row in the shared gate table — the WIDEST gated set in
+    /// R1 at six positions, and so the sharpest test of the all-at-once
+    /// contract.
+    const LINE_SEGMENT_GATE: LengthGateCase = LengthGateCase {
+        label: "line_segment",
+        build: line_segment_with_endpoints,
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.0,
+        step_handles: &[],
+    };
+
     #[test]
     fn compile_geometry_op_line_segment_length_gate_rejects_every_component() {
-        assert_length_gated(LengthGateCase {
-            label: "line_segment",
-            build: line_segment_with_endpoints,
-            gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
-            filler: 0.0,
-            step_handles: &[],
-        });
+        assert_length_gated(LINE_SEGMENT_GATE);
     }
 
     /// Six DISTINCT Length endpoint components are accepted and land in their
@@ -6367,17 +6472,22 @@
         }
     }
 
+    /// `helix`'s row in the shared gate table — three INDEPENDENT extents
+    /// rather than a point, which is why the group helper is
+    /// name-parameterised.
+    const HELIX_GATE: LengthGateCase = LengthGateCase {
+        label: "helix",
+        build: helix_with_components,
+        gated: &["radius", "pitch", "height"],
+        // A non-zero filler: a zero pitch or height is degenerate for reasons
+        // unrelated to units, and would muddy the signal.
+        filler: 1.0,
+        step_handles: &[],
+    };
+
     #[test]
     fn compile_geometry_op_helix_length_gate_rejects_every_component() {
-        assert_length_gated(LengthGateCase {
-            label: "helix",
-            build: helix_with_components,
-            // A non-zero filler: a zero pitch or height is degenerate for
-            // reasons unrelated to units, and would muddy the signal.
-            gated: &["radius", "pitch", "height"],
-            filler: 1.0,
-            step_handles: &[],
-        });
+        assert_length_gated(HELIX_GATE);
     }
 
     /// Three DISTINCT Length components are accepted into their own IR slots —
@@ -6463,17 +6573,21 @@
         }
     }
 
+    /// `arc`'s row in the shared gate table — a gated POINT plus a gated
+    /// standalone EXTENT, four of nine args.
+    const ARC_GATE: LengthGateCase = LengthGateCase {
+        label: "arc",
+        build: arc_with_center_radius,
+        // Deliberately EXCLUDES `start_angle`/`end_angle`/`ax`/`ay`/`az`.
+        gated: &["cx", "cy", "cz", "radius"],
+        // Non-zero: a zero radius is degenerate independently of units.
+        filler: 1.0,
+        step_handles: &[],
+    };
+
     #[test]
     fn compile_geometry_op_arc_length_gate_rejects_every_component() {
-        assert_length_gated(LengthGateCase {
-            label: "arc",
-            build: arc_with_center_radius,
-            // Deliberately EXCLUDES `start_angle`/`end_angle`/`ax`/`ay`/`az`.
-            gated: &["cx", "cy", "cz", "radius"],
-            // Non-zero: a zero radius is degenerate independently of units.
-            filler: 1.0,
-            step_handles: &[],
-        });
+        assert_length_gated(ARC_GATE);
     }
 
     /// Locks the split AND the scope boundary: a Length centre + Length radius
@@ -6537,6 +6651,32 @@
              got: {:?}",
             diagnostics
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test: ALL FAILURES AT ONCE, across every R1 family
+    // ---------------------------------------------------------------------------
+
+    /// Every gate row, driven through the fully-bare case — the whole point of
+    /// `required_length_args` and the one thing the per-position sweep cannot
+    /// see (it makes exactly one position bad at a time).
+    ///
+    /// Running the whole table rather than just `line_segment` is nearly free
+    /// and covers the two widest sets — `line_segment`'s six endpoint
+    /// coordinates and `arc`'s centre-plus-radius four — alongside the triples,
+    /// so no family can be quietly split back into chained reads.
+    #[test]
+    fn compile_geometry_op_length_gate_reports_every_bare_position_in_one_build() {
+        for case in [
+            TRANSLATE_GATE,
+            ROTATE_AROUND_GATE,
+            REVOLVE_GATE,
+            LINE_SEGMENT_GATE,
+            HELIX_GATE,
+            ARC_GATE,
+        ] {
+            assert_every_bare_position_reported(case);
+        }
     }
 
     // ---------------------------------------------------------------------------
