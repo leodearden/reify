@@ -66,9 +66,47 @@
 #         $REIFY_WARM_LANE_MOUNT); or, under --reseed, the post-abort discard of
 #         <lane_dir>/target failed — the lane is left carrying an uncertified
 #         clone and is deliberately NOT emitted on stdout.
-#   2   — Usage error (unknown flag, missing positional, --reseed without --base).
-#   75  — EX_TEMPFAIL: the lane's own flock is held by a live consumer
-#         (ASSIGNED lane; inv.2 one-consumer-per-lane-at-a-time).
+#   2   — Usage error (unknown flag, missing positional, --reseed without --base);
+#         or a WIRING error — the sibling scripts/lib_live_refs.sh is missing, so
+#         the T4 liveness check could not be loaded (an incomplete deployment,
+#         deliberately loud rather than silently fail-open).
+#   75  — EX_TEMPFAIL: the lane is BUSY. Either (a) its own flock is held by a
+#         live consumer (ASSIGNED lane; inv.2 one-consumer-per-lane-at-a-time),
+#         or (b) a live process references lane_dir or anything under it
+#         (cwd / open fd / mmap — T4). Both are benign "skip, retry next cycle"
+#         verdicts, never faults, and nothing was removed in either case.
+#
+#         ONE code for TWO reasons, deliberately: dark-factory's
+#         GitOps._run_thin_warm_lane (orchestrator/src/orchestrator/git_ops.py)
+#         treats rc=75 as a benign skip logged at DEBUG — "never logged at
+#         WARNING (§9.5 inv.11: release-thin is not an escalation/fault)" — and
+#         routes every OTHER non-zero rc to WARNING. A separate code for (b)
+#         would therefore turn every lingering-reference release-thin into a
+#         false fault and would require a cross-repo change to silence; reusing
+#         75 needs ZERO dark-factory change to ROUTE correctly, which is the
+#         strongest form of the "reify ships the primitive, dark-factory wires
+#         the invocation" seam.
+#
+#         The two reasons stay ATTRIBUTABLE through a machine-greppable stderr
+#         TOKEN prefixed on each refusal's first line, NOT through free-form
+#         English: `LANE_LOCK_CONTENDED:` for (a) and `LANE_LIVE_REF:` for (b).
+#         That follows the discriminant convention task 5568 ratified for
+#         seed-warm-lane.sh's identical problem — see the normative "Refusal
+#         signal" clause under docs/prds/warm-lane-pool-cow-seeding.md §9.5
+#         inv.11 — and reuses ITS literal token for (a), so one
+#         `grep LANE_LOCK_CONTENDED` separates lock contention across both
+#         scripts. Both tokens are UNCONDITIONAL (never flag-gated): a token
+#         that stays dark until a fleet is patched is dark for exactly the
+#         window most likely to need triage. Pinned in both directions by
+#         tests/infra/test_thin_warm_lane.sh (F3/F4, B3, and B3b's ordering arm).
+#
+#         KNOWN DF-side text drift (routing is correct, WORDING is not):
+#         dark-factory's rc=75 arm logs the fixed string "lane %s already
+#         re-acquired (rc=75, flock held) — benign skip", which MISNAMES the
+#         cause for (b). Harmless to behaviour, wrong for an operator reading
+#         the log. The token above is what makes the true cause recoverable
+#         from thin's own stderr until that string is widened DF-side; filed
+#         as a cross-repo follow-up.
 #
 #   The exit code tracks whether the lane is left SAFE, not whether the re-seed
 #   succeeded: a re-seed that failed but whose clone was discarded leaves exactly
@@ -85,8 +123,88 @@
 #        the fly, which can itself fail under a truly exhausted filesystem
 #        (ENOSPC) before any bytes are freed. Only bites a lane thinned
 #        outside the pool's acquire/release lifecycle.
+#   T4 — a live PROCESS REFERENCE at or under lane_dir (cwd / open fd / mmap;
+#        `live_ref_present`, scripts/lib_live_refs.sh) refuses the thin (75),
+#        preserving target/. Checked AFTER the T3 flock acquire and IMMEDIATELY
+#        BEFORE the rm — never as an up-front snapshot, which would reintroduce
+#        the very TOCTOU this gate closes. The mechanism (the /proc scan itself)
+#        is recorded once in docs/prds/warm-lane-pool-space-safety.md §8.4 and is
+#        deliberately not restated here. CAVEAT on that pointer, as of task
+#        5823: §8.4 is headed "GC — warm-lane-gc.sh (delta)" and its
+#        live-reference bullet is still written wholly in gc's terms (task
+#        5572, both passes) — the /proc MECHANISM it records is the shared
+#        one this script also uses, but the section does not yet name thin as
+#        its third call site. Widening it is a doc change outside this task's
+#        scope; filed as a follow-up.
+#
+#        T3 alone is INSUFFICIENT, and that is the whole reason T4 exists: the
+#        inv.2 flock is a reseed MUTEX, not a liveness oracle. It is held only
+#        across the acquire reseed (task 5354) and across dark-factory's
+#        run_scoped_verification (DF 3027) — NEVER across the implement phase,
+#        where an agent runs cargo build/test for tens of minutes. Root cause
+#        esc-5334-6 (2026-07-26): _lane-27, _lane-28 (both mid-`cargo` /
+#        `cargo-clippy`) and _lane-50 all had live consumers and ZERO held
+#        <lane>.lock. Without T4, thin would `rm -rf <lane>/target` under a live
+#        build — the failure that reset _lane-5 six times on 2026-07-25 and
+#        produced a 218-target "No such file or directory" storm on the sibling
+#        gc path (closed there by task 5572).
+#
+#        SKIP, never DEFER: on a live reference thin refuses and returns; it
+#        does not sleep or retry. A retry loop would hold <lane_dir>.lock on
+#        FD 9 across an unbounded wait, blocking the very acquire_lane reseed
+#        that lock exists to serialise (§9.5 inv.11) — turning a benign skip
+#        into a pool-wide stall.
+#
+#        Over-preserving is SAFE and TEMPORARY: acquire_lane ALWAYS re-seeds
+#        target/ from base (D10, cow-seeding), so a preserved divergent target/
+#        is never reused as warm cache; it costs one extra cycle of resident
+#        disk and is reclaimed by the next release-thin or gc pass once the
+#        reference clears. Residual risk, named rather than worked around here:
+#        a truly ORPHANED reference (a leaked test binary still holding an fd)
+#        shields its lane indefinitely — that is owned by the orphaned-test-
+#        binary reaper, docs/notes/orphaned-test-binary-reaper.md.
+#
+#        UNDISCHARGED CROSS-REPO SYNC, recorded rather than silently carried:
+#        dark-factory resolves the warm-lane scripts through a two-candidate
+#        preference order (GitOps._resolve_warm_lane_script) — FIRST
+#        <project_root>/scripts/<name>, THEN its own copy under
+#        orchestrator/scripts/warm-lane/. For reify the project copy (this file)
+#        always exists and always wins, so T4 is live in production here. But
+#        DF's copy of THIS script carries no T4 gate, so any project resolving
+#        through the FALLBACK candidate gets a thin that fails OPEN into exactly
+#        the `rm -rf <lane>/target`-under-a-live-build this gate closes. Task
+#        5572 discharged the equivalent sync for warm-lane-gc.sh (DF's copy has
+#        the gate); the thin half is NOT discharged. Porting it is a
+#        dark-factory change and is out of scope for a reify task — filed as a
+#        cross-repo follow-up rather than attempted from here.
+#
+#        MEASURED COST (this host, 2026-08-06: 1306 live processes, 13328 fd+cwd
+#        symlinks): one live_ref_present call returning the NEGATIVE verdict
+#        ~1.25s (3 samples, 1.24-1.32s). The negative is the RELEASE-path common
+#        case — the agent has already exited — and it cannot short-circuit, since
+#        "not referenced" is only established by exhausting every reference kind.
+#        Unlike gc's per-entry pass (entries x ~1.9s), thin pays exactly ONE call
+#        per invocation. It lands on dark-factory's release_lane, which awaits
+#        thin inline alongside an `rm -rf` of a multi-GB target/ that already
+#        costs seconds. Accepted on that basis. See scripts/lib_live_refs.sh's
+#        own cost table for the per-pass split.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Shared live-reference /proc scanner (live_ref_present). Fail LOUDLY if it is
+# missing: a silently-absent liveness guard is precisely the failure mode task
+# 5823 exists to remove. Exit 2 (usage/WIRING), not 1 (runtime) — an incomplete
+# deployment, in the same class as an unknown flag; see the exit-code table.
+# Sited BEFORE _usage and argv parsing so even --help trips it (pinned by A12),
+# and using `echo >&2` rather than err() because err() is defined below.
+if [ ! -f "$SCRIPT_DIR/lib_live_refs.sh" ]; then
+    echo "thin-warm-lane.sh: ERROR — scripts/lib_live_refs.sh not found next to thin-warm-lane.sh" >&2
+    exit 2
+fi
+# shellcheck source=scripts/lib_live_refs.sh
+source "$SCRIPT_DIR/lib_live_refs.sh"
 
 # ── log helpers (all write to stderr) ────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
@@ -139,9 +257,21 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
           of <lane_dir>/target failed — the lane is left carrying an uncertified
           clone and is deliberately NOT emitted on stdout. (The exit code tracks
           whether the lane is left SAFE, not whether the re-seed succeeded.)
-    2   — Usage error (unknown flag, missing positional, --reseed without --base).
-    75  — EX_TEMPFAIL: the lane's flock is held by a live consumer (ASSIGNED
-          lane; inv.2 one-consumer-per-lane).
+    2   — Usage error (unknown flag, missing positional, --reseed without
+          --base); or a WIRING error — the sibling scripts/lib_live_refs.sh is
+          missing, so the liveness check could not be loaded.
+    75  — EX_TEMPFAIL: the lane is BUSY. Either (a) its flock is held by a live
+          consumer (ASSIGNED lane; inv.2 one-consumer-per-lane), or (b) a live
+          process references the lane dir or anything under it (cwd / open fd /
+          mmap). Both are benign "skip, retry next cycle" verdicts, never
+          faults; nothing is removed in either case. One code for two reasons
+          because dark-factory logs rc=75 at DEBUG as a benign skip and every
+          other non-zero rc at WARNING — a distinct code would report each
+          lingering-reference release-thin as a false fault. The two reasons
+          stay attributable via an unconditional machine-greppable stderr
+          token on the first line of each refusal: \`LANE_LOCK_CONTENDED:\`
+          for (a) — the same literal seed-warm-lane.sh emits — and
+          \`LANE_LIVE_REF:\` for (b).
 EOF
 }
 
@@ -203,11 +333,11 @@ if [ -n "$RESEED" ] && [ -z "$BASE_TARGET_DIR" ]; then
     exit 2
 fi
 
-# Default --seed-script: sibling scripts/seed-warm-lane.sh, resolved via
-# BASH_SOURCE so this script works when invoked via a relative/symlinked path.
+# Default --seed-script: sibling scripts/seed-warm-lane.sh, resolved via the
+# SCRIPT_DIR hoisted at the top (itself BASH_SOURCE-derived, so this script works
+# when invoked via a relative/symlinked path). One definition, not two.
 if [ -z "$SEED_SCRIPT" ]; then
-    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    SEED_SCRIPT="$_script_dir/seed-warm-lane.sh"
+    SEED_SCRIPT="$SCRIPT_DIR/seed-warm-lane.sh"
 fi
 
 # ── lane_dir existence guard ───────────────────────────────────────────────────
@@ -268,11 +398,66 @@ LANE_LOCK="${LANE_DIR}.lock"
 exec 9>"$LANE_LOCK"
 if ! flock -n 9; then
     exec 9>&-
-    err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+    err "LANE_LOCK_CONTENDED: Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
     err "Refusing to thin an ASSIGNED lane (inv.2: one consumer per lane at a time)."
     exit 75
 fi
 # FD 9 stays open (lock held) for the rest of the run; bash releases it on exit.
+
+# ── T4: live-process-reference gate (task 5823) ───────────────────────────────
+# The flock above proves no consumer is mid-ACQUIRE; it does NOT prove no
+# consumer is mid-BUILD. The inv.2 lane lock is a reseed MUTEX, not a liveness
+# oracle: it is held only across the acquire reseed (task 5354) and across
+# dark-factory's run_scoped_verification (DF 3027), NEVER across the implement
+# phase, where an agent runs cargo build/test for tens of minutes (esc-5334-6;
+# earlier instances esc-5375-1, esc-5236/5069/5275/5062). So `flock -n 9` above
+# is blind for most of an ASSIGNED lane's life. Before freeing, ask /proc
+# directly: does any live process reference this lane dir or anything under it
+# (cwd / open fd / mmap)?
+#
+# Placement is load-bearing on three axes (mirrors warm-lane-gc.sh L570-593):
+#   - AFTER the flock acquire, so a flock-held lane keeps its own distinct
+#     diagnostic — the two exit-75 reasons must stay distinguishable in
+#     dark-factory's logs, which is what the LANE_LOCK_CONTENDED: /
+#     LANE_LIVE_REF: stderr tokens deliver (see the exit-code table; convention
+#     ratified by task 5568 for seed-warm-lane.sh) — and is spared the ~1.9s
+#     O(processes × fds) walk. This ordering is pinned by B3b, whose lane is
+#     BOTH flock-held AND live-referenced. Do
+#     NOT read that as the cost being small: on the RELEASE path the flock is
+#     normally FREE, so thin pays the full walk (and a negative verdict, the
+#     common one there, cannot short-circuit).
+#   - IMMEDIATELY BEFORE the destructive rm, never as an up-front snapshot: a
+#     verdict computed earlier and consumed later IS the TOCTOU this gate exists
+#     to close.
+#   - Sitting before the rm therefore ALSO covers the --reseed branch below for
+#     free: a refusal exits before the free, before the seed call, and before
+#     the post-abort discard of an uncertified clone (§9.5 inv.13), so no
+#     destructive path can bypass it.
+#
+# Bias toward OVER-preserving: a genuinely FREE lane has no referencing process,
+# and preserving is TEMPORARY — acquire_lane always re-seeds target/ from base
+# (D10), so a preserved divergent target/ is never reused as warm cache; it is
+# reclaimed by the next release-thin or gc pass once the reference clears.
+# Under-preserving corrupts a live build. A truly ORPHANED reference (a leaked
+# test binary holding an fd) would shield a lane indefinitely; that is owned by
+# the orphaned-test-binary reaper (docs/notes/orphaned-test-binary-reaper.md),
+# not worked around here.
+#
+# SKIP, not defer: thin is a one-shot primitive holding ${LANE_DIR}.lock on FD 9,
+# so a retry/sleep loop here would hold that lock across an unbounded wait —
+# blocking the very acquire_lane reseed the lock exists to serialise (§9.5
+# inv.11) and turning a benign skip into a pool-wide stall.
+#
+# The gate's /proc mechanism is NOT restated here — it is recorded once in
+# docs/prds/warm-lane-pool-space-safety.md §8.4 (which, as of task 5823, still
+# describes that shared mechanism in gc's terms only and does not yet name thin
+# as a call site — see the CAVEAT in the T4 header note above).
+if live_ref_present "$LANE_DIR"; then
+    exec 9>&-
+    err "LANE_LIVE_REF: Live process reference at or under the lane (cwd / open fd / mmap): $_rp_lane_dir"
+    err "Refusing to thin a lane with a live consumer build; preserving target/ (retry next cycle)."
+    exit 75
+fi
 
 # ── FREE-FIRST reclaim (T1/T2): only target/ is ever removed ──────────────────
 # Mirrors warm-lane-gc.sh's disk-pressure fast-path (L521-539): rm-stderr
