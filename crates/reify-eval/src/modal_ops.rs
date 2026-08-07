@@ -9079,6 +9079,98 @@ mod tests {
         );
     }
 
+    /// Every entry of the emitted series must be a LENGTH-dimensioned
+    /// `Value::Scalar`, not a bare `Value::Real` (#6094).
+    ///
+    /// Why this cannot be folded into the compile-side pin
+    /// (`reify-compiler/tests/modal_analysis_fns_stdlib_compile.rs`): the `.ri`
+    /// declared return type and the trampoline's emitted `Value` are checked
+    /// NOWHERE against each other. `ComputeNodeData` carries no type slot,
+    /// `ComputeOutcome::Completed` carries an untyped `Value`, and no
+    /// `FnReturnTypeMismatch` diagnostic exists — return types are deliberately
+    /// NOT a dimensional checksum (docs/prds/v0_6/units-physical-constants.md).
+    /// So retyping the declaration to `List<Length>` provably cannot green this
+    /// test, and vice versa; the two halves must be pinned independently or one
+    /// silently drifts, which is how the original `List<Real>`/`Value::Real`
+    /// pair arose.
+    ///
+    /// The magnitudes are re-asserted against the same closed-form Φ-projection
+    /// as the neighbouring `displacement_at_reconstructs_phi_projected_series`,
+    /// so the dimension change is proven not to have perturbed the values: SI
+    /// base unit for LENGTH is metres and `reconstruct_series` already produces
+    /// metres, making this a pure re-wrap with no numeric conversion.
+    #[test]
+    fn displacement_at_series_entries_are_length_dimensioned() {
+        // Same fixture as the sibling test: node 2 is the fundamental antinode.
+        let mode0 = mode_struct(40.0, 0.01, &[0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 1.0]);
+        let mode1 = mode_struct(250.0, 0.02, &[0.0, 0.0, 0.0, 0.0, 0.0, -0.7, 0.0, 0.0, 0.4]);
+        let modal_result = modal_result_with_modes(vec![mode0, mode1]);
+
+        let mc0 = vec![1.0, 2.0, 3.0, 4.0];
+        let mc1 = vec![0.1, 0.2, 0.3, 0.4];
+        let mode_coords = vec![mc0.clone(), mc1.clone()];
+        let t_samples_s = [0.0, 0.01, 0.02, 0.03];
+        let n_times = t_samples_s.len();
+        let history = displacement_history(modal_result, &t_samples_s, &mode_coords);
+
+        // Non-numeric "tip" → antinode node 2: c0 = Φ₀[2]·ẑ = 1.0, c1 = Φ₁[2]·ẑ = 0.4.
+        let value_inputs = vec![
+            history,
+            Value::String("tip".to_string()),
+            vec3_value([0.0, 0.0, 1.0]),
+        ];
+        let outcome = displacement_at_trampoline(
+            &value_inputs,
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+        let ComputeOutcome::Completed { result, .. } = outcome else {
+            panic!("expected a Completed outcome");
+        };
+
+        let Value::List(items) = result else {
+            panic!("displacement_at must return a Value::List; got {result:?}");
+        };
+
+        // Non-vacuity guard: an empty list would make the per-entry loop below
+        // pass trivially.
+        assert!(
+            !items.is_empty(),
+            "displacement_at must not return an empty list"
+        );
+        assert_eq!(items.len(), n_times, "series length must equal n_times");
+
+        // u[j] = c0·mc0[j] + c1·mc1[j] — the same summation `reconstruct_series` does.
+        let want: Vec<f64> = (0..n_times).map(|j| 1.0 * mc0[j] + 0.4 * mc1[j]).collect();
+
+        for (j, item) in items.iter().enumerate() {
+            let Value::Scalar {
+                si_value,
+                dimension,
+            } = item
+            else {
+                panic!(
+                    "series[{j}] must be a Length-dimensioned Value::Scalar, not a bare \
+                     Real: the reconstruction Φ·ξ is plain metres — Φ (kg^-1/2) times \
+                     ξ (kg^1/2·m) cancels the √mass factors (#6094); got {item:?}"
+                );
+            };
+            assert_eq!(
+                *dimension,
+                DimensionVector::LENGTH,
+                "series[{j}] must carry the LENGTH dimension; got {dimension:?}"
+            );
+            assert!(
+                (si_value - want[j]).abs() < 1e-12,
+                "series[{j}] magnitude must be unperturbed by the re-wrap: got \
+                 {si_value} m, want {} m",
+                want[j]
+            );
+        }
+    }
+
     /// Amendment (reviewer suggestion 4): pin the out-of-range numeric-index
     /// clamp as an intentional contract — an explicit index past the last node
     /// resolves to the last node (not an error, not node 0). Geometry-free
