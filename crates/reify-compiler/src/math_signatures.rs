@@ -46,7 +46,7 @@ pub const MATH_CONSTRUCTION_NAMES: &[&str] = &[
 /// The complete set of math-linalg **operation / function** builtin names
 /// recognised by the compiler (task 4182 δ, the §3 operation family). Sibling
 /// to [`MATH_CONSTRUCTION_NAMES`] — kept as a SEPARATE slice so α's
-/// construction-only contract (`math_construction_names_are_exactly_the_four`)
+/// construction-only contract (`math_construction_names_are_exactly_the_eight`)
 /// stays valid; [`is_math_typed_fn`] ORs the two. Single source of truth —
 /// imported into the `units.rs` test module to pin disjointness from the five
 /// geometry families, the dynamics-query family, AND the construction family.
@@ -95,7 +95,7 @@ pub const MATH_OPERATION_NAMES: &[&str] = &[
 /// The complete set of §1.2 trig/transcendental builtin names recognised by
 /// the compiler (task 4352). Sibling to [`MATH_CONSTRUCTION_NAMES`] and
 /// [`MATH_OPERATION_NAMES`] — kept as a SEPARATE slice so the construction
-/// exact-set contract (`math_construction_names_are_exactly_the_four`) and the
+/// exact-set contract (`math_construction_names_are_exactly_the_eight`) and the
 /// operation exact-set contract (`math_operation_names_are_exactly_the_frozen_set`)
 /// both stay valid; [`is_math_typed_fn`] ORs all three. Single source of truth
 /// — imported into the `units.rs` test module to pin disjointness from every
@@ -767,7 +767,7 @@ mod tests {
     /// `MATH_OPERATION_NAMES` is exactly the pre-1 frozen operation set —
     /// membership both ways plus an exact count (so neither a missing nor an
     /// extra name slips through), mirroring
-    /// `math_construction_names_are_exactly_the_four`.
+    /// `math_construction_names_are_exactly_the_eight`.
     #[test]
     fn math_operation_names_are_exactly_the_frozen_set() {
         assert_eq!(
@@ -794,7 +794,7 @@ mod tests {
 
     /// Both families are recognised by `is_math_typed_fn`, but they remain
     /// distinct slices — δ ORs them rather than merging (so α's
-    /// `math_construction_names_are_exactly_the_four` stays valid).
+    /// `math_construction_names_are_exactly_the_eight` stays valid).
     #[test]
     fn is_math_typed_fn_recognises_construction_and_operation_alike() {
         for name in EXPECTED_NAMES {
