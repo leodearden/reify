@@ -748,6 +748,79 @@ fn form_find_result_structure_has_surface_stresses_field() {
     );
 }
 
+/// Declaration lock for the dimensional bridge adjudicated in task #6095.
+///
+/// `FormFindResult.member_forces` is `List<Force>` while `force_densities` and
+/// `surface_stresses` are `List<Real>`. That asymmetry is deliberate, not a
+/// drift: the qᵢ are nullity-invariant dimensionless ratios (dimension-checked-
+/// readers PRD Leg B), and the FORCE tag on `Nᵢ = qᵢ·Lᵢ·q_ref` comes from the
+/// unit reference force density gauge `q_ref ≡ 1 N/m` (see the "Dimensional
+/// bridge" paragraph in `stdlib/tensegrity.ri`).
+///
+/// `form_find_result_structure_has_surface_stresses_field` above checks
+/// `member_forces` / `force_densities` by NAME only and pins a `cell_type`
+/// for `surface_stresses` alone, so nothing pinned the FORCE dimension. This
+/// test converts that convention into asserted contract.
+#[test]
+fn form_find_result_dimensional_bridge_declaration_lock() {
+    let template = find_structure("FormFindResult");
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    let member_forces = params
+        .iter()
+        .find(|vc| vc.id.member == "member_forces")
+        .unwrap_or_else(|| {
+            panic!(
+                "FormFindResult missing 'member_forces' field; got: {:?}",
+                names
+            )
+        });
+    assert_eq!(
+        member_forces.cell_type,
+        Type::List(Box::new(Type::Scalar {
+            dimension: DimensionVector::FORCE
+        })),
+        "FormFindResult.member_forces stays List<Force> — the q_ref ≡ 1 N/m gauge \
+         (task #6095); retyping it is a deliberate act, not a drive-by. Got {:?}",
+        member_forces.cell_type
+    );
+
+    let force_densities = params
+        .iter()
+        .find(|vc| vc.id.member == "force_densities")
+        .unwrap_or_else(|| {
+            panic!(
+                "FormFindResult missing 'force_densities' field; got: {:?}",
+                names
+            )
+        });
+    assert_eq!(
+        force_densities.cell_type,
+        Type::List(Box::new(Type::dimensionless_scalar())),
+        "FormFindResult.force_densities stays List<Real> — qᵢ are nullity-invariant \
+         dimensionless ratios (Leg B, upheld by task #6095's adjudication). Got {:?}",
+        force_densities.cell_type
+    );
+
+    let surface_stresses = params
+        .iter()
+        .find(|vc| vc.id.member == "surface_stresses")
+        .unwrap_or_else(|| {
+            panic!(
+                "FormFindResult missing 'surface_stresses' field; got: {:?}",
+                names
+            )
+        });
+    assert_eq!(
+        surface_stresses.cell_type,
+        Type::List(Box::new(Type::dimensionless_scalar())),
+        "FormFindResult.surface_stresses stays List<Real> — σ shares q's gauge \
+         because it enters D = CᵀQC + Σ_T σ_T·L_T additively (task #6095). Got {:?}",
+        surface_stresses.cell_type
+    );
+}
+
 // ─── TensegrityWire structure ─────────────────────────────────────────────────
 
 /// `TensegrityWire` has 9 params: `kind : String`, `from_index : Int`,
