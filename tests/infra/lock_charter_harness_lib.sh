@@ -58,6 +58,7 @@ cjs
 conf
 cpp
 css
+csv
 cts
 cxx
 diff
