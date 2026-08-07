@@ -1,6 +1,22 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// Mirror gui/src/__tests__/debugParity.test.ts:12-23 — these three mocks make
+// bridge.ts importable at collection time without a Tauri runtime. Proven
+// sufficient there (buildHandlers() is already called from that file); reused
+// here for task-5934 case (c), which needs the real buildHandlers() key set.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("html-to-image", () => ({
+  toPng: vi.fn().mockResolvedValue("data:image/png;base64,STUB"),
+}));
+
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as bridge from "../../src/debug/bridge.js";
 import { getByPath, evaluateAssertion, FIXTURES, VALUE_SCENARIOS, runValueScenario, KNOWN_DEBUG_TOOL_NAMES } from "./assertions.js";
 import type { Assertion, ValueScenario, ScenarioDeps } from "./assertions.js";
 import type { RpcResult } from "./rpc.js";
@@ -465,15 +481,24 @@ describe("F1 VALUE_SCENARIOS (task-4303)", () => {
 // task-5934: KNOWN_DEBUG_TOOL_NAMES must be a superset of every tool
 // advertised by tool_defs() in debug_server.rs — any advertised debug tool
 // may legitimately appear as a VALUE_SCENARIOS setup step, so an
-// under-populated set would silently reject a valid setup tool. The
-// complementary direction (KNOWN_DEBUG_TOOL_NAMES vs. bridge.ts
-// buildHandlers()) is covered transitively by debugParity.test.ts's (d)+(e).
+// under-populated set would silently reject a valid setup tool (case (b)).
+// Case (c) closes the reverse direction: every KNOWN_DEBUG_TOOL_NAMES entry
+// must resolve to a real tool_defs() or bridge.ts buildHandlers() name, so a
+// typo'd or stale entry added directly to KNOWN_DEBUG_TOOL_NAMES cannot
+// silently widen the allowlist past what actually exists. (debugParity.test.ts's
+// (d)+(e) constrain buildHandlers() against tool_defs()/REST_ONLY_HANDLERS, but
+// neither touches KNOWN_DEBUG_TOOL_NAMES — it is a hand-written superset, not a
+// derived set, so nothing else in the suite checks it.)
 describe("KNOWN_DEBUG_TOOL_NAMES ↔ tool_defs() parity (task-5934)", () => {
   const repoRoot = resolveRepoRoot(import.meta.url);
   const RUST = fs.readFileSync(path.join(repoRoot, "gui", "src-tauri", "src", "debug_server.rs"), "utf-8");
 
-  // Same regex as gui/src/__tests__/debugParity.test.ts:43 — deliberately
-  // skips the unquoted `name: &'static str` field of `struct ToolDef {`.
+  // Same extraction regex as toolDefNames in gui/src/__tests__/debugParity.test.ts
+  // (its test (b)) — deliberately skips the unquoted `name: &'static str` field of
+  // `struct ToolDef {`. Duplicated rather than imported: debugParity.test.ts lives
+  // under gui/src/ (typechecked, include: ["src"]) and exports nothing today, and
+  // this task's locked scope (gui/test/visual/{assertions.ts,assertions.test.ts})
+  // does not extend to editing it to add a shared export — see follow-up task.
   const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
 
   it("(a) extraction sanity — exact count matches raw ToolDef literals, no duplicates", () => {
@@ -485,5 +510,13 @@ describe("KNOWN_DEBUG_TOOL_NAMES ↔ tool_defs() parity (task-5934)", () => {
   it("(b) every tool_defs() name is present in KNOWN_DEBUG_TOOL_NAMES", () => {
     const missing = toolDefNames.filter((n) => !KNOWN_DEBUG_TOOL_NAMES.has(n));
     expect(missing).toStrictEqual([]);
+  });
+
+  it("(c) every KNOWN_DEBUG_TOOL_NAMES entry is a real tool_defs() or buildHandlers() name", () => {
+    const bridgeHandlerNames = Object.keys(bridge.buildHandlers({} as any));
+    const unknown = [...KNOWN_DEBUG_TOOL_NAMES].filter(
+      (n) => !toolDefNames.includes(n) && !bridgeHandlerNames.includes(n),
+    );
+    expect(unknown).toStrictEqual([]);
   });
 });
