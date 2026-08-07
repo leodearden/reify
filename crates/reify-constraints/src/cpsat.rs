@@ -143,6 +143,18 @@ fn build_variable_domain(
 /// therefore only has to drop the variable itself. The
 /// `two_autos_*_abandoned_sibling_branch` unit below pins this, because the
 /// argument is not obvious from the code alone.
+///
+/// That `Undef` re-evaluation is TRUE ONLY GIVEN THE STRIPPED SEED, and the
+/// guarantor is named deliberately (task #5467): `solve` removes every auto id
+/// from the `current_values` seed before the search starts (see the seed site
+/// there). A deeper auto is therefore genuinely ABSENT, not holding a stale
+/// value carried in from a previous resolution round or an earlier
+/// lexicographic stage. WITHOUT that strip this fold is not self-correcting:
+/// it materialises dependent cells from a mix of trial and stale values, and
+/// the `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The same stale seed
+/// also defeats `all_assigned` on the direct path, with no dependent cell
+/// involved at all — which is why the repair belongs at the seed and not in
+/// `fold_dependent_cells`. `stale_current_values_seed_tests` pins both arms.
 fn backtrack(
     variables: &[Variable],
     var_index: usize,
@@ -258,8 +270,40 @@ impl ConstraintSolver for CpSatSolver {
             .map(|(id, expr)| (id.clone(), expr.clone(), collect_constraint_refs(expr)))
             .collect();
 
-        // Initialize assignment with current_values (for non-auto-param refs)
+        // Initialize assignment with current_values (for non-auto-param refs).
+        //
+        // The parenthetical is load-bearing, so it is ENFORCED rather than
+        // merely intended (task #5467): every auto id is stripped back out
+        // below. `current_values` is the engine's whole value map
+        // (`values.clone()`, engine_eval.rs:2326) and DOES carry same-scope
+        // auto entries, so without the strip an unassigned auto holds a STALE
+        // CONCRETE value instead of being absent — and `backtrack`'s
+        // forward-check then prunes a feasible branch off a value the search
+        // had not chosen yet. Three real sources, (iii) first because it needs
+        // no eval layer at all and so is reachable purely inside this crate:
+        //
+        //  (iii) `solve_lexicographic` (registry.rs:668,717-720) warm-starts
+        //        stage N+1 from stage N's solution INSIDE one `solve()` call.
+        //  (i)   A second `eval_cached` at the same `VersionId` serves a
+        //        previously-SOLVED auto straight back from cache into `values`
+        //        (engine_eval.rs:6949-6962), which is then cloned to here.
+        //  (ii)  A `param_override` on an auto cell (engine_eval.rs:7026-7031),
+        //        written as `Determined` yet still admitted to `auto_params`.
+        //
+        // Strip ONLY the auto ids: `current_values` is the sole channel by
+        // which a CP-SAT constraint sees a NON-auto base value (pinned
+        // connector autos land there at engine_eval.rs:2327), so starting from
+        // an empty map instead would silently break every such model.
+        //
+        // Clone-then-`remove` rather than a filtered rebuild: `ValueMap`
+        // (reify-ir/src/value.rs) wraps a persistent `im::HashMap`, so `Clone`
+        // is an O(1) structural share and this loop is O(#auto_params) —
+        // cheaper than an O(|current_values|) rebuild, and `ValueMap` has no
+        // `FromIterator` impl to `collect` into anyway.
         let mut assignment = problem.current_values.clone();
+        for id in &auto_param_ids {
+            assignment.remove(id);
+        }
 
         // Run backtracking search
         match backtrack(
