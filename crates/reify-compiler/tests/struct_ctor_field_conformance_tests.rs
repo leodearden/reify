@@ -24,7 +24,9 @@ mod common;
 
 use reify_compiler::CompiledModule;
 use reify_core::diagnostics::DiagnosticCode;
-use reify_core::{Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan};
+use reify_core::{
+    BASE_UNIT_SYMBOLS, Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan,
+};
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
@@ -1901,13 +1903,44 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
     Some(after[..end].to_owned())
 }
 
-/// Whether any exponent of `dim` has a denominator other than 1.
+/// Whether `dim` has no clean unit-literal spelling, and so is legitimately
+/// exempt from offering an example.
 ///
-/// A fractional exponent (e.g. `FractureToughness`, Pa·m^0.5) has no clean unit
-/// literal spelling, so the example derivation declines to invent one.
-fn has_fractional_exponent(dim: &DimensionVector) -> bool {
-    dim.0.iter().any(|r| r.den() != 1)
+/// Exactly three reasons, each independently derivable from the vector and the
+/// stdlib's own unit table — this predicate does NOT consult the compiler's
+/// derivation, so it is a real oracle rather than a restatement of it:
+///
+/// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
+///   cannot be written as a unit literal at all;
+/// * an entirely NEGATIVE exponent set (e.g. `Frequency`, s⁻¹) leaves no
+///   numerator term to anchor the literal. Measured: `param x : Frequency = 1/s`
+///   fails with `unresolved name: s` — reify reads the bare `1` as a number and
+///   `/s` as a division, not as a quantity literal;
+/// * a slot whose base-unit symbol `stdlib/units.ri` does not declare as a unit.
+///   [`BASE_UNIT_SYMBOLS`] is the DISPLAY table; being renderable is weaker than
+///   being parseable. Measured: `param x : Voltage = 1m^2*kg/s^3/A` fails with
+///   `unknown unit: A`.
+///
+/// [`SPELLABLE_BASE_UNITS`] is this test's own reading of the stdlib, kept
+/// deliberately separate from the compiler's. Drift in EITHER direction is
+/// caught: if the stdlib gains a unit the compiler still declines, the exemption
+/// assert fires; if the compiler offers a literal the stdlib cannot parse, the
+/// round-trip half fails.
+///
+/// Anything else declining to offer an example is a derivation bug, and the rot
+/// guard says so by name.
+fn has_no_clean_unit_literal(dim: &DimensionVector) -> bool {
+    dim.0.iter().enumerate().any(|(slot, r)| {
+        r.num() != 0 && (r.den() != 1 || !SPELLABLE_BASE_UNITS.contains(&BASE_UNIT_SYMBOLS[slot]))
+    }) || !dim.0.iter().any(|r| r.num() > 0)
 }
+
+/// The base-unit symbols `crates/reify-compiler/stdlib/units.ri` declares as
+/// units, and which can therefore appear in a unit literal.
+///
+/// `A`, `mol`, `cd` and `sr` are deliberately absent: they name
+/// `DimensionVector` slots but the stdlib declares no unit for them.
+const SPELLABLE_BASE_UNITS: [&str; 6] = ["m", "kg", "s", "K", "rad", "USD"];
 
 /// Assert `source`'s sole rejection carries the hint AND names the dimension
 /// `type_name` resolves to, using that dimension's own `canonical_name()`.
@@ -1990,8 +2023,8 @@ fn g_i7_hint_is_absent_for_the_already_promoted_families() {
 /// unit-resolution path. Nothing here re-implements the derivation, so the test
 /// cannot agree with a broken implementation by construction.
 ///
-/// Rows whose exponents are fractional have no clean literal spelling and are
-/// exempt BY RETURNING NO EXAMPLE. The exemption is asserted to be exercised —
+/// Rows with no clean literal spelling (see [`has_no_clean_unit_literal`]) are
+/// exempt BY OFFERING NO EXAMPLE. The exemption is asserted to be exercised —
 /// as an absent example, never as a broken string — so the escape hatch stays
 /// visible rather than becoming a silent catch-all.
 #[test]
@@ -2015,9 +2048,9 @@ fn g_migration_hint_example_round_trips_for_every_named_dimension() {
 
         let Some(example) = example_literal_from_hint(&message) else {
             assert!(
-                has_fractional_exponent(dim),
-                "{label}: only a fractional-exponent dimension may decline to offer an \
-                 example literal, but {dim} has none; got: {message:?}"
+                has_no_clean_unit_literal(dim),
+                "{label}: only a dimension with no clean unit-literal spelling may decline \
+                 to offer an example, but {dim} has one; got: {message:?}"
             );
             exempt.push(type_name);
             continue;

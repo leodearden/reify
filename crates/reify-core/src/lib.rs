@@ -42,7 +42,7 @@ pub use diagnostics::{
     Diagnostic, DiagnosticCode, DiagnosticInfo, DiagnosticLabel, DiagnosticRef, Severity,
     SourceSpan,
 };
-pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
+pub use dimension::{BASE_UNIT_SYMBOLS, DimensionVector, NAMED_DIMENSIONS, Rational};
 pub use display_units::{AutoScale, AutoScaleChoice, DimensionLadder, UnitOption, unit_ladders};
 pub use field_calculus::{DifferentialOp, differential_codomain};
 pub use hash::ContentHash;
