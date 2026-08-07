@@ -1,0 +1,517 @@
+prd: docs/prds/jcodemunch-substrate-restoration.md
+schema_version: 1
+tasks:
+- label: alpha
+  title: Fix JcodemunchClient MCP session handling (server-assigned session id)
+  capabilities:
+  - name: client-mints-own-session-id-removed
+    binding: 'capability→producer — defect verified at source 2026-08-07: `session_id:
+      random_hex_32()` in JcodemunchClient::new, `.set("mcp-session-id", ...)` on
+      every POST including initialize; wired into production via RealJCodemunchOps::new
+      -> bin/reify-audit.rs:574 (not test-only)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'session_id: *random_hex_32'
+      paths:
+      - crates/reify-audit/src/jcodemunch_client.rs
+      expect: absent
+  - name: tools-list-exercised
+    binding: capability→producer — B1's assertion anchor; scripts/smoke-jcodemunch-serve.sh:68-113
+      is the in-repo working reference for the correct session flow
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: tools/list
+      paths:
+      - crates/reify-audit/src/jcodemunch_client.rs
+      expect: present
+  - name: self-minted-id-is-rejected
+    binding: rejection-check — 404 OBSERVED to fire across three serve/SDK combos
+      (1.108.54+mcp1.29.0, 1.108.27+1.29.0, 1.108.27+1.27.2), each with a 200 control
+      on the without-id arm (PRD §2.3 table)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: B2 is pinned by alpha's own live test against a spawned serve; that
+        test cannot run on the dispatch gate because jcodemunch is legitimately absent
+        in task worktrees
+  - name: transient-serve-spawnable-without-delta
+    binding: DAG-direction — uvx --from jcodemunch-mcp==1.108.54 is the raw capability
+      (verified on PyPI + /home/leo/.local/bin/uvx present); delta is the reusable
+      wrapper, not the capability, so delta->alpha is the correct edge direction
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction assertion, not a repo-state assertion
+  task_id: 6106
+- label: beta
+  title: scripts/jcodemunch-index-reify.sh — bare watch --once index primitive
+  capabilities:
+  - name: paths-from-never-used
+    binding: capability→producer — --paths-from is a real flag (server.py:6426, :7436-7441)
+      that short-circuits discovery and DELETEs every previously-indexed file absent
+      from the list; PRD §4.4 bans it against the production identity
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: --paths-from
+      paths:
+      - scripts/jcodemunch-index-reify.sh
+      expect: absent
+  - name: no-ai-summaries-used
+    binding: capability→producer — real argparse flag (server.py:6331/:6934); none
+      of the five detector tools read summaries or embeddings, their dependency is
+      index.imports
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: --no-ai-summaries
+      paths:
+      - scripts/jcodemunch-index-reify.sh
+      expect: present
+  - name: symbol-count-nonzero-guard
+    binding: capability→producer — `select count(*) from symbols` returns 54233 on
+      a live ~/.code-index DB (read-only probe 2026-08-07), so beta's `N sym` N>0
+      guard is producible
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: guard is behavioural (script exits non-zero at N==0); the mechanical
+        twin is the --no-ai-summaries/--paths-from pair above
+  - name: upstream-summary-token
+    binding: 'G6 branch-1/4 RESOLUTION — watcher.py:305 emits `changed={n} new={n}
+      deleted={n} ({d}s)` in BOTH 1.108.27 and 1.108.74: the literal token is `changed=0`,
+      NOT `changed: 0`. The PRD''s colon form is beta''s OWN stdout (beta owns its
+      summary line); no test may bind to the colon form as if the tool emitted it'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: beta must re-verify the upstream token against the PINNED 1.108.54 —
+        the decompose-time probe read 1.108.27 and 1.108.74 source, not 1.108.54
+  - name: max-folder-files-truncation-guarded
+    binding: 'G7 INV-SF-3 RESOLUTION (declared-intent-consumed-or-diagnosed) — max_folder_files:
+      10000 truncates with a WARNING, not an error; silently dropping files is declared
+      intent going unconsumed. OQ4''s *whether* is settled to yes; the *how* stays
+      tactical'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: guard shape is implementer's choice (preflight count vs post-run assertion);
+        the invariant fixes only that a guard exists
+  task_id: 6107
+- label: gamma
+  title: Identity resolution + freshness gate in reify-audit (§4.2 + §4.3)
+  capabilities:
+  - name: legacy-git-identity-default-removed
+    binding: 'capability→producer — `leodearden/reify` live at bin/reify-audit.rs:111,
+      :190, :215 AND :774 (the last inside a #[cfg(test)] assertion, which gamma must
+      update too); no such index exists or should be created'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: leodearden/reify
+      paths:
+      - crates/reify-audit/src
+      expect: absent
+  - name: refusal-carries-a-code
+    binding: 'G7 INV-SF-6 RESOLUTION (diagnostics-carry-codes) — B4/B5 assertions
+      would otherwise bind to prose. Refusals pinned to the stable greppable markers
+      E_JC_INDEX_STALE and E_JC_INDEX_EMPTY so boundary tests bind to code identity
+      (house pattern: tasks 2255/3416)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: E_JC_INDEX_(STALE|EMPTY)
+      paths:
+      - crates/reify-audit/src
+      expect: present
+  - name: per-path-identity-derivable
+    binding: capability→producer — storage/git_root.py:55-57 `_local_repo_name` =
+      f"{name}-{sha1(str(path))[:8]}", IDENTICAL in 1.108.27 and 1.108.74; verified
+      by prediction-then-measurement (predicted local/3484-e93a7bf3 == observed meta.repo).
+      /home/leo/src/reify -> local/reify-4ae45bbd
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: gamma derives the identity rather than hardcoding it; a grep for the
+        literal digest would pin the wrong thing
+  - name: index-head-and-symbol-count-readable
+    binding: 'capability→producer — BOTH §4.3 conjuncts obtainable with no MCP session:
+      read-only sqlite on a live index yields meta.git_head and `select count(*) from
+      symbols` = 54233. The MCP route is also real (get_repo_outline.py:155-162 takes
+      the current_sha != index.git_head branch). Both OQ1 answers substantiated'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: OQ1 (sqlite vs MCP) is tactical and decided during gamma; the gamma->alpha
+        edge makes either answer safe
+  task_id: 6108
+- label: delta
+  title: scripts/with-jcodemunch-serve.sh — spawn, readiness-poll, run, tear down
+  capabilities:
+  - name: teardown-is-trapped
+    binding: capability→producer — 'leaves nothing listening on 8901' requires teardown
+      on every exit path, including failure of the wrapped command
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'trap '
+      paths:
+      - scripts/with-jcodemunch-serve.sh
+      expect: present
+  - name: readiness-polls-mcp-no-trailing-slash
+    binding: capability→producer — scripts/smoke-jcodemunch-serve.sh:68-113 is the
+      working reference; the trailing-slash gotcha is already pinned at bin/reify-audit.rs:185-188
+      (/mcp/ triggers a 307 that drops mcp-session-id)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: /mcp
+      paths:
+      - scripts/with-jcodemunch-serve.sh
+      expect: present
+  - name: findings-array-is-non-vacuous
+    binding: 'G6 branch-3 RESOLUTION — an index-less run emits `[]`, which is literally
+      ''a findings array'' and is exactly the §2.4 vacuity shape. delta->beta wired
+      as a real edge (beta has no prereqs, so this costs no parallelism). NOT wired
+      to gamma: delta owns serve lifecycle, and a gamma refusal is a legitimate delta
+      outcome'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-edge resolution; the mechanical twin lives on epsilon, which depends
+        on all four
+  task_id: 6109
+- label: eps
+  title: Non-vacuous live capstone (INTEGRATION GATE) — replaces the graceful skip
+  capabilities:
+  - name: no-finding-count-assertion
+    binding: G6 branch-1 — P1's one recorded live run (2026-06-09) produced ZERO findings,
+      so a >=N assertion has no achievability basis and would reproduce §2.4's vacuity
+      in mirror image. The assertion is 'well-formed findings array, count may legitimately
+      be 0'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: findings\.len\(\) *> *0|!findings\.is_empty\(\)
+      paths:
+      - crates/reify-audit/tests/jcodemunch_live.rs
+      expect: absent
+  - name: count-asserting-test-name-retired
+    binding: G6 branch-1 twin — the existing capstone is NAMED `live_audit_produces_p1_and_pdead_findings`,
+      encoding the very count premise the PRD forbids; retiring the name is part of
+      retiring the premise
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: live_audit_produces_p1_and_pdead_findings
+      paths:
+      - crates/reify-audit/tests/jcodemunch_live.rs
+      expect: absent
+  - name: graceful-skip-removed
+    binding: 'rejection-check — the skip exists to remove: jcodemunch_serve_reachable()
+      bare-TCP preflight plus ''Preflight: skip gracefully'' at crates/reify-audit/tests/jcodemunch_live.rs,
+      under an #[ignore] gate. PASS-shaped whether or not the chain works'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: skip gracefully
+      paths:
+      - crates/reify-audit/tests/jcodemunch_live.rs
+      expect: absent
+  - name: capstone-must-not-become-gate-resident
+    binding: 'G7 INV-SF-2-corollary RESOLUTION — B8''s hard-fail is scoped to ''capstone
+      INVOKED''. jcodemunch is legitimately absent in task worktrees (PRD §9), so
+      a gate-resident hard-failing capstone turns main RED for every merge: an Error-severity
+      outcome on a healthy path'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'exclusion is expressed either as #[ignore]+env-flag or as an infra-test
+        classification; both are correct, so no single grep is the right anchor'
+  - name: oq3-drift-guard-same-diff
+    binding: overlay gate-test drift-guard — if OQ3 relocates the capstone to tests/infra/test_*.sh,
+      its OWN diff carries the tests/infra/run-all-classification.manifest bucket
+      row. No separate registration task, no prose ordering (esc-4914-162 precedent)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: conditional on OQ3's tactical resolution; a grep would fire falsely
+        on the cargo-test route
+  - name: upstream-capability-closure
+    binding: 'capability→producer — real MCP session (alpha), fresh non-empty index
+      (beta builds, gamma enforces + surfaces symbol_count>0), serve lifecycle (delta).
+      All four upstream. Plus #5830 (in-progress) declares the same jcodemunch_live.rs
+      file — wired as a real edge'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-closure assertion, enforced by the dependency edges themselves
+  task_id: 6110
+- label: zeta
+  title: deploy/systemd/reify-jcodemunch-index.{service,timer} + installer
+  capabilities:
+  - name: timer-unit-shipped
+    binding: 'capability→producer — reify already owns deploy/systemd/*.timer and
+      its installer; scripts/install-warm-lane-units.sh installs deploy/systemd/reify-warm-lane-gc.timer
+      entirely reify-side (both verified present). G4: no dark-factory counterpart
+      needed'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: OnCalendar
+      paths:
+      - deploy/systemd/reify-jcodemunch-index.timer
+      expect: present
+  - name: index-primitive-upstream
+    binding: capability→producer — beta, upstream. The timer invokes the same watch
+      --once primitive the sweep does (D3)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction assertion
+  - name: git-head-comparable-after-trigger
+    binding: capability→producer — meta.git_head readable via read-only sqlite (probe
+      2026-08-07) and via get_repo_outline (get_repo_outline.py:155-162)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: signal is a host-state observation after one timer trigger, not a repo-state
+        grep
+  task_id: 6111
+- label: eta
+  title: Retire jcodemunch-serve.service (delete unit + both dangling symlinks)
+  capabilities:
+  - name: serve-unit-deleted-from-repo
+    binding: capability→producer — deploy/systemd/jcodemunch-serve.service is tracked
+      on main; both ~/.config/systemd/user/ entries are dangling symlinks into reaped
+      worktree 4102 and systemctl reports `bad enabled`
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: jcodemunch-serve
+      paths:
+      - deploy/systemd
+      expect: absent
+  - name: replacement-exists-first
+    binding: capability→producer — delta, upstream. Do not retire the persistent unit
+      before the spawn/teardown wrapper exists
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction assertion
+  - name: watcher-unit-untouched
+    binding: GUARDRAIL — jcodemunch-watcher.service is `enabled enabled` and serves
+      5 OTHER repos (dark-factory, autopilot-video, solar-challenge, solar-challenge-platform,
+      pump-web-ui). reify is deliberately excluded from its --repos per D4. `grep
+      jcodemunch-serve` does not match it, so eta's signal is precise
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: host-unit guardrail; the repo has no file to grep for the negative
+  - name: runbook-edit-belongs-to-mu
+    binding: intra-PRD seam RESOLUTION — eta's PRD text says 'update the runbook'
+      and mu's says 'correct the record', both naming docs/architecture-audit/jcodemunch-serve-activation.md.
+      eta deletes unit + symlinks only; ALL doc correction is mu's (mu->eta already
+      ordered)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scope-boundary assertion between two batch leaves
+  task_id: 6112
+- label: theta
+  title: 'SPIKE: can entry_point_patterns express Rust roots? (both arms are a PASS)'
+  capabilities:
+  - name: pdead-baseline-is-measured
+    binding: 'capability→producer — PRD §2.6 live get_dead_code_v2 on a 48-file reify-audit
+      index: 100 findings, ALL confidence 1.0, all signals [''unreachable_file'',''no_callers'',''not_barrel_exported''],
+      including bin/reify-audit.rs::main and every #[test]. The server''s own framework_warning
+      corroborates. A measured positive baseline'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: VERDICT
+      paths:
+      - docs/notes/jcodemunch-rust-reachability-spike.md
+      expect: present
+  - name: puntested-baseline-also-recorded
+    binding: G6 branch-3 RESOLUTION — §2.6 measured PDEAD ONLY. kappa's premise ('same
+      shape; rides the same reachability substrate') is an INFERENCE. theta's scope
+      extended to baseline BOTH get_dead_code_v2 and get_untested_symbols in the same
+      session, so kappa's negative assertion has an upstream-measured comparand. Without
+      this, kappa's baseline binding would be producer-absent
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: get_untested_symbols
+      paths:
+      - docs/notes/jcodemunch-rust-reachability-spike.md
+      expect: present
+  - name: not-configurable-is-a-delivered-verdict
+    binding: capability→producer — theta is a spike; NOT-CONFIGURABLE is a delivered
+      verdict, not a block. iota/kappa are then cancelled by a HUMAN reading the record;
+      theta never changes sibling task state itself
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: both arms terminate in the same committed artifact; the VERDICT grep
+        above covers either
+  - name: query-substrate-upstream
+    binding: capability→producer — alpha, beta, gamma all upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-closure assertion
+  task_id: 6113
+- label: iota
+  title: Activate PDEAD (advisory, opt-in) once theta passes
+  capabilities:
+  - name: sample-floor-relaxed
+    binding: G6 branch-1 RESOLUTION — the PRD's 'a hand-reviewed sample of 30 findings'
+      is a COUNT assertion. After theta's configuration lands the PDEAD count may
+      legitimately collapse toward zero (a GOOD outcome) making a hard floor of 30
+      unachievable and reintroducing exactly the unvalidated-count shape epsilon forbids.
+      Read as 'up to 30 findings (all of them if fewer than 30 are produced)'. The
+      PRD's own load-bearing half — 'a checkable negative assertion, not a guessed
+      false-positive percentage' — is untouched
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: hand-review verdict; not mechanically expressible
+  - name: negative-assertion-fires-today
+    binding: 'rejection-check — §2.6 OBSERVED `main` and every #[test] being flagged
+      at confidence 1.0, so asserting their absence after configuration is meaningful
+      rather than vacuous'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the observed positive is theta's committed baseline; the post-configuration
+        negative is iota's hand review
+  - name: advisory-severity-unchanged
+    binding: 'capability→producer — D6 + prior PRD §4-d/§5 + task 4115: Severity::Low,
+      opt-in via --pattern, log-only, never auto-filed. This PRD does not revisit
+      it'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pdead_and_puntested_not_in_default_sweep
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+  - name: reachability-configured-upstream
+    binding: capability→producer — theta (pass arm), upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction assertion
+  task_id: 6114
+- label: kappa
+  title: Activate PUNTESTED (advisory, opt-in) once theta passes
+  capabilities:
+  - name: puntested-baseline-upstream
+    binding: 'capability→producer — theta, upstream, VIA the theta scope extension
+      (get_untested_symbols baseline). Without that extension this binding would have
+      been producer-absent: §2.6 measured PDEAD only'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-direction assertion; the mechanical twin is theta's get_untested_symbols
+        grep
+  - name: sample-floor-relaxed
+    binding: 'G6 branch-1 RESOLUTION — same as iota: ''up to 30 findings (all of them
+      if fewer than 30 are produced)'''
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: hand-review verdict; not mechanically expressible
+  - name: advisory-severity-unchanged
+    binding: capability→producer — D6; unchanged by this PRD
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pdead_and_puntested_not_in_default_sweep
+      paths:
+      - crates/reify-audit/src/bin/reify-audit.rs
+      expect: present
+  task_id: 6115
+- label: lambda
+  title: 'PLAYER: activate or retire — a committed determination either way'
+  capabilities:
+  - name: comparand-exists
+    binding: 'capability→producer — scripts/assert-crate-dag.sh, crates/reify-build-utils/tests/crate_dag_assertion.rs
+      and per-crate dag_invariant.rs are all present on main: B1-B6 are ALREADY hard-gated
+      without jcodemunch, so the overlap question has a real comparand'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: assert-crate-dag
+      paths:
+      - docs/notes/jcodemunch-player-determination.md
+      expect: present
+  - name: layer-rules-exist
+    binding: capability→producer — .jcodemunch.jsonc present; its own header states
+      a healthy run 'returns an empty finding set', which is why PLAYER's output is
+      indistinguishable from a broken one by construction
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the determination is the deliverable; the .jsonc is an input to it
+  - name: both-arms-are-a-pass
+    binding: capability→producer — activate OR retire; naming the exact violation
+      class assert-crate-dag.sh cannot catch, or documenting the overlap and retiring,
+      are equally delivered outcomes
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: decision leaf; the committed determination is the artifact either way
+  - name: query-substrate-upstream
+    binding: capability→producer — alpha, beta, gamma all upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-closure assertion
+  task_id: 6116
+- label: mu
+  title: Correct the record — no doc contradicts the landed jcodemunch behaviour
+  capabilities:
+  - name: nonexistent-db-claim-removed
+    binding: capability→producer — docs/architecture-audit/jcodemunch-serve-activation.md
+      asserts resolved identifier `leodearden-reify` and shared DB file `~/.code-index/leodearden-reify.db`,
+      neither of which exists (no leodearden/* git-identity index exists at all; per-path
+      identity is local/reify-4ae45bbd)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: leodearden-reify\.db
+      paths:
+      - docs/architecture-audit/jcodemunch-serve-activation.md
+      expect: absent
+  - name: stale-degradation-contract-removed
+    binding: capability→producer — the prior PRD still carries the row 'Yes — degrades
+      to exit 125 when serve is down', superseded by task 4109 (fail-soft to NoopJCodemunchOps
+      + breadcrumb, P2/P5 unaffected). Verbatim string confirmed present 2026-08-07
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: degrades to exit 125 when serve is down
+      paths:
+      - docs/prds/reify-audit-p1-jcodemunch-substrate.md
+      expect: absent
+  - name: landed-behaviour-to-document
+    binding: capability→producer — gamma (identity + refusal contract), zeta (replacement
+      freshness story), eta (unit retirement), ALL wired upstream. The PRD lists eta
+      only; gamma and zeta added at decompose because mu documents THEIR landed behaviour
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DAG-closure assertion
+  - name: player-doc-edit-owned-by-lambda
+    binding: scope-boundary — if lambda retires PLAYER, the .claude/skills/audit/SKILL.md
+      edit is part of lambda's retirement, not mu's. No unordered overlap between
+      the two leaves
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: scope-boundary assertion between two batch leaves
+  task_id: 6117
