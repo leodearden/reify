@@ -73,6 +73,34 @@ pub fn compute_dirty_cone(
 /// downstream consumers propagate the same way `compute_dirty_cone` does
 /// for ValueCell-seeded changes.
 ///
+/// # The realization fan-out is TRANSITIVE (amend, review round 1)
+///
+/// `ReverseDependencyIndex`'s realization-keyed map carries FOUR dependent
+/// kinds, not just ComputeNodes, and each is re-seeded onto the walk rather
+/// than treated as a leaf:
+///
+/// - `NodeId::Compute` — edge #10 (deps.rs:239-241). Expanded through its
+///   `output_value_cells` (edge #12) onto the ValueCell frontier.
+/// - `NodeId::Realization` — registered by `extract_realization_edges` for
+///   `GeomRef::Sub` operands on Boolean/Modify/Transform/Pattern/Sweep/
+///   Isosurface (deps.rs:210-214). Re-seeded onto a dedicated realization
+///   frontier so ITS own fan-out is walked too. Without this a ComputeNode
+///   consuming a realization two hops downstream of the moved one is never
+///   reached: `engine_edit::compute_changed_realizations` folds only a
+///   realization's OWN op args and is blind to cross-`Sub` geometry refs, so
+///   the downstream realization is not in the caller's seed set on its own
+///   merit either.
+/// - `NodeId::Value` — the GHR-δ S4 Realization→geometry-ValueCell edge
+///   (deps.rs:266-268). Pushed onto the ValueCell frontier, exactly as the
+///   BFS loop below does for a Value dependent, so consumers of a cell whose
+///   `Value::GeometryHandle` was re-backed also become dirty.
+/// - `NodeId::Constraint` — the geometry-query edge (deps.rs:194-196).
+///   A genuine leaf: constraints have no dependents of their own.
+///
+/// Every arm rounds toward INCLUSION. A node wrongly in the cone costs a
+/// recompute; a node wrongly out of it serves stale geometry, which is the
+/// failure β exists to prevent.
+///
 /// Seed discrimination (task-spec test 3, locked in by step-13): the caller
 /// is responsible for only inserting Realizations whose content-hash
 /// actually differs. An empty `changed_realizations` set yields no
@@ -86,9 +114,10 @@ pub fn compute_dirty_cone(
 /// Called from `engine_edit::invalidate_realization_dirty_cone`, which both
 /// edit entries reach at their post-value-cone seams — `Engine::edit_param`
 /// just after its snapshot install, and `Engine::edit_source` just before
-/// step (15)'s. Every `NodeId` this walk returns has its cache entry dropped,
-/// which is what forces the consuming `@optimized` nodes to re-dispatch on
-/// the next eval while unaffected consumers keep their cached result.
+/// step (15)'s. Every `NodeId` this walk returns has any per-node warm state
+/// donated to the `WarmStatePool` and then its cache entry dropped, which is
+/// what forces the consuming `@optimized` nodes to re-dispatch on the next
+/// eval while unaffected consumers keep their cached result.
 ///
 /// The seed is `Engine::last_changed_realizations`, produced by
 /// `engine_edit::compute_changed_realizations`. That helper compares the
@@ -108,21 +137,45 @@ pub fn compute_dirty_cone_with_realizations(
     let mut dirty: HashSet<NodeId> = HashSet::new();
     let mut frontier: VecDeque<ValueCellId> = changed_vcs.iter().cloned().collect();
 
-    // Seed from changed realizations via edge #10 (Realization → Compute).
-    // For each consuming ComputeNode, also seed edge #12 (Compute → output
-    // ValueCells) onto the frontier so downstream BFS picks up dependents
-    // of those output cells.
-    for rid in changed_realizations {
-        for dependent in reverse_index.realization_dependents_of(rid) {
-            if dirty.insert(dependent.clone())
-                && let NodeId::Compute(cn_id) = dependent
-                && let Some(cn_data) = graph.compute_nodes.get(cn_id)
-            {
-                for vc in &cn_data.output_value_cells {
-                    if dirty.insert(NodeId::Value(vc.clone())) {
-                        frontier.push_back(vc.clone());
+    // Seed from changed realizations. Transitive over the realization-keyed
+    // map's four dependent kinds — see the doc comment above for why each arm
+    // re-seeds instead of terminating. `seen_realizations` is the visit set
+    // for the realization frontier (NOT `dirty`, which never receives the
+    // seeds themselves: β leaves realization cache entries to γ #4730), so a
+    // Realization→Realization cycle cannot loop forever.
+    let mut realization_frontier: VecDeque<RealizationNodeId> =
+        changed_realizations.iter().cloned().collect();
+    let mut seen_realizations: HashSet<RealizationNodeId> =
+        changed_realizations.iter().cloned().collect();
+    while let Some(rid) = realization_frontier.pop_front() {
+        for dependent in reverse_index.realization_dependents_of(&rid) {
+            if !dirty.insert(dependent.clone()) {
+                continue;
+            }
+            match dependent {
+                // Edge #12: the ComputeNode writes these cells directly, so
+                // they are not reachable through `dependents_of` and must be
+                // inserted here.
+                NodeId::Compute(cn_id) => {
+                    if let Some(cn_data) = graph.compute_nodes.get(cn_id) {
+                        for vc in &cn_data.output_value_cells {
+                            if dirty.insert(NodeId::Value(vc.clone())) {
+                                frontier.push_back(vc.clone());
+                            }
+                        }
                     }
                 }
+                // A downstream realization consuming this one via GeomRef::Sub.
+                NodeId::Realization(rid2) => {
+                    if seen_realizations.insert(rid2.clone()) {
+                        realization_frontier.push_back(rid2.clone());
+                    }
+                }
+                // GHR-δ S4: the geometry cell this realization backs. Treated
+                // exactly like a Value dependent in the BFS loop below.
+                NodeId::Value(vcid) => frontier.push_back(vcid.clone()),
+                // Constraints and resolutions are leaves in this walk.
+                NodeId::Constraint(_) | NodeId::Resolution(_) => {}
             }
         }
     }
