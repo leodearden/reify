@@ -58,6 +58,17 @@
 # crates/reify-test-support/src/orphan_audit.rs:778) and 277 of its files carry
 # raw strings.
 #
+# A desync is surfaced rather than trusted: the END block of
+# `_AWK_PRODUCTION_PROLOGUE` WARNs — never fails — when a file's lexer state is
+# unbalanced at EOF. It is the only signal for the failure mode that is
+# otherwise INVISIBLE, because a line matching `carried_in && code == ""` is
+# `next`ed and so never scanned, and an unscanned line cannot be flagged.
+# MEASURED on this gate's own scan set at the time of writing: 562 files, of
+# which 562 end balanced, so the warning is silent on the live tree (verified
+# under gawk 5.2.1 and mawk 1.3.4; check-nan-safe-ordering.sh records the same
+# for its 121-file set). That measurement is what makes it safe as a warning
+# and premature as a failure.
+#
 # A two-regex chain cannot do this in EITHER order, which is why it was replaced
 # rather than reordered: strip comments first and a `//` living inside a STRING
 # truncates the code after it (11 lines of the live scan set change their brace
@@ -128,7 +139,14 @@
 #   0  clean — every known site delegates with its required variant, and no
 #      production source hand-rolls the bundle
 #   1  at least one violation (each printed to stderr)
-#   2  usage / not-a-git-work-tree error
+#   2  the gate could not scan: usage / not-a-git-work-tree error, an EMPTY SCAN
+#      SET (SCOPE_PATHSPECS matched nothing, or matched only paths the */tests/*
+#      filter removes), or an AWK FAILURE while scanning. Exit 2 OUTRANKS exit 1
+#      — a gate that could not scan has established neither that the tree is
+#      clean nor that it is dirty, so a violation already queued by the positive
+#      pass does not downgrade it.
+# A `WARN: … lexer state unbalanced at EOF` line on stderr is verdict-neutral
+# and never changes any of the above; see PRODUCTION-CODE VIEW below.
 
 set -euo pipefail
 
@@ -398,12 +416,40 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     }
     depth += n_open - n_close
 }
+
+# Self-consistency check: a lexer state left unbalanced at EOF (an unterminated
+# string / raw string / block comment, or a brace depth that never returns to 0)
+# means every line after the desync point lexed wrong — and, per the
+# `carried_in && code == ""` skip above, likely went entirely UNSCANNED. That
+# fails SILENTLY toward GREEN, because an unscanned line can never be flagged,
+# so it is surfaced here rather than left to discover itself.
+#
+# `quiet_eof` is this guard's one divergence from check-nan-safe-ordering.sh's
+# otherwise-identical block, and it is why that block cannot be copied
+# byte-for-byte: `_code_has` deliberately stops at its FIRST match
+# (`code ~ pat { found = 1; exit }`), which leaves the lexer legitimately
+# unbalanced mid-item, so a verbatim port would warn on every SUCCESSFUL site
+# lookup. The positive pass therefore passes -v quiet_eof=1 and only the
+# full-file negative scan can warn. No coverage is lost: all three KNOWN_SITES
+# are also in the negative pass's scan set and are scanned there in full.
+#
+# VERDICT-NEUTRAL — a warning, never a non-zero exit. Measured: this gate's
+# 562-file scan set ends every file balanced today, so the warning is silent on
+# the live tree; promoting it to a hard failure once that is trusted tree-wide
+# is a follow-up, not a day-one behavior change (same rationale main records
+# for its own 121-file set).
+END {
+    if (!quiet_eof && (in_str || in_raw || in_block > 0 || depth != 0))
+        printf "WARN: %s: lexer state unbalanced at EOF (str=%d raw=%d block=%d depth=%d)\n", FILENAME, in_str, in_raw, in_block, depth > "/dev/stderr"
+}
 AWK_PROLOGUE
 )"
 
 # _code_has <file> <awk-regex> — is the pattern present in PRODUCTION code?
+# quiet_eof=1 because the `exit` below stops mid-file by design; see the END
+# block in the prologue.
 _code_has() {
-    awk -v pat="$2" "$_AWK_PRODUCTION_PROLOGUE"'
+    awk -v pat="$2" -v quiet_eof=1 "$_AWK_PRODUCTION_PROLOGUE"'
         code ~ pat { found = 1; exit }
         END { exit(found ? 0 : 1) }
     ' "$1"
@@ -437,6 +483,23 @@ while IFS= read -r -d '' _f; do
     _files+=("$_f")
 done < <(git -C "$REPO_ROOT" ls-files -z -- "${SCOPE_PATHSPECS[@]}" 2>/dev/null)
 
+# An empty scan set (a crate rename, a module move, a repo reorg that no longer
+# matches SCOPE_PATHSPECS) must fail loudly, not exit 0 vacuously — a gate that
+# scans nothing looks identical, from the caller's side, to a gate that scanned
+# everything and found it clean. Checked AFTER the */tests/* filter, because
+# that filter can empty a non-empty match set on its own: single-star pathspecs
+# are not path-boundary-aware, so 'crates/*/src/*.rs' does match
+# crates/reify-foo/src/tests/helper.rs.
+#
+# Deliberately placed BEFORE the violations check below, so it outranks any
+# violation the positive pass has already queued: a stale scope is an
+# infrastructure fault, not a code finding, and a gate that could not scan has
+# established neither that the tree is clean nor that it is dirty.
+if [[ ${#_files[@]} -eq 0 ]]; then
+    echo "ERROR: no tracked .rs files matched SCOPE_PATHSPECS — scope is stale?" >&2
+    exit 2
+fi
+
 # Per-file action block, appended to the shared prologue. In order:
 #   1. honor the same-line `trampoline-registration:allow` escape;
 #   2. in a DEFINITION file only, skip the bundler body and the two definition
@@ -447,7 +510,13 @@ for f in "${_files[@]}"; do
     for _x in "${EXEMPT_DEFINITION_FILES[@]}"; do
         [[ "$f" == "$_x" ]] && { _allow_defs=1; break; }
     done
-    out="$(awk -v rel="$f" -v allow_defs="$_allow_defs" "$_AWK_PRODUCTION_PROLOGUE"'
+    # Checked explicitly (rather than left to `set -e` propagation) so a failing
+    # awk gets a diagnostic and the documented exit 2. Under plain `set -e` a
+    # failing `out="$(awk …)"` aborts with awk's OWN status, which for some awk
+    # failure modes is 1 — indistinguishable from "found a violation" (verified:
+    # PATH-shadowing awk to a stub that always exits 1 makes the pre-fix gate
+    # exit 1 on a CLEAN fixture, silently, with nothing printed).
+    if ! out="$(awk -v rel="$f" -v allow_defs="$_allow_defs" "$_AWK_PRODUCTION_PROLOGUE"'
         {
             # --- inline escape (same-line), mirrors ptodo:allow §6.8 ---
             # Matched against comment_tail (the dropped `//…` text that
@@ -489,7 +558,10 @@ for f in "${_files[@]}"; do
                 printf "%s:%d: %s\n", rel, FNR, $0
             }
         }
-    ' "$REPO_ROOT/$f")"
+    ' "$REPO_ROOT/$f")"; then
+        echo "ERROR: awk failed while scanning $f" >&2
+        exit 2
+    fi
     [[ -n "$out" ]] && note "$out"
 done
 
