@@ -39,7 +39,7 @@ tasks:
       kind: grep
       pattern: BuiltinId
       paths:
-      - crates/reify-types/src
+      - crates/reify-ir/src
       - crates/reify-compiler/src/expr.rs
       expect: present
 - label: tau1
