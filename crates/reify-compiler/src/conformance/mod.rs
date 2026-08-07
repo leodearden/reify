@@ -1300,6 +1300,53 @@ fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
 }
 
+/// Whether a `Type::ScalarParam(_)` ARG at a `Type::Scalar { .. }` PARAM must be
+/// DEFERRED rather than judged (task 5627 γ, D4-5; PRD invariant I5 / §7.4 B4).
+///
+/// `Type::ScalarParam(Q)` is the unresolved-DIMENSION placeholder a dim-kinded
+/// generic produces: `fn fwd<Q: Dimension>(x: Scalar<Q>)` resolves `x` to
+/// `ScalarParam("Q")` (`type_resolution.rs`), displayed `Scalar<Q>`. Its FAMILY
+/// is known — it is a scalar — and only its DIMENSION is open (see
+/// [`arg_type_is_unverifiable`]'s closing note, which draws the same distinction
+/// against `TypeParam`). At a `Scalar` slot there is therefore no dimension to
+/// compare: `Q` is bound at instantiation, and whether that binding conforms is
+/// decided there. Judging the UNINSTANTIATED body under the strict
+/// `DimensionVector` equality γ routes into this arm can only ever REJECT, so
+/// every such site would be a false positive — one γ's own promotion opens.
+///
+/// # Deliberately narrower than [`is_numeric_placeholder_leaf`]
+///
+/// That predicate also matches `Type::Int` and any CONCRETE `Type::Scalar { .. }`.
+/// Reusing it as the arg-side accept HERE would silence `Scalar<Q> ← Int` (I3)
+/// and `Scalar<Length> ← Scalar<Mass>` (I2) — precisely the two rejections γ
+/// exists to produce — leaving the promotion green, the corpus clean and the
+/// whole task functionally inert. The `Point` / `Matrix` / `Tensor` arms want its
+/// full membership set because a numeric-fallback placeholder is what they
+/// actually receive; this arm wants only the dimension-placeholder half.
+///
+/// It is a PER-ARM guard for the same reason it is not an entry in
+/// [`arg_type_is_unverifiable`]: adding it there would silence
+/// `String ← Scalar<Q>` at every arm at once, which that predicate's own doc
+/// comment already rules out.
+///
+/// # A2 — the INTENDED side effect on the dimensionless half
+///
+/// `Real` is `Type::Scalar { dimension: <dimensionless> }`, so this necessarily
+/// also silences `Real ← Scalar<Q>` — a warning belonging to task 5465's
+/// already-shipped dimensionless family, not to the family γ promotes. That is
+/// intended, not collateral: the argument for silence is identical in both
+/// halves, since `Q` is unbound either way and there is nothing to compare.
+/// Narrowing the guard to `!dimension.is_dimensionless()` to preserve that
+/// warning would assert `Scalar<Q>` is definitely-not-`Real` while
+/// simultaneously accepting it as maybe-`Scalar<Length>`.
+///
+/// All five behaviours above — the accept, the A2 post-state, and the three
+/// narrowness fences — are pinned by name in the γ D4-5 section of
+/// `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`.
+fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> bool {
+    matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
+}
+
 /// Whether a `Type::List` arg at a `Matrix`/`Tensor` param is plausibly the
 /// idiomatic nested-list-literal spelling of that matrix — i.e. it bottoms out
 /// in a NUMERIC (or already tensor-shaped) element type.
@@ -1715,7 +1762,16 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 // mismatch. Every other family keeps falling through silently,
                 // exactly as before α — see that predicate's doc comment for the
                 // per-family rationale and the sound-by-construction posture.
-                reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
+                //
+                // D4-5 (task 5627 γ): one arg-side accept sits in front of that
+                // gate — an unresolved-DIMENSION placeholder at a `Scalar` slot
+                // is deferred to instantiation rather than judged. See
+                // [`scalar_param_arg_defers_at_scalar_slot`] for why it is
+                // narrower than [`is_numeric_placeholder_leaf`] and why it is not
+                // an [`arg_type_is_unverifiable`] entry.
+                if !scalar_param_arg_defers_at_scalar_slot(param_type, arg_type) {
+                    reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
+                }
             }
         }
     }
