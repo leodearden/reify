@@ -6,6 +6,25 @@
 > repo on 2026-08-07 because the originally-cited session scratchpad path no longer exists.
 > This is a dated snapshot, not a maintained document.
 
+> **Corrections (2026-08-07 review).** A follow-up review (the type-decision enshrinement
+> review, ratified 2026-08-07) re-probed this snapshot's load-bearing claims. Three passages
+> below would actively mislead and carry inline `[2026-08-07 correction]` markers at the
+> affected spots:
+>
+> 1. `complex_mul`/`complex_div`/`complex_pow` were classified FALLBACK-CORRECT by a
+>    Value-kind-only check; `Type::Complex` carries a quantity parameter (ty.rs:199) which
+>    these transform (A·B, A/B, A^n — complex.rs:152/:179/:191-248; probed: `complex_mul` of
+>    two `Complex<m>` values → m²). They are mistyped today. `complex_sqrt` is correct only
+>    per the explicit "for v0.6" dimensionless deferral (complex.rs:271); `mod` is correct
+>    only on the Int×Int subdomain (every other arg shape is statically fallback-typed but
+>    eval-Undef). The FALLBACK-CORRECT/WRONG split shifts 16→13 / 93→96 accordingly;
+>    headline counts elsewhere in this snapshot are left as written.
+> 2. The prose "project(point, plane)" is wrong: `project`'s arg1 is decoded exclusively as
+>    `Value::Frame` (geometry.rs:962-964); a plane evals Undef. (Classification unaffected.)
+> 3. The blanket "typed Scalar<Length>/Real" for the `prb_*` family is imprecise for
+>    `prb_cartwheel_flexure`, which leads with an Int `blade_count` (flexures/compound.rs:289)
+>    and is fallback-typed `Int`.
+
 ---
 
 # The first-arg-type fallback: soundness analysis and recommendation
@@ -35,7 +54,7 @@ Family arms' name lists live in units.rs consts + six signature files (builtin/m
 
 The fallback is an M1 fossil: commit a32a1b2b2e (2026-03-16) introduced it as "For math functions, use the type of the first argument as a heuristic". The math family has since been carved out (tasks 4179/4182/4352 → math_signatures.rs), so the original clientele is gone. Its remaining legitimate work:
 
-1. ~15 type-preserving builtins still correctly typed by first-arg propagation: `transform_compose`, `transform_inverse`, `orient_compose`, `orient_inverse`, `orient_slerp`, `project(point,plane)`, `complex_add/mul/div/pow/sqrt/exp` [verified vs eval arms].
+1. ~15 type-preserving builtins still correctly typed by first-arg propagation: `transform_compose`, `transform_inverse`, `orient_compose`, `orient_inverse`, `orient_slerp`, `project(point,plane)`, `complex_add/mul/div/pow/sqrt/exp` [verified vs eval arms]. *[2026-08-07 correction: `complex_mul/div/pow` are not type-preserving — they transform the `Complex` quantity parameter; and `project`'s second arg is a Frame, not a plane (a plane evals Undef). See Corrections at top.]*
 2. A deliberate graceful-degradation escape hatch: three arg-aware arms (list helpers, affine algebra, field ops) return `None` on mis-shaped args and fall to the fallback for a "zero regression guarantee" (documented at expr.rs:3530-3533) [verified].
 3. Eval-deferred names in single-file compile regimes: today `reify eval`/`build` compile single-file, so calls to *imported user fns* find no user fn and ride the fallback to eval (see Q5 sequencing trap) [verified from RU PRD boundary #10].
 
@@ -84,7 +103,7 @@ The fallback is wrong for **93 of its 121 actual clients (77%)**. The five suspe
 - Orientation (10, orientation.rs; shrinks under 5344): orient_identity, orient_quaternion, orient_euler, orient_basis, orient_look_at, orient_axis_angle, orient_exp (→Orientation), orient_log (→Vector), orient_to_euler (→List of Angles), orient_to_axis_angle (→Map).
 - Numeric/complex (5): floor/ceil/round (→**Int of the erased SI value** — silently wrong VALUE for dimensioned args; probed), re/im (→Real, typed Complex).
 - Joints (5, joints.rs): transform_at (→Transform, typed joint StructureRef; attested in 4 examples), joint_axis, joint_range, joint_ratio, joint_offset.
-- Flexures (14): all prb_* constructors return joint Maps, typed Scalar<Length>/Real; several example-attested.
+- Flexures (14): all prb_* constructors return joint Maps, typed Scalar<Length>/Real; several example-attested. *[2026-08-07 correction: imprecise for `prb_cartwheel_flexure`, which leads with an Int `blade_count` (flexures/compound.rs:289) and is fallback-typed `Int`. See Corrections at top.]*
 - FEA (11, fea.rs): envelope_max/min (→Field, typed Map<String,Field>), case_names, result_for, linear_combine, min_max_stress, worst_case (→String; real impl in reify-expr), worst_buckling_case, envelope_critical_load, envelope_argmax/argmin.
 - Mechanism/snapshot/dynamics (7): world, bodies, transform_of, sweep_grid, ramp_profile_lower, inverse_dynamics_lower, inverse_dynamics_at_snapshot_lower.
 - Stackup/DFM/tolerancing/supports/loads/tensegrity (12): contributor, contributor_asym, stackup_worst_case, stackup_rss, monte_carlo_stackup, fits_build_volume (→Bool, typed BoundingBox), iso_it_tolerance (→Scalar<LENGTH>, typed Int), DisplacementSupport, RollerSupport, gravity, tensegrity_wires, tensegrity_surfaces.
@@ -93,7 +112,7 @@ The fallback is wrong for **93 of its 121 actual clients (77%)**. The five suspe
 
 ### FALLBACK-CORRECT (16) — what a hard closure would regress without prior registration
 
-transform_inverse, transform_compose, project, orient_inverse, orient_compose, orient_slerp, input_shape_apply, to_global, effective_tolerance_zone, mod, complex_add/mul/div/pow/exp/sqrt. (Caveat: the orient_* trio is only correct when arg0 wasn't already mistyped by an unregistered orient ctor upstream.)
+transform_inverse, transform_compose, project, orient_inverse, orient_compose, orient_slerp, input_shape_apply, to_global, effective_tolerance_zone, mod, complex_add/mul/div/pow/exp/sqrt. (Caveat: the orient_* trio is only correct when arg0 wasn't already mistyped by an unregistered orient ctor upstream.) *[2026-08-07 correction: `complex_mul/div/pow` are misclassified here — mistyped today via the `Complex` quantity parameter; `complex_sqrt` is correct only per the explicit "for v0.6" dimensionless deferral (complex.rs:271); `mod` is correct only on the Int×Int subdomain (other shapes statically fallback-typed but eval-Undef). See Corrections at top.]*
 
 ### FALLBACK-VARIES (5)
 
