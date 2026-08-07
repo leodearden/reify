@@ -482,17 +482,18 @@ are the dark-factory external-deps.
    (36→58, `dark_factory:3117`, 2026-07-28) and once by γ's own corpus guard going RED
    plus reconciliation review on the α side (58→59, reify #6067 / dark-factory
    43410b3418, 2026-08-07, adding `csv`). A reify-corpus sweep would not have caught
-   the latter, since reify tracks zero `.csv` files; the full incident narrative is
-   owned by `scripts/lock-charter-guard.sh`'s header, not restated here. The basename
-   vector has been found stale **once** (0→8, `dark_factory:3248`). The live-corpus
-   subset alarm in `tests/infra/test_lock_charter_guard.sh` (Cycle 9), which re-runs
-   the sweep in CI and goes RED when a tracked extensionless basename is missing from
-   the α vector, is the standing defence for the **extensionless-basename** vector
-   only — there is no live-corpus drift alarm for the extension vector on the α side
-   yet (γ has one — `test_every_tracked_extension_is_allowlisted`, which is what
-   caught `csv`; the α mirror is tracked as reify #6068). A RED in that Cycle 9 alarm
-   is fixed by updating α **and** γ together — the emitters exist so the two can be
-   compared byte-for-byte rather than by eye.
+   the latter — the standing scope limit of the α-side alarms below — since reify
+   tracks zero `.csv` files; the full incident narrative is owned by
+   `scripts/lock-charter-guard.sh`'s header, not restated here. The basename
+   vector has been found stale **once** (0→8, `dark_factory:3248`). Both α vectors now
+   carry a live-corpus subset alarm in `tests/infra/test_lock_charter_guard.sh`, each
+   re-running the sweep in CI and going RED when a tracked name is missing from the α
+   list: Cycle 9 for the **extensionless-basename** vector, Cycle 10 for the
+   **extension** vector (reify #6068). Cycle 10's γ-side peer is
+   `test_every_tracked_extension_is_allowlisted`, which is what caught `csv` — the two
+   sweep different corpora, so they are complementary rather than duplicates. A RED in
+   either alarm is fixed by updating α **and** γ together — the emitters exist so the
+   two can be compared byte-for-byte rather than by eye.
 3. **ε hide-point.** Precise architect-input field to suppress (`plan_tools.create_plan`
    args vs the briefing prompt assembly) — confirm at ε impl (§6 ⚠️).
 4. **set-to-plan event shape.** Whether the release emits per-module `lock_released` (as
