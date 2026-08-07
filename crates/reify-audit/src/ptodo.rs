@@ -121,6 +121,49 @@ fn ignore_attr(line: &str) -> Option<IgnoreForm> {
     }
 }
 
+/// §8.1 δ-A anchor (`.rs` only — gating in [`scan_file`]): an
+/// `#[allow(…dead_code…)]` attribute carrying a trailing `//` rationale.
+/// Returns the trimmed rationale text, or `None` when the line is not such an
+/// attribute or carries no rationale.
+///
+/// A direct structural sibling of [`ignore_attr`]: `trim_start`, early-return
+/// on a doc-comment prefix, then prefix-strip and inspect.
+///
+/// **Ordering hazard.** The `///`/`//!` guard MUST fire before the `#[allow(`
+/// search. `crates/reify-core/src/diagnostics.rs:4046` is a doc comment reading
+/// ``/// This function is `#[allow(dead_code)]` pending the live wiring of`` —
+/// prose that merely mentions the attribute, with the real attribute 12 lines
+/// below. Without the guard, that doc paragraph would be reported as an
+/// allow-rationale.
+///
+/// The lint list is SCANNED for a whole `dead_code` token rather than
+/// string-equality-matched, so `#[allow(dead_code, unused_variables)]` is
+/// recognised while `#[allow(dead_codex)]` is not.
+///
+/// Only the `//` rationale form is recognised; a `/* … */` trailing comment is
+/// out of scope (unmeasured in the live corpus, so unpinned by evidence).
+fn allow_dead_code_attr(line: &str) -> Option<&str> {
+    let t = line.trim_start();
+    // Doc-comment prose mentioning the attribute is not the attribute.
+    if t.starts_with("///") || t.starts_with("//!") {
+        return None;
+    }
+    let rest = t.strip_prefix("#[allow(")?;
+    let (lints, after) = rest.split_once(")]")?;
+    // Whole-token scan of the lint list: split on the separators a lint list
+    // can use, so `dead_codex` and a `dead_code` mention in the comment cannot
+    // both be read as the lint.
+    if !lints
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .any(|tok| tok == "dead_code")
+    {
+        return None;
+    }
+    let comment = after.trim_start().strip_prefix("//")?;
+    let rationale = comment.trim();
+    (!rationale.is_empty()).then_some(rationale)
+}
+
 // -----------------------------------------------------------------------
 // §8.2 citation resolution (canonical vs malformed)
 // -----------------------------------------------------------------------
