@@ -649,6 +649,107 @@ fi
 # ---------------------------------------------------------------------------
 # Cycle 10 — live-corpus extension drift alarm (standing guard against a stale
 # _EXTS).  The extension-side mirror of Cycle 9.
+#
+# Cycle 4 above already compares --list-extensions against CANONICAL_EXTS and
+# does so with a full equality assert, which is strictly stronger than any
+# presence check — in ONE direction.  CANONICAL_EXTS is a pin living in this
+# same repo, so it moves whenever _EXTS moves: it catches an accidental EDIT to
+# the allowlist and can never catch a MISSING entry, because nobody edits the
+# pin to mention an extension they did not know they needed.  #5726 was exactly
+# that failure on exactly this vector — 22 tracked extensions the list
+# misclassified as directories, found by a human running a manual sweep, not by
+# a gate.  This block converts that sweep into a standing CI signal, the same
+# conversion Cycle 9 performs for the extensionless vector.  The two are
+# complementary, not redundant: Cycle 4 owns the accidental-edit direction,
+# Cycle 10 owns the missing-entry direction.
+#
+# SUBSET, not equality, and measured to be binding here rather than merely
+# inherited from Cycle 9: the sweep finds 36 extensions while _EXTS carries 59,
+# and the 23-entry gap is legitimate because this is a SHARED α/γ vector —
+#   cc cjs csv cts cxx diff example example-systemd-config gitattributes
+#   gitmodules hh hpp jsonl jsx log mts python-version scss step stl svg
+#   template typed
+# have no reify file behind them today.  An equality assertion would be RED
+# permanently and would fight the shared nature of the list.  Over-coverage is
+# the safe direction — an entry with no reify file costs nothing, a missing
+# entry costs a rejected charter.
+#
+# HONEST SCOPE LIMIT — this alarm would NOT have caught the `csv` drift that
+# motivated #6067, and must not be read as closing that gap.  reify tracks zero
+# .csv files (measured: `git ls-files '*.csv' | wc -l` -> 0); the evidence lived
+# in dark-factory's corpus (plans/evidence/scheduler-scoring-2026-08-06/*.csv).
+# Cycle 10 defends against reify-corpus-driven drift only — a NEW tracked reify
+# extension landing with no allowlist entry, i.e. the #5726 shape.  The
+# cross-source half (γ's skipped Tier-2 comparison, esc-6067-2) stays open.
+#
+# LAST-dot extraction is the filter rule.  The extension side, unlike the
+# extensionless side, can surface non-extension tokens, and the answer is not a
+# token blacklist — it is asking exactly the question the guard answers.
+# _is_file_path() classifies on "${seg##*.}" (scripts/lock-charter-guard.sh:232),
+# the post-LAST-dot token, so the sweep extracts the same way.  Measured on
+# today's corpus: last-dot yields 36 clean real extensions and zero junk;
+# first-dot yields 73 tokens, 38 of which still contain a dot, off the corpus's
+# dotted-basename family (split.structure-Board.md, split.enum-Grade.md,
+# foo.module.css, bar.e2e.test.ts, d.ts).  Faithfulness to the predicate is what
+# makes the sweep junk-free — any other extraction would alarm on tokens
+# _is_file_path() never inspects, producing REDs no allowlist edit can fix.
+#
+# THIS IS A DELIBERATE FOURTH VARIANT of the canonical sweep command, not a
+# fourth copy.  The other three (the _EXTLESS header in
+# scripts/lock-charter-guard.sh, Cycle 7's provenance comment, Cycle 9's
+# executable form) are kept BYTE-IDENTICAL on purpose.  Cycle 10 differs from
+# them in exactly one place: the terminal branch selects DOTTED final segments
+# and reduces each to its post-last-dot token, where they select dotless ones
+# via `grep -v '\.'`.  Everything up to and including the `split($2, s, "/")`
+# final-segment extraction is identical.  Do not "unify the four" — collapsing
+# them silently breaks either this alarm or Cycle 9.
+#
+# The mode-160000 filter is carried even though reify tracks zero gitlinks
+# (measured: `git ls-files -s | grep -c '^160000'` -> 0): it is the documented
+# invariant — dark-factory's graphiti/mem0 submodule mount points must never be
+# admitted — and it keeps this sweep correct if reify ever vendors a submodule.
+# Same rationale Cycle 9 gives.
+#
+# Host-dependence is confined to this block by the rev-parse probe below, which
+# SKIPs cleanly outside a git checkout — the file header's "no skip guard, the
+# predicate is host-independent (C-P3)" promise holds for Cycles 1-8, which stay
+# pure-string.
+#
+# A RED HERE means a new tracked reify extension has landed with no allowlist
+# entry.  The fix is FOUR coordinated edits, not one: _EXTS in
+# scripts/lock-charter-guard.sh, CANONICAL_EXTS in Cycle 4 above, and
+# lcl_canonical_extensions() in tests/infra/lock_charter_harness_lib.sh (the
+# three pin edits Cycle 4's own comment enumerates), PLUS dark-factory's four γ
+# copies.  _EXTS is a shared vector; a unilateral α widening re-opens precisely
+# the seam divergence this subsystem exists to close.
+#
+# Green on arrival (36 swept ⊂ the 59 pinned) — by construction, since a RED on
+# arrival would mean the allowlist was already broken.  Per G6 it was shown to
+# FIRE rather than assumed to: deleting `ri` from _EXTS in a scratch copy of the
+# guard (59 -> 58 entries) turns this block from 38 passed / 0 failed to
+# 37 passed / 1 failed, with the single line
+#   FAIL: live-corpus ext drift: 'ri' present in --list-extensions
+# One targeted failure naming the missing entry — neither vacuous nor
+# over-broad.  Mutant not committed.
+#
+# The tab-split parse was likewise shown to matter rather than argued to, and it
+# matters MORE here than in Cycle 9, not less.  In a scratch repo tracking
+# `docs/notes.md`, `data/report v2.csv` and `docs/foo.bar baz.qux`:
+#   -z + FS="\t" form  -> csv md qux   (correct)
+#   whitespace $4 form -> bar md       (wrong, in TWO distinct ways)
+# (a) PHANTOM: `docs/foo.bar baz.qux` truncates at the space to `docs/foo.bar`,
+#     whose post-dot token `bar` names an extension that exists nowhere — the
+#     alarm REDs against a name the reader will hunt for in vain.  This is
+#     Cycle 9's documented failure mode.
+# (b) SILENT MISS, which Cycle 9 does NOT have: `data/report v2.csv` truncates to
+#     `data/report`, now DOTLESS, so the dotted branch drops it and the real
+#     `csv` is never checked — the alarm quietly weakens instead of failing
+#     loudly.  On the extensionless side a truncated path stays dotless and is
+#     still swept, so only (a) exists there.
+# reify tracks zero paths containing a space today (measured:
+# `git ls-files | grep -c ' '` -> 0), so both are latent — but a standing alarm
+# over a GROWING corpus is precisely where latent parse bugs surface, which is
+# the whole reason this block exists.  Scratch repo not committed.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Cycle 10: live-corpus drift alarm (_EXTS covers tracked corpus) ---"
