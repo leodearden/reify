@@ -190,6 +190,46 @@ fn baseline_is_well_formed() {
     }
 }
 
+/// Regression pin for the §8.1 lane δ-A user-observable signal (task #6087):
+/// the committed baseline must still carry the one CITED entry the lane exists
+/// to surface — `crates/reify-eval/src/engine_build.rs`, an
+/// `#[allow(dead_code)]` whose rationale defers to task #4744, which is `done`
+/// and therefore resolves through the unchanged β liveness lane to `orphaned`.
+///
+/// Asserts on `path` + `kind` + the cite id, NOT on the full normalized text,
+/// so ordinary reflowing of that comment does not break the test while a LANE
+/// REGRESSION (the fingerprint disappearing entirely, because a refactor
+/// silently dropped the allow-attribute anchor or a prose guard over-tightened)
+/// still does.
+///
+/// These entries are GRANDFATHERED DEBT, not a desired state. §6.6's ratchet is
+/// shrink-only: when the underlying comment is re-pointed at a live task, or the
+/// deferred wiring lands, this test and the baseline line are removed TOGETHER.
+/// This test must never be cited as an argument that the debt should stay.
+#[test]
+fn baseline_pins_lane_delta_a_user_observable_signal() {
+    let path = baseline_path();
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
+
+    let hit = content.lines().find(|l| {
+        let parts: Vec<&str> = l.splitn(3, " :: ").collect();
+        parts.len() == 3
+            && parts[0] == "crates/reify-eval/src/engine_build.rs"
+            && parts[1] == "orphaned"
+            && parts[2].contains("#4744")
+    });
+
+    assert!(
+        hit.is_some(),
+        "the lane δ-A cited signal is missing from the committed baseline: expected a \
+         `crates/reify-eval/src/engine_build.rs :: orphaned :: …#4744…` entry.\n\
+         Either the debt was legitimately burned down (delete this test WITH the \
+         baseline line — the ratchet is shrink-only), or the δ-A recognizer has \
+         regressed and stopped reporting it.\nbaseline:\n{content}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // (A′) Synthetic-content coverage for the well-formedness rules
 //
