@@ -2196,6 +2196,82 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.1 lane δ-A — #[allow(dead_code)] + deferral rationale (.rs)
+    // -------------------------------------------------------------------
+
+    /// The user-observable signal at unit level: a cited deferral rationale on
+    /// an allow-attribute becomes `Cited`, so the UNCHANGED β liveness lane
+    /// resolves it (cite #4744 is `done` → High `orphaned`). Shaped after
+    /// `crates/reify-eval/src/engine_build.rs:12891`.
+    #[test]
+    fn scan_file_allow_dead_code_cited() {
+        let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![4744]), line.to_string())]
+        );
+    }
+
+    /// SCOPE-1: a δ-A rationale with deferral prose but NO cite is unmarked
+    /// debt → `Structural(Untracked)`. This is the bulk of the measured lane.
+    #[test]
+    fn scan_file_allow_dead_code_uncited() {
+        let line = "#[allow(dead_code)] // wiring pending the morph rewrite";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Structural(Kind::Untracked), line.to_string())]
+        );
+    }
+
+    /// The dominant BENIGN class among the 68 measured δ-A candidates: a real
+    /// allow-rationale that explains rather than defers. It must stay silent —
+    /// a lane that fired here would report ordinary documented code as debt.
+    #[test]
+    fn scan_file_allow_dead_code_no_deferral() {
+        let lines = [
+            "#[allow(dead_code)] // used by some, but not all, test binaries that include this",
+            "#[allow(dead_code)] // Phase-1 scaffold; consumed in later phases",
+            "#[allow(dead_code)]",
+            // Guard 3 (word boundary) at the scan_file level: an identifier
+            // mention is not a deferral. Symbols are real
+            // (crates/reify-eval/src/cache.rs:968, :1013).
+            "#[allow(dead_code)] // superseded by mark_pending_with_cause",
+        ];
+        assert_eq!(scan_file(&lines.join("\n"), true), vec![]);
+    }
+
+    /// SCOPE-3: the §6.8 inline escape is precedence arm (1), ahead of every
+    /// classification arm, so it keeps working against δ-A with no code change.
+    /// Pinned rather than assumed.
+    #[test]
+    fn scan_file_allow_dead_code_escape_wins() {
+        let line = "#[allow(dead_code)] // pending #1234  // ptodo:allow";
+        assert_eq!(scan_file(line, true), vec![]);
+    }
+
+    /// δ-A is `.rs`-gated, keeping the `.sh`/`.py`/`.ts`/`.ri` blast radius at
+    /// zero (and removing the self-match hazard for the shell scenario's own
+    /// fixture text).
+    #[test]
+    fn scan_file_allow_dead_code_non_rust() {
+        let line = "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)";
+        assert_eq!(scan_file(line, false), vec![]);
+    }
+
+    /// Precedence: a line carrying BOTH an allow-attribute and a real comment
+    /// marker stays owned by the marker lane (arm 3) — ONE entry, no
+    /// double-count. The `else if` chain is what the fingerprint/baseline
+    /// machinery relies on for at-most-one-entry-per-line.
+    #[test]
+    fn scan_file_allow_dead_code_marker_lane_wins() {
+        let line = "#[allow(dead_code)] // TODO(#1234): pending the rewrite";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Cited(vec![1234]), line.to_string())]
+        );
+    }
+
+    // -------------------------------------------------------------------
     // §8.3 γ cite-first path — reason with canonical cite → Cited (β lane)
     // -------------------------------------------------------------------
 
