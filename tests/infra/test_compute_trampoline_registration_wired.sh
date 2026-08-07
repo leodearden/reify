@@ -906,6 +906,148 @@ assert "hE3: an escaped line does not suppress the UNescaped half-call on the fo
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
 # ===========================================================================
+# hF — THE GATE MUST NOT FAIL SILENTLY TOWARD GREEN.
+#
+# Three distinct ways this gate can report "clean" without having actually
+# checked anything, all of which check-nan-safe-ordering.sh on main already
+# guards and this copy does not:
+#
+#   hF1  it scanned NOTHING (SCOPE_PATHSPECS went stale) — indistinguishable,
+#        from the caller's side, from having scanned everything and found it
+#        clean;
+#   hF2  its awk failed — and awk's own failure status is 1 for some modes,
+#        which is exactly the gate's "found a violation" code, so the failure
+#        is laundered into an ordinary-looking verdict;
+#   hF3  its LEXER desynced mid-file — every line after the desync point that
+#        matches `carried_in && code == ""` is `next`ed, and an unscanned line
+#        can never be flagged.
+#
+# hF4 pins the one thing that must NOT come with hF3's warning.
+# ===========================================================================
+echo ""
+echo "--- (hF): a gate that checked nothing must not report clean ---"
+
+# hF1 — EMPTY SCAN SET must be a hard error (exit 2), not a vacuous exit 0.
+# Two shapes, because the guard has to sit AFTER the `*/tests/*` filter to
+# catch the second: a scope check written before the filter passes hF1b.
+# Note both fixtures also have all three known sites missing, so the POSITIVE
+# pass has already queued exit-1 violations — a stale scope is an
+# infrastructure fault and must outrank them, which is what pins the guard's
+# placement relative to the final violations check.
+SCOPE_FIX="$DET_TMP/scope-empty"
+mkdir -p "$SCOPE_FIX/src"
+git -C "$SCOPE_FIX" init -q
+git -C "$SCOPE_FIX" config user.email test@invalid.local
+git -C "$SCOPE_FIX" config user.name test
+printf '# not rust\n' > "$SCOPE_FIX/README.md"
+printf 'fn main() {}\n' > "$SCOPE_FIX/src/main.rs"   # top-level src/, not crates/*/src/
+git -C "$SCOPE_FIX" add -A
+assert "hF1a: a repo where SCOPE_PATHSPECS matches NOTHING exits 2, not 0" \
+    _exits_with 2 bash "$GATE" --repo-root "$SCOPE_FIX"
+assert "hF1a: stderr says the scope matched nothing (not a generic failure)" \
+    bash -c "bash '$GATE' --repo-root '$SCOPE_FIX' 2>&1 >/dev/null | grep -qi 'SCOPE_PATHSPECS'"
+
+# hF1b — every pathspec match is filtered out by `*/tests/*`. Single-star git
+# pathspecs are not path-boundary-aware, so crates/*/src/*.rs DOES match
+# crates/reify-foo/src/tests/helper.rs; the scan set is non-empty before the
+# filter and empty after it.
+SCOPE_FIX2="$DET_TMP/scope-empty-after-filter"
+mkdir -p "$SCOPE_FIX2/crates/reify-foo/src/tests"
+git -C "$SCOPE_FIX2" init -q
+git -C "$SCOPE_FIX2" config user.email test@invalid.local
+git -C "$SCOPE_FIX2" config user.name test
+printf 'pub fn helper() {}\n' > "$SCOPE_FIX2/crates/reify-foo/src/tests/helper.rs"
+git -C "$SCOPE_FIX2" add -A
+assert "hF1b: a scan set emptied by the */tests/* filter exits 2 (guard sits AFTER the filter)" \
+    _exits_with 2 bash "$GATE" --repo-root "$SCOPE_FIX2"
+
+# hF2 — AWK FAILURE must be exit 2, never laundered into 1.  PATH-shadow awk
+# with a stub that always exits 1 and run against the CLEAN baseline: today the
+# unchecked `out="$(awk …)"` assignment aborts under `set -e` carrying awk's
+# own status, so the gate exits 1 on a clean tree with nothing printed — the
+# same code it uses for a genuine violation.  main's rationale for the explicit
+# check is at check-nan-safe-ordering.sh:346-352.
+#
+# hF1's guard is what makes this total: with an empty scan set now impossible,
+# the negative-pass loop is guaranteed to execute at least once, so a
+# systematically broken awk can never reach the verdict at all.
+STUB_BIN="$DET_TMP/stub-bin"
+mkdir -p "$STUB_BIN"
+printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/awk"
+chmod +x "$STUB_BIN/awk"
+write_baseline
+stage
+assert "hF2: a failing awk exits 2, not 1 (a clean tree must not look like a violation)" \
+    _exits_with 2 env "PATH=$STUB_BIN:$PATH" bash "$GATE" --repo-root "$FIX"
+assert "hF2: stderr names the awk failure and the file it was scanning" \
+    bash -c "env 'PATH=$STUB_BIN:$PATH' bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'awk failed while scanning'"
+
+# hF3 — LEXER DESYNC must WARN, and must be VERDICT-NEUTRAL.
+# The fixture is deliberately malformed Rust (an unterminated `/*`): a
+# well-formed file that desyncs this lexer would BE the undiscovered bug the
+# warning exists to surface, so the desync has to be induced directly.
+#
+# Verdict-neutrality matters more here than on main: this gate's scan set is
+# 562 files against nan-safe's 121.  It measures clean today (every file ends
+# balanced — see hF4), but the warning must be structurally incapable of
+# turning a green tree red even if that stops being true.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/unbalanced.rs" <<'RS'
+pub fn documented() {}
+
+/* this block comment is never terminated, so the lexer ends the file
+   still inside it and every following line lexes to nothing
+RS
+stage
+assert "hF3a: an unbalanced file WARNs on stderr" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'lexer state unbalanced'"
+assert "hF3a: the WARN names the offending file" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep 'lexer state unbalanced' | grep -q 'unbalanced\.rs'"
+assert "hF3a: the WARN is VERDICT-NEUTRAL — an otherwise-clean tree still exits 0" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hF3b — the other direction: the WARN must not mask or upgrade a real
+# violation either.  Same unbalanced file, plus the h3 fourth bundler.
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hF3b: a real violation alongside an unbalanced file still exits 1 (not 2, not 0)" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hF3b: the violation is still reported as file:line despite the WARN" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
+
+# hF4 — NO SPURIOUS WARN FROM THE POSITIVE PASS.  `_code_has` deliberately
+# early-exits on its first match (`code ~ pat { found = 1; exit }`), which
+# leaves the lexer legitimately unbalanced at that point — mid-fn, depth > 0.
+# The positive pass makes six such calls across the three known sites, so a
+# verbatim port of main's END block would warn six times on every SUCCESSFUL
+# run.  This divergence is specific to this guard: nan-safe has no early-exit
+# helper, which is the concrete reason its END block cannot be copied
+# byte-for-byte.
+#
+# Asserted on the CLEAN fixture first — every file there is balanced, so the
+# ONLY possible source of a warning is the early exit — and then on the real
+# tree, whose 562-file scan set measures 562/562 balanced today.  No coverage
+# is lost by silencing the positive pass: all three known sites are also in
+# the negative pass's scan set and are scanned there in full.
+write_baseline
+stage
+assert "hF4: a clean fixture exits 0 (positive control for the stderr assertion below)" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+assert "hF4: _code_has's early exit produces NO 'lexer state unbalanced' warning" \
+    bash -c "! bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -q 'lexer state unbalanced'"
+assert "hF4: the REAL tree produces no 'lexer state unbalanced' warning either" \
+    bash -c "! bash '$GATE' --repo-root '$REPO_ROOT' 2>&1 >/dev/null | grep -q 'lexer state unbalanced'"
+
+# ===========================================================================
 # Part B — verify.sh's TEST plan EXECUTES the gui-feature-gated suite.
 #
 # The static gate above (Part A) pins gui/src-tauri/src/engine.rs's
