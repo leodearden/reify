@@ -349,12 +349,23 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
         "edit_source must carry the OLD graph's stored input_cone_hash forward onto \
          body_b's persisting node, not leave the `None` that from_templates seeds"
     );
+    // The carry-forward reaches body_a too, and for a NARROW reason: body_a's
+    // OPS are byte-identical across this recompile (PREMISE LOCK 2 above
+    // asserts exactly that), so it is absent from `diff_realizations`'
+    // `changed` set and the ops-identical carry-forward still applies. What
+    // moved is a VALUE, and a recomputed fold over identical ops catches
+    // precisely that. This is NOT "carrying forward is safe even when the
+    // inputs moved" — that rationale is false in general, because the fold is
+    // blind to an ops-only change (see the in-crate lock
+    // `input_cone_fold_is_blind_to_a_boolean_kind_flip` and the sibling test
+    // `edit_source_does_not_carry_input_cone_hash_forward_when_ops_changed`).
     assert_eq!(
         graph.realizations.get(&ra).unwrap().input_cone_hash,
         old_input_cone_a,
-        "the carry-forward applies to body_a too — carrying forward is safe even when \
-         the inputs moved, because the recomputed fold then DIFFERS from the carried \
-         hash and the realization is still classified changed (as asserted above)"
+        "the carry-forward applies to body_a too: its OPS are byte-identical across the \
+         recompile (its own PREMISE LOCK 2), so it is not in `changed_realizations` and \
+         the ops-identical carry-forward holds. Only the VALUE moved, which the \
+         recomputed fold catches."
     );
 
     // A subsequent display-only edit must now be empty for body_b at least:

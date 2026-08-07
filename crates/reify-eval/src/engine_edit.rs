@@ -3081,10 +3081,48 @@ impl Engine {
         // on — defeating the "an unaffected body's cache entry survives"
         // boundary case γ/δ depend on.
         //
-        // Safe even when the ops themselves changed: the fold recomputed over
-        // the NEW ops then differs from the carried-forward hash, so the
-        // realization is still classified changed here AND the build-time gate
-        // in `refresh_and_gate_demanded_realizations` still re-executes it.
+        // Carried forward ONLY across a node whose OPS are provably identical
+        // — i.e. one absent from both `changed_realizations` and
+        // `added_realizations`. The two hashes are complementary, and each
+        // guards the other's blind spot (the same argument that justifies the
+        // union below at the β compare site):
+        //
+        //   • `content_hash` sees the OPS but not the values. `from_templates`
+        //     builds it as `of_str(id) ⊕ combine_all(of_str(format!("{:?}",
+        //     op)))` (graph.rs:396) — a Debug render of the whole op IR — so
+        //     "unchanged content_hash" implies the ops are identical.
+        //   • The input-cone fold sees the VALUES but not the ops. It folds
+        //     only `(arg_name, evaluated value)` pairs and matches
+        //     `Boolean { .. } => &[]` (engine_build.rs:12790), mixing in no
+        //     discriminant, op kind, op count, or operand GeomRef.
+        //
+        // So the carry-forward may NOT lean on "the recomputed fold will
+        // differ anyway". A union→difference flip leaves the fold BYTE-EQUAL
+        // — pinned as an executable fact by the in-crate characterization lock
+        // `input_cone_fold_is_blind_to_a_boolean_kind_flip`. Stamping the old
+        // execution's hash onto such a node makes
+        // `refresh_and_gate_demanded_realizations` read `stored ==
+        // Some(current)` (engine_build.rs:11555) → `exempt` (:11566) →
+        // `demand_scoped_unified_pass` filters it out of the seed (:5766) →
+        // `execute_realization_ops` is never called → and per the DELTA
+        // CONTRACT at engine_build.rs:5737-5751 the absent mesh means "retain
+        // the previously rendered mesh", so the GUI keeps showing the union
+        // after the user typed `difference`. Restricting the carry-forward to
+        // ops-identical nodes leaves a changed node with the `None`
+        // `from_templates` seeds, which is exactly the pre-diff state that
+        // forces the gate down its re-execute branch. Cost is bounded to one
+        // transient re-execution: the gate unconditionally re-stamps the hash
+        // (:11570), so a skipped node holds `None` for exactly one build.
+        //
+        // Once the ops are known identical, a recomputed fold that differs
+        // from the carried hash can only mean the VALUES moved — which is
+        // precisely what β's compare site is there to catch.
+        //
+        // `added_realizations` is belt-and-braces (a genuinely new rid has no
+        // old node, so the `.get(rid)` below already yields `None`); it is in
+        // the predicate so it reads as the intended invariant rather than
+        // relying on that incidental fact.
+        //
         // This is a carry-forward of history, never a re-stamp — β never
         // writes a hash derived from the POST-edit context (see
         // `compute_changed_realizations`' doc for why that would be a
@@ -3096,6 +3134,9 @@ impl Engine {
             .graph
             .realizations
             .iter()
+            .filter(|(rid, _)| {
+                !changed_realizations.contains(*rid) && !added_realizations.contains(*rid)
+            })
             .filter_map(|(rid, _)| {
                 eval_state
                     .snapshot
