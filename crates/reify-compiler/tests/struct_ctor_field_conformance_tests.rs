@@ -1537,3 +1537,308 @@ fn value_floor_int_param_given_string_still_warns() {
 fn value_floor_dimensionless_real_param_given_string_still_warns() {
     assert_single_arg_type_mismatch_warning(SRC_FLOOR_REAL, "mag", "Real ← String");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// γ (task 5627): value floors for the PROMOTED dimensioned-`Scalar` family
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// γ promotes dimensioned `Type::Scalar` into
+// `general_leaf_param_family_is_validated`, so a dimensioned ctor field slot is
+// now judged under STRICT `DimensionVector` equality. The contract table is in
+// `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1 (invariants
+// I1-I8) and §7.4 (the named B1-B4 signals); it is deliberately NOT restated
+// here — these are its executable floors, keyed by invariant id.
+//
+// Two halves, and the split is load-bearing:
+//
+// * the REJECTION floors (I2/I3/I4, and the B1/B2 author-side shape) are RED
+//   before the promotion — the family is excluded, so every one of them is
+//   silent today;
+// * the ACCEPTANCE floors (I1/I6/I8/A3/B3) pass BEFORE and AFTER. They are the
+//   FALSE-POSITIVE floor: their whole value is that the promotion must not
+//   disturb them, which is why they are written before it rather than after.
+//
+// Every assertion is on `DiagnosticCode` IDENTITY plus `Severity::Warning`,
+// never on message prose beyond the param name (D4-8 / INV-SF-6, tasks
+// 2255/3416 precedent). There is NO exit-code assertion: γ is pre-δ, so
+// `CTOR_FIELD_CONFORMANCE_SEVERITY` is still `Warning` and γ does not touch it.
+
+/// Assert `source` emits ZERO ctor-conformance diagnostics.
+///
+/// The acceptance-floor counterpart of
+/// [`assert_single_arg_type_mismatch_warning`]. Scoped to the ctor-conformance
+/// code set only — a fixture may still emit unrelated diagnostics (an
+/// `auto`-resolution warning, an unresolved-name Error) without weakening the
+/// claim, which is exactly what makes the I6 and A3 floors expressible.
+fn assert_no_ctor_conformance_diags(source: &str, label: &str) {
+    let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "{label}: expected ZERO ctor-conformance diagnostics, got: {diags:#?}"
+    );
+}
+
+// ── REJECTION floors (RED before the promotion) ──────────────────────────────
+
+const SRC_G_I2_CROSS_DIMENSION: &str = r#"module test.g_i2_cross_dimension
+structure def W { param p : Scalar<Pressure> }
+structure def Root { let a = W(p: 200mm) }
+"#;
+
+const SRC_G_I3_BARE_REAL: &str = r#"module test.g_i3_bare_real
+structure def W { param p : Scalar<Velocity> }
+structure def Root { let a = W(p: 300.0) }
+"#;
+
+const SRC_G_I3_BARE_INT: &str = r#"module test.g_i3_bare_int
+structure def W { param p : Scalar<Velocity> }
+structure def Root { let a = W(p: 300) }
+"#;
+
+const SRC_G_I4_STRING: &str = r#"module test.g_i4_string
+structure def W { param d : Scalar<Density> }
+structure def Root { let a = W(d: "heavy") }
+"#;
+
+const SRC_G_I4_BOOL: &str = r#"module test.g_i4_bool
+structure def W { param d : Scalar<Density> }
+structure def Root { let a = W(d: true) }
+"#;
+
+/// I2 — cross-dimension: a `Length` literal at a `Scalar<Pressure>` slot is
+/// rejected. This is the strict-`DimensionVector`-equality half of the ruling:
+/// both sides are dimensioned scalars, so nothing but the dimension vectors
+/// themselves distinguishes them.
+#[test]
+fn g_i2_cross_dimension_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I2_CROSS_DIMENSION,
+        "p",
+        "I2: Scalar<Pressure> ← Length literal",
+    );
+}
+
+/// I3 — a BARE dimensionless `Real` at a dimensioned slot is rejected.
+///
+/// This is the negative pin β's `family_dimensioned_scalar_given_unit_literal_arg_is_silent`
+/// deliberately left to γ (PRD §11 γ): with that probe's fixture migrated to
+/// unit literals, nothing else asserts what a bare arg does here.
+#[test]
+fn g_i3_bare_real_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I3_BARE_REAL,
+        "p",
+        "I3: Scalar<Velocity> ← bare Real",
+    );
+}
+
+/// I3 — the `Int` spelling of the same bare arg is rejected too.
+///
+/// Also the fence on the D4-5 `ScalarParam` accept: `is_numeric_placeholder_leaf`
+/// matches `Int`, so an over-wide fence would make THIS case silent. It must
+/// keep failing-then-passing, never become silent.
+#[test]
+fn g_i3_bare_int_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I3_BARE_INT,
+        "p",
+        "I3: Scalar<Velocity> ← bare Int",
+    );
+}
+
+/// I4 — a `String` at a dimensioned slot is rejected (family-level mismatch).
+#[test]
+fn g_i4_string_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_G_I4_STRING, "d", "I4: Scalar<Density> ← String");
+}
+
+/// I4 — a `Bool` at a dimensioned slot is rejected.
+#[test]
+fn g_i4_bool_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_G_I4_BOOL, "d", "I4: Scalar<Density> ← Bool");
+}
+
+const SRC_G_B1_B2_AUTHOR_SIDE: &str = r#"module test.g_b1_b2
+structure def Steel {
+    param youngs_modulus : Pressure
+    param density : Density
+}
+structure def Root {
+    let s = Steel(youngs_modulus: 200mm, density: "heavy")
+}
+"#;
+
+/// PRD §7.4 B1/B2 — the combined author-side shape, and the PRD's own named
+/// signal for this promotion: ONE structure whose two dimensioned params are
+/// both supplied wrongly emits TWO independent `ArgTypeMismatch` warnings, one
+/// per site, not one aggregate and not a cascade.
+///
+/// The identical file is the §6.1 before-image: it emits NOTHING today.
+#[test]
+fn g_b1_b2_two_wrong_dimensioned_args_warn_once_each() {
+    let module = compile_source_with_stdlib(SRC_G_B1_B2_AUTHOR_SIDE);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "B1/B2: two wrongly-supplied dimensioned params must emit exactly two \
+         ctor-conformance diagnostics, got: {diags:#?}"
+    );
+    for d in &diags {
+        assert_eq!(
+            d.severity,
+            Severity::Warning,
+            "B1/B2: γ ctor field conformance is Warning-severity, got: {d:?}"
+        );
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "B1/B2: expected ArgTypeMismatch, got: {:?}",
+            d.code
+        );
+    }
+    for param in ["youngs_modulus", "density"] {
+        assert!(
+            diags.iter().any(|d| d.message.contains(param)),
+            "B1/B2: no diagnostic names param {param:?}; got: {diags:#?}"
+        );
+    }
+}
+
+// ── ACCEPTANCE floors (green BEFORE and AFTER the promotion) ─────────────────
+
+const SRC_G_I1_CLEAN_DIMENSIONED_ARGS: &str = r#"module test.g_i1_clean
+structure def Bundle {
+    param velocity : Scalar<Velocity>
+    param half_span : Length
+    param footprint : Area
+    param accel : Acceleration
+    param forwarded : Length
+}
+structure def Root {
+    param span : Length = 200mm
+    let b = Bundle(
+        velocity: 300mm/s,
+        half_span: span / 2.0,
+        footprint: 100mm * 1mm,
+        accel: 5.0 * STANDARD_GRAVITY(),
+        forwarded: span
+    )
+}
+"#;
+
+/// I1 (§6.6, the highest-risk acceptance floor) — `Scalar<Q> ← Scalar<Q>` is
+/// silent across ALL THREE arg shapes together: a unit literal, three
+/// arithmetic-DERIVED values (division by a `Real`, a `Length × Length` product
+/// promoted to `Area`, and a scaled stdlib constant), and a plain reference to a
+/// dimensioned param.
+///
+/// A failure here is an arg-side INFERENCE bug, not a corpus bug — the strict
+/// equality this task installs only holds up if the arg side actually carries
+/// the dimension it should. Keeping all four shapes in ONE fixture is
+/// deliberate: it is the shape the whole shipped corpus is written in, so a
+/// regression in any of them is a corpus-wide regression.
+#[test]
+fn g_i1_matching_dimensioned_args_are_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_I1_CLEAN_DIMENSIONED_ARGS,
+        "I1: Scalar<Q> ← Scalar<Q> across literal / derived / ref shapes",
+    );
+}
+
+const SRC_G_I6_ERROR_ARG: &str = r#"module test.g_i6_error_arg
+structure def W { param p : Scalar<Velocity> }
+structure def Root { let a = W(p: no_such_symbol_anywhere) }
+"#;
+
+/// I6 — anti-cascade: an arg whose `result_type` is `Type::Error` emits NO
+/// ctor-conformance diagnostic at a dimensioned slot, so the promotion cannot
+/// pile a spurious dimension complaint on top of an already-reported
+/// root cause. Delivered for free by `reject_if_incompatible`'s
+/// `arg_type_is_unverifiable` guard; pinned here so a later refactor cannot
+/// route around it.
+///
+/// The fixture DOES emit an unresolved-name Error; that is the root cause and
+/// is not a ctor-conformance code, so it is correctly outside this assertion.
+#[test]
+fn g_i6_error_typed_arg_at_dimensioned_slot_is_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_I6_ERROR_ARG, "I6: Scalar<Velocity> ← Type::Error");
+}
+
+const SRC_G_I8_REAL_GIVEN_INT: &str = r#"module test.g_i8_real_int
+structure def W { param mag : Real }
+structure def Root { let a = W(mag: 7) }
+"#;
+
+/// I8 — non-regression on the DIMENSIONLESS half task 5465 already promoted:
+/// `Real ← Int` stays silent.
+///
+/// `type_compatible`'s `Int`→`Scalar` widening (`type_compat.rs:232-237`) is
+/// gated on the PARAM side being dimensionless, which is simultaneously why
+/// this survives and why I3 (`Scalar<Velocity> ← Int`) rejects. The two are the
+/// same code path read from opposite sides, so they are pinned as a pair.
+#[test]
+fn g_i8_dimensionless_real_given_int_stays_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_I8_REAL_GIVEN_INT, "I8: Real ← Int");
+}
+
+const SRC_G_A3_AUTO_AND_UNDEF_DEFAULTS: &str = r#"module test.g_a3_defaults
+structure def W {
+    param strict_slot : Length = auto
+    param free_slot : Scalar<Velocity> = auto(free)
+    param undef_slot : Scalar<Density> = undef
+}
+structure def Root { sub w = W() }
+"#;
+
+const SRC_G_A3_AUTO_AND_UNDEF_ARGS: &str = r#"module test.g_a3_args
+structure def W {
+    param strict_slot : Length
+    param free_slot : Scalar<Velocity>
+    param undef_slot : Scalar<Density>
+}
+structure def Root {
+    sub w = W(strict_slot: auto, free_slot: auto(free), undef_slot: undef)
+}
+"#;
+
+/// A3 (addendum) — `auto`, `auto(free)` and `undef` at a DIMENSIONED `Scalar`
+/// slot are SILENT, at the param-DEFAULT entry into the walker.
+///
+/// Load-bearing for the corpus gate rather than merely nice to have: the PRD
+/// never states this and §6.5 item 1 records that this gate was never measured.
+/// The shipped corpus carries 96 such default sites, so if the promotion fired
+/// on any of them the gate would go red corpus-wide. (Measured green under the
+/// promotion at planning time; pinned here so a future change cannot silently
+/// break it.)
+#[test]
+fn g_a3_auto_and_undef_param_defaults_at_dimensioned_slots_are_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_A3_AUTO_AND_UNDEF_DEFAULTS,
+        "A3: auto / auto(free) / undef at dimensioned param DEFAULTS",
+    );
+}
+
+/// A3 — the same three placeholders at the ctor-ARG entry.
+#[test]
+fn g_a3_auto_and_undef_ctor_args_at_dimensioned_slots_are_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_A3_AUTO_AND_UNDEF_ARGS,
+        "A3: auto / auto(free) / undef at dimensioned ctor ARGS",
+    );
+}
+
+const SRC_G_B3_DENSITY_LITERAL: &str = r#"module test.g_b3_density
+structure def W { param d : Density }
+structure def Root { let a = W(d: 7850kg/m^3) }
+"#;
+
+/// PRD §7.4 B3 — the migrated fix form for a COMPOUND dimension: a
+/// `7850kg/m^3` literal at a `Density` slot is silent. This is also the literal
+/// γ's own migration hint offers for `Density` (step-4), so the accepted fix
+/// form and the suggested fix form are pinned to be the same thing.
+#[test]
+fn g_b3_compound_unit_literal_at_density_slot_is_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_B3_DENSITY_LITERAL, "B3: Density ← 7850kg/m^3");
+}
