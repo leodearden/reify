@@ -2072,3 +2072,149 @@ fn g_migration_hint_example_round_trips_for_every_named_dimension() {
          parse)"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// γ (task 5627): the D4-5 `ScalarParam` fence
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `Type::ScalarParam(Q)` is the UNRESOLVED-DIMENSION placeholder a dim-kinded
+// generic produces (`fn fwd<Q: Dimension>(x: Scalar<Q>)`, resolved in
+// `type_resolution.rs`; displayed `Scalar<Q>`). It is a scalar-FAMILY leaf whose
+// dimension alone is open — not an unknown type — so at a `Scalar` slot there is
+// no dimension to compare and the real conformance check belongs to
+// instantiation, not to this walker. γ's promotion makes such an arg newly
+// REJECTED, which is a false positive; D4-5 fences it back out.
+//
+// Every fixture below is the SAME shape modulo the forwarded arg's declared
+// type, so the only thing that can vary the outcome is the arg type itself.
+// That is what makes the narrowness fences bite: an over-wide fence reached for
+// via `is_numeric_placeholder_leaf` (which also matches `Int` and any concrete
+// `Scalar { .. }`) leaves the RED pair green while breaking these by name.
+
+const SRC_G_I5_DIMENSIONED_GIVEN_SCALARPARAM: &str = r#"module test.g_i5_scalarparam
+structure def W { param len : Scalar<Length> }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(len: x) }
+"#;
+
+const SRC_G_A2_REAL_GIVEN_SCALARPARAM: &str = r#"module test.g_a2_real_scalarparam
+structure def W { param mag : Real }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(mag: x) }
+"#;
+
+const SRC_G_I5_STRING_GIVEN_SCALARPARAM: &str = r#"module test.g_i5_string_scalarparam
+structure def W { param label : String }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(label: x) }
+"#;
+
+const SRC_G_I5_BOOL_GIVEN_SCALARPARAM: &str = r#"module test.g_i5_bool_scalarparam
+structure def W { param flag : Bool }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(flag: x) }
+"#;
+
+const SRC_G_I5_DIMENSIONED_GIVEN_CROSS_DIMENSION: &str = r#"module test.g_i5_cross_dimension
+structure def W { param len : Scalar<Length> }
+fn fwd(m: Scalar<Mass>) -> W { W(len: m) }
+"#;
+
+const SRC_G_I5_DIMENSIONED_GIVEN_INT: &str = r#"module test.g_i5_int
+structure def W { param len : Scalar<Length> }
+fn fwd(n: Int) -> W { W(len: n) }
+"#;
+
+/// I5 / PRD §7.4 B4 — a `Type::ScalarParam(_)` arg at a DIMENSIONED `Scalar`
+/// slot is SILENT.
+///
+/// A dim-kinded generic forwarding its own `Scalar<Q>` param into a concrete
+/// `Scalar<Length>` ctor field has no dimension to compare: `Q` is bound at
+/// instantiation, and whether the binding conforms is decided there. Judging the
+/// UNINSTANTIATED body under strict `DimensionVector` equality can only ever
+/// reject, so every such site would be a false positive.
+///
+/// RED both before γ's promotion is fenced and — importantly — after step-2
+/// ALONE: the promotion is precisely what makes this newly fire, so this floor
+/// is not a pre-existing gap γ inherited but one γ itself opens and must close.
+#[test]
+fn g_i5_scalarparam_arg_at_dimensioned_slot_is_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_I5_DIMENSIONED_GIVEN_SCALARPARAM,
+        "I5: Scalar<Length> ← ScalarParam(Q)",
+    );
+}
+
+/// A2 — the DECLARED, INTENDED side effect on the dimensionless half.
+///
+/// Pinned here rather than discovered later. Before this fence,
+/// `param mag : Real` given a `Scalar<Q>` arg emitted
+/// `argument 'mag' has type 'Scalar<Q>' but param 'mag' requires type 'Real'` —
+/// a diagnostic belonging to task 5465's already-shipped DIMENSIONLESS family,
+/// not to the family γ promotes. Because the fence lands on the SHARED
+/// general-leaf arm, it necessarily silences that too.
+///
+/// That is a real behaviour change to a shipped diagnostic, and it is
+/// INTENDED: the argument for silence is identical in both halves — `Q` is
+/// unbound, so there is nothing to compare, and the uninstantiated body can
+/// only ever be rejected. Splitting the fence to preserve the dimensionless
+/// warning would mean asserting that `Scalar<Q>` is definitely-not-`Real`
+/// while simultaneously accepting it as maybe-`Scalar<Length>`, which is
+/// incoherent. Recording the post-state here makes it a decision on the record
+/// rather than a silent regression.
+#[test]
+fn g_a2_dimensionless_real_given_scalarparam_becomes_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_A2_REAL_GIVEN_SCALARPARAM, "A2: Real ← ScalarParam(Q)");
+}
+
+/// FENCE — the accept is not a blanket: `String ← ScalarParam(Q)` STILL fires.
+///
+/// D4-5's own requirement. This half is already correct today and must survive:
+/// it is the reason the fix is a narrow PER-ARM guard rather than a widening of
+/// `arg_type_is_unverifiable`, which would silence `String ← Scalar<Q>` at every
+/// arm at once — the exact outcome that predicate's doc comment already forbids.
+#[test]
+fn g_i5_string_slot_given_scalarparam_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_STRING_GIVEN_SCALARPARAM,
+        "label",
+        "I5 fence: String ← ScalarParam(Q)",
+    );
+}
+
+/// FENCE — `Bool ← ScalarParam(Q)` STILL fires, for the same reason.
+#[test]
+fn g_i5_bool_slot_given_scalarparam_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_BOOL_GIVEN_SCALARPARAM,
+        "flag",
+        "I5 fence: Bool ← ScalarParam(Q)",
+    );
+}
+
+/// NARROWNESS FENCE vs I2 — a CONCRETE cross-dimension arg is not a
+/// placeholder, so `Scalar<Length> ← Scalar<Mass>` STILL fires.
+///
+/// Deliberately restated here, adjacent to the fence and in the fence's own
+/// fn-forwarding shape, even though `g_i2_cross_dimension_arg_at_dimensioned_slot_warns`
+/// covers the invariant: `is_numeric_placeholder_leaf` matches any concrete
+/// `Scalar { .. }`, so reaching for it as the arg-side accept would make THIS
+/// case silent. Failing by a name that says `i5` points at the fence rather than
+/// at the promotion.
+#[test]
+fn g_i5_dimensioned_slot_given_concrete_cross_dimension_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_DIMENSIONED_GIVEN_CROSS_DIMENSION,
+        "len",
+        "I5 fence: Scalar<Length> ← Scalar<Mass>",
+    );
+}
+
+/// NARROWNESS FENCE vs I3 — `Scalar<Length> ← Int` STILL fires.
+///
+/// The other half of `is_numeric_placeholder_leaf`'s membership set, and the
+/// other rejection γ exists to produce. Same restatement rationale as above.
+#[test]
+fn g_i5_dimensioned_slot_given_int_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_DIMENSIONED_GIVEN_INT,
+        "len",
+        "I5 fence: Scalar<Length> ← Int",
+    );
+}
