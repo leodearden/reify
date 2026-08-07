@@ -179,6 +179,16 @@ fn edit_param_reports_only_the_realization_whose_input_cone_moved() {
         "editing wa must report EXACTLY body_a's realization: body_b's input cone did \
          not move, so including it would be an over-evict that defeats γ's selectivity"
     );
+    // Named-subject restatement of the half of the `assert_eq!` above that is
+    // easiest to lose to a future re-shaping of the expected set. Also the
+    // only remaining use of `rb` outside the premise lock (amend, review
+    // round 1 — `test-quality`: the previous `let _ = &rb;` claimed to
+    // preserve an unused-variable signal but, being itself a use, was exactly
+    // what suppressed it).
+    assert!(
+        !engine.last_changed_realizations().contains(&rb),
+        "body_b's input cone did not move, so it must be absent from the changed set"
+    );
 
     // ── "Changed" is relative to the last EXECUTION, not the last edit ──
     //
@@ -222,11 +232,6 @@ fn edit_param_reports_only_the_realization_whose_input_cone_moved() {
          Got: {:?}",
         engine.last_changed_realizations()
     );
-
-    // `rb` is referenced by the premise lock above; bind it here so an
-    // accidental future removal of that lock surfaces as an unused warning
-    // rather than silently weakening the test.
-    let _ = &rb;
 }
 
 /// V2 of [`TWO_BODY_SRC`] with ONLY `wa`'s declared default changed.
@@ -735,5 +740,207 @@ fn edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization()
         "body_b's input cone did NOT move, so its consumer must RETAIN its cached \
          result. Losing it here means β over-evicted and degraded into the wholesale \
          flush it exists to replace."
+    );
+
+    // ── The S12 cross-kind cascade, now live on the param path ─────────
+    //
+    // (Amend, review round 1 — `architecture`.) The realization-keyed reverse
+    // map carries more than edge #10: the GHR-δ S4 Realization→geometry-cell
+    // edge means the moved realization's own `Value::GeometryHandle` cell is
+    // dropped too. On `edit_source` that duplicates the deliberate S12 cascade
+    // at `engine_edit.rs`'s step (9); on `edit_param` this is the first time
+    // it runs, so it is asserted rather than left implicit.
+    let geom_a = ValueCellId::new("TwoBodyProbed", "body_a");
+    let geom_b = ValueCellId::new("TwoBodyProbed", "body_b");
+    assert!(
+        engine
+            .last_substantive_value(&NodeId::Value(geom_a.clone()))
+            .is_none(),
+        "the S12 cascade must drop the geometry cell backed by the moved realization — \
+         its handle points at geometry built from the OLD wa"
+    );
+
+    // …and the drop is RECOVERABLE, which is the whole reason S12 invalidates
+    // rather than force-re-evaluating: the incremental edit path cannot re-run
+    // the kernel, so a forced re-eval would strip the handle to `Undef` for
+    // good. A subsequent build() re-executes the realization and the cell
+    // resolves to a real handle again.
+    engine.build(&compiled, ExportFormat::Step);
+    for (cell, label) in [(&geom_a, "body_a"), (&geom_b, "body_b")] {
+        let v = engine
+            .snapshot()
+            .expect("engine must have a snapshot after build()")
+            .values
+            .get(cell)
+            .map(|(v, _)| v.clone());
+        assert!(
+            matches!(v, Some(Value::GeometryHandle { .. })),
+            "after the rebuild, {label}'s cell must resolve to a real GeometryHandle, not \
+             `Undef` — the S12 drop is recoverable by re-execution (S16 lazy revalidation \
+             covers the read-before-rebuild window). Got: {v:?}"
+        );
+    }
+}
+
+/// V2 of [`TWO_BODY_PROBED_SRC`] with ONLY `wa`'s declared default changed —
+/// the probe function, both bodies' geometry-op IR and `wb` are all
+/// byte-identical.
+const TWO_BODY_PROBED_SRC_V2: &str = r#"
+@optimized("test::sel-evict-probe")
+fn probe(g: Geometry) -> Int {
+    0
+}
+
+structure TwoBodyProbed {
+    param wa: Length = 40mm
+    param wb: Length = 20mm
+
+    let body_a = box(wa, 5mm, 5mm)
+    let body_b = box(wb, 5mm, 5mm)
+    let probe_a = probe(body_a)
+    let probe_b = probe(body_b)
+}
+"#;
+
+/// Invocation counter for [`probe_fn_src`].
+///
+/// A SECOND static, deliberately not shared with [`PROBE_INVOCATIONS`]: that
+/// one documents a single-test ownership invariant, and cargo runs the two
+/// tests concurrently in the same process, so sharing it would make both
+/// premise locks race. Same module-privacy bound applies.
+static PROBE_INVOCATIONS_SRC: AtomicUsize = AtomicUsize::new(0);
+
+/// [`probe_fn`]'s twin for the `edit_source` propagation test, counting into
+/// [`PROBE_INVOCATIONS_SRC`].
+fn probe_fn_src(
+    _value_inputs: &[Value],
+    _realization_inputs: &[reify_eval::RealizationReadHandle],
+    _options: &Value,
+    _prior_warm_state: Option<&reify_ir::OpaqueState>,
+    _cancellation: &reify_eval::CancellationHandle,
+) -> reify_eval::ComputeOutcome {
+    PROBE_INVOCATIONS_SRC.fetch_add(1, Ordering::SeqCst);
+    reify_eval::ComputeOutcome::Completed {
+        result: Value::Int(0),
+        new_warm_state: None,
+        cost_per_byte: None,
+        diagnostics: vec![],
+        structured_detail: vec![],
+    }
+}
+
+/// The `edit_source` sibling of
+/// [`edit_param_evicts_only_the_compute_node_downstream_of_the_moved_realization`]
+/// (amend, review round 1 — `test-coverage`).
+///
+/// `edit_source` is the RISKIER of the two propagation call sites and had no
+/// eviction coverage at all: its `edit_source` tests asserted only
+/// `last_changed_realizations` membership and the `input_cone_hash`
+/// carry-forward. The specific hazard is that the site hands
+/// `&new_snapshot.graph` to the index builder on the premise that per-cell
+/// eval has repopulated `new_snapshot.graph.compute_nodes` by that point,
+/// while `engine_edit.rs`'s step (9)/(9b) comments both state that map "is
+/// always empty at this stage". If ComputeNode recreation writes to a
+/// different snapshot than the one handed to the builder, the cone is
+/// silently EMPTY, no test previously failed, and γ inherits a no-op.
+///
+/// Do NOT weaken the `probe_a` assertion to accept a surviving entry: an
+/// empty cone is exactly what lands here.
+#[test]
+fn edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    PROBE_INVOCATIONS_SRC.store(0, Ordering::SeqCst);
+
+    let v1 = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_PROBED_SRC);
+    let v2 = reify_test_support::parse_and_compile_with_stdlib(TWO_BODY_PROBED_SRC_V2);
+    let mut engine = make_occt_engine();
+    engine.register_compute_fn("test::sel-evict-probe", probe_fn_src);
+
+    // Same build()-without-a-prior-eval() shape as the edit_param sibling —
+    // see its comment for why a separate eval() would defeat the premise.
+    engine.build(&v1, ExportFormat::Step);
+
+    let ra = realization_for_cell(&engine, "TwoBodyProbed", "body_a");
+    let rb = realization_for_cell(&engine, "TwoBodyProbed", "body_b");
+    let cell_a = ValueCellId::new("TwoBodyProbed", "probe_a");
+    let cell_b = ValueCellId::new("TwoBodyProbed", "probe_b");
+
+    // ── PREMISE LOCKS (identical in kind to the edit_param sibling) ─────
+    {
+        let graph = &engine.snapshot().unwrap().graph;
+        for (rid, label) in [(&ra, "body_a"), (&rb, "body_b")] {
+            let cn = graph
+                .compute_nodes
+                .iter()
+                .find(|(_, cn)| cn.realization_inputs.contains(rid))
+                .map(|(_, cn)| cn.clone())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "premise: a ComputeNode consuming {label}'s realization must exist with \
+                         a NON-EMPTY realization_inputs (edge #10). compute_nodes present: {:?}",
+                        graph
+                            .compute_nodes
+                            .iter()
+                            .map(|(id, cn)| (id.clone(), cn.realization_inputs.clone()))
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert!(
+                !cn.realization_inputs.is_empty(),
+                "premise: {label}'s ComputeNode must carry a non-empty realization_inputs"
+            );
+        }
+    }
+    for (cell, label) in [(&cell_a, "probe_a"), (&cell_b, "probe_b")] {
+        assert!(
+            engine
+                .last_substantive_value(&NodeId::Value(cell.clone()))
+                .is_some(),
+            "premise: {label}'s output value cell must hold a cached substantive value \
+             after build(), else 'its entry was evicted' below is trivially true"
+        );
+    }
+    assert!(
+        PROBE_INVOCATIONS_SRC.load(Ordering::SeqCst) >= 2,
+        "premise: both probes must actually have been dispatched during build(). Got {} \
+         invocation(s).",
+        PROBE_INVOCATIONS_SRC.load(Ordering::SeqCst)
+    );
+
+    // ── The contract ───────────────────────────────────────────────────
+    engine
+        .edit_source(&v2)
+        .expect("edit_source onto V2 must succeed");
+
+    assert!(
+        engine.last_changed_realizations().contains(&ra),
+        "premise: the compare site must have classified body_a as changed — without that \
+         the propagation half has no seed and the assertion below would be measuring the \
+         classification bug, not the propagation one. Got: {:?}",
+        engine.last_changed_realizations()
+    );
+    assert!(
+        engine
+            .last_substantive_value(&NodeId::Value(cell_a.clone()))
+            .is_none(),
+        "body_a's input cone moved across the recompile, so edit_source's realization \
+         dirty cone must reach the ComputeNode consuming it and evict its output cell's \
+         cache entry. A surviving entry here is the silently-empty-cone failure: an index \
+         built while `compute_nodes` was still empty carries no edge #10."
+    );
+    assert!(
+        engine
+            .last_substantive_value(&NodeId::Value(cell_b.clone()))
+            .is_some(),
+        "body_b's ops and input cone are both unchanged, so its consumer must RETAIN its \
+         cached result — otherwise edit_source over-evicted and β degraded into the \
+         wholesale flush it exists to replace."
     );
 }
