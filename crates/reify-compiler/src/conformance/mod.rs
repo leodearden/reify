@@ -1595,11 +1595,27 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// # Why these families
 ///
 /// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
-/// carry genuinely inferred types. `Bool`, `Int`, `String` and DIMENSIONLESS
-/// `Scalar` (spelled `Real` in source, and by `Display`) are the families for
-/// which that presumption holds unconditionally at a struct-ctor arg position —
-/// the expression compiler infers them precisely, and `type_compat.rs` has real
-/// arms for each.
+/// carry genuinely inferred types. `Bool`, `Int`, `String` and the WHOLE
+/// `Scalar` family — dimensionless (spelled `Real` in source, and by `Display`)
+/// and dimensioned alike — are the families for which that presumption holds
+/// unconditionally at a struct-ctor arg position: the expression compiler infers
+/// them precisely, and `type_compat.rs` has real arms for each.
+///
+/// The dimensioned half is admitted by task 5627 (γ). It was HELD through tasks
+/// 5302/5465 pending a language-semantics ruling on whether a bare dimensionless
+/// arg is legal at a dimensioned slot; the ruling landed (fix the call sites, do
+/// not relax the slot) and its contract table lives in
+/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §0.1 / §4.1 — read it
+/// there rather than here, so the two cannot drift out of lockstep.
+///
+/// Nothing about the dimensioned half is special-cased in this walker: it rides
+/// the same `reject_if_incompatible` → `type_compatible` gate as the other
+/// three. Strict `DimensionVector` equality is what `type_compatible` already
+/// does (`implicitly_converts_to` has no `Scalar`-vs-`Scalar` arm past the
+/// `from == to` short-circuit), and the ONE scalar relaxation it carries
+/// (`type_compat.rs:232-237`, `Int` → `Scalar`) is gated on the PARAM side being
+/// dimensionless — which is simultaneously why `Real ← Int` survives the
+/// promotion and why `Scalar<Q> ← Int` now rejects.
 ///
 /// # Handled by dedicated shape-based arms instead (task 5465)
 ///
@@ -1633,16 +1649,6 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// `docs/legibility/design-invariants.md:126-128`, forbids a blanket escape that
 /// names none):
 ///
-/// * **Dimensioned `Scalar`** — supplying a bare dimensionless numeric literal
-///   at a dimensioned slot is idiomatic throughout the corpus. HELD, not
-///   forgotten: whether it should be legal is a language-semantics question
-///   about the dimensionless↔dimensioned slot convention, and today's answer is
-///   position-dependent across six gates (legal at ctor field slots, literal
-///   `param`/`let` defaults and constraint-def args; illegal at user-fn param
-///   slots, fn-param defaults, ambient defaults, compound initializers and all
-///   arithmetic). Owner: task #5627 (filed from this task as ticket
-///   `tkt_0RRQW5X0WYH2ZW0TZY1JZ6E189`, escalation `agent-followup-5465`), which
-///   carries the four candidate resolutions and their costs.
 /// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
 ///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
 ///   geometry conformance is decided only through the literal walker's op-array
@@ -1651,9 +1657,9 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 ///   decided when the type var is bound at instantiation (mirrors the arg-side
 ///   `TypeParam` skip inside [`reject_if_incompatible`]).
 ///
-/// The last two were the α negative guard's explicit carve-outs; they are
-/// subsumed by simple absence from the allowlist, so the redundant `matches!`
-/// is gone rather than left as dead belt-and-braces.
+/// Both were the α negative guard's explicit carve-outs; they are subsumed by
+/// simple absence from the allowlist, so the redundant `matches!` is gone rather
+/// than left as dead belt-and-braces.
 ///
 /// # Still unexamined
 ///
@@ -1689,11 +1695,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// exactly the class of false positive this allowlist exists to prevent. An
 /// applied generic structure still falls through this predicate silently.
 fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
-    match param_type {
-        Type::Bool | Type::Int | Type::String => true,
-        Type::Scalar { dimension } => dimension.is_dimensionless(),
-        _ => false,
-    }
+    matches!(
+        param_type,
+        Type::Bool | Type::Int | Type::String | Type::Scalar { .. }
+    )
 }
 
 /// RAII guard that pops the top entry from an in-flight Vec when dropped.
