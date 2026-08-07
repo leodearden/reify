@@ -481,15 +481,25 @@ export async function runValueScenario(
  *
  * Mirrors the handler keys registered by `buildHandlers()` in
  * gui/src/debug/bridge.ts (frontend-mediated tools) and `tool_defs()` in
- * gui/src-tauri/src/debug_server.rs (Rust-dispatched tools).
+ * gui/src-tauri/src/debug_server.rs (Rust-dispatched tools). The tool_defs()
+ * half of that invariant (KNOWN_DEBUG_TOOL_NAMES ⊇ tool_defs()) is
+ * mechanically checked by the parity test in assertions.test.ts (task-5934).
  *
  * Exported so assertions.test.ts can derive its KNOWN_TOOLS check from a single
  * source rather than maintaining an inline literal.  Update here when a new tool
  * is added to VALUE_SCENARIOS setup steps.
  */
 export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
-  // Rust-dispatched tools (debug_server.rs dispatch_tool)
+  // Rust-dispatched tools (debug_server.rs dispatch_tool, incl. its
+  // dispatch_stateless_tool delegate for health/morph_stats/mesh_morph_stats)
+  "health",
+  "engine_state",
+  "demand_dispatch",
+  "mesh_stats",
+  "morph_stats",
+  "mesh_morph_stats",
   "load_fixture",
+  "set_fea_case",
   "open_file",
   // Frontend-mediated tools (bridge.ts buildHandlers)
   "wait_for_idle",
@@ -547,5 +557,4 @@ export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   "set_window_size",
   "tab_order",
   "toggle_select",
-  "health",
 ] as const);
