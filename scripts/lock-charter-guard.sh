@@ -84,8 +84,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ---------------------------------------------------------------------------
 # Canonical extension allowlist (OQ#2 resolved — PRD §11 Q2).
 # Single source of truth for the α (reify) enforcement point: used by
-# _is_file_path(), classify, and --list-extensions.  α/γ-converged at 58 entries
-# since dark_factory:3117 landed — see the "Cross-repo seam: γ" status note in
+# _is_file_path(), classify, and --list-extensions.  α/γ-converged at 59 entries:
+# dark_factory:3117 landed at 58, then dark_factory 43410b3418 + this task (#6067)
+# widened both sides to 59 — see the "Cross-repo seam: γ" status note in
 # the header above, which is also where the still-diverged extensionless vector
 # is recorded.
 # PRD-explicit: rs ri toml cpp c h hpp md json yaml yml lock py sh ts tsx js txt step stl
@@ -98,8 +99,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   conf diff envrc example example-systemd-config gitattributes gitignore gitkeep
 #   gitmodules golden grammar icns ico jq jsonl log manifest npmrc python-version
 #   template timer typed
+# Widened 58 -> 59 on 2026-08-07 (#6067): `csv` — dark-factory-evidenced only.  reify tracks
+# zero .csv files (measured: git ls-files '*.csv' | wc -l -> 0); the evidence is DF's
+# plans/evidence/scheduler-scoring-2026-08-06/*.csv (landed e1c51efa8d), which RED'd DF's
+# corpus->allowlist guard for ~13.7h until dark_factory 43410b3418 widened all four γ copies.
+# Kept for the same reason Dockerfile is kept in _EXTLESS: this is a SHARED α/γ vector, and an
+# entry with no reify file behind it costs nothing while a missing one costs a rejected charter.
+# NOTE: γ LED this one, inverting the normal α-first sequencing — see the seam note in the header.
 # ---------------------------------------------------------------------------
-_EXTS="c cc cjs conf cpp css cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
+_EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
 
 # ---------------------------------------------------------------------------
 # Canonical extensionless-basename allowlist (C-P1 clause (ii) — PRD §11 Q2;
@@ -265,9 +273,10 @@ case "$_subcmd" in
         # LC_ALL=C for the same reason as --list-extensionless below: γ's Tier-2
         # comparison is against Python sorted() (code-point order), so byte order
         # is the only ordering the two sides can agree on and the only one that is
-        # host-independent as C-P3 requires.  Today's 58 entries happen to sort
-        # identically under C and en_US.UTF-8 (measured, md5-identical), so this
-        # is a no-op on the current vector — but the list already carries
+        # host-independent as C-P3 requires.  Today's 59 entries (re-measured
+        # 2026-08-07 after #6067 added `csv`) still sort identically under C and
+        # en_US.UTF-8 (md5-identical), so this remains a no-op on the current
+        # vector — but the list already carries
         # hyphenated members (example-systemd-config, python-version) and glibc
         # collation ignores punctuation at the primary level, so one future
         # hyphen/underscore entry could silently reorder this output on a
