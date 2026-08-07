@@ -741,6 +741,170 @@ stage
 assert "hD8: every hostile shape at once, half-calls inside the cfg(test) module — gate stays GREEN" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
 
+# hD9 / hD10 — BRACE ON THE LINE *AFTER* THE `mod` KEYWORD.
+#
+# Every cfg(test) fixture above (h2b, h4, hD1, hD3b, hD5b, hD8) happens to write
+# `mod tests {` with the brace on the SAME line, so none of them actually
+# exercises the other legal placement:
+#
+#     #[cfg(test)]
+#     mod tests
+#     {
+#
+# That is ordinary Rust, and CLAUDE.md records this repo has NO rustfmt gate
+# (`cargo fmt --all --check` reports ~5913 hunks across 685 of 1755 tracked .rs
+# files), so it is a shape tracked source really can carry — not a hypothetical.
+# Both directions were MEASURED against a throwaway `git init` fixture on this
+# tip before these assertions were written, and both are wrong today.
+#
+# hD9 — the VACUOUS-PIN direction (measured: exit 0, want 1).  Identical in
+# intent to h2b — production arm flipped to Unavailable, only a #[cfg(test)]
+# module names MorphRegistration::Enabled( — but with the brace on the next
+# line the skipper never arms, the test module's mention becomes visible to the
+# positive pass, and the per-site variant pin goes VACUOUS.  So hazard (2) /
+# esc-2962-66 is unguarded for legal brace placement, and h2b's claim to pin it
+# holds only for the same-line spelling.
+write_baseline
+cat > "$FIX/gui/src-tauri/src/engine.rs" <<'RS'
+fn from_engine(engine: &mut reify_eval::Engine) {
+    let morph = reify_eval::MorphRegistration::Unavailable { reason: "gui feature off" };
+    engine.register_production_compute_fns(morph);
+}
+
+#[cfg(test)]
+mod tests
+{
+    #[test]
+    fn names_the_enabled_variant() {
+        let _ = reify_eval::MorphRegistration::Enabled(reify_mesh_morph::register_morph_producer);
+    }
+}
+RS
+stage
+assert "hD9: a cfg(test) module with the brace on the NEXT line does not satisfy the production variant pin" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hD10 — the FALSE-RED direction (measured: exit 1, want 0).  The h4 body — the
+# shape of all five real in-src callers — with the brace on the next line.  The
+# skipper not arming makes a legitimate test-module half-call visible to the
+# NEGATIVE pass, reddening a clean tree.  Paired with hD9 deliberately: a "fix"
+# that only widened the skipper would satisfy hD9 while breaking this, and one
+# that only narrowed it would do the reverse.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn nothing() {}
+
+#[cfg(test)]
+mod tests
+{
+    #[test]
+    fn builds_an_engine() {
+        let mut engine = reify_eval::Engine::new();
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+}
+RS
+stage
+assert "hD10: a legitimate cfg(test) half-call with the brace on the NEXT line is NOT flagged" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hD10b — the `;` guard on the brace-on-next-line handling.  `#[cfg(test)] mod
+# tests;` declares an EXTERNAL module file and opens no body here, so it must
+# NOT leave the skipper armed for some unrelated later brace — otherwise the
+# production fn below it would be swallowed and the fourth-bundler pass would
+# go blind exactly as in hD7.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+#[cfg(test)]
+mod tests;
+
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hD10b: a self-terminating '#[cfg(test)] mod tests;' does not arm the skipper for a later unrelated brace" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# ===========================================================================
+# hE — THE INLINE ESCAPE IS A *COMMENT* CONCEPT.
+#
+# `// trampoline-registration:allow` declares an intentional direct half-call.
+# It must therefore be matched against the COMMENT text the lexer drops, not
+# against raw $0 (which also carries every string and char literal on the line)
+# and not against `code` (from which the comment has already been removed).
+# Raw $0 is what the gate uses today, and that is under-flagging.
+# ===========================================================================
+echo ""
+echo "--- (hE): the escape is matched against comment text, not raw \$0 ---"
+
+# hE1 — ESCAPE-IN-STRING (measured: exit 0, want 1).  A production line that
+# calls a bundle half AND merely MENTIONS the escape token inside a string
+# literal is silently suppressed today: the whole line is `next`ed before the
+# half-call is ever tested.  A violation that a nearby string can switch off is
+# not a gate.  The mirror-image rationale is already written down at
+# check-nan-safe-ordering.sh:361-364 for `nan-safe:allow`.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    let _doc = "trampoline-registration:allow"; reify_eval::compute_targets::register_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hE1: a STRING literal naming the escape token does NOT suppress a real half-call on that line" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hE1: stderr still names the offending site as file:line" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
+
+# hE2 — the OPPOSITE-direction regression pin.  Moving the escape check off raw
+# $0 must not disable the escape mechanism outright, so a REAL trailing
+# `// trampoline-registration:allow — <reason>` comment must still suppress —
+# including on a line that also carries an unrelated string literal, which is
+# precisely the shape that distinguishes "matched against the comment tail"
+# from "matched against the lexed code" (the latter suppresses nothing at all,
+# because the lexer drops the comment).  Green today; it exists so hE1's fix
+# cannot be a blunt deletion of the escape.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    let _label = "bespoke scratch engine";
+    reify_eval::compute_targets::register_compute_fns(&mut engine); // trampoline-registration:allow — bespoke fixture, the bundle is wrong here
+    reify_eval::register_shell_extract_compute_fns(&mut engine); // trampoline-registration:allow — bespoke fixture, the bundle is wrong here
+    engine
+}
+RS
+stage
+assert "hE2: a real trailing '// trampoline-registration:allow — <reason>' comment still suppresses" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hE3 — the escape does not LEAK to the next line.  The dropped comment tail is
+# per-line state; if it were stashed without being reset at every entry to the
+# lexer, an escaped line would silently clear the UNescaped half-call under it.
+write_baseline
+mkdir -p "$FIX/crates/reify-foo/src"
+cat > "$FIX/crates/reify-foo/src/lib.rs" <<'RS'
+pub fn build_engine() -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new();
+    reify_eval::compute_targets::register_compute_fns(&mut engine); // trampoline-registration:allow — bespoke fixture
+    reify_eval::register_shell_extract_compute_fns(&mut engine);
+    engine
+}
+RS
+stage
+assert "hE3: an escaped line does not suppress the UNescaped half-call on the following line" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
 # ===========================================================================
 # Part B — verify.sh's TEST plan EXECUTES the gui-feature-gated suite.
 #
