@@ -591,6 +591,74 @@ fn has_blocker_prose(reason: &str) -> bool {
     reason.contains("RED:")
 }
 
+/// §8.1 δ-A deferral-prose needles — the vocabulary that turns an
+/// `#[allow(dead_code)]` rationale into a tracked-work marker.
+///
+/// Deliberately a SEPARATE const from [`BLOCKER_PROSE`], and deliberately
+/// EXCLUDING that set's `once ` and `until `. `BLOCKER_PROSE` is applied to a
+/// short EXTRACTED `#[ignore]` reason string, where those two are acceptable;
+/// this set is applied to a whole trailing comment, where they explode ("run
+/// once manually", "once the cell is built", "valid until the next commit").
+/// Keeping the consts separate also guarantees the γ `#[ignore]` reason policy
+/// stays byte-identical — mutating `BLOCKER_PROSE` would silently reclassify
+/// existing `#[ignore]` findings and perturb the §6.6 baseline.
+///
+/// All needles are lowercase, and are matched case-SENSITIVELY (guard 1 below).
+const DEFERRAL_PROSE: &[&str] = &["pending", "deferred to", "not yet", "blocked on", "awaiting"];
+
+/// §8.1 δ-A: `true` when `text` carries deferral prose — i.e. an occurrence of a
+/// [`DEFERRAL_PROSE`] needle that survives all three false-positive guards.
+///
+/// FP control here is load-bearing, not cosmetic. Every false-positive line
+/// measured over the live corpus cites a task that is already `done`, so a
+/// spurious match does not merely add noise: it resolves through the β liveness
+/// lane to a **High `orphaned`** finding and hard-fails the merge gate. Each
+/// guard was derived from a measured class (task #6087), and each is pinned by a
+/// verbatim negative in `deferral_prose_negatives`:
+///
+/// 1. **Case-sensitive, lowercase-only.** No `to_lowercase()` — unlike
+///    [`has_blocker_prose`]. `Pending` is the `NodeCache` freshness enum
+///    VARIANT, and prose referring to it is not a deferral. Kills six of the
+///    seven originally-pinned sites (`crates/reify-eval/src/cache.rs:977`,
+///    `:1055`, `:1418`, `:3917`, `:4156`; `engine_demand.rs:110`). This
+///    mirrors the existing `RED:` case-sensitivity precedent in
+///    [`has_blocker_prose`].
+/// 2. **Delimiter guard.** A needle whose immediately preceding or following
+///    byte is `"` or a backtick is a quoted state name / code span, not prose.
+///    Required for the seventh site, `gui/src-tauri/src/types.rs:1010`
+///    (`/// "pending"` …`), which is lowercase and survives guard 1.
+/// 3. **Word boundary.** A needle flanked by an ASCII alphanumeric byte or `_`
+///    is part of an IDENTIFIER, not prose — `mark_pending_with_cause`,
+///    `mark_pruned_pending` (`crates/reify-eval/src/cache.rs:968`, `:3651`).
+///    Measured as a real class over the live corpus during task #6087.
+///
+/// Guards are per-OCCURRENCE, not per-line: a disqualified occurrence is
+/// skipped and scanning continues, so a line that both names an identifier and
+/// states a real deferral still matches on the latter.
+///
+/// Do NOT "simplify" this to a lowercased `contains` sweep: that reintroduces
+/// class 1 wholesale, and PRD §14 rejected unanchored substring vocabularies at
+/// an 89–100% false-positive rate for exactly this reason.
+fn has_deferral_prose(text: &str) -> bool {
+    /// A byte that disqualifies an adjacent needle occurrence: `"`/backtick
+    /// (guard 2 — quoted state name or code span) or an ASCII word byte
+    /// (guard 3 — the occurrence is inside an identifier). Absent (start/end of
+    /// string) never disqualifies.
+    fn disqualifies(b: Option<u8>) -> bool {
+        b.is_some_and(|b| b == b'"' || b == b'`' || b.is_ascii_alphanumeric() || b == b'_')
+    }
+
+    let bytes = text.as_bytes();
+    DEFERRAL_PROSE.iter().any(|needle| {
+        // Guard 1: match against the ORIGINAL text, not a lowercased copy.
+        text.match_indices(needle).any(|(start, hit)| {
+            let before = start.checked_sub(1).map(|i| bytes[i]);
+            let after = bytes.get(start + hit.len()).copied();
+            !disqualifies(before) && !disqualifies(after)
+        })
+    })
+}
+
 /// §6.8 inline escape: a line carrying the literal `ptodo:allow` opts out of
 /// the whole sweep for that line (an intentional, reviewed marker).
 fn line_escaped(line: &str) -> bool {
