@@ -20,9 +20,11 @@
 //!
 //! No new diagnostic codes are minted in α; no reify-core change.
 
+mod common;
+
 use reify_compiler::CompiledModule;
 use reify_core::diagnostics::DiagnosticCode;
-use reify_core::{Diagnostic, Severity, SourceSpan};
+use reify_core::{Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan};
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
@@ -1841,4 +1843,199 @@ structure def Root { let a = W(d: 7850kg/m^3) }
 #[test]
 fn g_b3_compound_unit_literal_at_density_slot_is_silent() {
     assert_no_ctor_conformance_diags(SRC_G_B3_DENSITY_LITERAL, "B3: Density ← 7850kg/m^3");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// γ (task 5627): the D4-6 / I7 migration hint
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A rejection at a DIMENSIONED `Scalar` slot carries a hint naming the expected
+// dimension and an example literal, mirroring `ArgRejection::message`'s shape in
+// `crates/reify-eval/src/arg_acceptance.rs` so the compile-time and runtime
+// diagnostics read consistently.
+//
+// Assertions are on the STABLE, semantic parts only — the fixed clause prefix
+// and the dimension's own `canonical_name()`, DERIVED by calling it rather than
+// hard-coded, so they track the `NAMED_DIMENSIONS` registry instead of pinning a
+// literal string.
+
+/// The invariant part of the migration-hint clause.
+const HINT_CLAUSE_PREFIX: &str = "pass a dimensioned ";
+
+/// Separator introducing the example literal, which is then backtick-delimited.
+const HINT_EXAMPLE_INTRO: &str = "such as `";
+
+/// The `DimensionVector` that reify's `<type_name>` annotation resolves to.
+///
+/// Looked up in `NAMED_DIMENSIONS` — the same registry both the name→dimension
+/// resolution and `canonical_name`'s dimension→name scan use — rather than via a
+/// `DimensionVector::<CONST>`, so an alias row (`Momentum` → the `Impulse`
+/// vector) resolves exactly as the compiler resolves it.
+fn dimension_named(type_name: &str) -> DimensionVector {
+    NAMED_DIMENSIONS
+        .iter()
+        .find(|(_, name)| *name == type_name)
+        .unwrap_or_else(|| panic!("no NAMED_DIMENSIONS row is named {type_name:?}"))
+        .0
+}
+
+/// The single ctor-conformance diagnostic message `source` emits.
+fn sole_ctor_conformance_message(source: &str, label: &str) -> String {
+    let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "{label}: expected exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    diags[0].message.clone()
+}
+
+/// Extract the example literal from a hint's ``such as `…` `` tail.
+///
+/// `None` when the hint carries no example — the deliberate escape hatch for a
+/// dimension whose exponents have no clean literal spelling.
+fn example_literal_from_hint(message: &str) -> Option<String> {
+    let after = message.split(HINT_EXAMPLE_INTRO).nth(1)?;
+    let end = after.find('`')?;
+    Some(after[..end].to_owned())
+}
+
+/// Whether any exponent of `dim` has a denominator other than 1.
+///
+/// A fractional exponent (e.g. `FractureToughness`, Pa·m^0.5) has no clean unit
+/// literal spelling, so the example derivation declines to invent one.
+fn has_fractional_exponent(dim: &DimensionVector) -> bool {
+    dim.0.iter().any(|r| r.den() != 1)
+}
+
+/// Assert `source`'s sole rejection carries the hint AND names the dimension
+/// `type_name` resolves to, using that dimension's own `canonical_name()`.
+fn assert_hint_names_dimension(source: &str, type_name: &str, label: &str) {
+    let message = sole_ctor_conformance_message(source, label);
+    assert!(
+        message.contains(HINT_CLAUSE_PREFIX),
+        "{label}: rejection at a dimensioned slot must carry the migration hint \
+         ({HINT_CLAUSE_PREFIX:?}); got: {message:?}"
+    );
+    let expected = dimension_named(type_name)
+        .canonical_name()
+        .unwrap_or_else(|| panic!("{label}: {type_name:?} has no canonical_name()"));
+    assert!(
+        message.contains(expected),
+        "{label}: hint must name the expected dimension {expected:?}; got: {message:?}"
+    );
+}
+
+/// Assert `source`'s sole rejection carries NO migration hint.
+fn assert_no_hint(source: &str, label: &str) {
+    let message = sole_ctor_conformance_message(source, label);
+    assert!(
+        !message.contains(HINT_CLAUSE_PREFIX),
+        "{label}: this family must keep its message byte-identical — no migration \
+         hint; got: {message:?}"
+    );
+}
+
+/// I7 — every rejection at a dimensioned slot carries the hint, and the hint
+/// names that slot's dimension.
+///
+/// One test over all five of the step-1 rejection fixtures rather than five
+/// one-liners: I7 is a property of the SLOT, not of the arg that missed it, so
+/// the arg shape (cross-dimension literal / bare Real / bare Int / String /
+/// Bool) must not change the outcome — which is only visible when they are
+/// asserted together.
+#[test]
+fn g_i7_rejections_at_dimensioned_slots_carry_the_migration_hint() {
+    for (source, type_name, label) in [
+        (SRC_G_I2_CROSS_DIMENSION, "Pressure", "I7: I2 cross-dimension"),
+        (SRC_G_I3_BARE_REAL, "Velocity", "I7: I3 bare Real"),
+        (SRC_G_I3_BARE_INT, "Velocity", "I7: I3 bare Int"),
+        (SRC_G_I4_STRING, "Density", "I7: I4 String"),
+        (SRC_G_I4_BOOL, "Density", "I7: I4 Bool"),
+    ] {
+        assert_hint_names_dimension(source, type_name, label);
+    }
+}
+
+/// Hint SCOPE fence — the four families task 5465 already promoted keep their
+/// messages byte-identical.
+///
+/// `emit_arg_type_mismatch` is shared, so an unconditional append would produce
+/// nonsense ("pass a dimensioned Bool literal") and would silently change the
+/// user-visible wording of four already-shipped diagnostics γ has no mandate to
+/// touch. This is what keeps the hint strictly ADDITIVE to the family γ
+/// promotes, and it is why the four `value_floor_*_still_warns` guards above
+/// remain meaningful as untouched regression fences.
+#[test]
+fn g_i7_hint_is_absent_for_the_already_promoted_families() {
+    assert_no_hint(SRC_FLOOR_STRING, "hint scope: String ← Int");
+    assert_no_hint(SRC_FLOOR_BOOL, "hint scope: Bool ← String");
+    assert_no_hint(SRC_FLOOR_INT, "hint scope: Int ← String");
+    assert_no_hint(SRC_FLOOR_REAL, "hint scope: dimensionless Real ← String");
+}
+
+/// ROT GUARD (D4-6) — for EVERY row of `NAMED_DIMENSIONS`, the example literal
+/// the hint offers must round-trip: parse as a reify unit literal and resolve
+/// back to exactly the dimension it was derived from.
+///
+/// This is what makes "derived from the registry so it cannot rot" STRUCTURAL
+/// rather than merely asserted. A new `NAMED_DIMENSIONS` row whose derived
+/// example does not parse fails the build; so does a derivation that composes a
+/// literal reify's compound-unit grammar does not accept.
+///
+/// The literal is read back out of the real diagnostic, and round-tripped
+/// through `common::stdlib_param_si_value` — the same oracle
+/// `compound_unit_resolution_tests.rs` uses, which drives the compiler's actual
+/// unit-resolution path. Nothing here re-implements the derivation, so the test
+/// cannot agree with a broken implementation by construction.
+///
+/// Rows whose exponents are fractional have no clean literal spelling and are
+/// exempt BY RETURNING NO EXAMPLE. The exemption is asserted to be exercised —
+/// as an absent example, never as a broken string — so the escape hatch stays
+/// visible rather than becoming a silent catch-all.
+#[test]
+fn g_migration_hint_example_round_trips_for_every_named_dimension() {
+    let mut exempt: Vec<&str> = Vec::new();
+
+    for (index, (dim, type_name)) in NAMED_DIMENSIONS.iter().enumerate() {
+        let source = format!(
+            "module test.rot_{index}\n\
+             structure def W {{ param p : {type_name} }}\n\
+             structure def Root {{ let a = W(p: \"not a quantity\") }}\n"
+        );
+        let label = format!("rot guard: {type_name}");
+        let message = sole_ctor_conformance_message(&source, &label);
+
+        assert!(
+            message.contains(HINT_CLAUSE_PREFIX),
+            "{label}: every NAMED_DIMENSIONS row is dimensioned, so its rejection must \
+             carry the hint; got: {message:?}"
+        );
+
+        let Some(example) = example_literal_from_hint(&message) else {
+            assert!(
+                has_fractional_exponent(dim),
+                "{label}: only a fractional-exponent dimension may decline to offer an \
+                 example literal, but {dim} has none; got: {message:?}"
+            );
+            exempt.push(type_name);
+            continue;
+        };
+
+        let (_si_value, resolved) = common::stdlib_param_si_value(type_name, &example);
+        assert_eq!(
+            resolved, *dim,
+            "{label}: example literal `{example}` resolves to {resolved}, not to the \
+             dimension it was derived from ({dim})"
+        );
+    }
+
+    assert!(
+        !exempt.is_empty(),
+        "no NAMED_DIMENSIONS row exercised the fractional-exponent exemption — either the \
+         registry lost its fractional dimensions (then delete the escape hatch) or the \
+         derivation stopped declining them (then it is inventing literals that cannot \
+         parse)"
+    );
 }
