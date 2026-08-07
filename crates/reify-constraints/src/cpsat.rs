@@ -154,7 +154,32 @@ fn build_variable_domain(
 /// the `Bool(false)` arm below PRUNES A FEASIBLE BRANCH. The same stale seed
 /// also defeats `all_assigned` on the direct path, with no dependent cell
 /// involved at all — which is why the repair belongs at the seed and not in
-/// `fold_dependent_cells`. `stale_current_values_seed_tests` pins both arms.
+/// `fold_dependent_cells`. The `*_stale_*` units below pin both arms.
+///
+/// # Cost of the TOTAL fold, and why the obvious saving is unsound as stated
+///
+/// The fold runs on EVERY trial value at EVERY depth, so it costs
+/// `O(|dependent_cells| · Π|domain_i|)` expression evaluations plus one
+/// persistent-map insert each — and a `Type::Int` domain runs to
+/// `MAX_INT_DOMAIN` = 1000 values, so the multiplier is not academic. The
+/// obvious saving is to hand `backtrack` each cell's transitive auto set
+/// (`decompose::dependent_cell_auto_reads`, which `SolverRegistry::solve_inner`
+/// already builds once per solve) and SKIP a cell at a depth where any of its
+/// autos is still unassigned — the folded value would be `Undef` there anyway,
+/// and `get_or_undef` treats absent and `Undef` alike.
+///
+/// SKIPPING IS UNSOUND, and the correction is not obvious from the sketch: a
+/// cell skipped at depth k is not ABSENT — it still holds whatever an ABANDONED
+/// DEEPER branch folded into it, which is exactly the value the total fold
+/// overwrites with `Undef` and which
+/// `two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch`
+/// exists to pin. A sound version must `remove` the unfoldable cell, not skip
+/// it. The saving survives that correction (an O(1) map op in place of an
+/// expression eval), but the `remove` is mandatory, not an optimisation detail.
+///
+/// Not done here: CP-SAT is landed-but-unwired — unreachable in production
+/// until PRD2 γ — so nothing pays this cost yet, and the change needs its own
+/// unwind-safety units rather than a rider on an amendment pass.
 fn backtrack(
     variables: &[Variable],
     var_index: usize,
@@ -332,27 +357,66 @@ impl ConstraintSolver for CpSatSolver {
 }
 
 // ---------------------------------------------------------------------------
-// LAYER 3 remainder — the CP-SAT forward-check has no per-trial dependent-cell
-// fold (task #5467 / PRD2 α, §3 decision 9, step-10 RED).
+// REGRESSION LOCKS for the CP-SAT forward-check's two dependent-cell hazards
+// (task #5467 / PRD2 α, §3 decision 9). Both are FIXED above; these units are
+// what keeps them fixed. CP-SAT is landed-but-unwired — unreachable in
+// production until PRD2 γ — so this module is the ONLY behavioural pin on
+// either, which is why every assertion names an expected VALUE or VARIANT
+// rather than settling for "did not panic".
 //
+// LOCK 1 — the per-trial fold at the top of `backtrack`'s value loop.
 // `backtrack` computes `auto_refs = refs ∩ auto_param_ids`. For a constraint
 // that reads ONLY a dependent cell that set is EMPTY, so `all_assigned` is
-// VACUOUSLY true and the constraint IS evaluated — against the stale/absent
-// base value of that cell. `eval_expr` returns a non-`Bool`, the
-// `_ => // Indeterminate — skip (don't prune)` arm fires, and nothing is ever
-// pruned. `solve` therefore returns the FIRST domain value regardless, and
-// `build_variable_domain` yields `[Bool(true), Bool(false)]` for `Type::Bool`,
-// so "first" is deterministically `true`.
+// VACUOUSLY true and the constraint IS evaluated. Before the fold it was
+// evaluated against that cell's stale/absent base value: `eval_expr` returned a
+// non-`Bool`, the `_ => // Indeterminate — skip (don't prune)` arm fired, and
+// nothing was ever pruned. `solve` then returned the FIRST domain value
+// regardless — `[Bool(true), Bool(false)]` for `Type::Bool`, i.e.
+// deterministically `true`, reported as `Solved`/`unique` rather than as a
+// failure. Removing the fold reintroduces exactly that.
 //
-// CP-SAT is landed-but-unwired (unreachable in production until PRD2 γ), so
-// these units are the ONLY behavioural pin on this half — they assert the
-// WRONG VALUE loudly rather than merely "did not panic".
+// LOCK 2 — the auto-id strip on the `current_values` seed in `solve`. Before
+// it, `assignment` started out carrying entries for auto params, so at depth k
+// the autos k+1..n held STALE CONCRETE values instead of being absent. The
+// forward-check then took the `Bool(false)` PRUNE arm on a FEASIBLE branch,
+// turning a satisfiable problem into `Infeasible` — wrong in the loud
+// direction, but wrong. Three real sources of such a stale entry, (iii) first
+// because it needs no eval layer at all and so is reachable purely inside
+// reify-constraints:
+//
+//  (iii) `registry.rs:668,717-720` — lexicographic multi-rank solving clones
+//        `base.current_values` once and then WARM-STARTS stage N+1 from stage
+//        N's solution INSIDE a single `solve()` call.
+//  (i)   `engine_eval.rs:6949-6962` — a second `eval_cached` at the same
+//        `VersionId` serves a previously-SOLVED auto from cache straight back
+//        into `values`, which `build_solver_problem` clones wholesale into
+//        `current_values` at engine_eval.rs:2326.
+//  (ii)  `engine_eval.rs:7026-7031` — a `param_override` on an auto cell, which
+//        is written as `Determined` yet is still admitted to `auto_params`.
+//
+// The two locks are ONE module because they share a fixture vocabulary and
+// because lock 2's `*_direct_path_*` unit is what proves lock 2's repair
+// belongs at the seed rather than inside the fold — an argument only legible
+// next to lock 1's fold units.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
-mod dependent_cell_fold_tests {
+mod dependent_cell_forward_check_tests {
     use super::*;
     use reify_ir::{ObjectiveSet, UnOp};
     use std::sync::Arc;
+
+    /// The value a stale same-scope auto entry carries into the search.
+    ///
+    /// Named rather than inlined — mirroring `STALE_SIDE` in
+    /// `tests/joint_drive_per_trial_recompute.rs:998` — so a mixed-up assertion
+    /// cannot pass by coincidence: every lock-2 fixture is built so that the
+    /// STALE answer and the CORRECT answer are opposites, and naming the stale
+    /// side makes that opposition explicit at the call site.
+    ///
+    /// A real one arrives via any of the three sources named in this module's
+    /// header; `registry.rs:717-720`'s lexicographic warm-start is the one that
+    /// needs no eval layer at all.
+    const STALE_SEED: bool = true;
 
     fn bool_auto(member: &str) -> AutoParam {
         AutoParam {
@@ -363,12 +427,32 @@ mod dependent_cell_fold_tests {
         }
     }
 
+    /// An `Int` auto over the INCLUSIVE bound pair `[lo, hi]` —
+    /// `build_variable_domain` enumerates `lo..=hi`, so the domain has
+    /// `hi - lo + 1` values.
+    fn int_auto(member: &str, lo: i64, hi: i64) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Int,
+            bounds: Some((lo as f64, hi as f64)),
+            free: true,
+        }
+    }
+
     fn bref(member: &str) -> CompiledExpr {
         CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Bool)
     }
 
+    fn iref(member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Int)
+    }
+
     fn not(e: CompiledExpr) -> CompiledExpr {
         CompiledExpr::unop(UnOp::Not, e, Type::Bool)
+    }
+
+    fn and(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
     }
 
     fn eq_true(e: CompiledExpr) -> CompiledExpr {
@@ -380,19 +464,64 @@ mod dependent_cell_fold_tests {
         )
     }
 
+    fn mul_int(e: CompiledExpr, k: i64) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Mul,
+            e,
+            CompiledExpr::literal(Value::Int(k), Type::Int),
+            Type::Int,
+        )
+    }
+
+    fn eq_int(e: CompiledExpr, k: i64) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Eq,
+            e,
+            CompiledExpr::literal(Value::Int(k), Type::Int),
+            Type::Bool,
+        )
+    }
+
+    /// A `ValueMap` seeded with exactly one `S.<member>` entry — every lock-2
+    /// fixture needs precisely one, and keeping it to one makes the thing under
+    /// test unmistakable at the call site.
+    ///
+    /// `ValueMap` has no `FromIterator` impl (reify-ir/src/value.rs), so this
+    /// is `new` + `insert` rather than a `collect`.
+    fn seed(member: &str, v: Value) -> ValueMap {
+        let mut m = ValueMap::new();
+        m.insert(ValueCellId::new("S", member), v);
+        m
+    }
+
+    /// A problem with the `current_values` seed exposed — that seed IS the
+    /// subject under test for lock 2, so it cannot be hard-wired the way
+    /// [`problem`] wires it.
+    fn problem_with_seed(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
+        current_values: ValueMap,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values,
+            objective: None::<ObjectiveSet>,
+            functions: Arc::from(Vec::new()),
+            dependent_cells,
+        }
+    }
+
+    /// [`problem_with_seed`] with an EMPTY seed — the shape every lock-1
+    /// fixture wants, and the shape all 11 `ResolutionProblem` literals in
+    /// `tests/cpsat_tests.rs` build.
     fn problem(
         auto_params: Vec<AutoParam>,
         constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
         dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
     ) -> ResolutionProblem {
-        ResolutionProblem {
-            auto_params,
-            constraints,
-            current_values: ValueMap::new(),
-            objective: None::<ObjectiveSet>,
-            functions: Arc::from(Vec::new()),
-            dependent_cells,
-        }
+        problem_with_seed(auto_params, constraints, dependent_cells, ValueMap::new())
     }
 
     /// The solved value of `S.<member>`, or a panic naming what actually came
@@ -410,17 +539,17 @@ mod dependent_cell_fold_tests {
         }
     }
 
-    /// (a) LET-INDIRECTED PRUNING — a constraint reading ONLY a dependent cell
-    /// must still prune the domain of the auto that cell is derived from.
+    /// LOCK 1 — LET-INDIRECTED PRUNING. A constraint reading ONLY a dependent
+    /// cell must still prune the domain of the auto that cell is derived from.
     ///
     /// `let f = not(up)`, `constraint f == true`. The unique satisfying
     /// assignment is `up = false`.
     ///
-    /// RED today: `backtrack` never materialises `S.f`, so `eval_expr` sees an
-    /// absent cell, returns a non-`Bool`, takes the skip-don't-prune arm, and
-    /// `solve` hands back the first domain value `Bool(true)` — reported as
-    /// `Solved` with `unique: true`, i.e. SILENTLY WRONG rather than loudly
-    /// unsolved.
+    /// Without the per-trial fold `backtrack` never materialises `S.f`, so
+    /// `eval_expr` sees an absent cell, returns a non-`Bool`, takes the
+    /// skip-don't-prune arm, and `solve` hands back the first domain value
+    /// `Bool(true)` — reported as `Solved` with `unique: true`, i.e. SILENTLY
+    /// WRONG rather than loudly unsolved.
     #[test]
     fn a_constraint_reading_only_a_dependent_cell_prunes_the_auto_it_derives_from() {
         let p = problem(
@@ -442,8 +571,8 @@ mod dependent_cell_fold_tests {
         );
     }
 
-    /// UNWIND SAFETY — a dependent value left behind by an ABANDONED sibling
-    /// branch must never be observed by the branch that follows it.
+    /// LOCK 1 — UNWIND SAFETY. A dependent value left behind by an ABANDONED
+    /// sibling branch must never be observed by the branch that follows it.
     ///
     /// Two autos, `up` and `dn`. `let f = not(up) and dn`,
     /// `constraint f == true`, `constraint dn == true` — unique satisfying
@@ -462,9 +591,6 @@ mod dependent_cell_fold_tests {
     /// folded entries is required.
     #[test]
     fn two_autos_do_not_observe_a_stale_dependent_value_from_an_abandoned_sibling_branch() {
-        let and = |l: CompiledExpr, r: CompiledExpr| {
-            CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
-        };
         let p = problem(
             vec![bool_auto("up"), bool_auto("dn")],
             vec![
@@ -493,7 +619,7 @@ mod dependent_cell_fold_tests {
         );
     }
 
-    /// (b) D1/B2 IDENTITY, negative half — the SAME logical problem written
+    /// LOCK 1 — D1/B2 IDENTITY, negative half. The SAME logical problem written
     /// with the auto read DIRECTLY and an EMPTY `dependent_cells` still solves
     /// to `up = false`.
     #[test]
@@ -513,8 +639,8 @@ mod dependent_cell_fold_tests {
         );
     }
 
-    /// (b) D1/B2 IDENTITY, positive half — a direct-only problem whose answer
-    /// is `true` still returns `true`.
+    /// LOCK 1 — D1/B2 IDENTITY, positive half. A direct-only problem whose
+    /// answer is `true` still returns `true`.
     ///
     /// Paired with the negative half deliberately: alone, either one could pass
     /// on a solver that always returned the first domain value.
@@ -532,143 +658,55 @@ mod dependent_cell_fold_tests {
             "`constraint up == true` is satisfied only by up = true",
         );
     }
-}
 
-// ---------------------------------------------------------------------------
-// STALE `current_values` SEED — `backtrack`'s documented "no explicit unwind is
-// needed" invariant is FALSE as written (task #5467, step-12 RED).
-//
-// That block claims the per-trial fold is self-correcting because "a cell whose
-// expression reads a not-yet-assigned deeper auto simply re-evaluates to
-// `Undef` here". The premise only holds if a not-yet-assigned auto is ABSENT
-// from `assignment`. It is not: `solve` seeds `assignment` from
-// `problem.current_values` (see the seed site above), which DOES carry entries
-// for auto params. At depth k the autos k+1..n therefore hold STALE CONCRETE
-// values, so the forward-check can take the `Bool(false)` PRUNE arm on a
-// FEASIBLE branch instead of the safe skip-don't-prune arm.
-//
-// Three real sources of such a stale same-scope auto entry, all verified for
-// this task — (iii) first, because it is the one reachable purely inside
-// reify-constraints with no eval layer involved at all:
-//
-//  (iii) `registry.rs:668,717-720` — lexicographic multi-rank solving clones
-//        `base.current_values` once and then WARM-STARTS stage N+1 from stage
-//        N's solution (`current_values.insert(k, v)` over the solved values)
-//        INSIDE a single `solve()` call.
-//  (i)   `engine_eval.rs:6949-6962` — a second `eval_cached` at the same
-//        `VersionId` serves a previously-SOLVED auto from cache straight back
-//        into `values`, which `build_solver_problem` clones wholesale into
-//        `current_values` at engine_eval.rs:2326.
-//  (ii)  `engine_eval.rs:7026-7031` — a `param_override` on an auto cell, which
-//        is written as `Determined` yet is still admitted to `auto_params`.
-//
-// Both failure modes below were reproduced first-hand on commit 8fbac63953 with
-// a scratch probe appended to this file, run via
-// `cargo test -p reify-constraints --lib`, then reverted (tree left clean).
-// Each returned `Infeasible { ConstraintUnsatisfiable }` on a SATISFIABLE
-// problem — wrong in the loud direction, but wrong.
-//
-// These units live in a NEW sibling module rather than in
-// `dependent_cell_fold_tests` so that step-10's committed RED-pinned text and
-// its `problem()` helper signature stay untouched; the four one-line
-// expression builders are re-declared locally for the same reason.
-// ---------------------------------------------------------------------------
-#[cfg(test)]
-mod stale_current_values_seed_tests {
-    use super::*;
-    use reify_ir::{ObjectiveSet, UnOp};
-    use std::sync::Arc;
-
-    /// The value a stale same-scope auto entry carries into the search.
+    /// LOCK 1 — a MULTI-VALUE domain, so the fold is exercised across several
+    /// abandoned branches rather than the single one a `Type::Bool` domain
+    /// affords.
     ///
-    /// Named rather than inlined — mirroring `STALE_SIDE` in
-    /// `tests/joint_drive_per_trial_recompute.rs:998` — so a mixed-up assertion
-    /// cannot pass by coincidence: every fixture below is built so that the
-    /// STALE answer and the CORRECT answer are opposites, and naming the stale
-    /// side makes that opposition explicit at the call site.
+    /// `n : Int` bounded `[0, 5]` (`build_variable_domain` enumerates
+    /// `Int(0) ..= Int(5)`), `let f = n * 2`, `constraint f == 6`. The unique
+    /// satisfying assignment is `n = 3` — neither the first nor the last domain
+    /// value, and three trials deep, so a search that pruned for the wrong
+    /// reason cannot land on it by accident the way it can on a two-value
+    /// domain. Without the per-trial fold `S.f` is absent, `eval_expr` returns
+    /// a non-`Bool`, the skip-don't-prune arm fires, and `solve` returns the
+    /// first domain value `Int(0)`.
     ///
-    /// A real one arrives via any of the three sources named in this module's
-    /// header comment; `registry.rs:717-720`'s lexicographic warm-start is the
-    /// one that needs no eval layer at all.
-    const STALE_SEED: bool = true;
+    /// The unsatisfiable half (`f == 7`, unreachable because `n * 2` is even
+    /// over the whole domain) is what proves the fold is EVALUATED rather than
+    /// merely inserted: it forces every one of the six trials to be folded and
+    /// rejected on its own merits.
+    #[test]
+    fn an_int_domain_dependent_cell_prunes_across_multiple_abandoned_branches() {
+        let build = |target: i64| {
+            problem(
+                vec![int_auto("n", 0, 5)],
+                vec![(ConstraintNodeId::new("S", 0), eq_int(iref("f"), target))],
+                vec![(ValueCellId::new("S", "f"), mul_int(iref("n"), 2))],
+            )
+        };
 
-    fn bool_auto(member: &str) -> AutoParam {
-        AutoParam {
-            id: ValueCellId::new("S", member),
-            param_type: Type::Bool,
-            bounds: None,
-            free: true,
-        }
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&build(6)), "n"),
+            Value::Int(3),
+            "`let f = n * 2` with `constraint f == 6` over n ∈ [0, 5] is \
+             satisfied ONLY by n = 3. Without a per-trial fold of \
+             `dependent_cells` the forward-check evaluates against an absent \
+             `S.f`, takes the skip-don't-prune arm, and returns the FIRST \
+             domain value `Int(0)` as a `Solved`/`unique` answer",
+        );
+
+        let odd = CpSatSolver.solve(&build(7));
+        assert!(
+            matches!(odd, SolveResult::Infeasible { .. }),
+            "`n * 2` is even for every n ∈ [0, 5], so `constraint f == 7` is \
+             UNSATISFIABLE. Getting `Solved` means the fold never produced a \
+             `Bool` the forward-check could act on and the search fell through \
+             to its first domain value; got {odd:?}",
+        );
     }
 
-    fn bref(member: &str) -> CompiledExpr {
-        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Bool)
-    }
-
-    fn not(e: CompiledExpr) -> CompiledExpr {
-        CompiledExpr::unop(UnOp::Not, e, Type::Bool)
-    }
-
-    fn and(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
-        CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
-    }
-
-    fn eq_true(e: CompiledExpr) -> CompiledExpr {
-        CompiledExpr::binop(
-            reify_ir::BinOp::Eq,
-            e,
-            CompiledExpr::literal(Value::Bool(true), Type::Bool),
-            Type::Bool,
-        )
-    }
-
-    /// A `ValueMap` seeded with exactly one `S.<member>` entry — every fixture
-    /// below needs precisely one, and keeping it to one makes the thing under
-    /// test unmistakable at the call site.
-    ///
-    /// `ValueMap` has no `FromIterator` impl (reify-ir/src/value.rs), so this
-    /// is `new` + `insert` rather than a `collect`.
-    fn seed(member: &str, v: Value) -> ValueMap {
-        let mut m = ValueMap::new();
-        m.insert(ValueCellId::new("S", member), v);
-        m
-    }
-
-    /// Like `dependent_cell_fold_tests::problem`, but with the `current_values`
-    /// seed exposed — that seed IS the subject under test here, so it cannot be
-    /// hard-wired to `ValueMap::new()` the way step-10's helper wires it.
-    fn problem_with_seed(
-        auto_params: Vec<AutoParam>,
-        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
-        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
-        current_values: ValueMap,
-    ) -> ResolutionProblem {
-        ResolutionProblem {
-            auto_params,
-            constraints,
-            current_values,
-            objective: None::<ObjectiveSet>,
-            functions: Arc::from(Vec::new()),
-            dependent_cells,
-        }
-    }
-
-    /// The solved value of `S.<member>`, or a panic naming what actually came
-    /// back — on this bug the solver returns a definite WRONG VERDICT
-    /// (`Infeasible` on a satisfiable problem), so the panic must report it.
-    fn solved_value(result: &SolveResult, member: &str) -> Value {
-        match result {
-            SolveResult::Solved { values, .. } => values
-                .get(&ValueCellId::new("S", member))
-                .unwrap_or_else(|| {
-                    panic!("no solved value for S.{member}; got values {values:?}")
-                })
-                .clone(),
-            other => panic!("expected SolveResult::Solved for S.{member}; got {other:?}"),
-        }
-    }
-
-    /// (a) STALE DEEPER AUTO REACHED THROUGH A DEPENDENT CELL.
+    /// LOCK 2 — STALE DEEPER AUTO REACHED THROUGH A DEPENDENT CELL.
     ///
     /// Two `Bool` autos in `auto_params` order `[S.a, S.b]`; `current_values`
     /// seeds ONLY `S.b`, with the stale value; `let f = not(b)`;
@@ -680,11 +718,11 @@ mod stale_current_values_seed_tests {
     /// `auto_param_ids` is EMPTY, so `all_assigned` is VACUOUSLY true and the
     /// constraint is evaluated at depth 0 — where `S.f` has already folded to
     /// `not(STALE_SEED) = false` off the stale `S.b`. Both `S.a` branches
-    /// therefore prune before the search ever descends to `S.b`.
-    ///
-    /// CONFIRMED RED: `Infeasible { ConstraintUnsatisfiable }`.
+    /// therefore prune before the search ever descends to `S.b`. Removing the
+    /// strip turns this satisfiable problem back into
+    /// `Infeasible { ConstraintUnsatisfiable }`.
     #[test]
-    fn a_stale_deeper_auto_behind_a_dependent_cell_must_not_prune_a_feasible_branch() {
+    fn stale_deeper_auto_behind_a_dependent_cell_must_not_prune_a_feasible_branch() {
         let p = problem_with_seed(
             vec![bool_auto("a"), bool_auto("b")],
             vec![(ConstraintNodeId::new("S", 0), eq_true(bref("f")))],
@@ -703,8 +741,8 @@ mod stale_current_values_seed_tests {
         );
     }
 
-    /// (b) STALE AUTO ON THE DIRECT PATH — the same defect with NO dependent
-    /// cells at all.
+    /// LOCK 2 — STALE AUTO ON THE DIRECT PATH, the same hazard with NO
+    /// dependent cells at all.
     ///
     /// Same two autos and the same stale `S.b` seed, but `dependent_cells` is
     /// EMPTY and the single constraint reads the auto DIRECTLY:
@@ -713,14 +751,13 @@ mod stale_current_values_seed_tests {
     /// makes that prematurely TRUE at depth 0. The constraint is evaluated
     /// against the stale value and prunes both `S.a` branches.
     ///
-    /// LOAD-BEARING for the fix's SHAPE: this proves the defect is not
-    /// dependent-cell-specific and therefore must be repaired at the SEED, not
-    /// inside `fold_dependent_cells` — a fold-local guard cannot reach this
-    /// path, which never touches the fold.
-    ///
-    /// CONFIRMED RED: `Infeasible { ConstraintUnsatisfiable }`.
+    /// LOAD-BEARING for the repair's SHAPE: this proves the defect is not
+    /// dependent-cell-specific and therefore belongs at the SEED, not inside
+    /// `fold_dependent_cells` — a fold-local guard cannot reach this path,
+    /// which never touches the fold. Removing the strip turns this satisfiable
+    /// problem back into `Infeasible { ConstraintUnsatisfiable }`.
     #[test]
-    fn b_stale_auto_on_the_direct_path_must_not_prune_a_feasible_branch() {
+    fn stale_auto_on_the_direct_path_must_not_prune_a_feasible_branch() {
         let p = problem_with_seed(
             vec![bool_auto("a"), bool_auto("b")],
             vec![(ConstraintNodeId::new("S", 0), eq_true(not(bref("b"))))],
@@ -738,13 +775,13 @@ mod stale_current_values_seed_tests {
         );
     }
 
-    /// (c) D1/B2 IDENTITY — a NON-auto seed entry must SURVIVE.
+    /// LOCK 2 — D1/B2 IDENTITY: a NON-auto seed entry must SURVIVE.
     ///
     /// This is the guard that matters most. `current_values` is the ONLY
     /// channel by which a CP-SAT constraint sees a non-auto base value (pinned
     /// connector autos are written into it at engine_eval.rs:2327), so an
-    /// over-broad "just start from `ValueMap::new()`" fix would pass (a) and
-    /// (b) while silently breaking every such model.
+    /// over-broad "just start from `ValueMap::new()`" strip would satisfy the
+    /// two units above while silently breaking every such model.
     ///
     /// One `Bool` auto `S.a`; `current_values` seeds the NON-auto cell `S.k`;
     /// `let g = k and a`; `constraint g == true`. With `k = true` the answer is
@@ -754,9 +791,8 @@ mod stale_current_values_seed_tests {
     /// ids: with `S.k` gone, `g` evaluates to a non-`Bool`, the
     /// skip-don't-prune arm fires, and the verdict stops depending on the seed.
     ///
-    /// Green on write.
     #[test]
-    fn c_a_non_auto_seed_entry_survives_and_still_drives_the_verdict() {
+    fn a_non_auto_seed_entry_survives_and_still_drives_the_verdict() {
         let build = |k: bool| {
             problem_with_seed(
                 vec![bool_auto("a")],
