@@ -133,6 +133,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Kept for the same reason Dockerfile is kept in _EXTLESS: this is a SHARED α/γ vector, and an
 # entry with no reify file behind it costs nothing while a missing one costs a rejected charter.
 # NOTE: γ LED this one, inverting the normal α-first sequencing — see the seam note in the header.
+# A LIVE ALARM NOW GUARDS THIS LIST: Cycle 10 of tests/infra/test_lock_charter_guard.sh
+# sweeps the tracked corpus and goes RED if a tracked reify extension is missing here —
+# the standing signal a pin inside this repo (Cycle 4's CANONICAL_EXTS) cannot give, since
+# that pin moves whenever this list moves.  Widening this list is therefore a FOUR-part
+# lockstep edit: _EXTS here, CANONICAL_EXTS in Cycle 4, lcl_canonical_extensions() in
+# tests/infra/lock_charter_harness_lib.sh, and γ's four copies — this is a SHARED α/γ
+# vector, so a unilateral α widening re-opens the seam divergence noted above.
 # ---------------------------------------------------------------------------
 _EXTS="c cc cjs conf cpp css csv cts cxx diff envrc example example-systemd-config gcode gitattributes gitignore gitkeep gitmodules golden grammar h hh hpp html icns ico jq js json jsonc jsonl jsx lock log manifest md mjs mts npmrc png py python-version ri rs scss service sh step stl svg template timer toml ts tsx txt typed yaml yml"
 
