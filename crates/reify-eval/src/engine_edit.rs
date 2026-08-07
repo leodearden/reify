@@ -7730,4 +7730,83 @@ structure GrowColl {
              node's own field, is the comparison source"
         );
     }
+
+    /// CHARACTERIZATION LOCK, not a behavioural assertion: the canonical
+    /// input-cone fold is BLIND to a boolean-kind flip.
+    ///
+    /// `compute_realization_upstream_values_hash_from_ops` folds only
+    /// `(arg_name, evaluated value)` pairs, and its match arm for a boolean is
+    /// `CompiledGeometryOp::Boolean { .. } => &[]` (engine_build.rs:12790) — so
+    /// the arg loop never runs and the op contributes NOTHING to the hash. No
+    /// arm mixes in the op discriminant, the op kind, the op count, or the
+    /// operand `GeomRef`s either. Two op vectors that differ only in a
+    /// `BooleanOp::Union` vs `BooleanOp::Difference` therefore fold to the
+    /// byte-identical 32-byte hash.
+    ///
+    /// This PASSES from the start. It is pinned as a first-class executable
+    /// fact because it is the load-bearing premise for the `edit_source`
+    /// carry-forward restriction: the input-cone fold cannot detect an
+    /// ops-only change, so the carry-forward must NOT rely on "the recomputed
+    /// fold will differ anyway" and must instead key on
+    /// `RealizationNodeData::content_hash`, which sees the op IR.
+    ///
+    /// If this test ever FAILS, the fold has gained op-identity coverage and
+    /// the `!changed_realizations.contains(rid)` skip in `edit_source` may be
+    /// relaxed. Do NOT "fix" it by weakening the assertion — the failure is
+    /// the signal.
+    ///
+    /// Exact byte equality over a deterministic XXH3 fold; no tolerance.
+    #[test]
+    fn input_cone_fold_is_blind_to_a_boolean_kind_flip() {
+        use crate::engine_build::compute_realization_upstream_values_hash_from_ops;
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+
+        let cell = ValueCellId::new("E", "wa");
+        let values = values_binding(&cell, 10.0);
+        let ctx = crate::eval_ctx_with_meta(&values, &[], &NO_META);
+
+        // Two boxes, then a boolean over them — the shape `compile_boolean`
+        // emits (`left_ops ++ right_ops ++ [Boolean{op,left,right}]`,
+        // geometry_boolean.rs:165-171).
+        let ops_with = |op: BooleanOp| -> Vec<CompiledGeometryOp> {
+            vec![
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![(
+                        "width".to_string(),
+                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
+                    )],
+                },
+                CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Box,
+                    args: vec![(
+                        "width".to_string(),
+                        CompiledExpr::value_ref(cell.clone(), Type::dimensionless_scalar()),
+                    )],
+                },
+                CompiledGeometryOp::Boolean {
+                    op,
+                    // Identical operands on both sides: the ONLY difference
+                    // between the two vectors is the `op` field itself.
+                    left: GeomRef::Step(0),
+                    right: GeomRef::Step(1),
+                },
+            ]
+        };
+
+        let union_hash =
+            compute_realization_upstream_values_hash_from_ops(&ops_with(BooleanOp::Union), &ctx);
+        let difference_hash = compute_realization_upstream_values_hash_from_ops(
+            &ops_with(BooleanOp::Difference),
+            &ctx,
+        );
+
+        assert_eq!(
+            union_hash, difference_hash,
+            "the input-cone fold must be blind to a union→difference flip — it folds \
+             only (arg_name, value) pairs and matches `Boolean {{ .. }} => &[]`. If this \
+             now DIFFERS the fold gained op-identity coverage; relax the edit_source \
+             carry-forward skip rather than weakening this lock."
+        );
+    }
 }

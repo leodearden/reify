@@ -374,6 +374,176 @@ fn edit_source_reports_the_moved_input_cone_that_the_static_content_hash_cannot_
     );
 }
 
+// ── The carry-forward hazard: an OPS-only change the fold cannot see ──────
+
+/// Two boxes combined by a boolean, plus an independent `body_c` whose ops are
+/// untouched by the V2 flip.
+///
+/// Sizes are chosen so BOTH boolean kinds are non-degenerate: `body_b` sits
+/// strictly inside `body_a`, so `union` is `body_a` and `difference` is
+/// `body_a` with an internal void — neither is an empty solid.
+const BOOL_SRC: &str = r#"
+structure BoolBody {
+    param wa: Length = 30mm
+    param wb: Length = 10mm
+    param wc: Length = 8mm
+
+    let body_a = box(wa, 20mm, 20mm)
+    let body_b = box(wb, 5mm, 5mm)
+    let combined = union(body_a, body_b)
+    let body_c = box(wc, 5mm, 5mm)
+}
+"#;
+
+/// V2 of [`BOOL_SRC`] differing in EXACTLY one token: `union` → `difference`.
+///
+/// No param default moves, so every scalar arg the input-cone fold can see is
+/// byte-identical across the recompile. `compile_boolean_op` builds
+/// `left_ops ++ right_ops ++ [Boolean{op,left,right}]`
+/// (geometry_boolean.rs:165-171), so the flip moves ONLY the `op` field of the
+/// trailing `Boolean` — which the fold is provably blind to (see the in-crate
+/// characterization lock `input_cone_fold_is_blind_to_a_boolean_kind_flip` in
+/// `engine_edit.rs`'s `mod tests`).
+const BOOL_SRC_V2: &str = r#"
+structure BoolBody {
+    param wa: Length = 30mm
+    param wb: Length = 10mm
+    param wc: Length = 8mm
+
+    let body_a = box(wa, 20mm, 20mm)
+    let body_b = box(wb, 5mm, 5mm)
+    let combined = difference(body_a, body_b)
+    let body_c = box(wc, 5mm, 5mm)
+}
+"#;
+
+/// The `edit_source` carry-forward must NOT apply to a realization whose OPS
+/// changed — only to one whose ops are provably identical.
+///
+/// # The hazard
+///
+/// The two hashes are complementary and each guards the other's blind spot:
+/// `RealizationNodeData::content_hash` sees the op IR but not the values (it is
+/// `of_str(id) ⊕ combine_all(of_str(format!("{:?}", op)))`, graph.rs:396), while
+/// the input-cone fold sees the values but not the ops (it folds only
+/// `(arg_name, value)` pairs and matches `Boolean { .. } => &[]`,
+/// engine_build.rs:12790).
+///
+/// A blanket carry-forward stamps the OLD execution's input-cone hash onto a
+/// node whose ops just changed. The fold recomputed over the NEW ops is then
+/// byte-EQUAL to it — the flip is invisible to the fold — so
+/// `refresh_and_gate_demanded_realizations` reads `stored == Some(current)`
+/// (engine_build.rs:11555), marks the realization `exempt` (:11566),
+/// `demand_scoped_unified_pass` filters it out of the seed (:5766),
+/// `execute_realization_ops` is never called — and per the DELTA CONTRACT at
+/// engine_build.rs:5737-5751 the absent mesh means "retain the previously
+/// rendered mesh". The GUI keeps showing the union after the user typed
+/// `difference`: a textbook 4317-class stale.
+///
+/// The fix is a targeted skip, NOT a blanket revert — hence the SELECTIVITY
+/// GUARD below.
+#[test]
+fn edit_source_does_not_carry_input_cone_hash_forward_when_ops_changed() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping edit_source_does_not_carry_input_cone_hash_forward_when_ops_changed: \
+             OCCT not available"
+        );
+        return;
+    }
+
+    let v1 = reify_test_support::parse_and_compile_with_stdlib(BOOL_SRC);
+    let v2 = reify_test_support::parse_and_compile_with_stdlib(BOOL_SRC_V2);
+
+    let mut engine = make_occt_engine();
+    let _ = engine.eval(&v1);
+    let _ = engine.build(&v1, ExportFormat::Step);
+
+    let r_combined = realization_for_cell(&engine, "BoolBody", "combined");
+    let r_c = realization_for_cell(&engine, "BoolBody", "body_c");
+
+    // Capture the OLD graph's state before edit_source replaces it.
+    let (old_content_hash_combined, old_content_hash_c, old_input_cone_c) = {
+        let graph = &engine.snapshot().unwrap().graph;
+        let combined = graph.realizations.get(&r_combined).unwrap();
+        let c = graph.realizations.get(&r_c).unwrap();
+
+        // PREMISE LOCK 1: α's write ran for BOTH. Without a populated stored
+        // hash the RED assertion below would be vacuous — `None` is exactly
+        // what it asserts, and it would already hold for the wrong reason.
+        assert!(
+            combined.input_cone_hash.is_some() && c.input_cone_hash.is_some(),
+            "premise: build() must populate BOTH input_cone_hash values before the \
+             recompile (α's write in execute_realization_ops). combined={:?} body_c={:?}",
+            combined.input_cone_hash,
+            c.input_cone_hash
+        );
+        (combined.content_hash, c.content_hash, c.input_cone_hash)
+    };
+
+    engine
+        .edit_source(&v2)
+        .expect("edit_source onto V2 must succeed");
+
+    let graph = &engine.snapshot().unwrap().graph;
+
+    // ── PREMISE LOCK 2: the ops really did change ──────────────────────
+    //
+    // The mirror image of the sibling test's PREMISE LOCK 2. `content_hash`
+    // renders the whole op IR through `Debug`, so `Boolean{op: Union, ..}` and
+    // `Boolean{op: Difference, ..}` hash differently. This is what puts
+    // `combined` into `diff_realizations`' `changed` set, giving the skip
+    // predicate something to key on.
+    assert_ne!(
+        graph.realizations.get(&r_combined).unwrap().content_hash,
+        old_content_hash_combined,
+        "premise: combined's STATIC content_hash must MOVE across a union→difference \
+         flip — that is what makes it a member of `changed_realizations`. If it did not \
+         move, the skip predicate has nothing to key on and this fixture no longer \
+         exercises the hazard."
+    );
+
+    // ── PREMISE LOCK 3: body_c is genuinely untouched ──────────────────
+    assert_eq!(
+        graph.realizations.get(&r_c).unwrap().content_hash,
+        old_content_hash_c,
+        "premise: body_c's ops must be byte-identical across the recompile, so it stays \
+         OUT of `changed_realizations` and the selectivity guard below is meaningful"
+    );
+
+    // ── THE RED ASSERTION ──────────────────────────────────────────────
+    assert_eq!(
+        graph.realizations.get(&r_combined).unwrap().input_cone_hash,
+        None,
+        "combined's OPS changed (union→difference), so its stored input_cone_hash must \
+         NOT be carried forward — it must keep the `None` that from_templates seeds \
+         (graph.rs:406). Carrying it forward is unsafe precisely because the fold is \
+         BLIND to this change: see the in-crate lock \
+         `input_cone_fold_is_blind_to_a_boolean_kind_flip` (engine_edit.rs), which pins \
+         that a union→difference flip folds to a byte-IDENTICAL hash. With the old hash \
+         carried forward, `refresh_and_gate_demanded_realizations` evaluates \
+         `stored != Some(current)` as FALSE, exempts the realization, never re-executes \
+         it, and the DELTA CONTRACT then retains the previously rendered mesh — stale \
+         geometry served for an edit the user made by hand."
+    );
+
+    // ── SELECTIVITY GUARD (green before AND after the fix) ─────────────
+    //
+    // The fix must be a TARGETED skip, not a blanket revert of the
+    // carry-forward. Losing body_c's carried hash would re-break γ/δ's
+    // "an unaffected body's cache entry survives" boundary case: from_templates
+    // reseeds it to `None`, the §11.2 `None` arm marks it conservatively
+    // changed forever, and γ's keyed eviction degenerates into the wholesale
+    // flush it exists to replace.
+    assert_eq!(
+        graph.realizations.get(&r_c).unwrap().input_cone_hash,
+        old_input_cone_c,
+        "body_c's ops are unchanged, so its stored input_cone_hash MUST still be carried \
+         forward. A `None` here means the carry-forward was reverted wholesale rather \
+         than narrowed to the ops-changed case."
+    );
+}
+
 // ── The propagation contract: the FIRST production caller of
 //    `compute_dirty_cone_with_realizations` ────────────────────────────────
 
