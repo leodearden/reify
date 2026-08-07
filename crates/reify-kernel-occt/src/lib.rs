@@ -548,15 +548,21 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
-/// Map a single-pass fuse result `OcctShape` to the [`BRepKind`] matching its
-/// actual top-level TopAbs type. `fuse_shape_list` yields a `SOLID` for an
-/// overlapping fuse and a `COMPSOLID` for a disjoint one; both `COMPSOLID` and
-/// `COMPOUND` are multi-body aggregates and classify as [`BRepKind::Compound`].
-/// Used by [`OcctKernel::fuse_all`] so the stored repr never claims a
-/// multi-body result is a single `Solid`. Any unrecognized type falls back to
+/// Map an `OcctShape` to the [`BRepKind`] matching its actual top-level TopAbs
+/// type, for ops whose result kind depends on their input rather than being
+/// fixed. Both `COMPSOLID` and `COMPOUND` are multi-body aggregates and
+/// classify as [`BRepKind::Compound`]. Any unrecognized type falls back to
 /// [`BRepKind::Solid`] (matches `store`'s implicit default).
+///
+/// Callers:
+/// - [`OcctKernel::fuse_all`] — `fuse_shape_list` yields a `SOLID` for an
+///   overlapping fuse and a `COMPSOLID` for a disjoint one, so the stored repr
+///   must not claim a multi-body result is a single `Solid`.
+/// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
+///   `loft_guided_profiles` solidify only when the section(s) were faces and
+///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
 #[cfg(has_occt)]
-fn brep_kind_of_fused(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
+fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
     Ok(match name.as_str() {
@@ -1011,7 +1017,7 @@ impl OcctKernel {
             // Identity passthrough: preserve the sole input's classification.
             self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
         } else {
-            brep_kind_of_fused(&fused)?
+            brep_kind_of_shape(&fused)?
         };
         Ok(self.store_with_repr(fused, repr))
     }
@@ -3174,6 +3180,11 @@ impl OcctKernel {
                 ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            // No Rust-side argument validation, unlike the LoftGuided / Pipe /
+            // ExtrudeInfinite neighbours: `make_pipe_shell` in
+            // cpp/occt_wrapper.{h,cpp} owns all three contracts — the section
+            // profile's, and the path's and guide's wire-ness — and raises a
+            // ContractViolation naming the offending argument and type.
             GeometryOp::SweepGuided {
                 profile,
                 path,
@@ -3182,8 +3193,18 @@ impl OcctKernel {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
                 let guide_shape = self.get_shape(*guide)?;
-                ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // The result kind is input-dependent, so it cannot use the
+                // default `store` (which stamps BRepKind::Solid): a face
+                // profile — the only kind a DSL `sweep_guided()` can supply —
+                // is capped into a SOLID, while a wire or vertex profile
+                // leaves an un-capped SHELL that no end cap can close. Stamping
+                // Solid on the latter would make `repr_of()` report a closed
+                // solid for a shape whose `IsClosed` is false, and mislead the
+                // sub-shape classification keyed off the repr.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3206,8 +3227,15 @@ impl OcctKernel {
                     let shape = self.get_shape(gid)?;
                     ffi::ffi::shape_vec_push(guide_vec.pin_mut(), shape);
                 }
-                ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Input-dependent result kind, exactly as for SweepGuided
+                // above: an all-face section set — the only kind a DSL
+                // `loft_guided()` can supply — is capped into a SOLID, while a
+                // mixed or all-wire set stays an un-capped SHELL. Stamp the
+                // repr the shape actually has rather than the default Solid.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::LineSegment {
                 x1,
