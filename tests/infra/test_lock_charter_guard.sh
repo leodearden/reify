@@ -647,4 +647,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Cycle 10 — live-corpus extension drift alarm (standing guard against a stale
+# _EXTS).  The extension-side mirror of Cycle 9.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 10: live-corpus drift alarm (_EXTS covers tracked corpus) ---"
+
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "  SKIP: $REPO_ROOT is not a git checkout — live-corpus sweep unavailable"
+else
+    run_list_extensions
+    assert "live-corpus ext drift: --list-extensions exits 0" test "$GUARD_RC" -eq 0
+    _emitted_exts="$GUARD_OUT"
+
+    # Tracked, non-gitlink, DOTTED final segments, reduced to their post-LAST-dot
+    # token.  Same sweep command as Cycle 9 through the gitlink filter and the
+    # final-segment split; only the terminal branch differs.
+    _tracked_exts="$(
+        git -C "$REPO_ROOT" ls-files -s -z \
+            | awk 'BEGIN { RS = "\0"; FS = "\t" }
+                   $1 !~ /^160000 / {
+                       n = split($2, s, "/"); seg = s[n]
+                       if (seg ~ /\./) { sub(/^.*\./, "", seg); if (seg != "") print seg }
+                   }' \
+            | LC_ALL=C sort -u
+    )"
+
+    # Non-vacuity: the sweep must actually find something, or every assertion
+    # below would pass by finding nothing to check.
+    assert "live-corpus ext drift: sweep found at least one tracked extension" \
+        test -n "$_tracked_exts"
+
+    while IFS= read -r _e; do
+        [ -z "$_e" ] && continue
+        assert "live-corpus ext drift: '$_e' present in --list-extensions" \
+            test "$(printf '%s\n' "$_emitted_exts" | grep -cxF "$_e")" -eq 1
+    done <<< "$_tracked_exts"
+fi
+
+# ---------------------------------------------------------------------------
 test_summary
