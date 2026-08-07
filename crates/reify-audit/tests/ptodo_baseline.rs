@@ -5,15 +5,25 @@
 //! (A) **`baseline_is_well_formed`** — always-on, hermetic. Reads
 //!   `crates/reify-audit/ptodo-baseline.txt` (resolved via `CARGO_MANIFEST_DIR`
 //!   so it works in any worktree), asserts the file EXISTS, and validates every
-//!   non-empty line against the `path :: kind :: text` grammar. The committed
-//!   baseline is intentionally EMPTY — the §6.4 zero-residual-debt end state —
-//!   which this test accepts as well-formed (it asserts existence + grammar, not
-//!   non-emptiness).
+//!   non-empty line against the `path :: kind :: text` grammar. This test
+//!   asserts existence + grammar, not emptiness either way.
+//!
+//!   The committed baseline was EMPTY (the §6.4 zero-residual-debt end state)
+//!   until task #6087 added the §8.1 lane δ-A recognizer — an
+//!   `#[allow(…dead_code…)]` attribute whose trailing rationale defers the
+//!   work. That lane surfaced a pre-existing population of 14 findings which
+//!   fingerprint (line-number-erased, deduped) to the 5 committed entries, and
+//!   they were seeded in the same diff as a SHRINK-ONLY grandfather set.
+//!   §6.6's ratchet cannot grow, so those entries can only be burned down: when
+//!   an underlying comment is re-pointed at a live task or the deferred work
+//!   lands, its baseline line is deleted. Every seeded entry was hand-inspected
+//!   as a genuine unmarked deferral; none is a false positive.
 //!
 //! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
 //!   content through the shared `validate_baseline_content` validator, so the
-//!   grammar/taxonomy/sort rules have real coverage that does NOT go inert while
-//!   the committed baseline is empty.
+//!   grammar/taxonomy/sort rules have real coverage independent of whatever the
+//!   committed baseline happens to contain (they were written while it was
+//!   empty and stay meaningful now that it is not).
 //!
 //! (B) **`live_findings_are_within_baseline`** — on-demand, `#[ignore]`.
 //!   Runs `ptodo::check` over the real working tree and asserts every live
@@ -78,8 +88,8 @@ const VALID_KINDS: &[&str] =
 /// grammar. Returns `Err(reason)` when the line is ill-formed.
 ///
 /// Pure (no I/O) so the rules it encodes are exercised by the `validate_*`
-/// unit tests over synthetic content — independent of whether the committed
-/// `ptodo-baseline.txt` happens to be empty.
+/// unit tests over synthetic content — independent of what the committed
+/// `ptodo-baseline.txt` happens to contain.
 fn check_baseline_line(line: &str) -> Result<(), String> {
     // Grammar: exactly two ` :: ` separators → three fields.
     let parts: Vec<&str> = line.splitn(3, " :: ").collect();
@@ -119,10 +129,11 @@ fn check_baseline_line(line: &str) -> Result<(), String> {
 /// are strictly sorted ascending (which also forbids duplicates). Returns
 /// `Err(reason)` on the first violation.
 ///
-/// An EMPTY input is valid — it is the §6.4 zero-residual end state. Because
-/// this is pure, the grammar/taxonomy/sort rules have real, permanent coverage
-/// via the `validate_*` unit tests below, rather than going inert whenever the
-/// committed baseline is empty.
+/// An EMPTY input remains valid — it is the §6.4 zero-residual end state, and
+/// the shrink-only ratchet's goal. It is no longer the CURRENT state: task
+/// #6087 seeded 5 grandfathered lane δ-A entries. Because this is pure, the
+/// grammar/taxonomy/sort rules have real, permanent coverage via the
+/// `validate_*` unit tests below regardless of the committed content.
 fn validate_baseline_content(content: &str) -> Result<(), String> {
     let mut prev: Option<&str> = None;
     for (lineno, line) in content.lines().enumerate() {
@@ -150,9 +161,10 @@ fn validate_baseline_content(content: &str) -> Result<(), String> {
 /// `path`, and the lines are strictly sorted ascending with no duplicates.
 ///
 /// An empty baseline PASSES — it is the §6.4 "zero residual debt" success state,
-/// not a failure. This test therefore asserts existence + well-formedness, NOT
-/// non-emptiness; the grammar rules themselves stay covered, whether or not the
-/// committed file is empty, by the `validate_*` unit tests below.
+/// not a failure. This test asserts existence + well-formedness, NOT emptiness
+/// in either direction; the grammar rules themselves stay covered, whatever the
+/// committed file contains, by the `validate_*` unit tests below. The committed
+/// file currently carries the 5 lane δ-A entries seeded by task #6087.
 #[test]
 fn baseline_is_well_formed() {
     let path = baseline_path();
@@ -181,12 +193,12 @@ fn baseline_is_well_formed() {
 // -----------------------------------------------------------------------
 // (A′) Synthetic-content coverage for the well-formedness rules
 //
-// The committed baseline is legitimately empty (zero residual debt), so
-// `baseline_is_well_formed` alone would leave every grammar/taxonomy/sort rule
-// inert (it would only exercise the `path.exists()` branch). These hermetic
-// unit tests drive crafted content straight through the SAME
-// `validate_baseline_content` validator, so the rules have real coverage that
-// does not depend on what the committed file contains.
+// These hermetic unit tests drive crafted content straight through the SAME
+// `validate_baseline_content` validator, so every grammar/taxonomy/sort rule has
+// real coverage that does not depend on what the committed file contains. They
+// were written while the baseline was empty — when `baseline_is_well_formed`
+// alone would have exercised only the `path.exists()` branch — and they remain
+// the permanent home of that coverage now that it is not.
 // -----------------------------------------------------------------------
 
 #[test]
