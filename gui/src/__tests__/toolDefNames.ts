@@ -37,7 +37,8 @@ import { fileURLToPath } from 'node:url';
  *     every literal in debug_server.rs is actually written.
  *   - `struct ToolDef {`'s own field `name: &'static str` is UNQUOTED, so it is
  *     never captured — only string-literal name fields are.  That is not a
- *     happy accident but the identity behind `analyzeToolDefs`' `-1`.
+ *     happy accident but the identity `analyzeToolDefs` leans on when it
+ *     discounts the struct declaration from the raw `ToolDef {` count.
  *   - A name containing characters outside [a-z0-9_] (e.g. uppercase or a
  *     hyphen) is DROPPED rather than captured.  The raw `ToolDef {` count in
  *     `analyzeToolDefs` still includes it, so such drift surfaces as a count
@@ -55,7 +56,13 @@ export interface ToolDefExtraction {
   names: string[];
   /** Every `ToolDef {` occurrence, including the `struct ToolDef {` definition. */
   rawToolDefCount: number;
-  /** `rawToolDefCount - 1` — the one non-literal occurrence is the struct definition. */
+  /**
+   * How many names the extraction SHOULD have found: every `ToolDef {`
+   * occurrence except the `struct ToolDef { … }` declaration(s), whose `name`
+   * field is unquoted and therefore structurally uncapturable.  Counted from
+   * the source rather than hardcoded as `- 1`, so the value stays meaningful
+   * for a source that declares the struct zero or more than once.
+   */
   expectedNameCount: number;
   /** Each name appearing more than once, listed once, in first-repeat order. */
   duplicates: string[];
@@ -75,6 +82,17 @@ export function analyzeToolDefs(rustSource: string): ToolDefExtraction {
   const names = extractToolDefNames(rustSource);
   const rawToolDefCount = rustSource.match(/ToolDef\s*\{/g)?.length ?? 0;
 
+  // The `struct ToolDef { … }` declaration is the one `ToolDef {` occurrence
+  // that can never yield a name, its `name` field being unquoted.  Counting
+  // the declarations from the source — rather than hardcoding `- 1` — makes
+  // that an invariant the code enforces instead of one it assumes: an empty or
+  // struct-free source yields `expectedNameCount === rawToolDefCount` instead
+  // of a nonsensical `-1`, and a second declaration (a `#[cfg(test)]` mod's,
+  // say) is discounted too.  A non-literal CONSTRUCTION such as
+  // `ToolDef { name: some_ident }` is deliberately NOT discounted: that is
+  // real drift, and the count mismatch is how it surfaces.
+  const structDeclCount = rustSource.match(/struct\s+ToolDef\s*\{/g)?.length ?? 0;
+
   const seen = new Set<string>();
   const duplicates: string[] = [];
   for (const name of names) {
@@ -88,7 +106,7 @@ export function analyzeToolDefs(rustSource: string): ToolDefExtraction {
   return {
     names,
     rawToolDefCount,
-    expectedNameCount: rawToolDefCount - 1,
+    expectedNameCount: rawToolDefCount - structDeclCount,
     duplicates,
   };
 }

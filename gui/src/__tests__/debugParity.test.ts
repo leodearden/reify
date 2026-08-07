@@ -103,7 +103,9 @@ describe('debug MCP parity: tool_defs() ↔ buildHandlers()', () => {
     // [a-z0-9_] (e.g. uppercase or hyphen), the name regex silently drops it
     // while the raw count still includes it — surfacing drift rather than
     // masking it behind a >= floor.
-    expect(extraction.names.length).toBe(extraction.expectedNameCount); // -1 for `struct ToolDef {`
+    // expectedNameCount discounts the `struct ToolDef {` declaration(s) that
+    // analyzeToolDefs counts in the source — not a hardcoded -1.
+    expect(extraction.names.length).toBe(extraction.expectedNameCount);
     // No duplicate tool_def names in debug_server.rs — a failure names the
     // offending tool rather than reporting a bare count mismatch.
     expect(extraction.duplicates).toStrictEqual([]);

@@ -89,17 +89,50 @@ describe('analyzeToolDefs', () => {
     });
   });
 
-  it('derives expectedNameCount as rawToolDefCount - 1', () => {
-    const src = `
-      struct ToolDef {
-          name: &'static str,
+  it('discounts the `struct ToolDef {` declarations it finds, not a hardcoded 1', () => {
+    // Empty source: nothing was expected, so 0 — not the -1 a hardcoded
+    // subtrahend would produce.
+    expect(analyzeToolDefs('')).toStrictEqual({
+      names: [],
+      rawToolDefCount: 0,
+      expectedNameCount: 0,
+      duplicates: [],
+    });
+
+    // Struct-free source — every occurrence is a capturable literal, so the
+    // expectation equals the raw count and the result is self-consistent.
+    expect(
+      analyzeToolDefs(`
+      ToolDef { name: "health", description: "liveness" },
+      ToolDef { name: "engine_state", description: "engine read" },
+    `),
+    ).toStrictEqual({
+      names: ['health', 'engine_state'],
+      rawToolDefCount: 2,
+      expectedNameCount: 2,
+      duplicates: [],
+    });
+
+    // Two declarations (e.g. a `#[cfg(test)]` mod re-declaring the struct)
+    // discount two.  Every expectation here is a literal, so this case fails
+    // under a hardcoded `- 1` rather than restating the formula.
+    expect(
+      analyzeToolDefs(`
+      struct ToolDef { name: &'static str }
+
+      #[cfg(test)]
+      mod tests {
+          struct ToolDef { name: &'static str }
       }
 
       ToolDef { name: "health", description: "liveness" },
-    `;
-    const result = analyzeToolDefs(src);
-    expect(result.rawToolDefCount).toBe(2);
-    expect(result.expectedNameCount).toBe(result.rawToolDefCount - 1);
+    `),
+    ).toStrictEqual({
+      names: ['health'],
+      rawToolDefCount: 3,
+      expectedNameCount: 1,
+      duplicates: [],
+    });
   });
 
   it('names a repeated tool in duplicates', () => {
