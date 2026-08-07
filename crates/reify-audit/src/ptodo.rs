@@ -1622,34 +1622,31 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // §8.1 deferral-prose matching — has_deferral_prose (lanes δ-A / δ-B)
+    // §8.1 deferral-prose matching — has_deferral_prose (lane δ-A)
     // -------------------------------------------------------------------
 
-    /// Verbatim rationale / comment substrings from the real evidence sites the
-    /// two anchored lanes exist to surface. Pinning the exact in-tree source
+    /// Verbatim rationale substrings from the real evidence sites the δ-A
+    /// allow-attribute lane exists to surface. Pinning the exact in-tree source
     /// text (rather than a paraphrase) keeps the user-observable signal covered
     /// at the unit level: if a refactor stops matching any of these, the lane
     /// has silently stopped reporting the debt it was built for.
     #[test]
     fn deferral_prose_positives() {
-        // crates/reify-eval/src/engine_build.rs:12891 — the δ-A rationale.
+        // crates/reify-eval/src/engine_build.rs:12891 — the δ-A rationale, and
+        // the one cited-orphaned site this task delivers end-to-end.
         assert!(has_deferral_prose(
             "production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring)"
-        ));
-        // crates/reify-core/src/diagnostics.rs:3991 — δ-B.
-        assert!(has_deferral_prose(
-            "that wiring is blocked on VolumeMesh realization (task #2947), mirroring"
-        ));
-        // crates/reify-core/src/diagnostics.rs:4046 — δ-B. The backticks here
-        // delimit `dispatch_volume_mesh`, NOT the needle, so guard 2 (which only
-        // inspects the bytes adjacent to the needle itself) leaves it alone.
-        assert!(has_deferral_prose(
-            "`dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will"
         ));
         // crates/reify-eval/src/engine_build.rs:2199 — δ-A rationale (legacy
         // `task 4050` cite form; the cite grammar is not this function's job).
         assert!(has_deferral_prose(
             "production wiring deferred to task 4050 (in-realization conversion executor)"
+        ));
+        // Guard 2 is scoped to the bytes adjacent to the NEEDLE, not to any
+        // backtick on the line: a rationale that code-spans a symbol name next
+        // to (but not around) the needle still matches.
+        assert!(has_deferral_prose(
+            "`dispatch_volume_mesh` wiring is blocked on the realization rewrite"
         ));
         assert!(has_deferral_prose("awaiting the solver rewrite"));
         assert!(has_deferral_prose("not yet wired into the dispatcher"));
@@ -1661,7 +1658,8 @@ mod tests {
     /// noisy, it would resolve through the β liveness lane to a High `orphaned`
     /// finding and hard-fail the merge gate. Guard 1 (case-sensitive,
     /// lowercase-only needles) kills six of the seven; guard 2 (quote/backtick
-    /// delimiter) is required for the seventh.
+    /// delimiter) is required for the seventh; guard 3 (word boundary) kills the
+    /// identifier class (`mark_pending_with_cause`), measured under task #6087.
     #[test]
     fn deferral_prose_negatives() {
         // --- guard 1: lowercase-only needles ---
@@ -1697,6 +1695,22 @@ mod tests {
         assert!(!has_deferral_prose(
             "\"pending\"` (task #4739 γ): a hidden body's cell keeps its cached prior"
         ));
+
+        // --- guard 3: word boundary (the identifier class) ---
+        // A needle occurrence flanked by an ASCII word byte or `_` is part of an
+        // identifier, not prose. Both lines below are verbatim from
+        // crates/reify-eval/src/cache.rs (:968, :3651); `mark_pending_with_cause`
+        // and `mark_pruned_pending` are real symbols there (:926-:968, :1013).
+        // Measured under task #6087: this class is why guard 3 exists.
+        assert!(!has_deferral_prose(
+            "cause via mark_pending_with_cause (task #2330 §9.2 invariant)."
+        ));
+        assert!(!has_deferral_prose(
+            "--- mark_pruned_pending producer tests (task #4739 γ) ---"
+        ));
+        // Word-boundary symmetry: a trailing word byte disqualifies too, so a
+        // needle used as an identifier PREFIX cannot match either.
+        assert!(!has_deferral_prose("the pendingWrites queue is drained here"));
 
         // --- real allow-rationales that are NOT deferrals (the dominant benign
         // class among the 68 measured δ-A candidates) ---
