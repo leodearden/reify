@@ -278,19 +278,75 @@ pub(crate) fn dependent_cell_auto_reads(
 /// is exactly what `dependent_cell_auto_reads` returns for an empty
 /// `dependent_cells`) inserts nothing, so every downstream ref set, union edge
 /// and `referenced_params` list is byte-identical to the pre-α behaviour.
+///
+/// Returns the ids the expansion REACHED — i.e. exactly the autos that were
+/// invisible to the caller's own syntactic walk. The constraint side needs that
+/// delta (and not just the widened set) to widen the DOMAIN classification the
+/// same way it widens the connectivity; returning it from here keeps that a
+/// by-product of the ONE expansion body instead of a second, drifting walk (G7).
+/// The list may contain ids the caller already held — re-reaching an already
+/// present auto is a no-op for both consumers. Callers that only want the
+/// widened set may drop the return value.
 pub(crate) fn expand_refs_through_dependent_cells(
     refs: &mut HashSet<ValueCellId>,
     auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
-) {
+) -> Vec<ValueCellId> {
     if auto_reads.is_empty() {
-        return;
+        return Vec::new();
     }
     let reached: Vec<ValueCellId> = refs
         .iter()
         .filter_map(|id| auto_reads.get(id))
         .flat_map(|autos| autos.iter().cloned())
         .collect();
-    refs.extend(reached);
+    refs.extend(reached.iter().cloned());
+    reached
+}
+
+/// The domain flag a bare auto param of this type contributes, mirroring
+/// `ConstraintClassifier`'s `ValueRef` arm exactly (numeric → `Dimensional`,
+/// `Bool` → `Logical`, anything else → no contribution).
+///
+/// `None` means "contributes nothing", which is NOT the same as `Dimensional`:
+/// `Dimensional` doubles as the classifier's empty-default, so folding a
+/// `String`/`Enum`-typed auto in as `Dimensional` would fabricate a numeric flag
+/// the classifier itself never sets.
+fn domain_of_auto_type(param_type: &reify_core::Type) -> Option<ConstraintDomain> {
+    if param_type.is_numeric() {
+        Some(ConstraintDomain::Dimensional)
+    } else if *param_type == reify_core::Type::Bool {
+        Some(ConstraintDomain::Logical)
+    } else {
+        None
+    }
+}
+
+/// Least upper bound of two constraint domains, reproducing
+/// `ConstraintClassifier`'s own flag algebra on the collapsed enum: reconstruct
+/// each side's flags (`Dimensional` → numeric, `Logical` → logical, `Geometric`
+/// → geometric, `CrossDomain` → geometric+numeric+logical), OR them, and
+/// re-apply the classifier's `into_domain` rules — geometric wins over numeric,
+/// and logical mixed with ANYTHING else is `CrossDomain`.
+///
+/// Kept here rather than in `classifier.rs` because it exists only to widen an
+/// ALREADY-classified constraint with autos the classifier could not see; the
+/// classifier's own single-expression contract is unchanged.
+fn widen_domain(a: ConstraintDomain, b: ConstraintDomain) -> ConstraintDomain {
+    use ConstraintDomain::{CrossDomain, Dimensional, Geometric, Logical};
+    if a == b {
+        return a;
+    }
+    match (a, b) {
+        (CrossDomain, _) | (_, CrossDomain) => CrossDomain,
+        // logical + (numeric | geometric) → mixed
+        (Logical, _) | (_, Logical) => CrossDomain,
+        // geometric absorbs numeric (the classifier reports `Geometric` for a
+        // geometry call over numeric leaves)
+        (Geometric, Dimensional) | (Dimensional, Geometric) => Geometric,
+        // exhaustive: the only remaining pair is (Dimensional, Dimensional),
+        // already returned by the `a == b` fast path above.
+        _ => Dimensional,
+    }
 }
 
 /// Decompose a constraint problem into independent connected components.
@@ -369,7 +425,7 @@ pub(crate) fn decompose_into_components_with_reads(
         // empty `auto_reads` this inserts nothing and the ref set — hence the
         // union edges and `referenced_params` below — is byte-identical to
         // pre-α.
-        expand_refs_through_dependent_cells(&mut refs, auto_reads);
+        let reached = expand_refs_through_dependent_cells(&mut refs, auto_reads);
 
         // Filter to only auto params
         let referenced: Vec<usize> = refs
@@ -387,7 +443,39 @@ pub(crate) fn decompose_into_components_with_reads(
             uf.union(referenced[0], referenced[i]);
         }
 
-        let domain = ConstraintClassifier::classify(expr);
+        // Domain classification must be widened WHEREVER connectivity was
+        // widened, or the two disagree about the same component (task #5467
+        // amendment). `ConstraintClassifier::classify` reads the SYNTACTIC
+        // expression only, and each `ValueRef` contributes its own
+        // `result_type`; an auto reached only THROUGH a derived cell has no
+        // `ValueRef` node here at all, so its type is invisible to the walk.
+        //
+        // Worked case: `let ok = a > 5.0; constraint ok == true` with a `Real`
+        // auto `a`. Post-α the union step pulls `a` into this component, but
+        // the classifier sees `{ok: Bool, literal true}` and reports `Logical`.
+        // A registry that wires a Bool/Enum-only solver into the `Logical` slot
+        // (`CpSatSolver`, once PRD2 γ wires it) would then hand a `Real` auto to
+        // `build_variable_domain`, get `Err("does not support param type …")`,
+        // and fail the WHOLE component with `NoProgress`. Widening to
+        // `CrossDomain` routes it to the fallback slot instead, which is what a
+        // component holding both a Bool cell and a Real auto actually is.
+        // `SolverRegistry::production()` leaves both `logical` and `fallback`
+        // `None`, so both spellings fall back to `DimensionalSolver` and
+        // production routing is unchanged today.
+        //
+        // D1/B2 IDENTITY: only the EXPANSION'S OWN reach is folded in, never
+        // the syntactically-referenced autos (whose types the classifier
+        // already saw via their `ValueRef` nodes). An empty `auto_reads`
+        // returns an empty `reached`, so this loop never runs and the domain is
+        // bit-identical to pre-α.
+        let mut domain = ConstraintClassifier::classify(expr);
+        for id in &reached {
+            if let Some(&pi) = param_index.get(id)
+                && let Some(d) = domain_of_auto_type(&auto_params[pi].param_type)
+            {
+                domain = widen_domain(domain, d);
+            }
+        }
 
         constraint_infos.push(ConstraintInfo {
             constraint_idx: ci,
@@ -731,6 +819,145 @@ mod tests {
             2,
             "…holding both autos; got {:?}",
             got[0].auto_params,
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // LAYER 2 — the DOMAIN classification must widen wherever connectivity did
+    //
+    // Widening connectivity without widening classification leaves the two
+    // disagreeing about the same component: the union step pulls in an auto the
+    // classifier never saw a `ValueRef` for, so `SubProblem.domain` describes
+    // only the constraint's syntax while `SubProblem.auto_params` describes the
+    // widened reality. `SolverRegistry::solver_for` routes on `domain`, so the
+    // disagreement is a mis-ROUTING, latent only because `production()` leaves
+    // both the `Logical` and the `CrossDomain` slot `None`.
+    // -----------------------------------------------------------------------
+
+    fn bool_cell_ref(entity: &str, member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new(entity, member), Type::Bool)
+    }
+
+    fn gt_lit(l: CompiledExpr, v: f64) -> CompiledExpr {
+        CompiledExpr::binop(
+            BinOp::Gt,
+            l,
+            CompiledExpr::literal(Value::Real(v), Type::length()),
+            Type::Bool,
+        )
+    }
+
+    fn eq_true(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(
+            BinOp::Eq,
+            e,
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        )
+    }
+
+    /// A `Bool`-typed derived cell over a NUMERIC auto: `let ok = a > 5.0`,
+    /// `constraint ok == true`.
+    ///
+    /// The syntactic classification is `Logical` — the walk sees only
+    /// `{ok: Bool, literal true}`. Post-α the auto `S.a` (a dimensioned
+    /// `Scalar`) is nonetheless unioned into this component, so a `Logical`
+    /// verdict would route a numeric auto to whatever sits in the `Logical`
+    /// slot. `CpSatSolver` — the intended occupant once PRD2 γ wires it —
+    /// answers `Err("CpSatSolver does not support param type …")` from
+    /// `build_variable_domain` and fails the entire component with
+    /// `NoProgress`. `CrossDomain` is the honest description and routes to the
+    /// fallback slot instead.
+    #[test]
+    fn a_bool_cell_over_a_numeric_auto_widens_the_domain_to_cross_domain() {
+        let params = vec![alpha_auto("S", "a")];
+        let constraints = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_true(bool_cell_ref("S", "ok")),
+        )];
+        let dependent_cells = vec![(
+            ValueCellId::new("S", "ok"),
+            gt_lit(alpha_vref("S", "a"), 5.0),
+        )];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "fixture integrity: `constraint ok == true` must reach `S.a` \
+             through `let ok = a > 5.0`, or the domain assertion below is \
+             vacuous; got {components:?}",
+        );
+        assert!(
+            components[0].auto_params.contains(&ValueCellId::new("S", "a")),
+            "fixture integrity: the component must actually hold the numeric \
+             auto whose routing is under test; got {:?}",
+            components[0].auto_params,
+        );
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::CrossDomain,
+            "the component couples a Bool-typed derived cell with a NUMERIC \
+             auto, so it is cross-domain. Getting `Logical` means the \
+             classification stayed syntactic while connectivity went \
+             transitive — and a registry with `CpSatSolver` in the `Logical` \
+             slot then fails the whole component with `NoProgress` because \
+             `build_variable_domain` rejects a Scalar param type",
+        );
+    }
+
+    /// The all-numeric α fixture must stay `Dimensional`. The widening folds in
+    /// the reached autos' OWN types, and `S.a`/`S.b` are dimensioned scalars,
+    /// so there is nothing non-numeric to mix in — this is the guard that the
+    /// widening does not smear every let-indirected component to `CrossDomain`
+    /// and route the PRD2 α leaf signal away from `DimensionalSolver`.
+    #[test]
+    fn the_all_numeric_alpha_fixture_stays_dimensional() {
+        let (params, constraints, dependent_cells) = alpha_fixture();
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(components.len(), 1, "fixture integrity; got {components:?}");
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::Dimensional,
+            "`let s = a + b; constraint s == 10.0` over numeric autos is \
+             purely dimensional — widening must add a flag only when a reached \
+             auto's type actually differs from what the classifier already saw",
+        );
+    }
+
+    /// A `Bool` cell over a `Bool` auto stays `Logical`. Paired with the
+    /// numeric case deliberately: alone, either could pass on a widening that
+    /// unconditionally returned `CrossDomain` for any let-indirected
+    /// constraint.
+    #[test]
+    fn a_bool_cell_over_a_bool_auto_stays_logical() {
+        let params = vec![AutoParam {
+            id: ValueCellId::new("S", "a"),
+            param_type: Type::Bool,
+            bounds: None,
+            free: true,
+        }];
+        let constraints = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_true(bool_cell_ref("S", "ok")),
+        )];
+        let dependent_cells = vec![(
+            ValueCellId::new("S", "ok"),
+            CompiledExpr::unop(reify_ir::UnOp::Not, bool_cell_ref("S", "a"), Type::Bool),
+        )];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(components.len(), 1, "fixture integrity; got {components:?}");
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::Logical,
+            "`let ok = not(a); constraint ok == true` over a Bool auto is \
+             purely logical — the reached auto contributes the SAME flag the \
+             classifier already had, so the widening must be a no-op here",
         );
     }
 

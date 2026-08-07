@@ -187,7 +187,10 @@ impl SolverRegistry {
                 // #5467 layer 2) rather than hand-rolled here — the same helper
                 // the decomposition's own constraint and objective sides use,
                 // so the three cannot drift out of lock-step (G7).
-                crate::decompose::expand_refs_through_dependent_cells(
+                // The returned reach-delta is only of interest to the
+                // decomposition's own domain widening; here the widened set is
+                // the whole point.
+                let _ = crate::decompose::expand_refs_through_dependent_cells(
                     &mut refs,
                     &dependent_auto_reads,
                 );
@@ -361,28 +364,34 @@ impl SolverRegistry {
             //   cell whose auto reads are unknown is exactly one we cannot prove
             //   is foldable here.
             //
-            // # SCOPE of "structurally impossible" — objective refs only
+            // # SCOPE of "structurally impossible" — now BOTH ref sides
             //
-            // The expansion above is applied to `obj_refs` ONLY.
-            // `decompose_into_components` still unions a CONSTRAINT's autos
-            // purely SYNTACTICALLY, so the guarantee is scoped to reads that
-            // happen inside the fold and the objective, NOT to every read in the
-            // model.  A constraint that reaches a second auto only THROUGH a
-            // derived cell — `a + side >= K` where `side = SIDE_COEFF*c` — still
-            // splits `a` and `c` into separate components, because the union
-            // step sees only the syntactic ref `side` and filters it away as a
-            // non-auto.  This filter then also removes `side` from the `{a}`
-            // component, since `{c}` is not a subset of `{a}`, and the
-            // constraint is evaluated each trial against whatever stale `side`
-            // sits in `current_values`.
+            // When task #5720 landed the filter, the expansion was applied to
+            // `obj_refs` ONLY: `decompose_into_components` still unioned a
+            // CONSTRAINT's autos purely SYNTACTICALLY, so a constraint that
+            // reached a second auto only THROUGH a derived cell —
+            // `a + side >= K` where `side = SIDE_COEFF*c` — split `a` and `c`
+            // into separate components.  The union step saw only the syntactic
+            // ref `side` and filtered it away as a non-auto; this filter then
+            // removed `side` from the `{a}` component too (since `{c}` is not a
+            // subset of `{a}`) and the constraint was evaluated each trial
+            // against whatever stale `side` sat in `current_values`.
             //
-            // That coupling gap PRE-DATES task #5720 — decomposition has always
-            // unioned constraint refs syntactically — but this filter does change
-            // its symptom, from a loud `Undef` (the wholesale list folded `side`
-            // against an unowned `c`) to a silent stale read.  Closing it means
-            // expanding constraint refs through `dependent_auto_reads` the same
-            // way, which changes decomposition for every existing model and is
-            // deliberately OUT OF SCOPE here; it is filed as its own follow-up.
+            // LAYER 2 (task #5467 / PRD2 α) CLOSES that gap: the constraint
+            // side is expanded through `dependent_auto_reads` by the SAME
+            // `expand_refs_through_dependent_cells` body (decompose.rs), so
+            // `a + side >= K` now unions `a` and `c` into ONE component, `side`
+            // is a subset of that component's autos, and the filter RETAINS it.
+            // The stale-silent-read failure mode is therefore gone, and the
+            // guarantee above is no longer scoped to fold-and-objective reads:
+            // every read that can couple two autos now couples them for real,
+            // whichever side of the problem it appears on.
+            //
+            // What the filter still drops is unchanged and still deliberate: a
+            // cell whose transitive auto set is UNKNOWN (the cycle case in the
+            // bullet above).  Do not read the closure of the coupling gap as a
+            // licence to widen the subset test — the subset test is what bounds
+            // the per-trial fold to the component's own cells.
             let sub_problem = ResolutionProblem {
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
