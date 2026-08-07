@@ -1622,6 +1622,105 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.1 deferral-prose matching — has_deferral_prose (lanes δ-A / δ-B)
+    // -------------------------------------------------------------------
+
+    /// Verbatim rationale / comment substrings from the real evidence sites the
+    /// two anchored lanes exist to surface. Pinning the exact in-tree source
+    /// text (rather than a paraphrase) keeps the user-observable signal covered
+    /// at the unit level: if a refactor stops matching any of these, the lane
+    /// has silently stopped reporting the debt it was built for.
+    #[test]
+    fn deferral_prose_positives() {
+        // crates/reify-eval/src/engine_build.rs:12891 — the δ-A rationale.
+        assert!(has_deferral_prose(
+            "production wiring pending task #4744 (volume-mesh-realization-and-morph-wiring)"
+        ));
+        // crates/reify-core/src/diagnostics.rs:3991 — δ-B.
+        assert!(has_deferral_prose(
+            "that wiring is blocked on VolumeMesh realization (task #2947), mirroring"
+        ));
+        // crates/reify-core/src/diagnostics.rs:4046 — δ-B. The backticks here
+        // delimit `dispatch_volume_mesh`, NOT the needle, so guard 2 (which only
+        // inspects the bytes adjacent to the needle itself) leaves it alone.
+        assert!(has_deferral_prose(
+            "`dispatch_volume_mesh` (blocked on task #2947).  The future dispatcher will"
+        ));
+        // crates/reify-eval/src/engine_build.rs:2199 — δ-A rationale (legacy
+        // `task 4050` cite form; the cite grammar is not this function's job).
+        assert!(has_deferral_prose(
+            "production wiring deferred to task 4050 (in-realization conversion executor)"
+        ));
+        assert!(has_deferral_prose("awaiting the solver rewrite"));
+        assert!(has_deferral_prose("not yet wired into the dispatcher"));
+    }
+
+    /// False-positive control. Every line in the first two groups is VERBATIM
+    /// from the pinned false-positive set measured over the live corpus, and
+    /// each cites a task that is already `done` — so a match would not merely be
+    /// noisy, it would resolve through the β liveness lane to a High `orphaned`
+    /// finding and hard-fail the merge gate. Guard 1 (case-sensitive,
+    /// lowercase-only needles) kills six of the seven; guard 2 (quote/backtick
+    /// delimiter) is required for the seventh.
+    #[test]
+    fn deferral_prose_negatives() {
+        // --- guard 1: lowercase-only needles ---
+        // `Pending` here is the NodeCache freshness enum VARIANT, not prose.
+        // crates/reify-eval/src/cache.rs:977
+        assert!(!has_deferral_prose(
+            "Demand-prune **Pending producer** (task #4739 γ): flip every cached node"
+        ));
+        // crates/reify-eval/src/cache.rs:1055
+        assert!(!has_deferral_prose(
+            "builds (task #2592, parity with the Pending guard from task #2451)."
+        ));
+        // crates/reify-eval/src/cache.rs:1418
+        assert!(!has_deferral_prose(
+            "is enforced via `assert!` in all builds (task #2592, parity with the Pending"
+        ));
+        // crates/reify-eval/src/cache.rs:3917
+        assert!(!has_deferral_prose(
+            "--- set_freshness precondition: Pending is forbidden (task #2451, step-1) ---"
+        ));
+        // crates/reify-eval/src/cache.rs:4156
+        assert!(!has_deferral_prose(
+            "#2328): Failed and Pending inputs now produce a Pending output rather than"
+        ));
+        // crates/reify-eval/src/engine_demand.rs:110
+        assert!(!has_deferral_prose(
+            "Demand-prune **Pending producer** wired at the Engine facade (task #4739 γ)."
+        ));
+
+        // --- guard 2: quote / backtick delimiter ---
+        // gui/src-tauri/src/types.rs:1010 — the needle IS lowercase, so guard 1
+        // alone lets it through; it is a quoted state name, not deferral prose.
+        assert!(!has_deferral_prose(
+            "\"pending\"` (task #4739 γ): a hidden body's cell keeps its cached prior"
+        ));
+
+        // --- real allow-rationales that are NOT deferrals (the dominant benign
+        // class among the 68 measured δ-A candidates) ---
+        assert!(!has_deferral_prose(
+            "used by some, but not all, test binaries that include this module"
+        ));
+        assert!(!has_deferral_prose("Phase-1 scaffold; consumed in later phases"));
+        assert!(!has_deferral_prose(""));
+    }
+
+    /// Case-sensitivity is load-bearing, not incidental. `has_blocker_prose`
+    /// lowercases its input; copying that here would reintroduce the entire
+    /// `Pending`-enum-variant false-positive class pinned above. Assert the
+    /// asymmetry directly so such a "simplification" fails loudly.
+    #[test]
+    fn deferral_prose_is_case_sensitive() {
+        assert!(has_deferral_prose("pending"));
+        assert!(!has_deferral_prose("Pending"));
+        assert!(!has_deferral_prose("PENDING"));
+        assert!(has_deferral_prose("blocked on"));
+        assert!(!has_deferral_prose("Blocked on"));
+    }
+
+    // -------------------------------------------------------------------
     // §8.1 marker recognition — ignore attributes (.rs)
     // -------------------------------------------------------------------
 
