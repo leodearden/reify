@@ -50,13 +50,24 @@
 #
 #   There are now TWO shared vectors across this seam, at different stages.
 #
-#   STATUS 2026-07-31 (#5890) — EXTENSION vector: CONVERGED.  dark_factory:3117
-#   has landed; DF main carries 58 CODE_EXTENSIONS entries, set-identical to
-#   _EXTS (measured, both sides).  The former "γ still pins 36 entries" note and
-#   both of its consequences are obsolete and have been removed rather than
-#   dated — they described a state that no longer exists.  Its predecessor reify
-#   #5737 was cancelled as a cross-repo misfile and drained INTO 3117 — cite
-#   3117, never #5737.  (Origin ticket: tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
+#   STATUS 2026-08-07 (#6067) — EXTENSION vector: CONVERGED.  Both sides now
+#   carry 59 entries, set-identical (measured, both sides).  dark_factory:3117
+#   converged the two at 58 first; dark-factory commit 43410b3418 then widened
+#   γ to 59 by adding `csv`, and this task (#6067) followed with the matching
+#   α widening.  THE SEQUENCING INVERTED THIS TIME, and that is the finding,
+#   not an aside: γ landed `csv` FIRST, to heal a ~13.7h DF main-red /
+#   merge-lane deadlock (DF corpus plans/evidence/scheduler-scoring-2026-08-06/
+#   *.csv, landed e1c51efa8d, RED'd DF's
+#   test_every_tracked_extension_is_allowlisted), and α followed after.  That
+#   is the opposite of this block's own "α ships the primitive, γ mirrors it"
+#   rule (below) and of the repo-wide CLAUDE.md convention "reify ships the
+#   primitive, dark-factory wires the invocation" — the prior convergence
+#   (dark_factory:3117) was α-first, so this is the first documented case of
+#   the inversion.  The former "γ still pins 36 entries" note and both of its
+#   consequences remain obsolete and removed rather than dated.  Its
+#   predecessor reify #5737 was cancelled as a cross-repo misfile and drained
+#   INTO 3117 — cite 3117, never #5737.  (Origin ticket:
+#   tkt_0RRT3KW6B9KF72BHDY5Q038R7Y.)
 #
 #   STATUS 2026-07-31 (#5890) — EXTENSIONLESS vector: α LEADS, γ LAGS.  This
 #   script accepts the 8 _EXTLESS basenames as of this task; γ does not.
@@ -70,12 +81,42 @@
 #   backstop.  This task alone does not make those paths declarable end-to-end.
 #   This is the same reify-leads shape as #5726 → 3117 and is handled the same
 #   way: α ships the primitive, γ mirrors it, and this block is the seam record.
-#   It is SAFE to lead, because γ's existing Tier-2 cross-source drift test
-#   (fused-memory/tests/test_lock_charter_guard.py
-#   ::test_extension_drift_guard_vs_reify_script) invokes only --list-extensions
-#   and compares against sorted(CODE_EXTENSIONS) — a surface this task leaves
-#   byte-identical.  The new --list-extensionless emitter is what lets 3248 add
-#   the matching Tier-2 comparison for the second vector from its side.
+#   This block used to argue it was SAFE to lead because γ's Tier-2
+#   cross-source drift test (fused-memory/tests/test_lock_charter_guard.py
+#   ::test_extension_drift_guard_vs_reify_script) was live and comparing
+#   against this script.  MEASURED 2026-08-07 (#6067): that premise is FALSE.
+#   The test resolves its target as
+#   `_REIFY_GUARD_SCRIPT = Path(__file__).parents[5] / 'reify' / 'scripts' /
+#   'lock-charter-guard.sh'` (test file line 64); from a MAIN (non-worktree)
+#   dark-factory checkout this resolves to /home/reify/scripts/
+#   lock-charter-guard.sh, verified non-existent (`.exists()` -> False).  The
+#   test carries `@pytest.mark.skipif(not _REIFY_GUARD_SCRIPT.is_file(), ...)`
+#   (line 77), so it is SKIPPED AT COLLECTION — confirmed by running it:
+#   `SKIPPED [1] tests/test_lock_charter_guard.py:77: reify script not present
+#   (standalone checkout; cross-repo drift check skipped)`.  It never reaches
+#   its own body's fallback `bash <path>` invocation at all.
+#   Hypothesis, not verified as THE fix: the test file's own comment (lines
+#   61-63) says the path is "resolved from the test file location; works in
+#   the dark-factory worktree layout: <src>/dark-factory/.worktrees/<n>/
+#   fused-memory/tests/ → <src>/reify/" — i.e. `parents[5]` looks calibrated
+#   for a dark-factory checkout nested one level deeper inside
+#   `.worktrees/<n>/`.  Measured on this host: `parents[3]`, not `parents[5]`,
+#   resolves to the correct `<src>` from the MAIN dark-factory checkout at
+#   /home/leo/src/dark-factory.  Whether dark-factory's normal test runs
+#   happen inside a worktree (where parents[5] may be the one that's right) or
+#   the main checkout (where parents[3] is) is dark-factory's call, not
+#   measured here — so this is NOT a ready-made one-line fix, only a located
+#   symptom.  The repair is out of scope for this task (outside reify
+#   entirely); filed as escalate_info + a follow-up ticket from #6067.
+#   CONSEQUENCE, plainly: for as long as that guard skips, this seam has NO
+#   live automated cross-source check on the extension vector either — γ's
+#   Tier-1 test (test_extension_drift_guard, line 67) only compares γ to γ,
+#   and α's Cycle 4 in tests/infra/test_lock_charter_guard.sh only compares α
+#   to a pin inside α.  Today's csv drift (α at 58 while γ had already moved
+#   to 59) was found by human/reconciliation review, not by a gate, and the
+#   next one will be too until this is fixed.  The new --list-extensionless
+#   emitter still gives 3248 the vector it needs to add the matching
+#   comparison for the second vector, once the path resolution works.
 
 set -euo pipefail
 
