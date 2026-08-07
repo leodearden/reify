@@ -85,38 +85,24 @@
 #   cross-source drift test (fused-memory/tests/test_lock_charter_guard.py
 #   ::test_extension_drift_guard_vs_reify_script) was live and comparing
 #   against this script.  MEASURED 2026-08-07 (#6067): that premise is FALSE.
-#   The test resolves its target as
-#   `_REIFY_GUARD_SCRIPT = Path(__file__).parents[5] / 'reify' / 'scripts' /
-#   'lock-charter-guard.sh'` (test file line 64); from a MAIN (non-worktree)
-#   dark-factory checkout this resolves to /home/reify/scripts/
-#   lock-charter-guard.sh, verified non-existent (`.exists()` -> False).  The
-#   test carries `@pytest.mark.skipif(not _REIFY_GUARD_SCRIPT.is_file(), ...)`
-#   (line 77), so it is SKIPPED AT COLLECTION — confirmed by running it:
-#   `SKIPPED [1] tests/test_lock_charter_guard.py:77: reify script not present
-#   (standalone checkout; cross-repo drift check skipped)`.  It never reaches
-#   its own body's fallback `bash <path>` invocation at all.
-#   Hypothesis, not verified as THE fix: the test file's own comment (lines
-#   61-63) says the path is "resolved from the test file location; works in
-#   the dark-factory worktree layout: <src>/dark-factory/.worktrees/<n>/
-#   fused-memory/tests/ → <src>/reify/" — i.e. `parents[5]` looks calibrated
-#   for a dark-factory checkout nested one level deeper inside
-#   `.worktrees/<n>/`.  Measured on this host: `parents[3]`, not `parents[5]`,
-#   resolves to the correct `<src>` from the MAIN dark-factory checkout at
-#   /home/leo/src/dark-factory.  Whether dark-factory's normal test runs
-#   happen inside a worktree (where parents[5] may be the one that's right) or
-#   the main checkout (where parents[3] is) is dark-factory's call, not
-#   measured here — so this is NOT a ready-made one-line fix, only a located
-#   symptom.  The repair is out of scope for this task (outside reify
-#   entirely); filed as escalate_info + a follow-up ticket from #6067.
-#   CONSEQUENCE, plainly: for as long as that guard skips, this seam has NO
-#   live automated cross-source check on the extension vector either — γ's
-#   Tier-1 test (test_extension_drift_guard, line 67) only compares γ to γ,
-#   and α's Cycle 4 in tests/infra/test_lock_charter_guard.sh only compares α
-#   to a pin inside α.  Today's csv drift (α at 58 while γ had already moved
-#   to 59) was found by human/reconciliation review, not by a gate, and the
-#   next one will be too until this is fixed.  The new --list-extensionless
-#   emitter still gives 3248 the vector it needs to add the matching
-#   comparison for the second vector, once the path resolution works.
+#   That test resolves this script's path relative to its own file location;
+#   the resolution does not land on a real file, so its skipif marker drops
+#   the test AT COLLECTION on every run — it has never compared anything.
+#   Repair is dark-factory's, not reify's.  The measured paths, the confirming
+#   SKIPPED line, and the located-symptom hypothesis are recorded in
+#   escalation esc-6067-2 (which also carries the dark-factory tracking
+#   ticket) and are deliberately NOT restated here: foreign-repo line cites
+#   and host paths rot on the next edit to that file, and nothing on either
+#   side gates them — which is exactly the failure this seam exists to catch.
+#   CONSEQUENCE, plainly: while that guard skips, this seam has NO live
+#   automated cross-source check on EITHER vector — γ's Tier-1 drift test
+#   compares γ only to γ, and α's Cycle 4 in
+#   tests/infra/test_lock_charter_guard.sh compares α only to a pin inside α.
+#   Today's csv drift (α at 58 while γ had already moved to 59) was found by
+#   human/reconciliation review, not by a gate, and the next one will be too
+#   until this is fixed.  The new --list-extensionless emitter still gives
+#   3248 the vector it needs to add the matching comparison for the second
+#   vector, once the path resolution works.
 
 set -euo pipefail
 
