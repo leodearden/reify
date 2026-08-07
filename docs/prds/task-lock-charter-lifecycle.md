@@ -477,13 +477,16 @@ are the dark-factory external-deps.
    - the **extensionless-basename** allowlist (C-P1 clause (ii)), emitted by
      `--list-extensionless`. γ's mirror of it is `dark_factory:3248`.
 
-   Completeness is not a one-time answer for either: both have already been found stale
-   by a manual sweep once (extensions at 36→58, `dark_factory:3117`; basenames at
-   0→8, `dark_factory:3248`). The standing defence is the live-corpus subset alarm in
-   `tests/infra/test_lock_charter_guard.sh` (Cycle 9), which re-runs the sweep in CI and
-   goes RED when a tracked extensionless basename is missing from the α vector. A RED
-   there is fixed by updating α **and** γ together — the emitters exist so the two can be
-   compared byte-for-byte rather than by eye.
+   Completeness is not a one-time answer for either: the extension vector has already
+   been found stale by a manual sweep **twice** (36→58, `dark_factory:3117`, 2026-07-28;
+   then 58→59, reify #6067 / dark-factory commit 43410b3418, 2026-08-07, adding `csv`),
+   while the basename vector has been found stale **once** (0→8, `dark_factory:3248`).
+   The live-corpus subset alarm in `tests/infra/test_lock_charter_guard.sh` (Cycle 9),
+   which re-runs the sweep in CI and goes RED when a tracked extensionless basename is
+   missing from the α vector, is the standing defence for the **extensionless-basename**
+   vector only — there is no live-corpus drift alarm for the extension vector yet (tracked
+   as reify #6068). A RED there is fixed by updating α **and** γ together — the emitters
+   exist so the two can be compared byte-for-byte rather than by eye.
 3. **ε hide-point.** Precise architect-input field to suppress (`plan_tools.create_plan`
    args vs the briefing prompt assembly) — confirm at ε impl (§6 ⚠️).
 4. **set-to-plan event shape.** Whether the release emits per-module `lock_released` (as
