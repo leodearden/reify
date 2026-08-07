@@ -32,7 +32,7 @@ tasks:
   title: compiler consumes registry ahead of legacy arms; CompiledExpr carries BuiltinId
   capabilities:
   - name: compiled-expr-shape-known
-    binding: wired — grep:crates/reify-types/src/expr.rs FunctionCall kind; content-hash
+    binding: wired — grep:crates/reify-ir/src/expr.rs FunctionCall kind; content-hash
       excludes result_type (crates/reify-compiler/src/expr.rs:3587-3594)
     verdict: PASS
     delivered_check:

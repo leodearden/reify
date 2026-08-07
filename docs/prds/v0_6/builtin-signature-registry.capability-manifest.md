@@ -10,7 +10,7 @@ PRD: `docs/prds/v0_6/builtin-signature-registry.md`. Binds each leaf's asserted 
 | α | analysis fns registered (seed family) | wired — `crates/reify-compiler/src/analysis_signatures.rs:38` `ANALYSIS_FN_NAMES` (5 names) | PASS |
 | α | `macro_rules` registry substrate | Rust language substrate; strum workspace-dep precedent for derives (`reify-ir` `GeometryOp` discriminants) | PASS |
 | α | row-without-eval-arm build failure | producer: this leaf (negative recipe deliverable, doc-comment form per 5055 precedent) | PASS |
-| β | `CompiledExpr` lives in reify-types | wired — `crates/reify-types/src/expr.rs` (FunctionCall kind; task 3702 lineage) | PASS |
+| β | `CompiledExpr` lives in reify-ir | wired — `crates/reify-ir/src/expr.rs` (FunctionCall kind; task 3702 lineage) | PASS |
 | β | content-hash currently excludes result_type | wired — `crates/reify-compiler/src/expr.rs:3587-3594` (hash = tag + qualified_name + arg hashes) | PASS |
 | τ1 | numeric eval arms exist (floor/ceil/round → Int; log10 → Real) | wired — `crates/reify-stdlib/src/numeric.rs:37-42`; sinh/cosh/tanh `crates/reify-stdlib/src/trig.rs:38-40` | PASS |
 | τ1 | dimensioned silent-accept pre-state | fixtures `numeric_floor_dimensioned_silent_accept.ri`, `numeric_sinh_dimensioned_silent_accept.ri` (check exit 0 today, D3-verified); probe evidence `floor(2.5mm)` → `Int(0)` (2026-08-03 sweep) | PASS |
