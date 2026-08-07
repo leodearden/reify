@@ -8978,7 +8978,7 @@ mod tests {
 
     /// step-15 (RED → GREEN in step-16): `displacement_at` reconstructs the exact
     /// Φ-projected single-location series u(tⱼ) = Σᵢ (Φᵢ[node]·dir)·mode_coords[i][j],
-    /// returning a non-Undef `List<Real>` (PRD §5.2) — covering the task's
+    /// returning a non-Undef `List<Length>` (PRD §5.2) — covering the task's
     /// "displacement_at returns the Φ-projected time history, not Undef" premise.
     ///
     /// A 2-mode DisplacementTimeHistory with known per-node Φ shapes and known
