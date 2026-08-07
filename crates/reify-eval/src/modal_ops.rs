@@ -2851,8 +2851,11 @@ pub fn solve_transient_response_trampoline(
 ///
 /// Lazy: only the queried node's time series is reconstructed — the full
 /// `n_nodes × n_times` displacement field is never materialized. Unlike the other
-/// modal trampolines this returns a non-struct `Value::List(Real)` (PRD §5.2). No
-/// warm state is donated (ι owns fn+dispatch; caching is λ's job).
+/// modal trampolines this returns a non-struct value: a `Value::List` of
+/// LENGTH-dimensioned `Value::Scalar`s in SI metres (PRD §5.2). Length, not a
+/// bare Real, because the PRODUCT Φ·ξ cancels the √mass factors each carries
+/// alone (#6094). No warm state is donated (ι owns fn+dispatch; caching is λ's
+/// job).
 pub fn displacement_at_trampoline(
     value_inputs: &[Value],
     _realization_inputs: &[RealizationReadHandle],
@@ -2903,11 +2906,17 @@ pub fn displacement_at_trampoline(
 }
 
 /// Wrap a reconstructed displacement series in a `ComputeOutcome::Completed`
-/// carrying a `Value::List(Real)` (PRD §5.2) — the non-struct result shape unique
-/// to `displacement_at`. No warm state / diagnostics (ι donates neither).
+/// carrying a `Value::List` of LENGTH-dimensioned `Value::Scalar`s in SI metres
+/// (PRD §5.2) — the non-struct result shape unique to `displacement_at`, and the
+/// runtime counterpart of the `-> List<Length>` declaration at
+/// `stdlib/modal_analysis_fns.ri` (#6094). No warm state / diagnostics (ι donates
+/// neither).
 fn displacement_series_outcome(series: Vec<f64>) -> ComputeOutcome {
     ComputeOutcome::Completed {
-        result: Value::List(series.into_iter().map(Value::Real).collect()),
+        result: Value::List(crate::compute_targets::scalar_list(
+            &series,
+            DimensionVector::LENGTH,
+        )),
         new_warm_state: None,
         cost_per_byte: None,
         diagnostics: Vec::new(),
@@ -8977,7 +8986,7 @@ mod tests {
     ///   - a NUMERIC "1" → explicit node index 1, and
     ///   - a NON-NUMERIC "tip" → the fundamental antinode (node 2, max ‖Φ₀‖).
     ///
-    /// Each returns a finite `List<Real>` of length n_times equal to the
+    /// Each returns a finite `List<Length>` of length n_times equal to the
     /// closed-form reconstruction. The two cases resolve to DIFFERENT nodes
     /// (1 vs 2) and so yield different series — proving the resolver discriminates
     /// explicit-index from antinode.
@@ -9000,7 +9009,8 @@ mod tests {
 
         let dir = [0.0, 0.0, 1.0];
 
-        // Invoke the trampoline for `location` and return the List<Real> as Vec<f64>.
+        // Invoke the trampoline for `location` and return the List<Length> as
+        // Vec<f64> of SI metres (`read_scalar_si` tolerates either spelling).
         let query = |location: &str| -> Vec<f64> {
             let value_inputs = vec![
                 history.clone(),
@@ -9039,7 +9049,7 @@ mod tests {
                     );
                     items.iter().map(read_scalar_si).collect()
                 }
-                other => panic!("displacement_at must return a Value::List(Real); got {other:?}"),
+                other => panic!("displacement_at must return a Value::List; got {other:?}"),
             }
         };
 
