@@ -204,6 +204,17 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   > invariant, enforced by `check --soft` itself).
 
 ### 8.4 GC — `warm-lane-gc.sh` (δ)
+
+> **Scope note (added 2026-08-07 — task 6063).** This section's heading and framing — Pass 1 / Pass 2,
+> the `_is_reclaimable` predicate, the per-entry cost model — are gc's. **One bullet below is not:** the
+> **live-reference gate** is *shared* mechanism, and `scripts/thin-warm-lane.sh` (its third call site,
+> task 5823) points here as its single normative home, as does `warm-lane-pool-cow-seeding.md` §9.5
+> inv.10/inv.11. Read that bullet as binding on **both** callers — the /proc mechanism, the
+> per-lane-not-batch TOCTOU rationale and the measured **per-call** cost apply identically to thin.
+> What is gc-specific there is only the Pass 1 / Pass 2 *ordering* prose and the `entries × per-call`
+> aggregate that follows from gc's per-entry loop; thin's own ordering and its one-call-per-invocation
+> shape are stated in the same bullet. Every other bullet in this section is gc-only.
+
 - `reclaim` runs two passes:
   - **Pass 1 — FREE pool lanes (`_lane-*`/`_spec-*`).** Reset `target/` to thin (via the α
     primitive) for **every** lane whose per-lane `flock -n` is free — **regardless of dirty tracked
