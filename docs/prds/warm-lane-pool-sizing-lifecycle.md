@@ -14,7 +14,7 @@ The XFS-reflink warm-lane pool (`/dev/loop29`, 6.0 TB, mounted `/home/leo/src/wa
 
 | Axis | Today | With this PRD |
 |---|---|---|
-| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target |
+| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target — unless a live process reference refuses the release-thin (exit 75, since #5823), in which case that lane's `target/` is PRESERVED until the next release-thin/gc pass reclaims it |
 | Accretion visibility | none until the disk-guard trips at the 50 GiB cliff (which *is* the wedge) | `warm-lane-audit.sh` reports resident/free/reclaimable/leaked/stale + projected headroom on demand and on a timer |
 | Dispatch under disk pressure | allocates new divergent lanes straight into the hard floor → ENOSPC | throttles new-lane allocation at a **soft floor** (prefers reclaim/reuse) before the hard floor is reached |
 | Pool capacity | fixed 6.0 TB image, hand-grown in incidents | budget-derived sizing + a supported online-grow operation (insurance, not the primary lever) |
