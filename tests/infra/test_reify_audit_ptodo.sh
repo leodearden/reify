@@ -20,6 +20,12 @@
 #                  → reify-audit exits non-zero.  Hermetic (sqlite3 seeded
 #                  tasks.db + --tasks-file []).  Mirrors scenario (d) for the
 #                  G-allow advisory→hard-gate flip.
+#   (f) LANE δ-A HARD GATE (task #6087) — an #[allow(...dead_code...)]
+#                  attribute whose trailing rationale defers the work and cites
+#                  a done task is classified orphaned→High → reify-audit exits
+#                  non-zero.  Hermetic, mirrors (d); adds a BENIGN control repo
+#                  so the lane's false-positive guards are proven at the binary
+#                  level and not only in unit tests.
 #
 # Design invariant (PRD 6.6): fingerprint derivation lives ONLY in the
 # ptodo-baseline-gen binary (the same ptodo::fingerprint path the ratchet uses).
@@ -60,7 +66,7 @@
 # dev-box `run_all.sh` runs, so it stays a graceful skip by design.
 #
 # SELF-MATCH SAFETY: this file must not contain any literal marker tokens that
-# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)
+# the PTODO structural lane sweeps for.  Marker text in scenarios (b)/(c)/(d)/(f)
 # is assembled from shell variables at runtime so the written fixture carries a
 # real token while this .sh source stays clean.
 #
@@ -188,7 +194,7 @@ elif [ "$_guard_rc" -ne 0 ]; then
         # ((a)+(b)) is skipped.  This is not a silent green: those scenarios
         # set $RAN, and the floor after test_summary still refuses a run that
         # executed none of them.
-        echo "test_reify_audit_ptodo.sh: reify-audit freshness guard failed (rc=$_guard_rc) but '$REIFY_AUDIT_BIN' is executable — skipping the precision-sensitive ratchet ((a)+(b)); the (c)+(d)+(e) hard gate still runs against the stale binary" >&2
+        echo "test_reify_audit_ptodo.sh: reify-audit freshness guard failed (rc=$_guard_rc) but '$REIFY_AUDIT_BIN' is executable — skipping the precision-sensitive ratchet ((a)+(b)); the (c)+(d)+(e)+(f) hard gate still runs against the stale binary" >&2
         RATCHET_SKIP=1
     else
         # ABSENT: nothing can run.  Leaving RATCHET_SKIP=0 here would look
@@ -694,9 +700,146 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_E}, 'done');
     # Emit passing-branch sentinel for scenario (e).  Gated on FAIL counter
     # unchanged — suppressed if any (e) assert failed (fixes silent_pass_on_failure).
     [ "$FAIL" -eq "$_fail_before_e" ] && echo "@@HARDGATE_E_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (f) LANE δ-A HARD GATE (task #6087): an `#[allow(...dead_code...)]`
+    #     attribute whose trailing rationale defers the work AND cites a DONE
+    #     task is classified orphaned→High → reify-audit exits NON-ZERO.
+    #
+    #     A direct transposition of scenario (d), inheriting its three hard-won
+    #     fixes for free: the LD_LIBRARY_PATH="" sqlite3 workaround
+    #     (esc-4581-87), the gate-on-binary-not-on-RATCHET_SKIP structure
+    #     (#4733), and the no-silent-green RAN floor.
+    #
+    #     Three assertions — the third is the one the ratified FP-control
+    #     requirement buys, proving the guards at the BINARY level and not only
+    #     in unit tests:
+    #       (f-orphan)  allowed.rs + task done  → orphaned High → exit 1
+    #       (f-control) UPDATE task to pending  → live cite     → exit 0
+    #       (f-benign)  non-deferral rationale  → no finding    → exit 0
+    #
+    #     SELF-MATCH SAFETY: this file is swept and is NOT allowlisted.  Lane
+    #     δ-A is .rs-gated so a literal attribute here could not fire it, but
+    #     the file's discipline is followed regardless — the attribute text,
+    #     the deferral needle and the cite id are assembled from shell
+    #     variables at runtime, so no literal attribute+cite+prose triple ever
+    #     appears in the committed source.
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (f) Lane δ-A hard gate: allow(dead_code) + deferral + done-task cite → High → non-zero exit ---"
+
+    FIX_F="$(mktemp -d)"
+    git -C "$FIX_F" init -q
+    mkdir -p "$FIX_F/src"
+
+    # Assemble the δ-A anchor at runtime (SELF-MATCH SAFETY, as in (d)/(e)).
+    ADC="allow(dead_code)"
+    DEFER="pending"
+    CITE_ID_F="6666"
+    printf '#[%s] // production wiring %s task #%s (hermetic fixture)\n' \
+        "$ADC" "$DEFER" "$CITE_ID_F" > "$FIX_F/src/allowed.rs"
+    # The benign control lives in the SAME repo but must contribute nothing;
+    # its rationale explains rather than defers (the dominant real-world class).
+    printf '#[%s] // used by some, but not all, test binaries that include this\n' \
+        "$ADC" > "$FIX_F/src/benign.rs"
+    git -C "$FIX_F" add -A
+
+    # Seed tasks.db AFTER the git add (mirrors (d)'s untracked-in-worktree reality).
+    # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
+    mkdir -p "$FIX_F/.taskmaster/tasks"
+    # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_F/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_F}, 'done');
+"
+
+    # Write an empty JSON array for --tasks-file (bypasses MCP; liveness lane
+    # still reads the sqlite3 tasks.db at <project_root>/.taskmaster/tasks/tasks.db).
+    FIX_F_TASKS_FILE="$FIX_F/tasks.json"
+    printf '[]' > "$FIX_F_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (f) begins.  @@HARDGATE_F_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (f) asserts — i.e. every assert
+    # passed.  A broken gate suppresses the sentinel.
+    _fail_before_f=$FAIL
+
+    # (f-orphan) done task → orphaned → High → exit 1.  Exactly one High: the
+    # benign sibling contributes nothing, which is what makes 1 (not 2) the
+    # assertion that also proves FP control.
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_F" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_F_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_adc_orphan=$?
+    set -e
+
+    assert "(f-orphan) allow(dead_code) deferral cite (#${CITE_ID_F}) → done-task → orphaned High → reify-audit exits 1" \
+        bash -c '[ "$1" -eq 1 ]' -- "$_exit_adc_orphan"
+
+    # (f-control) UPDATE task status to pending → live cite → no High → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_F/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_F};"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_F" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_F_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_adc_live=$?
+    set -e
+
+    assert "(f-control) pending-task allow(dead_code) deferral cite → live cite → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_adc_live"
+
+    # (f-benign) a repo carrying ONLY non-deferral allow-rationales → no
+    # finding at all → exit 0.  This is the FP-control guard proven at the
+    # binary level: an over-broad lane fires `untracked`→High here and the
+    # exit code becomes non-zero.
+    FIX_F2="$(mktemp -d)"
+    git -C "$FIX_F2" init -q
+    mkdir -p "$FIX_F2/src"
+    {
+        printf '#[%s] // used by some, but not all, test binaries that include this\n' "$ADC"
+        printf '#[%s] // superseded by mark_%s_with_cause at the wire site\n' "$ADC" "$DEFER"
+        printf '#[%s] // constructs a Pending producer for the demand-prune tests\n' "$ADC"
+        printf '#[%s] // serialises the "%s" wire tag for the GUI bridge\n' "$ADC" "$DEFER"
+    } > "$FIX_F2/src/benign.rs"
+    git -C "$FIX_F2" add -A
+
+    FIX_F2_TASKS_FILE="$FIX_F2/tasks.json"
+    printf '[]' > "$FIX_F2_TASKS_FILE"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_F2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_F2_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_adc_benign=$?
+    set -e
+
+    assert "(f-benign) non-deferral allow(dead_code) rationales (incl. identifier/enum-variant/quoted-state guards) → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_adc_benign"
+
+    # Emit passing-branch sentinel for scenario (f).  Gated on FAIL counter
+    # unchanged — suppressed if any (f) assert failed (fixes silent_pass_on_failure).
+    [ "$FAIL" -eq "$_fail_before_f" ] && echo "@@HARDGATE_F_PASSED@@"
 else
     echo ""
-    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e) hard gate could not run" >&2
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e)+(f) hard gate could not run" >&2
 fi
 
 # -----------------------------------------------------------------------
