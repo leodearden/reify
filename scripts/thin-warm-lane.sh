@@ -129,13 +129,7 @@
 #        BEFORE the rm — never as an up-front snapshot, which would reintroduce
 #        the very TOCTOU this gate closes. The mechanism (the /proc scan itself)
 #        is recorded once in docs/prds/warm-lane-pool-space-safety.md §8.4 and is
-#        deliberately not restated here. CAVEAT on that pointer, as of task
-#        5823: §8.4 is headed "GC — warm-lane-gc.sh (delta)" and its
-#        live-reference bullet is still written wholly in gc's terms (task
-#        5572, both passes) — the /proc MECHANISM it records is the shared
-#        one this script also uses, but the section does not yet name thin as
-#        its third call site. Widening it is a doc change outside this task's
-#        scope; filed as a follow-up.
+#        deliberately not restated here.
 #
 #        T3 alone is INSUFFICIENT, and that is the whole reason T4 exists: the
 #        inv.2 flock is a reseed MUTEX, not a liveness oracle. It is held only
@@ -449,9 +443,7 @@ fi
 # inv.11) and turning a benign skip into a pool-wide stall.
 #
 # The gate's /proc mechanism is NOT restated here — it is recorded once in
-# docs/prds/warm-lane-pool-space-safety.md §8.4 (which, as of task 5823, still
-# describes that shared mechanism in gc's terms only and does not yet name thin
-# as a call site — see the CAVEAT in the T4 header note above).
+# docs/prds/warm-lane-pool-space-safety.md §8.4.
 if live_ref_present "$LANE_DIR"; then
     exec 9>&-
     err "LANE_LIVE_REF: Live process reference at or under the lane (cwd / open fd / mmap): $_rp_lane_dir"
