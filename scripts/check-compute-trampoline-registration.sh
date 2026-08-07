@@ -110,12 +110,15 @@
 #     file-wholesale, so a fourth hand-rolled bundle added ELSEWHERE in
 #     compute_targets/mod.rs — the single most likely place for someone to add
 #     one — is still flagged;
-#   - escaped sites: any line carrying the inline escape
+#   - escaped sites: any line whose `//` COMMENT carries the inline escape
 #         // trampoline-registration:allow — <reason>
 #     mirroring reify-audit's `// ptodo:allow` convention (§6.8) and
-#     check-nan-safe-ordering.sh's `// nan-safe:allow`. The escape is a
-#     NEGATIVE-pass concept only (it declares an intentional direct half-call);
-#     it never suppresses a positive-pass delegation requirement.
+#     check-nan-safe-ordering.sh's `// nan-safe:allow`. It must be a real
+#     comment: the token is matched against the comment text the lexer drops,
+#     so merely NAMING it inside a string literal on the same line does not
+#     suppress anything. The escape is a NEGATIVE-pass concept only (it
+#     declares an intentional direct half-call); it never suppresses a
+#     positive-pass delegation requirement.
 #
 # HERMETIC SOURCE SET: `git ls-files` lists only tracked files, so untracked
 # build artifacts never enter the scan (mirrors check_event_inventory.sh).
@@ -191,12 +194,32 @@ note() { violations+="$1"$'\n'; }
 # string. Both passes prepend this, so neither can see what the other cannot.
 #
 # The `#[cfg(test)]` skipper additionally requires the opening line to declare a
-# `mod` (check-nan-safe-ordering.sh:106-120 does not). Without that requirement
-# a bare `#[cfg(test)] use …;` — gui/src-tauri/src/engine.rs:21, :102, :104 all
-# have one — leaves the skipper armed until the NEXT brace-opening line, which
-# can be an unrelated production item; that misfire is a silent under-flag on
-# the negative pass but a FALSE RED on the positive pass, so it is fixed here
-# rather than inherited.
+# `mod`. Without that requirement a bare `#[cfg(test)] use …;` —
+# gui/src-tauri/src/engine.rs:21, :102, :104 all have one — leaves the skipper
+# armed until the NEXT brace-opening line, which can be an unrelated production
+# item; that misfire is a silent under-flag on the negative pass but a FALSE
+# RED on the positive pass.
+#
+# HAND-SYNCED WITH scripts/check-nan-safe-ordering.sh. That guard carries the
+# same lexer (task 6031 ported it there FROM here), and main's copy is the
+# source of truth for the executable BODY: it is a strict superset, so drift is
+# resolved by porting from it, never by editing it from this side. Two
+# hardenings arrived that way, each closing a defect this copy demonstrably had
+# (tests/infra/test_compute_trampoline_registration_wired.sh hD9/hD10/hE1):
+#   - `pending_mod` — the brace on the line AFTER the `mod` keyword. Legal Rust,
+#     and CLAUDE.md records this repo has no rustfmt gate forcing
+#     brace-on-same-line, so it is a shape tracked source really carries;
+#     without it the skipper never arms for that spelling, which makes the
+#     per-site variant pin VACUOUS and false-REDs legitimate test-module calls.
+#   - `comment_tail` — the escape is COMMENT text. Matched against raw $0 it
+#     was also matched against string content, so a line that merely mentioned
+#     the token in a string silently suppressed a real half-call on it.
+# Task #6034 owns extracting this into one sourced lib and is blocked on both
+# guards being on main; naming it here is what time-bounds the hand-sync.
+# The prose ABOVE the lexer body is deliberately NOT synced — it is
+# guard-specific (this guard has a SECOND depth-driven skipper, the
+# definition-file `in_bundler` one, and a `_code_has` early-exit helper; the
+# nan-safe guard has neither).
 #
 # The prologue is assembled through a quoted heredoc rather than a single-quoted
 # assignment so the lexer can contain apostrophes (it must reason about `'` to
@@ -216,6 +239,13 @@ _AWK_PRODUCTION_PROLOGUE="$(cat <<'AWK_PROLOGUE'
 # locals, no gensub), so the gate is not silently gawk-only.
 function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     carried_in = (in_block > 0 || in_str || in_raw)
+    # The dropped `//…` tail (if any) is stashed here, so a caller can match
+    # an escape token against the REAL comment text rather than raw $0 —
+    # $0 also contains any string/char-literal content on the line, so a
+    # token that merely APPEARS inside a string must not count as the
+    # escape. Reset unconditionally (including on the fast path below) so a
+    # PRIOR line's tail never leaks onto a line with no comment at all.
+    comment_tail = ""
     n = length(line)
     # Fast path: nothing here can open a comment, a string or a char literal.
     # (A bare `/` is division or a path; only `//` and `/*` matter.)
@@ -260,7 +290,10 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
 
         ch = substr(line, i, 1)
         if (ch == "/") {
-            if (substr(line, i, 2) == "//") break   # //… tail: drop it entirely
+            if (substr(line, i, 2) == "//") {       # //… tail: drop it, but keep
+                comment_tail = substr(line, i)      # it for the escape check
+                break
+            }
             in_block++                              # /*: enter (nesting) comment
             i += 2
             continue
@@ -329,23 +362,39 @@ function _strip_line(line,   out, i, n, ch, h, j, k, pfx, rest) {
     }
     if (code ~ /#\[cfg\(test\)\]/) {
         pending_test = 1
+        pending_mod = 0
     } else if (pending_test) {
         # The pending gate survives only across blank lines, further attributes
         # and comments; any other non-mod line disarms it. A comment-only line
         # now lexes to the empty string, so the former `t ~ /^\/\//` alternative
         # is unreachable and is gone: `t == ""` already covers it.
+        #
+        # A `mod IDENT` line that opens no brace of its own — e.g. `mod tests`
+        # with the `{` on the NEXT line, legal Rust and this repo has no
+        # rustfmt gate forcing brace-on-same-line (CLAUDE.md) — sets
+        # `pending_mod` so that later brace-opening line can still arm the
+        # skipper below, even though *that* line's own text says nothing
+        # about `mod`. Guarded to n_open==0 and no same-line `;` so a
+        # self-terminating `mod tests;` (external file, no local body) does
+        # NOT leave `pending_mod` armed for some unrelated later brace.
         t = code; sub(/^[ \t]+/, "", t)
-        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/)) pending_test = 0
+        if (t ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/ && n_open == 0 && t !~ /;/) pending_mod = 1
+        if (!(t == "" || t ~ /^#\[/ || t ~ /(^|[^A-Za-z0-9_])mod[ \t]/ || (pending_mod && n_open > 0))) {
+            pending_test = 0
+            pending_mod = 0
+        }
     }
     if (pending_test && n_open > 0) {
-        if (code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
+        if (pending_mod || code ~ /(^|[^A-Za-z0-9_])mod[ \t]+[A-Za-z_]/) {
             in_test = 1
             test_base = depth        # depth BEFORE this block opened
             depth += n_open - n_close
             pending_test = 0
+            pending_mod = 0
             next
         }
         pending_test = 0             # cfg(test) on a fn/field/use, not a module
+        pending_mod = 0
     }
     depth += n_open - n_close
 }
@@ -401,9 +450,16 @@ for f in "${_files[@]}"; do
     out="$(awk -v rel="$f" -v allow_defs="$_allow_defs" "$_AWK_PRODUCTION_PROLOGUE"'
         {
             # --- inline escape (same-line), mirrors ptodo:allow §6.8 ---
-            # RAW $0 on purpose: the escape lives in a `//` comment, which the
-            # lexer drops, so matching `code` here would silently kill it.
-            if ($0 ~ /trampoline-registration:allow/) next
+            # Matched against comment_tail (the dropped `//…` text that
+            # _strip_line stashed), NOT `code` and NOT raw $0. `code` is wrong
+            # because the escape lives in a `//` comment, which the lexer
+            # drops — matching `code` would silently kill every escape. Raw $0
+            # is wrong the OTHER way: it also carries any string/char-literal
+            # content on the line, so a token that merely *appears inside a
+            # string* — e.g. `let _doc = "trampoline-registration:allow";`
+            # sharing a line with a real half-call — would wrongly suppress a
+            # real violation.
+            if (comment_tail ~ /trampoline-registration:allow/) next
 
             if (allow_defs) {
                 # Body of fn register_production_compute_fns — THE bundler.
