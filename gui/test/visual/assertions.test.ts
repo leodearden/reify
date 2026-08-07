@@ -461,3 +461,29 @@ describe("F1 VALUE_SCENARIOS (task-4303)", () => {
     }
   });
 });
+
+// task-5934: KNOWN_DEBUG_TOOL_NAMES must be a superset of every tool
+// advertised by tool_defs() in debug_server.rs — any advertised debug tool
+// may legitimately appear as a VALUE_SCENARIOS setup step, so an
+// under-populated set would silently reject a valid setup tool. The
+// complementary direction (KNOWN_DEBUG_TOOL_NAMES vs. bridge.ts
+// buildHandlers()) is covered transitively by debugParity.test.ts's (d)+(e).
+describe("KNOWN_DEBUG_TOOL_NAMES ↔ tool_defs() parity (task-5934)", () => {
+  const repoRoot = resolveRepoRoot(import.meta.url);
+  const RUST = fs.readFileSync(path.join(repoRoot, "gui", "src-tauri", "src", "debug_server.rs"), "utf-8");
+
+  // Same regex as gui/src/__tests__/debugParity.test.ts:43 — deliberately
+  // skips the unquoted `name: &'static str` field of `struct ToolDef {`.
+  const toolDefNames = [...RUST.matchAll(/ToolDef\s*\{\s*name:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
+
+  it("(a) extraction sanity — exact count matches raw ToolDef literals, no duplicates", () => {
+    const rawToolDefCount = RUST.match(/ToolDef\s*\{/g)?.length ?? 0;
+    expect(toolDefNames.length).toBe(rawToolDefCount - 1); // -1 for `struct ToolDef {` itself
+    expect(new Set(toolDefNames).size).toBe(toolDefNames.length);
+  });
+
+  it("(b) every tool_defs() name is present in KNOWN_DEBUG_TOOL_NAMES", () => {
+    const missing = toolDefNames.filter((n) => !KNOWN_DEBUG_TOOL_NAMES.has(n));
+    expect(missing).toStrictEqual([]);
+  });
+});
