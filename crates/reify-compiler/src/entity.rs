@@ -2603,8 +2603,9 @@ pub(crate) fn compile_entity(
                 //
                 // Cost note (task 2280): `compiled_arg.clone()` below is O(literal-tree-size)
                 // per arg.  See the `PendingBoundCheck::TraitArgConformance` doc-comment below
-                // for the Rc/arena trade-off analysis, and `tests/trait_arg_conformance_bench.rs`
-                // for the timing bench (run with `-- --ignored --nocapture`).
+                // for the Rc/arena trade-off analysis, and
+                // `tests/harness_traits/trait_arg_conformance_bench.rs` for the timing bench
+                // (run with `--test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`).
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {
