@@ -1,6 +1,6 @@
 # Capability manifest — builtin-signature-registry
 
-PRD: `docs/prds/v0_6/builtin-signature-registry.md`. Binds each leaf's asserted capabilities to evidence (G3+G6 mechanized). Machine-readable twin: `builtin-signature-registry.capability-manifest.yaml`. All source anchors verified 2026-08-04 against main `5fb3959fbb` (evidence lineage: the 2026-08-03 measured enumeration, session `investigate-reify-995019`, `xref.json`).
+PRD: `docs/prds/v0_6/builtin-signature-registry.md`. Binds each leaf's asserted capabilities to evidence (G3+G6 mechanized). Machine-readable twin: `builtin-signature-registry.capability-manifest.yaml`. All source anchors verified 2026-08-04 against main `5fb3959fbb` (evidence lineage: the 2026-08-03 measured enumeration, `docs/notes/fallback-soundness-analysis-2026-08-03.md` + `docs/notes/fallback-soundness-xref-2026-08-03.json`).
 
 **D3 verification note (2026-08-04, run `wf_53a7db08-66a`)**: the γ workflow's adversary correctly FAILED the α leaf's original probe-based registration premise as VACUOUS — `reify check` exits 0 on an unregistered name (`tests/prd-gate/fixtures/unknown_fn_silent_accept_baseline.ri`), on a bogus match-variant name, and on a mis-annotated payload (controls run 2026-08-04). Resolution: registration/typedness evidence re-homed to source-level wired bindings below; `.ri` fixtures serve as parse/regression baselines only. This vacuity is itself the hole the PRD closes (boundary #8).
 
