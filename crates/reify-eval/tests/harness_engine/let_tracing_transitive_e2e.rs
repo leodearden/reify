@@ -51,12 +51,43 @@ fn workspace_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// Repo-relative path of the PRD α fixture. Named so the panic below and this
+/// module's header cannot drift apart from the actual `read_to_string`.
+const ALPHA_FIXTURE_PATH: &str = "docs/prds/v0_6/fixtures/discrete_let_cont.ri";
+
 /// The PRD α fixture source, read from disk.
+///
+/// # The coupling to `docs/` is ONE-DIRECTIONAL and ungated
+///
+/// Binding this test to the PRD's literal artifact is deliberate (see the
+/// module header), but the gate is asymmetric: per CLAUDE.md, docs-only changes
+/// land via a `hooks/pre-commit` run on `main` that scopes `docs/` to
+/// no-heavy-checks, so an edit, rename or move of this `.ri` can land WITHOUT
+/// the Rust suite ever running. The next unrelated build then fails here, in a
+/// crate that has nothing to do with the change that broke it.
+///
+/// Closing that properly means either relocating the fixture under
+/// `crates/reify-eval/tests/fixtures/` (and having the PRD reference it) or
+/// adding it to `scripts/verify-pipeline-paths.txt` — both outside this task's
+/// lock set, so both are filed as follow-up rather than done here. What IS done
+/// here is making the failure self-describing: the panic names the missing
+/// path, the two sanctioned repairs, and the fact that a docs-only commit is
+/// the likely cause, so whoever hits it does not have to re-derive any of that.
 fn alpha_fixture_source() -> String {
-    let path = workspace_root().join("docs/prds/v0_6/fixtures/discrete_let_cont.ri");
+    let path = workspace_root().join(ALPHA_FIXTURE_PATH);
     std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "the PRD α fixture must be readable at {}: {e}",
+            "the PRD α fixture must be readable at {} ({e}).\n\
+             This test reads `{ALPHA_FIXTURE_PATH}` from disk on purpose, so \
+             that it tracks the PRD's literal artifact instead of pinning a \
+             stale paraphrase. Nothing in the docs-only landing path runs the \
+             Rust suite, so a rename/move/delete of that file lands green and \
+             surfaces HERE. Repair by restoring the path, or — if the move was \
+             intended — relocate the fixture under \
+             `crates/reify-eval/tests/fixtures/`, point the PRD at the new \
+             location, and update `ALPHA_FIXTURE_PATH`. Do NOT paper over it \
+             by inlining a copy of the source: the whole point of this read is \
+             that the PRD and the acceptance test cannot diverge.",
             path.display()
         )
     })
