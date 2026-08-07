@@ -12,9 +12,9 @@
 //
 //   2. `has_representation_within = true` → `set_capture_repr_tol(true)` +
 //      `tessellate_realizations()` fire to populate `achieved_repr_tol`.
-//      Expected: RepresentationWithin(Sphere, 1mm) → Satisfied (1m-radius sphere
-//      tessellated at #precision(0.3mm) has sampled chord deviation 6.202e-4 m
-//      against the 1.000e-3 m bound → no VIOLATED on stdout).
+//      Expected: RepresentationWithin(Sphere, 1mm) → Satisfied → no VIOLATED on
+//      stdout.  The measured margin and the retuning procedure live in ONE place:
+//      the "#precision and the RepresentationWithin margin" note below.
 //
 // Both side effects populate DISJOINT engine maps:
 //   - `build()` clears+repopulates `realization_handles` but never touches
@@ -28,22 +28,46 @@
 //
 // Under stub (no OCCT): exit 0, no W_DFM_OVERHANG, no VIOLATED (C1 degradation).
 //
-// #precision(0.3mm) sizes the RepresentationWithin test: the sampled facet-chord
-// deviation on the 1m-radius sphere measures 6.202e-4 m against the 1mm (1e-3 m)
-// bound — a 1.61x margin — giving Satisfied.  Adequate, but NOT "far below":
-// do not spend this headroom casually.  Coarsened from 0.1mm for #5976 (the
-// fixture dominated the reify-cli suite's critical path).
+// ── #precision and the RepresentationWithin margin ───────────────────────────
+// SINGLE SOURCE OF TRUTH for the numbers below.  Every other site — the Sphere
+// docstring further down, and both consumers under tests/harness_cli/ — points
+// here instead of restating them, so a retune has exactly one place to edit.
 //
-// DO NOT INTERPOLATE when changing this value.  #precision is threaded bit-exact
-// into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and OCCT meshes
-// each edge into an INTEGER segment count — so the achieved deviation is a SAWTOOTH
-// in #precision and neighbouring values swing ~3x.  0.49mm and 0.51mm both VIOLATE
-// the 1mm bound while 0.50mm passes.  0.3mm is chosen because its NEIGHBOURS are
-// also safe (0.25mm → 5.198e-4, 0.35mm → 7.271e-4), not because it is a smooth
-// optimum.  To coarsen further you must MEASURE the specific value and both its
-// neighbours: hold #precision at the candidate on a bare `sphere(1000mm)`, tighten
-// the RepresentationWithin bound to 0.01mm to force a violation, and read the
-// achieved deviation off the resulting `sampled facet deviation <X> m` message.
+// Measured under OCCT at #precision(0.3mm): the sampled facet-chord deviation on
+// the 1m-radius sphere is 6.202e-4 m against the 1mm (1.000e-3 m) assertion bound
+// — a 1.61x margin — giving Satisfied.  Adequate, but NOT "far below": do not
+// spend this headroom casually.  Coarsened from 0.1mm for #5976 (the fixture
+// dominated the reify-cli suite's critical path).
+//
+// That margin is watched by the 0.7mm DRIFT CANARY (`SphereCheck#constraint[1]`).
+// A Satisfied run prints no measurement — the achieved deviation is emitted only
+// on the Violated path — so absent the canary, drift in OCCT's BRepMesh output (a
+// deps pin bump, a platform difference) from 6.202e-4 toward the 1mm bound would
+// be invisible until it crossed and the suite went red with no prior warning.
+// The canary instead violates once ~1.13x of drift has accumulated, while ~30% of
+// the headroom to the real bound is still intact, and its diagnostic prints the
+// drifted value:
+//     RepresentationWithin: sampled facet deviation <X> m exceeds bound 7.000e-4 m
+// If ONLY `constraint[1]` violates, that is a drift WARNING, not a real breakage:
+// re-measure, then retune #precision (below) or move the canary deliberately.
+//
+// RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
+// bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
+// OCCT meshes each edge into an INTEGER segment count, so the achieved deviation
+// is a SAWTOOTH in #precision.  NEAR THE BOUND the sawtooth dominates: 0.49mm
+// (1.013e-3) and 0.51mm (1.056e-3) both VIOLATE the 1.000e-3 m bound while 0.50mm
+// between them passes at a 2.63x margin — a ~2.7x swing in achieved deviation
+// across a ±2% change in #precision.  FARTHER BELOW THE BOUND the measured points
+// happen to track ~2.08x #precision (0.25mm → 5.198e-4, 0.30mm → 6.202e-4,
+// 0.35mm → 7.271e-4), but that local ratio is an observation, not a guarantee —
+// and extrapolating it is exactly what makes the isolated 0.50mm tooth look safe.
+// 0.3mm was chosen because BOTH its neighbours also clear the bound, not because
+// it is a smooth optimum.
+//
+// To re-derive any candidate: hold #precision at the candidate on a bare
+// `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
+// deviation (e.g. 0.01mm) to force a violation, and read the achieved value off
+// the resulting `sampled facet deviation <X> m` message.
 
 import std.process
 
@@ -77,18 +101,28 @@ structure def OverhangRule : DFMRule {
 // ── RepresentationWithin kind ─────────────────────────────────────────────────
 
 /// 1 m-radius sphere realized at the module's #precision(0.3mm).
-/// At 0.3mm (3e-4 m) deflection the sampled facet-chord deviation measures
-/// 6.202e-4 m against the 1mm (1e-3 m) assertion bound — a 1.61x margin.
-/// See the header note before changing #precision: the response is a sawtooth.
+/// The measured facet-chord deviation, its margin against the 1mm bound, and the
+/// procedure for retuning #precision are in the header note "#precision and the
+/// RepresentationWithin margin" — read it before changing the pragma, because the
+/// response is a sawtooth and is not interpolatable.
 structure Sphere {
     let r = sphere(1000mm)
 }
 
-/// Declares the RepresentationWithin assertion.
+/// Declares the RepresentationWithin assertion and its drift canary:
+///
+///   constraint[0] — the real assertion, 1mm bound.
+///   constraint[1] — DRIFT CANARY, 0.7mm bound (header note): Satisfied today,
+///                   and the first to violate if the achieved deviation drifts
+///                   upward, printing the drifted value while headroom to the
+///                   real bound remains.
+///
 /// Under OCCT: tessellate_realizations populates achieved_repr_tol for
-/// "Sphere#realization[0]" → Satisfied → no VIOLATED on stdout.
-/// Under stub: Indeterminate (C1 graceful degradation) → exit 0.
+/// "Sphere#realization[0]" ONCE; both constraints read that single entry, so the
+/// canary adds no kernel work → both Satisfied → no VIOLATED on stdout.
+/// Under stub: both Indeterminate (C1 graceful degradation) → exit 0.
 structure SphereCheck {
     param subject : Sphere
     constraint RepresentationWithin(subject, 1mm)
+    constraint RepresentationWithin(subject, 0.7mm)
 }
