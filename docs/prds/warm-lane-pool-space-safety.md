@@ -222,13 +222,19 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
     touched — where "live-consumer" is **two** distinct tests since task 5572: the `_is_reclaimable`
     flock, and a live process reference at or under the entry, which sits OUTSIDE that predicate and
     runs after it (see the live-reference gate bullet below).
-- **Live-reference gate (task 5572), both passes.** A per-lane live **process-reference** check
+- **Live-reference gate (gc: task 5572; thin: task 5823).** A per-lane live **process-reference** check
   (`live_ref_present`, `scripts/lib_live_refs.sh`): does any process hold its cwd, an open fd, or an
   mmap at or under the entry? It sits deliberately **OUTSIDE** the `_is_reclaimable` predicate,
   which is precisely why its share of the preserved count is reported separately rather than folded
   into `preserved`. **Order:** Pass 1 gains it as its second preserve gate (after the flock); in
   Pass 2 it runs **AFTER** `_is_reclaimable` — cheapest decisive predicate first, so only an orphan
   that would actually be removed pays for the walk (the `_is_reclaimable` git pair is ~18 ms).
+  **Third call site — `thin-warm-lane.sh` (task 5823).** The same `live_ref_present` is also thin's
+  T4 gate, making thin this gate's **third** call site alongside gc's Pass 1 and Pass 2. Unlike gc's
+  per-entry, per-pass call, thin calls it **exactly once per invocation**: after its own `flock -n 9`
+  acquire and immediately before its `rm -rf <lane_dir>/target`. That placement is also why it covers
+  thin's `--reseed` branch and the post-abort discard of an uncertified clone (cow-seeding §9.5
+  inv.13).
   **Why per-lane and not a batch snapshot:** it is evaluated immediately before that entry's reset
   (Pass 1) or remove (Pass 2), under the flock the loop already holds. An up-front batch scan is the
   TOCTOU this gate exists to close — it would leave a lane that goes live mid-traversal unprotected
