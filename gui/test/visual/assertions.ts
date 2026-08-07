@@ -486,8 +486,11 @@ export async function runValueScenario(
  * mechanically checked by the parity test in assertions.test.ts (task-5934).
  *
  * Exported so assertions.test.ts can derive its KNOWN_TOOLS check from a single
- * source rather than maintaining an inline literal.  Update here when a new tool
- * is added to VALUE_SCENARIOS setup steps.
+ * source rather than maintaining an inline literal.  Every name in tool_defs()
+ * MUST appear here — enforced by assertions.test.ts's parity test (b); add the
+ * entry here when you add a ToolDef, whether or not any VALUE_SCENARIOS setup
+ * step uses it yet. Frontend-only handler names (bridge.ts buildHandlers()) are
+ * still added on demand, when a VALUE_SCENARIOS setup step first uses them.
  */
 export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Rust-dispatched tools (debug_server.rs dispatch_tool, incl. its
