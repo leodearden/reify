@@ -1817,6 +1817,73 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // §8.1 marker recognition — allow(dead_code) attributes (.rs, lane δ-A)
+    // -------------------------------------------------------------------
+
+    /// Real in-tree shapes the δ-A anchor must recognise. The returned value is
+    /// the trailing `//` RATIONALE, never the whole line — matching prose
+    /// against the whole line would let the `dead_code` token inside the
+    /// attribute itself be read as comment text.
+    #[test]
+    fn allow_dead_code_attr_positives() {
+        // crates/reify-eval/src/engine_build.rs:12891 (shape).
+        assert_eq!(
+            allow_dead_code_attr(
+                "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)"
+            ),
+            Some("production wiring pending task #4744 (volume-mesh)")
+        );
+        // Indented — the recogniser trims like `ignore_attr` does.
+        assert_eq!(
+            allow_dead_code_attr("    #[allow(dead_code)] // consumed by #4744 step-20"),
+            Some("consumed by #4744 step-20")
+        );
+        // Multi-lint list: the bracketed lints must be SCANNED, not
+        // string-equality-matched against `#[allow(dead_code)]`.
+        assert_eq!(
+            allow_dead_code_attr("#[allow(dead_code, unused_variables)] // pending #1234"),
+            Some("pending #1234")
+        );
+        // Whitespace inside the lint list, and extra spacing before the comment.
+        assert_eq!(
+            allow_dead_code_attr("#[allow( unused_variables , dead_code )]   // pending #1234"),
+            Some("pending #1234")
+        );
+    }
+
+    /// Negative pins. The `///`/`//!` case is the load-bearing one: it is
+    /// verbatim-shaped after `crates/reify-core/src/diagnostics.rs:4046`, a doc
+    /// comment that merely MENTIONS the attribute in backticks (the real
+    /// attribute is 12 lines below). Attributing that line to δ-A would report
+    /// a doc paragraph as an allow-rationale.
+    #[test]
+    fn allow_dead_code_attr_negatives() {
+        assert_eq!(
+            allow_dead_code_attr("/// This function is `#[allow(dead_code)]` pending the wiring"),
+            None
+        );
+        assert_eq!(
+            allow_dead_code_attr("//! module prose about `#[allow(dead_code)]` pending work"),
+            None
+        );
+        // Bare attribute, no trailing rationale → nothing to classify.
+        assert_eq!(allow_dead_code_attr("#[allow(dead_code)]"), None);
+        // Trailing whitespace only — still no rationale.
+        assert_eq!(allow_dead_code_attr("#[allow(dead_code)]   "), None);
+        // `dead_code` absent from the lint list.
+        assert_eq!(allow_dead_code_attr("#[allow(unused)]  // pending #1234"), None);
+        // `dead_code` appears only in the COMMENT, not the lint list.
+        assert_eq!(
+            allow_dead_code_attr("#[allow(deprecated)] // dead_code appears only in prose here"),
+            None
+        );
+        // Whole-token match: `dead_codex` is a different lint name.
+        assert_eq!(allow_dead_code_attr("#[allow(dead_codex)] // pending #1234"), None);
+        // Not an attribute line at all.
+        assert_eq!(allow_dead_code_attr("let x = 1; // pending #1234"), None);
+    }
+
+    // -------------------------------------------------------------------
     // §8.2 citation resolution — canonical `#NNNN`
     // -------------------------------------------------------------------
 
