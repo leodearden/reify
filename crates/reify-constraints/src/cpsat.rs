@@ -489,3 +489,254 @@ mod dependent_cell_fold_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// STALE `current_values` SEED — `backtrack`'s documented "no explicit unwind is
+// needed" invariant is FALSE as written (task #5467, step-12 RED).
+//
+// That block claims the per-trial fold is self-correcting because "a cell whose
+// expression reads a not-yet-assigned deeper auto simply re-evaluates to
+// `Undef` here". The premise only holds if a not-yet-assigned auto is ABSENT
+// from `assignment`. It is not: `solve` seeds `assignment` from
+// `problem.current_values` (see the seed site above), which DOES carry entries
+// for auto params. At depth k the autos k+1..n therefore hold STALE CONCRETE
+// values, so the forward-check can take the `Bool(false)` PRUNE arm on a
+// FEASIBLE branch instead of the safe skip-don't-prune arm.
+//
+// Three real sources of such a stale same-scope auto entry, all verified for
+// this task — (iii) first, because it is the one reachable purely inside
+// reify-constraints with no eval layer involved at all:
+//
+//  (iii) `registry.rs:668,717-720` — lexicographic multi-rank solving clones
+//        `base.current_values` once and then WARM-STARTS stage N+1 from stage
+//        N's solution (`current_values.insert(k, v)` over the solved values)
+//        INSIDE a single `solve()` call.
+//  (i)   `engine_eval.rs:6949-6962` — a second `eval_cached` at the same
+//        `VersionId` serves a previously-SOLVED auto from cache straight back
+//        into `values`, which `build_solver_problem` clones wholesale into
+//        `current_values` at engine_eval.rs:2326.
+//  (ii)  `engine_eval.rs:7026-7031` — a `param_override` on an auto cell, which
+//        is written as `Determined` yet is still admitted to `auto_params`.
+//
+// Both failure modes below were reproduced first-hand on commit 8fbac63953 with
+// a scratch probe appended to this file, run via
+// `cargo test -p reify-constraints --lib`, then reverted (tree left clean).
+// Each returned `Infeasible { ConstraintUnsatisfiable }` on a SATISFIABLE
+// problem — wrong in the loud direction, but wrong.
+//
+// These units live in a NEW sibling module rather than in
+// `dependent_cell_fold_tests` so that step-10's committed RED-pinned text and
+// its `problem()` helper signature stay untouched; the four one-line
+// expression builders are re-declared locally for the same reason.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod stale_current_values_seed_tests {
+    use super::*;
+    use reify_ir::{ObjectiveSet, UnOp};
+    use std::sync::Arc;
+
+    /// The value a stale same-scope auto entry carries into the search.
+    ///
+    /// Named rather than inlined — mirroring `STALE_SIDE` in
+    /// `tests/joint_drive_per_trial_recompute.rs:998` — so a mixed-up assertion
+    /// cannot pass by coincidence: every fixture below is built so that the
+    /// STALE answer and the CORRECT answer are opposites, and naming the stale
+    /// side makes that opposition explicit at the call site.
+    ///
+    /// A real one arrives via any of the three sources named in this module's
+    /// header comment; `registry.rs:717-720`'s lexicographic warm-start is the
+    /// one that needs no eval layer at all.
+    const STALE_SEED: bool = true;
+
+    fn bool_auto(member: &str) -> AutoParam {
+        AutoParam {
+            id: ValueCellId::new("S", member),
+            param_type: Type::Bool,
+            bounds: None,
+            free: true,
+        }
+    }
+
+    fn bref(member: &str) -> CompiledExpr {
+        CompiledExpr::value_ref(ValueCellId::new("S", member), Type::Bool)
+    }
+
+    fn not(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::unop(UnOp::Not, e, Type::Bool)
+    }
+
+    fn and(l: CompiledExpr, r: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(reify_ir::BinOp::And, l, r, Type::Bool)
+    }
+
+    fn eq_true(e: CompiledExpr) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Eq,
+            e,
+            CompiledExpr::literal(Value::Bool(true), Type::Bool),
+            Type::Bool,
+        )
+    }
+
+    /// A `ValueMap` seeded with exactly one `S.<member>` entry — every fixture
+    /// below needs precisely one, and keeping it to one makes the thing under
+    /// test unmistakable at the call site.
+    ///
+    /// `ValueMap` has no `FromIterator` impl (reify-ir/src/value.rs), so this
+    /// is `new` + `insert` rather than a `collect`.
+    fn seed(member: &str, v: Value) -> ValueMap {
+        let mut m = ValueMap::new();
+        m.insert(ValueCellId::new("S", member), v);
+        m
+    }
+
+    /// Like `dependent_cell_fold_tests::problem`, but with the `current_values`
+    /// seed exposed — that seed IS the subject under test here, so it cannot be
+    /// hard-wired to `ValueMap::new()` the way step-10's helper wires it.
+    fn problem_with_seed(
+        auto_params: Vec<AutoParam>,
+        constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
+        dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
+        current_values: ValueMap,
+    ) -> ResolutionProblem {
+        ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values,
+            objective: None::<ObjectiveSet>,
+            functions: Arc::from(Vec::new()),
+            dependent_cells,
+        }
+    }
+
+    /// The solved value of `S.<member>`, or a panic naming what actually came
+    /// back — on this bug the solver returns a definite WRONG VERDICT
+    /// (`Infeasible` on a satisfiable problem), so the panic must report it.
+    fn solved_value(result: &SolveResult, member: &str) -> Value {
+        match result {
+            SolveResult::Solved { values, .. } => values
+                .get(&ValueCellId::new("S", member))
+                .unwrap_or_else(|| {
+                    panic!("no solved value for S.{member}; got values {values:?}")
+                })
+                .clone(),
+            other => panic!("expected SolveResult::Solved for S.{member}; got {other:?}"),
+        }
+    }
+
+    /// (a) STALE DEEPER AUTO REACHED THROUGH A DEPENDENT CELL.
+    ///
+    /// Two `Bool` autos in `auto_params` order `[S.a, S.b]`; `current_values`
+    /// seeds ONLY `S.b`, with the stale value; `let f = not(b)`;
+    /// `constraint f == true`. The unique satisfying assignment is
+    /// `b = false` (`S.a` is unconstrained and comes back as its first domain
+    /// value).
+    ///
+    /// `collect_constraint_refs` gives `{S.f}`, whose intersection with
+    /// `auto_param_ids` is EMPTY, so `all_assigned` is VACUOUSLY true and the
+    /// constraint is evaluated at depth 0 — where `S.f` has already folded to
+    /// `not(STALE_SEED) = false` off the stale `S.b`. Both `S.a` branches
+    /// therefore prune before the search ever descends to `S.b`.
+    ///
+    /// CONFIRMED RED: `Infeasible { ConstraintUnsatisfiable }`.
+    #[test]
+    fn a_stale_deeper_auto_behind_a_dependent_cell_must_not_prune_a_feasible_branch() {
+        let p = problem_with_seed(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("f")))],
+            vec![(ValueCellId::new("S", "f"), not(bref("b")))],
+            seed("b", Value::Bool(STALE_SEED)),
+        );
+
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&p), "b"),
+            Value::Bool(!STALE_SEED),
+            "`let f = not(b)` with `constraint f == true` is satisfied ONLY by \
+             b = false. The stale `S.b = {STALE_SEED}` seed makes the depth-0 \
+             fold materialise `S.f = false`, so the forward-check prunes both \
+             `S.a` branches and the search never reaches `S.b` at all — a \
+             feasible problem reported Infeasible",
+        );
+    }
+
+    /// (b) STALE AUTO ON THE DIRECT PATH — the same defect with NO dependent
+    /// cells at all.
+    ///
+    /// Same two autos and the same stale `S.b` seed, but `dependent_cells` is
+    /// EMPTY and the single constraint reads the auto DIRECTLY:
+    /// `not(b) == true`. Here `auto_refs = {S.b}` is non-empty, but
+    /// `all_assigned` tests `assignment.get(r).is_some()` — and the stale seed
+    /// makes that prematurely TRUE at depth 0. The constraint is evaluated
+    /// against the stale value and prunes both `S.a` branches.
+    ///
+    /// LOAD-BEARING for the fix's SHAPE: this proves the defect is not
+    /// dependent-cell-specific and therefore must be repaired at the SEED, not
+    /// inside `fold_dependent_cells` — a fold-local guard cannot reach this
+    /// path, which never touches the fold.
+    ///
+    /// CONFIRMED RED: `Infeasible { ConstraintUnsatisfiable }`.
+    #[test]
+    fn b_stale_auto_on_the_direct_path_must_not_prune_a_feasible_branch() {
+        let p = problem_with_seed(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(not(bref("b"))))],
+            Vec::new(),
+            seed("b", Value::Bool(STALE_SEED)),
+        );
+
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&p), "b"),
+            Value::Bool(!STALE_SEED),
+            "`constraint not(b) == true` is satisfied ONLY by b = false, and it \
+             reads the auto DIRECTLY with an EMPTY `dependent_cells`. The stale \
+             `S.b = {STALE_SEED}` seed makes `all_assigned` true at depth 0, so \
+             both `S.a` branches prune on a value the search had not chosen yet",
+        );
+    }
+
+    /// (c) D1/B2 IDENTITY — a NON-auto seed entry must SURVIVE.
+    ///
+    /// This is the guard that matters most. `current_values` is the ONLY
+    /// channel by which a CP-SAT constraint sees a non-auto base value (pinned
+    /// connector autos are written into it at engine_eval.rs:2327), so an
+    /// over-broad "just start from `ValueMap::new()`" fix would pass (a) and
+    /// (b) while silently breaking every such model.
+    ///
+    /// One `Bool` auto `S.a`; `current_values` seeds the NON-auto cell `S.k`;
+    /// `let g = k and a`; `constraint g == true`. With `k = true` the answer is
+    /// `a = true`; flipping the seed to `k = false` makes `g` identically
+    /// `false` and the problem genuinely INFEASIBLE. Asserting BOTH halves is
+    /// what makes this fail loudly if the seed filter strips more than the auto
+    /// ids: with `S.k` gone, `g` evaluates to a non-`Bool`, the
+    /// skip-don't-prune arm fires, and the verdict stops depending on the seed.
+    ///
+    /// Green on write.
+    #[test]
+    fn c_a_non_auto_seed_entry_survives_and_still_drives_the_verdict() {
+        let build = |k: bool| {
+            problem_with_seed(
+                vec![bool_auto("a")],
+                vec![(ConstraintNodeId::new("S", 0), eq_true(bref("g")))],
+                vec![(ValueCellId::new("S", "g"), and(bref("k"), bref("a")))],
+                seed("k", Value::Bool(k)),
+            )
+        };
+
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&build(true)), "a"),
+            Value::Bool(true),
+            "`let g = k and a` with `constraint g == true` and the NON-auto \
+             seed `S.k = true` is satisfied only by a = true",
+        );
+
+        let flipped = CpSatSolver.solve(&build(false));
+        assert!(
+            matches!(flipped, SolveResult::Infeasible { .. }),
+            "flipping the NON-auto seed to `S.k = false` makes `g = false and \
+             a` identically false, so `constraint g == true` is UNSATISFIABLE. \
+             Getting anything else means the seed's non-auto entry was stripped \
+             along with the autos and the verdict no longer depends on it; got \
+             {flipped:?}",
+        );
+    }
+}
