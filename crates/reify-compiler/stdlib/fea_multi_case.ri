@@ -483,11 +483,11 @@ structure def BodyForce : Load {
 // docs/prds/v0_6/typed-fea-authoring-surface.md §4.1).
 //
 // Shape mirrors PointLoad: scalar dimensional magnitude + dimensionless
-// `direction : List<Real>`.  NOT `Vector3<Acceleration>` — `vec3(0 m/s^2, …)`
-// fails to parse (acceleration has no compound m/s² literal; only the
-// `1m/(1s*1s)` build form works).  The scalar form composes cleanly with
-// `STANDARD_GRAVITY()` / `5 * STANDARD_GRAVITY()` and keeps `direction`
-// general (centrifuge, lateral-g).
+// `direction : Vector3<Dimensionless>`.  NOT `Vector3<Acceleration>` —
+// `vec3(0 m/s^2, …)` fails to parse (acceleration has no compound m/s²
+// literal; only the `1m/(1s*1s)` build form works).  The scalar form composes
+// cleanly with `STANDARD_GRAVITY()` / `5 * STANDARD_GRAVITY()` and keeps
+// `direction` general (centrifuge, lateral-g).
 //
 //   `magnitude`  — gravitational acceleration applied to the body.
 //                  `Acceleration` resolves to the built-in `DimensionVector::ACCELERATION`

@@ -138,7 +138,9 @@ structure def BucklingOptions {
 // ── BucklingMode ─────────────────────────────────────────────────────────────
 
 // `BucklingMode` is one eigenpair returned by the buckling eigensolver: a scalar
-// load-multiplier eigenvalue paired with a displacement-field eigenvector.
+// load-multiplier eigenvalue paired with a dimensionless mode-shape eigenvector
+// — a DIRECTION field, not a displacement field (see the DIMENSIONALITY NOTE
+// on `mode_shape` below).
 // Populated exclusively by the solver — no caller-supplied defaults are
 // meaningful, no constraints (every field is solver-determined). Mirrors
 // the `ElasticResult`-style "output container only" discipline.
