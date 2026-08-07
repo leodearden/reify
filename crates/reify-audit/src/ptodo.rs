@@ -831,7 +831,10 @@ enum LineClass {
 /// 4. stub macro (`.rs`): a canonical cite on this line OR the line directly
 ///    above → `Cited(this-line ∪ above-line cites)` (above-line lookback for the
 ///    `// #NNNN` \ `todo!()` convention); else `Structural(Untracked)`.
-/// 5. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
+/// 5. lane δ-A (`.rs`): an `#[allow(…dead_code…)]` attribute whose trailing
+///    `//` rationale carries deferral prose → canonical cite → `Cited(ids)`;
+///    else `Structural(Untracked)`.
+/// 6. phantom phrase with no canonical cite → `Structural(PhantomTracking)`.
 fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
     let mut out = Vec::new();
     let mut prev: Option<&str> = None;
@@ -896,8 +899,34 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
+        } else if is_rust
+            && let Some(rationale) = allow_dead_code_attr(line)
+            && has_deferral_prose(rationale)
+        {
+            // (5) lane δ-A (.rs only): an #[allow(…dead_code…)] attribute whose
+            // trailing rationale defers the work is a tracked-work marker.
+            //
+            // Placement is load-bearing, not stylistic. It sits AFTER arm (3)
+            // so a line carrying both the attribute and a real TODO/FIXME
+            // marker stays owned by the marker lane — the `else if` chain is
+            // what guarantees at-most-one entry per line, which the
+            // fingerprint/§6.6 baseline machinery assumes.
+            //
+            // Prose is matched against the RATIONALE, never the whole line, so
+            // the `dead_code` token inside the attribute itself can never be
+            // read as comment prose.
+            //
+            // Emits only the EXISTING classes (§8.3 taxonomy unchanged, no new
+            // `Kind`): a canonical cite hands off to the unmodified β liveness
+            // lane (→ orphaned / unknown-id), an uncited rationale is unmarked
+            // debt (→ untracked).
+            if has_canonical_cite(rationale) {
+                out.push((line_no, LineClass::Cited(extract_cites(rationale)), line.trim().to_string()));
+            } else {
+                out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
+            }
         } else if phantom_phrase(line) && !has_canon {
-            // (5) phantom tracking — claim of tracking with no canonical cite.
+            // (6) phantom tracking — claim of tracking with no canonical cite.
             out.push((line_no, LineClass::Structural(Kind::PhantomTracking), line.trim().to_string()));
         }
 
