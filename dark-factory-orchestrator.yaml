@@ -463,11 +463,20 @@ speculation_probe:
 # now has headroom to verify premises and produce a plan without the CLI
 # truncating mid-tool-call.
 #
-# reviewer_comprehensive 30 -> 45 (2026-08-07, Leo approved, esc-5905-3): the
-# same failure mode, now measured on the reviewer. The 30 is dark-factory's
-# _reviewer_role default (orchestrator/src/orchestrator/agents/roles.py:966) and
-# applies to EVERY reviewer specialization; only reviewer_comprehensive is
-# active in this project, so only it is raised here.
+# reviewer 30 -> 45 (2026-08-07, Leo approved, esc-5905-3): the same failure
+# mode, now measured on the reviewer.
+#
+# THE KEY IS THE COLLAPSED `reviewer`, NOT `reviewer_comprehensive`. routing.py's
+# _config_key() maps every role whose name starts with "reviewer" to the single
+# `reviewer` config key ("byte-equivalence, invariant 3"), so TurnsConfig has no
+# per-specialization reviewer field at all — a `reviewer_comprehensive:` key here
+# is silently DROPPED by pydantic extra=ignore (caught by the config-key census
+# as esc-config-unknown-keys-startup-2 on the first attempt at this change).
+# Consequence: this necessarily raises EVERY reviewer specialization; it cannot
+# be scoped to one. That is acceptable because reviewer_comprehensive is the only
+# reviewer active in this project.
+# NOTE the sibling agent_env block below DOES key on `reviewer_comprehensive` —
+# the two namespaces use different role vocabularies. Do not copy one to the other.
 # Evidence (esc-5905-3, task 5905): 4 of 5 reviewer_comprehensive runs died at
 # maxTurns=30 (turnCount=31) on a 13-file/+432-131 diff, each leaving $2.3-2.9
 # of its $5 budget UNSPENT — turns were binding, not dollars. The single run
@@ -478,7 +487,7 @@ speculation_probe:
 # esc-6066-1. Load-once config: needs an orchestrator restart to take effect.
 max_turns:
   architect: 120
-  reviewer_comprehensive: 45
+  reviewer: 45
 
 # Per-role agent wall-clock timeout overrides (task 5157, 2026-07-08, Leo
 # approved — verify-flakiness survey follow-up, esc-4827 class).
