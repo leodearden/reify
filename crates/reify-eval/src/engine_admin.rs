@@ -2034,11 +2034,18 @@ impl Engine {
         self.last_diff_value_cells.as_ref()
     }
 
-    /// The set of realizations whose INPUT-cone hash moved during the most
-    /// recent `edit_param` / `edit_source` (selective-realization-eviction
-    /// PRD task β, #4729). Cleared at the start of every edit, so it always
-    /// describes exactly one edit; empty means no realization's inputs
-    /// moved (e.g. a display-only param edit).
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, as recomputed by the most recent ACCEPTED `edit_param`
+    /// / `edit_source` (selective-realization-eviction PRD task β, #4729).
+    /// Empty means nothing is known to be stale.
+    ///
+    /// The measurement is against α's stored `input_cone_hash` — "the input
+    /// cone as of the last execution" — so it is cumulative until a `build()`
+    /// re-executes, NOT a per-edit delta: a realization edited but not yet
+    /// rebuilt keeps being reported across subsequent unrelated edits. A
+    /// REJECTED edit (`NotInitialized` / `CellNotFound` / a param-override
+    /// type or dimension mismatch) mutates nothing and leaves the prior
+    /// record intact. See the field doc in `lib.rs` for the full contract.
     ///
     /// Consumed by task γ (#4730) keyed eviction. Note this is the
     /// INPUT-cone comparison, not the static

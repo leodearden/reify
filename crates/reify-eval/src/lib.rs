@@ -578,10 +578,23 @@ pub struct Engine {
     /// role (task 2170).
     #[allow(dead_code)]
     last_diff_value_cells: Option<crate::engine_edit::ValueCellDiff>,
-    /// The set of realizations whose INPUT-cone hash moved during the most
-    /// recent `edit_param` / `edit_source` — selective-realization-eviction
-    /// PRD task β (#4729). Cleared at the start of every edit, so it always
-    /// describes exactly one edit.
+    /// The set of realizations whose INPUT-cone hash has moved since their
+    /// last EXECUTION, recomputed by the most recent ACCEPTED `edit_param` /
+    /// `edit_source` — selective-realization-eviction PRD task β (#4729).
+    ///
+    /// # Cumulative until execution, not per-edit (amend, review round 1)
+    ///
+    /// Each accepted edit recomputes the set from scratch, but it compares
+    /// against α's stored `input_cone_hash`, which means "the input cone as of
+    /// the last execution". So a realization edited but not yet rebuilt stays
+    /// reported across subsequent unrelated edits, and only a real execution
+    /// (α's write in `execute_realization_ops`) retires it — β is deliberately
+    /// read-only w.r.t. the stored hash so that stays true. A REJECTED edit
+    /// mutates nothing and therefore leaves the prior record intact: both
+    /// entry points reset this field only AFTER their fallible guards. See
+    /// `edit_param_reports_only_the_realization_whose_input_cone_moved`
+    /// (third assertion) and
+    /// `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
     ///
     /// Produced by `engine_edit::compute_changed_realizations` (which
     /// recomputes the GHR-β input-cone fold against the post-edit context

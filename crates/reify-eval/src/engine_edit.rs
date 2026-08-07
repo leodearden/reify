@@ -524,23 +524,77 @@ pub(crate) fn compute_changed_realizations(
 ///
 /// Shared by both edit seams so the ordering hazard below is handled in one
 /// place. A no-op when `changed_realizations` is empty, so a no-realization
-/// edit pays nothing (the PRD §6 zero-cost row).
+/// edit pays nothing for THIS half. (That is the PRD §6 zero-cost row for the
+/// propagation half only — the classification half,
+/// [`compute_changed_realizations`], still folds every realization's ops
+/// unconditionally before this is reached. Correction, review round 1: the
+/// original comment claimed the zero-cost row for the pair.)
 ///
-/// # Why the reverse index is rebuilt here
+/// # What gets invalidated — all four realization-keyed dependent kinds
 ///
-/// Edge #10 (Realization → Compute) is registered by
+/// The walk's seed map is `ReverseDependencyIndex`'s realization-keyed index,
+/// which is broader than "the ComputeNodes consuming this realization". It
+/// carries Realization→Compute (edge #10), Realization→Constraint (the
+/// geometry-query edge, deps.rs:194-196), Realization→Realization
+/// (`GeomRef::Sub` operands, deps.rs:210-214) and the GHR-δ S4
+/// Realization→geometry-ValueCell edge (deps.rs:266-268). So this helper also
+/// drops constraint entries, downstream realization consumers' entries, and
+/// the `Value::GeometryHandle` cells backed by every moved realization.
+///
+/// That last one matters at the `edit_param` call site in particular: it is
+/// the **S12 cross-kind cascade** — previously live only on `edit_source`
+/// (see the block comment at the `changed_realizations` loop in step (9)) —
+/// now applying to the param path for the first time. The S12 rationale
+/// carries over verbatim: invalidation is correct and re-evaluation is not,
+/// because the incremental eval path cannot re-run the kernel and a forced
+/// re-eval would strip the handle to `Undef`; S16 lazy revalidation
+/// re-resolves the handle against the current `Engine` on the next read, and
+/// the next `build()` re-executes the realization behind it.
+///
+/// # Warm state is donated, never dropped
+///
+/// The cone contains `NodeId::Compute` entries (edge #10 is the whole point
+/// of the walk) and `CacheStore::invalidate` is a hard remove that would take
+/// the entry's warm/opaque state and `cost_per_byte` down with the value.
+/// `engine_compute::run_compute_dispatch`'s recovery path is
+/// `cache.get_warm_state(..).or_else(|| warm_pool.checkout(..))`, so an
+/// undonated state is simply gone and the next dispatch runs cold. Every node
+/// therefore hands its warm state to the pool FIRST — the same protocol as
+/// step (9)'s ComputeNode arm and `donate_warm_state_and_invalidate`, and
+/// kind-agnostic for the same reason those are: `get_warm_state` returns
+/// `None` for a node that carries none, so the non-Compute kinds cost one
+/// map lookup.
+///
+/// # Which reverse index is used
+///
+/// Edge #10 is registered by
 /// `ReverseDependencyIndex::build_from_graph_and_fields` by iterating
-/// `graph.compute_nodes` (deps.rs:234-242). Both indices already on hand at
-/// the call sites were built BEFORE ComputeNodes were inserted — on cold eval
-/// the index is built at engine_eval.rs:4090 while `@optimized` nodes are
-/// inserted at :9964, and `edit_source` builds its index near the top while
-/// noting that "the new snapshot's compute_nodes map is empty until per-cell
-/// eval recreates them below". Reusing either would make
-/// `realization_dependents_of` return nothing, the cone come back EMPTY, and
-/// the whole propagation half compile, run, and silently do nothing — the
-/// same silent-no-op failure mode design §5.2 attributes to keying on
-/// `content_hash`. So the index is rebuilt from the CURRENT post-eval graph,
-/// which is what `edit_param`'s structural branch already does.
+/// `graph.compute_nodes` (deps.rs:234-242). An index built BEFORE ComputeNodes
+/// were inserted makes `realization_dependents_of` return nothing, the cone
+/// come back EMPTY, and the whole propagation half compile, run, and silently
+/// do nothing — the same silent-no-op failure mode design §5.2 attributes to
+/// keying on `content_hash`. On cold eval the index is built at
+/// engine_eval.rs:4090 while `@optimized` nodes are inserted at :9964, and
+/// `edit_source` builds its index near the top while noting that "the new
+/// snapshot's compute_nodes map is empty until per-cell eval recreates them
+/// below" — so neither is admissible by default.
+///
+/// `prebuilt_index` is therefore an OPT-IN by a caller that has proven its
+/// index edge-#10-complete for `graph`; `None` means "rebuild from `graph`".
+/// Passing an index that is NOT complete silently under-evicts, so only two
+/// admissibility proofs are accepted today (both at the `edit_param` site,
+/// where the graph persists across the edit rather than being rebuilt):
+///
+/// 1. the structural branch just built its index from the final post-eval
+///    `new_snapshot.graph` and installed it — that graph carries the
+///    ComputeNodes forward, so the index has edge #10; and
+/// 2. `graph.compute_nodes.is_empty()`, where edge #10 is vacuous and the
+///    persisted index's other three realization edge kinds — all derived from
+///    source-derived nodes that only move on a structural mutation (branch 1)
+///    or a recompile (`edit_source`) — are already complete.
+///
+/// Together those cover every `edit_param` on a design with no `@optimized`
+/// nodes, which is the common case; the rebuild is what the rest pays.
 ///
 /// # Why invalidating the output VALUE cell is the load-bearing half
 ///
@@ -553,22 +607,31 @@ pub(crate) fn compute_changed_realizations(
 /// staged fields with zero production readers — the cutoff cannot be routed
 /// through them.
 ///
-/// Takes the cache, graph and fields as separate parameters rather than
+/// Takes the cache, pool, graph and fields as separate parameters rather than
 /// `&mut self` so callers can pass disjoint `Engine` field borrows (the graph
 /// may live inside `self.eval_state`).
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
+    warm_pool: &mut WarmStatePool,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
+    prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
     changed_realizations: &HashSet<RealizationNodeId>,
 ) {
     if changed_realizations.is_empty() {
         return;
     }
-    let index = crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
-        graph,
-        compiled_fields,
-    );
+    let rebuilt;
+    let index = match prebuilt_index {
+        Some(idx) => idx,
+        None => {
+            rebuilt = crate::deps::ReverseDependencyIndex::build_from_graph_and_fields(
+                graph,
+                compiled_fields,
+            );
+            &rebuilt
+        }
+    };
     // The ValueCell seed is EMPTY: the ValueCell-driven cone was already
     // computed and applied upstream in both edit entries, so re-passing it
     // would be a harmless superset but pure redundant BFS on the P0 edit
@@ -576,10 +639,19 @@ fn invalidate_realization_dirty_cone(
     let dirty = crate::dirty::compute_dirty_cone_with_realizations(
         &HashSet::new(),
         changed_realizations,
-        &index,
+        index,
         graph,
     );
     for node in &dirty {
+        // Capture the cost FIRST (`cost_per_byte_of` is read-only and stays
+        // valid before the take), then take the warm state and donate both to
+        // the pool, then drop the cache entry — the exact ordering of step
+        // (9)'s ComputeNode arm, so the pool→cache reinsert half of the
+        // round-trip inside `run_compute_dispatch` can restore state and cost.
+        let cost = cache.cost_per_byte_of(node).unwrap_or(0.0);
+        if let Some(state) = cache.get_warm_state(node) {
+            warm_pool.donate_with_cost(node.clone(), state, cost);
+        }
         cache.invalidate(node);
     }
 }
@@ -991,13 +1063,6 @@ impl Engine {
         let functions = Arc::clone(&self.functions);
         // Reset the per-edit guard-phase group evaluation counter before Phase 1.
         self.last_guard_phase_group_evals = 0;
-        // selective-realization-eviction β (#4729): the changed-realization
-        // set describes exactly ONE edit, so clear it at entry. Ungated (the
-        // field is always present, like `last_dispatch_count`); the real set
-        // is computed at the post-value-cone seam near the end of this
-        // function, once the input cones can be recomputed against the
-        // UPDATED context.
-        self.last_changed_realizations.clear();
         // Auto-invalidate the realization cache: edit_param changes input
         // parameter values, so any cached `GeometryHandleId` entries point at
         // OLD geometry and would silently be served by a subsequent
@@ -1078,6 +1143,33 @@ impl Engine {
                 });
             }
         }
+
+        // selective-realization-eviction β (#4729): reset the changed-
+        // realization set. Ungated (the field is always present, like
+        // `last_dispatch_count`); the real set is computed at the
+        // post-value-cone seam near the end of this function, once the input
+        // cones can be recomputed against the UPDATED context.
+        //
+        // **Ordering (amend, review round 1 — `correctness`): this MUST sit
+        // BELOW the `NotInitialized` / `CellNotFound` / `validate_param_override`
+        // guards**, which is the exact OPPOSITE requirement to the
+        // `clear_realization_cache()` contract-lock above (that one must sit
+        // before any fallible mutation so a stale handle cannot leak on an
+        // `Err` return). The two look co-locatable and are not, so they are
+        // deliberately kept apart.
+        //
+        // The reason is the field's semantics: the set is measured against the
+        // input cone AS OF THE LAST EXECUTION, so it is cumulative across
+        // edits until a `build()` re-executes and α re-stamps
+        // `input_cone_hash` — see
+        // `edit_param_reports_only_the_realization_whose_input_cone_moved`,
+        // whose third assertion pins that an edited-but-not-yet-rebuilt
+        // realization must STILL be reported. A REJECTED edit mutates nothing,
+        // so the prior record is still accurate; clearing it above the guards
+        // would leave the set empty with no compare site ever running, and γ
+        // (#4730) would skip evicting genuinely stale geometry. Pinned by
+        // `rejected_edit_param_does_not_wipe_the_changed_realization_record`.
+        self.last_changed_realizations.clear();
 
         // Clone snapshot and extract references (O(1) via PersistentMap)
         let parent_id = state.snapshot.id;
@@ -2792,18 +2884,49 @@ impl Engine {
         // helper's `edit_param` contract.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
-            let graph = &self.eval_state.as_ref().unwrap().snapshot.graph;
+            let state = self.eval_state.as_ref().unwrap();
+            let graph = &state.snapshot.graph;
             self.last_changed_realizations =
                 compute_changed_realizations(&graph.realizations, graph, &ctx);
-            // Propagate: mark the ComputeNodes consuming a moved realization
-            // (and their output cells' downstream cones) non-fresh, so the
-            // next eval re-dispatches them while unaffected consumers keep
-            // their cached result. `cache` and `compiled_fields` are disjoint
-            // `Engine` fields from `eval_state`, so these borrows coexist.
+            // Reuse the installed reverse index instead of rebuilding an
+            // O(graph) one per edit, but ONLY under the two admissibility
+            // proofs the helper documents (amend, review round 1 —
+            // `efficiency`):
+            //
+            //   `structural_mutation` — the branch above just built
+            //     `new_reverse_index` from the FINAL post-eval
+            //     `new_snapshot.graph` and installed it as `st.reverse_index`.
+            //     `edit_param` clones the persisting graph rather than
+            //     rebuilding it from templates, so those ComputeNodes are
+            //     carried forward and that index already has edge #10.
+            //     Rebuilding here was a pure duplicate of work done ~120 lines
+            //     above.
+            //   `compute_nodes.is_empty()` — edge #10 is vacuous, so the
+            //     persisted index cannot be missing it. Covers every edit on a
+            //     design with no `@optimized` nodes.
+            //
+            // Anything else rebuilds: an index missing edge #10 silently
+            // under-evicts, which is the unsafe direction.
+            let reusable_index = if structural_mutation || graph.compute_nodes.is_empty() {
+                Some(&state.reverse_index)
+            } else {
+                None
+            };
+            // Propagate: mark every realization-keyed dependent of a moved
+            // realization — its consuming ComputeNodes (and their output
+            // cells' downstream cones), its geometry-handle cell (the S12
+            // cascade, now live on the param path), its geometry-query
+            // constraints and its downstream `Sub` realizations — non-fresh,
+            // so the next eval re-dispatches them while unaffected consumers
+            // keep their cached result. `cache`, `warm_pool` and
+            // `compiled_fields` are disjoint `Engine` fields from
+            // `eval_state`, so these borrows coexist.
             invalidate_realization_dirty_cone(
                 &mut self.cache,
+                &mut self.warm_pool,
                 graph,
                 &self.compiled_fields,
+                reusable_index,
                 &self.last_changed_realizations,
             );
         }
@@ -4549,15 +4672,24 @@ impl Engine {
             changed.extend(changed_realizations.iter().cloned());
             changed.extend(added_realizations.iter().cloned());
             self.last_changed_realizations = changed;
-            // Propagate over the NEW graph, which by this point has had its
-            // ComputeNodes recreated by the per-cell eval above — see the
-            // helper's doc for why the index must be rebuilt here rather than
-            // reusing `new_reverse_index` (built while compute_nodes was
-            // still empty).
+            // Propagate over the NEW graph. `prebuilt_index` is `None` — the
+            // unconditional rebuild — because neither admissibility proof the
+            // helper accepts holds here: `new_reverse_index` was built near
+            // the top of `edit_source` while "the new snapshot's compute_nodes
+            // map is empty until per-cell eval recreates them below", so it
+            // cannot be assumed to carry edge #10, and whether per-cell eval
+            // has repopulated `new_snapshot.graph.compute_nodes` by this point
+            // is precisely the thing that must not be assumed. `edit_source`
+            // is a full recompile, so one O(graph) index build is proportionate
+            // to the work already done; `edit_param` is the P0 latency path
+            // and gets the reuse. Pinned by
+            // `edit_source_evicts_only_the_compute_node_downstream_of_the_moved_realization`.
             invalidate_realization_dirty_cone(
                 &mut self.cache,
+                &mut self.warm_pool,
                 &new_snapshot.graph,
                 &self.compiled_fields,
+                None,
                 &self.last_changed_realizations,
             );
         }
@@ -7848,6 +7980,81 @@ structure GrowColl {
              only (arg_name, value) pairs and matches `Boolean {{ .. }} => &[]`. If this \
              now DIFFERS the fold gained op-identity coverage; relax the edit_source \
              carry-forward skip rather than weakening this lock."
+        );
+    }
+
+    /// A REJECTED `edit_param` must leave `last_changed_realizations` intact
+    /// (amend, review round 1 — `reviewer_comprehensive` / `correctness`).
+    ///
+    /// The set is measured against the input cone AS OF THE LAST EXECUTION,
+    /// so it is cumulative until a `build()` re-executes — a realization
+    /// edited but not rebuilt must keep being reported (the third assertion of
+    /// `edit_param_reports_only_the_realization_whose_input_cone_moved`
+    /// pins exactly that). An edit that returns `Err` mutates nothing, so the
+    /// prior record is still accurate. Resetting the field ABOVE the guards
+    /// would leave it empty with no compare site ever running, and γ (#4730)
+    /// would skip evicting genuinely stale geometry.
+    ///
+    /// Both rejection classes are covered: `NotInitialized` (no `eval()` yet)
+    /// and `CellNotFound` (a live engine, an unknown cell) — the latter is the
+    /// one that proves the reset moved BELOW the guards rather than merely
+    /// below the `eval_state` unwrap.
+    #[test]
+    fn rejected_edit_param_does_not_wipe_the_changed_realization_record() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_ir::Value;
+        use reify_test_support::compile_source;
+
+        let sentinel = reify_core::RealizationNodeId::new("Stale", 0);
+
+        // ── Rejection 1: NotInitialized (no eval() has run) ─────────────
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.last_changed_realizations.insert(sentinel.clone());
+        let err = engine
+            .edit_param(ValueCellId::new("Nope", "x"), Value::Int(1))
+            .expect_err("edit_param before eval() must be rejected as NotInitialized");
+        assert!(
+            matches!(err, crate::EngineError::NotInitialized),
+            "expected NotInitialized, got {err:?}"
+        );
+        assert_eq!(
+            engine.last_changed_realizations,
+            HashSet::from([sentinel.clone()]),
+            "a NotInitialized rejection mutates nothing, so the prior staleness record \
+             must survive — an empty set here tells γ there is nothing to evict"
+        );
+
+        // ── Rejection 2: CellNotFound (live engine, unknown cell) ───────
+        const SRC: &str = r#"structure S {
+    param w : Length = 5mm
+}"#;
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+        engine.last_changed_realizations.insert(sentinel.clone());
+        let err = engine
+            .edit_param(ValueCellId::new("S", "does_not_exist"), Value::Int(1))
+            .expect_err("edit_param on an unknown cell must be rejected as CellNotFound");
+        assert!(
+            matches!(err, crate::EngineError::CellNotFound { .. }),
+            "expected CellNotFound, got {err:?}"
+        );
+        assert_eq!(
+            engine.last_changed_realizations,
+            HashSet::from([sentinel.clone()]),
+            "a CellNotFound rejection mutates nothing either. This is the assertion that \
+             fails if the reset sits above the guards rather than below them."
+        );
+
+        // ── Control: an ACCEPTED edit DOES recompute (and so clears the \
+        //    synthetic sentinel, which no real realization backs) ────────
+        engine
+            .edit_param(ValueCellId::new("S", "w"), Value::length(0.010))
+            .expect("edit_param on a real param must succeed");
+        assert!(
+            !engine.last_changed_realizations.contains(&sentinel),
+            "control: an ACCEPTED edit must recompute the set from scratch — if the \
+             sentinel survives here the reset was dropped entirely rather than moved"
         );
     }
 }
