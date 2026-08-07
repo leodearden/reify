@@ -230,6 +230,7 @@ cjs
 conf
 cpp
 css
+csv
 cts
 cxx
 diff
@@ -634,6 +635,43 @@ else
             test "$(printf '%s\n' "$_emitted" | grep -cxF "$_name")" -eq 1
     done <<< "$_tracked_extless"
 fi
+
+# ---------------------------------------------------------------------------
+# Cycle 10 — `csv` allowlisted (α/γ convergence, dark_factory 43410b3418)
+#
+# dark-factory commit 43410b3418 (2026-08-07) "fix(lock-charter): allowlist
+# `csv` — heal main and break the merge-lane deadlock" widened all four γ
+# copies (shared/src/shared/locking.py CODE_EXTENSIONS,
+# fused-memory/src/fused_memory/middleware/lock_charter_guard.py, and both
+# drift-guard test copies) from 58 to 59 entries, after DF's own corpus
+# plans/evidence/scheduler-scoring-2026-08-06/*.csv landed on DF main
+# (e1c51efa8d) and RED'd DF's test_every_tracked_extension_is_allowlisted for
+# ~13.7h.
+#
+# reify tracks ZERO .csv files (measured: git ls-files '*.csv' | wc -l -> 0),
+# so this entry is dark-factory-evidenced only — the same shared-vector shape
+# as Dockerfile in _EXTLESS (Cycle 9's SUBSET-not-equality rationale above).
+# Over-coverage is the safe direction: an entry with no reify file behind it
+# costs nothing, a missing entry costs a rejected charter.
+#
+# step-1: verify RED (measured 2026-08-07: classify prints "REJECT
+# plans/evidence/x.csv", exit 1); step-2 GREEN by adding `csv` to _EXTS.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle 10: \`csv\` allowlisted (α/γ convergence, dark_factory 43410b3418) ---"
+
+for _csv_path in \
+    "plans/evidence/scheduler-scoring-2026-08-06/run.csv" \
+    "data.csv"
+do
+    run_classify "$_csv_path"
+    assert "classify '$_csv_path' exits 0 (ACCEPT)" test "$GUARD_RC" -eq 0
+    assert "classify '$_csv_path' stdout contains ACCEPT" test "${GUARD_OUT#*ACCEPT}" != "$GUARD_OUT"
+done
+
+run_list_extensions
+assert "--list-extensions emits exactly one 'csv' line" \
+    test "$(printf '%s\n' "$GUARD_OUT" | grep -cxF csv)" -eq 1
 
 # ---------------------------------------------------------------------------
 test_summary
