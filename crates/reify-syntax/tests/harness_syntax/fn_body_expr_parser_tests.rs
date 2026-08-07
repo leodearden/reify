@@ -8,7 +8,7 @@
 //! zero `fn_let_binding` children and reads the same `result` field in both arms.
 //!
 //! User-observable signal:
-//!   `cargo test -p reify-syntax --test fn_body_expr_parser_tests`
+//!   `cargo test -p reify-syntax --test harness_syntax -- fn_body_expr_parser_tests::`
 
 use reify_ast::*;
 

@@ -2603,8 +2603,9 @@ pub(crate) fn compile_entity(
                 //
                 // Cost note (task 2280): `compiled_arg.clone()` below is O(literal-tree-size)
                 // per arg.  See the `PendingBoundCheck::TraitArgConformance` doc-comment below
-                // for the Rc/arena trade-off analysis, and `tests/trait_arg_conformance_bench.rs`
-                // for the timing bench (run with `-- --ignored --nocapture`).
+                // for the Rc/arena trade-off analysis, and
+                // `tests/harness_traits/trait_arg_conformance_bench.rs` for the timing bench
+                // (run with `--test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`).
                 for ((_, arg_expr), (arg_name, compiled_arg)) in
                     sub.args.iter().zip(compiled_args.iter())
                 {
@@ -5129,8 +5130,8 @@ pub(crate) enum PendingBoundCheck {
     /// crates) or introduce a `CompilationCtx`-owned arena (see
     /// `compile_builder/ctx.rs`).  Both are out of scope for this observational
     /// task.  Timing bench:
-    ///   `crates/reify-compiler/tests/trait_arg_conformance_bench.rs`
-    ///   `cargo test -p reify-compiler --test trait_arg_conformance_bench -- --ignored --nocapture`
+    ///   `crates/reify-compiler/tests/harness_traits/trait_arg_conformance_bench.rs`
+    ///   `cargo test -p reify-compiler --test harness_traits -- trait_arg_conformance_bench:: --ignored --nocapture`
     TraitArgConformance {
         target_name: String,
         arg_name: String,
