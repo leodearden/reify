@@ -178,3 +178,60 @@ fn check_gdt_removed_2018_emits_warning_on_stderr() {
         "GdtRemoved2018 warning must name replacement characteristics.\nstderr: {stderr}"
     );
 }
+
+// ── task 5748 / esc-5748-7: no double-print on sub-path (c)'s build branch ───
+
+/// D2 invariant lock for `cmd_check` sub-path (c) (`--purpose`) on a
+/// GEOMETRY-BEARING module: a `GdtIllegalModifier` error must be printed
+/// EXACTLY ONCE.
+///
+/// Task 5748's D1 item 2 routes a geometry-bearing `--purpose` module through
+/// `realize_for_check` instead of `eval`. That realization internally calls
+/// `Engine::check`, which already ends with
+/// `diagnostics.extend(self.run_gdt_check_passes(module, &values))`
+/// (engine_constraints.rs) — so the legality pass has ALREADY contributed its
+/// diagnostics by the time `cmd_check` folds in its own
+/// `engine.run_gdt_check_passes(...)` call. `run_gdt_check_passes` is a pure
+/// function of `(module, values)`, so a bare `extend` there yields two
+/// byte-identical error lines, violating D2's "no diagnostic that would appear
+/// in `check()`'s own diagnostics today is ever printed twice".
+///
+/// The pre-existing `check_purpose_gdt_illegal_modifier_exits_failure` above
+/// cannot catch this: `contains("error:")` / `contains("MMC")` are both still
+/// true when the line appears twice.
+///
+/// Note the assertion is on the ERROR TEXT, not on a substring like "MMC" that
+/// also occurs in the fixture-independent parts of the report.
+#[test]
+fn check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=FlatnessMmcPurposeGeometry",
+        &common::fixture_path("gdt_illegal_modifier_purpose_geometry.ri"),
+    ]);
+
+    let needle = "`Flatness` is an RFS-only tolerance characteristic";
+    assert!(
+        stderr.contains(needle),
+        "the GdtIllegalModifier error must still reach stderr on the geometry-bearing \
+         `--purpose` path.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences,
+        1,
+        "the GD&T legality pass contributes its diagnostics ONCE via the realization's \
+         internal `Engine::check` and once more via `cmd_check`'s own fold-in; D2 \
+         requires the two to collapse to a single printed line — got {occurrences}.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The GdtIllegalModifier escalation still fires (unchanged by the merge —
+    // membership is a union, so no exit code can move).
+    assert!(
+        !status.success(),
+        "reify check --purpose must still exit non-zero for a GdtIllegalModifier.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}

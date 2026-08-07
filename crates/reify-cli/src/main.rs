@@ -1232,7 +1232,30 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // GD&T legality pass (task 4589): runs over post-eval values identically
         // to the non-purpose branch.  Folded in BEFORE report_eval_output so the
         // error prints to stderr alongside other diagnostics.
-        diagnostics.extend(engine.run_gdt_check_passes(&compiled, &values));
+        //
+        // On the `used_build` branch this pass has ALREADY run once inside the
+        // realization: `realize_for_check` → `build_with_geometry_output` seeds
+        // its diagnostic list from `self.check(module)` (engine_build.rs:4046),
+        // and `Engine::check` ends with
+        // `diagnostics.extend(self.run_gdt_check_passes(module, &eval_result.values))`
+        // (engine_constraints.rs:1880).  `run_gdt_check_passes` is a pure
+        // function of (module, values), so a bare `extend` here would print
+        // every `GdtIllegalModifier` / `GdtRemoved2018` line a SECOND time —
+        // exactly the "no diagnostic is ever printed twice" invariant D2
+        // asserts.  Route it through the same identity merge instead
+        // (esc-5748-7).
+        //
+        // The non-geometry arm keeps the plain `extend`: `eval()` never runs
+        // the legality pass, so there is nothing to collapse, and deduping here
+        // could only REMOVE a line this branch prints today — two distinct
+        // callouts can legitimately yield two byte-identical messages, and C2
+        // byte-identity with pre-5748 output is the contract on that arm.
+        let gdt_diagnostics = engine.run_gdt_check_passes(&compiled, &values);
+        if used_build {
+            diagnostics = merge_build_diagnostics(&diagnostics, &gdt_diagnostics);
+        } else {
+            diagnostics.extend(gdt_diagnostics);
+        }
 
         let outcome = report_eval_output(
             &constraint_results,
