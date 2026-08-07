@@ -1132,19 +1132,19 @@ fn a_name_that_is_only_a_suffix_of_a_documented_one_is_not_counted_as_mentioned(
 // ── Doc form scan: (name, arity) ─────────────────────────────────────────────
 //
 // `documented_geometry_op_names` (above) collapses every overload of a name
-// into one entry, so a second arity for an already-documented name can go
-// unmirrored into the fixture without failing anything — see the module doc's
-// "Doc → fixture coverage at FORM granularity" gap (task 5583).
-// `documented_geometry_op_forms` is the same span scan widened to also record
-// each span's argument count as an `Arity`, so overloads are tracked as
-// distinct forms rather than collapsed to a name.
+// into one entry, so it alone cannot see a second arity for an
+// already-documented name. `documented_geometry_op_forms` is the same span
+// scan widened to also record each span's argument count as an `Arity`, so
+// overloads are tracked as distinct forms rather than collapsed to a name —
+// feeding `unmirrored_documented_forms`, so an unmirrored overload is RED via
+// `every_documented_geometry_op_form_is_exercised_by_the_fixture` (task #5583).
 //
 // The tests below pin the extraction rule directly (inline markdown, no
 // fixture/chunk involved) before anything consumes it. The ellipsis rule is
 // the one genuine hazard: an arg equal to `…` or ENDING IN `…` (e.g.
 // `weights…`) contributes 0 to the minimum and marks the form variadic —
-// `documented_geometry_op_forms_suffixed_ellipsis_is_at_least` is the case
-// that decides whether this task is GREENable at all (see the module doc).
+// `documented_geometry_op_forms_suffixed_ellipsis_is_at_least` pins exactly
+// that case — the one real chunk rows like `shell(..., faces…)` rely on.
 
 #[test]
 fn documented_geometry_op_forms_extracts_exact_arity() {
@@ -1572,7 +1572,7 @@ fn unmirrored_documented_forms_reports_a_name_with_no_fixture_call_at_all() {
 /// The floor is deliberately well under the live count so ordinary chunk
 /// editing does not trip it, but well over half of it so a genuinely gutted
 /// scan cannot slip through: the section carries 50 forms across ~43 distinct
-/// names today (measured, task 5583 — it was 33 before task 5675 documented 15
+/// names today (measured, task #5583 — it was 33 before task 5675 documented 15
 /// further ops).
 fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
     assert!(
@@ -1624,7 +1624,7 @@ fn assert_form_scan_not_vacuous(documented: &[DocForm]) {
 
 /// Every documented FORM in the real chunk must be exercised by the real
 /// fixture at that exact arity — the doc → fixture direction at FORM
-/// granularity (task 5583), closing the gap
+/// granularity (task #5583), closing the gap
 /// `every_documented_geometry_op_name_is_exercised_by_the_fixture` leaves
 /// open (see the module doc).
 ///
@@ -1650,7 +1650,7 @@ fn every_documented_geometry_op_form_is_exercised_by_the_fixture() {
         unmirrored.is_empty(),
         "stdlib.md documents geometry-op FORM(s) with no compiling instance at that exact \
          arity in tests/fixtures/stdlib_geometry_ops_smoke.ri — a documented overload can go \
-         unmirrored even when its NAME is exercised, just at a different arity (task 5583). \
+         unmirrored even when its NAME is exercised, just at a different arity (task #5583). \
          Remediation: add a call at that arity to \
          crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri, or correct the \
          signature in crates/reify-mcp/src/tools/chunks/stdlib.md if the compiler does not \
