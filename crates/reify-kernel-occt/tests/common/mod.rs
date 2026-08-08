@@ -930,3 +930,64 @@ fn parse_xyz_reads_all_three_fields() {
     assert_eq!(p.y, 2.5, "y from {s}");
     assert_eq!(p.z, -0.5, "z from {s}");
 }
+
+/// (b) Non-finite components parse — the contract that distinguishes this
+/// helper from a `serde_json`-based one.
+///
+/// The assertion on the raw string comes first deliberately: it pins the
+/// PRODUCER's `f64` Display formatting, not merely this parser's tolerance, so
+/// the test fails if someone later swaps `centroid_json` to a real JSON
+/// encoder. `<f64 as Display>` emits the bare tokens `inf` / `-inf` / `NaN`,
+/// which strict JSON forbids and `serde_json::from_str` rejects outright, while
+/// `<f64 as FromStr>` accepts exactly those tokens.
+#[test]
+fn parse_xyz_accepts_non_finite_components() {
+    let s = producer_format_xyz(f64::NEG_INFINITY, f64::INFINITY, f64::NAN);
+    assert!(
+        s.contains("\"x\":-inf") && s.contains("\"y\":inf"),
+        "f64 Display must emit the bare inf/-inf tokens that strict JSON forbids, got {s}"
+    );
+    let p = parse_xyz(&s);
+    assert!(
+        p.x.is_infinite() && p.x.is_sign_negative(),
+        "x should round-trip as -inf, got {}",
+        p.x
+    );
+    assert!(
+        p.y.is_infinite() && p.y.is_sign_positive(),
+        "y should round-trip as +inf, got {}",
+        p.y
+    );
+    assert!(p.z.is_nan(), "NaN should round-trip, got {}", p.z);
+}
+
+/// (c) Whitespace around `:` / `,` is trimmed, keys parse with or without
+/// surrounding quotes, and an unrecognised extra key is ignored rather than
+/// fatal.
+#[test]
+fn parse_xyz_tolerates_whitespace_and_quoted_keys() {
+    let s = "{ \"x\" : -1.0 , y: 2.0 , \"z\" :-3.0 , \"future_key\": 99.0 }";
+    let p = parse_xyz(s);
+    assert_eq!(p.x, -1.0);
+    assert_eq!(p.y, 2.0);
+    assert_eq!(p.z, -3.0);
+}
+
+/// (d) An absent key PANICS naming the field — it must NOT silently return
+/// `f64::NAN`, which is what `sweep_guided_integration.rs`'s parser did and
+/// which would make a downstream `(z - target).abs() < tol` quietly evaluate
+/// false, surfacing a malformed kernel response as a confusing geometry
+/// assertion rather than a parse failure.
+#[test]
+#[should_panic(expected = "z")]
+fn parse_xyz_panics_on_missing_field() {
+    let _ = parse_xyz("{\"x\":1,\"y\":2}");
+}
+
+/// (e) A non-numeric value panics, naming the offending pair AND quoting the
+/// full input so the malformed kernel response is visible in the failure.
+#[test]
+#[should_panic(expected = "not-a-number")]
+fn parse_xyz_panics_on_unparseable_value() {
+    let _ = parse_xyz("{\"x\":1,\"y\":not-a-number,\"z\":3}");
+}
