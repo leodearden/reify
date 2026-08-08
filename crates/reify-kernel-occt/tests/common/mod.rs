@@ -856,3 +856,35 @@ fn bbox_all_finite_discriminates() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// JSON-Point3 (xyz) parsing (task 5937)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Contract tests for the shared `Xyz` / `parse_xyz` helpers above. Like the
+// bbox ones, these `#[test]` fns run as `common::<name>` within the single
+// `harness_occt` test binary.
+// ---------------------------------------------------------------------------
+
+/// Build a JSON-Point3 string EXACTLY the way the kernel does
+/// (`crates/reify-kernel-occt/src/lib.rs:274`, `fn centroid_json`): each
+/// component goes through `f64` **Display**, which is not a JSON number encoder.
+fn producer_format_xyz(x: f64, y: f64, z: f64) -> String {
+    format!("{{\"x\":{},\"y\":{},\"z\":{}}}", x, y, z)
+}
+
+/// (a) All three fields are recovered from the producer's exact wire format.
+///
+/// Exact `assert_eq!` is the correct assertion here, not a tolerance: every
+/// literal below is a dyadic rational exactly representable in binary64, `f64`
+/// Display emits the shortest round-tripping form, and Rust's `f64: FromStr` is
+/// correctly rounded — so the round-trip is an exact-representation identity.
+#[test]
+fn parse_xyz_reads_all_three_fields() {
+    let s = producer_format_xyz(-1.0, 2.5, -0.5);
+    let p: Xyz = parse_xyz(&s);
+    assert_eq!(p.x, -1.0, "x from {s}");
+    assert_eq!(p.y, 2.5, "y from {s}");
+    assert_eq!(p.z, -0.5, "z from {s}");
+}
