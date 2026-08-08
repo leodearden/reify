@@ -33,14 +33,17 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 ///   I1 = σ, I2 = 0, I3 = 0
 ///
 /// Note: I2/I3 are zero for the uniaxial case (off-diagonals all zero,
-/// only σ_xx ≠ 0).  Dimension pinning for I2 (PRESSURE²) and I3
-/// (PRESSURE³) is covered by the hydrostatic unit test in analysis.rs
-/// (nonzero values with explicit dimension asserts).
+/// only σ_xx ≠ 0), so this fixture cannot pin their dimensions — a zero
+/// satisfies a dimension assert for any dimension. That pinning lives in the
+/// hydrostatic unit test in analysis.rs and, end-to-end, in
+/// `INVARIANT_POWERS_FIXTURE` below (non-degenerate diag(2,3,5) MPa).
 ///
 /// Also includes `let i1_val = inv.i1` to exercise `.ri` field-access on
 /// the `StressInvariants` struct (suggestion 4 / task-2884 amendment) and
-/// confirm no `TypeKindMismatch` fires when the eval value `Scalar<PRESSURE>`
-/// is stored under the `Real`-placeholder field type from the struct def.
+/// confirm no `TypeKindMismatch` fires. As of task #6092 the struct def
+/// declares the real dimensions (`i1 : Pressure`), so the declared and
+/// produced types now AGREE; before that, the field was a `Real` placeholder
+/// holding a `Scalar<PRESSURE>`. The guard is still load-bearing either way.
 const UNIAXIAL_FIXTURE: &str = r#"
 structure def StressReductionsFixture {
     let stress  = matrix([[1.0e6Pa, 0.0Pa, 0.0Pa],
@@ -350,14 +353,20 @@ fn safety_factor_uniaxial_evals_to_real_250() {
 
 /// Reading `inv.i1` from `.ri` DSL must NOT trigger `TypeKindMismatch`.
 ///
-/// The `StressInvariants` struct def declares `param i1 : Real` (a
-/// dimension-agnostic placeholder following the `AnalysisResult` convention
-/// in `analysis.ri`), while the runtime builtin produces `Value::Scalar<PRESSURE>`
+/// The `StressInvariants` struct def declares `param i1 : Pressure` (task
+/// #6092), matching the `Value::Scalar<PRESSURE>` the runtime builtin produces
 /// for a dimensioned input tensor.  This test confirms that the `let i1_val =
-/// inv.i1` field-access expression in `.ri` stores the eval result (`Scalar<PRESSURE>`)
-/// without panicking — verifying that the `let`-cell path does NOT run the
+/// inv.i1` field-access expression in `.ri` stores the eval result without
+/// panicking — verifying that the `let`-cell path does NOT run the
 /// `value_type_kind_matches` type-kind check (which applies only to
 /// param-override injections, not computed `let` cells).
+///
+/// That `let`-cell property is what the test actually pins, and it is
+/// independent of the declared field type — which is why the test survived the
+/// #6092 retype unchanged. Only its rationale moved: from "a `Scalar` stored
+/// under a `Real` placeholder" to "declared and produced dimensions agree".
+/// The `Value::Real` arm below is therefore still reachable and still correct:
+/// a dimensionless input tensor collapses to `Real` in the producer.
 #[test]
 fn stress_invariants_field_access_i1_does_not_type_kind_mismatch() {
     let result = run_fixture();

@@ -9,16 +9,26 @@
 //   I2 = (tr(σ)²  − tr(σ²)) / 2      (sum of principal 2×2 minors)
 //   I3 = det(σ)                        (determinant — third invariant)
 //
-// All three params are typed `Real` as dimension-agnostic placeholders, per
-// the `AnalysisResult` convention in analysis.ri: the `stress_invariants`
-// runtime builtin produces correctly-dimensioned `Scalar` values
-// (I1 ~ Pressure, I2 ~ Pressure², I3 ~ Pressure³), but Pressure² and
-// Pressure³ have no named `.ri` alias, so `Real` is used to avoid a
-// dimension-checking dead-end while still naming the fields.
+// Each param declares the dimension the `stress_invariants` runtime builtin
+// already produces — I1 ~ Pressure, I2 ~ Pressure², I3 ~ Pressure³ — using the
+// `Pressure`/`Pressure2`/`Pressure3` aliases from units.ri. Task #6092.
+//
+// These were previously `Real` placeholders, but ONLY because Pa² and Pa³ had
+// no named `.ri` alias to declare; that gap is closed, so the declaration now
+// matches the runtime instead of erasing it. Do not revert to `Real`: user code
+// can pass these fields where a `Pressure`/`Pressure2`/`Pressure3` is demanded,
+// and `Real` breaks that at overload resolution.
+//
+// This deliberately DIVERGES from the `AnalysisResult` trait in analysis.ri,
+// which KEEPS its `Real` placeholders. That is not an oversight to be tidied
+// up: it is documented there as a structural contract that does not participate
+// in dimension checking, and analysis.ri is `#no_prelude`, so it cannot see
+// these aliases in the first place.
 //
 // Module placement: registered after `std.analysis` in `stdlib_loader.rs`
 // so the growing prelude carries `Stress`/`AnalysisResult` when this module
-// compiles. Zero dependencies on other stdlib modules beyond built-in types.
+// compiles. It now also REQUIRES `std.units` to precede it (see the ordering
+// note on the `std.fea` entry in stdlib_loader.rs).
 
 structure def StressInvariants {
     param i1 : Pressure
