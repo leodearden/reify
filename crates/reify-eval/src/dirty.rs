@@ -1308,6 +1308,385 @@ mod tests {
         );
     }
 
+    /// β step-16 (a): the OTHER direction of the transitive fan-out — a
+    /// realization reached through a VALUECELL, entered via a ComputeNode.
+    ///
+    /// step-14/step-15 made the realization-keyed fan-out transitive, but only
+    /// on the realization-keyed map's own `NodeId::Realization` arm. The walk
+    /// also feeds the ValueCell BFS from realization seeds (edge #12 off a
+    /// `NodeId::Compute` dependent, and the GHR-δ S4 `NodeId::Value` arm), and
+    /// `build_from_graph_and_fields` registers ValueCell→Realization edges in
+    /// the VALUECELL-keyed map for every value-read in a realization's op args
+    /// (`deps.rs:203-208`). So the walk can hop
+    /// `Realization → ValueCell → Realization` — and until step-17 it DEAD-ENDS
+    /// there: the BFS inserts the `NodeId::Realization` dependent into `dirty`
+    /// and falls through both of its `if let` arms, never walking that second
+    /// realization's own realization-keyed dependents.
+    ///
+    /// Topology: `C0{realization_inputs:[R0], output_value_cells:[b]}` puts `b`
+    /// on the ValueCell frontier from the `{R0}` seed via edges #10 + #12;
+    /// `index.add(b, Realization(R1))` is the value-read hop; and
+    /// `C1{realization_inputs:[R1], output_value_cells:[d]}` is R1's OWN
+    /// edge-#10 fan-out, which is what must not be lost. Seeded with an EMPTY
+    /// `changed_vcs`, mirroring the sole production call site
+    /// (`engine_edit::invalidate_realization_dirty_cone`).
+    #[test]
+    fn compute_dirty_cone_with_realizations_fans_out_past_a_realization_behind_a_value_cell() {
+        use crate::dirty::compute_dirty_cone_with_realizations;
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        // `b` is C0's output cell (the hop cell R1 reads); `d` is C1's output.
+        for name in &["b", "d"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::dimensionless_scalar(),
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
+        }
+        let b = ValueCellId::new(e, "b");
+        let d = ValueCellId::new(e, "d");
+
+        let r0_id = RealizationNodeId::new(e, 0);
+        let r1_id = RealizationNodeId::new(e, 1);
+        for rid in [&r0_id, &r1_id] {
+            graph.realizations.insert(
+                rid.clone(),
+                RealizationNodeData {
+                    geometry_cell: None,
+                    id: rid.clone(),
+                    operations: vec![],
+                    content_hash: ContentHash::of_str("r"),
+                    produced_repr: ReprKind::BRep,
+                    produced_kernel: None,
+                    input_cone_hash: None,
+                },
+            );
+        }
+
+        // C0 consumes the SEED R0 and writes `b`; C1 consumes R1 and writes `d`.
+        let c0_id = ComputeNodeId::new(e, 0);
+        let c1_id = ComputeNodeId::new(e, 1);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c0_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt0"),
+            cache_key: ContentHash::of_str("ck0"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c1_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r1_id.clone()],
+            options_hash: ContentHash::of_str("opt1"),
+            cache_key: ContentHash::of_str("ck1"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![d.clone()],
+        });
+
+        // build_from_graph registers R0 → Compute(C0) and R1 → Compute(C1)
+        // (edge #10). Splice the VALUECELL-keyed hop `b` → Realization(R1),
+        // i.e. R1 reads `b` in its op args (deps.rs:203-208).
+        let mut index = ReverseDependencyIndex::build_from_graph(&graph);
+        index.add(b.clone(), NodeId::Realization(r1_id.clone()));
+
+        let mut changed_realizations = HashSet::new();
+        changed_realizations.insert(r0_id.clone());
+        let changed_vcs: HashSet<ValueCellId> = HashSet::new();
+
+        let dirty = compute_dirty_cone_with_realizations(
+            &changed_vcs,
+            &changed_realizations,
+            &index,
+            &graph,
+        );
+
+        // The first hop already works today — assert it so a failure below is
+        // unambiguously the ValueCell→Realization dead-end, not a broken fixture.
+        assert!(
+            dirty.contains(&NodeId::Compute(c0_id.clone())),
+            "fixture check: Compute(C0) consumes the seed R0 via edge #10, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(b.clone())),
+            "fixture check: Value(b) is C0's output cell (edge #12), got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Realization(r1_id.clone())),
+            "fixture check: Realization(R1) reads `b`, so the BFS reaches it, got: {:?}",
+            dirty
+        );
+
+        // The actual contract: R1's OWN fan-out must be walked too.
+        assert!(
+            dirty.contains(&NodeId::Compute(c1_id.clone())),
+            "dirty cone should include Compute(C1), R1's own edge-#10 consumer: a realization \
+             discovered through the VALUECELL-keyed map must be re-seeded onto the realization \
+             frontier, not treated as a leaf — otherwise C1 serves STALE GEOMETRY, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(d.clone())),
+            "dirty cone should include Value(d) via edge #12 off C1, got: {:?}",
+            dirty
+        );
+    }
+
+    /// β step-16 (b): the same ValueCell hop, entered through the OTHER arm
+    /// that feeds the BFS from a realization seed — the GHR-δ S4
+    /// `Realization → Value` edge (`deps.rs:266-268`) rather than edge #12 off
+    /// a ComputeNode. Both producers must reach the fixpoint, not just the
+    /// Compute one.
+    ///
+    /// Topology: `R0 → Value(g)` (the geometry cell R0 backs),
+    /// `g → Realization(R1)` (R1 reads `g` in its op args), and
+    /// `C1{realization_inputs:[R1], output_value_cells:[d]}`.
+    #[test]
+    fn compute_dirty_cone_with_realizations_fans_out_past_a_realization_behind_a_geometry_cell() {
+        use crate::dirty::compute_dirty_cone_with_realizations;
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        for name in &["g", "d"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::dimensionless_scalar(),
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
+        }
+        let g = ValueCellId::new(e, "g");
+        let d = ValueCellId::new(e, "d");
+
+        let r0_id = RealizationNodeId::new(e, 0);
+        let r1_id = RealizationNodeId::new(e, 1);
+        for rid in [&r0_id, &r1_id] {
+            graph.realizations.insert(
+                rid.clone(),
+                RealizationNodeData {
+                    geometry_cell: None,
+                    id: rid.clone(),
+                    operations: vec![],
+                    content_hash: ContentHash::of_str("r"),
+                    produced_repr: ReprKind::BRep,
+                    produced_kernel: None,
+                    input_cone_hash: None,
+                },
+            );
+        }
+
+        let c1_id = ComputeNodeId::new(e, 0);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c1_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r1_id.clone()],
+            options_hash: ContentHash::of_str("opt"),
+            cache_key: ContentHash::of_str("ck"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![d.clone()],
+        });
+
+        // GHR-δ S4: R0 → Value(g). Then the value-read hop g → Realization(R1).
+        let mut index = ReverseDependencyIndex::build_from_graph(&graph);
+        index.add_realization(r0_id.clone(), NodeId::Value(g.clone()));
+        index.add(g.clone(), NodeId::Realization(r1_id.clone()));
+
+        let mut changed_realizations = HashSet::new();
+        changed_realizations.insert(r0_id.clone());
+        let changed_vcs: HashSet<ValueCellId> = HashSet::new();
+
+        let dirty = compute_dirty_cone_with_realizations(
+            &changed_vcs,
+            &changed_realizations,
+            &index,
+            &graph,
+        );
+
+        assert!(
+            dirty.contains(&NodeId::Value(g.clone())),
+            "fixture check: Value(g) is the geometry cell R0 backs (GHR-δ S4), got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Realization(r1_id.clone())),
+            "fixture check: Realization(R1) reads `g`, so the BFS reaches it, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Compute(c1_id.clone())),
+            "dirty cone should include Compute(C1): the GHR-δ S4 `NodeId::Value` arm feeds the \
+             same ValueCell BFS, so a realization discovered from IT must also be re-seeded, \
+             got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(d.clone())),
+            "dirty cone should include Value(d) via edge #12 off C1, got: {:?}",
+            dirty
+        );
+    }
+
+    /// β step-16 (c): cycle safety across the MIXED Realization/ValueCell path.
+    ///
+    /// (a)'s topology, closed back to the seed with
+    /// `index.add(d, Realization(R0))`. This pins the invariant step-17's
+    /// re-seed arm must not break: the seeds live in `seen_realizations` but
+    /// deliberately NEVER in `dirty` (β leaves realization cache entries to
+    /// γ #4730), so the BFS re-seed must be guarded on `seen_realizations`.
+    /// A `dirty`-guarded re-seed would let a cycle returning to a seed
+    /// re-enter the realization frontier.
+    ///
+    /// A regression here HANGS rather than failing an assertion; the value of
+    /// the test is that the hang is attributed to this walk. The membership
+    /// assertions additionally prove the cycle does not stop the walk short of
+    /// its useful work.
+    #[test]
+    fn compute_dirty_cone_with_realizations_terminates_on_a_mixed_valuecell_realization_cycle() {
+        use crate::dirty::compute_dirty_cone_with_realizations;
+        use crate::graph::{ComputeNodeData, EvaluationGraph, RealizationNodeData, ValueCellNode};
+        use reify_compiler::ValueCellKind;
+        use reify_core::{ComputeNodeId, ContentHash, RealizationNodeId, Type};
+        use reify_ir::ReprKind;
+
+        let mut graph = EvaluationGraph::default();
+        let e = "E";
+
+        for name in &["b", "d"] {
+            let id = ValueCellId::new(e, *name);
+            graph.value_cells.insert(
+                id.clone(),
+                ValueCellNode {
+                    id: id.clone(),
+                    kind: ValueCellKind::Param,
+                    cell_type: Type::dimensionless_scalar(),
+                    default_expr: None,
+                    content_hash: ContentHash::of_str(name),
+                },
+            );
+        }
+        let b = ValueCellId::new(e, "b");
+        let d = ValueCellId::new(e, "d");
+
+        let r0_id = RealizationNodeId::new(e, 0);
+        let r1_id = RealizationNodeId::new(e, 1);
+        for rid in [&r0_id, &r1_id] {
+            graph.realizations.insert(
+                rid.clone(),
+                RealizationNodeData {
+                    geometry_cell: None,
+                    id: rid.clone(),
+                    operations: vec![],
+                    content_hash: ContentHash::of_str("r"),
+                    produced_repr: ReprKind::BRep,
+                    produced_kernel: None,
+                    input_cone_hash: None,
+                },
+            );
+        }
+
+        let c0_id = ComputeNodeId::new(e, 0);
+        let c1_id = ComputeNodeId::new(e, 1);
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c0_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r0_id.clone()],
+            options_hash: ContentHash::of_str("opt0"),
+            cache_key: ContentHash::of_str("ck0"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![b.clone()],
+        });
+        graph.insert_compute_node(ComputeNodeData {
+            computation_id: c1_id.clone(),
+            target: "fea".to_string(),
+            value_inputs: vec![],
+            realization_inputs: vec![r1_id.clone()],
+            options_hash: ContentHash::of_str("opt1"),
+            cache_key: ContentHash::of_str("ck1"),
+            cached_result: None,
+            result_content_hash: None,
+            opaque_state: None,
+            running: None,
+            output_value_cells: vec![d.clone()],
+        });
+
+        // R0 →#10 C0 →#12 b → R1 →#10 C1 →#12 d → R0: the cycle closes on the
+        // SEED, through both maps.
+        let mut index = ReverseDependencyIndex::build_from_graph(&graph);
+        index.add(b.clone(), NodeId::Realization(r1_id.clone()));
+        index.add(d.clone(), NodeId::Realization(r0_id.clone()));
+
+        let mut changed_realizations = HashSet::new();
+        changed_realizations.insert(r0_id.clone());
+        let changed_vcs: HashSet<ValueCellId> = HashSet::new();
+
+        // Reaching this call's return at all IS the termination assertion.
+        let dirty = compute_dirty_cone_with_realizations(
+            &changed_vcs,
+            &changed_realizations,
+            &index,
+            &graph,
+        );
+
+        assert!(
+            dirty.contains(&NodeId::Compute(c1_id.clone())),
+            "the mixed cycle must not stop the walk short of its useful work, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Value(d.clone())),
+            "dirty cone should still include Value(d) via edge #12 despite the cycle, got: {:?}",
+            dirty
+        );
+        assert!(
+            dirty.contains(&NodeId::Realization(r0_id.clone())),
+            "R0 is reached as a genuine ValueCell dependent of `d`, so it lands in `dirty` even \
+             though it was also the seed — which is why the re-seed guard must be \
+             `seen_realizations`, not `dirty`, got: {:?}",
+            dirty
+        );
+    }
+
     #[test]
     fn dirty_cone_includes_resolution_node() {
         use crate::graph::{EvaluationGraph, ResolutionNodeData, ValueCellNode};
