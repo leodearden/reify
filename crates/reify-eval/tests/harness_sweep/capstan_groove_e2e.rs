@@ -35,14 +35,6 @@
 //! same window. #5580's "a half-round is the only depth that admits the rope"
 //! reasoning retires with the oversize arc and must not be reinstated.
 //!
-//! **3. The seat arc conforms to DIN 15061
-//! (`capstan_seat_arc_is_din_15061_oversize`).** `groove_r = 0.53·rope_dia` —
-//! an OVERSIZE arc, not a zero-clearance slip fit — with the SEATED rope's
-//! centreline still on the D/d circle `pitch_r`, per-side anti-pinch clearance
-//! at the rope's widest section, and a seat bottom that lands on the seated
-//! rope's own underside. This is the module's only non-lockstep pin on the arc
-//! ratio itself: see [`DIN_15061_SEAT_RATIO`].
-//!
 //! **2. The seat removes the right stock
 //! (`capstan_seat_volume_delta_matches_half_pi_r2_l`).** The volume the helical
 //! seat takes out of the drum blank is checked at two very different
@@ -59,7 +51,7 @@
 //!      sharp, and they pull in OPPOSITE directions:
 //!        * the seated half-disc's area centroid lies `4·groove_r/(3π)`
 //!          radially INBOARD of the spine, so it sweeps a shorter helix than
-//!          the spine does — worth ≈ −5.3 % at the file's defaults;
+//!          the spine does — worth ≈ −5.6 % at the file's defaults;
 //!        * the swept tube's two end caps are flat discs normal to the helix
 //!          tangent, so a lens of it pokes past each end of the land cylinder
 //!          — into the retaining flanges, which are solid stock all the way
@@ -69,8 +61,18 @@
 //!          each end. Over BOTH ends that is exactly ONE full-disc lens,
 //!          ≈ +1.5 %.
 //!
-//!      Net ≈ −3.9 %: that is what band (1) has to swallow, and the entire
+//!      Net ≈ −4.0 %: that is what band (1) has to swallow, and the entire
 //!      reason it cannot be an equality.
+//!
+//! **3. The seat arc conforms to DIN 15061
+//! (`capstan_seat_arc_is_din_15061_oversize`).** `groove_r = 0.53·rope_dia` —
+//! an OVERSIZE arc, not a zero-clearance slip fit — with the SEATED rope's
+//! centreline still on the D/d circle `pitch_r`, per-side anti-pinch clearance
+//! at the rope's widest section, and a seat bottom that lands on the seated
+//! rope's own underside. This is the module's only non-lockstep pin on the arc
+//! ratio itself: see [`DIN_15061_SEAT_RATIO`]. Gates (1) and (2) are both
+//! parametrized by the file's own `groove_r` and would stay green through a
+//! revert to a slip fit, so this one is not redundant with them.
 //!
 //! Why band (2) is ±3 % and not the ±2 % this module carried before #5580: the
 //! old budget was written for a correction term worth ~2 % of the swept
@@ -78,8 +80,8 @@
 //! half-round seat the correction is 50 % of the section, so that budget no
 //! longer covers it and carrying it over would be a guessed threshold. A
 //! pessimistic a-priori budget for the enlarged terms is ≲0.5 %, and the
-//! residual this seat actually leaves, measured, is 0.0202 % — so ±3 % is
-//! ≈ 148× the real residual while still catching a modelling regression (a
+//! residual this seat actually leaves, measured, is 0.0321 % — so ±3 % is
+//! ≈ 93× the real residual while still catching a modelling regression (a
 //! `groove_r` off by 7 % moves ΔV by ~14 %). See [`HALF_ROUND_REL_TOL`].
 //!
 //! **No geometry number is hard-coded here.** Every input to the expected value
@@ -159,15 +161,21 @@ const MIN_MOUTH_CLEARANCE_FRAC: f64 = 2.0 * DIN_15061_SEAT_RATIO - 1.0;
 ///
 /// This is PRD §6 row 11's conformance band verbatim (as re-spec'd by #5580 —
 /// the reference value moved from `π·r²·L` to `0.5·π·r²·L`; the band width did
-/// not). It is deliberately coarse: at the file's defaults the ideal
-/// over-predicts the true seat by 3.87 % (measured), and the band has to
-/// swallow that.
-/// That 3.9 % is a NET of two opposite terms, not a single effect — sweeping
+/// not, and #5683 did not move it either — only the meaning of `r` and the
+/// radius `L` is measured at). It is deliberately coarse: at the file's
+/// defaults the ideal over-predicts the true seat by 4.07 % (measured on the
+/// DIN 15061 oversize seat; it was 3.87 % on the equal-radii seat #5683
+/// replaced), and the band has to swallow that.
+/// That 4.1 % is a NET of two opposite terms, not a single effect — sweeping
 /// the section at the spine radius rather than at the seated half's area
-/// centroid over-predicts by ≈ 5.3 %, while the end lenses that emerge into
-/// the flanges are under-counted by ≈ 1.5 %. Regression sensitivity
-/// comes from [`HALF_ROUND_REL_TOL`] instead — do NOT tighten this one to
-/// compensate, it would stop meaning "row 11".
+/// centroid over-predicts by ≈ 5.57 %, while the end lenses that emerge into
+/// the flanges are under-counted by ≈ 1.53 %. Both shares are quoted against
+/// the coarse ideal, so they sum to the closed form's ≈ −4.04 % offset from it
+/// (the remaining 0.03 % is the measured residual — see
+/// [`HALF_ROUND_REL_TOL`]). The centroid term grew with the oversize arc
+/// because `4·groove_r/(3π)` grows faster than `seat_c` does. Regression
+/// sensitivity comes from [`HALF_ROUND_REL_TOL`] instead — do NOT tighten this
+/// one to compensate, it would stop meaning "row 11".
 const PAPPUS_REL_TOL: f64 = 0.15;
 
 /// Relative tolerance on `ΔV` against the centroid-Pappus + end-lens closed
@@ -175,20 +183,38 @@ const PAPPUS_REL_TOL: f64 = 0.15;
 ///
 /// With the centroid shift and the end lenses both modelled, the residual is
 /// only the second-order terms the closed form ignores — land-surface
-/// curvature within the section plane (~0.006 %) and tessellation/`volume()`
-/// resolution. **Measured on THIS geometry** (the half-round seat this constant
+/// curvature within the section plane and tessellation/`volume()` resolution.
+/// **Measured on THIS geometry** (the DIN 15061 oversize seat this constant
 /// actually gates, at the file's defaults): the kernel reports ΔV =
-/// 2.589140e-5 m³ against a prediction of 2.589662e-5 m³, i.e. the closed form
-/// runs high by 0.0202 %. So 3 % is ≈ 148× the residual it has to cover — and
-/// ≈ 6× even the deliberately pessimistic ≲0.5 % a-priori budget for the
-/// enlarged correction terms, which is what sized it before the run. (Method
-/// cross-check: the same three ingredients reproduce the pre-#5580
-/// submerged-channel ΔV to −0.09 %. That geometry has a different seated area,
-/// centroid and end lenses, so it validates the METHOD, not this number.)
+/// 2.924801e-5 m³ against a prediction of 2.925740e-5 m³, i.e. the closed form
+/// runs high by 0.0321 %. So 3 % is ≈ 93× the residual it has to cover — and
+/// ≈ 16× even the deliberately pessimistic ≲0.5 % a-priori budget for the
+/// enlarged correction terms.
+///
+/// The band was NOT re-sized for #5683's oversize arc; the a-priori basis for
+/// keeping it was that the dominant ignored term — land-surface curvature
+/// within the section plane, ~0.006 % on the equal-radii seat — scales as
+/// `(R_s/C)²`, i.e. `(3.18/24.18)² / (3/24)² = 1.107×` → ~0.0066 %, with
+/// tessellation/`volume()` resolution unchanged, so the residual was expected
+/// to stay ≈ 0.02 %. It came in at 0.0321 %, i.e. 1.59× the pre-#5683
+/// residual rather than the 1.107× that curvature scaling alone accounts for —
+/// so the estimate was directionally right and conservative in magnitude, but
+/// it is not the whole story. At ≈ 93× inside the band that gap is recorded
+/// rather than acted on; it would matter if a future arc ratio pushed the
+/// residual toward the ≲0.5 % budget. (Method cross-check: the same three
+/// ingredients reproduce the pre-#5580 submerged-channel ΔV to −0.09 %. That
+/// geometry has a different seated area, centroid and end lenses, so it
+/// validates the METHOD, not this number.)
 ///
 /// It stays sharp enough for the failure modes this module claims to catch: a
 /// `groove_r` off by 7 % moves ΔV by ~14 %, and a seat that reverts to a
 /// submerged full tube moves it by ~100 %.
+///
+/// **What this band does NOT catch: a revert to a slip-fit
+/// `groove_r = rope_dia/2`.** The closed form is parametrized by the file's own
+/// `groove_r`, so it would simply predict the correspondingly smaller ΔV and
+/// stay green. That is [`capstan_seat_arc_is_din_15061_oversize`]'s job, via
+/// the externally-pinned [`DIN_15061_SEAT_RATIO`].
 ///
 /// This deliberately replaces the pre-#5580 `SEATED_SECTION_REL_TOL = 0.02`
 /// rather than inheriting it: that budget was sized for a correction term
@@ -200,31 +226,37 @@ const HALF_ROUND_REL_TOL: f64 = 0.03;
 /// profile back out of its tessellated mesh.
 ///
 /// Sized from the residual actually measured on this design, not guessed. At
-/// the file's defaults the mesh reads back land = 24.000225 mm against a
-/// [`seat_arc_centre`] of 24 mm (0.2 µm out — vertices of a tessellated
+/// the file's defaults the mesh reads back land = 24.180070 mm against a
+/// [`seat_arc_centre`] of 24.180 mm (0.07 µm out — vertices of a tessellated
 /// cylinder lie ON the true circle, so only floating-point noise separates
-/// them), and a seat bottom of 20.979 mm against a `pitch_r - rope_dia/2` of
-/// 21 mm (21 µm out — OCCT approximates the swept pipe surface with a
+/// them), and a seat bottom of 20.989 mm against a `pitch_r - rope_dia/2` of
+/// 21 mm (11 µm out — OCCT approximates the swept pipe surface with a
 /// B-spline, so the innermost generator is only sampled). Worst residual =
-/// 0.70 % of `groove_r`.
+/// 0.34 % of `groove_r`. (Both figures re-measured on #5683's oversize seat;
+/// they were 0.2 µm / 21 µm, worst 0.70 %, on the equal-radii seat.)
 ///
-/// 10 % of `groove_r` is 0.3 mm here: 14x that residual, and still an order of
-/// magnitude tighter than every failure these assertions exist to catch — a
+/// 10 % of `groove_r` is 0.318 mm here: 29x that residual, and still an order
+/// of magnitude tighter than every failure these assertions exist to catch — a
 /// seat that never breaks through reads the land radius instead of the groove
-/// bottom (3 mm out, 100 % of `groove_r`), and a land put back above the seat's
-/// arc centre reads high against `seat_c` by however far it was raised.
+/// bottom (3.18 mm out, 100 % of `groove_r`), and a land put back above the
+/// seat's arc centre reads high against `seat_c` by however far it was raised.
 ///
-/// That second figure is a **measured negative control**, not a derivation:
-/// reinstating the pre-#5580 submerged channel (`land_r = pitch_r + groove_r −
-/// 0.3mm`) and re-running this test makes the mesh read `land_max` =
-/// 26.700209 mm against a seat arc centre of 24 mm — 2.700 mm out, 90 % of
-/// `groove_r`, 9x this band, caught. The same run is also why both assertions
-/// reference recomputed radii and not `land_r`: against `land_r` that submerged
-/// drum reads 0.2 µm out and sails through, and its `seat_min` is unchanged at
-/// 20.979 mm (the swept tube bottoms at `seat_c − groove_r` whatever the land
-/// does), so neither of the other two mesh comparisons would have noticed it
-/// either. There is no regression this band could swallow that a tighter one
-/// would catch.
+/// That second figure rests on a **measured negative control** — but one taken
+/// on the PRE-#5683 equal-radii geometry, not re-run here, so it is carried
+/// with its provenance stated rather than as a measurement of this seat.
+/// #5580 reinstated the pre-#5580 submerged channel (`land_r = pitch_r +
+/// groove_r − 0.3mm`) and re-ran this test: the mesh read `land_max` =
+/// 26.700209 mm against an arc centre of 24 mm — 2.700 mm out, 90 % of
+/// `groove_r`, 9x this band, caught. Nothing in that result depends on the arc
+/// ratio (the equivalent submerged land here would sit at `seat_c + groove_r −
+/// 0.3mm` = 27.06 mm, 2.700 mm out again), so the conclusion carries even
+/// though the number was not re-taken. That run is also why both assertions
+/// reference recomputed radii and not `land_r`: against `land_r` the submerged
+/// drum reads 0.2 µm out and sails through, and its `seat_min` is unchanged
+/// (the swept tube bottoms at `seat_c − groove_r` whatever the land does), so
+/// neither of the other two mesh comparisons would have noticed it either.
+/// There is no regression this band could swallow that a tighter one would
+/// catch.
 const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 
 // ── Shared prologue ──────────────────────────────────────────────────────────
