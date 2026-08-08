@@ -372,10 +372,10 @@ fn is_decimal_sibling(si_scale: f64, default_si_scale: f64) -> bool {
 ///
 /// Each dimension's `is_default` entry is numerically identical to the unit
 /// `DimensionVector::to_display_units` already chooses for that dimension
-/// (Length→mm, Area→mm², Volume→mm³, Angle→deg; Mass/Pressure/Density and the
+/// (Length→mm, Area→mm^2, Volume→mm^3, Angle→deg; Mass/Pressure/Density and the
 /// single-rung Force/Energy/Power ladders fall through `to_display_units`'s
 /// unscaled fallback branch, so their defaults are the coherent-SI base unit
-/// — kg, Pa, kg/m³, N, J, W — at `si_scale: 1.0`).
+/// — kg, Pa, kg/m^3, N, J, W — at `si_scale: 1.0`).
 pub fn unit_ladders() -> Vec<DimensionLadder> {
     vec![
         DimensionLadder {
@@ -411,7 +411,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Area".to_string(),
-            derived_unit_name: "mm\u{00B2}".to_string(),
+            derived_unit_name: "mm^2".to_string(),
             auto_scale: Some(AutoScale {
                 enabled: true,
                 band_lo: 1.0,
@@ -419,17 +419,17 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             }),
             units: vec![
                 UnitOption {
-                    label: "mm\u{00B2}".to_string(),
+                    label: "mm^2".to_string(),
                     si_scale: 1e-6,
                     is_default: true,
                 },
                 UnitOption {
-                    label: "cm\u{00B2}".to_string(),
+                    label: "cm^2".to_string(),
                     si_scale: 1e-4,
                     is_default: false,
                 },
                 UnitOption {
-                    label: "m\u{00B2}".to_string(),
+                    label: "m^2".to_string(),
                     si_scale: 1.0,
                     is_default: false,
                 },
@@ -437,7 +437,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Volume".to_string(),
-            derived_unit_name: "mm\u{00B3}".to_string(),
+            derived_unit_name: "mm^3".to_string(),
             auto_scale: Some(AutoScale {
                 enabled: true,
                 band_lo: 1.0,
@@ -445,12 +445,12 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             }),
             units: vec![
                 UnitOption {
-                    label: "mm\u{00B3}".to_string(),
+                    label: "mm^3".to_string(),
                     si_scale: 1e-9,
                     is_default: true,
                 },
                 UnitOption {
-                    label: "cm\u{00B3}".to_string(),
+                    label: "cm^3".to_string(),
                     si_scale: 1e-6,
                     is_default: false,
                 },
@@ -460,7 +460,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
                     is_default: false,
                 },
                 UnitOption {
-                    label: "m\u{00B3}".to_string(),
+                    label: "m^3".to_string(),
                     si_scale: 1.0,
                     is_default: false,
                 },
@@ -537,7 +537,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Density".to_string(),
-            derived_unit_name: "kg/m\u{00B3}".to_string(),
+            derived_unit_name: "kg/m^3".to_string(),
             auto_scale: Some(AutoScale {
                 enabled: false,
                 band_lo: 1.0,
@@ -545,12 +545,12 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
             }),
             units: vec![
                 UnitOption {
-                    label: "kg/m\u{00B3}".to_string(),
+                    label: "kg/m^3".to_string(),
                     si_scale: 1.0,
                     is_default: true,
                 },
                 UnitOption {
-                    label: "g/cm\u{00B3}".to_string(),
+                    label: "g/cm^3".to_string(),
                     si_scale: 1000.0,
                     is_default: false,
                 },
@@ -706,9 +706,9 @@ mod tests {
     /// `default_si_scale_matches_to_display_units_numeric_value` below
     /// already locks against its true source (`to_display_units`). That
     /// test only exercises each ladder's DEFAULT rung though, so this table
-    /// keeps ONLY the non-default-rung coverage (cm/m/in, L, g, g/cm³, …)
+    /// keeps ONLY the non-default-rung coverage (cm/m/in, L, g, g/cm^3, …)
     /// the five tests used to provide — the default rungs themselves
-    /// (Volume mm³, Length mm, Mass kg, Pressure Pa, Density kg/m³) are
+    /// (Volume mm^3, Length mm, Mass kg, Pressure Pa, Density kg/m^3) are
     /// deliberately omitted here since pinning them would just re-assert
     /// the constructor's own constants back at itself; their correctness is
     /// covered, against the real source, by the anchored test below (task
@@ -724,7 +724,7 @@ mod tests {
             ("Length", "m", 1.0, false),
             ("Length", "in", 0.0254, false),
             ("Mass", "g", 1e-3, false),
-            ("Density", "g/cm\u{00B3}", 1000.0, false),
+            ("Density", "g/cm^3", 1000.0, false),
         ];
         for &(dimension, label, si_scale, is_default) in expected {
             let u = unit(ladder(&ladders, dimension), label);
@@ -870,7 +870,7 @@ mod tests {
     ///
     /// Only the numeric value is compared, not the unit label:
     /// Mass/Pressure/Density intentionally use a more specific default label
-    /// (`"kg"`, `"Pa"`, `"kg/m³"`) than `to_display_units`'s generic `"SI"`
+    /// (`"kg"`, `"Pa"`, `"kg/m^3"`) than `to_display_units`'s generic `"SI"`
     /// fallback label (see module doc above) — that label divergence is
     /// deliberate, not drift.
     #[test]
@@ -1022,7 +1022,7 @@ mod tests {
         let area = ladder(&ladders, "Area");
         assert_eq!(
             area.auto_scaled(0.0045),
-            AutoScaleChoice::Rung(unit(area, "cm\u{00B2}")),
+            AutoScaleChoice::Rung(unit(area, "cm^2")),
             "0.0045 m² is 4500 mm² (out of band) but 45 cm²"
         );
 
@@ -1166,7 +1166,7 @@ mod tests {
         let area = ladder(&ladders, "Area");
         assert_eq!(
             area.auto_scaled(-0.0045),
-            AutoScaleChoice::Rung(unit(area, "cm\u{00B2}")),
+            AutoScaleChoice::Rung(unit(area, "cm^2")),
             "the band is on |mantissa|, so -0.0045 m² picks the same rung as +0.0045"
         );
 
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!(
             area.auto_scaled(0.5),
             AutoScaleChoice::Engineering {
-                rung: unit(area, "mm\u{00B2}"),
+                rung: unit(area, "mm^2"),
                 mantissa: 500.0,
                 exponent: 3,
             },
@@ -1347,7 +1347,7 @@ mod tests {
         assert_eq!(
             area.auto_scaled(-0.5),
             AutoScaleChoice::Engineering {
-                rung: unit(area, "mm\u{00B2}"),
+                rung: unit(area, "mm^2"),
                 mantissa: -500.0,
                 exponent: 3,
             }
@@ -1382,19 +1382,19 @@ mod tests {
         );
         assert_eq!(
             volume.auto_scaled(1e-6),
-            AutoScaleChoice::Rung(unit(volume, "cm\u{00B3}")),
+            AutoScaleChoice::Rung(unit(volume, "cm^3")),
             "1e-6 m³ renders as 1000 mm³, so mm³ is out of band and cm³ wins"
         );
         assert_eq!(
             volume.auto_scaled(-1e-6),
-            AutoScaleChoice::Rung(unit(volume, "cm\u{00B3}")),
+            AutoScaleChoice::Rung(unit(volume, "cm^3")),
             "the band is on |mantissa|, so the sign must not change the rung"
         );
 
         assert_eq!(
             volume.auto_scaled(1000.0),
             AutoScaleChoice::Engineering {
-                rung: unit(volume, "mm\u{00B3}"),
+                rung: unit(volume, "mm^3"),
                 mantissa: 1.0,
                 exponent: 12,
             },
@@ -1403,7 +1403,7 @@ mod tests {
         assert_eq!(
             volume.auto_scaled(-1000.0),
             AutoScaleChoice::Engineering {
-                rung: unit(volume, "mm\u{00B3}"),
+                rung: unit(volume, "mm^3"),
                 mantissa: -1.0,
                 exponent: 12,
             },
