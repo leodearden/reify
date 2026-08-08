@@ -47,3 +47,8 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod row;
+
+// ── flat root re-exports ─────────────────────────────────────────────────────
+// Flat re-export so consumers write `reify_builtins::BuiltinRow` (etc.)
+// alongside the module-path form `reify_builtins::row::BuiltinRow`.
+pub use row::{Arity, ArgSlot, Basis, BindingKind, BuiltinRow, Family, ResultSpec};

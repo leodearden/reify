@@ -1,5 +1,213 @@
 //! The PRD §7.1 row vocabulary: [`BuiltinRow`] and the column types it is
 //! built from.
+//!
+//! One [`BuiltinRow`] per registered builtin. Same-name arity overloads
+//! (`offset`@2/@3, `floor`@1/@2) are DISTINCT rows sharing a name-group;
+//! `lookup(name, argc)` disambiguates them.
+//!
+//! Everything here is pure `reify_core::Type` algebra — no `Value`, no eval fn
+//! pointers (PRD decision 3). The [`ResultSpec::ArgAware`] fn pointer is
+//! `fn(&[Type]) -> Option<Type>`: compile-time type computation, never eval.
+
+use reify_core::Type;
+
+/// Which builtin family a row belongs to.
+///
+/// The family column is what lets a per-family dispatcher (reify-stdlib's
+/// `eval_parse` / `eval_analysis` shims) gate on "is this one of mine?"
+/// without re-deriving membership from a name list.
+///
+/// α seeds two families; each later τ migration adds its own variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Family {
+    /// Fallible string→quantity parse builtins (task #4535).
+    Parse,
+    /// FEA stress-analysis reduction builtins (FEA-5, task #2884).
+    Analysis,
+}
+
+/// How a builtin is bound to an implementation — PRD §3 decision 4.
+///
+/// Exhaustiveness is enforced **per kind, in the kind's owning crate**: the
+/// `registry!` macro emits one sub-enum per kind present in the invocation, and
+/// that crate matches on the sub-enum with no `_` arm (I-REG-2). A flat
+/// `BuiltinId` match would instead force every owning crate to name all ~358
+/// eventual variants — including ones it has no business knowing — just to stay
+/// `_`-free.
+///
+/// All five variants are declared now even though α seeds only
+/// [`BindingKind::EvalBuiltin`], so a later τ adds rows rather than widening
+/// the vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BindingKind {
+    /// Dispatched by `reify_stdlib::eval_builtin`.
+    EvalBuiltin,
+    /// Intercepted natively in reify-expr (needs an `EvalContext`).
+    ExprIntercept,
+    /// Geometry queries / selectors / kinematics, via reify-eval's maps.
+    EnginePostProcess,
+    /// Lowered to a `CompiledGeometryOp` in reify-ir.
+    GeometryOp,
+    /// Relations and markers — no runtime binding at all.
+    CompileOnly,
+}
+
+/// How many arguments a row accepts.
+///
+/// This is the row's own declared shape. It is NOT, in α, a diagnostic gate:
+/// the compiler ladder is arity-insensitive today, and preserving that exactly
+/// is a hard constraint of the seed migration (see
+/// `reify-compiler`'s `builtin_registry::registry_result_type`). Real arity
+/// diagnostics arrive with the first genuine overload in τ-numeric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Arity {
+    /// Exactly `n` arguments.
+    Exact(usize),
+    /// Between `lo` and `hi` arguments, both bounds inclusive.
+    Range(usize, usize),
+    /// Any number of arguments, including none.
+    Variadic,
+}
+
+impl Arity {
+    /// Does an `argc`-argument call match this arity?
+    pub fn matches(&self, argc: usize) -> bool {
+        match self {
+            Arity::Exact(n) => argc == *n,
+            Arity::Range(lo, hi) => argc >= *lo && argc <= *hi,
+            Arity::Variadic => true,
+        }
+    }
+}
+
+/// A per-argument-slot constraint.
+///
+/// α needs only [`ArgSlot::Any`]: the seed families' arg checking is unchanged
+/// from today, and today there is none at the slot level.
+///
+/// The real vocabulary — the existing `check_builtin_arg_types` per-slot
+/// dimension checks, plus the ratified `SameDimensionAs(slot)` constraint that
+/// `floor`@2 / `atan2` / `remap` need to say "both args share a free dimension
+/// D" — migrates into this column in **τ-numeric** (PRD §3 decision 5). The
+/// column is present-but-minimal rather than absent so rows written now do not
+/// need reshaping then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ArgSlot {
+    /// No constraint on this slot.
+    Any,
+}
+
+/// How a row's result type is computed — PRD §3 decision 5.
+pub enum ResultSpec {
+    /// The result type is the same whatever the args are.
+    Const(Type),
+    /// The result type is computed from the argument types.
+    ///
+    /// A `None` return means "these args are mis-shaped". In α that never
+    /// happens (the seed resolvers are total, reproducing legacy behaviour that
+    /// never rejected); wiring `None` to an `E_BuiltinArgShape` diagnostic
+    /// instead of a silent first-arg guess is τ-numeric's work.
+    ArgAware(fn(&[Type]) -> Option<Type>),
+}
+
+impl ResultSpec {
+    /// Compute this row's result type for a call with the given argument types.
+    pub fn resolve(&self, args: &[Type]) -> Option<Type> {
+        match self {
+            ResultSpec::Const(ty) => Some(ty.clone()),
+            ResultSpec::ArgAware(f) => f(args),
+        }
+    }
+}
+
+impl std::fmt::Debug for ResultSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResultSpec::Const(ty) => f.debug_tuple("Const").field(ty).finish(),
+            // A fn pointer's address is noise in a failure message; the row's
+            // name (which the caller has) is what identifies the resolver.
+            ResultSpec::ArgAware(_) => f.write_str("ArgAware(<fn>)"),
+        }
+    }
+}
+
+/// Structural equality over the `Const` arm only.
+///
+/// `ArgAware` is deliberately **never equal to anything, including itself**.
+/// Rust compares `fn` pointers by address, which is not a meaningful identity:
+/// the compiler may merge two identically-bodied functions into one address or
+/// duplicate one across codegen units, so `==` on `ArgAware` would answer a
+/// question about codegen, not about signatures.
+///
+/// Row identity is [`BuiltinRow::id`], never structural equality. This impl
+/// exists so tests can assert on `Const` rows directly; it is not a row-identity
+/// mechanism.
+impl PartialEq for ResultSpec {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ResultSpec::Const(a), ResultSpec::Const(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// Why a row's signature is what it is — the ratified I-REG-7 closed
+/// vocabulary (PRD §7.1, ratified 2026-08-07).
+///
+/// Every row must carry one; the registry-crate lint test enforces presence and
+/// reports the [`Basis::Artifact`] count as a visible ratchet toward zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Basis {
+    /// A decision task ruled this signature. Cites ONE task in canonical
+    /// `#NNNN` form, however many artifacts echo it.
+    Ruling(&'static str),
+    /// A physical derivation fixes this signature.
+    Physics(&'static str),
+    /// A design document DECIDED this signature (not merely recorded it).
+    Doc(&'static str),
+    /// "Preserves today's behaviour; no independent justification."
+    ///
+    /// Legal but conspicuous. Per the ratified I-REG-7, an `Artifact` row may
+    /// **not** cite implementation behaviour as its justification — the tag
+    /// itself already declares exactly that.
+    Artifact,
+}
+
+impl Basis {
+    /// Is this the unjustified [`Basis::Artifact`] tag?
+    ///
+    /// The count of rows answering `true` is I-REG-7's reviewed ratchet toward
+    /// zero.
+    pub fn is_artifact(&self) -> bool {
+        matches!(self, Basis::Artifact)
+    }
+}
+
+/// One registered builtin — the PRD §7.1 row.
+///
+/// Generic over its id type because each `registry!` invocation mints its own
+/// `BuiltinId` enum — including the test-local invocations that keep the macro
+/// honest. The crate's real registry supplies the default type parameter, so
+/// consumers simply write `reify_builtins::BuiltinRow`.
+#[derive(Debug)]
+pub struct BuiltinRow<Id: Copy + 'static> {
+    /// The name a `.ri` author writes.
+    pub name: &'static str,
+    /// The generated key this row is dispatched on.
+    pub id: Id,
+    /// Which builtin family this row belongs to.
+    pub family: Family,
+    /// Which dispatcher owns this row's implementation.
+    pub binding: BindingKind,
+    /// How many arguments this row accepts.
+    pub arity: Arity,
+    /// Per-slot argument constraints, one entry per declared slot.
+    pub arg_slots: &'static [ArgSlot],
+    /// How this row's result type is computed.
+    pub result: ResultSpec,
+    /// Why this row's signature is what it is (I-REG-7).
+    pub basis: Basis,
+}
 
 #[cfg(test)]
 mod tests {
