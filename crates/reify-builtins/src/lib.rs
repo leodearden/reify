@@ -45,3 +45,5 @@
 // Mirrors the reify-core lint-attribute prelude for parity across the
 // core stack; reify-builtins itself has no current trigger.
 #![allow(clippy::mutable_key_type)]
+
+pub mod row;
