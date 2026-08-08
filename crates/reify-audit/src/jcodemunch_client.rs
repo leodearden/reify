@@ -1582,6 +1582,21 @@ mod tests {
         /// assertion against it.
         const ASSIGNED_SESSION: &str = "srv-assigned-0001";
 
+        /// How the stub answers `initialize` — the one axis these tests
+        /// vary. Everything after the handshake is identical across modes.
+        #[derive(Clone, Copy)]
+        enum InitializeReply {
+            /// A healthy serve: 200, a well-formed JSON-RPC result body,
+            /// and an `Mcp-Session-Id` header.
+            WithSession,
+            /// 200 and the same well-formed body, but NO session header —
+            /// the server never assigned a session.
+            NoSessionHeader,
+            /// 202 with an empty body and no session header. The shape a
+            /// notification-only responder produces.
+            AcceptedEmpty,
+        }
+
         /// One recorded request: lowercased header names → values, plus the
         /// parsed JSON body.
         #[derive(Clone, Debug)]
@@ -1676,10 +1691,16 @@ mod tests {
         }
 
         impl RecordingStub {
-            /// Bind an ephemeral loopback port and start serving. The
-            /// listener is bound once and kept — never dropped and
-            /// re-bound — so nothing else can win the port in between.
+            /// A healthy stub: `initialize` answers 200 with a session id.
             fn start() -> Self {
+                Self::start_with(InitializeReply::WithSession)
+            }
+
+            /// Bind an ephemeral loopback port and start serving, answering
+            /// `initialize` per `reply`. The listener is bound once and
+            /// kept — never dropped and re-bound — so nothing else can win
+            /// the port in between.
+            fn start_with(reply: InitializeReply) -> Self {
                 let listener =
                     TcpListener::bind("127.0.0.1:0").expect("bind loopback stub");
                 let addr = listener.local_addr().expect("stub local_addr");
@@ -1739,12 +1760,20 @@ mod tests {
                                 },
                             })
                             .to_string();
-                            write_response(
-                                &mut stream,
-                                200,
-                                Some(ASSIGNED_SESSION),
-                                body.as_bytes(),
-                            );
+                            match reply {
+                                InitializeReply::WithSession => write_response(
+                                    &mut stream,
+                                    200,
+                                    Some(ASSIGNED_SESSION),
+                                    body.as_bytes(),
+                                ),
+                                InitializeReply::NoSessionHeader => {
+                                    write_response(&mut stream, 200, None, body.as_bytes())
+                                }
+                                InitializeReply::AcceptedEmpty => {
+                                    write_response(&mut stream, 202, None, b"")
+                                }
+                            }
                         }
                         // A real serve answers this notification 202 with
                         // an empty body — keep that shape.
@@ -1880,6 +1909,57 @@ mod tests {
                 "every post-handshake call must replay the server-assigned \
                  session id verbatim",
             );
+        }
+
+        /// α's share of contract item 5: a responder that assigns no
+        /// session id is not a live seam, so the handshake must fail.
+        ///
+        /// Without an assigned id, contract item 3 (replay it on every
+        /// later POST) is unsatisfiable by construction — there is nothing
+        /// to replay. Returning `Ok` here would hand back a client whose
+        /// every subsequent call is answered `400 Missing session ID`,
+        /// which is exactly the PASS-shaped nothing this task exists to
+        /// remove.
+        ///
+        /// The residual hole — a response that DOES carry a session id but
+        /// whose body is 202/empty/not an initialize result — belongs to
+        /// task #5832 and is deliberately not asserted here.
+        #[test]
+        fn initialize_without_an_assigned_session_id_is_a_protocol_error() {
+            let stub = RecordingStub::start_with(InitializeReply::NoSessionHeader);
+
+            match JcodemunchClient::new(stub.url()) {
+                Err(LoadError::Protocol(_)) => {} // expected
+                Ok(_) => panic!(
+                    "expected Protocol error when the initialize response \
+                     carries no Mcp-Session-Id header, got Ok — a client with \
+                     no session id fails every later call",
+                ),
+                Err(LoadError::Http(e)) => panic!(
+                    "expected Protocol error for the missing session id, got \
+                     Http error: {e}",
+                ),
+            }
+        }
+
+        /// The same claim through the 202 shape: an `initialize` answered
+        /// `202` with an empty body and no session header assigns nothing,
+        /// so it too must fail rather than yield a session-less client.
+        #[test]
+        fn initialize_answered_202_without_a_session_id_is_a_protocol_error() {
+            let stub = RecordingStub::start_with(InitializeReply::AcceptedEmpty);
+
+            match JcodemunchClient::new(stub.url()) {
+                Err(LoadError::Protocol(_)) => {} // expected
+                Ok(_) => panic!(
+                    "expected Protocol error when initialize is answered 202 \
+                     with no Mcp-Session-Id header, got Ok",
+                ),
+                Err(LoadError::Http(e)) => panic!(
+                    "expected Protocol error for the 202-without-session-id \
+                     handshake, got Http error: {e}",
+                ),
+            }
         }
     }
 }
