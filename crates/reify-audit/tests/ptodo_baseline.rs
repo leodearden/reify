@@ -17,7 +17,10 @@
 //!   §6.6's ratchet cannot grow, so those entries can only be burned down: when
 //!   an underlying comment is re-pointed at a live task or the deferred work
 //!   lands, its baseline line is deleted. Every seeded entry was hand-inspected
-//!   as a genuine unmarked deferral; none is a false positive.
+//!   as a genuine deferral; none is a false positive. Three kinds are
+//!   represented, per §8.3's lane-independent taxonomy: one `orphaned` (cites a
+//!   `done` task), one `malformed-cite` (the legacy `task NNNN` form), and three
+//!   `untracked` (no cite at all).
 //!
 //! (A′) **`validate_*`** — always-on, hermetic unit tests that drive crafted
 //!   content through the shared `validate_baseline_content` validator, so the
@@ -190,45 +193,17 @@ fn baseline_is_well_formed() {
     }
 }
 
-/// Regression pin for the §8.1 lane δ-A user-observable signal (task #6087):
-/// the committed baseline must still carry the one CITED entry the lane exists
-/// to surface — `crates/reify-eval/src/engine_build.rs`, an
-/// `#[allow(dead_code)]` whose rationale defers to task #4744, which is `done`
-/// and therefore resolves through the unchanged β liveness lane to `orphaned`.
-///
-/// Asserts on `path` + `kind` + the cite id, NOT on the full normalized text,
-/// so ordinary reflowing of that comment does not break the test while a LANE
-/// REGRESSION (the fingerprint disappearing entirely, because a refactor
-/// silently dropped the allow-attribute anchor or a prose guard over-tightened)
-/// still does.
-///
-/// These entries are GRANDFATHERED DEBT, not a desired state. §6.6's ratchet is
-/// shrink-only: when the underlying comment is re-pointed at a live task, or the
-/// deferred wiring lands, this test and the baseline line are removed TOGETHER.
-/// This test must never be cited as an argument that the debt should stay.
-#[test]
-fn baseline_pins_lane_delta_a_user_observable_signal() {
-    let path = baseline_path();
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {path:?}: {e}"));
-
-    let hit = content.lines().find(|l| {
-        let parts: Vec<&str> = l.splitn(3, " :: ").collect();
-        parts.len() == 3
-            && parts[0] == "crates/reify-eval/src/engine_build.rs"
-            && parts[1] == "orphaned"
-            && parts[2].contains("#4744")
-    });
-
-    assert!(
-        hit.is_some(),
-        "the lane δ-A cited signal is missing from the committed baseline: expected a \
-         `crates/reify-eval/src/engine_build.rs :: orphaned :: …#4744…` entry.\n\
-         Either the debt was legitimately burned down (delete this test WITH the \
-         baseline line — the ratchet is shrink-only), or the δ-A recognizer has \
-         regressed and stopped reporting it.\nbaseline:\n{content}"
-    );
-}
+// NOTE (task #6087, amendment): there is deliberately NO test here asserting
+// that a specific lane δ-A entry is PRESENT in the committed baseline. Such a
+// test cannot provide the recognizer-regression coverage it would appear to —
+// it reads a static file the same commit authored, and the §6.6 ratchet is a
+// SUBSET oracle (`live ⊆ baseline`), so a recognizer that stops firing shrinks
+// the live set and leaves both green. The only state it detects is someone
+// editing the baseline, which is exactly the shrink-only burn-down flow the
+// ratchet exists to allow. Real regression coverage for the δ-A user-observable
+// signal lives in `check_allow_dead_code_deferral_lane` (tests/ptodo.rs), which
+// drives `ptodo::check` end-to-end against a seeded `done` cite and asserts the
+// High `orphaned:` summary.
 
 // -----------------------------------------------------------------------
 // (A′) Synthetic-content coverage for the well-formedness rules
