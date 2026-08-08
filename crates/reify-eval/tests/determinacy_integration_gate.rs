@@ -243,8 +243,9 @@ fn representation_within_violated_when_injected_over_bound() {
 /// Verifies that `RepresentationWithin(subject, 1mm)` is `Satisfied` when the
 /// injected value is below the 1mm bound.
 ///
-/// Mirrors the engine BT7 numeric premise (fine sphere: achieved ≪ 1mm) in the
-/// composition context (same module that also has the purpose intrinsic).
+/// Mirrors the engine BT7 numeric premise (fine sphere: achieved below the 1mm
+/// bound) in the composition context (same module that also has the purpose
+/// intrinsic).
 #[test]
 fn representation_within_satisfied_when_injected_under_bound() {
     let compiled = parse_and_compile(INTEGRATION_SOURCE);
