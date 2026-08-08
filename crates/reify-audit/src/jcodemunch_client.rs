@@ -1530,4 +1530,274 @@ mod tests {
             "readable file must return no diagnostic; got: {diagnostic:?}"
         );
     }
+
+    // ------------------------------------------------------------------
+    // MCP session-handshake contract
+    // ------------------------------------------------------------------
+    //
+    // A hermetic loopback recording stub plus the assertions that pin the
+    // streamable-HTTP session lifecycle: the server assigns the session id,
+    // the client never mints one.
+    //
+    // The stub copies `tests/cli.rs`'s `spawn_mock_mcp_on` discipline —
+    // one request per connection (`Connection: close`, so `ureq` reconnects
+    // predictably) and a stop-flag + non-blocking accept poll teardown, so
+    // a failing assertion cannot leak the accept thread. The one addition
+    // is that it records each request's HEADERS alongside its body, which
+    // is exactly what `tests/cli.rs`'s version discards and what these
+    // contract assertions need.
+    mod session_contract {
+        use super::*;
+
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::{SocketAddr, TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        /// The session id the stub hands out in its `initialize` response.
+        ///
+        /// Deliberately NOT 32 lowercase hex: a client-minted id (the bug
+        /// under test) can then never accidentally satisfy an equality
+        /// assertion against it.
+        const ASSIGNED_SESSION: &str = "srv-assigned-0001";
+
+        /// One recorded request: lowercased header names → values, plus the
+        /// parsed JSON body.
+        #[derive(Clone, Debug)]
+        struct Recorded {
+            headers: HashMap<String, String>,
+            body: Value,
+        }
+
+        impl Recorded {
+            fn method(&self) -> &str {
+                self.body.get("method").and_then(|m| m.as_str()).unwrap_or("")
+            }
+
+            fn session_header(&self) -> Option<&str> {
+                self.headers.get("mcp-session-id").map(|s| s.as_str())
+            }
+        }
+
+        /// Read one complete HTTP/1.1 request, returning its lowercased
+        /// headers and parsed JSON body. Assumes `Content-Length` is
+        /// present, which `ureq`'s `send_json` always sets.
+        fn read_request(stream: &mut TcpStream) -> Option<Recorded> {
+            let mut reader = BufReader::new(stream.try_clone().ok()?);
+            // Request line: read and discard. The stub serves every path.
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).ok()? == 0 {
+                return None;
+            }
+            let mut headers: HashMap<String, String> = HashMap::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).ok()? == 0 {
+                    return None;
+                }
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                let (name, value) = line.split_once(':')?;
+                let name = name.trim().to_ascii_lowercase();
+                let value = value.trim().to_string();
+                if name == "content-length" {
+                    content_length = value.parse().ok()?;
+                }
+                headers.insert(name, value);
+            }
+            let body = if content_length == 0 {
+                Value::Null
+            } else {
+                let mut buf = vec![0u8; content_length];
+                reader.read_exact(&mut buf).ok()?;
+                serde_json::from_slice(&buf).ok()?
+            };
+            Some(Recorded { headers, body })
+        }
+
+        fn write_response(
+            stream: &mut TcpStream,
+            status: u16,
+            session: Option<&str>,
+            body: &[u8],
+        ) {
+            let status_text = match status {
+                202 => "Accepted",
+                _ => "OK",
+            };
+            let mut head = format!(
+                "HTTP/1.1 {status} {status_text}\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n",
+                body.len()
+            );
+            if let Some(session) = session {
+                // Mixed case on purpose. HTTP header names are
+                // case-insensitive and a real jcodemunch serve emits this
+                // one lowercase, so the client must not match on case.
+                head.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
+            }
+            head.push_str("\r\n");
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body);
+        }
+
+        /// A recording MCP stub on loopback. Serves every path.
+        struct RecordingStub {
+            url: String,
+            addr: SocketAddr,
+            stop: Arc<AtomicBool>,
+            requests: Arc<Mutex<Vec<Recorded>>>,
+            handle: Option<thread::JoinHandle<()>>,
+        }
+
+        impl RecordingStub {
+            /// Bind an ephemeral loopback port and start serving. The
+            /// listener is bound once and kept — never dropped and
+            /// re-bound — so nothing else can win the port in between.
+            fn start() -> Self {
+                let listener =
+                    TcpListener::bind("127.0.0.1:0").expect("bind loopback stub");
+                let addr = listener.local_addr().expect("stub local_addr");
+                // No trailing slash: a real jcodemunch serve 307-redirects
+                // `/mcp/` and drops `mcp-session-id` on the way.
+                let url = format!("http://127.0.0.1:{}/mcp", addr.port());
+                listener
+                    .set_nonblocking(true)
+                    .expect("set_nonblocking on stub listener");
+
+                let stop = Arc::new(AtomicBool::new(false));
+                let requests: Arc<Mutex<Vec<Recorded>>> = Arc::new(Mutex::new(Vec::new()));
+                let stop_thread = Arc::clone(&stop);
+                let requests_thread = Arc::clone(&requests);
+
+                let handle = thread::spawn(move || loop {
+                    if stop_thread.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut stream = match listener.accept() {
+                        Ok((s, _)) => s,
+                        Err(_) => {
+                            // WouldBlock (the common case) and any other
+                            // transient error both back off, so the loop
+                            // can never peg a CPU nor miss the stop flag.
+                            thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                    };
+                    // Restore blocking semantics for BufReader, but bound
+                    // the read so a stalled peer can't wedge the join.
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                    let recorded = match read_request(&mut stream) {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    let req_id = recorded.body.get("id").cloned().unwrap_or(Value::Null);
+                    let method = recorded.method().to_string();
+                    requests_thread
+                        .lock()
+                        .expect("stub request log")
+                        .push(recorded);
+
+                    match method.as_str() {
+                        "initialize" => {
+                            let body = json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": {
+                                    "protocolVersion": PROTOCOL_VERSION,
+                                    "capabilities": {},
+                                    "serverInfo": {
+                                        "name": "recording-stub",
+                                        "version": "0.1",
+                                    },
+                                },
+                            })
+                            .to_string();
+                            write_response(
+                                &mut stream,
+                                200,
+                                Some(ASSIGNED_SESSION),
+                                body.as_bytes(),
+                            );
+                        }
+                        // A real serve answers this notification 202 with
+                        // an empty body — keep that shape.
+                        "notifications/initialized" => {
+                            write_response(&mut stream, 202, None, b"")
+                        }
+                        _ => write_response(&mut stream, 200, None, b"{}"),
+                    }
+                });
+
+                Self {
+                    url,
+                    addr,
+                    stop,
+                    requests,
+                    handle: Some(handle),
+                }
+            }
+
+            fn url(&self) -> &str {
+                &self.url
+            }
+
+            /// Every request recorded so far, in arrival order.
+            fn requests(&self) -> Vec<Recorded> {
+                self.requests.lock().expect("stub request log").clone()
+            }
+        }
+
+        impl Drop for RecordingStub {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Relaxed);
+                // Best-effort wakeup; the non-blocking accept poll is the
+                // safety net, so this failing cannot hang the join.
+                let _ = TcpStream::connect_timeout(&self.addr, Duration::from_millis(50));
+                if let Some(handle) = self.handle.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+
+        /// Contract item 1: the `initialize` POST carries NO
+        /// `mcp-session-id` request header.
+        ///
+        /// In MCP streamable-HTTP the session is assigned by the server on
+        /// `initialize`. A client-minted id makes a real jcodemunch serve
+        /// answer `404 Invalid or expired session ID`, which `post` maps to
+        /// `LoadError::Http` and `reify-audit` fail-softs into a no-op —
+        /// silently, which is how the seam stayed dead for ten weeks.
+        #[test]
+        fn initialize_carries_no_client_minted_session_header() {
+            let stub = RecordingStub::start();
+
+            let client = JcodemunchClient::new(stub.url());
+            assert!(
+                client.is_ok(),
+                "handshake against the recording stub must succeed; got {:?}",
+                client.err(),
+            );
+
+            let requests = stub.requests();
+            let first = requests.first().expect("stub recorded no request at all");
+            assert_eq!(
+                first.method(),
+                "initialize",
+                "the handshake's first POST must be `initialize`",
+            );
+            assert_eq!(
+                first.session_header(),
+                None,
+                "`initialize` must carry no mcp-session-id request header — \
+                 the server assigns the session, the client never mints one",
+            );
+        }
+    }
 }
