@@ -138,8 +138,8 @@ fn line_escaped(line: &str) -> bool {
 ///
 /// Crate resolution is a precedence: an explicit same-line `-p <crate>`
 /// wins; when absent, falls back to the containing file's `crates/<crate>/`
-/// path so bare `cargo test --test X` invocations (run from inside their
-/// crate dir) still resolve.
+/// path so bare `cargo test --test <stem>` invocations (run from inside
+/// their crate dir) still resolve.
 fn scan(root: &Path, files: &[String]) -> Vec<Finding> {
     let mut findings = Vec::new();
     for file in files {
@@ -368,4 +368,82 @@ fn inline_allow_marker_suppresses_the_line() {
     assert_eq!(findings[0].file, "crates/crate-a/src/unescaped.rs");
     assert_eq!(findings[0].crate_name, "crate-a");
     assert_eq!(findings[0].stem, "escaped_stem");
+}
+
+/// Test B: live anti-drift guard.
+///
+/// Runs `scan()` over the real repo's tracked `crates/**/*.rs`. Graceful-skip
+/// when git is unavailable or this does not look like a real repo. The
+/// invariant: ZERO findings on the live tree — a hand-typed `--test <stem>`
+/// doc invocation must always resolve to an existing test file, or carry the
+/// `stale-test-target:allow` escape if it documents one that intentionally
+/// does not (e.g. prose about a retired selector). Deliberately NOT
+/// `#[ignore]`d, so this runs on every verify — a stale command is the
+/// entire operational access route to an `#[ignore]`d test, so drift here
+/// silently retires the guard it documents.
+#[test]
+fn stale_test_target_doc_invocations_live() {
+    // Resolve workspace root from CARGO_MANIFEST_DIR (crates/reify-audit).
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let ws_root = Path::new(manifest_dir)
+        .parent()
+        .unwrap() // crates/
+        .parent()
+        .unwrap() // workspace root
+        .to_path_buf();
+
+    // Graceful-skip if git is not available.
+    if std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("stale_test_target_doc_invocations_live: skipping — git not available");
+        return;
+    }
+
+    // Graceful-skip if this does not look like a real repo. Existence-based,
+    // NOT is_dir(): in a task worktree `.git` is a regular FILE (a `gitdir:`
+    // pointer), never a directory — an is_dir() check would silently skip
+    // this test in exactly the environment the merge gate runs it in.
+    if !ws_root.join(".git").exists() && !ws_root.join(".git").is_file() {
+        eprintln!("stale_test_target_doc_invocations_live: skipping — not a git repo");
+        return;
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&ws_root)
+        .arg("ls-files")
+        .output()
+        .expect("git ls-files");
+    assert!(output.status.success(), "git ls-files failed: {output:?}");
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let files: Vec<String> = listing
+        .lines()
+        .filter(|f| f.starts_with("crates/") && f.ends_with(".rs"))
+        .map(|f| f.to_string())
+        .collect();
+
+    let findings = scan(&ws_root, &files);
+
+    eprintln!(
+        "stale_test_target_doc_invocations_live: {} finding(s) over {} tracked crates/**/*.rs files",
+        findings.len(),
+        files.len()
+    );
+
+    assert!(
+        findings.is_empty(),
+        "ZERO stale --test <stem> doc invocations expected on the clean tree. \
+         {} finding(s) found — either retarget the invocation to an existing \
+         crates/<crate>/tests/<stem>.rs, or if it is prose (not a real \
+         invocation), add a trailing `// {ALLOW_MARKER} — reason`:\n{}",
+        findings.len(),
+        findings
+            .iter()
+            .map(|f| format!("  {}:{} — {}/{}", f.file, f.line, f.crate_name, f.stem))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }
