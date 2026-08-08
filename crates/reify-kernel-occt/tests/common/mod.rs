@@ -948,6 +948,48 @@ pub fn parse_xyz(s: &str) -> Xyz {
     }
 }
 
+/// Unwrap the result of a JSON-Point3 query into an [`Xyz`].
+///
+/// Takes the already-produced `Result` rather than a kernel plus a handle id
+/// because the call sites use two unrelated kernel types — `OcctKernel`
+/// (`src/lib.rs:3628`) and `OcctKernelHandle` (`src/handle.rs:370`) — with no
+/// `Deref` between them. Both expose
+/// `pub fn query(&self, &GeometryQuery) -> Result<Value, QueryError>`, so
+/// accepting the `Result` lets ONE helper serve both without introducing a
+/// trait or duplicating an accessor per kernel type.
+///
+/// Generic over `E: Debug` rather than hard-coding `QueryError` so this module
+/// need not import reify-ir's error enum, and so a future change to that enum
+/// does not ripple into the shared test module.
+///
+/// `query_label` names the query variant (e.g. `"Centroid"`, `"FaceNormal"`)
+/// and is interpolated into BOTH panic paths below. It diverges from
+/// [`bbox_of`]'s fixed message deliberately: that helper's call sites all
+/// issued `GeometryQuery::BoundingBox`, whereas this wire format is shared by
+/// five variants, so a fixed string would erase which query failed. The
+/// eval-side production parser for this same format
+/// (`reify_eval::topology_selectors::parse_xyz_value`) threads such a label for
+/// the same reason.
+///
+/// See [`parse_xyz`] for the wire-format and strictness contracts.
+///
+/// # Panics
+///
+/// Panics if the query failed (naming `query_label` and surfacing the
+/// underlying error's `Debug`), or if it returned any `Value` variant other
+/// than `String` (naming both `query_label` and the variant received).
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn xyz_of<E: std::fmt::Debug>(query_result: Result<Value, E>, query_label: &str) -> Xyz {
+    // `unwrap_or_else` rather than `.expect(...)`: `expect` prints the error's
+    // Debug but cannot interpolate `query_label`, and both must appear together.
+    let value =
+        query_result.unwrap_or_else(|e| panic!("{query_label} query should succeed, got {e:?}"));
+    match value {
+        Value::String(s) => parse_xyz(&s),
+        other => panic!("expected {query_label} JSON-Point3 String, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract tests for the shared `Xyz` / `parse_xyz` helpers above. Like the
 // bbox ones, these `#[test]` fns run as `common::<name>` within the single
