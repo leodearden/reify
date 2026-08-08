@@ -1,4 +1,129 @@
 //! The registry: α's seed rows (parse + analysis).
+//!
+//! Every result type below reproduces today's legacy value VERBATIM. α makes
+//! zero corrections (PRD §7.3(6)) — the seed migration's job is to move the
+//! source of truth, not to change any answer. Each row's `//` comment names
+//! where its type came from, with a `file.rs:LINE` anchor and the originating
+//! task, in the multi-row ledger dialect of
+//! `crates/reify-eval/src/registry_drift_tests.rs:239-274`.
+
+use reify_core::Type;
+
+use crate::resolvers::{tensor_scalar_reduction, tensor_scalar_reduction_list};
+
+crate::macros::registry! {
+    EvalBuiltin => EvalBuiltinId, as_eval_builtin {
+        // ── Family::Parse (task #4535) ──────────────────────────────────────
+        //
+        // Both rows are arg-INDEPENDENT: `eval_parse` returns the same VARIANT
+        // for a given name whatever the (String) argument's value, so `Const`
+        // is exact rather than an approximation.
+
+        // parse_length -> Option<Length>.
+        // Legacy: crates/reify-compiler/src/parse_signatures.rs:51.
+        // #4535 rules the Option shape; the ladder arm exists because the
+        // first-arg fallback would otherwise type this as the arg's own
+        // Type::String, breaking both the consumer's match{Some/None} check
+        // and the eval-time value_type_kind_matches guard (the eval'd value is
+        // a real Value::Option, never a Value::String).
+        ParseLength {
+            name: "parse_length",
+            family: Parse,
+            arity: Exact(1),
+            arg_slots: [Any],
+            result: Const(Type::Option(Box::new(Type::length()))),
+            basis: Ruling("#4535")
+        },
+
+        // parse_length_r -> the PRELUDE Result<T,E> of dependency task #4035,
+        // registered as Type::Enum("Result") so the eval-time
+        // value_type_kind_matches guard passes against the
+        // Value::Enum{type_name:"Result", ..} that eval_parse constructs.
+        // Legacy: crates/reify-compiler/src/parse_signatures.rs:52.
+        ParseLengthR {
+            name: "parse_length_r",
+            family: Parse,
+            arity: Exact(1),
+            arg_slots: [Any],
+            result: Const(Type::Enum("Result".to_string())),
+            basis: Ruling("#4535")
+        },
+
+        // ── Family::Analysis (FEA-5, task #2884) ────────────────────────────
+        //
+        // Arities come from the eval kernels, not from the compiler: four of
+        // the five are built on `helpers::unary` and safety_factor on
+        // `helpers::binary` (crates/reify-stdlib/src/analysis.rs).
+
+        // von_mises -> scalar_or_real(tensor_quantity(arg0)).
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:73.
+        // #2884's text explicitly rules `von_mises -> Pressure`; the ArgAware
+        // form generalises that to the tensor's own quantity, which is what
+        // the legacy arm already computed.
+        VonMises {
+            name: "von_mises",
+            family: Analysis,
+            arity: Exact(1),
+            arg_slots: [Any],
+            result: ArgAware(tensor_scalar_reduction),
+            basis: Ruling("#2884")
+        },
+
+        // max_shear -> the same reduction as von_mises.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:73 (shared arm).
+        // NOT ruled by #2884 — that task's text names von_mises,
+        // principal_stresses and stress_invariants only. The derivation is
+        // what fixes the signature, so the basis is Physics, not a Ruling
+        // cite that would not survive being read.
+        MaxShear {
+            name: "max_shear",
+            family: Analysis,
+            arity: Exact(1),
+            arg_slots: [Any],
+            result: ArgAware(tensor_scalar_reduction),
+            basis: Physics("max shear = (σ₁−σ₃)/2 is a stress, so it carries the tensor's quantity")
+        },
+
+        // principal_stresses -> List(scalar_or_real(tensor_quantity(arg0))).
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:78.
+        // #2884 rules `-> List<Pressure>`; mirrors the `eigenvalues` arm.
+        PrincipalStresses {
+            name: "principal_stresses",
+            family: Analysis,
+            arity: Exact(1),
+            arg_slots: [Any],
+            result: ArgAware(tensor_scalar_reduction_list),
+            basis: Ruling("#2884")
+        },
+
+        // safety_factor -> dimensionless, whatever the args.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:82, whose
+        // own comment records the derivation at :80-81.
+        // Like max_shear, NOT ruled by #2884 — the derivation is the basis.
+        SafetyFactor {
+            name: "safety_factor",
+            family: Analysis,
+            arity: Exact(2),
+            arg_slots: [Any, Any],
+            result: Const(Type::dimensionless_scalar()),
+            basis: Physics("yield/von_mises — pressure cancels, so the ratio is dimensionless for any arg dimension")
+        },
+
+        // stress_invariants -> StructureRef("StressInvariants"), the struct def
+        // in crates/reify-compiler/stdlib/fea.ri.
+        // Legacy: crates/reify-compiler/src/analysis_signatures.rs:87.
+        // #2884 rules the `{I1,I2,I3}` result; mirrors is_dynamics_query ->
+        // StructureRef("MassProperties").
+        StressInvariants {
+            name: "stress_invariants",
+            family: Analysis,
+            arity: Exact(1),
+            arg_slots: [Any],
+            result: Const(Type::StructureRef("StressInvariants".to_string())),
+            basis: Ruling("#2884")
+        },
+    }
+}
 
 #[cfg(test)]
 mod tests {

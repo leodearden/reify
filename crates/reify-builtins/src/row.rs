@@ -190,7 +190,7 @@ impl Basis {
 /// honest. The crate's real registry supplies the default type parameter, so
 /// consumers simply write `reify_builtins::BuiltinRow`.
 #[derive(Debug)]
-pub struct BuiltinRow<Id: Copy + 'static> {
+pub struct BuiltinRow<Id: Copy + 'static = crate::BuiltinId> {
     /// The name a `.ri` author writes.
     pub name: &'static str,
     /// The generated key this row is dispatched on.
