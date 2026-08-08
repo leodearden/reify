@@ -194,6 +194,62 @@ fn omission_lane_reports_only_the_bare_name() {
     );
 }
 
+/// A units file whose registry mixes identifier names with the unit SYMBOLS a
+/// units file plausibly carries — one of which occurs non-boundary-delimited in
+/// the chunk below, which is the shape that used to take the whole detector
+/// down with `byte index is not a char boundary`.
+const NON_ASCII_UNITS: &str = "\
+//! Fixture registry mixing builtin names with non-identifier unit symbols.
+
+pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
+    \"alpha_op\",
+    \"µm\",
+    \"°C\",
+    \"m/s\",
+    \"delta_op\",
+];
+";
+
+/// Prose that mentions the multibyte tokens ONLY without word boundaries — the
+/// retry path — plus the `§`/`→` a real chunk carries.
+const NON_ASCII_CHUNK: &str = "\
+# Geometry §3 — tolerances
+
+- `alpha_op(shape, amount)` — the alpha operation.
+- Machining tolerance is 5µm at 20°C → tighter than cast.
+";
+
+/// A non-ASCII corpus must be scanned, not crashed on, and must not put an
+/// unsatisfiable entry into the ratchet.
+///
+/// Two defects met here: `contains_word`'s boundary-rejected retry stepped one
+/// BYTE, so a multibyte census name plus one non-boundary occurrence panicked
+/// mid-scan; and the census admitted non-identifier tokens at all, so `µm`
+/// would have become an `undocumented-name:` that no chunk edit could satisfy
+/// (the ASCII boundary alphabet can never report such a token documented).
+/// `check()`'s contract is "unreadable files are skipped fail-safe (no finding,
+/// no panic)" — a panic reachable from corpus CONTENT breaks it just as badly.
+#[test]
+fn a_non_ascii_registry_and_chunk_are_scanned_not_panicked_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(root, FIX_UNITS, NON_ASCII_UNITS);
+    write_file(root, FIX_CHUNK, NON_ASCII_CHUNK);
+
+    let h = Harness::new(&[FIX_UNITS, FIX_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let names: Vec<&str> = findings.iter().map(finding_name).collect();
+    assert_eq!(
+        names,
+        vec!["delta_op"],
+        "only the identifier-shaped undocumented name may be reported: the \
+         multibyte and punctuated tokens are not documentable builtin call \
+         names and must never enter the census. Got {findings:?}"
+    );
+}
+
 /// PRD leaf γ contract: the baseline file "may be empty/absent at this stage".
 /// Absent → no error, no panic, and the previously-baselined name simply joins
 /// the offender set.

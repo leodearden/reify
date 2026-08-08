@@ -752,9 +752,16 @@ pub fn allow_marker_reason(line: &str) -> Option<&str> {
 /// documentation silently vouch for `union` and under-report coverage.
 ///
 /// Case-sensitive — Reify builtin names are snake_case, and a prose `Union` is
-/// not the builtin. `needle` is assumed identifier-shaped (ASCII), so byte
-/// indexing is safe even when `haystack` contains multibyte characters: a
-/// match can only start and end at ASCII byte positions.
+/// not the builtin.
+///
+/// UTF-8-safe on BOTH arguments. Neither is assumed ASCII: `haystack` is chunk
+/// prose (`§`, `→`, em dashes) and `needle` is whatever a `*_NAMES` registry
+/// happens to hold. A match index is always a char boundary — the needle's
+/// first byte is either ASCII or a UTF-8 lead byte, and neither can occur mid
+/// char — but the boundary-rejected RETRY must still step by a whole char, or a
+/// non-ASCII needle would slice into a continuation byte and panic. A detector
+/// whose contract is "unreadable input is skipped fail-safe (no finding, no
+/// panic)" must not have a panic reachable from corpus content.
 fn contains_word(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
@@ -769,9 +776,11 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
         if left_ok && right_ok {
             return true;
         }
-        // Advance past this occurrence's first byte, not past the whole
-        // needle: overlapping occurrences must still be considered.
-        start = idx + 1;
+        // Advance past this occurrence's first CHARACTER, not past the whole
+        // needle: overlapping occurrences must still be considered, but a
+        // one-BYTE step would land inside a multibyte char whenever `needle`
+        // starts with one and the next `haystack[start..]` slice would panic.
+        start = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
         if start >= haystack.len() {
             break;
         }
@@ -1067,11 +1076,31 @@ struct CensusName {
 ///
 /// Sorting here (rather than at emission) is what makes the finding list
 /// deterministic irrespective of declaration order inside `units.rs`.
+///
+/// ## Non-identifier tokens never enter the census
+///
+/// An entry that is not [`is_identifier_shaped`] cannot be a documentable
+/// builtin call name, and admitting one would be harmful twice over. It would
+/// enter the ratchet as an `undocumented-name:` that no chunk edit could
+/// legitimately satisfy — the same "no correct resolution" defect the
+/// `#[cfg(test)]` exclusion exists to prevent — and, being possibly non-ASCII
+/// (`"µm"`, `"°C"` are entirely plausible tokens in a *units* file), it would
+/// then be matched against ~8MB of chunk prose by [`contains_word`], whose
+/// boundary alphabet is ASCII and which can therefore never report such a token
+/// documented anyway.
+///
+/// This is the census's own admission test, deliberately distinct from the
+/// oracle-side one in [`known_name_index`]: both use [`is_identifier_shaped`],
+/// but for opposite reasons — there to keep prose from vouching for a
+/// fabrication, here to keep an unsatisfiable entry out of the ratchet.
 fn census_names(registries: &[Registry]) -> Vec<CensusName> {
     let mut by_name: std::collections::BTreeMap<String, CensusName> =
         std::collections::BTreeMap::new();
     for reg in registries {
         for entry in &reg.entries {
+            if !is_identifier_shaped(&entry.name) {
+                continue;
+            }
             match by_name.get_mut(&entry.name) {
                 Some(existing) => {
                     // Merge: the first well-formed reason wins; a reasonless
@@ -1963,6 +1992,74 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
         assert!(
             got.is_empty(),
             "`intersection_all` must not vouch for `intersection`; got {got:?}"
+        );
+    }
+
+    /// The boundary-rejected retry must step by a whole CHARACTER.
+    ///
+    /// `units.rs` is a *units* file, so a non-ASCII registry entry (`"µm"`,
+    /// `"°C"`) is entirely plausible; one such entry plus one non-boundary
+    /// occurrence anywhere in ~8MB of chunk prose used to turn the whole
+    /// detector into a `byte index is not a char boundary` panic — a
+    /// fail-safe-by-contract scanner taken down by corpus content.
+    #[test]
+    fn contains_word_retry_is_char_stepped_not_byte_stepped() {
+        // First occurrence is boundary-rejected (`a` on its left), so the
+        // matcher retries from INSIDE the two-byte `µ`. A one-byte step panics
+        // here; a char step finds the real occurrence that follows.
+        assert!(
+            contains_word("aµm µm", "µm"),
+            "the standalone `µm` must be found after retrying past the \
+             boundary-rejected `aµm`"
+        );
+        // Same retry path, nothing to find afterwards — must return false, not
+        // panic.
+        assert!(!contains_word("aµm", "µm"));
+        // A multibyte needle whose only occurrence is boundary-clean.
+        assert!(contains_word("size °C max", "°C"));
+        // A multibyte HAYSTACK with an ASCII needle still matches normally.
+        assert!(contains_word("§ union → ok", "union"));
+    }
+
+    /// A non-identifier registry token never reaches the census, so it can
+    /// never become an `undocumented-name:` no chunk edit could satisfy.
+    #[test]
+    fn census_excludes_non_identifier_tokens() {
+        let regs = vec![Registry {
+            const_name: "UNIT_SYMBOL_NAMES".to_string(),
+            entries: vec![
+                RegistryEntry {
+                    name: "µm".to_string(),
+                    line: 1,
+                    allow: None,
+                    allow_missing_reason: false,
+                },
+                RegistryEntry {
+                    name: "m/s".to_string(),
+                    line: 2,
+                    allow: None,
+                    allow_missing_reason: false,
+                },
+                RegistryEntry {
+                    name: "unresolved unit: {}".to_string(),
+                    line: 3,
+                    allow: None,
+                    allow_missing_reason: false,
+                },
+                RegistryEntry {
+                    name: "extrude".to_string(),
+                    line: 4,
+                    allow: None,
+                    allow_missing_reason: false,
+                },
+            ],
+        }];
+        let census = census_names(&regs);
+        let got: Vec<&str> = census.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            got,
+            vec!["extrude"],
+            "only the identifier-shaped entry may enter the census"
         );
     }
 
