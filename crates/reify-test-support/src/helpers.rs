@@ -870,6 +870,23 @@ mod tests {
         }
     }
 
+    /// `eval_result`'s sibling for `reify_eval::CheckResult` — the
+    /// `assert_no_check_errors` tests below vary only `diagnostics`, so the same
+    /// one-place-to-edit rationale as `eval_result` applies: `CheckResult`
+    /// derives no `Default`, and open-coding its 5-field literal at each
+    /// `#[should_panic]` site would make a new struct field an edit at every one
+    /// of them (task #5653 review).
+    #[cfg(feature = "eval-helpers")]
+    fn check_result(diagnostics: Vec<reify_core::Diagnostic>) -> reify_eval::CheckResult {
+        reify_eval::CheckResult {
+            values: reify_ir::ValueMap::new(),
+            constraint_results: vec![],
+            diagnostics,
+            resolved_params: std::collections::HashMap::new(),
+            structured_detail: vec![],
+        }
+    }
+
     /// mesh_aabb: computes the correct (min, max) AABB over a known flat
     /// vertex buffer.
     #[test]
@@ -1073,15 +1090,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_check_errors_passes_on_clean_result() {
-        use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::CheckResult {
-            values: ValueMap::new(),
-            constraint_results: vec![],
-            diagnostics: vec![],
-            resolved_params: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = check_result(vec![]);
         super::assert_no_check_errors(&result);
     }
 
@@ -1091,16 +1100,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "check errors")]
     fn test_assert_no_check_errors_panics_on_error_diagnostic() {
-        use reify_core::Diagnostic;
-        use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::CheckResult {
-            values: ValueMap::new(),
-            constraint_results: vec![],
-            diagnostics: vec![Diagnostic::error("something went wrong")],
-            resolved_params: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = check_result(vec![Diagnostic::error("something went wrong")]);
         super::assert_no_check_errors(&result);
     }
 
@@ -1109,16 +1109,7 @@ mod tests {
     #[cfg(feature = "eval-helpers")]
     #[test]
     fn test_assert_no_check_errors_passes_with_warnings_only() {
-        use reify_core::Diagnostic;
-        use reify_ir::ValueMap;
-        use std::collections::HashMap;
-        let result = reify_eval::CheckResult {
-            values: ValueMap::new(),
-            constraint_results: vec![],
-            diagnostics: vec![Diagnostic::warning("just a warning")],
-            resolved_params: HashMap::new(),
-            structured_detail: vec![],
-        };
+        let result = check_result(vec![Diagnostic::warning("just a warning")]);
         // Should not panic — warnings are not errors
         super::assert_no_check_errors(&result);
     }
