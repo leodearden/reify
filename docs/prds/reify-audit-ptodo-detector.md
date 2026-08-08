@@ -254,6 +254,15 @@ orchestrator's file locks serialize them.)
   motivating line is `crates/reify-core/src/diagnostics.rs:4046`). A bare
   `#[allow(dead_code)]` with no rationale is not a marker, and a `/* … */` trailing
   comment is not recognised (unmeasured in the live corpus, so unpinned by evidence).
+  The rationale must be on the **same line**: a rationale on the PRECEDING line — the
+  shape the stub-macro lane's above-line lookback handles for `// #NNNN` \ `todo!()` —
+  is out of scope for δ-A v1. That is an evidence-backed decision, not an oversight:
+  measured over the live corpus (task #6087) the preceding-line population is **2 sites**
+  (`crates/reify-stdlib/src/loads.rs:71`, `crates/reify-stdlib/src/supports.rs:76`) and
+  **both are `///` doc comments** describing the item — the same class the `///`/`//!`
+  guard already excludes on the same-line form, for the same reason. The plain-`//`
+  preceding-line form has **zero** occurrences, so the lookback would buy no signal while
+  widening the anchor to doc-comment prose. Revisit only if that count moves.
   Precedence: this lane sits AFTER comment markers, so a line carrying both the
   attribute and a real `TODO(...)` stays owned by the marker lane — at most one
   finding per line, which the §6.6 fingerprint machinery assumes.
@@ -276,9 +285,20 @@ and states a real deferral still matches on the latter:
 2. **Delimiter guard** — a needle immediately preceded or followed by `"` or a backtick
    is a quoted state name / code span. Kills the seventh, `gui/src-tauri/src/types.rs:1010`
    (`/// "pending"` …`), which is lowercase and survives guard 1.
-3. **Word boundary** — a needle flanked by an ASCII alphanumeric byte or `_` is inside
-   an IDENTIFIER (`mark_pending_with_cause`, `mark_pruned_pending`;
-   `crates/reify-eval/src/cache.rs:968`, `:3651`).
+3. **Identifier context** — a needle flanked by an ASCII word byte (the module-shared
+   `is_word_byte`, not a re-spelled copy) is inside an IDENTIFIER
+   (`mark_pending_with_cause`, `mark_pruned_pending`;
+   `crates/reify-eval/src/cache.rs:968`, `:3651`). The guard covers the whole identifier
+   family, not just its `snake_case` half: `-` disqualifies on **either** side (a
+   hyphenated compound — "the pending-queue path" — names a thing rather than deferring
+   work), and `.` / `:` disqualify on the **left only** (member/path qualification —
+   `self.pending`, `NodeCache::pending`). The `.`/`:` asymmetry is deliberate and pinned
+   by test: a TRAILING `.`/`:` is ordinary punctuation, and disqualifying it would
+   silently kill the two most natural ways to write a real deferral ("wiring is
+   pending.", "pending: the morph rewrite"). Widening guard 3 to this full family
+   changed **nothing** in the live δ-A population (14 findings / 5 fingerprints before
+   and after) — it is prospective FP control for rationales a future author would write
+   without any thought of debt, which would otherwise land as High `untracked`.
 
 FP control here is load-bearing, not cosmetic: every false-positive line measured over
 the live corpus cites an already-`done` task, so a spurious match does not merely add
@@ -634,7 +654,9 @@ is deduped.
 
 *Guard 3's status:* it killed nothing in the live δ-A population (14 needle-bearing before
 and after) because the identifier-class sites carry no allow-attribute and so are not δ-A
-candidates at all. It is a **forward guard**, adopted because the class is real and cheap
+candidates at all. The same holds for the amended, wider guard 3 (`-` on either side,
+`.`/`:` on the left) re-measured over the same corpus: still 14 findings / 5 fingerprints.
+It is a **forward guard**, adopted because the class is real and cheap
 to exclude, and pinned by a synthetic negative fixture
 (`tests/fixtures/ptodo/scenario14_allow_dead_code_deferral.rs`, six rationales, **zero**
 expected findings — an over-fire guard rather than a smoke test).

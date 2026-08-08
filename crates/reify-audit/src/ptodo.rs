@@ -142,6 +142,18 @@ fn ignore_attr(line: &str) -> Option<IgnoreForm> {
 ///
 /// Only the `//` rationale form is recognised; a `/* … */` trailing comment is
 /// out of scope (unmeasured in the live corpus, so unpinned by evidence).
+///
+/// **Same-line only — a scope decision, not an oversight.** A rationale on the
+/// PRECEDING line (the shape arm (4)'s stub-macro lookback handles for
+/// `// #NNNN` \ `todo!()`) is deliberately NOT recognised by δ-A v1. Measured
+/// over the live corpus under task #6087: the preceding-line population is **2
+/// sites** (`crates/reify-stdlib/src/loads.rs:71`,
+/// `crates/reify-stdlib/src/supports.rs:76`) and **both are `///` doc comments**
+/// describing the item — the same class the `///`/`//!` guard above already
+/// excludes on the same-line form, for the same reason (item documentation is
+/// not an attribute rationale). The plain-`//` preceding-line form has **zero**
+/// occurrences. Adding the lookback would therefore buy no signal while widening
+/// the anchor to doc-comment prose; revisit only if that count moves.
 fn allow_dead_code_attr(line: &str) -> Option<&str> {
     let t = line.trim_start();
     // Doc-comment prose mentioning the attribute is not the attribute.
@@ -670,10 +682,16 @@ const DEFERRAL_PROSE: &[&str] = &["pending", "deferred to", "not yet", "blocked 
 ///    byte is `"` or a backtick is a quoted state name / code span, not prose.
 ///    Required for the seventh site, `gui/src-tauri/src/types.rs:1010`
 ///    (`/// "pending"` …`), which is lowercase and survives guard 1.
-/// 3. **Word boundary.** A needle flanked by an ASCII alphanumeric byte or `_`
-///    is part of an IDENTIFIER, not prose — `mark_pending_with_cause`,
-///    `mark_pruned_pending` (`crates/reify-eval/src/cache.rs:968`, `:3651`).
-///    Measured as a real class over the live corpus during task #6087.
+/// 3. **Identifier context.** A needle flanked by an ASCII word byte
+///    ([`is_word_byte`]) is part of an IDENTIFIER, not prose —
+///    `mark_pending_with_cause`, `mark_pruned_pending`
+///    (`crates/reify-eval/src/cache.rs:968`, `:3651`). Measured as a real class
+///    over the live corpus during task #6087. The same guard also rejects the
+///    non-`snake_case` halves of that family, which the first cut missed: a
+///    hyphenated compound (`the pending-queue path`) on either side, and a
+///    member/path qualification (`self.pending`, `NodeCache::pending`) on the
+///    LEFT. The `.`/`:` half is deliberately left-only — see
+///    [`disqualifies_before`](has_deferral_prose::disqualifies_before).
 ///
 /// Guards are per-OCCURRENCE, not per-line: a disqualified occurrence is
 /// skipped and scanning continues, so a line that both names an identifier and
@@ -683,12 +701,41 @@ const DEFERRAL_PROSE: &[&str] = &["pending", "deferred to", "not yet", "blocked 
 /// class 1 wholesale, and PRD §14 rejected unanchored substring vocabularies at
 /// an 89–100% false-positive rate for exactly this reason.
 fn has_deferral_prose(text: &str) -> bool {
-    /// A byte that disqualifies an adjacent needle occurrence: `"`/backtick
-    /// (guard 2 — quoted state name or code span) or an ASCII word byte
-    /// (guard 3 — the occurrence is inside an identifier). Absent (start/end of
+    /// A byte that disqualifies an adjacent needle occurrence from EITHER side:
+    /// `"`/backtick (guard 2 — quoted state name or code span), an ASCII word
+    /// byte (guard 3 — the occurrence is inside an identifier), or `-` (guard 3
+    /// — a hyphenated compound such as `pending-queue` NAMES a thing rather than
+    /// deferring work).
+    ///
+    /// The word-byte half delegates to the module-shared [`is_word_byte`], the
+    /// documented alphabet for the hand-rolled `\b` checks, rather than
+    /// re-spelling `is_ascii_alphanumeric() || b == b'_'` — so a future change to
+    /// the module's notion of a word byte cannot silently skip this guard.
+    fn disqualifies_either_side(b: u8) -> bool {
+        b == b'"' || b == b'`' || b == b'-' || is_word_byte(b)
+    }
+
+    /// The byte immediately BEFORE a needle occurrence. Everything in
+    /// [`disqualifies_either_side`], plus `.` and `:` — a needle qualified by a
+    /// member or path separator is a SYMBOL reference, not prose
+    /// (`self.pending`, `NodeCache::pending`).
+    ///
+    /// The `.`/`:` half is deliberately LEFT-ONLY. A trailing `.`/`:` is ordinary
+    /// punctuation, and disqualifying it would silently kill the two most
+    /// natural ways to write a real deferral — `wiring is pending.` and
+    /// `pending: the morph rewrite`. Pinned by
+    /// `deferral_prose_trailing_punctuation_still_matches`.
+    ///
+    /// Absent (start of string) never disqualifies.
+    fn disqualifies_before(b: Option<u8>) -> bool {
+        b.is_some_and(|b| b == b'.' || b == b':' || disqualifies_either_side(b))
+    }
+
+    /// The byte immediately AFTER a needle occurrence — the symmetric half of
+    /// [`disqualifies_before`] MINUS `.`/`:` (see that doc). Absent (end of
     /// string) never disqualifies.
-    fn disqualifies(b: Option<u8>) -> bool {
-        b.is_some_and(|b| b == b'"' || b == b'`' || b.is_ascii_alphanumeric() || b == b'_')
+    fn disqualifies_after(b: Option<u8>) -> bool {
+        b.is_some_and(disqualifies_either_side)
     }
 
     let bytes = text.as_bytes();
@@ -697,7 +744,7 @@ fn has_deferral_prose(text: &str) -> bool {
         text.match_indices(needle).any(|(start, hit)| {
             let before = start.checked_sub(1).map(|i| bytes[i]);
             let after = bytes.get(start + hit.len()).copied();
-            !disqualifies(before) && !disqualifies(after)
+            !disqualifies_before(before) && !disqualifies_after(after)
         })
     })
 }
@@ -1835,6 +1882,11 @@ mod tests {
         assert!(!has_deferral_prose(
             "\"pending\"` (task #4739 γ): a hidden body's cell keeps its cached prior"
         ));
+        // The BACKTICK half of guard 2, which the `"` case above does not cover:
+        // a rationale that code-spans the state name is naming a symbol, not
+        // deferring work. (`deferral_prose_positives` pins the converse — a
+        // backtick elsewhere on the line does not disqualify.)
+        assert!(!has_deferral_prose("uses the `pending` flag internally"));
 
         // --- guard 3: word boundary (the identifier class) ---
         // A needle occurrence flanked by an ASCII word byte or `_` is part of an
@@ -1851,6 +1903,18 @@ mod tests {
         // Word-boundary symmetry: a trailing word byte disqualifies too, so a
         // needle used as an identifier PREFIX cannot match either.
         assert!(!has_deferral_prose("the pendingWrites queue is drained here"));
+        // The non-`snake_case` halves of the same identifier family. These are
+        // ordinary explanatory rationales an author would write without any
+        // thought of debt, so matching them would hand a future author a red
+        // merge gate (`untracked` is High) with no obvious cause.
+        // Member access — `.` immediately before the needle.
+        assert!(!has_deferral_prose("only set when self.pending is drained"));
+        // Path qualification — `:` immediately before the needle.
+        assert!(!has_deferral_prose("mirrors NodeCache::pending semantics"));
+        // Hyphenated compound — `-` on either side names a thing, it does not
+        // defer work.
+        assert!(!has_deferral_prose("used by the pending-queue path"));
+        assert!(!has_deferral_prose("the not-quite-pending state is transient"));
 
         // --- real allow-rationales that are NOT deferrals (the dominant benign
         // class among the 68 measured δ-A candidates) ---
@@ -1859,6 +1923,22 @@ mod tests {
         ));
         assert!(!has_deferral_prose("Phase-1 scaffold; consumed in later phases"));
         assert!(!has_deferral_prose(""));
+    }
+
+    /// Guard 3's `.`/`:` half is LEFT-ONLY, and that asymmetry is load-bearing:
+    /// `.` and `:` are identifier context only when they PRECEDE the needle
+    /// (`self.pending`, `NodeCache::pending`, pinned as negatives above). After
+    /// it they are ordinary punctuation, and disqualifying them would silently
+    /// kill the two most natural ways to write a real deferral. Assert the
+    /// surviving direction directly so a "symmetry cleanup" fails loudly.
+    #[test]
+    fn deferral_prose_trailing_punctuation_still_matches() {
+        assert!(has_deferral_prose("volume-mesh wiring is pending."));
+        assert!(has_deferral_prose("pending: the morph rewrite"));
+        assert!(has_deferral_prose("awaiting: the solver rewrite"));
+        // Sanity: the same needles WITH the punctuation on the left do not match.
+        assert!(!has_deferral_prose("mirrors NodeCache::pending"));
+        assert!(!has_deferral_prose("only set when self.pending"));
     }
 
     /// Case-sensitivity is load-bearing, not incidental. `has_blocker_prose`
