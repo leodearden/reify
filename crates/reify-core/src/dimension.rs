@@ -508,9 +508,9 @@ impl DimensionVector {
         } else if *self == DimensionVector::ANGLE {
             (display_value, Cow::Borrowed("deg"))
         } else if *self == DimensionVector::AREA {
-            (display_value, Cow::Borrowed("mm\u{00B2}"))
+            (display_value, Cow::Borrowed("mm^2"))
         } else if *self == DimensionVector::VOLUME {
-            (display_value, Cow::Borrowed("mm\u{00B3}"))
+            (display_value, Cow::Borrowed("mm^3"))
         } else if *self == DimensionVector::MONEY {
             (display_value, Cow::Borrowed("USD"))
         } else if self.is_dimensionless() {
