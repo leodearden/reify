@@ -164,6 +164,7 @@
 //! exists to prevent.
 
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 // -----------------------------------------------------------------------
@@ -264,7 +265,21 @@ fn strip_line_comment(line: &str) -> &str {
 /// Every retained byte is copied verbatim, so multibyte sequences survive
 /// intact; every dropped span is delimited by ASCII `/*`/`*/`/`//`, so a drop
 /// can never split a char.
-fn strip_block_comments(line: &str, depth: &mut usize) -> String {
+///
+/// Returns [`Cow::Borrowed`] for the overwhelmingly common line that has
+/// nothing to strip. With no open block and no `/` anywhere, the loop below
+/// provably copies the input byte-for-byte: depth can only rise through the
+/// `/*` arm, the `//` break needs a `/`, and every other arm (including the
+/// in-string `\` escape, which pushes both of its bytes) falls through to a
+/// verbatim push. So the early-out is an identity, not an approximation — and
+/// it matters, because [`known_name_index`] runs this over the whole oracle
+/// corpus (~200k lines of compiler and stdlib source on the real tree) and
+/// every allocation it makes there is immediately discarded by
+/// [`strip_line_comment`]/[`quoted_tokens`].
+fn strip_block_comments<'a>(line: &'a str, depth: &mut usize) -> Cow<'a, str> {
+    if *depth == 0 && !line.contains('/') {
+        return Cow::Borrowed(line);
+    }
     let bytes = line.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut in_str = false;
@@ -315,7 +330,7 @@ fn strip_block_comments(line: &str, depth: &mut usize) -> String {
     // Lossy is unreachable in practice (every retained byte comes from a valid
     // &str and sequences are never split), but it keeps this infallible rather
     // than panicking inside a fail-safe detector.
-    String::from_utf8_lossy(&out).into_owned()
+    Cow::Owned(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Byte offset of a word-boundary-delimited [`ALLOW_TOKEN`] in `line`.
@@ -1839,6 +1854,52 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
             vec!["GEOMETRY_FUNCTION_NAMES"],
             "only `*_NAMES` string-slice consts are registries; got: {regs:?}"
         );
+    }
+
+    /// The comment stripper must BORROW the common line and allocate only when
+    /// it actually rewrites something.
+    ///
+    /// `known_name_index` runs it over ~200k lines of compiler and stdlib
+    /// source per fabrication-lane run; an unconditional `Vec<u8>` + `String`
+    /// per line is pure waste on the one genuinely hot path this detector has.
+    /// The early-out must also be an IDENTITY, so the same-output assertions
+    /// below matter as much as the borrow ones.
+    #[test]
+    fn strip_block_comments_borrows_when_there_is_nothing_to_strip() {
+        let mut depth = 0usize;
+        for line in [
+            "    \"is_watertight\",",
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[",
+            "",
+            "    let msg = \"unresolved unit: {} — see §3\";",
+            "    let escaped = \"a\\\"b\";",
+        ] {
+            let got = strip_block_comments(line, &mut depth);
+            assert!(
+                matches!(got, Cow::Borrowed(_)),
+                "{line:?} has nothing to strip and must not allocate"
+            );
+            assert_eq!(got, line, "the early-out must be an identity");
+            assert_eq!(depth, 0, "{line:?} must not open a block");
+        }
+
+        // Anything that actually rewrites still returns an owned String, and
+        // still rewrites correctly.
+        let mut depth = 0usize;
+        let got = strip_block_comments("\"a\", /* \"phantom\" */ \"b\",", &mut depth);
+        assert!(matches!(got, Cow::Owned(_)), "a stripped line is owned");
+        assert_eq!(quoted_tokens(&got), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(depth, 0);
+
+        // An OPEN block is stripped even with no `/` on the line — the
+        // early-out must not fire on depth > 0.
+        let mut depth = 1usize;
+        let got = strip_block_comments("still inside the comment", &mut depth);
+        assert!(
+            matches!(got, Cow::Owned(_)) && got.is_empty(),
+            "a line inside an open block must be dropped, got {got:?}"
+        );
+        assert_eq!(depth, 1, "the block is still open");
     }
 
     /// Three spellings that mean exactly what `pub const X_NAMES: &[&str]`
