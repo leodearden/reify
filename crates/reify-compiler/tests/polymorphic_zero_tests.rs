@@ -233,3 +233,87 @@ structure S {
         "mass > 1-1 constant-folded zero no extra error",
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// task 6038 — operand shapes asserted by the corrected stdlib esc-3115-112
+// comments
+//
+// The stdlib comment sweep restates several `> 0N` / `> 0Hz` / `>= 0kg` /
+// `> 0 * 1N * 1s` constraint literals as a readability CONVENTION rather than a
+// requirement, on the grounds that a bare `0` would compile too. These cases
+// pin that claim for the dimension families and the operator those sites use
+// but which the Step-3/Step-5 sections above do not exercise, so a regression
+// cannot silently re-stale the corrected comments.
+// ────────────────────────────────────────────────────────────────────────────
+
+/// `member > 0` — base-ish named dimension Force (N).
+///
+/// Backs the corrected notes on `StepForce.magnitude > 0N` and
+/// `HarmonicForce.amplitude > 0N` (modal_analysis.ri) and
+/// `JointLimit.max_force` (trajectory.ri).
+#[test]
+fn force_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param magnitude : Force = 1N
+    constraint magnitude > 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "force > 0 comparison");
+}
+
+/// `member > 0` — named dimension Frequency (Hz).
+///
+/// Backs the corrected notes on `HarmonicForce.frequency > 0Hz`
+/// (modal_analysis.ri) and the three `target_frequency > 0Hz` shaper
+/// constraints (ZVShaper / ZVDShaper / EIShaper, trajectory.ri).
+#[test]
+fn frequency_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param frequency : Frequency = 1Hz
+    constraint frequency > 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "frequency > 0 comparison");
+}
+
+/// `member >= 0` — the `>=` operator, which no case above exercises.
+///
+/// `coerce_zero_operand` runs in `compile_binop` before `infer_binop_type`, so
+/// it is operator-agnostic; this pins that for the one stdlib site that uses a
+/// non-strict bound, `MassProperties`' `constraint mass >= 0kg` (dynamics.ri).
+#[test]
+fn mass_ge_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param mass : Mass = 1kg
+    constraint mass >= 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "mass >= 0 comparison");
+}
+
+/// `member > 0` — compound-product dimension Impulse (N·s = kg·m·s⁻¹).
+///
+/// Backs the corrected note on `ImpulseForce.impulse > 0 * 1N * 1s`
+/// (modal_analysis.ri), whose stale text claimed the dimensioned-zero form was
+/// needed "because polymorphic-zero has not landed".
+#[test]
+fn impulse_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param impulse : Impulse = 1N * 1s
+    constraint impulse > 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "impulse > 0 comparison");
+}
