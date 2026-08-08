@@ -9,7 +9,7 @@
 # Asserts:
 #   1. MCP handshake (initialize → notifications/initialized) over
 #      streamable-HTTP at http://127.0.0.1:8901/mcp returns HTTP 200
-#      with a JSON-RPC body.
+#      with a JSON-RPC body and a server-assigned Mcp-Session-Id header.
 #   2. tools/call get_changed_symbols for the reify repo over a
 #      content-guaranteed commit range returns NON-EMPTY symbol data
 #      (the observable signal); prints the symbol data.
@@ -33,7 +33,8 @@ Usage: scripts/smoke-jcodemunch-serve.sh [-h|--help]
 
 Activation smoke test for the jcodemunch query-serve (L-SERVE).
 Asserts:
-  1. MCP handshake at http://127.0.0.1:8901/mcp returns JSON-RPC body.
+  1. MCP handshake at http://127.0.0.1:8901/mcp returns JSON-RPC body
+     and a server-assigned Mcp-Session-Id header.
   2. get_changed_symbols for reify returns NON-EMPTY symbol data.
   3. jcodemunch-watcher.service is active concurrently with assertion 2.
 Exits 0 on success, 1 on failure.
