@@ -32,19 +32,19 @@ let mount = FixedSupport("mount_face")
 
 let operating = LoadCase(
     name:     "operating",
-    loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: [0.0, -1.0, 0.0])],
+    loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
 let overload = LoadCase(
     name:     "overload",
-    loads:    [PointLoad(point: "load_face", force: 10000.0, direction: [0.0, -1.0, 0.0])],
+    loads:    [PointLoad(point: "load_face", force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
 let transport = LoadCase(
     name:     "transport",
-    loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: [0.0, -1.0, 0.0])],
+    loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
 )
 
@@ -89,7 +89,7 @@ The first four parameters (`material`, `length`, `width`, `height`) mirror the o
 
 ### Why `ShellForce.Off`?
 
-The default `ShellForce.Auto` classifies the bracket as a shell (thickness/in-plane ratio 6/80 = 0.075 < the shell threshold of 0.2). The shell kernel handles only transverse (Z-axis) loads; the example's Y-direction loads (`direction: [0.0, -1.0, 0.0]`) would be silently discarded. `ShellForce.Off` forces the tet/solid path, which handles all three force-vector components and produces the `Regular3D` Sampled stress fields that `envelope_von_mises` requires.
+The default `ShellForce.Auto` classifies the bracket as a shell (thickness/in-plane ratio 6/80 = 0.075 < the shell threshold of 0.2). The shell kernel handles only transverse (Z-axis) loads; the example's Y-direction loads (`direction: vec3(0.0, -1.0, 0.0)`) would be silently discarded. `ShellForce.Off` forces the tet/solid path, which handles all three force-vector components and produces the `Regular3D` Sampled stress fields that `envelope_von_mises` requires.
 
 A thin-body advisory (aspect ratio ≫ 10) fires at `Warning` severity — not `Error` — and is expected for plate-like geometry. It does not prevent the solve.
 
@@ -268,7 +268,7 @@ See §4 for the per-case `mesh_size` / `element_order` option interaction and th
 ```
 let tight_case = LoadCase(
     name:     "fine_check",
-    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: [0.0, -1.0, 0.0])],
+    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
     options:  some(ElasticOptions(cg_tolerance: 1e-10, shell_force: ShellForce.Off)),
 )
@@ -280,7 +280,7 @@ let tight_case = LoadCase(
 ```
 let coarse_case = LoadCase(
     name:     "coarse_sanity",
-    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: [0.0, -1.0, 0.0])],
+    loads:    [PointLoad(point: "load_face", force: 5000.0, direction: vec3(0.0, -1.0, 0.0))],
     supports: [mount],
     options:  some(ElasticOptions(mesh_size: 0.02, shell_force: ShellForce.Off)),
 )

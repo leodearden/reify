@@ -96,7 +96,10 @@ pub fn safety_factor_buckling(
     result.modes[0].eigenvalue
 }
 
-// `mode_shape` — displacement field eigenvector for mode n.
+// `mode_shape` — dimensionless mode-shape eigenvector field for mode n: a
+// DIRECTION field, not a displacement field (a buckling eigenvector is defined
+// only up to scalar multiplication — see the DIMENSIONALITY NOTE on
+// `BucklingMode.mode_shape` in solver_buckling.ri).
 //
 // Returns `result.modes[n].mode_shape`. For task ε this is `Undef`
 // per the tet-result convention (Undef must remain accepted for Field
@@ -106,7 +109,7 @@ pub fn safety_factor_buckling(
 pub fn mode_shape(
     result : BucklingResult,
     n      : Int
-) -> Field<Point3<Length>, Vector3<Length>> {
+) -> Field<Point3<Length>, Vector3<Dimensionless>> {
     result.modes[n].mode_shape
 }
 
