@@ -47,6 +47,7 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod macros;
+pub mod registry;
 pub mod row;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────
