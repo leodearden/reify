@@ -43,8 +43,16 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // raise (10s->30s, task 4503): no ceiling can fix a deadlock.
     //
     // Reading on separate threads keeps the pipes empty, so the child always
-    // makes progress and the ceiling stays what its name says -- a pure
-    // liveness guard.
+    // makes progress and the ceiling measures liveness rather than pipe
+    // capacity.
+    //
+    // That is not the same as an unconditional wall-clock bound on this helper.
+    // The joins below return only once EVERY holder of a pipe's write end is
+    // gone, and killing the direct child does not close an end inherited by a
+    // grandchild it spawned -- such a grandchild would wedge the joins past the
+    // ceiling instead of surfacing as the timeout panic. `reify mcp-server`
+    // spawns no subprocess today (the CLI's only `Command::new` is the `gui`
+    // subcommand's), so the joins do terminate; bound them if that changes.
     let mut child_stdout = child.stdout.take().expect("failed to open stdout");
     let mut child_stderr = child.stderr.take().expect("failed to open stderr");
     let stdout_reader = std::thread::spawn(move || {
@@ -76,6 +84,12 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
             Ok(None) => {
                 if start.elapsed() > timeout {
                     child.kill().ok();
+                    // Reap it. SIGKILL makes the child exit, but until someone
+                    // wait()s it stays a zombie for the rest of this test
+                    // binary's life. The `Ok(Some(_))` arm above reaps via
+                    // `try_wait` on the normal path, so this is the only path
+                    // that would leak one.
+                    let _ = child.wait();
                     timed_out = true;
                     break;
                 }
@@ -85,9 +99,9 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
         }
     }
 
-    // The child has exited, so both pipes are at EOF and these joins are
-    // bounded. (On the timeout path above we already killed the child, which
-    // closes its ends of the pipes, so the readers finish there too.)
+    // The child is gone -- it exited on its own, or was killed AND reaped above
+    // -- so its ends of both pipes are closed and, given no surviving
+    // grandchild holds one (see the drain comment), the readers are at EOF.
     let stdout_bytes = stdout_reader
         .join()
         .expect("stdout reader thread panicked")
