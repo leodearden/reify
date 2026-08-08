@@ -1887,6 +1887,201 @@ fn reload_for_watch_impl_runs_correctly_through_large_stack() {
     assert_same_salient_state(&wrapped, &direct, "reload_for_watch_impl");
 }
 
+// ── Task 5772: run_on_worker composition guards ──────────────────────────────
+//
+// These stand in for the 14 un-headless-testable `main.rs` command wrappers that
+// step-8 routes through the persistent worker, exactly as the task-5357 guards
+// above stand in for its three. Those wrappers take `tauri::State` / `AppHandle`
+// and cannot be constructed headlessly, so what is testable — and what actually
+// matters — is the COMPOSITION they perform:
+// `run_on_worker(move || commands::x_impl(&engine, ..))`, with the
+// `Arc<Mutex<EngineSession>>` MOVED into a `'static` closure rather than
+// borrowed as the scoped `run_on_large_stack` tier permits.
+//
+// The wrappers proxied here: `get_initial_state`, `set_parameter`,
+// `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
+// `get_entity_tree`, `get_entity_identity_map`, `get_mechanism_descriptors`,
+// `get_def_preview`, `get_containing_definition`,
+// `get_entity_at_source_location`, `get_active_fea_case`, `set_active_fea_case`.
+
+/// Compile-time proof that `T` satisfies the bound the whole migration rests on.
+///
+/// `run_on_worker` requires `T: Send + 'static` because the result crosses a
+/// channel from a thread that outlives the submitting frame. Every migrated
+/// command's payload must therefore qualify — as must the `Arc<Mutex<…>>` moved
+/// in. This never runs; naming the types is the assertion.
+fn assert_send_static<T: Send + 'static>() {}
+
+/// Pins `T: Send + 'static` for every type the migration moves across the
+/// worker's queue: each migrated command's return payload, plus the engine
+/// handle itself.
+///
+/// `Result<T, String>` follows from `T` (and `String` is `Send + 'static`), so
+/// the payloads are what need naming. If a future command returns something
+/// non-`Send` — an `Rc`, a raw pointer, a borrow — it cannot join this tier, and
+/// this list is where that shows up as a compile error rather than as a puzzling
+/// error at the call site in `main.rs` (which only builds under `--features gui`).
+#[test]
+fn migrated_command_payloads_are_send_and_static() {
+    use crate::engine::EngineSession;
+    use crate::types::{DefInfo, EntityIdentity, EntityTreeNode, GuiState, MechanismDescriptor};
+    use reify_mcp::SourceLocationInfo;
+    use std::collections::HashMap;
+
+    assert_send_static::<GuiState>(); // get_initial_state, set_parameter, get_def_preview
+    assert_send_static::<Vec<EntityTreeNode>>(); // get_entity_tree
+    assert_send_static::<HashMap<String, EntityIdentity>>(); // get_entity_identity_map
+    assert_send_static::<Vec<MechanismDescriptor>>(); // get_mechanism_descriptors
+    assert_send_static::<SourceLocationInfo>(); // get_source_location
+    assert_send_static::<Option<DefInfo>>(); // get_containing_definition
+    assert_send_static::<Option<String>>(); // get_entity_at_source_location, get_active_fea_case
+    assert_send_static::<()>(); // export, sync_demand, sync_observed_demand, set_active_fea_case
+
+    // The handle every migrated closure captures. Already proven in practice by
+    // `debug_server::run_on_engine`, which clones it into a `'static`
+    // `spawn_on_large_stack` closure — pinned here so the migration does not
+    // depend on that remaining true elsewhere.
+    assert_send_static::<Arc<Mutex<EngineSession>>>();
+}
+
+/// `get_initial_state_impl` through `run_on_worker` returns the same salient
+/// state as a direct call — the projection command every session starts with.
+#[test]
+fn get_initial_state_impl_runs_correctly_through_worker() {
+    use crate::commands::get_initial_state_impl;
+
+    let engine_direct = make_test_engine_for_commands();
+    let direct =
+        get_initial_state_impl(&engine_direct).expect("direct get_initial_state_impl should succeed");
+
+    let engine_wrapped = make_test_engine_for_commands();
+    // The `Arc` is CLONED and MOVED — the `'static` bound is the API price of a
+    // persistent worker, and this is what paying it looks like at a call site.
+    let engine = Arc::clone(&engine_wrapped);
+    let wrapped = crate::large_stack::run_on_worker(move || get_initial_state_impl(&engine))
+        .expect("get_initial_state_impl through run_on_worker should succeed");
+
+    assert!(
+        !wrapped.values.is_empty(),
+        "GuiState.values should be non-empty for the bracket fixture on the worker"
+    );
+    assert_same_salient_state(&wrapped, &direct, "get_initial_state_impl");
+}
+
+/// `set_parameter_impl` through `run_on_worker` returns the same salient state
+/// as a direct call.
+///
+/// This is the command the whole tier exists for: it fires per slider-drag
+/// frame, which is why a fresh 256 MiB mapping per call was the wrong mechanism.
+/// The cell id is DISCOVERED from the engine's own initial state rather than
+/// hardcoded, so the guard cannot rot into a no-op if the fixture's parameter
+/// names change; setting a cell to its OWN current value keeps the edit a
+/// genuine round-trip through `set_parameter` without changing the model.
+#[test]
+fn set_parameter_impl_runs_correctly_through_worker() {
+    use crate::commands::{get_initial_state_impl, set_parameter_impl};
+
+    let engine_direct = make_test_engine_for_commands();
+    let probe =
+        get_initial_state_impl(&engine_direct).expect("initial state should expose a settable cell");
+    // `ValueData.kind` uses the CAPITALIZED convention (`engine::cell_kind_gui_str`);
+    // the lowercase `"param"` form belongs to the entity-tree / identity-map
+    // APIs (`cell_kind_tree_str`). The split is deliberate, and picking the
+    // wrong one here matches nothing and fails the `expect` below.
+    let param = probe
+        .values
+        .iter()
+        .find(|v| v.kind == "Param")
+        .expect("the bracket fixture must expose at least one Param cell");
+    let (cell_id, value) = (param.cell_id.clone(), param.value.clone());
+
+    let direct = set_parameter_impl(&engine_direct, &cell_id, &value)
+        .unwrap_or_else(|e| panic!("direct set_parameter_impl({cell_id}, {value}) failed: {e}"));
+
+    let engine_wrapped = make_test_engine_for_commands();
+    let engine = Arc::clone(&engine_wrapped);
+    let (wrapped_cell, wrapped_value) = (cell_id.clone(), value.clone());
+    let wrapped = crate::large_stack::run_on_worker(move || {
+        set_parameter_impl(&engine, &wrapped_cell, &wrapped_value)
+    })
+    .unwrap_or_else(|e| panic!("set_parameter_impl through run_on_worker failed: {e}"));
+
+    assert_same_salient_state(&wrapped, &direct, "set_parameter_impl");
+}
+
+/// `get_entity_tree_impl` through `run_on_worker` returns the same tree as a
+/// direct call.
+///
+/// A traversal of an already-compiled structure — the recursion-bearing shape
+/// that motivated giving these commands a large stack at all, even though they
+/// are not the full-compile hazard task 5337 diagnosed.
+#[test]
+fn get_entity_tree_impl_runs_correctly_through_worker() {
+    use crate::commands::get_entity_tree_impl;
+
+    let engine_direct = make_test_engine_for_commands();
+    let direct =
+        get_entity_tree_impl(&engine_direct).expect("direct get_entity_tree_impl should succeed");
+
+    let engine_wrapped = make_test_engine_for_commands();
+    let engine = Arc::clone(&engine_wrapped);
+    let wrapped = crate::large_stack::run_on_worker(move || get_entity_tree_impl(&engine))
+        .expect("get_entity_tree_impl through run_on_worker should succeed");
+
+    assert!(
+        !wrapped.is_empty(),
+        "the bracket fixture must yield a non-empty entity tree on the worker"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped, |n| &n.entity_path),
+        sorted_keys(&direct, |n| &n.entity_path),
+        "the set of entity-tree node paths must not depend on which thread the walk ran on"
+    );
+}
+
+/// `export_impl` through `run_on_worker` agrees with a direct call and actually
+/// writes the file.
+///
+/// The kernel-touching migrated command: `export` reaches the geometry kernel,
+/// so this is the guard that the relocation composes with kernel work and not
+/// just with in-memory projection. Writing a non-empty file is the load-bearing
+/// half — an `Ok` alone would also be returned by an export that silently did
+/// nothing on the worker thread.
+#[test]
+fn export_impl_runs_correctly_through_worker() {
+    use crate::commands::export_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let engine_direct = make_test_engine_for_commands();
+    let direct_path = dir.path().join("direct.step");
+    let direct = export_impl(&engine_direct, "step", direct_path.to_str().unwrap());
+
+    let engine_wrapped = make_test_engine_for_commands();
+    let wrapped_path = dir.path().join("wrapped.step");
+    let engine = Arc::clone(&engine_wrapped);
+    // Already-owned `String`, so it simply MOVES into the `'static` closure —
+    // the shape every migrated `main.rs` wrapper's arguments have.
+    let path_arg = wrapped_path.to_str().unwrap().to_owned();
+    let wrapped =
+        crate::large_stack::run_on_worker(move || export_impl(&engine, "step", &path_arg));
+
+    assert_eq!(
+        wrapped.is_ok(),
+        direct.is_ok(),
+        "export must succeed or fail identically on the worker and inline; \
+         wrapped={wrapped:?} direct={direct:?}"
+    );
+    wrapped.expect("export_impl through run_on_worker should succeed");
+
+    let written = std::fs::metadata(&wrapped_path)
+        .unwrap_or_else(|e| panic!("the worker's export must write {wrapped_path:?}: {e}"));
+    assert!(
+        written.len() > 0,
+        "the worker's export must write a NON-EMPTY file, not just return Ok"
+    );
+}
+
 // ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
 
 /// `cancel_solve_impl` calls `.cancel()` on the published handle, clears the
