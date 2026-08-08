@@ -1036,3 +1036,62 @@ fn parse_xyz_panics_on_missing_field() {
 fn parse_xyz_panics_on_unparseable_value() {
     let _ = parse_xyz("{\"x\":1,\"y\":not-a-number,\"z\":3}");
 }
+
+/// (a) `xyz_of` unwraps a successful `Value::String` query into the same `Xyz`
+/// that `parse_xyz` yields for that string, for two different error types.
+///
+/// Reuses the [`FakeQueryError`] declared above for the bbox tests rather than
+/// introducing a second stand-in.
+#[test]
+fn xyz_of_unwraps_ok_string() {
+    let s = producer_format_xyz(-1.0, 2.0, -3.0);
+    let expected = Xyz {
+        x: -1.0,
+        y: 2.0,
+        z: -3.0,
+    };
+
+    // E = String
+    let via_string = xyz_of(Ok::<_, String>(Value::String(s.clone())), "Centroid");
+    assert_eq!(via_string, expected);
+    assert_eq!(via_string, parse_xyz(&s), "xyz_of must agree with parse_xyz");
+
+    // E = FakeQueryError — a second instantiation of the `E: Debug` parameter,
+    // which is what lets one helper serve both `OcctKernel::query` and
+    // `OcctKernelHandle::query` (unrelated types with no `Deref` between them).
+    let via_other = xyz_of(Ok::<_, FakeQueryError>(Value::String(s)), "Centroid");
+    assert_eq!(via_other, expected);
+}
+
+/// (b) A failed query panics NAMING THE QUERY. This is `query_label`'s whole
+/// reason for existing: unlike `bbox_of`, whose seven call sites all issued
+/// `GeometryQuery::BoundingBox`, this helper serves five different query
+/// variants, so a fixed panic string would erase which one failed.
+#[test]
+#[should_panic(expected = "FaceNormal")]
+fn xyz_of_error_panic_names_the_query() {
+    let _ = xyz_of(
+        Err::<Value, _>(FakeQueryError("kernel exploded")),
+        "FaceNormal",
+    );
+}
+
+/// (c) …and that same panic surfaces the underlying error's `Debug`, so the
+/// kernel's own diagnostic is not swallowed by the shared helper.
+#[test]
+#[should_panic(expected = "kernel exploded")]
+fn xyz_of_error_panic_surfaces_error_debug() {
+    let _ = xyz_of(
+        Err::<Value, _>(FakeQueryError("kernel exploded")),
+        "FaceNormal",
+    );
+}
+
+/// (d) A non-`String` `Value` panics naming the received variant, preserving
+/// the `panic!("expected ... String, got {other:?}")` behaviour of the call
+/// sites this consolidates.
+#[test]
+#[should_panic(expected = "Real")]
+fn xyz_of_panics_on_non_string_value() {
+    let _ = xyz_of(Ok::<_, String>(Value::Real(1.0)), "Centroid");
+}
