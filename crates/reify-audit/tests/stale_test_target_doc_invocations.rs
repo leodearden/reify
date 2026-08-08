@@ -119,6 +119,17 @@ fn extract_p_crate(line: &str) -> Option<String> {
     None
 }
 
+/// Inline escape marker (mirrors ptodo.rs's `ptodo:allow`, §6.8). Same-line
+/// only; trailing `— reason` prose expected. Named once so it stays
+/// greppable and cannot silently drift out of sync with its doc mentions.
+const ALLOW_MARKER: &str = "stale-test-target:allow";
+
+/// A line carrying the literal [`ALLOW_MARKER`] opts out of the sweep for
+/// that line entirely (checked before extraction).
+fn line_escaped(line: &str) -> bool {
+    line.contains(ALLOW_MARKER)
+}
+
 /// Scan `files` (paths relative to `root`) for `--test <stem>` doc
 /// invocations and return a [`Finding`] for each stem that does not resolve
 /// to an existing `crates/<crate>/tests/<stem>.rs`. Pure function of its
@@ -137,6 +148,9 @@ fn scan(root: &Path, files: &[String]) -> Vec<Finding> {
         };
         let path_crate = crate_from_path(file);
         for (idx, line) in content.lines().enumerate() {
+            if line_escaped(line) {
+                continue;
+            }
             let stems = extract_stems(line);
             if stems.is_empty() {
                 continue;
