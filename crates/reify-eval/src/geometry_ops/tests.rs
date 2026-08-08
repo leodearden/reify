@@ -53,6 +53,17 @@
         )
     }
 
+    /// Helper: build a `CompiledExpr` literal that evaluates to `Value::Undef`
+    /// — the UNRESOLVED state (an unresolved param, a `ValueMap` cell still
+    /// empty during a partial / fixpoint build, or an expression `reify-expr`
+    /// has no arm for), as distinct from a WRONG one. The declared `Type` is
+    /// `length()` because that is the slot such a cell resolves into; like
+    /// [`literal_scalar`]'s, it is irrelevant to `eval_expr`, which clones the
+    /// `Value`.
+    fn literal_undef() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::length())
+    }
+
     /// Helper: wrap a bare `GeometryHandleId` in a `KernelHandle` with the
     /// default test kernel (`KernelId::Occt`).
     ///
@@ -6016,6 +6027,78 @@
     #[test]
     fn compile_geometry_op_translate_length_gate_rejects_every_component() {
         assert_length_gated(TRANSLATE_GATE);
+    }
+
+    /// The MIXED group — the precedence rule `required_length_args` encodes,
+    /// which neither shared-contract helper above can see.
+    ///
+    /// [`assert_length_gated`] makes exactly ONE position bad per iteration
+    /// (every other is a valid Length) and [`assert_every_bare_position_reported`]
+    /// makes every position bad in the SAME way, so both are structurally blind
+    /// to two DIFFERENT failure classes meeting in one group. Here `dx` is
+    /// `Undef` (Unresolved) and `dy` is a bare `Real` (Invalid), pinning both
+    /// halves of the all-at-once behaviour in one case:
+    ///
+    ///   - PRECEDENCE — the FIRST error wins, so the caller-facing `Err` is
+    ///     `dx`'s "unresolved (Undef)" and never `dy`'s "missing or non-Length".
+    ///     A refactor to "last error wins", to `Err`-on-first-`Invalid`, or a
+    ///     reordering of the names array would otherwise flip that wording
+    ///     silently — during solver iteration, where `Undef` cells are expected
+    ///     transient state and mislabelling one as non-Length is exactly the
+    ///     misdiagnosis `required_length_arg` exists to avoid.
+    ///   - NO SHORT-CIRCUIT — `dy` is still diagnosed even though `dx` already
+    ///     failed. Under the old `?`-chain an `Undef` first member suppressed
+    ///     that warning entirely, so this is the diagnostic-COUNT half of the
+    ///     change, which the wording assertions alone would not catch.
+    #[test]
+    fn compile_geometry_op_translate_unresolved_beats_a_later_bare_component() {
+        let values = ValueMap::new();
+
+        // dx unresolved, dy bare (the 1000× hazard), dz a clean Length.
+        let op = translate_with_components(&[
+            literal_undef(),
+            literal_f64(5.0),
+            literal_length(0.056),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &[GeometryHandleId(42)],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("an unresolved dx with a bare dy must drop the translate op");
+
+        assert!(
+            err.contains("dx") && err.contains("unresolved (Undef)"),
+            "the FIRST failing member wins, so the error must carry dx's \
+             unresolved-Undef wording; got: {err:?}"
+        );
+        assert!(
+            !err.contains("dy"),
+            "dy's later Invalid must not mask dx's Unresolved in the \
+             caller-facing error; got: {err:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("dy") && d.message.contains("expects Length")),
+            "dy must STILL be diagnosed in the SAME build even though dx failed \
+             first — the all-at-once guarantee, which the old `?`-chain \
+             short-circuited; got: {:?}",
+            diagnostics
+        );
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("dx")),
+            "an unresolved dx degrades QUIETLY at the value level — its whole \
+             report is the caller-facing Err, with no warning of its own; \
+             got: {:?}",
+            diagnostics
+        );
     }
 
     /// The clean path: dimensioned components are accepted and reach the IR in SI
