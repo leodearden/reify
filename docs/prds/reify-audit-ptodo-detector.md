@@ -335,10 +335,24 @@ Task-1622 tool (`reify-test-support`) keeps format-level checks; PTODO owns
 citation-liveness — γ wires the split using the existing pub extraction fns.
 
 **Lane δ-A adds NO new kind (task #6087).** The `#[allow(dead_code)]` rationale lane
-reuses the existing taxonomy end-to-end: an uncited deferral rationale is `untracked`
-(structural, High per §8.4), and a cited one emits nothing of its own — it hands the
-extracted ids to the **unchanged** liveness lane, which resolves them to `orphaned` /
-`unknown-id` / `parked-on-anchor` exactly as for any other marker. Consequently the
+reuses the existing taxonomy end-to-end, with the SAME three-way split as the comment-marker
+lane: a canonically-cited rationale emits nothing of its own — it hands the extracted ids to
+the **unchanged** liveness lane, which resolves them to `orphaned` / `unknown-id` /
+`parked-on-anchor` exactly as for any other marker; a rationale carrying a legacy/Greek cite
+is `malformed-cite` (structural, Medium per §8.4); an uncited deferral rationale is
+`untracked` (structural, High). The `malformed-cite` branch is normative, not incidental:
+the trigger in the table above is defined lane-independently, and the live corpus contains
+the legacy form on this anchor (`// production wiring deferred to task 4050 …`,
+`crates/reify-eval/src/engine_build.rs:2199/2278/2292`). Collapsing it into `untracked`
+would report an imprecise cite at hard-gate severity where §8.4 rates it advisory.
+
+*Known divergence:* the `#[ignore]` γ lane has no `malformed-cite` branch — its reason
+policy is cite-first-then-blocker-prose and is byte-frozen (changing it would reclassify
+existing `#[ignore]` findings and perturb the §6.6 baseline). That is recorded here as a
+deliberate asymmetry so it is not silently inherited by the next lane; aligning γ is a
+separate change, not a consequence of #6087.
+
+Consequently the
 §6.6 fingerprint grammar (`path :: kind :: normalized text`), the ratchet test's
 `VALID_KINDS`, `ptodo-baseline-gen`'s filter and the §8.4 severity mapping are all
 untouched by the lane; the diff is confined to two pure recognizers plus one `scan_file`
@@ -634,7 +648,7 @@ radius at zero.
 |---|---|
 | Candidates (`#[allow(…dead_code…)]` + trailing `//` rationale) | 68 |
 | Needle-bearing after guards 1–3 | 14 |
-| Split | 1 cited + 13 uncited |
+| Split | 1 canonically cited + 3 legacy-cited + 10 uncited |
 | Measured false positives | **0** (all 14 hand-inspected) |
 | Baseline seeded | 5 fingerprints |
 
@@ -643,7 +657,8 @@ rather than defer ("used by some, but not all, test binaries that include this m
 "Phase-1 scaffold; consumed in later phases") — and they stay correctly silent. The one
 cited hit is `crates/reify-eval/src/engine_build.rs:12891` (`// production wiring pending
 task #4744 …`), whose cite is `done` → **High `orphaned`**: the user-observable signal this
-task exists to produce. The 13 uncited hits are genuine unmarked deferrals → **High
+task exists to produce. Three hits carry the legacy `task 4050` cite form → **Medium
+`malformed-cite`** (§8.3). The remaining 10 are genuine unmarked deferrals → **High
 `untracked`**.
 
 *Why 14 findings seed only 5 fingerprints:* `fingerprint()` is line-number-erased

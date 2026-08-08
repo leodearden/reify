@@ -964,11 +964,29 @@ fn scan_file(content: &str, is_rust: bool) -> Vec<(usize, LineClass, String)> {
             // read as comment prose.
             //
             // Emits only the EXISTING classes (§8.3 taxonomy unchanged, no new
-            // `Kind`): a canonical cite hands off to the unmodified β liveness
-            // lane (→ orphaned / unknown-id), an uncited rationale is unmarked
-            // debt (→ untracked).
+            // `Kind`), and the three-way split MIRRORS arm (3) rather than
+            // inventing its own: canonical cite → the unmodified β liveness lane
+            // (→ orphaned / unknown-id); legacy/Greek cite → malformed-cite;
+            // otherwise unmarked debt → untracked.
+            //
+            // The malformed-cite branch is deliberate. §8.3 defines that trigger
+            // LANE-INDEPENDENTLY, and three of this lane's live findings are
+            // `// production wiring deferred to task 4050 (…)`
+            // (crates/reify-eval/src/engine_build.rs:2199/2278/2292) — the legacy
+            // `task NNNN` form. Collapsing them into `untracked` would report an
+            // author who cited imprecisely at High (hard gate) where §8.4 rates a
+            // malformed cite Medium (advisory).
+            //
+            // The γ `#[ignore]` arm (2) above does NOT have this branch. That is
+            // a divergence, not a precedent to copy: γ's reason policy is
+            // cite-first-then-blocker-prose and is byte-frozen (changing it would
+            // reclassify existing `#[ignore]` findings and perturb the §6.6
+            // baseline), so aligning it is out of scope here rather than
+            // unnecessary. See PRD §8.3.
             if has_canonical_cite(rationale) {
                 out.push((line_no, LineClass::Cited(extract_cites(rationale)), line.trim().to_string()));
+            } else if has_malformed_cite(rationale) {
+                out.push((line_no, LineClass::Structural(Kind::MalformedCite), line.trim().to_string()));
             } else {
                 out.push((line_no, LineClass::Structural(Kind::Untracked), line.trim().to_string()));
             }
@@ -2329,6 +2347,26 @@ mod tests {
         assert_eq!(
             scan_file(line, true),
             vec![(1, LineClass::Structural(Kind::Untracked), line.to_string())]
+        );
+    }
+
+    /// A δ-A rationale whose cite is the LEGACY `task NNNN` form is
+    /// `malformed-cite`, not `untracked` — the arm mirrors arm (3)'s three-way
+    /// split, and §8.3 defines the malformed-cite trigger lane-independently.
+    ///
+    /// This is the live shape at `crates/reify-eval/src/engine_build.rs:2199`
+    /// (also `:2278`, `:2292` — 3 of the lane's 14 live findings, 1 of the 5
+    /// seeded baseline fingerprints), pinned VERBATIM. The kind drives severity:
+    /// `malformed-cite` is Medium/advisory per §8.4 whereas `untracked` is High
+    /// and hard-fails the merge gate, so a silent flip here would change what a
+    /// merge does, not just what it prints.
+    #[test]
+    fn scan_file_allow_dead_code_legacy_cite() {
+        let line =
+            "#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)";
+        assert_eq!(
+            scan_file(line, true),
+            vec![(1, LineClass::Structural(Kind::MalformedCite), line.to_string())]
         );
     }
 
