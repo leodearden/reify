@@ -1251,6 +1251,159 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     }
 }
 
+/// The joint-drive model with the child's LOWER BRACKET raised from `0.0` to
+/// `1.0` — moves the floored bound from the ABSOLUTE-floor regime into the
+/// RELATIVE-margin regime (see [`bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound`]).
+///
+/// Deliberately an INLINE source rather than an edit to the shipped
+/// `examples/whole_model_joint_drive.ri`, following the `OVERRIDE_SRC`
+/// precedent below: changing that file would perturb BT-5's hand-derived
+/// arithmetic and re-trigger the three example auto-enrolling gates
+/// (`examples_smoke`, the determinism walk, the no-bare-`Scalar` corpus check)
+/// for no benefit.
+const SHIFTED_LOWER_BRACKET_SRC: &str = r#"
+module joint_drive_shifted_lower_bracket
+
+structure def Rivet : Costed {
+    param supplier          : String = "Acme Fastener"
+    param part_number       : String = "R-4210"
+    param unit_cost         : Money  = 0.50USD
+    param lead_time         : Time   = 24h
+
+    param quantity_produced : Real   = auto(free)
+    constraint quantity_produced >= 1.0
+    constraint quantity_produced <= 100.0
+}
+
+structure RivetedPanel {
+    sub rivets = Rivet()
+
+    minimize cost(self.descendants)
+
+    let total_cost : Money = cost(self.descendants)
+}
+"#;
+
+/// BT-5b — the merged auto lands ON the ROBUSTNESS-FLOORED lower bound, not on
+/// the raw constraint boundary and not on a fixed seed.
+///
+/// # RED/GREEN — this test is EXPECTED TO PASS ON ARRIVAL
+///
+/// Nothing is broken here; only `examples/whole_model_joint_drive.ri`'s header
+/// prose had gone stale (task #5939). This is a characterization / anti-rot
+/// pin, not a RED-first driver — its value is prospective: it fails the moment
+/// the merged figure drifts again, which is the exact recurrence #5939 exists
+/// to prevent. The figures previously rotted silently because BT-5 above is
+/// deliberately COMPARATIVE (strict inequality) and cannot catch a drift
+/// between two sub-frozen values: both the stale `0.01` and the actual `1e-9`
+/// sit far below the frozen cascade's `50.0`, so BT-5 stayed green throughout
+/// the drift.
+///
+/// # The rule, not a magic number
+///
+/// With a Money objective and at least one live inequality, the solver
+/// synthesises a per-constraint margin floor (task #4789 α;
+/// `crates/reify-constraints/src/solver.rs` lines 715-744):
+///
+///     m_i        = max(REL_MARGIN × |bound_i|, ABS_FLOOR_SI)
+///     REL_MARGIN   = 0.02   (solver.rs:739)
+///     ABS_FLOOR_SI = 1e-9   (solver.rs:744)
+///     floored_lo = bracket + m_i
+///
+/// `line_cost = 0.50USD × quantity_produced` is strictly increasing, so the
+/// argmin sits exactly on the floored LOWER bound in both regimes below —
+/// this test pins that RELATIONSHIP across two brackets rather than a single
+/// converged value, which is what makes it durable and is the executable
+/// counterpart of the revised header prose:
+///
+/// (a) Shipped model (bracket `0.0`) — ABSOLUTE-floor regime. The bound
+///     magnitude is 0, so `m = max(0.02×0, 1e-9)` degenerates to the absolute
+///     floor `1e-9`, and the floored lower bound is `1e-9`.
+/// (b) Bracket-shifted variant (bracket `1.0`, [`SHIFTED_LOWER_BRACKET_SRC`])
+///     — RELATIVE-margin regime. `m = max(0.02×1.0, 1e-9) = 0.02`, so the
+///     floored lower bound is `1.02`. This matches the solver's own worked
+///     example ("`x > 1mm` → m = 20µm → floor: x ≥ 1.02mm", solver.rs:738)
+///     and its unit test `(lo.0 - 1.02).abs() < 1e-12` (solver.rs:6293). It
+///     is also the direct executable REFUTATION of the header's former
+///     (falsified) claim that this bracket makes the solve report
+///     `RobustnessFloorInfeasible` — [`eval_ri_with_real_solver`] already
+///     asserts zero `Severity::Error`, so that regression would fail here
+///     automatically.
+///
+/// # Not a house-norm violation
+///
+/// The sibling BT-5 docstring's house norm forbids a precise CONVERGED value
+/// or a TUNED tolerance at the `.ri` layer (those belong at the
+/// `reify-constraints` layer with explicitly bounded autos). These assertions
+/// are different in kind: an order-of-magnitude band and a closed-form-margin
+/// tolerance, both derived from the two named solver constants above and only
+/// THEN confirmed against observation — never tuned to match an unknown
+/// output. BT-5's own comparative assertions above are left untouched.
+#[test]
+fn bt5b_merged_auto_lands_on_the_robustness_floored_lower_bound() {
+    // ---- (a) shipped model — ABSOLUTE-floor regime (bracket 0.0). ----
+
+    let merged_src = std::fs::read_to_string(JOINT_DRIVE_EXAMPLE_PATH)
+        .unwrap_or_else(|e| panic!("could not read {JOINT_DRIVE_EXAMPLE_PATH}: {e}"));
+    let merged = eval_ri_with_real_solver(&merged_src, "merged (shipped, bracket 0.0)");
+    let merged_q = scalar_si(
+        &merged,
+        &ValueCellId::new("Rivet", "quantity_produced"),
+        "merged (shipped, bracket 0.0)",
+    );
+
+    // `merged_q > 0.0`: non-vacuity guard — a collapsed/Undef-as-0.0 auto must
+    // not pass. `merged_q <= 1e-6`: an ORDER-OF-MAGNITUDE band, deliberately
+    // not a precise pin — 3 orders above the derived floor 1e-9 and 7+ orders
+    // below the frozen-cascade box centre 50.0.
+    assert!(
+        merged_q > 0.0 && merged_q <= 1e-6,
+        "BT-5b(a): the shipped model's merged auto must land in the \
+         ABSOLUTE-floor band (0.0, 1e-6] — derived from `m = max(REL_MARGIN × \
+         |0.0|, ABS_FLOOR_SI) = ABS_FLOOR_SI = 1e-9`, so the floored lower \
+         bound is 1e-9. Got merged_q={merged_q}.",
+    );
+
+    // ---- (b) bracket-shifted variant — RELATIVE-margin regime (bracket 1.0). ----
+
+    // `eval_ri_with_real_solver` already asserts zero `Severity::Error`, so a
+    // `RobustnessFloorInfeasible` regression on this bracket fails right here.
+    let shifted = eval_ri_with_real_solver(
+        SHIFTED_LOWER_BRACKET_SRC,
+        "bracket-shifted (`quantity_produced >= 1.0`)",
+    );
+    let shifted_q = scalar_si(
+        &shifted,
+        &ValueCellId::new("Rivet", "quantity_produced"),
+        "bracket-shifted",
+    );
+
+    // Closed form: `m = max(0.02 × |1.0|, 1e-9) = 0.02`, floored lower bound
+    // `1.0 + 0.02 = 1.02`. Tolerance 1e-6 is looser than the solver's own
+    // 1e-12 unit-test tolerance for the same quantity (solver.rs:6293) —
+    // derived from the closed form first, confirmed against observation
+    // second, never tuned to match an unknown output.
+    assert!(
+        (shifted_q - 1.02).abs() <= 1e-6,
+        "BT-5b(b): the bracket-shifted variant's merged auto must land at the \
+         RELATIVE-margin floored lower bound 1.0 + max(0.02×1.0, 1e-9) = 1.02. \
+         Got shifted_q={shifted_q} (diff {}).",
+        (shifted_q - 1.02).abs(),
+    );
+
+    // ---- (c) tie the two regimes together — this is the RULE, not two ----
+    // ---- coincidences. ----
+
+    assert!(
+        shifted_q > merged_q,
+        "BT-5b(c): raising the lower bracket from 0.0 to 1.0 must raise the \
+         floored argmin — the ABSOLUTE floor (1e-9) at bracket 0.0 is strictly \
+         below the RELATIVE-margin floor (1.02) at bracket 1.0, per \
+         `floored_lo = bracket + max(REL_MARGIN×|bracket|, ABS_FLOOR_SI)`. Got \
+         shifted_q={shifted_q} vs merged_q={merged_q}.",
+    );
+}
+
 /// BT-6(a) — an INTRA-TEMPLATE let cycle in a model that ALSO carries an auto
 /// and a `minimize` still errors. β's per-trial SCC-unroll must not have
 /// silently admitted a cycle that has nothing to do with the solver feedback
