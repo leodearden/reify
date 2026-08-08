@@ -317,3 +317,73 @@ structure S {
     );
     assert_no_error_diagnostics(&compiled.diagnostics, "impulse > 0 comparison");
 }
+
+/// `material.density > 0` — MEMBER-ACCESS operand, the shape backing
+/// `structural_physical.ri`'s `trait Physical` / `constraint material.density
+/// > 0kg/m^3`.
+///
+/// MEASURED (task 6038): the coercion DOES reach a member-access operand. The
+/// gate in `coerce_zero_operand` (expr.rs:337/353) keys on the sibling's
+/// COMPILED TYPE being `Type::Scalar{D}` with non-dimensionless D — it is
+/// syntax-agnostic about the sibling's expression shape — and
+/// `material.density` compiles to `Scalar[kg·m^-3]`. This is a genuinely
+/// different operand shape from the `IndexAccess` case that
+/// `structural_physical.ri:69-72` deliberately carves out, so it is asserted
+/// separately rather than assumed from the plain-identifier cases above.
+///
+/// Deliberately written as a `structure`, not the `trait Physical` it mirrors:
+/// see `member_access_mismatched_non_zero_still_errors` below for why a trait
+/// body would make this assertion vacuous.
+#[test]
+fn member_access_lhs_gt_zero_no_error() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param material : Material
+    constraint material.density > 0
+}
+"#,
+    );
+    assert_no_error_diagnostics(&compiled.diagnostics, "member-access LHS > 0 comparison");
+}
+
+/// NON-VACUITY GUARD for `member_access_lhs_gt_zero_no_error` above.
+///
+/// Every case in this file asserts the ABSENCE of a diagnostic, which is only
+/// meaningful if the dimension guard would actually fire on this operand shape.
+/// It does: a mismatched NON-ZERO literal against the same member access
+/// (`Scalar[kg·m^-3]` vs `Scalar[m]`) is rejected, and per the expr.rs gate a
+/// non-zero is never coerced. So the sibling test passing means the zero WAS
+/// coerced, not that member accesses are simply unchecked.
+///
+/// This guard is not ceremonial. When the same probe is written against a
+/// `trait` body instead of a `structure`, the guard goes silent: a trait-body
+/// `constraint material.density > 1m` — and even `mass + 1m` on a plain
+/// identifier, or a reference to a wholly undefined field — produces zero
+/// diagnostics, because a trait compiled with no conformer does not
+/// dimension-check its body. A member-access probe written in that form would
+/// therefore pass no matter what the coercion did.
+#[test]
+fn member_access_mismatched_non_zero_still_errors() {
+    let compiled = compile_source_with_stdlib(
+        r#"
+structure S {
+    param material : Material
+    constraint material.density > 1m
+}
+"#,
+    );
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| format!("{:?}", d.severity).contains("Error"))
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected a dimension-mismatch error for `material.density > 1m` \
+         (Density vs Length); got none — the member-access dimension guard is \
+         not firing, which would make member_access_lhs_gt_zero_no_error vacuous. \
+         Diagnostics: {:#?}",
+        compiled.diagnostics
+    );
+}
