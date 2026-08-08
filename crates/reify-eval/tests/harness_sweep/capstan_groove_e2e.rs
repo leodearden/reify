@@ -4,7 +4,7 @@
 //!
 //! Compiles the REAL design file `prj/printer_v01/dev_capstan.ri` through the
 //! full source → parse → compile(stdlib+checked) → Engine(real
-//! `OcctKernelHandle`) → tessellate pipeline and pins two properties of the
+//! `OcctKernelHandle`) → tessellate pipeline and pins three properties of the
 //! rope seat cut into the drum.
 //!
 //! **1. The seat admits the rope (`capstan_seat_admits_the_rope_radially`).**
@@ -15,18 +15,33 @@
 //! `groove_r` centred at `seat_c` under a land at `land_r`, the mouth chord is
 //! `2·sqrt(groove_r² − (land_r − seat_c)²)`, which is *maximised* at exactly
 //! `land_r == seat_c`: a shallower land closes the mouth over the rope, and a
-//! deeper one closes it back under. With an equal-radii seat
-//! (`groove_r == rope_dia/2`) that maximum is exactly `rope_dia`, so the arc
-//! centre is then also the ONLY land radius that admits the rope at all. A
+//! deeper one closes it back under. Under the DIN 15061 arc that maximum is
+//! `2·groove_r = 1.06·rope_dia`, so the mouth clears the rope by 6 %. A
 //! radially-admitting mouth is what
 //! `docs/projects/printer_v01.md` requires — its service model is "Hours
 //! (re-wind capstans)" and its departure tangent migrates axially across the
 //! band every revolution, so the rope has to leave the seat radially at an
 //! arbitrary mid-band position. #5580 retired the pre-existing `groove_mouth`
-//! captive-channel knob for exactly that reason. Re-introducing a radial
-//! cut-back of any depth necessarily moves `land_r` off `seat_c`, which
-//! collapses that chord — so the mouth assertion catches it on
-//! mechanical grounds, whatever the parameter that produced it is called.
+//! captive-channel knob for exactly that reason.
+//!
+//! Note what this assertion no longer does. With an equal-radii seat the arc
+//! centre was the ONLY land radius admitting the rope at all, so the mouth
+//! chord alone pinned the seat depth. An oversize arc opens a whole BAND of
+//! admitting land radii, `|land_r − seat_c| ≤ sqrt(groove_r² − (rope_dia/2)²)`
+//! = 1.055 mm wide at the defaults, so a small re-introduced cut-back now
+//! clears the mouth assertion. What pins the depth instead is the volume
+//! gate's premise guard below (a `groove_r·1e-6` window) together with
+//! `dev_capstan.ri`'s own two-sided `land_r` band, which is deliberately the
+//! same window. #5580's "a half-round is the only depth that admits the rope"
+//! reasoning retires with the oversize arc and must not be reinstated.
+//!
+//! **3. The seat arc conforms to DIN 15061
+//! (`capstan_seat_arc_is_din_15061_oversize`).** `groove_r = 0.53·rope_dia` —
+//! an OVERSIZE arc, not a zero-clearance slip fit — with the SEATED rope's
+//! centreline still on the D/d circle `pitch_r`, per-side anti-pinch clearance
+//! at the rope's widest section, and a seat bottom that lands on the seated
+//! rope's own underside. This is the module's only non-lockstep pin on the arc
+//! ratio itself: see [`DIN_15061_SEAT_RATIO`].
 //!
 //! **2. The seat removes the right stock
 //! (`capstan_seat_volume_delta_matches_half_pi_r2_l`).** The volume the helical
@@ -112,6 +127,32 @@ const DEV_CAPSTAN: &str = concat!(
 
 /// The design entity whose cells and constraints this module gates.
 const CAPSTAN_ENTITY: &str = "Capstan";
+
+/// DIN 15061 rope-drum seat arc radius as a fraction of rope diameter:
+/// `r_groove = 0.53·d`. External standard, so it is the REFERENCE and not a
+/// design cell.
+///
+/// **This is the one geometry number deliberately hard-coded in this module**,
+/// against the header's "no geometry number is hard-coded here" rule. It is the
+/// same narrow exception PRD §6 row 9 takes for the published ISO 286 IT value,
+/// and for the same reason: conformance to an EXTERNAL standard makes the
+/// standard's number the reference, and reading the design's own
+/// `seat_arc_ratio` cell back out would assert nothing but that the file equals
+/// itself.
+///
+/// It is load-bearing rather than stylistic. Both of this module's other gates
+/// are parametrized by the file's own `groove_r`, so a silent revert to a
+/// slip-fit `groove_r = rope_dia/2` leaves BOTH green: the volume gate's closed
+/// form would simply predict the smaller ΔV, and the mesh gate's land reference
+/// [`seat_arc_centre`] would simply move back onto `pitch_r`.
+/// [`capstan_seat_arc_is_din_15061_oversize`] is the only assertion here that
+/// catches it.
+const DIN_15061_SEAT_RATIO: f64 = 0.53;
+
+/// Fractional clearance the DIN ratio buys at the seat mouth, straight out of
+/// it: the mouth is the section's full width `2·r_groove = 2·0.53·d = 1.06·d`,
+/// so the rope clears it by 6 % of `rope_dia`.
+const MIN_MOUTH_CLEARANCE_FRAC: f64 = 2.0 * DIN_15061_SEAT_RATIO - 1.0;
 
 /// Relative tolerance on `ΔV` against the ideal half-round swept solid
 /// `0.5·π·groove_r²·L`, the spine-radius arc length.
@@ -351,11 +392,14 @@ fn finished_drum(result: &TessellateResult) -> &reify_eval::MeshSurface {
 /// Three claims, all computed from the design file's own cells:
 ///   1. the seat breaks through the land (`land_r < seat_c + groove_r`) —
 ///      otherwise it is a buried tunnel and the drum renders smooth;
-///   2. the mouth chord `2·sqrt(groove_r² − (land_r − seat_c)²)` is at least
-///      `rope_dia`. The general chord form is used deliberately rather than
-///      asserting `land_r == seat_c`: it catches a re-introduced depth offset
-///      in EITHER direction, and it states the mechanical requirement rather
-///      than one particular way of meeting it;
+///   2. the mouth chord `2·sqrt(groove_r² − (land_r − seat_c)²)` clears the
+///      rope by DIN 15061's margin — at least
+///      `rope_dia·(1 + MIN_MOUTH_CLEARANCE_FRAC)`, i.e. `1.06·rope_dia`. The
+///      general chord form is used deliberately rather than asserting
+///      `land_r == seat_c`: it catches a re-introduced depth offset in EITHER
+///      direction, and it states the mechanical requirement rather than one
+///      particular way of meeting it. It no longer pins the depth on its own,
+///      though — see the module header on the admitting band;
 ///   3. the drum the kernel actually produced HAS that seat — read back off
 ///      the finished mesh, not off the scalars. (1) and (2) are arithmetic
 ///      over four scalar cells, and would stay green for a sweep placed at the
@@ -395,32 +439,51 @@ fn capstan_seat_admits_the_rope_radially() {
         (seat_c + groove_r) * 1e3
     );
 
-    // ---- (2) The mouth admits the rope radially ----
+    // ---- (2) The mouth admits the rope radially, WITH clearance ----
     // Chord of the seat circle (centre at seat_c, radius groove_r) cut by the
     // land cylinder at land_r. `max(0.0)` only fires when the seat lies wholly
     // clear of the land, a case (1) already rejects — it just keeps the failure
     // message numeric instead of NaN.
     //
-    // The comparison carries a relative epsilon rather than being exact: with an
-    // equal-radii seat the two sides are bit-for-bit equal (`2·groove_r ==
-    // rope_dia` with `groove_r = rope_dia / 2`), so a bare `>=` sits at exactly
-    // zero margin and one unit-conversion refactor away from a 1-ulp false red.
-    // The epsilon is 1e-9 relative — nine orders below any real seat-depth
-    // regression, which moves the chord by a fraction of a millimetre at least.
+    // The chord is still maximised at `land_r == seat_c`, but that maximum is no
+    // longer merely `rope_dia`: a DIN 15061 arc makes it `2·groove_r =
+    // 1.06·rope_dia`, so this asserts a strict 6 % clearance rather than #5580's
+    // bare admission. Note that the admitting band is now WIDE — any land within
+    // `sqrt(groove_r² − (rope_dia/2)²) = 1.055 mm` of the arc centre still passes
+    // a rope — so this assertion no longer pins the land radius on its own.
+    // What pins it is the volume gate's premise guard and the design's own
+    // two-sided band; #5580's "a half-round is the ONLY depth that admits the
+    // rope" reasoning retires here, and must not be reinstated.
+    //
+    // The comparison keeps a relative epsilon: the tie MOVED, it did not vanish.
+    // `MIN_MOUTH_CLEARANCE_FRAC` is derived from the same DIN ratio the design
+    // multiplies into `groove_r`, so at the file's defaults the two sides are
+    // still bit-for-bit equal — measured 0 ulps apart, now at 1.06·rope_dia
+    // instead of at 1.00·rope_dia. That exactness is also luck of the particular
+    // `rope_dia`, not structural. A bare `>=` would therefore sit at exactly
+    // zero margin and one rounding difference away from a 1-ulp false red,
+    // exactly as it did before. 1e-9 relative is nine orders below any real
+    // seat-depth regression, which moves the chord by a fraction of a millimetre
+    // at least.
     let offset = land_r - seat_c;
     let mouth = 2.0 * (groove_r.powi(2) - offset.powi(2)).max(0.0).sqrt();
+    let min_mouth = rope_dia * (1.0 + MIN_MOUTH_CLEARANCE_FRAC);
     assert!(
-        mouth >= rope_dia * (1.0 - 1e-9),
-        "the rope seat's mouth must admit the rope RADIALLY: mouth chord = \
-         {:.4} mm but rope_dia = {:.4} mm. The chord is \
-         2·sqrt(groove_r² − (land_r − seat_c)²) and is MAXIMISED only at \
-         land_r == seat_c (the land plane through the section's arc centre, \
-         mouth == 2·groove_r); here land_r − seat_c = {:.4} mm, so a shallower \
-         land closes the mouth over the rope and a deeper one closes it back \
-         under. \
+        mouth >= min_mouth * (1.0 - 1e-9),
+        "the rope seat's mouth must admit the rope RADIALLY with DIN 15061 \
+         clearance: mouth chord = {:.4} mm but the required minimum is \
+         rope_dia·(1 + {:.2} %) = {:.4} mm (rope_dia = {:.4} mm). The chord is \
+         2·sqrt(groove_r² − (land_r − seat_c)²), maximised at land_r == seat_c \
+         (the land plane through the section's arc centre) where it equals \
+         2·groove_r; here land_r − seat_c = {:.4} mm, so a shallower land closes \
+         the mouth over the rope and a deeper one closes it back under. A mouth \
+         at exactly rope_dia means the arc reverted to a slip fit — see \
+         `capstan_seat_arc_is_din_15061_oversize`. \
          (pitch_r = {:.4} mm, seat_c = {:.4} mm, groove_r = {:.4} mm, \
          land_r = {:.4} mm)",
         mouth * 1e3,
+        MIN_MOUTH_CLEARANCE_FRAC * 100.0,
+        min_mouth * 1e3,
         rope_dia * 1e3,
         offset * 1e3,
         pitch_r * 1e3,
@@ -507,6 +570,126 @@ fn capstan_seat_admits_the_rope_radially() {
         seat_min * 1e3,
         tol * 1e3,
         land_r * 1e3
+    );
+}
+
+// ── DIN 15061: the seat arc is OVERSIZE, not a slip fit ──────────────────────
+
+/// The rope seat's arc must be DIN 15061 oversize (`r = 0.53·d`) rather than a
+/// zero-clearance slip fit, and oversizing it must not have moved the rope off
+/// the D/d circle.
+///
+/// This is the module's conformance pin to an EXTERNAL standard, and the only
+/// assertion here that can catch a revert to `groove_r = rope_dia/2`: both
+/// other gates are parametrized by the file's own `groove_r` and would stay
+/// green. See [`DIN_15061_SEAT_RATIO`] for why it references the standard's
+/// number rather than the design's `seat_arc_ratio` cell.
+///
+/// Four claims, from the file's own cells:
+///   1. **DIN conformance** — `groove_r == 0.53·rope_dia` (3.180 mm here).
+///   2. **The D/d story is intact** — the SEATED rope's centreline still lands
+///      on `pitch_r`. That is true by construction of [`seat_arc_centre`];
+///      asserting it anyway makes the helper's derivation a claim this module
+///      owns rather than an unexamined identity, so an edit to the helper is
+///      caught here instead of silently shifting the transmission ratio.
+///   3. **Anti-pinch clearance** — the actual mechanical reason DIN oversizes.
+///      At the rope's widest section the seat is wider than the rope, so a
+///      load-ovalised braid cannot wedge against the seat walls.
+///   4. **The seat bottom is invariant** — the seat bottoms exactly where the
+///      seated rope's underside sits, whatever the arc ratio. That is what lets
+///      the mesh gate reference `pitch_r − rope_dia/2` without mentioning
+///      `groove_r`.
+#[test]
+fn capstan_seat_arc_is_din_15061_oversize() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let result = dev_capstan();
+
+    let rope_dia = capstan_cell(result, "rope_dia", DimensionVector::LENGTH);
+    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
+    let seat_c = seat_arc_centre(pitch_r, groove_r, rope_dia);
+
+    // ---- (1) DIN conformance ----
+    let din_groove_r = DIN_15061_SEAT_RATIO * rope_dia;
+    assert!(
+        (groove_r - din_groove_r).abs() <= din_groove_r * 1e-9,
+        "the rope seat's arc radius must conform to DIN 15061 rope-drum \
+         practice, r_groove = {DIN_15061_SEAT_RATIO}·d: expected {:.6} mm for a \
+         rope_dia of {:.4} mm, but the design's groove_r is {:.6} mm. A \
+         groove_r of exactly rope_dia/2 = {:.4} mm is a zero-clearance SLIP FIT \
+         — the seat then has no mouth clearance and a load-ovalised braid \
+         pinches at the seat bottom. This assertion references the standard's \
+         0.53 and NOT the file's seat_arc_ratio cell, deliberately: the volume \
+         and mesh gates are both parametrized by groove_r and would stay green \
+         through exactly this revert.",
+        din_groove_r * 1e3,
+        rope_dia * 1e3,
+        groove_r * 1e3,
+        rope_dia * 0.5e3
+    );
+
+    // ---- (2) The seated rope's centreline is still the D/d circle ----
+    // Under tension the rope bottoms out in its seat, so its centre lies
+    // `groove_r - rope_dia/2` inboard of the arc centre. Oversizing the arc
+    // moves the ARC outboard; the ROPE must not move at all, or drum_d, the
+    // pitch circumference, active_turns and the transmission ratio all shift
+    // without anything in the design saying so.
+    let seated_rope_centre = seat_c - (groove_r - rope_dia / 2.0);
+    assert!(
+        (seated_rope_centre - pitch_r).abs() <= pitch_r * 1e-9,
+        "oversizing the seat arc must move the ARC outboard, not the ROPE: the \
+         seated rope's centreline sits at {:.6} mm but the D/d circle pitch_r \
+         is {:.6} mm. The seated centre is seat_c − (groove_r − rope_dia/2), \
+         with seat_c = {:.6} mm; if these part company then drum_d, the pitch \
+         circumference, active_turns, groove_len and the transmission ratio are \
+         all silently off.",
+        seated_rope_centre * 1e3,
+        pitch_r * 1e3,
+        seat_c * 1e3
+    );
+
+    // ---- (3) Anti-pinch: the seat is wider than the rope where the rope is widest ----
+    // The rope's widest section is the plane through its centre, at radius
+    // pitch_r. Half-width of the seat there is sqrt(groove_r² − (pitch_r −
+    // seat_c)²); the rope's own half-width is rope_dia/2. Algebraically the
+    // former exceeds the latter exactly when groove_r > rope_dia/2, which is
+    // why `dev_capstan.ri` carries that single inequality as its whole
+    // clearance statement rather than a separate ratio bound.
+    let seat_half_width = (groove_r.powi(2) - (pitch_r - seat_c).powi(2))
+        .max(0.0)
+        .sqrt();
+    let rope_half_width = rope_dia / 2.0;
+    assert!(
+        seat_half_width > rope_half_width,
+        "the seat must clear the rope at the rope's WIDEST section (radius \
+         pitch_r), or a load-ovalised braid wedges against the seat walls: seat \
+         half-width = {:.6} mm but the rope's is {:.6} mm ({:.4} mm of \
+         per-side clearance, which must be strictly positive). This is \
+         algebraically exactly `groove_r > rope_dia/2` — the anti-pinch \
+         condition and the mouth-clearance condition are one inequality, and it \
+         is the constraint dev_capstan.ri states.",
+        seat_half_width * 1e3,
+        rope_half_width * 1e3,
+        (seat_half_width - rope_half_width) * 1e3
+    );
+
+    // ---- (4) The seat bottoms on the seated rope's underside ----
+    let seat_bottom = seat_c - groove_r;
+    let rope_underside = pitch_r - rope_dia / 2.0;
+    assert!(
+        (seat_bottom - rope_underside).abs() <= rope_underside * 1e-9,
+        "the seat must bottom exactly where the seated rope's underside sits, \
+         whatever the arc ratio: seat_c − groove_r = {:.6} mm but \
+         pitch_r − rope_dia/2 = {:.6} mm. This invariant is what lets the mesh \
+         gate reference the rope's underside — a figure that does not mention \
+         groove_r at all — instead of a groove_r-derived depth that would move \
+         in lockstep with the arc.",
+        seat_bottom * 1e3,
+        rope_underside * 1e3
     );
 }
 
