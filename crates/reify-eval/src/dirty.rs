@@ -73,7 +73,25 @@ pub fn compute_dirty_cone(
 /// downstream consumers propagate the same way `compute_dirty_cone` does
 /// for ValueCell-seeded changes.
 ///
-/// # The realization fan-out is TRANSITIVE (amend, review round 1)
+/// # The realization fan-out is TRANSITIVE (amend, review rounds 1 and 2)
+///
+/// The realization frontier and the ValueCell frontier are two MUTUALLY
+/// FEEDING producers drained to a single fixpoint, not two staged passes: a
+/// realization expands onto ValueCells, and a ValueCell can just as well
+/// expand back onto a realization. Running them sequentially would leave the
+/// walk half-transitive — a realization discovered late, by the ValueCell BFS,
+/// would never get its own fan-out walked.
+///
+/// A `NodeId::Realization` dependent is therefore re-seeded onto the
+/// realization frontier WHEREVER it is found:
+///
+/// - in the realization-keyed map (deps.rs:210-214) — a downstream
+///   realization consuming this one as a `GeomRef::Sub` operand;
+/// - in the ValueCell-keyed map (deps.rs:203-208) — a realization that READS
+///   the cell, registered for every value-read in its op args. Both arms that
+///   feed the ValueCell frontier from a realization seed can land on such a
+///   cell: the edge-#12 expansion off a `NodeId::Compute` dependent, and the
+///   GHR-δ S4 `NodeId::Value` arm.
 ///
 /// `ReverseDependencyIndex`'s realization-keyed map carries FOUR dependent
 /// kinds, not just ComputeNodes, and each is re-seeded onto the walk rather
@@ -97,9 +115,16 @@ pub fn compute_dirty_cone(
 /// - `NodeId::Constraint` — the geometry-query edge (deps.rs:194-196).
 ///   A genuine leaf: constraints have no dependents of their own.
 ///
-/// Every arm rounds toward INCLUSION. A node wrongly in the cone costs a
-/// recompute; a node wrongly out of it serves stale geometry, which is the
-/// failure β exists to prevent.
+/// Every arm rounds toward INCLUSION, from BOTH directions. A node wrongly in
+/// the cone costs a recompute; a node wrongly out of it serves stale geometry,
+/// which is the failure β exists to prevent.
+///
+/// `seen_realizations` is the single visit set for both producers, so every
+/// realization is pushed at most once regardless of which map discovered it —
+/// that is what makes the fixpoint terminate. It is deliberately NOT `dirty`:
+/// the seeds are pre-loaded into `seen_realizations` but never enter `dirty`
+/// (β leaves realization cache entries to γ #4730), so a `dirty`-guarded
+/// re-seed would let a cycle returning to a seed re-enter the frontier.
 ///
 /// Seed discrimination (task-spec test 3, locked in by step-13): the caller
 /// is responsible for only inserting Realizations whose content-hash
@@ -137,63 +162,83 @@ pub fn compute_dirty_cone_with_realizations(
     let mut dirty: HashSet<NodeId> = HashSet::new();
     let mut frontier: VecDeque<ValueCellId> = changed_vcs.iter().cloned().collect();
 
-    // Seed from changed realizations. Transitive over the realization-keyed
-    // map's four dependent kinds — see the doc comment above for why each arm
-    // re-seeds instead of terminating. `seen_realizations` is the visit set
-    // for the realization frontier (NOT `dirty`, which never receives the
-    // seeds themselves: β leaves realization cache entries to γ #4730), so a
-    // Realization→Realization cycle cannot loop forever.
+    // Seed from changed realizations. `seen_realizations` is the visit set for
+    // the realization frontier (NOT `dirty`, which never receives the seeds
+    // themselves: β leaves realization cache entries to γ #4730), so a cycle
+    // back through a seed cannot loop forever.
     let mut realization_frontier: VecDeque<RealizationNodeId> =
         changed_realizations.iter().cloned().collect();
     let mut seen_realizations: HashSet<RealizationNodeId> =
         changed_realizations.iter().cloned().collect();
-    while let Some(rid) = realization_frontier.pop_front() {
-        for dependent in reverse_index.realization_dependents_of(&rid) {
-            if !dirty.insert(dependent.clone()) {
-                continue;
+
+    // ONE fixpoint over two mutually-feeding frontiers — see the doc comment
+    // above. Draining them sequentially would leave the walk half-transitive:
+    // a realization discovered by the ValueCell BFS would never get its own
+    // fan-out walked, and the ValueCells that fan-out yields would never be
+    // drained in turn.
+    while !realization_frontier.is_empty() || !frontier.is_empty() {
+        // Realization-keyed dependents. Transitive over the map's four
+        // dependent kinds — see the doc comment for why each arm re-seeds
+        // instead of terminating.
+        while let Some(rid) = realization_frontier.pop_front() {
+            for dependent in reverse_index.realization_dependents_of(&rid) {
+                if !dirty.insert(dependent.clone()) {
+                    continue;
+                }
+                match dependent {
+                    // Edge #12: the ComputeNode writes these cells directly, so
+                    // they are not reachable through `dependents_of` and must be
+                    // inserted here.
+                    NodeId::Compute(cn_id) => {
+                        if let Some(cn_data) = graph.compute_nodes.get(cn_id) {
+                            for vc in &cn_data.output_value_cells {
+                                if dirty.insert(NodeId::Value(vc.clone())) {
+                                    frontier.push_back(vc.clone());
+                                }
+                            }
+                        }
+                    }
+                    // A downstream realization consuming this one via GeomRef::Sub.
+                    NodeId::Realization(rid2) => {
+                        if seen_realizations.insert(rid2.clone()) {
+                            realization_frontier.push_back(rid2.clone());
+                        }
+                    }
+                    // GHR-δ S4: the geometry cell this realization backs. Treated
+                    // exactly like a Value dependent in the BFS loop below.
+                    NodeId::Value(vcid) => frontier.push_back(vcid.clone()),
+                    // Constraints and resolutions are leaves in this walk.
+                    NodeId::Constraint(_) | NodeId::Resolution(_) => {}
+                }
             }
-            match dependent {
-                // Edge #12: the ComputeNode writes these cells directly, so
-                // they are not reachable through `dependents_of` and must be
-                // inserted here.
-                NodeId::Compute(cn_id) => {
-                    if let Some(cn_data) = graph.compute_nodes.get(cn_id) {
+        }
+
+        // BFS over ValueCell dependents — as `compute_dirty_cone`, plus the
+        // `NodeId::Realization` re-seed that closes the other direction.
+        while let Some(cell) = frontier.pop_front() {
+            for dependent in reverse_index.dependents_of(&cell) {
+                if dirty.insert(dependent.clone()) {
+                    if let NodeId::Value(vcid) = dependent {
+                        frontier.push_back(vcid.clone());
+                    }
+                    if let NodeId::Compute(cn_id) = dependent
+                        && let Some(cn_data) = graph.compute_nodes.get(cn_id)
+                    {
                         for vc in &cn_data.output_value_cells {
                             if dirty.insert(NodeId::Value(vc.clone())) {
                                 frontier.push_back(vc.clone());
                             }
                         }
                     }
-                }
-                // A downstream realization consuming this one via GeomRef::Sub.
-                NodeId::Realization(rid2) => {
-                    if seen_realizations.insert(rid2.clone()) {
+                    // A realization that READS this cell (deps.rs:203-208).
+                    // Re-seed so ITS own realization-keyed fan-out is walked
+                    // too. Guarded on `seen_realizations`, never on `dirty`:
+                    // the seeds are absent from `dirty` by construction, so a
+                    // `dirty` guard would re-admit a seed reached by a cycle.
+                    if let NodeId::Realization(rid2) = dependent
+                        && seen_realizations.insert(rid2.clone())
+                    {
                         realization_frontier.push_back(rid2.clone());
-                    }
-                }
-                // GHR-δ S4: the geometry cell this realization backs. Treated
-                // exactly like a Value dependent in the BFS loop below.
-                NodeId::Value(vcid) => frontier.push_back(vcid.clone()),
-                // Constraints and resolutions are leaves in this walk.
-                NodeId::Constraint(_) | NodeId::Resolution(_) => {}
-            }
-        }
-    }
-
-    // BFS over ValueCell dependents — identical to `compute_dirty_cone`.
-    while let Some(cell) = frontier.pop_front() {
-        for dependent in reverse_index.dependents_of(&cell) {
-            if dirty.insert(dependent.clone()) {
-                if let NodeId::Value(vcid) = dependent {
-                    frontier.push_back(vcid.clone());
-                }
-                if let NodeId::Compute(cn_id) = dependent
-                    && let Some(cn_data) = graph.compute_nodes.get(cn_id)
-                {
-                    for vc in &cn_data.output_value_cells {
-                        if dirty.insert(NodeId::Value(vc.clone())) {
-                            frontier.push_back(vc.clone());
-                        }
                     }
                 }
             }
