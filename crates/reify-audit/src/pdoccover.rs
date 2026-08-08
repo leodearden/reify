@@ -444,9 +444,19 @@ fn quoted_tokens(s: &str) -> Vec<String> {
 /// Registry-header match: returns the const identifier when `line` declares a
 /// `[pub[(…)]] const <IDENT>_NAMES: &[&str] = …`.
 ///
-/// Accepts `pub const`, `pub(crate) const` and bare `const`, and requires the
-/// `&[&str]` element type so tuple-slice consts (the real `SI_PREFIXES:
-/// &[(&str, f64)]`) are excluded — their quoted tokens are not builtin names.
+/// Accepts `pub const`, `pub(crate) const`, bare `const` and the `static`
+/// spellings of each, and requires a `&[&str]` element type so tuple-slice
+/// consts (the real `SI_PREFIXES: &[(&str, f64)]`) are excluded — their quoted
+/// tokens are not builtin names.
+///
+/// The type match tolerates the two spellings that mean the same thing:
+/// explicit `'static` lifetimes (`&'static [&'static str]`) are erased before
+/// comparison, and a fixed-size array (`&[&str; N]`) is accepted alongside the
+/// slice. A grammar that silently REJECTED those would be a false-clean surface
+/// one level below the one PRD decision 5 chose pattern discovery to avoid: the
+/// registry would leave the census with no signal. What this grammar does not
+/// model is cross-checked by [`undiscovered_registry_idents`], which names the
+/// missed ident instead of letting the census shrink quietly.
 fn registry_header(line: &str) -> Option<&str> {
     let s = line.trim_start();
     // Optional visibility prefix.
@@ -462,8 +472,10 @@ fn registry_header(line: &str) -> Option<&str> {
     } else {
         s
     };
-    let s = s.strip_prefix("const")?;
-    // `const` must be a whole word.
+    let s = s
+        .strip_prefix("const")
+        .or_else(|| s.strip_prefix("static"))?;
+    // The item keyword must be a whole word.
     if !s.starts_with(|c: char| c.is_whitespace()) {
         return None;
     }
@@ -476,58 +488,36 @@ fn registry_header(line: &str) -> Option<&str> {
     {
         return None;
     }
-    // Element type must be `&[&str]` — excludes `&[(&str, f64)]` etc.
-    let rest: String = s[colon + 1..].chars().filter(|c| !c.is_whitespace()).collect();
-    if !rest.starts_with("&[&str]") {
+    // Element type must be `&[&str]` or `&[&str; N]` — excludes
+    // `&[(&str, f64)]` etc. Whitespace is squashed first, then `'static`
+    // lifetimes are erased, which is why the squash is safe: `&'static
+    // [&'static str]` squashes to `&'static[&'staticstr]` and erases to
+    // `&[&str]`, the same shape the unlifetimed spelling produces.
+    let squashed: String = s[colon + 1..].chars().filter(|c| !c.is_whitespace()).collect();
+    let rest = squashed.replace("'static", "");
+    if !(rest.starts_with("&[&str]") || rest.starts_with("&[&str;")) {
         return None;
     }
     Some(ident)
 }
 
-/// Extract every `*_NAMES` string-slice registry from `units_src`.
+/// `units.rs` reduced to what the registry scan may read: per line, the CODE
+/// part (block comments, line comments and attributes removed) plus whether the
+/// line sits inside a `#[cfg(test)]` item.
 ///
-/// Pure `&str -> Vec<Registry>`, no IO, so the grammar is unit-testable
-/// without disk access (the `pdssentinel.rs` `scan_content` split).
-///
-/// Line walk, no regex (the audit crate has no regex dep and must not gain
-/// one). Every line is first reduced to its CODE part in one forward pass —
-/// `/* … */` block-comment spans (tracked across lines), then the `// …` tail,
-/// then attribute lines blanked wholesale. The header is recognised on that
-/// code view — possibly with `&[` broken onto a following line, the real
-/// `GEOMETRY_KINEMATIC_QUERY_NAMES` shape — after which quoted tokens are
-/// accumulated per line until bracket depth returns to zero.
-///
-/// The comment/attribute reduction is what keeps a phantom name out of the
-/// census: a quoted token inside a `//` comment, a `/* … */` span, or an
-/// attribute's arguments (`#[cfg(feature = "x")]`) is not code, and a name
-/// that entered the census from one of those could never be satisfied by any
-/// chunk edit. Bracket depth is counted on the same reduced view, so an
-/// attribute's `[`/`]` cannot desynchronise the body scan. Nested `&[…]`
-/// inside an entry value is handled by the depth counter itself.
-///
-/// ## `#[cfg(test)]` scope is excluded
-///
-/// A registry declared inside a `#[cfg(test)]` module is a TEST FIXTURE, not a
-/// builtin-name registry, and must never enter the census. The real `units.rs`
-/// declares two (`AFFINE_ALGEBRA_NAMES`, `LIST_HELPER_NAMES` — "local fixtures
-/// for name families that have no pub single-source slice"); today their
-/// contents happen to be real builtin names, so the resulting findings were not
-/// *wrong*, but the provenance string sent a reader to go document a
-/// `#[cfg(test)]` const. Worse, a future negative-test fixture holding a
-/// deliberately fake name would enter the census as an `undocumented-name:`
-/// that no chunk edit could ever legitimately satisfy — an entry in the ratchet
-/// with no correct resolution.
-///
-/// Scope is tracked by brace depth over the same forward pass, with string and
-/// char literals blanked ([`blank_literals`]) so a `{` inside a message
-/// template cannot shift it.
-// G-allow: consumed by check()/baseline_candidates() in-module, and by the registry-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
-pub fn extract_registries(units_src: &str) -> Vec<Registry> {
-    let lines: Vec<&str> = units_src.lines().collect();
+/// Shared by [`extract_registries`] and [`undiscovered_registry_idents`] so the
+/// completeness cross-check reads exactly the same view the census does — a
+/// cross-check computed over a different view could disagree with the thing it
+/// is checking.
+struct CodeView {
+    code: Vec<String>,
+    in_test: Vec<bool>,
+}
 
-    // One forward pass reducing every line to its code part AND marking which
-    // lines sit inside a `#[cfg(test)]` item. Block-comment depth and brace
-    // depth both carry across lines, so neither can be done lazily per line.
+/// Build the [`CodeView`] in ONE forward pass. Block-comment depth and brace
+/// depth both carry across lines, so neither can be done lazily per line.
+fn code_view(units_src: &str) -> CodeView {
+    let lines: Vec<&str> = units_src.lines().collect();
     let mut block_depth = 0usize;
     let mut brace_depth: i32 = 0;
     // A `#[cfg(test)]` attribute has been seen and its item not yet identified.
@@ -578,6 +568,57 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
         code_lines.push(if is_attr { String::new() } else { code });
         in_test.push(inside);
     }
+
+    CodeView {
+        code: code_lines,
+        in_test,
+    }
+}
+
+/// Extract every `*_NAMES` string-slice registry from `units_src`.
+///
+/// Pure `&str -> Vec<Registry>`, no IO, so the grammar is unit-testable
+/// without disk access (the `pdssentinel.rs` `scan_content` split).
+///
+/// Line walk, no regex (the audit crate has no regex dep and must not gain
+/// one). Every line is first reduced to its CODE part in one forward pass —
+/// `/* … */` block-comment spans (tracked across lines), then the `// …` tail,
+/// then attribute lines blanked wholesale. The header is recognised on that
+/// code view — possibly with `&[` broken onto a following line, the real
+/// `GEOMETRY_KINEMATIC_QUERY_NAMES` shape — after which quoted tokens are
+/// accumulated per line until bracket depth returns to zero.
+///
+/// The comment/attribute reduction is what keeps a phantom name out of the
+/// census: a quoted token inside a `//` comment, a `/* … */` span, or an
+/// attribute's arguments (`#[cfg(feature = "x")]`) is not code, and a name
+/// that entered the census from one of those could never be satisfied by any
+/// chunk edit. Bracket depth is counted on the same reduced view, so an
+/// attribute's `[`/`]` cannot desynchronise the body scan. Nested `&[…]`
+/// inside an entry value is handled by the depth counter itself.
+///
+/// ## `#[cfg(test)]` scope is excluded
+///
+/// A registry declared inside a `#[cfg(test)]` module is a TEST FIXTURE, not a
+/// builtin-name registry, and must never enter the census. The real `units.rs`
+/// declares two (`AFFINE_ALGEBRA_NAMES`, `LIST_HELPER_NAMES` — "local fixtures
+/// for name families that have no pub single-source slice"); today their
+/// contents happen to be real builtin names, so the resulting findings were not
+/// *wrong*, but the provenance string sent a reader to go document a
+/// `#[cfg(test)]` const. Worse, a future negative-test fixture holding a
+/// deliberately fake name would enter the census as an `undocumented-name:`
+/// that no chunk edit could ever legitimately satisfy — an entry in the ratchet
+/// with no correct resolution.
+///
+/// Scope is tracked by brace depth over the same forward pass, with string and
+/// char literals blanked ([`blank_literals`]) so a `{` inside a message
+/// template cannot shift it.
+// G-allow: consumed by check()/baseline_candidates() in-module, and by the registry-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
+pub fn extract_registries(units_src: &str) -> Vec<Registry> {
+    let lines: Vec<&str> = units_src.lines().collect();
+    let CodeView {
+        code: code_lines,
+        in_test,
+    } = code_view(units_src);
 
     let mut out: Vec<Registry> = Vec::new();
     let mut i = 0;
@@ -699,6 +740,106 @@ pub fn extract_registries(units_src: &str) -> Vec<Registry> {
         i = j + 1;
     }
 
+    out
+}
+
+/// Every production-scope `*_NAMES` ident that LOOKS declared, whatever its
+/// item keyword or element type — the completeness oracle for
+/// [`extract_registries`]'s grammar.
+///
+/// ## Why a grammar needs a cross-check at all
+///
+/// PRD decision 5 chose pattern discovery (`*_NAMES`) over a hardcoded registry
+/// list, because "a hardcoded registry list would itself be an omission-drift
+/// surface". A discovery grammar that silently REJECTS an unmodelled
+/// declaration shape is the same surface one level down: the registry leaves
+/// the census, every name in it stops being checked, and PDOCCOVER reports
+/// clean on it forever. The floor guard cannot see it either — it asserts that
+/// the PRD-named registries are still found and that discovered registries are
+/// non-empty, both of which stay true when a NEW registry is invisible.
+///
+/// ## What counts as "looks declared"
+///
+/// An `UPPER_SNAKE` ident ending in `_NAMES` in declaration position — followed
+/// by `:` (and not `::`, which is a path) — on a line the [`CodeView`] keeps.
+/// Deliberately blind to the item keyword and to the element type, because
+/// those are exactly what the grammar might be too narrow about. Comments,
+/// attribute lines and `#[cfg(test)]` scope are excluded by the shared code
+/// view, so a fixture registry or a name discussed in a doc-comment is not a
+/// hit.
+///
+/// ## The caller does the subtraction
+///
+/// This returns the DECLARED set, not the undiscovered difference, so the
+/// caller can assert both directions: that nothing declared is missing from the
+/// census (completeness) AND that everything discovered is in here
+/// (non-vacuity). A function that returned only the difference could go blind —
+/// scan nothing, find nothing missing — and its guard would pass silently,
+/// which is the very failure mode the cross-check exists to close.
+///
+/// A declared-but-undiscovered ident is not automatically a bug: a genuinely
+/// different KIND of const (a tuple slice, an alias of another registry) is
+/// legitimately not a name registry. It means "a human must classify this",
+/// which is why the caller is a test naming the ident rather than a finding
+/// category. Consumed by `registry_extraction_floor_guard_against_real_units_rs`
+/// in `tests/pdoccover.rs` — a separate crate, so `pub` is required.
+// G-allow: consumed by the registry-path completeness cross-check in tests/pdoccover.rs.
+pub fn declared_registry_idents(units_src: &str) -> Vec<String> {
+    let view = code_view(units_src);
+    let mut out: BTreeSet<String> = BTreeSet::new();
+    for (code, in_test) in view.code.iter().zip(view.in_test.iter()) {
+        if *in_test {
+            continue;
+        }
+        for ident in declaration_position_idents(code) {
+            if ident.ends_with(REGISTRY_SUFFIX) {
+                out.insert(ident.to_string());
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// `UPPER_SNAKE` idents in `code` that sit in declaration position — followed,
+/// after optional whitespace, by a single `:`.
+///
+/// A byte walk, like every other scanner here: `::` is a path separator and
+/// never a declaration, and an ident preceded by `::` is a path segment. Case
+/// is the cheap discriminator that keeps ordinary locals and fields out.
+fn declaration_position_idents(code: &str) -> Vec<&str> {
+    let bytes = code.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !is_word_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_word_byte(bytes[i]) {
+            i += 1;
+        }
+        let ident = &code[start..i];
+        // Screaming snake case only, and never a `::path::SEGMENT`.
+        let shouty = ident
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+        // Byte comparison, never a `code[start - 2..start]` slice: the code
+        // view can hold multibyte literals and a 2-byte back-step could land
+        // mid-char.
+        let after_path_sep = start >= 2 && bytes[start - 2] == b':' && bytes[start - 1] == b':';
+        if !shouty || after_path_sep {
+            continue;
+        }
+        // Next non-space byte must be a lone `:`.
+        let mut j = i;
+        while j < bytes.len() && bytes[j] == b' ' {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b':') && bytes.get(j + 1) != Some(&b':') {
+            out.push(ident);
+        }
+    }
     out
 }
 
@@ -1697,6 +1838,106 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
             const_names(&regs),
             vec!["GEOMETRY_FUNCTION_NAMES"],
             "only `*_NAMES` string-slice consts are registries; got: {regs:?}"
+        );
+    }
+
+    /// Three spellings that mean exactly what `pub const X_NAMES: &[&str]`
+    /// means. Rejecting them would drop the whole registry out of the census
+    /// with no signal — the false-clean mode the guards exist to prevent.
+    #[test]
+    fn extract_registries_accepts_static_lifetime_and_array_type_forms() {
+        let src = r#"pub static ALPHA_NAMES: &[&str] = &["a_op"];
+pub const BETA_NAMES: &'static [&'static str] = &["b_op"];
+pub const GAMMA_NAMES: &[&str; 1] = &["c_op"];
+static DELTA_NAMES: &'static [&'static str; 1] = &["d_op"];
+"#;
+        let regs = extract_registries(src);
+        assert_eq!(
+            const_names(&regs),
+            vec![
+                "ALPHA_NAMES",
+                "BETA_NAMES",
+                "GAMMA_NAMES",
+                "DELTA_NAMES"
+            ],
+            "`static`, explicit `'static` lifetimes and `&[&str; N]` are all \
+             the same kind of registry; got: {regs:?}"
+        );
+        for reg in &regs {
+            assert_eq!(
+                entry_names(reg).len(),
+                1,
+                "{} parsed to the wrong entry list: {reg:?}",
+                reg.const_name
+            );
+        }
+        // The tuple-slice exclusion must survive the widening.
+        assert!(
+            extract_registries("pub const SI_PREFIX_NAMES: &'static [(&str, f64)] = &[(\"k\", 1e3)];\n")
+                .is_empty(),
+            "a tuple slice is still not a name registry, lifetime or not"
+        );
+    }
+
+    /// The completeness oracle sees `*_NAMES` declarations the grammar does not
+    /// model, so the caller can name them instead of letting them leave the
+    /// census silently.
+    #[test]
+    fn declared_registry_idents_sees_what_the_grammar_skips() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &["box"];
+pub const SI_PREFIX_NAMES: &[(&str, f64)] = &[("kilo", 1e3)];
+pub const ALIAS_NAMES: &[&str] = GEOMETRY_FUNCTION_NAMES;
+"#;
+        assert_eq!(
+            declared_registry_idents(src),
+            vec![
+                "ALIAS_NAMES".to_string(),
+                "GEOMETRY_FUNCTION_NAMES".to_string(),
+                "SI_PREFIX_NAMES".to_string()
+            ],
+            "all three declarations must be seen, sorted — the discovered one \
+             too, so the caller can prove the scan is not vacuous"
+        );
+        // The subtraction the floor guard performs.
+        let discovered: Vec<String> = extract_registries(src)
+            .into_iter()
+            .map(|r| r.const_name)
+            .collect();
+        let undiscovered: Vec<String> = declared_registry_idents(src)
+            .into_iter()
+            .filter(|d| !discovered.contains(d))
+            .collect();
+        assert_eq!(
+            undiscovered,
+            vec!["ALIAS_NAMES".to_string(), "SI_PREFIX_NAMES".to_string()],
+            "the tuple slice and the alias are the two the grammar does not \
+             model; the real registry must not be flagged"
+        );
+    }
+
+    /// Fixtures, prose and paths are not registry declarations.
+    #[test]
+    fn declared_registry_idents_ignores_test_scope_comments_and_paths() {
+        let src = r#"pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &["box"];
+
+// A comment about MISSING_NAMES: not code.
+fn f() {
+    let x = units::GEOMETRY_FUNCTION_NAMES::LEN;
+    let names = vec![OTHER_NAMES];
+    let _ = (x, names);
+}
+
+#[cfg(test)]
+mod tests {
+    const FIXTURE_NAMES: &[(&str, u8)] = &[("a", 1)];
+}
+"#;
+        assert_eq!(
+            declared_registry_idents(src),
+            vec!["GEOMETRY_FUNCTION_NAMES".to_string()],
+            "only the real declaration counts: a comment, a path segment, a \
+             bare reference and a `#[cfg(test)]` fixture are none of them \
+             registry declarations"
         );
     }
 

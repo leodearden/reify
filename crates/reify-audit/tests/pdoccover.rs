@@ -854,14 +854,32 @@ const PRD_NAMED_REGISTRIES: &[&str] = &[
 /// RED — only a parse regression that collapses the census does.
 const REGISTRY_NAME_FLOOR: usize = 60;
 
+/// `*_NAMES` declarations in the real `units.rs` that `extract_registries`
+/// legitimately does not model, each with the reason it is excluded.
+///
+/// EMPTY today: all 12 production registries are plain `pub const X_NAMES:
+/// &[&str]`, and the three `#[cfg(test)]` fixtures are outside the code view.
+/// An entry belongs here only when a human has classified the declaration as
+/// something other than a builtin-name registry (a tuple slice, an alias of
+/// another registry whose names are already censused). Adding an entry to
+/// silence a shape the grammar SHOULD read is the false-clean move assertion
+/// (v) exists to make impossible — widen `registry_header` instead.
+const KNOWN_UNDISCOVERED_REGISTRY_IDENTS: &[&str] = &[];
+
 /// `extract_registries` over the REAL `crates/reify-compiler/src/units.rs`
 /// must (i) find every PRD-named registry, (ii) find a non-empty entry list
 /// for every registry it discovers, (iii) clear a conservative distinct-name
-/// floor, and (iv) yield only identifier-shaped names.
+/// floor, (iv) yield only identifier-shaped names, and (v) leave no
+/// declaration-shaped `*_NAMES` ident undiscovered and unclassified.
 ///
 /// Purpose: a `units.rs` refactor (a new declaration shape, a re-indent, a
 /// macro, an attribute) that breaks extraction fails RED here rather than
 /// yielding a silently false-clean coverage result.
+///
+/// (i)–(iv) all defend registries that ARE discovered; only (v) defends
+/// against a registry that is never discovered at all — which is invisible to
+/// the others, since a missing registry makes nothing empty and nothing
+/// malformed, it just shrinks the census.
 #[test]
 fn registry_extraction_floor_guard_against_real_units_rs() {
     let units_path = repo_root().join("crates/reify-compiler/src/units.rs");
@@ -939,6 +957,45 @@ fn registry_extraction_floor_guard_against_real_units_rs() {
         "these extracted 'names' are not identifier-shaped: {malformed:?}. \
          A non-entry token (type annotation, doc string, attribute, comment) \
          leaked into the census and would be reported as an undocumented name."
+    );
+
+    // (v) Completeness: every declaration-shaped `*_NAMES` ident in production
+    // scope is either discovered or explicitly classified. Without this, a
+    // registry written in a shape `registry_header` does not model — a
+    // `static`, an unusual element type, anything future — leaves the census
+    // silently and PDOCCOVER reports clean on every name in it forever.
+    let declared = reify_audit::pdoccover::declared_registry_idents(&src);
+    // Non-vacuity FIRST: a cross-check that scanned nothing would otherwise
+    // report nothing missing and pass silently — the same shape of
+    // false-clean it exists to catch.
+    let unseen: Vec<&str> = found
+        .iter()
+        .copied()
+        .filter(|f| !declared.iter().any(|d| d == f))
+        .collect();
+    assert!(
+        unseen.is_empty(),
+        "the completeness oracle did not see {} registr{} that \
+         `extract_registries` DID discover: {unseen:?}. \
+         `declared_registry_idents` has gone blind, so assertion (v) below \
+         would pass vacuously.",
+        unseen.len(),
+        if unseen.len() == 1 { "y" } else { "ies" },
+    );
+
+    let undiscovered: Vec<String> = declared
+        .into_iter()
+        .filter(|ident| !found.contains(&ident.as_str()))
+        .filter(|ident| !KNOWN_UNDISCOVERED_REGISTRY_IDENTS.contains(&ident.as_str()))
+        .collect();
+    assert!(
+        undiscovered.is_empty(),
+        "these `*_NAMES` declarations in the real units.rs were NOT discovered \
+         as registries: {undiscovered:?}. Every name in them has silently left \
+         the omission census. Either widen `registry_header` to read the shape \
+         (the usual answer), or — if a human has classified the declaration as \
+         something other than a builtin-name registry — record it in \
+         KNOWN_UNDISCOVERED_REGISTRY_IDENTS with the reason."
     );
 }
 
