@@ -805,6 +805,19 @@ impl JcodemunchClient {
     /// Run the MCP handshake: `initialize` with no session header, store
     /// the id the server assigns in its response, then acknowledge with
     /// `notifications/initialized` carrying that id.
+    ///
+    /// An `initialize` response that assigns no session id is a hard
+    /// failure, not an empty session: without an id every later POST is
+    /// answered `400 Missing session ID`, so an `Ok` here would hand back
+    /// a client that cannot make a single successful call.
+    ///
+    /// Gotcha, observed against a live serve: a jcodemunch **404**
+    /// response also carries a fresh `mcp-session-id` header, so the id
+    /// must only ever be read off a *success* response. `ureq` returns
+    /// `Err(Error::Status(..))` for 4xx and [`Self::post_raw`] maps that to
+    /// [`LoadError::Http`] before the header is read, so the confusion is
+    /// unreachable today — this note exists so a future refactor (e.g. one
+    /// that inspects error responses) does not quietly make it reachable.
     fn initialize(&mut self) -> Result<(), LoadError> {
         let payload = json!({
             "jsonrpc": "2.0",
@@ -821,7 +834,13 @@ impl JcodemunchClient {
         });
         // No session header on `initialize`: the server assigns it.
         let (assigned, _) = self.post_raw(&payload, None)?;
-        self.session_id = assigned.unwrap_or_default();
+        self.session_id = assigned.ok_or_else(|| {
+            LoadError::Protocol(
+                "initialize response carried no Mcp-Session-Id header — the \
+                 server did not assign a session; not a live jcodemunch seam"
+                    .into(),
+            )
+        })?;
 
         let ack = json!({
             "jsonrpc": "2.0",
