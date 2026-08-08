@@ -7,7 +7,7 @@
 
 #![cfg(has_occt)]
 
-use crate::common;
+use crate::common::{self, Xyz};
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, QueryError, Value, WarmStartable};
 
@@ -207,22 +207,6 @@ fn query_edge_length_returns_correct_value_for_extracted_box_edge() {
     }
 }
 
-/// Parse a `Value::String` formatted by the kernel as
-/// `{"x":...,"y":...,"z":...}` (the JSON encoding used by Centroid,
-/// EdgeTangent, FaceNormal) into a 3-tuple of f64.
-fn parse_xyz(v: &Value) -> (f64, f64, f64) {
-    let s = match v {
-        Value::String(s) => s,
-        other => panic!("expected Value::String, got {:?}", other),
-    };
-    let parsed: serde_json::Value =
-        serde_json::from_str(s).unwrap_or_else(|e| panic!("failed to parse {:?} as JSON: {e}", s));
-    let x = parsed["x"].as_f64().expect("missing x");
-    let y = parsed["y"].as_f64().expect("missing y");
-    let z = parsed["z"].as_f64().expect("missing z");
-    (x, y, z)
-}
-
 #[test]
 fn query_face_normal_top_face_of_box_is_plus_z() {
     // 10x10x10 mm box centered at origin → z ∈ [-5e-3, +5e-3]. The "top"
@@ -238,10 +222,8 @@ fn query_face_normal_top_face_of_box_is_plus_z() {
     let top = faces
         .iter()
         .find(|id| {
-            let c = kernel
-                .query(&GeometryQuery::Centroid(**id))
-                .expect("Centroid query");
-            let (_x, _y, z) = parse_xyz(&c);
+            let Xyz { z, .. } =
+                common::xyz_of(kernel.query(&GeometryQuery::Centroid(**id)), "Centroid");
             (z - target_z).abs() < pos_tol
         })
         .copied()
@@ -312,10 +294,14 @@ fn query_edge_tangent_returns_unit_vector_along_axis() {
     let z_edge = find_edge_with_extents(&mut kernel, &edges, 0.0, 0.0, 0.030);
 
     // x-aligned edge: tangent should be ±(1, 0, 0).
-    let t_x = kernel
-        .query(&GeometryQuery::EdgeTangent(x_edge))
-        .expect("EdgeTangent on x-aligned edge");
-    let (tx, ty, tz) = parse_xyz(&t_x);
+    let Xyz {
+        x: tx,
+        y: ty,
+        z: tz,
+    } = common::xyz_of(
+        kernel.query(&GeometryQuery::EdgeTangent(x_edge)),
+        "EdgeTangent",
+    );
     assert!(
         (tx.abs() - 1.0).abs() < dir_tol,
         "x-edge tangent |x| should be ≈1, got tx={tx}"
@@ -330,10 +316,14 @@ fn query_edge_tangent_returns_unit_vector_along_axis() {
     );
 
     // y-aligned edge: tangent should be ±(0, 1, 0).
-    let t_y = kernel
-        .query(&GeometryQuery::EdgeTangent(y_edge))
-        .expect("EdgeTangent on y-aligned edge");
-    let (tx, ty, tz) = parse_xyz(&t_y);
+    let Xyz {
+        x: tx,
+        y: ty,
+        z: tz,
+    } = common::xyz_of(
+        kernel.query(&GeometryQuery::EdgeTangent(y_edge)),
+        "EdgeTangent",
+    );
     assert!(
         tx.abs() < dir_tol,
         "y-edge tangent x should be ≈0, got {tx}"
@@ -348,10 +338,14 @@ fn query_edge_tangent_returns_unit_vector_along_axis() {
     );
 
     // z-aligned edge: tangent should be ±(0, 0, 1).
-    let t_z = kernel
-        .query(&GeometryQuery::EdgeTangent(z_edge))
-        .expect("EdgeTangent on z-aligned edge");
-    let (tx, ty, tz) = parse_xyz(&t_z);
+    let Xyz {
+        x: tx,
+        y: ty,
+        z: tz,
+    } = common::xyz_of(
+        kernel.query(&GeometryQuery::EdgeTangent(z_edge)),
+        "EdgeTangent",
+    );
     assert!(
         tx.abs() < dir_tol,
         "z-edge tangent x should be ≈0, got {tx}"
@@ -482,10 +476,8 @@ fn centroid_query_on_extracted_face_fails_after_warm_start_round_trip() {
     let (top_face_id, pre_cz) = faces
         .iter()
         .find_map(|id| {
-            let c = kernel_a
-                .query(&GeometryQuery::Centroid(*id))
-                .expect("Centroid query on face handle should succeed");
-            let (_, _, z) = parse_xyz(&c);
+            let Xyz { z, .. } =
+                common::xyz_of(kernel_a.query(&GeometryQuery::Centroid(*id)), "Centroid");
             if (z - target_z).abs() < pos_tol {
                 Some((*id, z))
             } else {
