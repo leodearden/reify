@@ -821,7 +821,8 @@ structure def RotaryConformerMissingTorque : RotaryPort {
 
 /// LinearPort refines exactly [MotivePort] with required members [max_speed,
 /// max_force, stroke, axis] in order:
-///   max_speed : Scalar<Velocity = Length/Time>
+///   max_speed : Scalar<Velocity> (NAMED_DIMENSIONS builtin, m/s; back-compat
+///               `pub type Velocity` in units.ri resolves to the same dimension)
 ///   max_force : Scalar<FORCE>
 ///   stroke    : Scalar<LENGTH>
 ///   axis      : Vector3<Length>
@@ -859,14 +860,15 @@ fn linear_port_trait_surface() {
         );
     }
 
-    // Velocity = Length / Time (alias resolves to the composite dimension).
+    // Velocity is a NAMED_DIMENSIONS builtin (m/s); it resolves to Length/Time
+    // regardless (see units.ri:87-96 for the builtin-shadows-alias rationale).
     let expected_velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_speed"),
         Type::Scalar {
             dimension: expected_velocity_dim
         },
-        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity alias)"
+        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity NAMED_DIMENSIONS builtin)"
     );
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_force"),
