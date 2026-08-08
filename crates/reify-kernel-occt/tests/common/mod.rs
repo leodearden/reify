@@ -1,5 +1,6 @@
 //! Shared helpers for the `harness_occt` integration tests: local-feature
-//! (fillet/chamfer) assertions, and bounding-box query parsing.
+//! (fillet/chamfer) assertions, bounding-box query parsing, and JSON-Point3
+//! (xyz) query parsing.
 //!
 //! The local-feature assertions were extracted from
 //! `fillet_with_history_integration.rs` and
@@ -17,6 +18,13 @@
 //! 5377's reviewer-amendment pass and resolved by task 5893. The wire-format
 //! contract, and why the parser is deliberately not `serde_json`-based, are
 //! stated ONCE on [`parse_bbox`]; do not restate either here.
+//!
+//! The JSON-Point3 half ([`Xyz`], [`parse_xyz`], [`xyz_of`]) does the same for
+//! the `{"x":_,"y":_,"z":_}` format shared by the Centroid / EdgeTangent /
+//! FaceNormal / FaceNormalAt / ClosestPointOnShape queries — a duplication
+//! finding filed during task 5893's review and resolved by task 5937. Its
+//! wire-format and strictness contracts are likewise stated ONCE, on
+//! [`parse_xyz`].
 
 #![cfg(has_occt)]
 
@@ -876,6 +884,38 @@ pub struct Xyz {
 
 /// Parse the JSON-Point3 string returned by the kernel's point/direction
 /// queries.
+///
+/// Wire format: `{"x":<f>,"y":<f>,"z":<f>}`, shared by five query variants —
+/// `Centroid`, `EdgeTangent`, `FaceNormal`, `FaceNormalAt` and
+/// `ClosestPointOnShape`, all of which route through `centroid_json`
+/// (`src/lib.rs:274`) or an identical `format!`.
+///
+/// Keys parse with or without surrounding quotes, whitespace around `:` and `,`
+/// is trimmed, and unrecognised keys are ignored. A repeated key takes
+/// last-wins; empty or whitespace-only input recognises no key at all and so
+/// takes the missing-field panic below.
+///
+/// **Deliberately NOT `serde_json`-based**, even though `serde_json` is already
+/// a dev-dependency of this crate. The producer `centroid_json` is a single
+/// `format!` that passes each component through `f64` **Display**, which is not
+/// a JSON number encoder: a non-finite component is emitted as the bare token
+/// `inf` / `-inf` / `NaN`, which strict JSON forbids and `serde_json::from_str`
+/// rejects outright, while `<f64 as FromStr>` accepts exactly those tokens. The
+/// constraint follows from the producer's formatting alone — unlike the bbox
+/// format, no harness site currently produces a non-finite centroid, tangent or
+/// normal, so see [`parse_bbox`] for the case where unbounded values are live
+/// in this harness and the distinction is load-bearing today.
+///
+/// # Panics
+///
+/// - naming the absent field, if any of `x` / `y` / `z` is missing. This adopts
+///   the strictest of the behaviours found among the parsers it consolidates:
+///   `sweep_guided_integration.rs`'s silently defaulted a missing key to
+///   `f64::NAN`, which would make a downstream `(z - target).abs() < tol`
+///   quietly evaluate false, surfacing a malformed kernel response as a
+///   confusing geometry assertion rather than a parse failure.
+/// - quoting the offending pair and the full input, if a value does not parse
+///   as `f64` or a pair carries no `:` separator.
 #[allow(dead_code)] // only called from has_occt integration-test binaries
 pub fn parse_xyz(s: &str) -> Xyz {
     const NAMES: [&str; 3] = ["x", "y", "z"];
@@ -889,17 +929,22 @@ pub fn parse_xyz(s: &str) -> Xyz {
         let Some(slot) = NAMES.iter().position(|n| *n == key) else {
             continue; // unrecognised key (e.g. a future extension): ignore
         };
-        let Some(raw) = parts.next() else { continue };
-        let Ok(val) = raw.trim().parse::<f64>() else {
-            continue;
-        };
+        let raw = parts
+            .next()
+            .unwrap_or_else(|| panic!("xyz pair {pair:?} has no ':' separator, in {s:?}"));
+        let val: f64 = raw.trim().parse().unwrap_or_else(|e| {
+            panic!("xyz pair {pair:?} has a non-numeric value ({e}), in {s:?}")
+        });
         fields[slot] = Some(val);
     }
 
+    let get = |i: usize| -> f64 {
+        fields[i].unwrap_or_else(|| panic!("xyz is missing the {} field, in {s:?}", NAMES[i]))
+    };
     Xyz {
-        x: fields[0].unwrap_or(f64::NAN),
-        y: fields[1].unwrap_or(f64::NAN),
-        z: fields[2].unwrap_or(f64::NAN),
+        x: get(0),
+        y: get(1),
+        z: get(2),
     }
 }
 
