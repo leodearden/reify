@@ -72,6 +72,13 @@ fn extract_stems(line: &str) -> Vec<String> {
         } else {
             continue;
         };
+        // A `<` immediately after the separator is a metavariable placeholder
+        // (`--test <name>`, the crates/reify-kernel-occt/tests/harness_occt.rs:13
+        // shape), not a real stem — skip explicitly rather than relying on
+        // the alphanumeric/`_` character class below to incidentally reject it.
+        if after_sep.starts_with('<') {
+            continue;
+        }
         let stem: String = after_sep
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
