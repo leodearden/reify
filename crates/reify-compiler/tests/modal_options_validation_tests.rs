@@ -328,6 +328,90 @@ fn rayleigh_damping_param_shape() {
     );
 }
 
+// ─── task-6093: declared dimensions propagate to field reads ─────────────────
+
+/// The retype's **user-observable** consequence, pinned as a behavioural test
+/// rather than a shape assertion.
+///
+/// # Why this test and not a constructor-argument diagnostic
+///
+/// Task #6093's stated acceptance signal was "a bare-`Real` construction now
+/// produces the standard structure-field dimension diagnostic". That signal
+/// **cannot be delivered**, because Reify does not type-check structure
+/// constructor arguments at all. Verified live at the task's branch point
+/// against the release binary:
+///
+///   - `Probe(a: 5.0mm, b: 0.0003kg)` into `Frequency`/`Time` params passes
+///     `check` clean, and `eval` then stores the values verbatim.
+///   - The already-tightened stdlib `Mode(frequency: 5.0mm, ...)` from task
+///     4548 is equally silent — the sibling precedent has the same gap.
+///   - The repo already documents this in prose at
+///     `examples/modal/transient_step_response.ri:44` ("structure ctors do
+///     not type-check args").
+///
+/// Manufacturing that diagnostic would mean gating the eval-side reader
+/// (`modal_ops::read_scalar_si`), which this task explicitly scopes out and
+/// which `docs/prds/v0_6/dimension-checked-readers.md` owns.
+///
+/// What the declaration change *does* produce is this: the declared type
+/// propagates into expression type-checking on field **reads**. So a bare
+/// `Real` construction stays silent, but every downstream *use* of
+/// `damping.alpha` / `damping.beta` now carries the dimension. That is a
+/// genuine, testable consequence of the declaration change alone.
+///
+/// Asserted on diagnostic substance ("dimension mismatch in addition"), not
+/// exact prose, so wording churn does not make this brittle.
+///
+/// RED before the retype (both arms):
+///   (i)  `damping.beta + 1.0s`  -> `dimension mismatch in addition: Real vs Scalar[s]`
+///        `damping.alpha + 1.0Hz` -> `... Real vs Scalar[s^-1]`
+///   (ii) `damping.beta + 1.0`   -> accepted (no diagnostic at all)
+/// GREEN after: (i) compiles clean, (ii) is rejected.
+#[test]
+fn rayleigh_damping_fields_propagate_declared_dimensions() {
+    // (i) Dimensioned reads must type-check: alpha is a Frequency, beta a Time.
+    let dimensioned = r#"
+structure DampingFieldReadProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)
+    let beta_plus_time  = damping.beta + 1.0s
+    let alpha_plus_freq = damping.alpha + 1.0Hz
+}
+"#;
+    let module = compile_source_with_stdlib(dimensioned);
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "adding `1.0s` to RayleighDamping.beta and `1.0Hz` to .alpha must \
+         type-check once the params carry their declared dimensions. \
+         RED while the params are `Real` (`dimension mismatch in addition: \
+         Real vs Scalar[s]`). Got {}: {:#?}",
+        errors.len(),
+        errors
+    );
+
+    // (ii) Inversely, adding a BARE dimensionless literal to a now-dimensioned
+    // field must be rejected. This arm is what proves the retype actually
+    // tightened something rather than merely widening what is accepted.
+    let bare = r#"
+structure DampingFieldBareProbe {
+    let damping = RayleighDamping(alpha: 0.0Hz, beta: 0.0003s)
+    let beta_plus_bare = damping.beta + 1.0
+}
+"#;
+    let bare_module = compile_source_with_stdlib(bare);
+    let bare_errors = errors_only(&bare_module);
+    assert!(
+        bare_errors
+            .iter()
+            .any(|d| d.message.contains("dimension mismatch in addition")),
+        "adding a bare dimensionless `1.0` to RayleighDamping.beta (declared \
+         `Time`) must raise a dimension-mismatch error. RED while the param \
+         is `Real`, where this snippet compiles clean. Got {}: {:#?}",
+        bare_errors.len(),
+        bare_errors
+    );
+}
+
 // ─── step-9: Mode param shape (no constraints, no defaults) ──────────────────
 
 /// `Mode` (in std/modal/analysis — NOT std/solver/buckling's coexisting
