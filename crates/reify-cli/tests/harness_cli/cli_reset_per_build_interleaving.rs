@@ -43,7 +43,11 @@ fn check_both_kinds_yield_real_verdicts_under_occt() {
         "combined DFM+RepresentationWithin module should exit 0.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    // RepresentationWithin is never VIOLATED here (sphere chord deviation ≪ 1mm).
+    // RepresentationWithin is never VIOLATED here: at the fixture's #precision the
+    // sphere's chord deviation stays inside the 1mm bound with a margin that is
+    // adequate but not vast, watched by a tighter drift canary. The measured value
+    // and the retuning procedure live in ONE place — the `dfm_with_repr_within.ri`
+    // header — so read that before touching the pragma rather than trusting a copy.
     assert!(
         !stdout.contains("VIOLATED"),
         "RepresentationWithin must be Satisfied, never VIOLATED.\n\

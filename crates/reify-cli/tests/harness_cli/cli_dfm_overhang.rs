@@ -109,8 +109,10 @@ fn check_dfm_overhang_emits_one_w_dfm_overhang_under_occt() {
 /// correct verdicts for both kinds in one `check()` call.
 ///
 /// Under OCCT: exactly one `W_DFM_OVERHANG` on stderr (box bottom face dips
-/// 90° with max_overhang_angle=0deg); RepresentationWithin Satisfied (1m sphere
-/// at #precision(0.1mm) ≪ 1mm bound); no `VIOLATED` on stdout; exit 0.
+/// 90° with max_overhang_angle=0deg); RepresentationWithin Satisfied — both the
+/// real 1mm assertion and the fixture's drift canary; no `VIOLATED` on stdout;
+/// exit 0.  (Measured margin, drift canary and retuning procedure: see the
+/// `dfm_with_repr_within.ri` header — the single site carrying those numbers.)
 ///
 /// Stub mode (no OCCT): exit 0, no `W_DFM_OVERHANG`, no `VIOLATED` (C1).
 #[test]
@@ -163,6 +165,24 @@ fn check_dfm_plus_repr_within_combined_arm() {
         !stderr.contains("E_DFM_OVERHANG"),
         "OCCT mode: no E_DFM_OVERHANG (severity is Warning, not Error).\n\
          stderr: {stderr}"
+    );
+
+    // RepresentationWithin kind — REAL, non-Indeterminate. The `!VIOLATED` check
+    // above is satisfied by an *Indeterminate* verdict too, so on its own it would
+    // pass straight through a hole where tessellate_realizations never populated
+    // `achieved_repr_tol`. Pin the positive verdict as well (#5976).
+    //
+    // One assert suffices for both halves: `finish_check` prints the "All
+    // constraints satisfied." summary only for ConstraintOutcome::AllSatisfied,
+    // which `report_constraint_results` returns only when indeterminate_count == 0
+    // — so this also rules out any per-entry `INDETERMINATE <label>` line. (The
+    // sibling consumer of this fixture, cli_reset_per_build_interleaving.rs, holds
+    // the same pin for its own leaf-(d) reason; each is load-bearing where it is.)
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "OCCT: RepresentationWithin must be a REAL Satisfied verdict, not \
+         Indeterminate — an Indeterminate here means tessellate_realizations did \
+         not populate achieved_repr_tol.\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
 
