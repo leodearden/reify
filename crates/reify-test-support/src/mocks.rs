@@ -3153,8 +3153,11 @@ mod tests {
                 assert_eq!(
                     *angle,
                     Value::angle(0.05),
-                    "a Draft fixture's angle must be an ANGLE-dimensioned Value, \
-                     matching what production emits (task 5777)"
+                    "Draft fixtures are retyped to ANGLE ahead of δ's (5780) draft \
+                     gate — task 5777. Production's draft path is still an ungated \
+                     raw-Value passthrough (`let angle = eval_arg(\"angle\")?` in \
+                     reify-eval's modify_draft), so for a bare .ri literal it still \
+                     emits Value::Real today"
                 );
                 assert_eq!(*plane, GeometryHandleId(2));
             }

@@ -8834,40 +8834,22 @@ mod tests {
     }
 
     /// Dimensioning a Draft fixture's angle does not change the geometry OCCT
-    /// produces — the premise PRD
-    /// `docs/prds/v0_6/angle-units-surface-convergence.md` decision D2 rests on
-    /// at the kernel boundary (task 5777, angle-units α).
+    /// produces — PRD `docs/prds/v0_6/angle-units-surface-convergence.md`
+    /// decision D2, observed at the kernel boundary (task 5777, angle-units α).
     ///
-    /// The OCCT Draft arm reads its angle via `extract_f64`, a thin wrapper over
-    /// `Value::as_f64`, whose `Scalar` arm returns `si_value` verbatim. So
-    /// `Value::Real(x)` and `Value::angle(x)` should reach OCCT as the same `x`.
-    /// The companion pin at the `Value` layer is
-    /// `reify_ir::value::tests::angle_and_real_agree_bit_exactly_under_as_f64`;
-    /// this one closes the loop by observing actual OCCT output.
+    /// A CHARACTERIZATION pin, expected green against unchanged production
+    /// code: the OCCT Draft arm reads its angle via `extract_f64`, a thin
+    /// wrapper over `Value::as_f64`, so this closes at actual OCCT output what
+    /// `reify_ir::value::tests::angle_and_real_agree_bit_exactly_under_as_f64`
+    /// pins at the `Value` layer.
     ///
-    /// This is a CHARACTERIZATION pin, expected green against unchanged
-    /// production code — the six migrated OCCT Draft fixtures build their
-    /// `GeometryOp` by hand and reach the kernel via `execute`, bypassing the
-    /// eval chokepoint entirely, so nothing about their dimension is otherwise
-    /// observable. Its value is prospective.
-    ///
-    /// Anti-vacuity: `draft_angle_on_box` tolerates a legitimate
-    /// `OperationFailed` because Draft is finicky, and so does this test — but
-    /// only when BOTH forms take the SAME branch, and a run where NO face
-    /// produced geometry is a loud failure rather than a silent pass. A test
-    /// that "passes" because neither arm produced geometry would prove nothing.
-    ///
-    /// Failure diagnosis is split three ways so the message names the actual
-    /// culprit: the two forms DIVERGING is the D2 contradiction; both failing
-    /// IDENTICALLY with something other than `OperationFailed` exonerates the
-    /// dimension tag and indicts the fixture; neither producing geometry at all
-    /// trips the `compared > 0` guard.
-    ///
-    /// It drafts a single CURATED face, the same way
-    /// `execute_draft_curated_faces_honored` does. The all-faces path
-    /// (`faces: vec![]`) is the finicky one that test explicitly declines to
-    /// use as an oracle, and on this fixture it fails outright — the
-    /// both-failed guard below caught exactly that during development.
+    /// Draft is finicky, so this sweeps up to two CURATED faces — never the
+    /// all-faces path, which `execute_draft_curated_faces_honored` explicitly
+    /// declines to use as an oracle — and requires `compared > 0` so a run
+    /// where no face produced geometry fails loudly instead of passing
+    /// silently. The three-way failure split below names the culprit: the two
+    /// forms DIVERGING is the D2 contradiction; both failing IDENTICALLY
+    /// exonerates the dimension tag and indicts the fixture.
     #[test]
     fn draft_angle_dimensioned_matches_bare_real_volume() {
         let angle_rad = std::f64::consts::PI / 60.0;

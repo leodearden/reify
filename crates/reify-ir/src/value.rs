@@ -4598,28 +4598,39 @@ mod tests {
     /// `as_f64` ever started scaling or rejecting dimensioned scalars, which
     /// would otherwise silently re-dimension the whole migrated corpus.
     ///
-    /// The constants are exactly those α migrated. Compares are bit-exact `==`,
-    /// never an epsilon — an approximate compare would mask precisely the drift
-    /// this exists to catch.
+    /// The inputs are chosen to DISCRIMINATE, not to restate the migration:
+    /// the asserted property is value-independent, so repeating it over α's
+    /// four migrated constants would be the same assertion four times. `TAU` is
+    /// kept as one representative migrated value; the rest are the values that
+    /// would actually catch a future `as_f64` that scales or sanitises —
+    /// `MIN_POSITIVE` (any factor other than exactly 1.0 perturbs or flushes
+    /// it), `INFINITY` (a rejecting `as_f64` returns `None`), and `-0.0` (a
+    /// sanitising one drops the sign). `NAN` is deliberately absent: it is
+    /// never `assert_eq!`-comparable.
+    ///
+    /// Compares are on BIT PATTERNS, never an epsilon and never bare `==` —
+    /// `==` cannot tell `-0.0` from `0.0`, so it would silently defeat the one
+    /// input that tests sign preservation.
     #[test]
     fn angle_and_real_agree_bit_exactly_under_as_f64() {
         for x in [
             std::f64::consts::TAU,
-            std::f64::consts::PI / 60.0,
-            0.1,
-            0.05,
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            f64::INFINITY,
         ] {
             assert_eq!(
-                Value::angle(x).as_f64(),
-                Value::Real(x).as_f64(),
+                Value::angle(x).as_f64().map(f64::to_bits),
+                Value::Real(x).as_f64().map(f64::to_bits),
                 "Value::angle({x}) and Value::Real({x}) must be indistinguishable \
                  through as_f64 (PRD D2 behaviour-preservation premise)"
             );
             assert_eq!(
-                Value::angle(x).as_f64(),
-                Some(x),
+                Value::angle(x).as_f64().map(f64::to_bits),
+                Some(x.to_bits()),
                 "Value::angle({x}).as_f64() must return the source magnitude \
-                 unscaled — `rad` converts by a factor of exactly 1.0"
+                 unscaled, bit for bit — `rad` converts by a factor of exactly 1.0"
             );
             // Anti-vacuity: the pin above would also hold if BOTH sides
             // degenerated to a bare `Real`. Require the dimension to actually
