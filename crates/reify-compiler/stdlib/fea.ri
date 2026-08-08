@@ -21,7 +21,7 @@
 // compiles. Zero dependencies on other stdlib modules beyond built-in types.
 
 structure def StressInvariants {
-    param i1 : Real
-    param i2 : Real
-    param i3 : Real
+    param i1 : Pressure
+    param i2 : Pressure2
+    param i3 : Pressure3
 }
