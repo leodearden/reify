@@ -845,12 +845,14 @@ const CAPSTAN_SURFACE_PREFIX: &str = "CapstanDrive.capstan#realization[";
 ///
 /// Also pins that the design still checks clean at its defaults, so the
 /// constraints guarding the seat cannot silently regress (equivalent to `reify
-/// check` reporting "All constraints satisfied"). Those are the two-sided
-/// `land_r` band that pins the seat depth to `pitch_r` (and so subsumes
-/// break-through), the groove-bottom-to-bore wall `pitch_r - groove_r >
-/// bore_r`, the mouth-clearance lead `lead > groove_r * 2.0`, and `flange_r >
-/// land_r`. That in-file band is what makes `reify check` — not just this
-/// Rust gate — report a seat depth edited off `pitch_r`.
+/// check` reporting "All constraints satisfied"). Those are the oversize-arc
+/// bound `groove_r > rope_dia / 2` (which is the anti-pinch AND the
+/// mouth-clearance statement at once), the two-sided `land_r` band that pins
+/// the seat depth to the arc centre `seat_c` (and so subsumes break-through),
+/// the groove-bottom-to-bore wall `seat_c - groove_r > bore_r`, the
+/// mouth-clearance lead `lead > groove_r * 2.0`, and `flange_r > land_r`. That
+/// in-file band is what makes `reify check` — not just this Rust gate — report
+/// a seat depth edited off `seat_c`.
 #[test]
 fn capstan_surfaces_only_the_finished_drum() {
     if !reify_kernel_occt::OCCT_AVAILABLE {

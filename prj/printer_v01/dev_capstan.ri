@@ -79,20 +79,39 @@ pub structure IdlerPulley {
 /// the belt's ±z moment pair (axially adjacent on the one drum).
 ///
 /// The rope seat is modelled: a circular section of radius `groove_r` swept
-/// along `helix(pitch_r, lead, groove_len)` and subtracted from the land cylinder
+/// along `helix(seat_c, lead, groove_len)` and subtracted from the land cylinder
 /// at `land_r`, between two retaining flanges and over an axial shaft bore.
 /// `blank_volume` − `body_volume` is the stock the seat removes.
 ///
-/// The seat is a HALF-ROUND open seat: `land_r = pitch_r` puts the swept section's
-/// arc centre ON the land surface, so exactly half the section is cut away and the
-/// mouth it opens is the section's full width, `2*groove_r == rope_dia`. The rope
-/// is therefore laid in RADIALLY, not wound in thread-style. That is what this
-/// drive needs: `docs/projects/printer_v01.md` lists service as "Hours (re-wind
-/// capstans)", and the departure tangent migrates axially across the band every
-/// revolution, so the rope has to leave the seat radially at an arbitrary mid-band
-/// position. A half-round is also the ONLY depth that admits the rope at all — the
-/// mouth chord `2*sqrt(groove_r^2 - (land_r - pitch_r)^2)` is maximised exactly at
-/// `land_r == pitch_r`, so any other land radius closes the mouth below `rope_dia`.
+/// The seat arc is DIN 15061 OVERSIZE: `groove_r = 0.53*rope_dia`, not the
+/// `rope_dia/2` slip fit that would touch the rope everywhere at once. That buys
+/// two things a winch drum needs — 6% of clearance at the mouth, and room at the
+/// seat's widest section so a load-ovalised braid cannot pinch against the walls.
+///
+/// The land is placed at the seat's ARC CENTRE (`land_r = seat_c`), which does two
+/// jobs. Mechanically it MAXIMISES the mouth chord
+/// `2*sqrt(groove_r^2 - (land_r - seat_c)^2)` at `2*groove_r == 1.06*rope_dia` —
+/// the best radial-lay clearance the arc can give. The rope is therefore laid in
+/// RADIALLY, not wound in thread-style. That is what this drive needs:
+/// `docs/projects/printer_v01.md` lists service as "Hours (re-wind capstans)", and
+/// the departure tangent migrates axially across the band every revolution, so the
+/// rope has to leave the seat radially at an arbitrary mid-band position.
+/// Analytically it puts the land plane through the section's arc centre, so exactly
+/// HALF the swept section stays seated — which is the premise the Rust acceptance
+/// gate's volume closed form rests on, and why the in-file band below and that
+/// gate's window are deliberately identical.
+///
+/// Note the land radius is now a DESIGN CHOICE and no longer forced. With an
+/// oversize arc a whole band of land radii admits the rope,
+/// `|land_r - seat_c| <= sqrt(groove_r^2 - (rope_dia/2)^2)` = 1.055mm wide at the
+/// defaults; the pre-existing claim that a half-round is the ONLY depth that admits
+/// the rope was true of the equal-radii seat and RETIRES here. The two reasons
+/// above are what justify pinning it, not necessity.
+///
+/// It is the ROPE's centreline, not the arc centre, that stays on `pitch_r`: under
+/// tension the rope bottoms out in its seat, so its centre sits `groove_r -
+/// rope_dia/2` inboard of the arc centre, and the arc centre is put that far
+/// OUTBOARD to compensate. So the D/d story below is untouched by the oversize arc.
 /// The wrap stays positive and zero-slip because both rope ends are ANCHORED to
 /// the drum, not because the channel traps them.
 ///
@@ -120,14 +139,26 @@ pub structure Capstan {
     param windings    : Int    = 2
     param bore_dia    : Length = 19mm     // motor shaft
 
+    /// Seat arc radius as a fraction of rope diameter. DIN 15061 rope-drum
+    /// practice is r = 0.53·d: an OVERSIZE seat, so the rope has genuine
+    /// clearance at the mouth and a load-ovalised braid cannot pinch at the
+    /// seat bottom. 0.5 would be a zero-clearance slip fit.
+    param seat_arc_ratio : Real = 0.53
+
     let pitch_r    = drum_d / 2                   // rope centreline (the D/d circle)
-    let groove_r   = rope_dia / 2                 // rope seat = swept-cutter section radius
-    // Outer land/crest cylinder. Cut back to the rope CENTRELINE, so the seat is a
-    // true half-round: its arc centre sits ON the land surface and its mouth is the
-    // seat's full width, 2*groove_r == rope_dia. This is the only depth that admits
-    // the rope radially — a shallower land closes the mouth over the rope, a deeper
-    // one closes it back under (the mouth chord peaks at land_r == pitch_r).
-    let land_r     = pitch_r
+    let groove_r   = rope_dia * seat_arc_ratio    // rope seat = swept-cutter section radius
+    // Seat arc CENTRE radius. Under tension the rope is pressed radially inward and
+    // bottoms out in its seat, so its centre sits (groove_r - rope_dia/2) inboard of
+    // the arc centre — put the arc centre that far OUTBOARD of pitch_r and the
+    // seated rope's centreline lands exactly on the D/d circle. With an equal-radii
+    // seat the two coincide, which is why this cell did not exist before.
+    let seat_c     = pitch_r + groove_r - rope_dia / 2
+    // Outer land/crest cylinder, cut back to the seat's ARC CENTRE. Its mouth is
+    // then the seat's full width, 2*groove_r == 1.06*rope_dia — the widest the arc
+    // can open — and exactly half the swept section stays seated. A shallower land
+    // closes the mouth over the rope, a deeper one closes it back under (the mouth
+    // chord peaks at land_r == seat_c).
+    let land_r     = seat_c
     let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
     let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
@@ -135,10 +166,12 @@ pub structure Capstan {
 
     // The rope channel: a circular section of radius groove_r, posed normal to the
     // helix start tangent (rotate -90° about +X takes the profile's +Z normal onto
-    // +Y) and stood off onto the helix start point at +pitch_r, swept along the
-    // helical spine and re-centred on the band.
-    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), pitch_r, 0mm, 0mm)
-    aux let groove_path    = helix(pitch_r, lead, groove_len)
+    // +Y) and stood off onto the helix start point at +seat_c, swept along the
+    // helical spine and re-centred on the band. The spine runs at the seat's ARC
+    // CENTRE, which is where the section is centred — not at pitch_r, which is where
+    // the seated rope's centreline ends up.
+    aux let groove_profile = translate(rotate(circle(groove_r), 1.0, 0.0, 0.0, 0deg - 90deg), seat_c, 0mm, 0mm)
+    aux let groove_path    = helix(seat_c, lead, groove_len)
     aux let groove_cutter  = translate(sweep(groove_profile, groove_path), 0mm, 0mm, 0mm - groove_len / 2)
 
     // Stock: land + two flanges, bored through — the drum before the groove is cut.
@@ -161,37 +194,54 @@ pub structure Capstan {
     let body_volume  = volume(body)
 
     constraint flange_r > land_r
-    // The seat must be a TRUE HALF-ROUND — arc centre ON the land surface, i.e.
-    // land_r == pitch_r. The two bounds below are the one-sided halves of that
-    // equality, written as the two distinct ways a seat-depth edit breaks the
-    // drive (the mouth chord 2*sqrt(groove_r^2 - (land_r - pitch_r)^2) peaks at
-    // land_r == pitch_r, so ANY offset drops it below rope_dia):
-    //  - a land above the centreline leaves the seat submerged and closes the
-    //    mouth back UNDER the rope; at land_r >= pitch_r + groove_r there is no
+    // The seat arc must be OVERSIZE, never a slip fit. This ONE inequality is the
+    // whole clearance story, stated in geometry rather than in a ratio: the seat's
+    // half-width at the rope's WIDEST section is
+    // sqrt(groove_r^2 - (groove_r - rope_dia/2)^2), which exceeds the rope's own
+    // rope_dia/2 exactly when groove_r*rope_dia > rope_dia^2/2, i.e. exactly when
+    // groove_r > rope_dia/2. So anti-pinch (a load-ovalised braid must not wedge
+    // against the seat walls) and mouth clearance (2*groove_r > rope_dia) are the
+    // same statement. A companion `seat_arc_ratio > 0.5` would be strictly implied
+    // and is deliberately not written. No upper bound is needed either: the
+    // clearance-lead constraint below already caps the arc at lead/2.
+    constraint groove_r > rope_dia / 2
+    // The land must sit ON the seat's ARC CENTRE — land_r == seat_c. The two bounds
+    // below are the one-sided halves of that equality, written as the two distinct
+    // ways a seat-depth edit breaks the drive:
+    //  - a land above the arc centre leaves the seat submerged and closes the
+    //    mouth back UNDER the rope; at land_r >= seat_c + groove_r there is no
     //    mouth at all — a buried tunnel, and the drum renders smooth. That
     //    break-through bound is subsumed by the tighter one here.
-    //  - a land below the centreline cuts the land past the rope centreline, so
-    //    the mouth closes OVER a rope that no longer sits in a seat.
-    // The ±1e-6-of-groove_r width (3nm at the defaults) is fp slack around the
-    // equality, not a design freedom: no other seat depth admits the rope, and
-    // `land_r = pitch_r` above is a bit-exact assignment so the width only has to
-    // be positive. It is deliberately the SAME window the Rust acceptance gate
+    //  - a land below the arc centre cuts the land past the section's centre, so
+    //    the seated fraction drops below half and the mouth starts closing again.
+    // Unlike the equal-radii seat this replaces, the pin is NOT forced by
+    // admission: an oversize arc admits the rope anywhere within
+    // sqrt(groove_r^2 - (rope_dia/2)^2) = 1.055mm of the arc centre. It is pinned
+    // because the arc centre maximises the mouth AND because it is the only depth
+    // that leaves exactly half the swept section seated — the premise the Rust
+    // acceptance gate's volume closed form rests on.
+    // The ±1e-6-of-groove_r width (3.18nm at the defaults) is fp slack around the
+    // equality, not a design freedom: `land_r = seat_c` above is a bit-exact
+    // assignment so the width only has to be positive. It is deliberately the SAME
+    // window the Rust acceptance gate
     // (crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs) uses to guard
-    // its half-round closed form, so there is no band of seat depths that passes
+    // that closed form, so there is no band of seat depths that passes
     // `reify check` here but panics there.
-    constraint land_r < pitch_r + groove_r * 0.000001
-    constraint land_r > pitch_r - groove_r * 0.000001
-    // Wall between the groove BOTTOM (pitch_r - groove_r = the deepest stock the
-    // seat removes) and the shaft bore. This is the ONLY wall statement: the
-    // weaker `land_r > bore_r` it replaces bounded the land surface, which sits a
-    // full groove_r clear of the seat's bottom, and is strictly implied by this
-    // one given the half-round band above (land_r == pitch_r > bore_r + groove_r).
-    constraint pitch_r - groove_r > bore_r
-    // Clearance lead: at a half-round seat each wrap opens a 2*groove_r wide mouth
-    // in the land, so the lead must exceed the MOUTH width or adjacent seats merge
-    // and the land ridge between wraps vanishes (wedging would drift the effective
-    // Ø → transmission-ratio error). Numerically the same as `lead > rope_dia` at
-    // the defaults (7mm > 6mm, a 1mm ridge), but it names the geometry that gates it.
+    constraint land_r < seat_c + groove_r * 0.000001
+    constraint land_r > seat_c - groove_r * 0.000001
+    // Wall between the groove BOTTOM (seat_c - groove_r = the deepest stock the
+    // seat removes, which is the seated rope's own underside pitch_r - rope_dia/2
+    // = 21mm) and the shaft bore. This is the ONLY wall statement: the weaker
+    // `land_r > bore_r` it replaces bounded the land surface, which sits a full
+    // groove_r clear of the seat's bottom, and is strictly implied by this one
+    // given the band above (land_r == seat_c > bore_r + groove_r).
+    constraint seat_c - groove_r > bore_r
+    // Clearance lead: each wrap opens a 2*groove_r wide mouth in the land, so the
+    // lead must exceed the MOUTH width or adjacent seats merge and the land ridge
+    // between wraps vanishes (wedging would drift the effective Ø →
+    // transmission-ratio error). With the DIN arc the mouth is 6.36mm and the
+    // ridge narrows from 1.00mm to 0.64mm at the defaults — still positive, and no
+    // longer numerically the same statement as `lead > rope_dia`.
     constraint lead > groove_r * 2.0
     constraint d_ratio > 0.0
 }
