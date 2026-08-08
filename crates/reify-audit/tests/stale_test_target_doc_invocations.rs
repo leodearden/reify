@@ -84,23 +84,60 @@ fn extract_stems(line: &str) -> Vec<String> {
     stems
 }
 
+/// Extract a same-line `-p <crate>` flag's crate name, if present. Requires
+/// the separator (space or `=`) to sit immediately after `-p`, so this does
+/// not match inside a longer flag such as `--profile` or `--package`.
+fn extract_p_crate(line: &str) -> Option<String> {
+    const NEEDLE: &str = "-p";
+    for (idx, _) in line.match_indices(NEEDLE) {
+        let rest = &line[idx + NEEDLE.len()..];
+        let mut chars = rest.chars();
+        let Some(sep) = chars.next() else { continue };
+        let after_sep = if sep == '=' {
+            &rest[sep.len_utf8()..]
+        } else if sep.is_whitespace() {
+            rest.trim_start_matches(|c: char| c.is_whitespace())
+        } else {
+            continue;
+        };
+        let crate_name: String = after_sep
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
+        if crate_name.is_empty() {
+            continue;
+        }
+        return Some(crate_name);
+    }
+    None
+}
+
 /// Scan `files` (paths relative to `root`) for `--test <stem>` doc
 /// invocations and return a [`Finding`] for each stem that does not resolve
 /// to an existing `crates/<crate>/tests/<stem>.rs`. Pure function of its
 /// arguments — no `git` or `cargo` invocation — so it can be driven over a
 /// tempdir with no git repo (Test A) as well as the real repo (Test B).
+///
+/// Crate resolution is a precedence: an explicit same-line `-p <crate>`
+/// wins; when absent, falls back to the containing file's `crates/<crate>/`
+/// path so bare `cargo test --test X` invocations (run from inside their
+/// crate dir) still resolve.
 fn scan(root: &Path, files: &[String]) -> Vec<Finding> {
     let mut findings = Vec::new();
     for file in files {
         let Ok(content) = std::fs::read_to_string(root.join(file)) else {
             continue;
         };
-        let Some(path_crate) = crate_from_path(file) else {
-            continue;
-        };
+        let path_crate = crate_from_path(file);
         for (idx, line) in content.lines().enumerate() {
-            for stem in extract_stems(line) {
-                let crate_name = path_crate.clone();
+            let stems = extract_stems(line);
+            if stems.is_empty() {
+                continue;
+            }
+            let Some(crate_name) = extract_p_crate(line).or_else(|| path_crate.clone()) else {
+                continue;
+            };
+            for stem in stems {
                 let resolves = root
                     .join("crates")
                     .join(&crate_name)
@@ -111,7 +148,7 @@ fn scan(root: &Path, files: &[String]) -> Vec<Finding> {
                     findings.push(Finding {
                         file: file.clone(),
                         line: idx + 1,
-                        crate_name,
+                        crate_name: crate_name.clone(),
                         stem,
                     });
                 }
