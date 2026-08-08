@@ -153,9 +153,11 @@ structure def Rivet : Costed {
 
     // The joint-drive target.  Bracketed by a NON-DEGENERATE box so the
     // cost-minimising direction and the frozen Chebyshev centre (50.0) are far
-    // apart — that separation is what makes the coupling observable.  The lower
-    // bracket must contain the solver's fixed 0.01 seed for a dimensionless
-    // auto; see the header's "Why the merged figure is the SEED" note.
+    // apart — that separation is what makes the coupling observable.  The 0.0
+    // lower bracket also selects the ABSOLUTE-floor regime (the robustness
+    // margin degenerates to `ABS_FLOOR_SI` at a zero bracket), landing the
+    // merged figure at 1e-9; see the header's "Why the merged figure is the
+    // ROBUSTNESS FLOOR, not zero" note.
     param quantity_produced : Real   = auto(free)
     constraint quantity_produced >= 0.0
     constraint quantity_produced <= 100.0
