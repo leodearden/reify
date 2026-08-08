@@ -31,6 +31,96 @@ fn write_file(root: &Path, path: &str, content: &str) {
     std::fs::write(&full, content).expect("write_file");
 }
 
+/// A `--test <stem>` doc invocation whose stem does not resolve to an
+/// existing `crates/<crate>/tests/<stem>.rs`.
+#[derive(Debug)]
+struct Finding {
+    file: String,
+    line: usize,
+    crate_name: String,
+    stem: String,
+}
+
+/// Derive the crate name from a `crates/<crate>/...`-relative path.
+fn crate_from_path(file: &str) -> Option<String> {
+    let mut parts = file.split('/');
+    if parts.next()? != "crates" {
+        return None;
+    }
+    let crate_name = parts.next()?;
+    if crate_name.is_empty() {
+        return None;
+    }
+    Some(crate_name.to_string())
+}
+
+/// Extract every `--test <stem>` stem on `line`. A stem is `[A-Za-z0-9_]+`
+/// immediately following a space or `=` separator. Anything else after the
+/// separator — including the `<` of a `--test <name>` metavariable
+/// placeholder, or end-of-line — yields an empty stem and is skipped.
+fn extract_stems(line: &str) -> Vec<String> {
+    const NEEDLE: &str = "--test";
+    let mut stems = Vec::new();
+    for (idx, _) in line.match_indices(NEEDLE) {
+        let rest = &line[idx + NEEDLE.len()..];
+        let mut chars = rest.chars();
+        let Some(sep) = chars.next() else { continue };
+        let after_sep = if sep == '=' {
+            &rest[sep.len_utf8()..]
+        } else if sep.is_whitespace() {
+            rest.trim_start_matches(|c: char| c.is_whitespace())
+        } else {
+            continue;
+        };
+        let stem: String = after_sep
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if stem.is_empty() {
+            continue;
+        }
+        stems.push(stem);
+    }
+    stems
+}
+
+/// Scan `files` (paths relative to `root`) for `--test <stem>` doc
+/// invocations and return a [`Finding`] for each stem that does not resolve
+/// to an existing `crates/<crate>/tests/<stem>.rs`. Pure function of its
+/// arguments — no `git` or `cargo` invocation — so it can be driven over a
+/// tempdir with no git repo (Test A) as well as the real repo (Test B).
+fn scan(root: &Path, files: &[String]) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for file in files {
+        let Ok(content) = std::fs::read_to_string(root.join(file)) else {
+            continue;
+        };
+        let Some(path_crate) = crate_from_path(file) else {
+            continue;
+        };
+        for (idx, line) in content.lines().enumerate() {
+            for stem in extract_stems(line) {
+                let crate_name = path_crate.clone();
+                let resolves = root
+                    .join("crates")
+                    .join(&crate_name)
+                    .join("tests")
+                    .join(format!("{stem}.rs"))
+                    .is_file();
+                if !resolves {
+                    findings.push(Finding {
+                        file: file.clone(),
+                        line: idx + 1,
+                        crate_name,
+                        stem,
+                    });
+                }
+            }
+        }
+    }
+    findings
+}
+
 /// Test A: hermetic extraction + resolution over two synthetic sources.
 ///
 /// `crates/crate-a/src/live.rs` names a stem with a matching
