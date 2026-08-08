@@ -53,6 +53,14 @@ rg -n -U --multiline-dotall \
 rg -n -U --multiline-dotall \
   '\("(angle|start_angle|end_angle)"(\.into\(\)|\.to_string\(\))?\s*,' crates/ --glob '*.rs'
 
+# Bucket 3 — bare angles in .ri source text EMBEDDED IN RUST TESTS. Matches a
+# DSL `let x = builtin(...)` whose final argument is an unsuffixed numeric.
+rg -n --glob '*.rs' \
+  'let\s+\w+\s*=\s*(revolve|rotate|rotate_around|circular_pattern)\s*\(.*,\s*-?[0-9]+(\.[0-9]+)?\s*\)' \
+  crates/
+# ...and the arc form, whose angles are args 5 and 6 rather than the last one:
+rg -n --glob '*.rs' 'arc\s*\([^)]*,\s*-?[0-9]+(\.[0-9]+)?\s*,\s*-?[0-9]+(\.[0-9]+)?\s*,' crates/
+
 # .ri corpus — angle-consuming builtin call sites.
 rg -n -g '*.ri' '\b(revolve|rotate|rotate_around|circular_pattern|arc)\s*\(' .
 ```
@@ -141,7 +149,14 @@ not retype, generalise or redefine `r` — change individual call sites only.
 
 ## 2. Bucket 2 — GATE-REJECTED (`("angle", <bare literal>)` via `compile_geometry_op`)
 
-**31 sites.** These are the ones that actually break when a gate lands.
+**31 sites.** These are the hand-written `CompiledExpr` args that break when a
+gate lands.
+
+> **Scope caveat — bucket 2 is not the whole blast radius.** It covers only
+> angles written as Rust `CompiledExpr` literals. Rust tests that embed bare
+> `.ri` SOURCE TEXT and compile it through the same chokepoint break too, and
+> they are counted separately in [§3](#3-bucket-3--bare-angles-in-ri-source-text-embedded-in-rust-tests).
+> Sizing a leaf off the 6-file / 31-site table below alone will under-scope it.
 
 ### 2.1 Split by consuming leaf
 
@@ -192,7 +207,93 @@ Already dimensioned — these are **NOT** bucket 2, do not "migrate" them:
 
 ---
 
-## 3. The degrees/radians trap — load-bearing for ε (5781)
+## 3. Bucket 3 — bare angles in `.ri` source text embedded in Rust tests
+
+**14 sites across 6 files.** *(Measured at `8e2d63be17`, later than §§1–2's
+`50bc85d168` — re-derive before acting.)*
+
+Buckets 1 and 2 are both about angles written as **Rust values**. This third
+class is angles written as **DSL text** inside a Rust string literal, which the
+test then parses and compiles. They are invisible to every grep in §§1–2 — no
+`Value::` and no `("angle", ..)` tuple appears anywhere near them — yet the ones
+that reach `compile_geometry_op` break exactly like bucket 2 does.
+
+### 3.1 Split by chokepoint — this is what decides whether a site breaks
+
+| Where it lands | File | Sites | Leaf |
+|---|---|---|---|
+| **Eval chokepoint** (`Engine::build` → `compile_geometry_op`) | `reify-eval/tests/rotate_e2e.rs` | 1 | γ |
+| | `reify-eval/tests/unified_dag_geometry_executors.rs` | 1 | γ |
+| | `reify-eval/tests/circular_pattern_angle.rs` | 1 | ε |
+| | **eval total — γ/δ/ε break these** | **3** | |
+| **Compile only** (no `Engine`, no kernel) | `reify-compiler/tests/harness_langcore/let_scope_tests.rs` | 8 | 5 γ / 3 ε |
+| | `reify-compiler/tests/geometry_profile_precondition_tests.rs` | 2 | γ |
+| | `reify-compiler/tests/compile_api_tests.rs` | 1 | ε |
+| | **compile total — ζ's (5782) concern, NOT γ/δ/ε's** | **11** | |
+
+The three `reify-compiler` files were checked for `Engine::new` / `engine.build`
+/ `build_with_kernel` and contain **none** — they only compile, so a gate
+installed at the eval chokepoint cannot see them. They are listed anyway because
+a compile-side ANGLE `CheckableArg` slot (ζ, 5782) *would* reach them, and
+because a reader who greps for bare angles will find them and needs to know
+which leaf owns them.
+
+By builtin the 14 split γ 9 / ε 5 / **δ 0** — `draft` has no inline `.ri` test
+source at all. Bare inline **`arc`** sites: **zero**; every one writes `rad` or
+`deg`. Nothing outside `crates/` matched.
+
+### 3.2 The two INVERTING tests
+
+Two of the three eval-chokepoint sites are not migration targets at all — the
+test's whole point is that the bare form is currently ACCEPTED, so γ and ε must
+**invert the assertion**, not add a unit suffix:
+
+- `rotate_e2e.rs` — `rotate_with_bare_radian_literal_lands_in_kernel` asserts a
+  bare radian literal reaches the kernel. γ's gate rejects it.
+- `circular_pattern_angle.rs` — `circular_pattern_bare_360_emits_deprecation
+  _warning` asserts the bare-degrees path warns and coerces. ε retires
+  `resolve_bare_angle`, so the warning it asserts stops existing. Its sibling
+  `circular_pattern_360deg_no_deprecation_warning` is already dimensioned and
+  survives. Both share `plate_source(angle_expr)`, so the bare site is
+  `format!`-built and the §"Derivation commands" regex **cannot see it** — it is
+  the +1 that makes 14 out of 13 grep-visible hits.
+
+The third (`unified_dag_geometry_executors.rs`, a sibling-realization *cycle*
+test) is incidental: its angle is bare only because nothing made it otherwise.
+That one is a plain retype.
+
+### 3.3 The remedy differs from bucket 2 — fix the TEXT, not a `Value`
+
+A bucket-3 site is fixed by editing the DSL source: `rotate(a, 0, 0, 1, 90)`
+becomes `rotate(a, 0, 0, 1, 90deg)`. Do **not** reach for `Value::angle(..)` —
+there is no `Value` at the site.
+
+This also means §4's degrees/radians trap resolves itself here: the compiler
+converts `360deg` to radians as part of unit resolution, so writing the suffix
+*is* the conversion. Bucket 2's "compute π/2 by hand" rule is a bucket-2 rule
+and must not be carried into a `.ri` string, where `Value::angle(PI/2.0)` is not
+even expressible.
+
+### 3.4 Reproducing 14 from 18 raw hits
+
+The §"Derivation commands" regex returns 18. Five are false positives and one
+true site is invisible to it:
+
+- **2 in `rotate_e2e.rs`** — the trailing unsuffixed numeric belongs to
+  `vec3(0.0, 0.0, 1.0)` nested inside `orient_axis_angle(…, 90deg)`. The angle
+  itself is dimensioned.
+- **1 in `let_scope_tests.rs`** — a commented-out line.
+- **2 in `geometry_arg_count_span_tests.rs`** — deliberate arg-COUNT-error
+  fixtures (`circular_pattern(box(...), 1.0)`, `rotate(box(...), 0.0, 0.0)`).
+  They have the wrong arity, so there is no angle slot and they fail before any
+  angle gate could fire. Not migration targets.
+- **+1 invisible**, the `format!`-built `circular_pattern_angle.rs` site (§3.2).
+
+18 − 5 + 1 = **14**.
+
+---
+
+## 4. The degrees/radians trap — load-bearing for ε (5781)
 
 **`circular_pattern` is the one builtin whose bare angle means DEGREES. Every
 other bucket-2 site means RADIANS.**
@@ -226,14 +327,14 @@ holds CircularPattern angle sites (§1.2), and they are the *opposite* case: the
 are hand-built, so they sit **downstream** of `resolve_bare_angle` and already
 hold post-conversion radians (`TAU`, `FRAC_PI_2`, `1.57`). The kernel reads them
 through `extract_f64` → `Value::as_f64` with no conversion. Converting a
-bucket-1 CircularPattern angle would introduce the very error §3 exists to
+bucket-1 CircularPattern angle would introduce the very error §4 exists to
 prevent, just in the other direction.
 
 > **Bucket 2 CONVERTS (degrees → radians). Bucket 1 RETYPES ONLY.**
 
 ---
 
-## 4. The `.ri` corpus
+## 5. The `.ri` corpus
 
 A sweep of every tracked `.ri` file (`git ls-files '*.ri'`) finds **21**
 executable angle-consuming builtin call sites (`revolve` / `rotate` /
@@ -272,7 +373,7 @@ unit-vector components and are explicitly not gated. Do not migrate them.
 
 ---
 
-## 5. Coupling note — `feature_datum_axis.ri`
+## 6. Coupling note — `feature_datum_axis.ri`
 
 `examples/geometric_relations/feature_datum_axis.ri` is Rust-coupled by tests the
 PRD does not name:
@@ -290,7 +391,7 @@ Any future edit to this file must keep all three green.
 
 ---
 
-## 6. Sibling tasks
+## 7. Sibling tasks
 
 Verified against live task records rather than copied from prose:
 
