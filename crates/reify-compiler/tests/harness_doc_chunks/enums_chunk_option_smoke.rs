@@ -89,25 +89,28 @@ fn option_section_lines() -> Vec<&'static str> {
     rest[..end].to_vec()
 }
 
-/// Every fenced code block inside the `## Option Type` section, in document
-/// order, as `(info string, body)`. A fence delimiter is a line whose trimmed
-/// form starts with three backticks; the opening delimiter may carry any info
-/// string (which is what `option_section_fences_are_reify_tagged` inspects).
+/// The BODY of every fenced code block inside the `## Option Type` section, in
+/// document order. A fence delimiter is a line whose trimmed form starts with
+/// three backticks and is excluded from the body; an opening delimiter may
+/// carry any info string, which is deliberately discarded rather than asserted
+/// on here — fence-tag discipline is #5477 leaf β's repo-wide `fence_gate.rs`
+/// gate, not this module's job. This module's subject is what the fences
+/// EVALUATE to, not how they are spelled.
 ///
 /// Panics if the section contains no fence at all, so a section that loses its
 /// example does not silently pass.
-fn option_section_fences() -> Vec<(String, String)> {
-    let mut fences: Vec<(String, String)> = Vec::new();
-    let mut open: Option<(String, Vec<&str>)> = None;
+fn option_section_fences() -> Vec<String> {
+    let mut fences: Vec<String> = Vec::new();
+    let mut open: Option<Vec<&str>> = None;
     for line in option_section_lines() {
-        if let Some(info) = line.trim_start().strip_prefix("```") {
+        if line.trim_start().strip_prefix("```").is_some() {
             match open.take() {
                 // Closing delimiter: emit the accumulated body.
-                Some((tag, body)) => fences.push((tag, body.join("\n"))),
-                // Opening delimiter: record its info string, start accumulating.
-                None => open = Some((info.trim().to_string(), Vec::new())),
+                Some(body) => fences.push(body.join("\n")),
+                // Opening delimiter: start accumulating, info string discarded.
+                None => open = Some(Vec::new()),
             }
-        } else if let Some((_, body)) = open.as_mut() {
+        } else if let Some(body) = open.as_mut() {
             body.push(line);
         }
     }
@@ -141,7 +144,7 @@ fn as_module(fence: &str) -> String {
 /// pre-fix failure surfaces as a parse-error panic naming the snippet.
 #[test]
 fn option_section_fences_compile_clean() {
-    for (ordinal, (_tag, fence)) in option_section_fences().iter().enumerate() {
+    for (ordinal, fence) in option_section_fences().iter().enumerate() {
         let compiled = compile_source_with_stdlib(&as_module(fence));
         let errors = errors_only(&compiled);
         assert!(
@@ -327,7 +330,7 @@ fn option_section_example_evaluates_to_documented_values() {
          evaluation assertions to cover it rather than leaving fence #0 the only one \
          pinned against the evaluator"
     );
-    let fence = &fences[0].1;
+    let fence = &fences[0];
 
     // --- subject = some(0.25mm), base = 1mm ---
     let present = eval_module(&as_module(fence));
@@ -646,37 +649,6 @@ fn binderless_option_match_still_evaluates_to_undef() {
              it: {eval_errors:#?}\n\
              Rewrite the warning in crates/reify-mcp/src/tools/chunks/enums.md in this \
              same diff."
-        );
-    }
-}
-
-/// Every fence in the `## Option Type` section must carry the `reify` info
-/// string.
-///
-/// Scoped deliberately to this one section: the repo-wide retag sweep is #5477
-/// leaf β's explicitly-scoped deliverable (PRD
-/// `docs/prds/v0_6/doc-chunk-truth-enforcement.md` §Sketch (a)), and doing it
-/// here would collide with that leaf and drag ~111 schematic fences into this
-/// task's review. Tagging the fence this task authors is mechanical, and leaves
-/// β's sweep with one section already correct.
-///
-/// **Delete this test when β lands.** β's `fence_gate.rs` enforces exactly this
-/// property repo-wide, including this fence, at which point the assertion would
-/// live in two places — and this module's section-local fence parser
-/// (`option_section_lines` / `option_section_fences`) would duplicate β's
-/// line-level one. The right move in β's diff is to drop this test and, if the
-/// scrapers are still wanted here, take them from β's shared helper rather than
-/// keeping a second copy. The rest of this module — which pins evaluated VALUES,
-/// not fence syntax — stays: β's gate is a compile check and cannot see the
-/// `undef` failure mode.
-#[test]
-fn option_section_fences_are_reify_tagged() {
-    for (ordinal, (tag, _body)) in option_section_fences().iter().enumerate() {
-        assert_eq!(
-            tag, "reify",
-            "`{SECTION_HEADING}` fence #{ordinal} must open with a ```reify info \
-             string so the fence gate (#5477 leaf β) can tell compilable Reify \
-             source from schematic notation; found info string {tag:?}"
         );
     }
 }
