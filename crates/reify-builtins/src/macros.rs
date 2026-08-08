@@ -1,4 +1,240 @@
 //! The `registry!` macro: one row list expands into every registry artifact.
+//!
+//! # Why a macro at all
+//!
+//! Every artifact below is derived from ONE list of rows, so deleting a row
+//! shrinks all of them together. Two independently-authored tables — a row
+//! table and a name→id map, say — can drift; one repetition cannot. The
+//! in-tree precedent for that property is `corpus_shard_tests!`
+//! (`crates/reify-eval/tests/snapshot_cache_divergence_gate.rs:375-396`),
+//! whose own doc-comment makes the same argument.
+//!
+//! PRD open question 1 is resolved here as `macro_rules`, not `build.rs`
+//! codegen and not a proc-macro crate: everything needed is token pasting, and
+//! a generated-source step would put the registry's single source of truth
+//! behind a build artifact.
+//!
+//! # Invocation shape
+//!
+//! Rows are GROUPED BY [`BindingKind`](crate::row::BindingKind). The grouping
+//! is not cosmetic — it is what makes PRD decision 4 ("exhaustiveness is
+//! enforced per kind in the kind's owning crate") mechanically true. Each group
+//! mints its own sub-enum, so `reify-stdlib` matches exhaustively on
+//! `EvalBuiltinId` and never has to name the geometry or compile-only variants
+//! it has no business knowing.
+//!
+//! ```text
+//! registry! {
+//!     EvalBuiltin => EvalBuiltinId, as_eval_builtin {
+//!         ParseLength {
+//!             name: "parse_length",
+//!             family: Parse,
+//!             arity: Exact(1),
+//!             arg_slots: [Any],
+//!             result: Const(Type::Option(Box::new(Type::length()))),
+//!             basis: Ruling("#4535")
+//!         },
+//!     }
+//! }
+//! ```
+//!
+//! Three things the invocation must spell out that the macro cannot derive,
+//! because `macro_rules` has no identifier case-conversion or concatenation:
+//! the row's variant ident AND its name literal (S7's lint test pins that
+//! pairing), and each group's sub-enum name and accessor name.
+//!
+//! # Emitted items
+//!
+//! - `pub enum BuiltinId` — one variant per row, flattened across groups in
+//!   source order.
+//! - `pub enum <KindId>` per group, plus `BuiltinId::<accessor>()`.
+//! - `rows()` / `row(id)` — the row table.
+//! - `lookup(name, argc)` / `name_group(name)` — the ONLY string→builtin
+//!   resolution in the workspace (I-REG-1).
+
+/// Expand a kind-grouped row list into the full registry surface.
+///
+/// See the module docs for the invocation shape and the list of emitted items.
+macro_rules! registry {
+    (
+        $(
+            $kind:ident => $kind_id:ident, $accessor:ident {
+                $(
+                    $variant:ident {
+                        name: $name:literal,
+                        family: $family:ident,
+                        arity: $arity_v:ident $(( $($arity_a:expr),* ))?,
+                        arg_slots: [ $($slot:ident),* $(,)? ],
+                        result: $result_v:ident ( $($result_a:expr),* ),
+                        basis: $basis_v:ident $(( $($basis_a:expr),* ))?
+                        $(,)?
+                    }
+                ),* $(,)?
+            }
+        )*
+    ) => {
+        /// The generated key every registered builtin is dispatched on.
+        ///
+        /// One variant per row, flattened across kind groups in declaration
+        /// order. Same-name arity overloads are DISTINCT variants.
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, Hash,
+            ::strum::EnumIter, ::strum::EnumCount,
+        )]
+        pub enum BuiltinId {
+            $( $( $variant, )* )*
+        }
+
+        $(
+            /// The subset of [`BuiltinId`] bound by this kind's owning
+            /// dispatcher.
+            ///
+            /// The owning crate matches on THIS enum with no `_` arm, which is
+            /// what gives I-REG-2 teeth: adding a row to this group adds a
+            /// variant here and stops that crate compiling until it is bound.
+            #[derive(
+                Debug, Clone, Copy, PartialEq, Eq, Hash,
+                ::strum::EnumIter, ::strum::EnumCount,
+            )]
+            pub enum $kind_id {
+                $( $variant, )*
+            }
+
+            impl BuiltinId {
+                #[doc = concat!(
+                    "Narrow to [`", stringify!($kind_id), "`], or `None` if this row \
+                     is bound by a different kind."
+                )]
+                // Unreachable when every row in the registry belongs to this
+                // one group — true of α, whose seven seed rows are all
+                // EvalBuiltin. The arm is still required the moment a second
+                // group appears, so it is allowed rather than conditional.
+                #[allow(unreachable_patterns)]
+                pub fn $accessor(self) -> Option<$kind_id> {
+                    match self {
+                        $( BuiltinId::$variant => Some($kind_id::$variant), )*
+                        _ => None,
+                    }
+                }
+            }
+        )*
+
+        /// Every registered row, in declaration order.
+        ///
+        /// Lazily built rather than a plain `static`: `ResultSpec::Const(Type)`
+        /// holds heap-allocating values (`Type::Option(Box::new(..))`,
+        /// `Type::Enum(String)`, `Type::StructureRef(String)`), so the table is
+        /// not const-constructible. Re-spelling `Const` as `Const(fn() -> Type)`
+        /// would keep a pure `static` at the cost of silently amending the PRD
+        /// §7.1 row shape, so lazy init is preferred over redefining the
+        /// contract.
+        pub fn rows() -> &'static [$crate::row::BuiltinRow<BuiltinId>] {
+            static ROWS: ::std::sync::OnceLock<
+                ::std::vec::Vec<$crate::row::BuiltinRow<BuiltinId>>
+            > = ::std::sync::OnceLock::new();
+
+            ROWS.get_or_init(|| ::std::vec![
+                $( $(
+                    $crate::row::BuiltinRow {
+                        name: $name,
+                        id: BuiltinId::$variant,
+                        family: $crate::row::Family::$family,
+                        binding: $crate::row::BindingKind::$kind,
+                        arity: $crate::row::Arity::$arity_v $(( $($arity_a),* ))?,
+                        arg_slots: &[ $( $crate::row::ArgSlot::$slot ),* ],
+                        result: $crate::row::ResultSpec::$result_v( $($result_a),* ),
+                        basis: $crate::row::Basis::$basis_v $(( $($basis_a),* ))?,
+                    },
+                )* )*
+            ])
+        }
+
+        /// The row a [`BuiltinId`] was minted for.
+        ///
+        /// Total by construction — ids and rows come from the same repetition.
+        pub fn row(id: BuiltinId) -> &'static $crate::row::BuiltinRow<BuiltinId> {
+            rows()
+                .iter()
+                .find(|r| r.id == id)
+                .expect(
+                    "every BuiltinId has a row: both are emitted from the same \
+                     registry! repetition",
+                )
+        }
+
+        /// The one authored `name → row` table.
+        ///
+        /// A true `static` (unlike [`rows`]) because `Arity` is a plain
+        /// `usize`-payload enum and `BuiltinId` is fieldless, so the whole
+        /// table is const-constructible. Emitted from the SAME repetition as
+        /// [`rows`], so a row cannot appear in one and not the other.
+        ///
+        /// Storing the row's `Arity` rather than a single argc is what lets the
+        /// index serve `Range` and `Variadic` rows without a second table.
+        static NAME_INDEX: &[(&str, $crate::row::Arity, BuiltinId)] = &[
+            $( $(
+                (
+                    $name,
+                    $crate::row::Arity::$arity_v $(( $($arity_a),* ))?,
+                    BuiltinId::$variant,
+                ),
+            )* )*
+        ];
+
+        /// Resolve a builtin name and argument count to its [`BuiltinId`].
+        ///
+        /// **I-REG-1**: this is the only string→builtin resolution in the
+        /// workspace. [`name_group`] reads the same [`NAME_INDEX`] — it is a
+        /// second ACCESSOR, never a second string map.
+        ///
+        /// A linear scan is deliberate: the table is tiny (7 rows in α) and
+        /// this runs at compile time, not in an eval loop. A hash index is a
+        /// later optimisation if the ~358-row end state ever measures as hot.
+        pub fn lookup(name: &str, argc: usize) -> Option<BuiltinId> {
+            NAME_INDEX
+                .iter()
+                .find(|(n, arity, _)| *n == name && arity.matches(argc))
+                .map(|(_, _, id)| *id)
+        }
+
+        /// Every id sharing `name`, whatever its arity — empty for an
+        /// unregistered name.
+        ///
+        /// The argc-INDEPENDENT membership accessor. Two consumers need it: the
+        /// compiler ladder, whose family arms are name-only today (so an
+        /// argc-keyed-only registry would silently change typing for
+        /// arity-mismatched calls), and stdlib-namespace κ #5503, which needs a
+        /// builtin-MEMBERSHIP authority for its strict-visibility flip.
+        ///
+        /// Derived from [`NAME_INDEX`] on first call, so PRD open question 2 is
+        /// answered "both accessors, one table".
+        pub fn name_group(name: &str) -> &'static [BuiltinId] {
+            static GROUPS: ::std::sync::OnceLock<
+                ::std::vec::Vec<(&'static str, ::std::vec::Vec<BuiltinId>)>
+            > = ::std::sync::OnceLock::new();
+
+            let groups = GROUPS.get_or_init(|| {
+                let mut out: ::std::vec::Vec<(&'static str, ::std::vec::Vec<BuiltinId>)> =
+                    ::std::vec::Vec::new();
+                for &(n, _, id) in NAME_INDEX.iter() {
+                    match out.iter_mut().find(|entry| entry.0 == n) {
+                        Some(entry) => entry.1.push(id),
+                        None => out.push((n, ::std::vec![id])),
+                    }
+                }
+                out
+            });
+
+            groups
+                .iter()
+                .find(|entry| entry.0 == name)
+                .map(|entry| entry.1.as_slice())
+                .unwrap_or(&[])
+        }
+    };
+}
+
+pub(crate) use registry;
 
 #[cfg(test)]
 mod tests {
