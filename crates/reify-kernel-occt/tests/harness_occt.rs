@@ -11,8 +11,8 @@
 //!
 //! What does NOT stay unchanged: the nextest `binary_id` for every one of the 51 former
 //! binaries becomes `harness_occt`, so a `--test <name>` / `binary(<name>)` selector keyed on
-//! the old per-file name (e.g. `--test contains`, `binary(contains)`) no longer matches — only // stale-test-target:allow — prose documenting a selector that intentionally no longer resolves
-//! the `test(...)` NAME predicate is preserved via module paths. No such binary-level selector
+//! the old per-file name no longer matches — e.g. `--test contains`, `binary(contains)` no longer resolve. // stale-test-target:allow — prose documenting a selector that intentionally no longer resolves
+//! Only the `test(...)` NAME predicate is preserved via module paths. No such binary-level selector
 //! exists anywhere in this repo today (the 6 binary-name guards — test_heavy_filter_atoms,
 //! test_nextest_slow_priority, test_verify_offline_partition, test_verify_gate_exclude_heavy,
 //! test_run_offline_deep, test_verify_role_prio — contain no occt refs, and nextest.toml's
