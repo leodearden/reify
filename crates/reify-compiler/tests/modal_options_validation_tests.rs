@@ -224,15 +224,17 @@ fn no_damping_marker_structure() {
 
 /// `RayleighDamping` declares two PRD §4.2 params with the canonical types:
 ///
-///   - `alpha : Real`  (mass-proportional damping coefficient)
-///   - `beta  : Real`  (stiffness-proportional damping coefficient)
+///   - `alpha : Frequency`  (mass-proportional damping coefficient, = s⁻¹)
+///   - `beta  : Time`       (stiffness-proportional damping coefficient, = s)
 ///
 /// Per-mode damping ratio: ζ_i = (α + β·ω_i²) / (2·ω_i). Preserves mode-shape
 /// orthogonality so transient response stays in real arithmetic.
 ///
 /// Assertions:
-///   (a) exactly 2 params, (b) the two params are (alpha, beta) of type Real
-///       in declaration order,
+///   (a) exactly 2 params, (b) the two params are (alpha, beta) with their
+///       registered named dimensions, in declaration order — declaration
+///       order is load-bearing because constructor arg binding is positional
+///       (labels are cosmetic; see examples/modal/printer_gantry_modes.ri),
 ///   (c) neither carries a `default_expr` (input-only fields without a
 ///       canonical default — PRD §4.2 lists no defaults),
 ///   (d) no constraints — alpha and beta are conventionally non-negative
@@ -255,9 +257,23 @@ fn rayleigh_damping_param_shape() {
     );
 
     // (b) param names + types in declaration order
+    // `RayleighDamping.alpha` / `.beta` tightened from the `Real` PLACEHOLDER
+    // to their registered named dimensions — task #6093, following the
+    // `Mode.frequency` precedent from task 4548 below. The units previously
+    // lived ONLY in the stdlib prose comment; they now live in the type.
     let expected: &[(&str, Type)] = &[
-        ("alpha", Type::dimensionless_scalar()),
-        ("beta", Type::dimensionless_scalar()),
+        (
+            "alpha",
+            Type::Scalar {
+                dimension: DimensionVector::FREQUENCY,
+            },
+        ),
+        (
+            "beta",
+            Type::Scalar {
+                dimension: DimensionVector::TIME,
+            },
+        ),
     ];
     for (i, (expected_name, expected_ty)) in expected.iter().enumerate() {
         let cell = &params[i];
