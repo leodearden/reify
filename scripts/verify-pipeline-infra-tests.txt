@@ -43,6 +43,10 @@ scripts/seed-warm-lane.sh            tests/infra/test_warm_lane_pool.sh
 # test_tree_sitter_pipeline.sh silently rests on.
 scripts/seed-warm-lane.sh            tests/infra/test_target_per_lane_independence.sh
 scripts/refresh-warm-base.sh         tests/infra/test_warm_lane_pool.sh
+# Task 5981: refresh-warm-base.sh's OWN suite also guards its provenance WIP
+# refusal path (Block I). The row above maps the artifact only to the pool
+# suite, so that assertion would not be selected on a branch-scope verify.
+scripts/refresh-warm-base.sh         tests/infra/test_refresh_warm_base.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_pool.sh
 scripts/warm-lane-preflight.sh       tests/infra/test_warm_lane_preflight.sh
 scripts/warm-lane-ref-check.sh       tests/infra/test_warm_lane_ref_visibility.sh
@@ -159,6 +163,13 @@ hooks/pre-merge-commit               tests/infra/test_hooks_call_verify.sh
 hooks/pre-commit                     tests/infra/test_hooks_call_verify.sh
 hooks/reference-transaction          tests/infra/test_reference_transaction_gate.sh
 hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate.sh
+# Task 5981: the same two artifacts also carry the refs/stash arm (the guard
+# against `git stash` in a shared checkout) and its independent stash-guard
+# switches, which test_reference_transaction_gate.sh does not exercise at all --
+# it drives refs/heads/main lines only. A second row per artifact is additive:
+# select_infra_tests() dedups globs by whole token, so both suites are selected.
+hooks/reference-transaction          tests/infra/test_stash_guard.sh
+hooks/main-gate-lib.sh               tests/infra/test_stash_guard.sh
 
 # Task 5259 (W4c): the ambient-isolation lib's hostile+baseline disambiguation
 # is guarded by BOTH the consumer (test_run_all_ambient_isolation.sh) and the

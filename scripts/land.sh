@@ -66,8 +66,8 @@ fi
 # Refuse a dirty working tree — see header trap (1).
 if [ -n "$(git status --porcelain)" ]; then
     echo "land.sh: ERROR — working tree is dirty. The merge gate verifies the WHOLE" >&2
-    echo "  working tree, so unrelated changes would cause false failures. Commit," >&2
-    echo "  stash, or clean them first, then re-run." >&2
+    echo "  working tree, so unrelated changes would cause false failures. Commit or" >&2
+    echo "  clean them first, then re-run." >&2
     exit 1
 fi
 
