@@ -248,3 +248,61 @@ fn cross_crate_p_flag_takes_precedence_over_containing_path() {
         findings[0]
     );
 }
+
+/// Test A: false-positive class (3) — no-`-p` invocations resolve via the
+/// containing crate, plus the `--test <name>` metavariable guard.
+///
+/// (a) `crates/crate-a/src/wrapped.rs` wraps a doc comment across two lines
+///     (`crates/reify-expr/tests/kleene_logic_tests.rs:4-5` shape) with no
+///     `-p` anywhere — resolves against the containing crate.
+/// (b) `crates/crate-a/src/bare_mention.rs` is a bare parenthetical mention
+///     with no `cargo` and no `-p` (`crates/reify-compiler/src/entity.rs:2608`
+///     shape) — also resolves via the containing crate, and DOES produce a
+///     finding when the target is absent (proving the line is genuinely
+///     checked, not silently skipped for lacking `-p`/`cargo`).
+/// (c) `crates/crate-a/src/metavar.rs` contains the angle-bracket
+///     metavariable `--test <name>` (`crates/reify-kernel-occt/tests/
+///     harness_occt.rs:13` shape) — must NOT be extracted at all.
+#[test]
+fn no_p_flag_falls_back_to_containing_crate_and_skips_metavariables() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        "crates/crate-a/src/wrapped.rs",
+        "//! cargo test\n//! --test wrapped_stem\n", // stale-test-target:allow — synthetic fixture
+    );
+    write_file(root, "crates/crate-a/tests/wrapped_stem.rs", "// empty\n");
+
+    write_file(
+        root,
+        "crates/crate-a/src/bare_mention.rs",
+        "// (run with `--test bare_stem -- foo:: --ignored`)\n", // stale-test-target:allow — synthetic fixture
+    );
+    // Deliberately NOT creating crates/crate-a/tests/bare_stem.rs.
+
+    write_file(
+        root,
+        "crates/crate-a/src/metavar.rs",
+        "//! Usage: `cargo test --test <name>`\n", // stale-test-target:allow — synthetic fixture
+    );
+
+    let files = vec![
+        "crates/crate-a/src/wrapped.rs".to_string(),
+        "crates/crate-a/tests/wrapped_stem.rs".to_string(),
+        "crates/crate-a/src/bare_mention.rs".to_string(),
+        "crates/crate-a/src/metavar.rs".to_string(),
+    ];
+
+    let findings = scan(root, &files);
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly one finding (bare_mention.rs's bare_stem); got {findings:?}"
+    );
+    assert_eq!(findings[0].file, "crates/crate-a/src/bare_mention.rs");
+    assert_eq!(findings[0].crate_name, "crate-a");
+    assert_eq!(findings[0].stem, "bare_stem");
+}
