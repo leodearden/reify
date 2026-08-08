@@ -250,11 +250,17 @@ pub(crate) enum LengthArg {
 /// Look up a named LENGTH-semantic argument, evaluate it with full context,
 /// and require a finite LENGTH-dimensioned `Value::Scalar`.
 ///
-/// This is the units chokepoint for EVERY named length-semantic arg of a
-/// scalar-form geometry builtin. The authoritative position table — and what
-/// stays deliberately un-gated — lives in the `arg_acceptance` module doc, and
-/// is deliberately NOT restated here: one list, one place to update when the
-/// next family is gated. Unlike
+/// This is the units chokepoint for the length-semantic args that reach an
+/// `f64` through a NAMED-ARG read: the pattern spacings and origins, the
+/// transform components and pivot, the sweep axis origins, and the curve
+/// coordinates and radii. It is NOT the chokepoint for every length-semantic
+/// arg of a scalar-form geometry builtin — the modify + sweep MAGNITUDES
+/// (`fillet` radius, `extrude` distance, …) are placed into their `GeometryOp`
+/// field as a raw `Value` and coerced as SI metres only at the kernel boundary,
+/// so they never pass through here at all. The authoritative position table —
+/// and what stays un-gated, with the task that owns it — lives in the
+/// `arg_acceptance` module doc, and is deliberately NOT restated here: one
+/// list, one place to update when the next family is gated. Unlike
 /// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
 /// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
 /// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`

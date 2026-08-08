@@ -25,9 +25,20 @@
 //! - Variadic curve coordinates (`interp`/`bezier`/`nurbs`), which reach f64
 //!   through `eval_all_args_to_f64` rather than a named-arg helper — task 5658.
 //! - `profile_polygon`'s 2-D vertex pairs — task 5661.
-//! - The raw-`Value` primitive/profile chokepoint, plus the single shared
-//!   `DiagnosticCode` that every code-less Contract C site still needs — task
-//!   5743.
+//! - The raw-`Value` primitive/profile chokepoint (box/cylinder/sphere/… dims,
+//!   `half_space` px/py/pz, rectangle/circle/ellipse dims), plus the single
+//!   shared `DiagnosticCode` that every code-less Contract C site still needs —
+//!   task 5743.
+//! - The modify + sweep MAGNITUDES, on that same raw-`Value` chokepoint once
+//!   5743 introduces it: `fillet` radius, `chamfer` distance,
+//!   `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset,
+//!   `offset_solid`/`offset_curve` distance, `extrude`/`extrude_symmetric`
+//!   distance, `pipe` radius, `zone_slab` width — task 5744. These never reach
+//!   a named-arg f64 helper at all: each is stored into its `GeometryOp` field
+//!   as a raw `Value` by the bare-accepting `eval_named_arg` and coerced as SI
+//!   metres at the kernel boundary, so it leaves no `as_f64` fingerprint —
+//!   which is exactly why repeated hand audits missed them, and why they are
+//!   listed here rather than left to be re-derived.
 //!
 //! Deliberately NOT gated, and not a residual: unit-vector DIRECTIONS
 //! (`ax`/`ay`/`az`, `nx`/`ny`/`nz`, and `extrude_infinite`'s `dx`/`dy`/`dz`),
