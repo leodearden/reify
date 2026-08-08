@@ -6,9 +6,29 @@
 //!
 //! ## Wire protocol
 //!
-//! MCP streamable-HTTP, protocol version `2024-11-05`. Mirror of
-//! `fused_memory_client.rs` — same handshake, same SSE/JSON dual-path, same
-//! `into_reader()` no-10 MiB cap discipline.
+//! MCP streamable-HTTP, protocol version `2024-11-05`. Same SSE/JSON
+//! dual-path and same `into_reader()` no-10 MiB cap discipline as
+//! `fused_memory_client.rs`.
+//!
+//! ## Session lifecycle
+//!
+//! The session id is assigned by the **server**, never minted by the
+//! client:
+//!
+//! 1. `initialize` is POSTed with **no** `mcp-session-id` request header.
+//! 2. The id the server returns in that response's `Mcp-Session-Id`
+//!    header is stored on the client.
+//! 3. Every subsequent POST — starting with `notifications/initialized` —
+//!    replays that stored id verbatim.
+//!
+//! A client-minted id is not merely redundant: a live jcodemunch serve
+//! answers such an `initialize` with `404 Invalid or expired session ID`,
+//! which [`post`](JcodemunchClient::post) maps to [`LoadError::Http`] and
+//! `reify-audit` then fail-softs into a no-op detector — silently.
+//!
+//! `fused_memory_client.rs` still mints its own id. That divergence is
+//! deliberate: fixing it is out of scope here (it works today against the
+//! fused-memory server) and belongs to its own task.
 //!
 //! ## MUNCH/1 encoding
 //!
@@ -747,9 +767,11 @@ fn filter_refs_to_file(refs: Vec<SymbolReference>, file: &str) -> Vec<SymbolRefe
 /// Sync MCP streamable-HTTP client for jcodemunch. One instance == one
 /// MCP session.
 ///
-/// Near-clone of [`crate::fused_memory_client::FusedMemoryClient`]; differs
-/// only in `CLIENT_NAME` and the `call_tool` content step (routes
-/// MUNCH-vs-JSON via [`decode_tool_result`]).
+/// `session_id` holds the id the **server** assigned during the handshake
+/// (see the module-level "Session lifecycle" notes); it is never minted
+/// here. Differs from [`crate::fused_memory_client::FusedMemoryClient`] in
+/// that session handling, in `CLIENT_NAME`, and in the `call_tool` content
+/// step (which routes MUNCH-vs-JSON via [`decode_tool_result`]).
 pub struct JcodemunchClient {
     url: String,
     session_id: String,
@@ -760,13 +782,19 @@ pub struct JcodemunchClient {
 impl JcodemunchClient {
     /// Connect to `url` and complete the MCP handshake
     /// (initialize + notifications/initialized).
+    ///
+    /// The `session_id` starts empty and is filled in by
+    /// [`Self::initialize`] before the value is returned. That window is
+    /// unobservable: `new` is the only constructor and it propagates a
+    /// failed handshake, so every instance a caller can hold carries a
+    /// real server-assigned id.
     pub fn new(url: impl Into<String>) -> Result<Self, LoadError> {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build();
-        let client = Self {
+        let mut client = Self {
             url: url.into(),
-            session_id: random_hex_32(),
+            session_id: String::new(),
             agent,
             next_id: Cell::new(1),
         };
@@ -774,10 +802,10 @@ impl JcodemunchClient {
         Ok(client)
     }
 
-    fn initialize(&self) -> Result<(), LoadError> {
-        // No session header on `initialize`: the server assigns the
-        // session. The returned id is discarded for now — capturing and
-        // replaying it is the next step.
+    /// Run the MCP handshake: `initialize` with no session header, store
+    /// the id the server assigns in its response, then acknowledge with
+    /// `notifications/initialized` carrying that id.
+    fn initialize(&mut self) -> Result<(), LoadError> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
@@ -791,12 +819,16 @@ impl JcodemunchClient {
                 "capabilities": {},
             },
         });
-        let _ = self.post_raw(&payload, None)?;
-        let _ = self.post(&json!({
+        // No session header on `initialize`: the server assigns it.
+        let (assigned, _) = self.post_raw(&payload, None)?;
+        self.session_id = assigned.unwrap_or_default();
+
+        let ack = json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
             "params": {},
-        }))?;
+        });
+        let _ = self.post_raw(&ack, Some(&self.session_id))?;
         Ok(())
     }
 
@@ -1055,47 +1087,6 @@ impl JCodemunchOps for RealJCodemunchOps {
         };
         layer_violations_from_wire(&decoded)
     }
-}
-
-// -----------------------------------------------------------------------
-// Session ID (verbatim from fused_memory_client.rs)
-// -----------------------------------------------------------------------
-
-fn random_hex_32() -> String {
-    let mut buf = [0u8; 16];
-    #[cfg(unix)]
-    {
-        if let Ok(mut f) = std::fs::File::open("/dev/urandom")
-            && f.read_exact(&mut buf).is_ok()
-        {
-            return hex32(&buf);
-        }
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let pid = std::process::id() as u64;
-    let mut x = now ^ pid.wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    for chunk in buf.chunks_mut(8) {
-        x = x
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let bytes = x.to_le_bytes();
-        for (i, b) in chunk.iter_mut().enumerate() {
-            *b = bytes[i];
-        }
-    }
-    hex32(&buf)
-}
-
-fn hex32(buf: &[u8; 16]) -> String {
-    let mut out = String::with_capacity(32);
-    for b in buf {
-        use std::fmt::Write;
-        let _ = write!(out, "{:02x}", b);
-    }
-    out
 }
 
 // -----------------------------------------------------------------------
