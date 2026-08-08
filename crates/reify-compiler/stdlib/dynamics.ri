@@ -44,9 +44,12 @@
 //      `mechanism : Real`, `Pose3 = Real`, and JointLimit.joint : Real.
 //      Retargeting each placeholder propagates the type tightening to every
 //      consumer without touching structure_def bodies.
-//   4. `constraint mass >= 0kg`: RHS is the dimensioned-zero literal `0kg` (NOT
-//      `0`): a bare 0 is Type::Real and dimension-incompatible with a Mass-typed
-//      LHS (esc-3115 rule; cf. ZVShaper `> 0Hz` in trajectory.ri). The PSD
+//   4. `constraint mass >= 0kg`: the dimensioned-zero literal `0kg` is retained
+//      by convention, because it reads as an explicit mass bound; a bare `0`
+//      also compiles, because task-4485/β's polymorphic-zero rewrite promotes a
+//      syntactic zero to `Scalar<Mass>(0.0)` at compile time, before the
+//      dimension guard runs (esc-3115-112 resolved; cf. ZVShaper `> 0Hz` in
+//      trajectory.ri, which now records the same convention). The PSD
 //      inertia check (negative eigenvalue) is a Rust hook in reify-eval (see
 //      dynamics_psd.rs) because no DSL expression form can compute eigenvalues.
 
@@ -73,7 +76,8 @@
 // Declarative constraint:
 //   `constraint mass >= 0kg` fires at ctor time via SIR-α
 //   check_constraints_against_templates machinery (task 3540, landed). No further
-//   plumbing needed. RHS is `0kg` (dimensioned-zero literal) per esc-3115.
+//   plumbing needed. RHS is `0kg` by the convention stated in header decision 4
+//   above (esc-3115-112 resolved by task-4485/β — a bare `0` would compile too).
 structure def MassProperties {
     param mass : Mass
     param com : Point3<Length>
@@ -81,8 +85,11 @@ structure def MassProperties {
     param origin : Frame3
 
     // Non-negativity guard: mass must be physically valid at construction.
-    // The RHS is `0kg` (dimensioned-zero literal per esc-3115 — a bare `0`
-    // is Type::Real and dimension-incompatible with Mass). PSD inertia is
+    // The RHS is `0kg` by the convention stated in header decision 4 (an
+    // explicit mass bound reads better; a bare `0` would be coerced to
+    // `Scalar<Mass>(0.0)` at compile time by task-4485/β, esc-3115-112
+    // resolved — this holds for `>=` as much as for `>`, since the rewrite
+    // runs in `compile_binop` ahead of type inference). PSD inertia is
     // enforced by the reify-eval Rust hook (dynamics_psd.rs) since no DSL
     // expression form can compute eigenvalues.
     constraint mass >= 0kg
