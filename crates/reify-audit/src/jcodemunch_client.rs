@@ -775,7 +775,10 @@ impl JcodemunchClient {
     }
 
     fn initialize(&self) -> Result<(), LoadError> {
-        let _ = self.post(&json!({
+        // No session header on `initialize`: the server assigns the
+        // session. The returned id is discarded for now — capturing and
+        // replaying it is the next step.
+        let payload = json!({
             "jsonrpc": "2.0",
             "id": self.next_id(),
             "method": "initialize",
@@ -787,7 +790,8 @@ impl JcodemunchClient {
                 },
                 "capabilities": {},
             },
-        }))?;
+        });
+        let _ = self.post_raw(&payload, None)?;
         let _ = self.post(&json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
@@ -802,18 +806,36 @@ impl JcodemunchClient {
         id
     }
 
-    fn post(&self, payload: &Value) -> Result<Value, LoadError> {
-        let response = self
+    /// POST `payload`, attaching `mcp-session-id` only when `session` is
+    /// `Some`. Returns the response's own `mcp-session-id` header (if any)
+    /// alongside the decoded body.
+    ///
+    /// The session header is copied out **before** anything else touches
+    /// the response: the 202 branch returns early, and `into_reader()`
+    /// consumes the response by value, so any later read is impossible.
+    /// `ureq`'s `Response::header` matches case-insensitively — a live
+    /// jcodemunch serve emits the name lowercase.
+    fn post_raw(
+        &self,
+        payload: &Value,
+        session: Option<&str>,
+    ) -> Result<(Option<String>, Value), LoadError> {
+        let mut request = self
             .agent
             .post(&self.url)
             .set("Content-Type", "application/json")
-            .set("Accept", "application/json, text/event-stream")
-            .set("mcp-session-id", &self.session_id)
+            .set("Accept", "application/json, text/event-stream");
+        if let Some(session) = session {
+            request = request.set("mcp-session-id", session);
+        }
+        let response = request
             .send_json(payload.clone())
             .map_err(|e| LoadError::Http(format!("POST {}: {e}", self.url)))?;
 
+        let assigned = response.header("mcp-session-id").map(|s| s.to_string());
+
         if response.status() == 202 {
-            return Ok(Value::Null);
+            return Ok((assigned, Value::Null));
         }
 
         let ctype = response
@@ -843,7 +865,7 @@ impl JcodemunchClient {
                 LoadError::Protocol(format!("no SSE data line in response: {body}"))
             })?
         } else if body.is_empty() {
-            return Ok(Value::Null);
+            return Ok((assigned, Value::Null));
         } else {
             serde_json::from_str(&body).map_err(|e| {
                 LoadError::Protocol(format!("body parse: {e}; body={body}"))
@@ -853,7 +875,14 @@ impl JcodemunchClient {
         if let Some(err) = value.get("error") {
             return Err(LoadError::Protocol(format!("JSON-RPC error: {err}")));
         }
-        Ok(value)
+        Ok((assigned, value))
+    }
+
+    /// POST `payload` on the established session. Thin wrapper over
+    /// [`Self::post_raw`] for every call after the handshake.
+    fn post(&self, payload: &Value) -> Result<Value, LoadError> {
+        self.post_raw(payload, Some(&self.session_id))
+            .map(|(_, value)| value)
     }
 
     fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, LoadError> {
