@@ -255,13 +255,12 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     }
 
     // Sanitize repo-redirect git env vars before spawning (via
-    // build_audit_command -> crate::git_env::sanitize, the workspace's single
-    // definition, which reify_audit::git_env re-exports): the script's first
-    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and an ambient
-    // GIT_DIR/GIT_WORK_TREE (exported into a hook's entire process tree)
-    // overrides BOTH cwd and an explicit `-C`. Full rationale and failure
-    // mode: crates/reify-audit/src/git_env.rs module doc, "Resolved
-    // non-central case".
+    // build_audit_command -> crate::git_env::sanitize): the script's first
+    // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, so an ambient
+    // redirect var, not this call's `repo_root`, would decide which checkout it
+    // enumerates. Why such a var beats both cwd and an explicit `-C`, and what
+    // that costs: `crate::git_env`'s module doc, where the sanitizer is
+    // defined.
     let output = build_audit_command(script, scope, repo_root)
         .output()
         .unwrap_or_else(|e| panic!("failed to invoke audit-orphan-producers.sh: {e}"));

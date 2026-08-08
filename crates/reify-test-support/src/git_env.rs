@@ -8,9 +8,33 @@
 //! `reify-audit`'s repo-targeting git commands — and only this direction is
 //! reachable without inverting the edge.
 //!
-//! `reify_audit::git_env` re-exports both items, and builds the `git -C <root>`
-//! constructor (`reify_audit::git_env::command`) on top of them; that module's
-//! doc carries the full failure-mode analysis this sanitizer exists to prevent.
+//! This module is the ENTRY POINT for what the sanitizer removes and why it
+//! exists — a reader starting here needs nothing from above the dependency
+//! edge. `reify_audit::git_env` re-exports both items and adds what is local to
+//! it: the `git -C <root>` constructor (`reify_audit::git_env::command`), the
+//! workspace rule that every repo-targeting git invocation be built through
+//! that constructor, the measured `-C`-is-overridden evidence, and the
+//! call-site sweep enforcing the rule. Those are further reading, not a
+//! prerequisite for this module.
+//!
+//! # The failure mode this prevents
+//!
+//! Git exports `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` into a hook's
+//! entire process tree, and those override an explicit `-C <root>`. For
+//! `git commit --only`, `GIT_INDEX_FILE` points at a *temporary* index built
+//! for that commit. So under `hooks/pre-commit` -> `hooks/project-checks` ->
+//! `scripts/verify.sh` -> the workspace test run, an unsanitized
+//! `git -C <tempdir> add .` writes the PARENT repository's temporary index
+//! instead of the tempdir's, and an unsanitized `git -C <tempdir> ls-files`
+//! reads that parent index — yielding a wrong file set rather than an error.
+//! Both observed signatures came from this: a divergent PTODO finding set
+//! (exit `Some(1)` where `Some(2)` was expected) from `reify-audit`'s
+//! production reader path, and `git ["add", "."] exited Some(128)` from a
+//! fixture helper colliding with the parent repo's `index.lock`.
+//!
+//! Note the asymmetry that makes this worth a single shared definition: the
+//! redirect vars do not make git *fail* — they make it silently operate on a
+//! different repository.
 
 use std::process::Command;
 
@@ -25,8 +49,8 @@ use std::process::Command;
 /// drop `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` (which a
 /// harness may set precisely to *increase* isolation), `GIT_TRACE*`
 /// (debuggability) and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (commit determinism) —
-/// strictly more collateral for no gain against the failure mode
-/// `reify_audit::git_env`'s module doc analyses. Those are left untouched.
+/// strictly more collateral for no gain against the failure mode this module's
+/// doc analyses above. Those are left untouched.
 ///
 /// This doc is the workspace's ONE copy of that argument, living with the
 /// constant it justifies; `reify_audit::git_env` points here rather than
@@ -72,6 +96,19 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// site above the dependency edge. A caller needing another shape must be able
 /// to reach this sanitizer rather than re-derive [`REPO_REDIRECT_VARS`] by
 /// hand, which is exactly how this class of bug reaches a new helper.
+///
+/// # What does NOT enforce this `pub`
+///
+/// While this fn lived in `crates/reify-audit/src` its public surface was
+/// argued for by an explicit `// G-allow:` marker and enforced by the
+/// orphan-producer sweeps. This crate is excluded from that audit at the
+/// script level (`scripts/audit-orphan-producers.sh`'s `EXCLUDE_CRATES`, whose
+/// Rust mirror is `crate::orphan_audit`'s own `EXCLUDE_CRATES`), so neither the
+/// literal-scope nor the glob-scope sweep reaches here and a marker would be
+/// dead ceremony. The `pub` is therefore justified by the re-export in
+/// `reify_audit::git_env` and its callers, not by a gate: if that consumer ever
+/// goes away, this item should be demoted or deleted in the same change,
+/// because no sweep will say so.
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
         cmd.env_remove(var);
