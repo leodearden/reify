@@ -15,11 +15,23 @@
 //! the large stack, so the recursion survives. An impl lacking `stack_size` would
 //! abort the deep-recursion test, so the test genuinely drives the feature.
 //!
-//! That argument covers the persistent-worker section below verbatim (task 5772):
-//! its deep-recursion test invokes [`deep_recurse`] ONLY through
+//! That argument covers the persistent-worker section below (task 5772): its
+//! deep-recursion test invokes the recursion ONLY through
 //! `large_stack::run_on_worker`, whose symbol is absent at RED — so that RED is
-//! likewise a clean compile error and the ~16 MiB recursion never touches a
-//! default-size stack.
+//! likewise a clean compile error.
+//!
+//! One CORRECTION to the argument above, found while driving 5772's step-3 RED:
+//! "invoked through a large-stack helper" does NOT by itself imply "runs on a
+//! large stack". Every helper documents an INLINE-degradation arm that hands the
+//! closure back to the CALLER's default-size stack — `run_on_large_stack` when
+//! the OS refuses the 256 MiB mapping, `run_on_worker` additionally when the
+//! worker is dead. Driving the recursion through a degraded helper overflowed
+//! and SIGABRTed the whole test binary, taking every other test's result with
+//! it. [`deep_recurse_if_on_thread`] closes that hole for the worker tier by
+//! CHECKING the thread before recursing, so a degraded helper yields a clean
+//! assertion failure instead. The two task-5357 tests still call [`deep_recurse`]
+//! directly; their degradation arm needs the OS to refuse a mapping, which no
+//! test can provoke, so they are left as 5357 wrote them.
 
 /// A recursive frame that pins ~8 KiB of live stack per call and USES the
 /// recursive result (non-tail), defeating tail-call optimization and dead-frame
@@ -49,6 +61,33 @@ fn deep_recurse(depth: u32) -> u64 {
 /// i.e. 8x the 2 MiB default stack (a no-`stack_size` impl overflows) and 16x
 /// under the 256 MiB `COMPILE_STACK_SIZE` constant (GREEN is reliable).
 const DEEP_RECURSION_DEPTH: u32 = 2048;
+
+/// Recurse ~16 MiB ONLY if we genuinely landed on the expected large-stack
+/// thread; otherwise report where we actually are, without recursing.
+///
+/// "Invoked through a large-stack helper" does NOT by itself imply "runs on a
+/// large stack": every helper documents an INLINE-degradation arm that hands the
+/// closure back to the CALLER's default-size stack — `run_on_large_stack` when
+/// the OS refuses the 256 MiB mapping, `run_on_worker` additionally when the
+/// queue is dead. Recursing there overflows and SIGABRTs the whole test binary,
+/// taking every other test's result with it (observed while driving task 5772's
+/// step-3 RED, where a panicking job had killed the worker).
+///
+/// Checking first is what makes the module docs' "no violent RED" claim true by
+/// CONSTRUCTION rather than by assumption: a degraded helper now yields a clean
+/// assertion failure naming the thread it ran on.
+fn deep_recurse_if_on_thread(expected_name: &'static str, depth: u32) -> Result<u64, String> {
+    let actual = std::thread::current().name().map(str::to_owned);
+    if actual.as_deref() != Some(expected_name) {
+        return Err(format!(
+            "refusing to recurse ~16 MiB on thread {actual:?}: expected the \
+             large-stack thread {expected_name:?}. The helper degraded to an \
+             inline call, so recursing here would overflow a default-size stack \
+             and abort the entire test binary."
+        ));
+    }
+    Ok(deep_recurse(depth))
+}
 
 /// (a) `run_on_large_stack` returns the closure's computed value, runs the
 /// closure on a DISTINCT thread (not the caller), and permits the closure to
@@ -285,9 +324,18 @@ fn run_on_worker_returns_value_and_runs_on_named_distinct_thread() {
 fn run_on_worker_reuses_one_persistent_thread_unlike_run_on_large_stack() {
     use crate::large_stack::{run_on_large_stack, run_on_worker};
 
+    let caller_id = std::thread::current().id();
     let first = run_on_worker(|| std::thread::current().id());
     let second = run_on_worker(|| std::thread::current().id());
     let third = run_on_worker(|| std::thread::current().id());
+
+    // Non-vacuity: if the helper had degraded to inline execution, all three
+    // would trivially be equal — to the CALLER's own id. Rule that out first,
+    // so "all equal" can only mean "one real worker served all three".
+    assert_ne!(
+        first, caller_id,
+        "jobs must run on a worker thread, not degrade to an inline call on the caller"
+    );
 
     assert_eq!(
         first, second,
@@ -317,16 +365,20 @@ fn run_on_worker_reuses_one_persistent_thread_unlike_run_on_large_stack() {
 /// [`crate::large_stack::COMPILE_STACK_SIZE`] is applied to it and not just to
 /// the per-call helpers.
 ///
-/// The recursion runs ONLY through the helper, so at RED (symbol absent) this is
-/// a compile error, never a SIGSEGV — see the module docs.
+/// The recursion runs ONLY through the helper, and only once
+/// [`deep_recurse_if_on_thread`] has confirmed the helper did not degrade to an
+/// inline call — so neither an absent symbol nor a dead worker can turn this
+/// into a SIGSEGV. See the module docs.
 #[test]
 fn run_on_worker_survives_deep_recursion_over_default_stack() {
-    use crate::large_stack::run_on_worker;
+    use crate::large_stack::{WORKER_THREAD_NAME, run_on_worker};
 
-    let result = run_on_worker(|| deep_recurse(DEEP_RECURSION_DEPTH));
+    let result =
+        run_on_worker(|| deep_recurse_if_on_thread(WORKER_THREAD_NAME, DEEP_RECURSION_DEPTH));
 
+    let depth_reached = result.unwrap_or_else(|why| panic!("{why}"));
     assert_eq!(
-        result,
+        depth_reached,
         u64::from(DEEP_RECURSION_DEPTH) + 1,
         "deep recursion must run to completion on the persistent worker's large stack"
     );
@@ -353,4 +405,146 @@ fn worker_thread_name_is_distinct_and_fits_the_linux_budget() {
         WORKER_THREAD_NAME, ENGINE_THREAD_NAME,
         "the persistent worker must be distinguishable from the fire-and-forget engine thread"
     );
+}
+
+// ── Shared-worker robustness (task 5772) ─────────────────────────────────────
+//
+// The properties a PER-CALL spawn never needed. A per-call thread's death costs
+// exactly one call; the shared worker's would cost every future one in the
+// process, so a single poisoned job must not disable the mechanism for
+// everybody else.
+//
+// RED shape (no hang, by construction). Before the worker runs jobs under
+// `catch_unwind`, a panicking job unwinds the worker thread, dropping the
+// `Receiver`. Every later `send` then returns `SendError`, and `run_on_worker`'s
+// inline-recovery arm runs the recovered job on the submitter — so (l) fails
+// deterministically on a ThreadId mismatch rather than blocking. (k) likewise
+// fails on the payload assertion: the submitter sees its reply channel
+// disconnect and raises "large-stack worker died", not the original "boom".
+//
+// (m) is a GREEN-side guarantee. Because the worker is PROCESS-WIDE, whether it
+// is already poisoned when (m) runs depends on test-thread interleaving with (k)
+// and (l), so at RED it may pass or fail — it cannot hang either way. (l) is the
+// deterministic RED for panic isolation.
+
+/// (k) A panicking job propagates the panic to ITS submitter, carrying the
+/// ORIGINAL payload — the same faithful semantics
+/// `run_on_large_stack_propagates_closure_panic` pins for the scoped tier.
+///
+/// The payload assertion is the load-bearing half: a worker that merely died
+/// would also make `catch_unwind` return `Err`, just with the helper's
+/// "worker died" message instead of the closure's own.
+#[test]
+fn run_on_worker_propagates_the_original_job_panic_to_its_submitter() {
+    use crate::large_stack::run_on_worker;
+    use std::panic::AssertUnwindSafe;
+
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // Concrete `T = ()` so inference is unambiguous; the closure never
+        // returns normally, but the panic must still cross back over the queue.
+        run_on_worker::<_, ()>(|| panic!("boom"));
+    }));
+
+    let payload = result.expect_err("a panicking job must propagate out of run_on_worker");
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".to_owned());
+    assert_eq!(
+        message, "boom",
+        "the submitter must receive the JOB's original panic payload, not a \
+         substitute raised by the helper"
+    );
+}
+
+/// (l) The worker SURVIVES a panicking job. This is the whole difference between
+/// a shared worker and a per-call spawn: one poisoned job must not disable the
+/// mechanism for every future caller in the process.
+///
+/// `ThreadId`s are never reused, so an equal pair across the panic proves the
+/// SAME thread kept serving — not that a replacement was silently spun up.
+#[test]
+fn run_on_worker_survives_a_panicking_job() {
+    use crate::large_stack::run_on_worker;
+    use std::panic::AssertUnwindSafe;
+
+    let caller_id = std::thread::current().id();
+    let before = run_on_worker(|| std::thread::current().id());
+    // Non-vacuity: a helper that had ALREADY degraded to inline execution would
+    // report the caller's own id both before and after, passing this test while
+    // proving nothing. Pin that the recorded id really is a worker's.
+    assert_ne!(
+        before, caller_id,
+        "the pre-panic job must run on a worker thread, not inline on the caller"
+    );
+
+    let poisoned = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        run_on_worker::<_, ()>(|| panic!("poisoned job"));
+    }));
+    assert!(
+        poisoned.is_err(),
+        "the panicking job must still surface as a panic on its submitter"
+    );
+
+    let (value, after) = run_on_worker(|| (7u32, std::thread::current().id()));
+    assert_eq!(
+        value, 7,
+        "the worker must keep answering submissions after a poisoned job"
+    );
+    assert_eq!(
+        after, before,
+        "the SAME persistent worker thread must survive the panic — a per-call \
+         spawn can afford to die, a shared one cannot"
+    );
+}
+
+/// (m) Concurrent submitters each get their OWN result, and all of them run on
+/// the one shared worker: no cross-talk between the per-call reply channels, and
+/// no accidental second worker under contention.
+#[test]
+fn concurrent_submitters_share_one_worker_without_cross_talk() {
+    use crate::large_stack::run_on_worker;
+
+    const SUBMITTERS: u64 = 8;
+
+    let handles: Vec<_> = (0..SUBMITTERS)
+        .map(|i| {
+            std::thread::spawn(move || {
+                // A distinct closure per submitter, so a mis-routed reply shows
+                // up as a wrong value rather than a coincidentally-equal one.
+                let (doubled, worker_id) =
+                    run_on_worker(move || (i * 2, std::thread::current().id()));
+                (i, doubled, worker_id)
+            })
+        })
+        .collect();
+
+    let results: Vec<_> = handles
+        .into_iter()
+        .map(|h| h.join().expect("submitter thread must not panic"))
+        .collect();
+    assert_eq!(
+        results.len() as u64,
+        SUBMITTERS,
+        "every submitter must be accounted for"
+    );
+
+    for (i, doubled, _) in &results {
+        assert_eq!(
+            *doubled,
+            i * 2,
+            "submitter {i} received another submitter's result — the per-call \
+             reply channels must not cross-talk"
+        );
+    }
+
+    let (_, _, first_worker) = results[0];
+    for (i, _, worker_id) in &results {
+        assert_eq!(
+            *worker_id, first_worker,
+            "submitter {i} ran on a different thread — concurrent submissions \
+             must all land on the ONE persistent worker"
+        );
+    }
 }
