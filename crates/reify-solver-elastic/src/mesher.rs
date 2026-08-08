@@ -99,7 +99,10 @@ pub struct ProfileBoundary {
     pub holes: Vec<Vec<[f64; 2]>>,
 }
 
-/// Errors from [`mesh_swept_profile_2d`].
+/// Errors on the 2-D cross-section meshing path: the four returned by
+/// [`mesh_swept_profile_2d`] itself, plus [`Mesh2dError::ProfileUnresolvable`]
+/// for an upstream producer that could not build a [`ProfileBoundary`] to hand
+/// it in the first place.
 #[derive(Debug)]
 pub enum Mesh2dError {
     /// Outer ring is empty — caller passed nothing to mesh.
@@ -115,6 +118,19 @@ pub enum Mesh2dError {
     /// detected at compile time). Callers can choose to fall back to a
     /// different mesher or surface this as a configuration error.
     GmshUnavailable,
+    /// No [`ProfileBoundary`] could be produced for this body at all, so
+    /// nothing was ever handed to [`mesh_swept_profile_2d`]. The payload names
+    /// the producer-side reason.
+    ///
+    /// Distinct from [`Mesh2dError::EmptyBoundary`] on purpose: that one means
+    /// a boundary WAS produced and its outer ring turned out to be empty, and
+    /// conflating the two makes a downstream diagnostic
+    /// (`"swept hex/wedge path failed: …"`) misreport an upstream resolution
+    /// failure as a degenerate cross-section. Producers live above this crate
+    /// (e.g. `reify_eval::sweep_classifier::build_swept_2d_mesh`), so the
+    /// reason is carried as text rather than as a typed enum this layer would
+    /// have to know about.
+    ProfileUnresolvable(String),
 }
 
 /// User-tunable knobs for one [`mesh_swept_profile_2d`] call.
@@ -313,10 +329,21 @@ pub fn auto_mesh_size_from_boundary(boundary: &ProfileBoundary, multiplier: f64)
 
 /// Shoelace-formula signed area of a closed 2D ring.
 ///
-/// CCW ring -> positive; CW ring -> negative; collinear / zero-area ring -> 0.0
-/// (within float tolerance). Private to the module; used by the
-/// `mesh_swept_profile_2d` validation pre-pass to flag degenerate outer rings.
-fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
+/// # Sign convention
+///
+/// Positive = counter-clockwise (CCW); negative = clockwise (CW); collinear /
+/// zero-area ring = 0.0 (within float tolerance). This is exactly the
+/// convention [`ProfileBoundary`] documents for its own rings ("Outer-boundary
+/// points (CCW for positive area)"), so the sign of this function IS the
+/// predicate for "does this ring satisfy the `ProfileBoundary` outer contract".
+///
+/// A ring of fewer than 3 points has no area and returns `0.0`.
+///
+/// Used by the `mesh_swept_profile_2d` validation pre-pass to flag degenerate
+/// outer rings, and re-exported at the crate root so upstream *producers* of a
+/// `ProfileBoundary` can normalise their rings to the same convention rather
+/// than each re-deriving the formula.
+pub fn ring_signed_area_2d(ring: &[[f64; 2]]) -> f64 {
     if ring.len() < 3 {
         return 0.0;
     }

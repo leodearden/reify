@@ -80,14 +80,22 @@ fn engine_swept_kind_table_records_extrude_realization() {
         "expected exactly one swept-kind table entry after a single Extrude realization, got len() == {}",
         table.len()
     );
-    assert_eq!(
-        table.lookup(final_handle),
-        Some(&SweptKind::Extrude {
-            axis: [0.0, 0.0, 1.0],
-            length: Value::length(0.01),
-        }),
-        "the realization's final handle must map to SweptKind::Extrude with axis=+Z and length=10mm (0.01m SI)"
-    );
+    // Task 5218 added a `profile` handle to SweptKind::Extrude; match on the
+    // axis/length invariants with `..` so the assertion is stable regardless of
+    // the realization-internal profile handle id.
+    match table.lookup(final_handle) {
+        Some(SweptKind::Extrude { axis, length, .. }) => {
+            assert_eq!(*axis, [0.0, 0.0, 1.0], "extrude axis must be +Z");
+            assert_eq!(
+                *length,
+                Value::length(0.01),
+                "extrude length must be 10mm (0.01m SI)"
+            );
+        }
+        other => panic!(
+            "the realization's final handle must map to SweptKind::Extrude with axis=+Z and length=10mm (0.01m SI); got {other:?}"
+        ),
+    }
 }
 
 /// (b) A realization that finishes with a Modify op (Fillet) is NOT a
@@ -345,15 +353,28 @@ fn engine_swept_kind_table_records_revolve_realization() {
         "expected exactly one swept-kind table entry after a single Revolve realization, got len() == {}",
         table.len()
     );
-    assert_eq!(
-        table.lookup(final_handle),
-        Some(&SweptKind::Revolve {
-            axis_origin: [0.0, 0.0, 0.0],
-            axis_dir: [0.0, 0.0, 1.0],
-            angle_rad: std::f64::consts::FRAC_PI_2,
-        }),
-        "the realization's final handle must map to SweptKind::Revolve with axis=+Z and angle=π/2"
-    );
+    // Task 5218 added a `profile` handle to SweptKind::Revolve; match on the
+    // axis/angle invariants with `..` so the assertion is stable regardless of
+    // the realization-internal profile handle id.
+    match table.lookup(final_handle) {
+        Some(SweptKind::Revolve {
+            axis_origin,
+            axis_dir,
+            angle_rad,
+            ..
+        }) => {
+            assert_eq!(*axis_origin, [0.0, 0.0, 0.0], "revolve axis_origin must be the origin");
+            assert_eq!(*axis_dir, [0.0, 0.0, 1.0], "revolve axis_dir must be +Z");
+            assert_eq!(
+                *angle_rad,
+                std::f64::consts::FRAC_PI_2,
+                "revolve angle must be π/2"
+            );
+        }
+        other => panic!(
+            "the realization's final handle must map to SweptKind::Revolve with axis=+Z and angle=π/2; got {other:?}"
+        ),
+    }
 }
 
 /// (e) Sweep-along-LineSegment realization populates the table with a single
