@@ -320,7 +320,18 @@ fn get_initial_state(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<reify_gui::types::GuiState, String> {
-    let result = reify_gui::commands::get_initial_state_impl(&state.engine);
+    // Task 5772: engine-bearing projection commands run on the PERSISTENT
+    // large-stack worker. Same 256 MiB headroom as the compile tier, but one
+    // mapping for the process lifetime instead of one per call — these fire far
+    // too often for a fresh 256 MiB mmap each. The worker takes `'static`
+    // closures, so the `Arc` is cloned and the owned args move in; `emit_status`,
+    // the `IdleGuard`, `compute_delta` and `emit_delta` all STAY on the command
+    // thread, mirroring how 5357 wrapped the compile paths.
+    let engine = Arc::clone(&state.engine);
+    let result =
+        reify_gui::large_stack::run_on_worker(move || {
+            reify_gui::commands::get_initial_state_impl(&engine)
+        });
     if let Ok(ref gui_state) = result {
         // Store as last_state so subsequent commands produce correct diffs
         let delta = compute_delta(&state.last_state, gui_state);
@@ -339,7 +350,10 @@ fn set_parameter(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::set_parameter_impl(&state.engine, &cell_id, &value);
+    let engine = Arc::clone(&state.engine);
+    let result = reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::set_parameter_impl(&engine, &cell_id, &value)
+    });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
@@ -358,12 +372,15 @@ fn sync_observed_demand(
     displayed_cells: Vec<String>,
     panel_constraints: Vec<String>,
 ) -> Result<(), String> {
-    reify_gui::commands::sync_observed_demand_impl(
-        &state.engine,
-        &visible_realizations,
-        &displayed_cells,
-        &panel_constraints,
-    )
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::sync_observed_demand_impl(
+            &engine,
+            &visible_realizations,
+            &displayed_cells,
+            &panel_constraints,
+        )
+    })
 }
 
 /// Register the GUI's viewport-visible realizations as the PRODUCTION selective
@@ -376,7 +393,10 @@ fn sync_demand(
     state: tauri::State<'_, AppState>,
     visible_realizations: Vec<String>,
 ) -> Result<(), String> {
-    reify_gui::commands::sync_demand_impl(&state.engine, &visible_realizations)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::sync_demand_impl(&engine, &visible_realizations)
+    })
 }
 
 #[tauri::command]
@@ -442,7 +462,10 @@ fn open_file_engine(
 
 #[tauri::command]
 fn export(state: tauri::State<'_, AppState>, format: String, path: String) -> Result<(), String> {
-    reify_gui::commands::export_impl(&state.engine, &format, &path)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::export_impl(&engine, &format, &path)
+    })
 }
 
 #[tauri::command]
@@ -450,28 +473,40 @@ fn get_source_location(
     state: tauri::State<'_, AppState>,
     entity_path: String,
 ) -> Result<reify_mcp::SourceLocationInfo, String> {
-    reify_gui::commands::get_source_location_impl(&state.engine, &entity_path)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_source_location_impl(&engine, &entity_path)
+    })
 }
 
 #[tauri::command]
 fn get_entity_tree(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<reify_gui::types::EntityTreeNode>, String> {
-    reify_gui::commands::get_entity_tree_impl(&state.engine)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_entity_tree_impl(&engine)
+    })
 }
 
 #[tauri::command]
 fn get_entity_identity_map(
     state: tauri::State<'_, AppState>,
 ) -> Result<std::collections::HashMap<String, reify_gui::types::EntityIdentity>, String> {
-    reify_gui::commands::get_entity_identity_map_impl(&state.engine)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_entity_identity_map_impl(&engine)
+    })
 }
 
 #[tauri::command]
 fn get_mechanism_descriptors(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<reify_gui::types::MechanismDescriptor>, String> {
-    reify_gui::commands::get_mechanism_descriptors_impl(&state.engine)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_mechanism_descriptors_impl(&engine)
+    })
 }
 
 #[tauri::command]
@@ -479,7 +514,13 @@ fn get_def_preview(
     state: tauri::State<'_, AppState>,
     def_name: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    reify_gui::commands::get_def_preview_impl(&state.engine, &def_name)
+    // Evaluates a definition, so this is recursion-bearing in the same way the
+    // compile paths are — the strongest single reason to cover all 14, not just
+    // the four the task description named.
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_def_preview_impl(&engine, &def_name)
+    })
 }
 
 #[tauri::command]
@@ -488,7 +529,10 @@ fn get_containing_definition(
     line: u32,
     col: u32,
 ) -> Result<Option<reify_gui::types::DefInfo>, String> {
-    reify_gui::commands::get_containing_definition_impl(&state.engine, line, col)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_containing_definition_impl(&engine, line, col)
+    })
 }
 
 #[tauri::command]
@@ -497,7 +541,10 @@ fn get_entity_at_source_location(
     line: u32,
     col: u32,
 ) -> Result<Option<String>, String> {
-    reify_gui::commands::get_entity_at_source_location_impl(&state.engine, line, col)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_entity_at_source_location_impl(&engine, line, col)
+    })
 }
 
 #[tauri::command]
@@ -740,7 +787,10 @@ fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// lex-first). Returns `Some(name)` after a `set_active_fea_case` call.
 #[tauri::command]
 fn get_active_fea_case(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
-    reify_gui::commands::get_active_fea_case_impl(&state.engine)
+    let engine = Arc::clone(&state.engine);
+    reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::get_active_fea_case_impl(&engine)
+    })
 }
 
 /// Switch to the named FEA case and return a rebuilt GuiState (task 3026 case-picker).
@@ -755,7 +805,10 @@ fn set_active_fea_case(
     state: tauri::State<'_, AppState>,
     case: String,
 ) -> Result<reify_gui::types::GuiState, String> {
-    let result = reify_gui::commands::set_active_fea_case_impl(&state.engine, &case);
+    let engine = Arc::clone(&state.engine);
+    let result = reify_gui::large_stack::run_on_worker(move || {
+        reify_gui::commands::set_active_fea_case_impl(&engine, &case)
+    });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
