@@ -71,7 +71,8 @@
 //! chunk survives on the call), and non-function call-shaped syntax
 //! (`auto(free)`, `@region(…)`). Narrowing THAT is **#5647**. Until it lands
 //! the omission lane is the trustworthy half, which is one more reason the CLI
-//! arm is opt-in.
+//! arm is opt-in — and the reason #5480's gate must leave `fabricated-name:`
+//! report-only (see "δ's gate must key on the OMISSION categories only").
 //!
 //! **No residual count is pinned in this comment.** It would be wrong within a
 //! chunk edit, and there is no test behind it (the floor guards deliberately
@@ -135,6 +136,29 @@
 //! those are #5480 (δ). [`baseline_candidates`] is the single derivation δ's
 //! regenerator calls, sharing [`omission_dispositions`] with [`check`] so a
 //! generated baseline cannot disagree with the ratchet that checks it.
+//!
+//! ### δ's gate must key on the OMISSION categories only, until #5647 lands
+//!
+//! Normative for #5480, recorded here because #5480's own text says this
+//! pattern "needs no change" and would otherwise inherit the constraint
+//! silently. The ratchet has ONE channel and it is omission-shaped: the
+//! baseline file is a flat list of NAMES, and [`baseline_candidates`] selects
+//! [`Disposition::Undocumented`] alone. A `fabricated-name:` finding therefore
+//! has no ratchet channel at all — it is suppressible only by hand-editing a
+//! `pdoccover:allow` marker onto the mentioning chunk line, one at a time.
+//!
+//! Combine that with the mention-side imprecision documented above — today's
+//! residue on the real corpus is dominated by #5647-class false positives
+//! (grammar metavariables, user names called inside example source,
+//! call-shaped non-function syntax) — and a hard gate over ALL five categories
+//! would land carrying unsuppressable false positives. So δ's gate keys on
+//! `undocumented-name:`, `stale-baseline-entry:`, `stale-allow-entry:` and
+//! `allow-missing-reason:`; `fabricated-name:` stays REPORT-ONLY. Two ways to
+//! lift that, whichever comes first: #5647 narrows the mention side until the
+//! residue is real, or the baseline format grows `path:name` rows and the
+//! disposition logic covers fabrications so the ratchet absorbs them the way it
+//! absorbs omissions. Either is a deliberate decision with a test behind it —
+//! neither is a silent widening of the gate.
 //!
 //! ## Both scanners are deliberately format-agnostic
 //!
@@ -1700,6 +1724,17 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// already-baselined names (debt already accounted for), reasonless markers (a
 /// defect to fix, not debt to freeze) and fabrications (a chunk defect with no
 /// registry entry to key on).
+///
+/// ## The fabrication exclusion is a constraint on #5480's gate
+///
+/// Because this is the ONLY ratchet channel and it is name-keyed, a
+/// `fabricated-name:` finding cannot be baselined at all — only hand-marked
+/// with `pdoccover:allow`, per chunk line. #5480's hard gate must therefore key
+/// on the omission categories only, leaving `fabricated-name:` report-only
+/// until #5647 narrows the mention side (or until the baseline format grows
+/// `path:name` rows and [`omission_dispositions`] is generalised to cover
+/// fabrications). Module header, "δ's gate must key on the OMISSION categories
+/// only", has the full rationale.
 ///
 /// Reads only what the omission lane needs — [`load_inputs`], not
 /// [`load_oracle_sources`] — so a regenerator run does not pay for the
