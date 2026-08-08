@@ -957,6 +957,63 @@ impl JcodemunchClient {
                 other => other,
             })
     }
+
+    /// Client-side counterpart of the MCP `tools/list` method: the names of
+    /// every tool this session's server advertises.
+    ///
+    /// This is the observable signal for boundary scenario B1 — a completed
+    /// handshake only means the seam is live if the server actually offers
+    /// the tools the detectors call, which is what
+    /// `tests/jcodemunch_session_live.rs` asserts against a real serve.
+    ///
+    /// A missing or non-array `result.tools`, or an entry with no `name`, is
+    /// a [`LoadError::Protocol`] — never an empty or silently shortened
+    /// list. An absent tool list is a protocol violation, not a server with
+    /// no tools, and reporting it as `Ok(vec![])` would recreate exactly the
+    /// PASS-shaped nothing this client's session handling exists to prevent.
+    ///
+    /// Goes through [`Self::post`], so it carries the stored server-assigned
+    /// session id and reuses the SSE-vs-JSON routing unchanged (a live serve
+    /// answers `tools/list` as `text/event-stream`). It deliberately does
+    /// NOT route through [`decode_tool_result`], which decodes a
+    /// `tools/call` result's MUNCH-vs-JSON content and does not apply to a
+    /// `tools/list` envelope.
+    // G-allow: test-facing pub fn (sole external caller: tests/jcodemunch_session_live.rs, a separate crate; pub(crate) would break it). The observable signal for PRD boundary scenario B1 — that a live serve advertises the tools the detectors call.
+    pub fn list_tools(&self) -> Result<Vec<String>, LoadError> {
+        let resp = self.post(&json!({
+            "jsonrpc": "2.0",
+            "id": self.next_id(),
+            "method": "tools/list",
+            "params": {},
+        }))?;
+        let tools = resp
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .ok_or_else(|| {
+                LoadError::Protocol(format!(
+                    "tools/list: response carried no `result.tools`; got {resp}"
+                ))
+            })?
+            .as_array()
+            .ok_or_else(|| {
+                LoadError::Protocol(format!(
+                    "tools/list: `result.tools` is not an array; got {resp}"
+                ))
+            })?;
+        tools
+            .iter()
+            .map(|tool| {
+                tool.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        LoadError::Protocol(format!(
+                            "tools/list: tool entry has no string `name`; got {tool}"
+                        ))
+                    })
+            })
+            .collect()
+    }
 }
 
 // -----------------------------------------------------------------------
