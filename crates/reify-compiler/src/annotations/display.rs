@@ -223,6 +223,50 @@ mod tests {
         assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
     }
 
+    /// The `@display` label vocabulary follows the curated ladders' ASCII
+    /// relabel (task λ, #5788; addendum L4).
+    ///
+    /// This pass validates a label by EXACT STRING EQUALITY against
+    /// `reify_core::display_units::unit_ladders()`, so relabelling the curated
+    /// tables from `mm²` to `mm^2` silently flips which annotations this
+    /// compiler accepts: `@display("mm^2")` starts working and
+    /// `@display("mm²")` starts erroring. That is a user-visible surface change
+    /// with no corpus impact — `@display` uses across the whole repo are 0, so
+    /// nothing needs migrating — but "no corpus impact" is not "no change", and
+    /// the addendum is explicit that it must not ship silently. Pinning it here
+    /// is the part λ can own; the prose belongs to task ξ.
+    ///
+    /// The superscript spelling is written as an escape so it survives an
+    /// editor or tool that normalizes source glyphs.
+    #[test]
+    fn display_label_vocabulary_is_ascii_after_the_curated_relabel() {
+        // ASCII spelling: a real Area rung, so no diagnostic.
+        let diags = run(
+            std::slice::from_ref(&disp("mm^2")),
+            &scalar(reify_core::DimensionVector::AREA),
+        );
+        assert!(
+            diags.is_empty(),
+            "@display(\"mm^2\") on an Area cell must be valid, got: {:?}",
+            diags
+        );
+
+        // Superscript spelling: no longer a rung, so exactly one error. This is
+        // the half that changes behaviour, and the half a reader is most likely
+        // to assume still works.
+        let diags = run(
+            std::slice::from_ref(&disp("mm\u{00B2}")),
+            &scalar(reify_core::DimensionVector::AREA),
+        );
+        let errs = errors(&diags);
+        assert_eq!(
+            errs.len(),
+            1,
+            "@display(\"mm\u{00B2}\") must now be rejected, got: {:?}",
+            diags
+        );
+    }
+
     // ── (f) malformed @display → silent here (shape is arg_check's job) ───────
 
     #[test]

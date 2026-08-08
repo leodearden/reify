@@ -1410,4 +1410,65 @@ mod tests {
             "the lower-edge snap must preserve the mantissa's sign"
         );
     }
+
+    /// Every curated ladder label is spelled in the ASCII `^`-exponent
+    /// alphabet, never with the U+00B2/U+00B3 superscript glyphs (task λ,
+    /// #5788; PRD contract C2 — "accept what we cannot enumerate, normalize
+    /// what we curate").
+    ///
+    /// WHY this is a test rather than a convention: these labels are compared
+    /// by raw string equality by three separate consumers — `@display`'s
+    /// validator (reify-compiler/src/annotations/display.rs), the GUI's unit
+    /// picker, and the ladder lookups in this very module. The ASCII spelling
+    /// is also the only one the .ri grammar can parse, so a superscript label
+    /// advertises a unit no user can type.
+    ///
+    /// The negative sweep alone would be satisfied by the tables becoming empty
+    /// or renamed to something else entirely, so the eight relabelled spellings
+    /// are ALSO pinned positively. `L` is included because it is the one Volume
+    /// rung that was already ASCII, and #5788 declares the stdlib unit that
+    /// finally makes it resolvable.
+    #[test]
+    fn curated_labels_use_ascii_exponent_alphabet() {
+        let ladders = unit_ladders();
+
+        // Negative sweep: no superscript exponent glyph anywhere in the tables.
+        for l in &ladders {
+            for bad in ['\u{00B2}', '\u{00B3}'] {
+                assert!(
+                    !l.derived_unit_name.contains(bad),
+                    "ladder {:?} derived_unit_name {:?} must not contain {bad:?}",
+                    l.dimension,
+                    l.derived_unit_name
+                );
+                for u in &l.units {
+                    assert!(
+                        !u.label.contains(bad),
+                        "ladder {:?} rung label {:?} must not contain {bad:?}",
+                        l.dimension,
+                        u.label
+                    );
+                }
+            }
+        }
+
+        // Positive pins: the exact ASCII spellings, on their own ladders.
+        let area = ladder(&ladders, "Area");
+        for label in ["mm^2", "cm^2", "m^2"] {
+            unit(area, label);
+        }
+        assert_eq!(area.derived_unit_name, "mm^2");
+
+        let volume = ladder(&ladders, "Volume");
+        for label in ["mm^3", "cm^3", "L", "m^3"] {
+            unit(volume, label);
+        }
+        assert_eq!(volume.derived_unit_name, "mm^3");
+
+        let density = ladder(&ladders, "Density");
+        for label in ["kg/m^3", "g/cm^3"] {
+            unit(density, label);
+        }
+        assert_eq!(density.derived_unit_name, "kg/m^3");
+    }
 }
