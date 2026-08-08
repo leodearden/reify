@@ -23,9 +23,12 @@
 # task exists to serve.  The SKIP line is informational; both asserts below
 # still run.
 #
-# The preflight below runs a real tree-sitter subprocess, but a time-bounded one
-# (_SUBSTRATE_PROBE_TIMEOUT_S in prd-capability-check.py), so a tree-sitter
-# wedged on its own grammar lock reports unusable instead of hanging this run.
+# The preflight below runs at most one real tree-sitter subprocess, and a
+# time-bounded one (_SUBSTRATE_PROBE_TIMEOUT_S in prd-capability-check.py), so a
+# tree-sitter wedged on its own grammar lock reports unusable instead of hanging
+# this run.  "At most": a lane that never generated the grammar is answered from
+# the absent parser.c, before any subprocess is spent, and reports unusable for
+# that reason instead — the SKIP line below names whichever cause applied.
 
 set -euo pipefail
 

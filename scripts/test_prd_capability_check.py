@@ -14,6 +14,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1021,6 +1022,25 @@ class TestHarnessExitCode(unittest.TestCase):
 
 # Helper: parser.c path for the skip-guard
 _TS_GRAMMAR_PARSER = os.path.join(_REPO_ROOT, "tree-sitter-reify", "src", "parser.c")
+
+
+def _patch_parser_c(exists: bool):
+    """Patch os.path.isfile so parser.c reports `exists`; other paths are real.
+
+    Keeps every case that depends on the generated grammar independent of
+    whether this lane happened to generate it, without blinding unrelated
+    isfile() calls.  Module-level because both the skip-guard tests and the
+    --grammar-substrate-status CLI tests now need it: the CLI checks the same
+    file, resolved through pcc._find_repo_root(), which agrees with _REPO_ROOT.
+    """
+    real_isfile = os.path.isfile
+
+    def fake_isfile(path):
+        if path == _TS_GRAMMAR_PARSER:
+            return exists
+        return real_isfile(path)
+
+    return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
 _REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
 _REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
 _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
@@ -1093,25 +1113,11 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
     its own patches.
     """
 
-    @staticmethod
-    def _patch_parser_c(exists: bool):
-        """Patch os.path.isfile so parser.c reports `exists`; other paths are real.
-
-        Keeps every case independent of whether this lane happened to generate
-        the grammar, without blinding unrelated isfile() calls.
-        """
-        real_isfile = os.path.isfile
-
-        def fake_isfile(path):
-            if path == _TS_GRAMMAR_PARSER:
-                return exists
-            return real_isfile(path)
-
-        return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
+    # Shares the module-level _patch_parser_c() with the CLI tests below.
 
     def test_substrate_probe_exception_degrades_to_unavailable(self):
         """(a) ANY exception from the substrate probe → unavailable, never propagated."""
-        with self._patch_parser_c(True), \
+        with _patch_parser_c(True), \
              unittest.mock.patch.object(
                  pcc, "grammar_substrate_usable",
                  side_effect=RuntimeError("boom")):
@@ -1133,7 +1139,7 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         The hardening must not silently disable the e2e on a healthy lane; that
         would be a coverage loss disguised as a fix.
         """
-        with self._patch_parser_c(True), \
+        with _patch_parser_c(True), \
              unittest.mock.patch.object(
                  pcc, "grammar_substrate_usable", return_value=(True, "")):
             available, _ = _compute_grammar_e2e_status()
@@ -1147,7 +1153,7 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         cannot quietly reorder the conjunction.
         """
         probe = unittest.mock.Mock(return_value=(True, ""))
-        with self._patch_parser_c(False), \
+        with _patch_parser_c(False), \
              unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
             available, reason = _compute_grammar_e2e_status()
         self.assertFalse(available)
@@ -1276,8 +1282,16 @@ class TestMain(unittest.TestCase):
         return tmpdir
 
     def _run_status_with_stub(self, stub):
-        """Run main(["--grammar-substrate-status"]) against a TREE_SITTER_BIN stub."""
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+        """Run main(["--grammar-substrate-status"]) against a TREE_SITTER_BIN stub.
+
+        Pins parser.c present as well as the stub.  The mode checks the generated
+        grammar before it probes, so without that patch every case below would
+        silently depend on whether this lane happened to run `tree-sitter
+        generate`, and would flip to 75 on one that had not — the ambient
+        conditioning TestGrammarSubstrateUsable's docstring rules out.
+        """
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}), \
+             _patch_parser_c(True):
             return self._run_main_capturing(["--grammar-substrate-status"])
 
     def test_grammar_substrate_status_usable_returns_0(self):
@@ -1331,7 +1345,8 @@ class TestMain(unittest.TestCase):
         caller that passes --json unconditionally.
         """
         stub = _ts_stub_cache_denied(self._stub_dir())
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}), \
+             _patch_parser_c(True):
             rc, out, _ = self._run_main_capturing(
                 ["--json", "--grammar-substrate-status"]
             )
@@ -1356,7 +1371,8 @@ class TestMain(unittest.TestCase):
         ))
         stub = _ts_stub_clean(self._stub_dir())
         with unittest.mock.patch.object(pcc, "evaluate", sentinel), \
-             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}), \
+             _patch_parser_c(True):
             rc, out, _ = self._run_main_capturing(
                 ["--grammar-substrate-status", "/nonexistent/probe-set.json"]
             )
@@ -1381,6 +1397,54 @@ class TestMain(unittest.TestCase):
             rc, _, _ = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
         self.assertEqual(rc, 0)
         sentinel.assert_not_called()
+
+    def test_grammar_substrate_status_ungenerated_grammar_returns_75(self):
+        """No generated parser.c → exit 75 naming it, and no probe is spawned.
+
+        grammar_substrate_usable() reports an ungenerated grammar USABLE on
+        purpose — the load failure it produces carries no permission marker, and
+        its narrowness contract keeps a missing or corrupt grammar loud rather
+        than skippable.  So without a precondition check of its own, this mode
+        would answer "usable" to a shell caller that then still collects exit 70
+        from the probe run: the one answer the mode exists to spare it.
+        """
+        probe = unittest.mock.Mock(return_value=(True, ""))
+        with _patch_parser_c(False), \
+             unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
+            rc, out, _ = self._run_main_capturing(["--grammar-substrate-status"])
+        self.assertEqual(
+            rc, 75,
+            "an ungenerated grammar must reach the caller as the same SKIP "
+            "contract as any other unrunnable substrate, not as exit 0",
+        )
+        self.assertIn(
+            "parser.c", out,
+            "the reason must name the missing file; 'grammar unusable' with no "
+            "path is the un-attributable message this task exists to remove",
+        )
+        self.assertEqual(
+            probe.call_count, 0,
+            "the isfile() precondition must short-circuit ahead of the probe: a "
+            "lane with no grammar should pay no tree-sitter subprocess",
+        )
+
+    def test_grammar_substrate_status_generated_grammar_still_probes(self):
+        """The precondition gates, it does not replace: a present parser.c still probes.
+
+        Guards the inverse mistake — answering the whole question from isfile()
+        would reinstate the path-existence guard whose blindness to a denied
+        cache is the reported bug.
+        """
+        probe = unittest.mock.Mock(return_value=(True, ""))
+        with _patch_parser_c(True), \
+             unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
+            rc, _, _ = self._run_main_capturing(["--grammar-substrate-status"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            probe.call_count, 1,
+            "isfile(parser.c) says the grammar was GENERATED, never that "
+            "tree-sitter can load it; the behavioural probe must still run",
+        )
 
     def test_grammar_substrate_status_non_executable_cli_returns_75(self):
         """A present-but-unlaunchable tree-sitter CLI → exit 75, reason on stdout.
@@ -1563,6 +1627,26 @@ class TestMain(unittest.TestCase):
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
+        self._assert_no_cache_denial_hint(out)
+
+    def test_non_harness_error_verdict_emits_no_cache_denial_hint(self):
+        """A PASSing probe whose stderr merely LOOKS denied gets no hint.
+
+        The predicate reads stderr alone, so a check/ir probe that quoted a load
+        failure and a permission denial in its own output would print a
+        tree-sitter cache/landlock hint under a PASS line — mis-attributing a
+        healthy probe to the sandbox, the inverse of what the hint is for.  Only
+        a HARNESS_ERROR means "could not run", which is what the hint explains.
+        """
+        runner = self._make_runner({
+            "grammar": (0, "", ""),
+            # exit 1 satisfies the check probe's match → PRESENT → PASS, while
+            # the stderr carries the full denial signature.
+            "check":   (1, "", _CACHE_DENIED_STDERR),
+            "ir":      (0, "a = 0.01 m", ""),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 0, "precondition: every probe must have PASSed")
         self._assert_no_cache_denial_hint(out)
 
     def test_harness_error_stderr_is_capped_not_unbounded(self):
@@ -1944,6 +2028,66 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
 
 
+def _ts_stub_forks_grandchild(
+    tmpdir: str, pidfile: str, name: str = "ts_stub_forks", seconds: int = 120
+) -> str:
+    """Stub that backgrounds a long sleeper, records its pid, then wedges itself.
+
+    Models the wedged tree-sitter the substrate bound is sized for: one that had
+    already forked `cc` for the cold-cache grammar compile.  The grandchild
+    inherits the probe's stdout/stderr pipes, so killing only the direct child
+    leaves it running and still holding them.
+
+    `seconds` outlasts any plausible test bound, so a sleeper found alive is a
+    real leak rather than a race with its own exit.
+    """
+    return _write_ts_stub(tmpdir, name, f"""\
+        sleep {seconds} &
+        echo $! > {shlex.quote(pidfile)}
+        sleep {seconds}
+    """)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """True while `pid` names a live (non-zombie) process.
+
+    Reads /proc rather than os.kill(pid, 0): a killed grandchild is reparented
+    and can sit as a zombie until its new parent reaps it, which os.kill reports
+    identically to a running process.
+    """
+    try:
+        with open(f"/proc/{pid}/stat") as fh:
+            # The comm field is parenthesised and may itself contain spaces, so
+            # split after the LAST ')': state is the field right after it.
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state != "Z"
+
+
+def _kill_pid_quietly(pid: int) -> None:
+    """Best-effort SIGKILL, so a failing test cannot leak its sleeper."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _wait_until(predicate, timeout_s: float) -> bool:
+    """Poll `predicate` until true or `timeout_s` elapses; return its last value.
+
+    Process death is asynchronous — the signal is delivered and the parent reaps
+    at their own pace — so the alternative to polling is a sleep long enough to
+    be slow and still short enough to be flaky.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return bool(predicate())
+
+
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     """Stub that EXISTS on disk but carries no execute bit.
 
@@ -2153,16 +2297,22 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             "the errno detail naming the missing CLI must reach the reason",
         )
 
-        # Same sentinel, different subsystem: an absent grammar directory.
+        # Same sentinel, different subsystem: an absent grammar directory.  The
+        # CLI here is a perfectly good stub, so only the cwd can fail.
+        bad_root = os.path.join(self._tmpdir, "no-repo")
         with unittest.mock.patch.object(
-            pcc, "_find_repo_root", return_value=os.path.join(self._tmpdir, "no-repo")
+            pcc, "_find_repo_root", return_value=bad_root
         ):
             usable, cwd_reason = self._call(self._clean_stub())
         self.assertFalse(usable, "an absent grammar directory is an unusable substrate")
         self.assertIn(
-            "tree-sitter-reify", cwd_reason,
+            os.path.join(bad_root, "tree-sitter-reify"), cwd_reason,
             "an absent grammar directory must be attributable from the reason, "
-            "not silently reported as a missing CLI",
+            "not silently reported as a missing CLI.  Asserted on the CONCRETE "
+            "path, because the reason's static sentence names "
+            "'tree-sitter-reify' for every launch failure — including the "
+            "missing-CLI case above — so a substring assertion on that alone "
+            "would still pass with the errno detail dropped entirely",
         )
 
     # ── (e) present-but-unlaunchable CLI → unusable, never a raise ────────────
@@ -2238,6 +2388,43 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         self.assertEqual(
             pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
             "a probe that never finished cannot be trusted as PRESENT/ABSENT",
+        )
+
+    def test_timeout_kills_the_probes_whole_process_tree(self):
+        """A timed-out probe must leave no descendant running.
+
+        subprocess.run kills and reaps only the DIRECT child, so a wedged
+        tree-sitter that had already forked `cc` leaked it — still holding the
+        inherited stdout/stderr pipes.  The bound exists precisely for the
+        wedged-toolchain case, so it must not manufacture a process leak in it;
+        the repo tracks that class of orphan separately
+        (docs/notes/orphaned-test-binary-reaper.md).
+        """
+        pidfile = os.path.join(self._tmpdir, "grandchild.pid")
+        stub = _ts_stub_forks_grandchild(self._tmpdir, pidfile)
+        probe = pcc.Probe(
+            capability="wedged with a grandchild",
+            probe_kind="grammar",
+            fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+            expected={"observation": "present", "match": {}},
+        )
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe, timeout=0.6)
+        self.assertIn(
+            pcc._PROBE_TIMEOUT_SENTINEL, run.stderr,
+            "precondition: the stub must have outlasted the bound",
+        )
+        self.assertTrue(
+            _wait_until(lambda: os.path.isfile(pidfile) and os.path.getsize(pidfile), 5.0),
+            "precondition: the stub must have recorded its grandchild's pid",
+        )
+        with open(pidfile) as fh:
+            pid = int(fh.read().strip())
+        self.addCleanup(_kill_pid_quietly, pid)
+        self.assertTrue(
+            _wait_until(lambda: not _pid_is_alive(pid), 5.0),
+            "the kill must reach the probe's grandchildren, not only the direct "
+            "child; a leaked compile outlives the run still holding its pipes",
         )
 
     def test_probe_set_runs_stay_unbounded(self):

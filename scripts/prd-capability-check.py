@@ -46,10 +46,11 @@ Harness exit codes:
     2   ≥1 UNPROVABLE, 0 FAIL
     64  usage / argument error (sysexits EX_USAGE)
     70  tool / runtime error (sysexits EX_SOFTWARE) — HARNESS_ERROR verdict
-    75  grammar substrate unavailable — callers should SKIP, not FAIL
+    75  grammar substrate unavailable (grammar never generated, or tree-sitter
+        cannot load it) — callers should SKIP, not FAIL
         (sysexits EX_TEMPFAIL; only ever returned by --grammar-substrate-status,
-        which runs one substrate probe but evaluates no probe set, and so can
-        never affect a verdict)
+        which runs at most one substrate probe but evaluates no probe set, and
+        so can never affect a verdict)
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -465,6 +467,19 @@ class Result:
     observation: str
     verdict: str
 
+    def as_probe_run(self) -> ProbeRun:
+        """The captured evidence, viewed again as the ProbeRun that produced it.
+
+        Lets a ProbeRun predicate (grammar_cache_denied) be applied to a finished
+        Result without the caller rebuilding one field by field — a copy that
+        drifts silently if Result ever carries more of the run.
+        """
+        return ProbeRun(
+            exit_code=self.exit_code,
+            stdout=self.stdout,
+            stderr=self.stderr,
+        )
+
 
 # ---------------------------------------------------------------------------
 # build_command() — construct probe argv from probe kind and fixture
@@ -551,7 +566,8 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
     `reify eval` on a heavy fixture may legitimately run long, and a bound there
     would manufacture a HARNESS_ERROR out of a slow machine.  An elapsed timeout
     needs its own catch and sentinel because subprocess.TimeoutExpired derives
-    from SubprocessError, NOT from OSError.
+    from SubprocessError, NOT from OSError; a bounded run is handed to
+    _run_bounded(), which owns that catch and the cleanup it implies.
 
     Args:
         probe:   The Probe to run.
@@ -574,27 +590,20 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
         cwd = os.path.join(repo_root, "tree-sitter-reify")
 
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=cwd,
-            timeout=timeout,
-        )
-        return ProbeRun(
-            exit_code=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-        )
-    except subprocess.TimeoutExpired as exc:
-        # A separate sentinel from the launch failure below: "the tool is wedged"
-        # and "the tool is missing" are different operator problems.
-        # subprocess.run has already killed and reaped the child by now.
-        return ProbeRun(
-            exit_code=124,  # conventional timeout(1) exit code
-            stdout="",
-            stderr=f"{_PROBE_TIMEOUT_SENTINEL}: {exc}",
-        )
+        if timeout is None:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=cwd,
+                timeout=None,
+            )
+            return ProbeRun(
+                exit_code=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+        return _run_bounded(cmd, cwd=cwd, timeout=timeout)
     except OSError as exc:
         # Represent rather than propagate: callers run this at import time in the
         # test harness, where a raise costs the whole suite instead of one skip.
@@ -603,6 +612,83 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
             stdout="",
             stderr=f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}",
         )
+
+
+# Bound on the post-kill drain.  Only reachable if something escaped the killed
+# process group (it called setsid() itself) and still holds the pipes; short,
+# because at that point the choice is between a leaked process and the hang the
+# outer bound exists to prevent.
+_KILL_DRAIN_TIMEOUT_S = 2.0
+
+
+def _run_bounded(cmd: List[str], cwd: Optional[str], timeout: float) -> ProbeRun:
+    """Run `cmd` under a wall-clock bound, killing its whole process tree on timeout.
+
+    Split out so the unbounded gate path keeps plain subprocess.run().  A bounded
+    run needs more than run() offers: on a timeout run() kills and reaps only the
+    DIRECT child, so a wedged `tree-sitter` that had already forked `cc` — the
+    cold-cache grammar compile _SUBSTRATE_PROBE_TIMEOUT_S is sized for — leaves
+    that grandchild running and still holding the inherited stdout/stderr pipes.
+    start_new_session=True makes the child a session (and process-group) leader,
+    so one killpg reaches the whole tree.
+
+    Only the bounded path gets a session of its own: an unbounded `reify eval`
+    stays in the caller's process group, where an operator's Ctrl-C still
+    reaches it.
+
+    Raises:
+        OSError: if the command cannot be launched — run_probe()'s handler turns
+            that into the _BINARY_NOT_FOUND_SENTINEL representation, so the two
+            paths report a launch failure identically.
+    """
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        start_new_session=True,
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            _kill_process_tree(proc)
+            try:
+                # Safe to drain now: the group is dead, so every inherited write
+                # end of these pipes is closed and this cannot block behind a
+                # surviving grandchild.
+                proc.communicate(timeout=_KILL_DRAIN_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                # Something outlived the group kill and still holds the pipes.
+                # Stop reading rather than trade a process leak for a hang; the
+                # with-block still closes them and reaps the direct child.
+                proc.kill()
+            # A separate sentinel from the launch failure: "the tool is wedged"
+            # and "the tool is missing" are different operator problems.
+            return ProbeRun(
+                exit_code=124,  # conventional timeout(1) exit code
+                stdout="",
+                stderr=f"{_PROBE_TIMEOUT_SENTINEL}: {exc}",
+            )
+    return ProbeRun(exit_code=proc.returncode, stdout=stdout, stderr=stderr)
+
+
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """SIGKILL the probe's process group, falling back to the direct child.
+
+    The group exists only because _run_bounded() launched with
+    start_new_session=True, which gives the child pgid == pid; that is what makes
+    a single signal reach `cc` and anything else the probe spawned.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        # Already reaped, or the pgid lookup was refused.  The direct child is
+        # still ours to kill, and killing it beats killing nothing.
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -621,6 +707,35 @@ _SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 # function interrogates — cannot hang the caller.
 _SUBSTRATE_PROBE_TIMEOUT_S = 30.0
 
+# The generated parser, relative to the repo root.  Its absence is a
+# PRECONDITION failure, not a substrate one, and the two must not be conflated:
+# with no parser.c there is no reify language to load, so `tree-sitter parse`
+# reports a load failure carrying no permission marker — which is exactly the
+# shape grammar_substrate_usable()'s narrowness contract deliberately leaves
+# LOUD (a corrupt grammar must reach HARNESS_ERROR, never a skip).  A caller
+# asking "can a grammar probe run here?" therefore checks this first.
+_GRAMMAR_PARSER_C_RELPATH = os.path.join("tree-sitter-reify", "src", "parser.c")
+
+
+def grammar_generated(repo_root: Optional[str] = None) -> tuple:
+    """Return (generated, parser_c_path) for the tree-sitter parser source.
+
+    Cheap and side-effect-free — one isfile() — so callers can put it ahead of
+    the subprocess grammar_substrate_usable() spends.
+    """
+    root = _find_repo_root() if repo_root is None else repo_root
+    parser_c = os.path.join(root, _GRAMMAR_PARSER_C_RELPATH)
+    return (os.path.isfile(parser_c), parser_c)
+
+
+def _grammar_not_generated_reason(parser_c: str) -> str:
+    """Operator-facing reason for an ungenerated grammar; names the missing file."""
+    return (
+        f"the reify tree-sitter grammar was never generated ({parser_c} is "
+        "missing), so no grammar probe can run here; generate it with "
+        "`tree-sitter generate` in tree-sitter-reify/"
+    )
+
 
 def grammar_substrate_usable() -> tuple:
     """Return (usable, reason) for the tree-sitter grammar toolchain.
@@ -638,6 +753,13 @@ def grammar_substrate_usable() -> tuple:
     parse failure.  An unparseable fixture is the *expected* result for several
     committed probes, so treating it as a broken substrate would suppress the
     grammar e2e exactly when the grammar is healthy.
+
+    PRECONDITION, not checked here: that the grammar was generated at all.  An
+    absent parser.c produces a load failure with no permission marker, which
+    this function reports USABLE by design — the narrowness contract keeps a
+    missing or corrupt grammar loud rather than skippable.  Callers wanting the
+    whole question answered pair this with grammar_generated(), which is what
+    --grammar-substrate-status and the test harness's skip-guard both do.
 
     Callers use the result to SKIP rather than to alter a verdict — a probe that
     could not run still reports HARNESS_ERROR / exit 70.
@@ -819,12 +941,13 @@ def main(argv: List[str]) -> int:
     probe with the real runner, prints per-probe evidence (or --json), and
     returns harness_exit_code(results).
 
-    --grammar-substrate-status is a separate mode: it runs ONE substrate probe
-    (a real `tree-sitter parse` subprocess, bounded by
-    _SUBSTRATE_PROBE_TIMEOUT_S) to report whether a grammar probe could run here
-    at all, so a shell caller can print a clean SKIP instead of reporting an
-    unrunnable probe as a gate FAIL.  It evaluates no probe set, so it cannot
-    affect any verdict.  --json does not apply to it: the finding is carried by
+    --grammar-substrate-status is a separate mode: it reports whether a grammar
+    probe could run here at all, so a shell caller can print a clean SKIP
+    instead of reporting an unrunnable probe as a gate FAIL.  It answers with
+    both halves of that question — grammar_generated() (is there a parser.c to
+    load?) and then, only if so, ONE substrate probe (a real `tree-sitter parse`
+    subprocess, bounded by _SUBSTRATE_PROBE_TIMEOUT_S).  It evaluates no probe
+    set, so it cannot affect any verdict.  --json does not apply to it: the finding is carried by
     the exit code (0 / 75), with a one-line human reason on stdout.  A
     PROBE_SET_JSON passed alongside it is ignored for the same reason.
 
@@ -859,9 +982,11 @@ def main(argv: List[str]) -> int:
         dest="grammar_substrate_status",
         help=(
             "Report whether tree-sitter can run a grammar probe here; "
-            "exit 0 if usable, 75 if not.  Runs one substrate probe (a real "
-            "tree-sitter subprocess, time-bounded); evaluates no probe set and "
-            "affects no verdict.  Ignores --json and any PROBE_SET_JSON."
+            "exit 0 if usable, 75 if not (grammar not generated, cache/lock "
+            "unwritable, CLI unlaunchable, or no answer within the bound).  "
+            "Runs at most one substrate probe (a real tree-sitter subprocess, "
+            "time-bounded); evaluates no probe set and affects no verdict.  "
+            "Ignores --json and any PROBE_SET_JSON."
         ),
     )
     try:
@@ -872,6 +997,19 @@ def main(argv: List[str]) -> int:
 
     # --- Substrate status mode: report and return, without running probes ---
     if args.grammar_substrate_status:
+        # Ordered, not merged: an ungenerated grammar is a precondition failure
+        # that grammar_substrate_usable() reports usable by design (see its
+        # docstring).  Without this the shell caller is told "usable" and then
+        # still collects exit 70 from the probe run — the one answer this mode
+        # exists to spare it.  Cheap first, so a lane with no grammar pays no
+        # subprocess.
+        generated, parser_c = grammar_generated()
+        if not generated:
+            sys.stdout.write(
+                "grammar substrate: unusable: "
+                f"{_grammar_not_generated_reason(parser_c)}\n"
+            )
+            return 75  # EX_TEMPFAIL — same SKIP contract as an unusable substrate
         usable, reason = grammar_substrate_usable()
         if usable:
             sys.stdout.write("grammar substrate: usable\n")
@@ -936,7 +1074,8 @@ def main(argv: List[str]) -> int:
             # A HARNESS_ERROR means the probe could not run, so the tool's own
             # message is the operator's only lead — and the 200-char preview cuts
             # the measured 253-char cache denial mid-path, naming no file at all.
-            if r.stderr and r.verdict == _HARNESS_ERROR:
+            harness_error = r.verdict == _HARNESS_ERROR
+            if r.stderr and harness_error:
                 stderr_text = r.stderr[:_HARNESS_ERROR_STDERR_CAP]
             else:
                 stderr_text = r.stderr[:200] if r.stderr else "(empty)"
@@ -947,9 +1086,12 @@ def main(argv: List[str]) -> int:
             sys.stdout.write(f"  exit_code: {r.exit_code}\n")
             sys.stdout.write(f"  stdout:    {stdout_preview}\n")
             sys.stdout.write(f"  stderr:    {stderr_text}\n")
-            if grammar_cache_denied(
-                ProbeRun(exit_code=r.exit_code, stdout=r.stdout, stderr=r.stderr)
-            ):
+            # Scoped to HARNESS_ERROR for the same reason as the cap above: the
+            # hint explains why a probe could not RUN.  A check/ir probe whose
+            # own stderr happened to quote both a load failure and a denial
+            # would otherwise print a tree-sitter cache/landlock hint under a
+            # PASS or FAIL line — the mis-attribution the hint exists to prevent.
+            if harness_error and grammar_cache_denied(r.as_probe_run()):
                 sys.stdout.write(
                     f"  hint:      {_CACHE_DENIAL_EXPLANATION}.  "
                     f"{_CACHE_DENIAL_NEXT_STEP}\n"
