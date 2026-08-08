@@ -70,6 +70,44 @@ fn binary_union_is_one_boolean_pass() {
     );
 }
 
+/// A single binary boolean (Difference → `boolean_cut`) performs exactly ONE
+/// pass — the cut increment site, which no fuse-path test reaches.
+#[test]
+fn binary_difference_is_one_boolean_pass() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real cut
+
+    reset_boolean_pass_count();
+    kernel
+        .execute(&GeometryOp::Difference { left: a, right: b })
+        .expect("binary difference must succeed");
+    assert_eq!(
+        boolean_pass_count(),
+        1,
+        "a single binary Difference must perform exactly 1 boolean pass"
+    );
+}
+
+/// A single binary boolean (Intersection → `boolean_common`) performs exactly
+/// ONE pass — the common increment site, which no fuse-path test reaches.
+#[test]
+fn binary_intersection_is_one_boolean_pass() {
+    let mut kernel = OcctKernel::new();
+    let a = unit_box(&mut kernel);
+    let b = translated_x(&mut kernel, a, 0.5); // overlapping → a real common
+
+    reset_boolean_pass_count();
+    kernel
+        .execute(&GeometryOp::Intersection { left: a, right: b })
+        .expect("binary intersection must succeed");
+    assert_eq!(
+        boolean_pass_count(),
+        1,
+        "a single binary Intersection must perform exactly 1 boolean pass"
+    );
+}
+
 /// `fuse_all` of K=5 shapes performs exactly ONE pass — single-pass, NOT K−1.
 #[test]
 fn fuse_all_of_five_is_one_boolean_pass() {
@@ -210,11 +248,13 @@ fn boolean_work_on_another_thread_stays_out_of_this_threads_window() {
     // `cxx::UniquePtr`), so the worker's kernel is constructed INSIDE the
     // closure and never captured across the thread boundary.
     //
-    // The `join()` before this thread touches OCCT again is load-bearing, not
-    // incidental: src/handle.rs documents concurrent OCCT access from multiple
-    // threads as undefined behaviour (which is why `OcctKernelHandle` exists),
-    // so the two threads must never be inside OCCT at the same time.  A
-    // sequential handoff still reproduces the defect exactly — the failure is a
+    // The `join()` before this thread touches OCCT again is a sequential
+    // handoff for readability, NOT the thing that makes concurrent OCCT access
+    // safe: task #5277 folded ~50 OCCT integration files into this one
+    // `harness_occt` binary, so libtest is already running other OCCT tests on
+    // other threads while this one runs.  The join only avoids adding one
+    // *further* concurrent OCCT user, and keeps the assertion window trivial to
+    // reason about.  It costs the test nothing — the defect under test is a
     // foreign increment landing inside this thread's open window, and
     // sequencing changes nothing about that.
     std::thread::spawn(|| {
@@ -259,8 +299,10 @@ fn a_freshly_spawned_thread_starts_from_a_zero_count() {
         .expect("binary union must succeed");
     // This thread now stands at exactly 1.
 
-    // The reader thread performs no OCCT work at all — it only reads the
-    // counter — so this test adds no concurrent-OCCT exposure.
+    // The reader thread never calls into OCCT proper — it only reads the
+    // thread-local counter — so it adds no OCCT user of its own.  (It does not
+    // make the harness single-threaded: since task #5277 libtest already runs
+    // other OCCT tests concurrently on other threads.)
     let observed = std::thread::spawn(boolean_pass_count)
         .join()
         .expect("reader thread must not panic");
