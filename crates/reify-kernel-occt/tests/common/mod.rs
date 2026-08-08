@@ -867,6 +867,43 @@ fn bbox_all_finite_discriminates() {
 
 // ---------------------------------------------------------------------------
 // JSON-Point3 (xyz) parsing (task 5937)
+//
+// Consolidates six hand-rolled `{"x":_,"y":_,"z":_}` parsers that had
+// accumulated across `tests/harness_occt/` — three standalone functions
+// (`topology_extract_integration.rs`'s and `shell_open_curated_faces.rs`'s
+// `parse_xyz`, `sweep_guided_integration.rs`'s `parse_centroid`) and three
+// inline decodes (in `closest_point_on_shape_integration.rs`,
+// `analytic_datum_tests.rs` and `face_differential_integration.rs`'s
+// `geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal`). The
+// duplication was filed as a finding during task 5893's review and resolved
+// here, mirroring how 5893 itself consolidated the bounding-box parsers.
+//
+// TWO COPIES ARE DELIBERATELY LEFT IN PLACE — this is settled judgement, not an
+// unfinished sweep:
+//
+//  1. `src/lib.rs:4950 parse_centroid_json` CANNOT be migrated. It sits inside
+//     `#[cfg(all(test, has_occt))] mod tests` (opened at `src/lib.rs:4856`), so
+//     it compiles into the *unit*-test crate, whereas this module compiles into
+//     the *integration*-test crate — a separate compilation unit that `src/`
+//     cannot import. Task 5893 left the adjacent `parse_bbox_field`
+//     (`src/lib.rs:4969`) in place for exactly this reason; that is precedent,
+//     not oversight. Correcting the record for task 5937's own premise: its
+//     description called this copy a parser that "lives in production source
+//     rather than the test harness", which it is not — it is a unit-test helper
+//     that merely lives in `src/`, so no task should be filed to "move the
+//     production parser". (The genuine production parser for this wire format
+//     is `reify-eval`'s `topology_selectors::parse_xyz_value`, a different
+//     crate with a `Result` rather than panic contract; out of scope here.)
+//
+//  2. `face_differential_integration.rs`'s hand-rolled `serde_json` decode in
+//     `face_outward_unit_normal_for_test_returns_unit_outward_normal_for_sphere_face`
+//     (at :221) is NOT migrated by design. That decode IS the cross-check
+//     contract of assertion (c): it pins the typed helper against the
+//     JSON-encoded production query path using an INDEPENDENT decoder, so
+//     routing both sides through one shared parser would hollow the assertion
+//     out. The site carries its own do-not-consolidate marker.
+//
+// Consequently `serde_json` REMAINS a required dev-dependency of this crate.
 // ---------------------------------------------------------------------------
 
 /// A point/direction triple returned by the kernel's JSON-Point3 queries,
