@@ -313,3 +313,45 @@ fn no_p_flag_falls_back_to_containing_crate_and_skips_metavariables() {
     assert_eq!(findings[0].crate_name, "crate-a");
     assert_eq!(findings[0].stem, "bare_stem");
 }
+
+/// Test A: false-positive class (2) — the inline `stale-test-target:allow`
+/// escape.
+///
+/// `crates/crate-a/src/escaped.rs` names a stem with no matching test file,
+/// but the line carries a trailing `stale-test-target:allow` marker — zero
+/// findings. `crates/crate-a/src/unescaped.rs` carries the IDENTICAL stem
+/// reference with no marker — this negative control DOES produce a finding,
+/// proving the marker (not some parsing quirk) is what suppresses the first.
+#[test]
+fn inline_allow_marker_suppresses_the_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        "crates/crate-a/src/escaped.rs",
+        "//! Historically ran with `--test escaped_stem` // stale-test-target:allow — prose, not an invocation\n",
+    );
+    write_file(
+        root,
+        "crates/crate-a/src/unescaped.rs",
+        "//! Historically ran with `--test escaped_stem`\n", // stale-test-target:allow — synthetic fixture
+    );
+    // Deliberately NOT creating crates/crate-a/tests/escaped_stem.rs.
+
+    let files = vec![
+        "crates/crate-a/src/escaped.rs".to_string(),
+        "crates/crate-a/src/unescaped.rs".to_string(),
+    ];
+
+    let findings = scan(root, &files);
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly one finding (from unescaped.rs only); got {findings:?}"
+    );
+    assert_eq!(findings[0].file, "crates/crate-a/src/unescaped.rs");
+    assert_eq!(findings[0].crate_name, "crate-a");
+    assert_eq!(findings[0].stem, "escaped_stem");
+}
