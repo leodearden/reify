@@ -76,7 +76,12 @@ trait Conductive : ElectricallyCharacterized {
 // the `> 0.0V/m` constraint degrades to Satisfaction::Indeterminate + a
 // ConstraintIndeterminate Warning (Kleene, arch §2.5) rather than a hard error.
 // RHS values dimensioned to match LHS aliases (Ω·m, V/m) — see Conductive above
-// for rationale (esc-3115-112).
+// for rationale (esc-3115-112). That inherited rationale applies as written to
+// `resistivity > 1000000ohm*m` only: the RHS there is NON-ZERO, and the
+// polymorphic-zero rewrite never coerces a non-zero. For
+// `dielectric_strength > 0.0V/m` the RHS is a zero, so a bare `0.0` would now
+// be coerced to `Scalar<ElectricFieldStrength>` at compile time by task-4485/β
+// (esc-3115-112 resolved); `0.0V/m` is kept for readability.
 trait Insulating : ElectricallyCharacterized {
     constraint resistivity > 1000000ohm*m
     constraint dielectric_strength > 0.0V/m
