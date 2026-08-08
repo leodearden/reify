@@ -148,6 +148,28 @@ pub type Permeability = Inductance / Length
 /// dimension of the molar gas constant R = N_A·k_B.
 pub type MolarGasConstant = Energy / AmountOfSubstance / Temperature
 
+/// Pressure squared (Pa² = kg²·m⁻²·s⁻⁴). No standard named quantity exists for
+/// this dimension, so the alias name is positional: the digit IS the exponent.
+///
+/// Exists so `std.fea`'s `StressInvariants.i2` can declare the dimension the
+/// `stress_invariants` builtin ALREADY emits — the runtime computes
+/// `let dim2 = dim.mul(&dim)` (crates/reify-stdlib/src/analysis.rs) — replacing
+/// the `Real` placeholder that was previously used only because no such alias
+/// existed. Task #6092.
+pub type Pressure2 = Pressure * Pressure
+
+/// Pressure cubed (Pa³ = kg³·m⁻³·s⁻⁶) — dimension of the third stress invariant
+/// I3 = det(σ), which the `stress_invariants` builtin emits as
+/// `dim2.mul(&dim)`. Alias name is positional, as for `Pressure2`. Task #6092.
+///
+/// Chained through `Pressure2` rather than spelled `Pressure * Pressure *
+/// Pressure` because the grammar forbids `^` and parens in type-alias RHS (the
+/// same constraint documented on `StefanBoltzmannDim` above, which writes T⁴ as
+/// four repeated factors). Chaining is also DRY — one place defines the square —
+/// and the transitive-alias path resolves to exactly PRESSURE³, identical to
+/// `PRESSURE.mul(&PRESSURE).mul(&PRESSURE)`, with no precision loss.
+pub type Pressure3 = Pressure2 * Pressure
+
 /// Standard acceleration of gravity (g_n), 9.80665 m/s² — BIPM/CGPM 1901 §70
 /// reference value. Use in body-force loads: `gravity(5 * STANDARD_GRAVITY())`.
 /// Body uses the compositional `1m / (1s * 1s)` form rather than the compound
