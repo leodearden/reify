@@ -501,15 +501,19 @@ trait Shaper { }
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
 //   - max_force : Scalar<Force>  — RESOLVED(force-scalar): tightened from Real
-//                                  by task 4580. Constraint RHS updated to
-//                                  dimensioned-zero `0 * 1N` (esc-3115 rule:
-//                                  bare `0` is dimensionless; Scalar<Force>
-//                                  LHS requires a dimensioned RHS literal).
+//                                  by task 4580. Constraint RHS is the bare
+//                                  `0` in the constraint below: the task-4485
+//                                  step-7 migration sweep dropped the older
+//                                  `0 * 1N` boilerplate, because task-4485/β's
+//                                  polymorphic-zero rewrite coerces a
+//                                  syntactic zero to Scalar<Force> at compile
+//                                  time (esc-3115-112 resolved).
 //
 // No defaults: both fields are caller-supplied. There is no canonical "default
 // max force" (the limit is entirely application-specific).
 //
-// Constraint `max_force > 0 * 1N` is added in step-34, tightened in task 4580.
+// Constraint `max_force > 0` is added in step-34, tightened in task 4580 (the
+// RHS read `0 * 1N` until the task-4485 step-7 sweep; esc-3115-112 resolved).
 // Explicitly NOT constrained:
 // `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
 // predicate on a handle.
@@ -665,9 +669,10 @@ structure def TOTSShaper : Shaper {
 //
 // Constraint:
 //   target_frequency > 0Hz — rejects degenerate zero or negative frequency.
-//   The constraint RHS MUST be the dimensioned literal `0Hz` → Value::Scalar
-//   {si_value:0.0, dimension:FREQUENCY}; a bare `0` is Type::Real, which is
-//   dim-incompatible with Frequency per the esc-3115 rule documented at
+//   The dimensioned literal `0Hz` is retained by convention, because it reads
+//   as an explicit frequency bound; a bare `0` compiles to the same
+//   Value::Scalar{si_value:0.0, dimension:FREQUENCY} via task-4485/β's
+//   polymorphic-zero rewrite (esc-3115-112 resolved). Same convention as
 //   `StepForce.magnitude`'s `constraint magnitude > 0N` note in
 //   modal_analysis.ri.
 structure def ZVShaper : Shaper {
@@ -692,7 +697,8 @@ structure def ZVShaper : Shaper {
 //                                     must supply per PRD §5.1 / task spec).
 //
 // Constraint:
-//   target_frequency > 0Hz — same dimensioned literal as ZVShaper (0Hz, not 0).
+//   target_frequency > 0Hz — same convention as ZVShaper (`0Hz`); a bare `0` is
+//   equally valid post-task-4485/β (esc-3115-112 resolved).
 structure def ZVDShaper : Shaper {
     param target_frequency : Frequency
     param damping_ratio : Real
@@ -724,7 +730,8 @@ structure def ZVDShaper : Shaper {
 //                                        as `TOTSShaper.vibration_tolerance`.
 //
 // Constraints:
-//   target_frequency > 0Hz     — dimensioned literal (esc-3115 rule).
+//   target_frequency > 0Hz     — dimensioned literal by convention
+//                                (esc-3115-112 resolved by task-4485/β).
 //   vibration_tolerance > 0    — lower bound of (0, 1] interval.
 //   vibration_tolerance <= 1   — upper bound of (0, 1] interval.
 structure def EIShaper : Shaper {
