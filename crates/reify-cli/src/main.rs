@@ -473,39 +473,21 @@ const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<bind
 /// severity is owned by `engine_eval.rs`; downgrading it to a warning is a
 /// separate engine-side concern (deferred, out of scope for this CLI task).
 /// The ANCHORED needle that identifies a `ConstraintIndeterminate` diagnostic
-/// as being *about* `entry`'s constraint.
+/// as being *about* `entry`'s constraint: `constraint {label-or-id}
+/// indeterminate`, preferring the label exactly as
+/// `engine_constraints::labeled_diagnostics` does.
 ///
-/// # Why this exists (task 5748, esc-5748-4 review fix)
+/// Both matchers over that grammar — [`merge_post_build_verdicts`]'s retain and
+/// [`drop_falsified_indeterminate_diagnostics`] — go through this one helper, so
+/// they cannot drift into deleting different sets.
 ///
-/// Both indeterminacy-diagnostic matchers in this file —
-/// [`merge_post_build_verdicts`]'s retain (inward leg) and
-/// [`drop_falsified_indeterminate_diagnostics`] (outward leg) — must agree on
-/// what "this diagnostic is about that constraint" means, or they drift and one
-/// of them silently deletes output the other would have kept.  esc-5748-4 caught
-/// exactly that drift: the outward leg was anchored while the inward leg used a
-/// bare `message.contains(needle)`.
-///
-/// * **The needle prefers the label**, exactly as engine_build.rs's
-///   `labeled_diagnostics` rewrite does: a labeled constraint's diagnostic
-///   embeds the label, not the raw id.
-/// * **It spans `constraint {needle} indeterminate`** — the needle AND the
-///   trailing ` indeterminate` token, which every emitted variant carries
-///   (reify-constraints/src/lib.rs:187/196/201).  A bare `contains(needle)` has
-///   two live failure modes.  (a) Raw-id prefix collision: a verdict for
-///   `Foo#constraint[1]` would delete `Foo#constraint[10]`'s still-true
-///   warning, since `Foo#constraint[1]` IS a substring of
-///   `Foo#constraint[10]`; `constraint Foo#constraint[1] indeterminate` is not
-///   a substring of `constraint Foo#constraint[10] indeterminate`, so the
-///   anchored form cannot.  (b) Short-label collision, the likelier one: a
-///   constraint labeled `w` would match essentially every other constraint's
-///   message (`… undefined inputs: Bracket.width` contains `w`), wiping the
-///   whole indeterminacy-explanation set.  Anchoring bounds the match on both
-///   sides of the needle, so a label only matches in the one position the
-///   checker actually writes it.
-///
-/// Deletion here is unrecoverable output loss, not a cosmetic difference: the
-/// dropped line is the ONLY explanation the user gets for a printed
-/// `INDETERMINATE` verdict.  Hence one helper, one definition, both call sites.
+/// The anchoring is load-bearing, not decoration: a bare `contains(label-or-id)`
+/// lets `Foo#constraint[1]` match `Foo#constraint[10]`'s still-true warning, and
+/// lets a one-character label match nearly every message. Both collisions are
+/// pinned by `anchored_matcher_survives_an_id_prefix_collision` and
+/// `anchored_matcher_survives_a_short_label_collision`. A wrong match is
+/// unrecoverable output loss — the dropped line is the only explanation the user
+/// gets for a printed `INDETERMINATE`.
 fn indeterminacy_anchor(entry: &reify_eval::ConstraintCheckEntry) -> String {
     format!(
         "constraint {} indeterminate",
@@ -517,56 +499,32 @@ fn indeterminacy_anchor(entry: &reify_eval::ConstraintCheckEntry) -> String {
 /// onto the authoritative [`CheckResult`], for entries `check()` left
 /// `Indeterminate`.
 ///
-/// # Why this exists (task 5748, esc-5748-1 ruling)
-///
-/// `cmd_check`'s kernel-backed arm calls `build()` and then, separately,
-/// `check()` as the constraint source of record.  Routing a geometry-bearing
-/// module through `build()` (D1) resolves geometry-query value cells
-/// (`centroid`, `moment_of_inertia`, …) via
-/// `run_post_processes`/`post_process_geometry_queries` — but ONLY into
-/// build()'s own `values` map.  `Engine::check()` then opens with a fresh
-/// `self.eval(module)` and checks constraints against that pure-eval map, so
-/// those cells are `Undef` again at verdict time and every constraint reading
-/// one degrades to `Indeterminate`.  Routing alone is therefore observably
-/// inert on the verdict axis; this merge is what makes D1 user-visible.
-///
-/// `build_with_geometry_output` carries a dedicated task-4229 pass
-/// (engine_build.rs:4908-4990) that re-checks geometry-derived constraints
-/// against the post-realization value map; `Engine::check()` has no equivalent.
-/// This function is the CLI-side mirror of that pass's merge loop.
+/// Routing a geometry-bearing module through the realization (D1) resolves
+/// geometry-query cells (`centroid`, `moment_of_inertia`, …) into the
+/// realization's OWN value map only; `Engine::check()` opens with a fresh
+/// `self.eval(module)` and would report every constraint reading one as
+/// `Indeterminate` again.  This merge is what makes D1 observable on the verdict
+/// axis — the CLI-side mirror of `engine_build::build_with_geometry_output`'s
+/// task-4229 post-realization re-check, which `Engine::check()` has no
+/// equivalent of.
 ///
 /// # Contract
 ///
-/// * **Upgrade-only.**  Only entries whose `check()` verdict is
-///   `Indeterminate` are touched.  A definite `Satisfied`/`Violated` from
-///   `check()` is never regressed, and an `Indeterminate` build verdict never
-///   overwrites anything.  This is what keeps build()'s copy safe to consult
-///   despite being computed before `tessellate_realizations`: a
-///   `RepresentationWithin` / GD&T `Conforms` entry that check() resolved
-///   definitively is untouched, and one that check() left `Indeterminate` is
-///   also `Indeterminate` in build()'s copy (build()'s internal `check()` runs
-///   with an empty `achieved_repr_tol` and freshly-cleared
-///   `realization_handles`), so no stale tessellate-dependent verdict can leak
-///   through.  Only the geometry-query axis — where build() has strictly MORE
-///   information than check() — actually moves.
-/// * **Entries are matched by `id`**, never by position: the two calls build
-///   their result vectors independently.
-/// * **The stale warning is dropped.**  When an entry upgrades, the
-///   `ConstraintIndeterminate` diagnostic `check()` emitted for it (e.g.
-///   "indeterminate: undefined inputs: BoltFlange.moi_principal") is no longer
-///   true, so it is removed — matched by the shared ANCHORED needle
-///   [`indeterminacy_anchor`] (`constraint {label-or-id} indeterminate`), the
-///   same matcher [`drop_falsified_indeterminate_diagnostics`] uses, so the two
-///   legs cannot drift.  A bare `contains(label-or-id)` (what
-///   engine_build.rs:5003 still does internally) would let a definite
-///   `Foo#constraint[1]` delete `Foo#constraint[10]`'s still-true warning, and
-///   would let a one-character label wipe the whole explanation set.
-/// * **Diagnostics are otherwise untouched** here; D2's separate
-///   `merge_build_diagnostics` owns appending build()-only entries.
+/// * **Upgrade-only.**  Only `Indeterminate` entries are touched; a definite
+///   `check()` verdict is never regressed and an `Indeterminate` build verdict
+///   never overwrites anything.  That is what makes build()'s copy safe to
+///   consult even though it is computed before `tessellate_realizations` and
+///   with cleared `realization_handles`: on the tessellate/GD&T axis it is never
+///   MORE definite than `check()`, so only the geometry-query axis moves.
+/// * **Entries are matched by `id`**, never by position.
+/// * **The upgraded entry's now-false `ConstraintIndeterminate` warning is
+///   dropped**, matched by the shared [`indeterminacy_anchor`].
+/// * **Diagnostics are otherwise untouched**; [`merge_build_diagnostics`] owns
+///   appending build()-only entries.
 ///
-/// `None` build result (lightweight arm, or a kernel-backed module that took
-/// only the `tessellate_realizations` side effect) → total no-op, so every
-/// pre-5748 input stays byte-identical.
+/// A `None` build result (the lightweight arm, or a kernel-backed module that
+/// took only the `tessellate_realizations` side effect) is a total no-op, so
+/// every pre-5748 input stays byte-identical.
 fn merge_post_build_verdicts(
     result: &mut reify_eval::CheckResult,
     build_result: Option<&reify_eval::BuildResult>,
@@ -574,6 +532,18 @@ fn merge_post_build_verdicts(
     let Some(build_result) = build_result else {
         return;
     };
+    // Indexed once, not re-scanned per entry: both lists are O(constraints) and
+    // this pass is now on EVERY geometry-bearing `reify check`, so the naive
+    // nested `find` was quadratic in the constraint count of any real assembly.
+    // `or_insert`, not `collect`: a duplicate id must resolve to the FIRST
+    // entry, exactly as the `find` this replaced did.
+    let mut build_verdicts: std::collections::HashMap<
+        &reify_core::ConstraintNodeId,
+        reify_ir::Satisfaction,
+    > = std::collections::HashMap::with_capacity(build_result.constraint_results.len());
+    for r in &build_result.constraint_results {
+        build_verdicts.entry(&r.id).or_insert(r.satisfaction);
+    }
     // Anchored needles of the entries that upgraded, collected during the walk
     // and applied to `diagnostics` afterwards (one `&mut result` borrow at a
     // time).
@@ -582,12 +552,7 @@ fn merge_post_build_verdicts(
         if entry.satisfaction != reify_ir::Satisfaction::Indeterminate {
             continue;
         }
-        let Some(new_sat) = build_result
-            .constraint_results
-            .iter()
-            .find(|r| r.id == entry.id)
-            .map(|r| r.satisfaction)
-        else {
+        let Some(new_sat) = build_verdicts.get(&entry.id).copied() else {
             continue;
         };
         if new_sat == reify_ir::Satisfaction::Indeterminate {
@@ -599,12 +564,8 @@ fn merge_post_build_verdicts(
     if upgraded_anchors.is_empty() {
         return;
     }
-    // The "indeterminate: undefined inputs: …" warnings check() emitted for the
-    // upgraded constraints are now false — drop them.  Matched by the SHARED
-    // anchored needle (`indeterminacy_anchor`), never a bare
-    // `contains(label_or_id)`: an unanchored match lets `Foo#constraint[1]`
-    // delete `Foo#constraint[10]`'s still-true warning, and lets a
-    // short-labeled constraint (`w`) wipe the entire explanation set.
+    // The warnings check() emitted for the upgraded constraints are now false —
+    // drop them, matched by the shared anchored needle.
     result.diagnostics.retain(|d| {
         !(d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate)
             && upgraded_anchors.iter().any(|a| d.message.contains(a)))
@@ -614,90 +575,55 @@ fn merge_post_build_verdicts(
 /// Drop the `ConstraintIndeterminate` diagnostics in `build_diags` that the
 /// AUTHORITATIVE `constraint_results` positively falsify.
 ///
-/// # Why this exists (task 5748, reviewer_comprehensive review fix)
-///
-/// [`merge_post_build_verdicts`] is the inward leg — it adopts build()'s
-/// verdicts onto `check()`'s results.  This is its outward mirror, and D2's
-/// missing return leg: the diagnostic merge is ONE-DIRECTIONAL by construction,
-/// so nothing anywhere drops a stale indeterminacy claim `build()` made about a
-/// constraint the later, authoritative `check()` resolved on its own.
-///
-/// * `build()`'s internal task-4229 retain (engine_build.rs:5000-5004) drops
-///   only the warnings BUILD itself upgraded, and is gated on its own result
-///   list still holding an `Indeterminate`.
-/// * [`merge_post_build_verdicts`] retains only over `check()`'s OWN list, and
-///   only for the entries IT upgraded.
-///
-/// Neither knows about the other pass's verdicts, so without this filter
-/// `check` prints a self-contradiction: stdout `OK SphereCheck#constraint[0]` +
-/// `All constraints satisfied.` while stderr carries `warning: constraint
-/// SphereCheck#constraint[0] indeterminate: undefined inputs:
-/// SphereCheck.subject` (measured on `tests/fixtures/dfm_with_repr_within.ri`).
+/// The outward mirror of [`merge_post_build_verdicts`], and D2's return leg.
+/// The diagnostic merge only ever ADDS build entries, and neither retain that
+/// already exists — `engine_build::build_with_geometry_output`'s task-4229 one,
+/// or [`merge_post_build_verdicts`]' — knows about the other pass's verdicts.
+/// Without this filter, `check` prints stdout `OK …` / `All constraints
+/// satisfied.` while stderr still carries build's `… indeterminate: undefined
+/// inputs: …` for the same constraint (measured on
+/// `tests/fixtures/dfm_with_repr_within.ri`).
 ///
 /// # Contract
 ///
-/// * **Drop on positive falsification only.**  A diagnostic is removed only
-///   when `constraint_results` holds a DEFINITE (`Satisfied`/`Violated`) verdict
-///   for that same constraint.  An id the authoritative list never mentions is
-///   left alone, so a build-only diagnostic about a constraint outside that list
-///   still reaches the user — which is what preserves PRD D2's "every
-///   build()-only diagnostic appears at least once".
+/// * **Drop on positive falsification only.**  An entry is removed only when
+///   `constraint_results` holds a DEFINITE verdict for that same constraint; an
+///   id the authoritative list never mentions is left alone.  That is what
+///   preserves PRD D2's "every build()-only diagnostic appears at least once".
 /// * **Only `DiagnosticCode::ConstraintIndeterminate` is in scope.**  A verdict
-///   falsifies the INDETERMINACY claim and nothing else; a `ConstraintViolated`
-///   (or uncoded) line naming the same constraint survives untouched.
-///   That scoping leaves the mirror case OPEN, deliberately: if `build()`
-///   reports a constraint `Violated` where the authoritative `check()` says
-///   `Satisfied`, [`merge_post_build_verdicts`] correctly keeps `Satisfied`
-///   (it never regresses a definite verdict) but build's `ConstraintViolated`
-///   line still reaches stderr via [`merge_build_diagnostics`] — the same
-///   stdout/stderr self-contradiction this helper exists to remove.  The
-///   grammar would extend cleanly (`constraint {needle} violated`, parallel to
-///   [`indeterminacy_anchor`]), but dropping a VIOLATION error is a heavier
-///   call than dropping an indeterminacy warning — it can be the only signal
-///   of a real problem — and the scenario needs `build()` to reach a definite
-///   verdict that DISAGREES with a definite `check()` verdict, which no
-///   measured path on this branch produces (build's copy has strictly less
-///   information on the tessellate/GD&T axis and strictly more only on the
-///   geometry-query axis, where `check()` is `Indeterminate` and the upgrade
-///   applies).  Filed as #6048 (ticket `tkt_0RS4DKXQ7DVAEGX80WJMGEPAM5`) with
-///   the anchor grammar and the GD&T exception worked out; γ/#5403 owns the
-///   unified gate over this merged set and is the natural point to resolve it.
-///   The gap is not left to prose: `d2_pass_ordering_tests::
-///   mirror_case_build_side_violation_currently_survives` PINS the current
-///   behaviour, so whoever closes #6048 gets a failing test rather than a
-///   silently-diverging comment.
-/// * **The needle is the shared [`indeterminacy_anchor`]** — label-preferring
-///   and ANCHORED on `constraint {needle} indeterminate`.  See that helper for
-///   why anchoring is load-bearing (raw-id prefix collision; short-label
-///   collision).  [`merge_post_build_verdicts`] uses the identical matcher, so
-///   the inward and outward legs cannot drift apart (esc-5748-4).
-/// * Anchoring matters MORE here than on the inward leg: this filter walks ALL
-///   definite verdicts, a far larger needle set than the entries a single pass
-///   upgraded, so collision exposure is correspondingly higher.  (engine_build
-///   .rs:5003 still uses a bare `contains` internally — engine-side, out of
-///   scope for this CLI task.)
+///   falsifies the indeterminacy claim and nothing else, so a
+///   `ConstraintViolated` line naming the same constraint survives.
+/// * **The needle is the shared [`indeterminacy_anchor`]**, so this leg and the
+///   inward one cannot drift.
 ///
-/// Severity-agnostic by code, but in practice this only ever removes
-/// `Warning`-severity entries.  No exit code can move either way:
-/// `report_eval_output`'s outcome derives solely from `constraint_results` via
-/// `report_constraint_results`, never from the diagnostic list.
+/// Two residual gaps are pinned as tests rather than argued here, both tracked
+/// under #6048: build reporting `Violated` where check says `Satisfied` keeps
+/// build's error line (`mirror_case_build_side_violation_currently_survives`),
+/// and an id-less `ConstraintIndeterminate` carries no needle to match
+/// (`idless_indeterminate_warning_survives_an_upgrade`).  γ (#5403) owns the
+/// unified gate over the merged set and is the natural point to resolve both.
 ///
-/// An empty `constraint_results` (or one holding no definite verdict) falsifies
-/// nothing → `build_diags` verbatim, so every pre-fix input stays
-/// byte-identical (C2).
+/// No exit code can move either way: `report_eval_output`'s outcome derives
+/// solely from `constraint_results`, never from the diagnostic list.  An empty
+/// `constraint_results`, or one holding no definite verdict, falsifies nothing
+/// → `build_diags` verbatim (C2).
 fn drop_falsified_indeterminate_diagnostics(
     build_diags: &[reify_core::Diagnostic],
     constraint_results: &[reify_eval::ConstraintCheckEntry],
 ) -> Vec<reify_core::Diagnostic> {
-    // Nothing to filter — checked FIRST because it dominates the `anchors`
-    // short-circuit below: the lightweight arm (`build_result == None`) passes
-    // `unwrap_or(&[])` here on EVERY non-geometry `reify check`, and it is
-    // exactly the arm that also carries the most definite verdicts.  Building
-    // one `format!`-allocated anchor per satisfied constraint before
-    // discovering there is no diagnostic to test them against is pure waste
-    // (reviewer_comprehensive `efficiency` suggestion).
+    // Two short-circuits ahead of the `format!`-allocated anchor set, both the
+    // common case: the lightweight arm passes an empty slice here on EVERY
+    // non-geometry `reify check`, and a realization that reports only
+    // compile/kernel errors has nothing droppable no matter what the verdicts
+    // say.
     if build_diags.is_empty() {
         return Vec::new();
+    }
+    if !build_diags
+        .iter()
+        .any(|d| d.code == Some(reify_core::DiagnosticCode::ConstraintIndeterminate))
+    {
+        return build_diags.to_vec();
     }
     let anchors: Vec<String> = constraint_results
         .iter()
@@ -900,29 +826,16 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 // is the ONLY thing that resolves geometry-query value cells
                 // (`centroid`, `moment_of_inertia`, …).
                 //
-                // The `BuildResult` is CAPTURED, not discarded (task 5748,
-                // esc-5748-1 ruling). Routing through `build()` is necessary
-                // but NOT sufficient to make those cells reach a verdict:
-                // `Engine::check()` (engine_constraints.rs:1841) opens with a
-                // fresh `self.eval(module)` and checks constraints against
-                // THAT pure-eval value map, so build()'s post-processed values
-                // are thrown away and the constraint stays `Indeterminate`.
-                // Only `build_with_geometry_output` carries the task-4229
-                // "re-check geometry-derived constraints after the realization
-                // loop" pass (engine_build.rs:4908-4990); `check()` has no
-                // equivalent. So build()'s `constraint_results` are the ONLY
-                // post-realization verdicts available on this path, and the
-                // merge below adopts them where — and only where — check() had
-                // nothing better. See `merge_post_build_verdicts`.
+                // The `BuildResult` is CAPTURED, not discarded: its
+                // `constraint_results` are the only post-realization verdicts
+                // available here, and `merge_post_build_verdicts` below adopts
+                // them where check() had nothing better. See that helper.
                 //
                 // `realize_for_check`, NOT `build()` (esc-5748-6): `build()`
-                // additionally runs the Phase-B product-export walk, whose
-                // EXPORT-ONLY diagnostics ("all realized bodies are aux; no
-                // product geometry to export", "export error: …", "compound
-                // assembly error: …") were harmless while the whole
-                // `BuildResult` was discarded, but reach stderr for every
-                // geometry-bearing module now that the merge below is live.
-                // `check` exports nothing, so those are false errors.
+                // also runs the Phase-B product-export walk, whose EXPORT-ONLY
+                // diagnostics were harmless while the whole `BuildResult` was
+                // discarded but are false errors now that the merge is live —
+                // `check` exports nothing.
                 build_result = Some(engine.realize_for_check(&compiled));
             }
             if has_representation_within {
@@ -964,31 +877,16 @@ fn cmd_check(args: &[String]) -> ExitCode {
         // this merge a module whose geometry cannot compile at all still
         // reported "All constraints satisfied." under `check`.
         //
-        // Ordering is load-bearing and runs AFTER `merge_post_build_verdicts`:
-        // that pass drops the now-false `ConstraintIndeterminate` warnings for
-        // the entries it upgraded, and merging first would let build()'s copy
-        // of those same warnings reappend them.
+        // ORDERING IS LOAD-BEARING and both legs run AFTER
+        // `merge_post_build_verdicts`, so the filter reads the POST-upgrade
+        // verdicts and the merge cannot re-append a warning the upgrade just
+        // falsified. Composed and pinned in that order by
+        // `d2_pass_ordering_tests::upgraded_constraints_warning_survives_in_
+        // neither_list`.
         //
-        // The plan's separate `build_diagnostics` accumulator is subsumed by the
-        // `build_result` capture the esc-5748-1 ruling landed: `None` (the
-        // lightweight arm, and the kernel-backed sub-case that takes only the
-        // `tessellate_realizations` side effect) yields an empty slice, so those
-        // paths stay byte-identical (C2) with no redundant clone.
-        //
-        // The merge is one-directional by construction — it only ever ADDS
-        // build entries — so it needs a return leg, and
-        // `drop_falsified_indeterminate_diagnostics` is it: build()'s internal
-        // task-4229 retain (engine_build.rs:5000-5004) drops only the warnings
-        // BUILD upgraded, and `merge_post_build_verdicts` only those IT
-        // upgraded; neither knows about the authoritative `check()` above, so
-        // without this filter build's stale "indeterminate" claim about a
-        // constraint check() resolved on its own reaches stderr and contradicts
-        // check's own stdout verdict.
-        //
-        // ORDERING IS LOAD-BEARING: this runs AFTER `merge_post_build_verdicts`
-        // so it reads the POST-upgrade `result.constraint_results` — an entry
-        // that pass just upgraded to a definite verdict must also falsify
-        // build's copy of the matching warning.
+        // A `None` build result (the lightweight arm, and the kernel-backed
+        // sub-case that takes only the `tessellate_realizations` side effect)
+        // yields an empty slice, so those paths stay byte-identical (C2).
         let build_diagnostics: Vec<reify_core::Diagnostic> =
             drop_falsified_indeterminate_diagnostics(
                 build_result
@@ -1016,27 +914,17 @@ fn cmd_check(args: &[String]) -> ExitCode {
 
         // Both ad-hoc escalations below read the MERGED set, not check()'s alone
         // (PRD D2). merged ⊇ check()'s set, so nothing that fails today can
-        // start passing.
-        //
-        // The reverse direction is NOT the blanket "build adds nothing these two
-        // predicates match" this comment used to claim — that was wrong twice
-        // over. `realize_for_check` retires the first half (esc-5748-6): it
-        // skips the Phase-B export walk, so export-only diagnostics can no
-        // longer reach this set at all. The second half is REAL and open:
-        // `check_constraints_post_geometry` appends `dfm_build_diags` to the
-        // realization's diagnostics unconditionally (engine_build.rs), and
-        // `E_DFM_BUILD_VOLUME` (reify-stdlib dfm.rs) is always `Severity::Error`
-        // and carries the very `E_DFM_` prefix `dfm_has_error_diagnostic`
-        // matches. So for a `has_dfm_rule` module, an `E_DFM_` error present in
-        // the post-geometry harvest but absent from the authoritative check()
-        // list CAN flip this exit 0 → FAILURE. That is a behaviour change this
-        // leaf does not attempt to adjudicate; it is tracked as a reviewer
-        // suggestion on this task, not fixed here.
-        //
-        // Leaf γ (#5403) replaces both predicates with a single general
-        // `Severity::Error` gate over this same merged set — which subsumes the
-        // open question above. Feeding one set to both reporting and the exit
-        // decision here is what keeps γ's diff small.
+        // start passing — but the widening direction is REAL and deliberate:
+        // `engine_build::check_constraints_post_geometry` appends
+        // `dfm_build_diags` unconditionally, and `E_DFM_BUILD_VOLUME`
+        // (reify-stdlib `dfm.rs`) is always `Severity::Error` with the `E_DFM_`
+        // prefix `dfm_has_error_diagnostic` matches, so a `has_dfm_rule` module
+        // whose harvest carries one CAN flip exit 0 → FAILURE. Pinned by
+        // `d2_pass_ordering_tests::dfm_escalation_predicate_widens_to_build_
+        // only_errors` rather than adjudicated here; leaf γ (#5403) replaces
+        // both predicates with one `Severity::Error` gate over this same merged
+        // set, which subsumes the question. Feeding one set to both reporting
+        // and the exit decision is what keeps γ's diff small.
         //
         // Escalate to FAILURE when a GdtIllegalModifier error is present.
         // Scoped strictly to this code so non-GD&T modules are byte-identical.
@@ -1176,9 +1064,9 @@ fn cmd_check(args: &[String]) -> ExitCode {
         }
 
         // `check_constraints_with_values` takes the value map as an ARGUMENT and
-        // never re-runs eval (engine_constraints.rs:700), so on the geometry
-        // branch the verdicts below are computed directly against build()'s
-        // POST-processed values. The staleness gap that forced
+        // never re-runs eval, so on the geometry branch the verdicts below are
+        // computed directly against the realization's POST-processed values.
+        // The staleness gap that forced
         // `merge_post_build_verdicts` on sub-path (b) — where `Engine::check()`
         // opens with a fresh `self.eval(module)` and throws build()'s values
         // away — simply does not exist here, so no verdict merge is needed.
@@ -1191,32 +1079,49 @@ fn cmd_check(args: &[String]) -> ExitCode {
                 }
             };
 
+        // GD&T legality pass (task 4589): runs over post-eval values identically
+        // to the non-purpose branch.  Computed HERE, ahead of the diagnostic
+        // assembly, because the `used_build` arm needs it to identify the
+        // realization's redundant copy of the same pass (see
+        // `strip_diagnostics_reproduced_by`).  Folded in below, before
+        // `report_eval_output`, so the error prints to stderr alongside the
+        // others.
+        let gdt_diagnostics = engine.run_gdt_check_passes(&compiled, &values);
+
         // Front-end diagnostics first, then check diagnostics — chronological order.
         let mut diagnostics = if used_build {
-            // D2 (task 5748) for sub-path (c). `build()` re-runs the eval
+            // D2 (task 5748) for sub-path (c). The realization re-runs the eval
             // front-end internally, so its list BOTH carries internal
             // duplicates (measured: the `mirror(...)` 'ox' compile error twice
-            // for one call site) AND overlaps whatever
-            // `check_constraints_with_values` reports. Route both through the
-            // accumulating dedup: the build entries seed the list in
-            // chronological order, the check entries merge in behind them, and
-            // an entry produced by both passes is reported exactly once.
+            // for one call site) AND overlaps what
+            // `check_constraints_with_values` reports; the build entries seed
+            // the list and the check entries merge in behind them, so an entry
+            // produced by both passes is reported exactly once.
             //
-            // First the same return leg sub-path (b) applies (see the D2 block
-            // there): the merge only ever ADDS build entries, so build's stale
-            // `ConstraintIndeterminate` claims are filtered against the
-            // AUTHORITATIVE `constraint_results` from
-            // `check_constraints_with_values` before they can be merged in.
-            // Applied symmetrically here so the two sub-paths cannot drift.
-            // The known divergence path on this branch is the `UnifiedDag`
-            // `declined` set (engine_build.rs:4952-4966), whose constraints
-            // keep build's Indeterminate warning while the CLI-side check can
-            // still reach a definite verdict for them.
+            // Same return leg as sub-path (b), applied symmetrically so the two
+            // cannot drift: build's stale `ConstraintIndeterminate` claims are
+            // filtered against the AUTHORITATIVE `constraint_results` first. The
+            // known divergence path here is `engine_fixpoint`'s UnifiedDag
+            // `declined` set, whose constraints keep build's Indeterminate
+            // warning while the CLI-side check still reaches a definite verdict.
+            //
+            // Composition pinned by `d2_pass_ordering_tests::
+            // run_in_cmd_check_purpose_order`'s tests.
             let front_end_diagnostics = drop_falsified_indeterminate_diagnostics(
                 &front_end_diagnostics,
                 &constraint_results,
             );
-            let deduped_build = dedup_diagnostics(&front_end_diagnostics);
+            // The realization's list also carries a COPY of the GD&T legality
+            // pass appended below. Withdraw it before the dedup rather than
+            // letting the dedup collapse the two runs: that pass can emit two
+            // byte-identical lines for two distinct callouts, which the dedup
+            // key cannot tell from a re-run, so deduping printed ONE line where
+            // the non-geometry arm printed two. With the copy withdrawn, the
+            // fold below is the single source and multiplicity is right by
+            // construction (see `strip_diagnostics_reproduced_by`).
+            let realization_only =
+                strip_diagnostics_reproduced_by(&front_end_diagnostics, &gdt_diagnostics);
+            let deduped_build = dedup_diagnostics(&realization_only);
             merge_build_diagnostics(&deduped_build, &check_diags)
         } else {
             // Non-geometry: plain chronological concatenation, byte-identical
@@ -1229,33 +1134,17 @@ fn cmd_check(args: &[String]) -> ExitCode {
             d
         };
 
-        // GD&T legality pass (task 4589): runs over post-eval values identically
-        // to the non-purpose branch.  Folded in BEFORE report_eval_output so the
-        // error prints to stderr alongside other diagnostics.
-        //
-        // On the `used_build` branch this pass has ALREADY run once inside the
-        // realization: `realize_for_check` → `build_with_geometry_output` seeds
-        // its diagnostic list from `self.check(module)` (engine_build.rs:4046),
-        // and `Engine::check` ends with
-        // `diagnostics.extend(self.run_gdt_check_passes(module, &eval_result.values))`
-        // (engine_constraints.rs:1880).  `run_gdt_check_passes` is a pure
-        // function of (module, values), so a bare `extend` here would print
-        // every `GdtIllegalModifier` / `GdtRemoved2018` line a SECOND time —
-        // exactly the "no diagnostic is ever printed twice" invariant D2
-        // asserts.  Route it through the same identity merge instead
-        // (esc-5748-7).
-        //
-        // The non-geometry arm keeps the plain `extend`: `eval()` never runs
-        // the legality pass, so there is nothing to collapse, and deduping here
-        // could only REMOVE a line this branch prints today — two distinct
-        // callouts can legitimately yield two byte-identical messages, and C2
-        // byte-identity with pre-5748 output is the contract on that arm.
-        let gdt_diagnostics = engine.run_gdt_check_passes(&compiled, &values);
-        if used_build {
-            diagnostics = merge_build_diagnostics(&diagnostics, &gdt_diagnostics);
-        } else {
-            diagnostics.extend(gdt_diagnostics);
-        }
+        // BOTH arms append the legality pass's output the same plain way, so
+        // multiplicity is whatever this one authoritative run produced —
+        // one line per callout, two distinct callouts of the same
+        // characteristic included. The `used_build` arm's realization carried a
+        // second copy of the same pass (`realize_for_check` →
+        // `build_with_geometry_output` seeds its diagnostic list from
+        // `Engine::check`, which ends by extending with `run_gdt_check_passes`);
+        // that copy was already withdrawn above, so this `extend` cannot double
+        // anything. esc-5748-7 first closed the doubling with an identity merge
+        // instead, which was over-strong for the same reason the dedup is.
+        diagnostics.extend(gdt_diagnostics);
 
         let outcome = report_eval_output(
             &constraint_results,
@@ -3149,85 +3038,54 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
 /// Structural-equality merge of a discarded [`reify_eval::BuildResult`]'s
 /// diagnostics into the authoritative [`reify_eval::CheckResult`]'s.
 ///
-/// # Why this exists (task 5748, PRD `check-diagnostic-truthfulness.md` D2)
+/// The `BuildResult` used to be dropped on the floor, which swallowed every
+/// realization-only diagnostic — `compile_geometry_op` gating errors and
+/// kernel-dispatch failures `check()` alone never produces — so a module whose
+/// geometry cannot compile at all reported "All constraints satisfied." under
+/// `check` while `eval`/`build` reported a hard error on the same file (PRD
+/// `check-diagnostic-truthfulness.md` D2).
 ///
-/// `cmd_check`'s kernel-backed arm calls `build()` for its handle-population
-/// side effect and then, separately, `check()` as the source of record.  The
-/// `BuildResult` used to be dropped on the floor, which silently swallowed
-/// every realization-only diagnostic — `compile_geometry_op` gating errors and
-/// kernel-dispatch failures that `check()` alone never produces.  A module
-/// whose geometry cannot compile at all therefore reported "All constraints
-/// satisfied." under `check` while `eval`/`build` reported a hard error on the
-/// same file.
+/// Neither naive alternative works: build()'s copy of the check-style entries
+/// is stale (its internal `self.check(module)` runs before
+/// `realization_handles` / `achieved_repr_tol` are populated), and plain
+/// concatenation double-prints every eval-level diagnostic because both passes
+/// re-run `eval()` over the same input.  Hence keep the seed verbatim and
+/// append only what it does not already hold.
 ///
-/// Neither naive alternative works.  Using build()'s diagnostics *instead* is
-/// wrong: `build_with_geometry_output` calls `self.check(module)` internally as
-/// its first step, so its copy of the check-style entries is stale (computed
-/// before `realization_handles` / `achieved_repr_tol` are populated).  Plain
-/// concatenation is also wrong: both passes re-run `eval()` over the same
-/// deterministic input, so every genuine eval-level diagnostic would print
-/// twice.  Hence: keep check()'s list authoritative and verbatim, then append
-/// only what is not already present by `(severity, code, message)`.
+/// # Invariants upheld (PRD D2)
 ///
-/// # Invariants upheld (PRD D2, verbatim)
-///
-/// * No diagnostic that would appear in `check()`'s own diagnostics today is
-///   ever printed twice.
-/// * Every diagnostic that `build()` alone would have produced (i.e. every
-///   `compile_geometry_op` / kernel-dispatch diagnostic) appears at least once
-///   in the reported set.
-/// * `constraint_results` come from the authoritative `check()` call only
-///   (never `build()`'s stale copy) — RepresentationWithin/GD&T/DFM
-///   correctness is unaffected.
-///
-/// That third invariant is the caller's contract, not this function's: this
-/// helper takes and returns diagnostics ONLY and never sees a
-/// `constraint_results`.  (The one narrow, adjacent exception the esc-5748-1
-/// ruling carved out lives in [`merge_post_build_verdicts`], which upgrades
-/// `Indeterminate` verdicts and can never substitute or regress a definite one.)
+/// * No diagnostic already in the seed is printed twice.
+/// * Every build()-only diagnostic appears at least once.
+/// * `constraint_results` come from the authoritative `check()` call — the
+///   caller's contract, not this function's; the one adjacent exception is
+///   [`merge_post_build_verdicts`], which only upgrades `Indeterminate`.
 ///
 /// # Ordering: AUTHORITY, not chronology (and the two arms differ)
 ///
-/// The seed list leads the output.  `cmd_check`'s two sub-paths seed it
-/// differently, deliberately, and neither ordering is chronological — recorded
-/// here rather than left to be rediscovered (reviewer_comprehensive
-/// `consistency` finding):
-///
-/// * Sub-path (b), no `--purpose`: seeded with `check()`'s list even though
-///   `build()` ran FIRST.  The lead position is an AUTHORITY signal — the
-///   verdict-bearing pass's diagnostics read before the realization-only
-///   extras — and it is what makes "check()'s list verbatim, in order" a
-///   property a reader can rely on.  Anti-chronological on purpose.
-/// * Sub-path (c), `--purpose`: seeded with `build()`'s list, because there the
-///   seed also has to absorb build's INTERNAL duplicates (the `mirror(...)`
-///   'ox' error twice) before check's entries merge in behind it — a job that
-///   belongs to [`dedup_diagnostics`], which that call site runs over the build
-///   list FIRST and then passes the collapsed result here as the seed.  That
-///   happens to coincide with chronology; the dedup requirement is the reason.
-///
-/// The asymmetry is stderr-ordering only: membership is identical either way
-/// (the merge is a union under the same key), so no invariant above depends on
-/// which list leads, and no exit code can move.  γ/#5403 unifies both arms onto
-/// one `Severity::Error` gate and is the natural point to pick one ordering.
+/// The seed leads the output.  Sub-path (b) seeds with `check()`'s list even
+/// though the realization ran first — lead position signals authority and makes
+/// "check()'s list verbatim, in order" a property a reader can rely on.
+/// Sub-path (c) seeds with the realization's list, because there the seed must
+/// first absorb its own internal duplicates via [`dedup_diagnostics`].  The
+/// asymmetry is stderr ordering only — membership is a union under the same
+/// key either way, so no invariant depends on it and no exit code can move.
+/// γ/#5403 unifies both arms and is the natural point to pick one ordering.
 ///
 /// # Dedup key
 ///
-/// [`DiagKey`] — a `HashSet<(Severity, Option<DiagnosticCode>, String)>` rather
-/// than a derived `PartialEq`: [`reify_core::Diagnostic`] is `#[non_exhaustive]`
-/// and derives only `Debug, Clone` (diagnostics.rs:3834), so deriving equality
-/// would be a reify-core API change outside this leaf's scope AND would drag
-/// `labels`/`candidates` into identity, which the PRD deliberately excludes.
-/// The three compared fields are each `Eq + Hash` (`Severity` :94,
-/// `DiagnosticCode` :152, `String`), so the tuple key is buildable here.
+/// [`DiagKey`], a hand-built tuple rather than a derived `PartialEq`:
+/// [`reify_core::Diagnostic`] is `#[non_exhaustive]` and derives only
+/// `Debug, Clone`, so deriving equality would be a reify-core API change
+/// outside this leaf's scope AND would drag `labels`/`candidates` into
+/// identity, which the PRD excludes.
 ///
 /// Membership is tested against the ACCUMULATING set — seeded from
 /// `check_diags`, then grown as build entries are appended — so duplicates
-/// *internal to* `build_diags` also collapse to one occurrence.  This is not
-/// hypothetical: on the `mirror(...)` bare-origin shape (fixture
-/// `tests/fixtures/mirror_bare_origin.ri`) `build()` emits
-/// `failed to compile geometry operation: missing or non-Length argument 'ox'
-/// for mirror` TWICE for a single call site.  The PRD requires "at least
-/// once", and collapsing matches `check`'s existing output discipline.
+/// *internal to* `build_diags` also collapse.  Measured, not hypothetical: on
+/// `tests/fixtures/mirror_bare_origin.ri` the realization emits the `'ox'`
+/// compile error twice for a single call site.  Note the corollary in
+/// [`DiagKey`]: a list that can hold two DISTINCT findings with the same text
+/// must be kept out of that collapse (see [`strip_diagnostics_reproduced_by`]).
 fn merge_build_diagnostics(
     check_diags: &[reify_core::Diagnostic],
     build_diags: &[reify_core::Diagnostic],
@@ -3251,6 +3109,22 @@ fn merge_build_diagnostics(
 /// falsification legs (esc-5748-4).  See [`merge_build_diagnostics`]' "Dedup
 /// key" section for why this is a hand-built tuple rather than a derived
 /// `PartialEq` on `#[non_exhaustive] reify_core::Diagnostic`.
+///
+/// # Why the span is NOT part of the key
+///
+/// Tempting, because it would tell two same-text findings apart — but MEASURED
+/// to be wrong: on `tests/fixtures/mirror_bare_origin.ri` the duplicated
+/// `'ox'` geometry-compile error carries two DIFFERENT `realization_span`s for
+/// the one user-visible problem, so a span-aware key stops collapsing exactly
+/// the duplication this leaf exists to collapse.
+///
+/// The corollary is that no local key can distinguish "one finding reported
+/// twice" from "two findings that happen to read alike" (two GD&T callouts of
+/// the same characteristic are byte-identical — `illegal_modifier_error` puts
+/// the location in a label, not the message).  So a list that may hold the
+/// latter must never be handed to [`dedup_diagnostics`]; see
+/// [`strip_diagnostics_reproduced_by`], which is how `cmd_check`'s sub-path (c)
+/// keeps that list out of the dedup's way.
 type DiagKey = (Severity, Option<reify_core::DiagnosticCode>, String);
 
 fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
@@ -3260,14 +3134,15 @@ fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
 /// Collapse duplicates WITHIN one diagnostic list, keeping the first occurrence
 /// of each [`DiagKey`] in order.
 ///
-/// This is the self-dedup half of [`merge_build_diagnostics`], split out because
-/// `cmd_check`'s sub-path (c) genuinely needs it on its own: `build()` re-runs
-/// the eval front-end internally and emits some entries twice for a single call
-/// site (measured: the `mirror(...)` bare-origin `'ox'` compile error). That
-/// call site used to spell it `merge_build_diagnostics(&[], &diags)` — the empty
-/// seed made the two-list merge degrade into exactly this function, but read as
-/// a trick and left a future reader unable to tell a deliberate dummy argument
-/// from a bug (reviewer_comprehensive `design` suggestion).
+/// The self-dedup half of [`merge_build_diagnostics`], named rather than
+/// spelled `merge_build_diagnostics(&[], &diags)`, and sharing its
+/// [`diagnostic_identity`] so the two cannot drift onto different keys.
+/// `cmd_check`'s sub-path (c) needs it on its own: the realization re-runs the
+/// eval front-end internally and emits some entries twice for a single call
+/// site (measured: the `mirror(...)` bare-origin `'ox'` compile error).
+///
+/// Only safe on a list that cannot hold two DISTINCT findings with the same
+/// [`DiagKey`] — see that type and [`strip_diagnostics_reproduced_by`].
 ///
 /// NOT the other way round: `merge_build_diagnostics(a, b)` is deliberately
 /// *not* `dedup_diagnostics(&[a, b].concat())`.  The merge reproduces its seed
@@ -3280,6 +3155,54 @@ fn dedup_diagnostics(diags: &[reify_core::Diagnostic]) -> Vec<reify_core::Diagno
     diags
         .iter()
         .filter(|d| seen.insert(diagnostic_identity(d)))
+        .cloned()
+        .collect()
+}
+
+/// Drop from `diags` every entry that `rerun` reproduces, so a caller that is
+/// about to append `rerun` itself does not report the same pass twice.
+///
+/// # Why this is not just a dedup
+///
+/// `cmd_check`'s sub-path (c) `used_build` arm has TWO copies of the GD&T
+/// legality pass's output: the realization seeds its diagnostics from
+/// `Engine::check`, which ends by extending with `run_gdt_check_passes`, and
+/// `cmd_check` then runs that same pure `(module, values)` function itself.
+/// Collapsing them with [`dedup_diagnostics`] is not sound, because that pass
+/// can legitimately emit two byte-identical lines for two different callouts
+/// (`engine_constraints::illegal_modifier_error` names the characteristic in
+/// the message and the location in a label), and the dedup key cannot tell
+/// those apart from a re-run — see [`DiagKey`].  Deduping collapsed a
+/// two-callout module to ONE printed line while the non-geometry arm printed
+/// two.
+///
+/// Removing the realization's copy WHOLESALE and letting `cmd_check`'s own run
+/// be the single source sidesteps the ambiguity entirely: multiplicity comes
+/// from one authoritative run, so it is right by construction, and both arms
+/// then append the pass's output the same plain way.
+///
+/// Keyed on the run we are about to append, NOT on a list of GD&T
+/// [`reify_core::DiagnosticCode`]s: `run_gdt_check_passes` is documented as the
+/// aggregation point for future static passes, and a code list would go stale
+/// the moment one is added.  A line the realization emitted that this run does
+/// NOT reproduce is therefore kept — it is a build-only diagnostic and PRD D2
+/// requires it to reach the user.
+///
+/// Pinned by `d2_pass_ordering_tests::purpose_order_keeps_two_same_text_callouts`
+/// and, end to end, by `cli_gdt_legality.rs::
+/// check_purpose_gdt_two_illegal_callouts_on_geometry_module_print_twice`.
+fn strip_diagnostics_reproduced_by(
+    diags: &[reify_core::Diagnostic],
+    rerun: &[reify_core::Diagnostic],
+) -> Vec<reify_core::Diagnostic> {
+    if rerun.is_empty() {
+        return diags.to_vec();
+    }
+    let reproduced: std::collections::HashSet<DiagKey> =
+        rerun.iter().map(diagnostic_identity).collect();
+    diags
+        .iter()
+        .filter(|d| !reproduced.contains(&diagnostic_identity(d)))
         .cloned()
         .collect()
 }
@@ -5000,7 +4923,7 @@ mod merge_build_diagnostics_tests {
 
     /// Renders a diagnostic down to the three fields the merge compares, so
     /// assertions read as data rather than as a hand-written `PartialEq`
-    /// (`reify_core::Diagnostic` derives only `Debug, Clone` — diagnostics.rs:3834).
+    /// (`reify_core::Diagnostic` derives only `Debug, Clone`).
     fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
         (d.severity, d.code, d.message.clone())
     }
@@ -5176,7 +5099,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
 
     /// Renders a diagnostic down to the fields the filter reasons about, so
     /// assertions read as data (`reify_core::Diagnostic` derives only
-    /// `Debug, Clone` — diagnostics.rs:3834, no `PartialEq`).
+    /// `Debug, Clone`, no `PartialEq`).
     fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
         (d.severity, d.code, d.message.clone())
     }
@@ -5206,7 +5129,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
         }
     }
 
-    /// Builds the exact shape the checker emits (reify-constraints/src/lib.rs:187):
+    /// Builds the exact shape `reify_constraints`' checker emits:
     /// `constraint {needle} indeterminate: undefined inputs: {cells}`, coded
     /// `ConstraintIndeterminate`, at `Warning` severity.
     fn indeterminate_warning(needle: &str, undefined: &str) -> Diagnostic {
@@ -5326,7 +5249,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
 
     /// (6) Label-preferring needle. When a constraint carries a label the
     /// checker embeds the LABEL in the message, not the raw id
-    /// (engine_build.rs:5000-5004's `labeled_diagnostics` rewrite), so the
+    /// (`engine_constraints::labeled_diagnostics`' rewrite), so the
     /// matcher must prefer `label` exactly as `merge_post_build_verdicts` does.
     #[test]
     fn matches_on_the_label_when_the_entry_carries_one() {
@@ -5371,7 +5294,7 @@ mod drop_falsified_indeterminate_diagnostics_tests {
     }
 
     /// (8) Not every `ConstraintIndeterminate` diagnostic names a constraint
-    /// id: `Conforms INDETERMINATE: <reason>` (engine_constraints.rs:2156)
+    /// id: `Conforms INDETERMINATE: <reason>` (`engine_constraints::gdt_indeterminate_diag`)
     /// carries the code with no id at all. Nothing can falsify it, so it always
     /// survives — the filter must not fall back to a broad code-only drop.
     #[test]
@@ -5473,7 +5396,7 @@ mod merge_post_build_verdicts_tests {
         }
     }
 
-    /// The exact shape the checker emits (reify-constraints/src/lib.rs:187).
+    /// The exact shape `reify_constraints`' checker emits.
     fn indeterminate_warning(needle: &str, undefined: &str) -> Diagnostic {
         Diagnostic::warning(format!(
             "constraint {} indeterminate: undefined inputs: {}",
@@ -5680,7 +5603,7 @@ mod merge_post_build_verdicts_tests {
         );
     }
 
-    /// Reviewer failure scenario A — RAW-ID PREFIX COLLISION.
+    /// Failure mode A — RAW-ID PREFIX COLLISION.
     ///
     /// `Foo#constraint[1]` upgrades; `Foo#constraint[10]` stays indeterminate.
     /// A bare `contains("Foo#constraint[1]")` matches `[10]`'s message and
@@ -5718,7 +5641,7 @@ mod merge_post_build_verdicts_tests {
         );
     }
 
-    /// Reviewer failure scenario B — SHORT-LABEL COLLISION (the likelier one).
+    /// Failure mode B — SHORT-LABEL COLLISION (the likelier one).
     ///
     /// The needle prefers the label, so an upgraded constraint labeled `w`
     /// would, unanchored, match essentially EVERY other message (`… undefined
@@ -5804,20 +5727,47 @@ mod merge_post_build_verdicts_tests {
 /// integration lock uses a fixture where `check()` resolves the constraint on
 /// its own — so `merge_post_build_verdicts` performs no upgrade and the
 /// ordering dependency is never exercised end to end.  A future refactor could
-/// reorder the calls and every existing test would still pass
-/// (reviewer_comprehensive `test-coverage` suggestion).
+/// reorder the calls and every existing test would still pass.
 #[cfg(test)]
 mod d2_pass_ordering_tests {
     use super::{
-        dedup_diagnostics, drop_falsified_indeterminate_diagnostics, merge_build_diagnostics,
-        merge_post_build_verdicts,
+        dedup_diagnostics, dfm_has_error_diagnostic, drop_falsified_indeterminate_diagnostics,
+        merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
     };
-    use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, Severity};
+    use reify_core::{
+        ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan,
+    };
     use reify_eval::{BuildResult, CheckResult, ConstraintCheckEntry};
     use reify_ir::Satisfaction;
 
+    /// Deliberately message-only, NOT `super::diagnostic_identity`: assertions
+    /// that reused the production key could not observe a change to it.
     fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
         (d.severity, d.code, d.message.clone())
+    }
+
+    /// The identity a caller actually cares about when spans are the point:
+    /// message text plus the primary label span.
+    fn key_with_span(d: &Diagnostic) -> (String, Option<(u32, u32)>) {
+        (
+            d.message.clone(),
+            d.labels.first().map(|l| (l.span.start, l.span.end)),
+        )
+    }
+
+    /// A GD&T illegal-modifier line as `engine_constraints::
+    /// illegal_modifier_error` builds it: the message names the characteristic
+    /// only, the LOCATION lives in the label.
+    fn gdt_illegal_modifier(start: u32, end: u32) -> Diagnostic {
+        Diagnostic::error(
+            "`Flatness` is an RFS-only tolerance characteristic; material condition \
+             modifiers (MMC/LMC) are not permitted",
+        )
+        .with_code(DiagnosticCode::GdtIllegalModifier)
+        .with_label(DiagnosticLabel::new(
+            SourceSpan::new(start, end),
+            "illegal material condition modifier applied here",
+        ))
     }
 
     fn entry(index: u32, satisfaction: Satisfaction) -> ConstraintCheckEntry {
@@ -5845,6 +5795,260 @@ mod d2_pass_ordering_tests {
             &result.constraint_results,
         );
         merge_build_diagnostics(&result.diagnostics, &build_diagnostics)
+    }
+
+    /// Runs the passes exactly as `cmd_check`'s sub-path (c) `--purpose`
+    /// `used_build` arm does, and returns the list that reaches
+    /// `report_eval_output`.
+    ///
+    /// A DIFFERENT composition from [`run_in_cmd_check_order`], not a variant of
+    /// it: the seed is BUILD's list (not check's), there is an extra
+    /// self-dedup pass, and the GD&T re-run merges in last.  Only
+    /// `check_purpose_surfaces_geometry_compile_error` exercised it end to end,
+    /// and that test's content assertions are OCCT-gated — so in a stub-mode
+    /// build nothing verified this arm at all.  These are kernel-independent.
+    fn run_in_cmd_check_purpose_order(
+        build_diags: &[Diagnostic],
+        check_diags: &[Diagnostic],
+        gdt_diags: &[Diagnostic],
+        constraint_results: &[ConstraintCheckEntry],
+    ) -> Vec<Diagnostic> {
+        let build_diags = drop_falsified_indeterminate_diagnostics(build_diags, constraint_results);
+        let realization_only = strip_diagnostics_reproduced_by(&build_diags, gdt_diags);
+        let deduped_build = dedup_diagnostics(&realization_only);
+        let mut merged = merge_build_diagnostics(&deduped_build, check_diags);
+        merged.extend(gdt_diags.to_vec());
+        merged
+    }
+
+    /// Sub-path (c)'s return leg: `check_constraints_with_values` is the
+    /// authoritative verdict source there too, so build's stale indeterminacy
+    /// claim about a constraint it resolved definitely must survive in NEITHER
+    /// list.  The sibling lock on sub-path (b) is
+    /// `upgraded_constraints_warning_survives_in_neither_list`; this arm had no
+    /// equivalent.
+    #[test]
+    fn purpose_order_drops_build_indeterminacy_the_authoritative_check_falsified() {
+        let stale = indeterminate_warning("BoltFlange#constraint[1]");
+        let still_true = indeterminate_warning("BoltFlange#constraint[7]");
+        let results = vec![
+            entry(1, Satisfaction::Satisfied),
+            entry(7, Satisfaction::Indeterminate),
+        ];
+
+        let merged =
+            run_in_cmd_check_purpose_order(&[stale, still_true.clone()], &[], &[], &results);
+
+        assert_eq!(
+            merged.iter().map(key).collect::<Vec<_>>(),
+            vec![key(&still_true)],
+            "constraint[1] was resolved definitely by the authoritative check, so \
+             build's claim that it is indeterminate is false and must not print; \
+             constraint[7] is still indeterminate and its explanation must stay"
+        );
+    }
+
+    /// The same composition must not become a shredder: a realization-only
+    /// diagnostic survives, and build's internal re-emission of one occurrence
+    /// collapses to a single line.
+    #[test]
+    fn purpose_order_keeps_build_only_entries_and_collapses_the_internal_rerun() {
+        let compile_error = Diagnostic::error(
+            "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror",
+        );
+        let check_only = Diagnostic::warning("purpose constraint could not be evaluated");
+
+        let merged = run_in_cmd_check_purpose_order(
+            &[compile_error.clone(), compile_error.clone()],
+            std::slice::from_ref(&check_only),
+            &[],
+            &[entry(1, Satisfaction::Satisfied)],
+        );
+
+        assert_eq!(
+            merged.iter().map(key).collect::<Vec<_>>(),
+            vec![key(&compile_error), key(&check_only)],
+            "build's duplicated entry collapses to one, the check-side entry \
+             merges in behind it, and nothing is lost"
+        );
+    }
+
+    /// Two DISTINCT callouts of the same characteristic are two findings, not
+    /// one repeated line: `illegal_modifier_error` names the characteristic in
+    /// the message and the location in a label, so their [`DiagKey`]s are equal
+    /// and nothing local can tell them from a re-run.  Both must still print.
+    ///
+    /// This is the case a [`dedup_diagnostics`] over the realization's list
+    /// silently collapsed to ONE line while the non-geometry arm printed two.
+    /// End-to-end twin: `cli_gdt_legality.rs::
+    /// check_purpose_gdt_two_illegal_callouts_on_geometry_module_print_twice`.
+    #[test]
+    fn purpose_order_keeps_two_same_text_callouts() {
+        let first = gdt_illegal_modifier(120, 180);
+        let second = gdt_illegal_modifier(240, 300);
+
+        // The realization's internal `Engine::check` reports both; `cmd_check`
+        // then re-runs the same pure pass and appends its output.
+        let merged = run_in_cmd_check_purpose_order(
+            &[first.clone(), second.clone()],
+            &[],
+            &[first.clone(), second.clone()],
+            &[],
+        );
+
+        assert_eq!(
+            merged.iter().map(key_with_span).collect::<Vec<_>>(),
+            vec![key_with_span(&first), key_with_span(&second)],
+            "one line per callout, from the single authoritative run — the \
+             realization's redundant copy is withdrawn, never collapsed"
+        );
+    }
+
+    /// The other half of the same requirement: the pass running TWICE must not
+    /// double its output.  One callout, two runs, one line (esc-5748-7).
+    #[test]
+    fn purpose_order_does_not_double_the_gdt_pass() {
+        let callout = gdt_illegal_modifier(120, 180);
+
+        let merged = run_in_cmd_check_purpose_order(
+            std::slice::from_ref(&callout),
+            &[],
+            std::slice::from_ref(&callout),
+            &[],
+        );
+
+        assert_eq!(
+            merged.iter().map(key_with_span).collect::<Vec<_>>(),
+            vec![key_with_span(&callout)],
+            "the realization's copy is withdrawn, so the fold cannot double it"
+        );
+    }
+
+    /// A realization diagnostic the appended run does NOT reproduce is a
+    /// build-only entry and must survive the withdrawal (PRD D2's "every
+    /// build()-only diagnostic appears at least once").  Keyed on the run, not
+    /// on a GD&T code list, precisely so this stays true.
+    #[test]
+    fn withdrawal_keeps_realization_entries_the_rerun_does_not_reproduce() {
+        let compile_error = Diagnostic::error(
+            "failed to compile geometry operation: missing or non-Length argument 'ox' for mirror",
+        );
+        let callout = gdt_illegal_modifier(120, 180);
+
+        let kept = strip_diagnostics_reproduced_by(
+            &[compile_error.clone(), callout.clone()],
+            std::slice::from_ref(&callout),
+        );
+
+        assert_eq!(
+            kept.iter().map(key).collect::<Vec<_>>(),
+            vec![key(&compile_error)],
+            "only the reproduced entry is withdrawn"
+        );
+        assert_eq!(
+            strip_diagnostics_reproduced_by(std::slice::from_ref(&compile_error), &[])
+                .iter()
+                .map(key)
+                .collect::<Vec<_>>(),
+            vec![key(&compile_error)],
+            "an empty rerun withdraws nothing"
+        );
+    }
+
+    /// CHARACTERIZATION of the exit-code widening sub-path (b) took on when the
+    /// `has_dfm_rule` escalation moved to the MERGED set.
+    ///
+    /// `check_constraints_post_geometry` appends `dfm_build_diags` to the
+    /// realization's diagnostics unconditionally, and `E_DFM_BUILD_VOLUME` is
+    /// always `Severity::Error` with the `E_DFM_` prefix
+    /// `dfm_has_error_diagnostic` matches.  So an `E_DFM_` error present only in
+    /// the post-geometry harvest — absent from the authoritative `check()` list
+    /// — now flips `reify check` from exit 0 to FAILURE for a DFM-rule module.
+    ///
+    /// That change is acknowledged in `cmd_check`'s comment but was pinned
+    /// nowhere, so a future refactor could silently revert or widen it.  This
+    /// test pins BOTH directions of the predicate the escalation reads.  γ
+    /// (#5403) replaces both ad-hoc predicates with one `Severity::Error` gate
+    /// over this same merged set; when it lands, THIS TEST tells whoever does it
+    /// what the pre-γ gate actually did.
+    #[test]
+    fn dfm_escalation_predicate_widens_to_build_only_errors() {
+        let harvest_error = Diagnostic::error("E_DFM_BUILD_VOLUME: realized volume is zero");
+        let harvest_warning = Diagnostic::warning("W_DFM_OVERHANG: 62° exceeds 45° limit");
+        let check_diags = vec![Diagnostic::warning("unrelated")];
+
+        assert!(
+            !dfm_has_error_diagnostic(&check_diags),
+            "precondition: check()'s own list carries no DFM error, so pre-5748 \
+             this module exited 0"
+        );
+        assert!(
+            dfm_has_error_diagnostic(&merge_build_diagnostics(&check_diags, &[harvest_error])),
+            "an E_DFM_ error reachable only through the post-geometry harvest now \
+             escalates to FAILURE — the live behaviour change this leaf takes on"
+        );
+        assert!(
+            !dfm_has_error_diagnostic(&merge_build_diagnostics(&check_diags, &[harvest_warning])),
+            "a W_DFM_ warning in the same harvest must NOT escalate (C1: graceful \
+             degradation never invents a failure)"
+        );
+    }
+
+    /// CHARACTERIZATION, not endorsement: an id-less `ConstraintIndeterminate`
+    /// diagnostic survives the inward leg even when the entry it describes was
+    /// upgraded.
+    ///
+    /// `engine_constraints::gdt_indeterminate_diag` emits `Conforms
+    /// INDETERMINATE: {reason}` with the code but no constraint id, so
+    /// [`indeterminacy_anchor`]'s `constraint {id-or-label} indeterminate`
+    /// needle cannot match it.  Surviving is CORRECT for a build-only entry (an
+    /// unmatched diagnostic must never be dropped — that is what preserves D2's
+    /// "every build()-only diagnostic appears at least once"), and is the reason
+    /// `keeps_idless_indeterminate_diagnostics` locks it on the outward leg.
+    ///
+    /// On the inward leg the same rule means an upgraded geometric `Conforms`
+    /// would keep check()'s own id-less warning, reproducing the
+    /// stdout-OK/stderr-indeterminate contradiction this task removes elsewhere.
+    /// No measured path reaches it — build's copy runs with cleared
+    /// `realization_handles`, so it is never MORE definite on the GD&T axis, and
+    /// the upgrade cannot fire.  The combination is pinned here rather than
+    /// argued in prose; it is the same residual gap tracked as #6048, and
+    /// whoever closes that ticket should decide this case with it.
+    #[test]
+    fn idless_indeterminate_warning_survives_an_upgrade() {
+        let idless = Diagnostic::warning("Conforms INDETERMINATE: feature handle unrealized")
+            .with_code(DiagnosticCode::ConstraintIndeterminate);
+        let mut result = CheckResult {
+            values: Default::default(),
+            constraint_results: vec![entry(1, Satisfaction::Indeterminate)],
+            diagnostics: vec![idless.clone()],
+            resolved_params: Default::default(),
+            structured_detail: Vec::new(),
+        };
+        let build = BuildResult {
+            values: Default::default(),
+            constraint_results: vec![entry(1, Satisfaction::Satisfied)],
+            geometry_output: None,
+            diagnostics: vec![],
+            resolved_params: Default::default(),
+        };
+
+        let merged = run_in_cmd_check_order(&mut result, &build);
+
+        assert_eq!(
+            result.constraint_results[0].satisfaction,
+            Satisfaction::Satisfied,
+            "precondition: the entry must have upgraded, else the id-less \
+             warning's survival proves nothing"
+        );
+        assert_eq!(
+            merged.iter().map(key).collect::<Vec<_>>(),
+            vec![key(&idless)],
+            "an id-less ConstraintIndeterminate carries no needle to match, so \
+             the anchored retain leaves it alone. If this now fails because the \
+             line was dropped, the matcher grew a span- or code-only arm — \
+             update #6048 and this test together"
+        );
     }
 
     /// The scenario the ordering exists for: `check()` left the constraint

@@ -1,0 +1,49 @@
+module gdt_two_illegal_modifiers_purpose_geometry
+
+// gdt_two_illegal_modifiers_purpose_geometry.ri — task 5748 amendment
+// (reviewer_comprehensive `correctness` suggestion on the sub-path (c) dedup).
+//
+// The TWO-CALLOUT twin of `gdt_illegal_modifier_purpose_geometry.ri`: two
+// separate `Flatness` callouts, each carrying an MMC modifier, each attached to
+// its own body. `illegal_modifier_error` formats its message from the
+// characteristic name alone and anchors the LOCATION in a label
+// (`callout.span` = the value cell's span), so these two distinct callouts
+// yield two byte-identical messages at two different spans.
+//
+// That is the shape a text-only dedup key silently collapses: on sub-path (c)'s
+// `used_build` arm the build list is BOTH the self-dedup subject and the merge
+// seed, so both lines became one — while the non-geometry `--purpose` arm
+// (plain `extend`) kept printing two. The regression lock is
+// `cli_gdt_legality.rs::check_purpose_gdt_two_illegal_callouts_on_geometry_module_print_twice`.
+//
+// `param geometry : Solid` makes `module_has_geometry` unambiguously TRUE, so
+// `cmd_check`'s sub-path (c) takes the `used_build` branch. The purpose
+// constraint is satisfiable (80mm > 0mm), so the ONLY source of a non-zero exit
+// is the GdtIllegalModifier escalation.
+//
+// Compiles CLEAN (legality is a check-time lint, not a compile error).
+
+structure TwoFlatnessMmcPurposeGeometry {
+    param width : Length = 80mm
+
+    let body_a = box(10mm, 10mm, 10mm)
+    let body_b = box(20mm, 20mm, 20mm)
+
+    let flatness_a = Flatness(
+        tolerance_value: 0.1mm,
+        material_condition: MaterialCondition.MMC,
+        feature: body_a
+    )
+
+    let flatness_b = Flatness(
+        tolerance_value: 0.2mm,
+        material_condition: MaterialCondition.MMC,
+        feature: body_b
+    )
+
+    param geometry : Solid = body_a
+}
+
+purpose mfg_ready(subject : Structure) {
+    constraint subject.width > 0mm
+}

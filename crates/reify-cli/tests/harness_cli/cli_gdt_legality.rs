@@ -235,3 +235,51 @@ fn check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once() {
          stdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// Two DISTINCT illegal callouts of the same characteristic must print TWO
+/// lines on the geometry-bearing `--purpose` path (task 5748 amendment,
+/// reviewer_comprehensive `correctness` suggestion).
+///
+/// `illegal_modifier_error` formats its message from the characteristic name
+/// alone and anchors the location in a label, so two `Flatness`+MMC callouts
+/// are two byte-identical messages at two different spans. Sub-path (c)'s
+/// `used_build` arm is the only place where the build list is BOTH the
+/// self-dedup subject and the merge seed, so a text-only dedup key collapsed
+/// them into one printed line — silently losing the second callout's location,
+/// which is the ONLY thing that distinguishes the two reports.
+///
+/// This is the counterpart of
+/// `check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once`: that
+/// test pins that the legality pass's two RUNS (the realization's internal
+/// `Engine::check` and `cmd_check`'s own fold-in) collapse; this one pins that
+/// two distinct CALLOUTS do not. Both must hold at once, which is exactly what
+/// makes the primary label span part of the dedup identity load-bearing.
+///
+/// Kernel-independent: the legality pass is a static lint over post-eval
+/// values, so it produces the same two callouts with or without OCCT.
+#[test]
+fn check_purpose_gdt_two_illegal_callouts_on_geometry_module_print_twice() {
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "check",
+        "--purpose",
+        "mfg_ready=TwoFlatnessMmcPurposeGeometry",
+        &common::fixture_path("gdt_two_illegal_modifiers_purpose_geometry.ri"),
+    ]);
+
+    let needle = "`Flatness` is an RFS-only tolerance characteristic";
+    let occurrences = stderr.matches(needle).count();
+    assert_eq!(
+        occurrences, 2,
+        "the module declares TWO illegal Flatness callouts; each is a separate \
+         report anchored at its own span, so both must reach stderr. Collapsing \
+         them to one is not deduplication — it is dropping a finding.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The escalation still fires, exactly as for the single-callout twin.
+    assert!(
+        !status.success(),
+        "reify check --purpose must still exit non-zero for a GdtIllegalModifier.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+}
