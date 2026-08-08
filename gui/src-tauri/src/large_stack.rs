@@ -95,6 +95,19 @@ const _: () = assert!(
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
+/// Thread name for [`run_on_worker`]'s single PERSISTENT large-stack thread.
+///
+/// Distinct from both per-call names so a backtrace or profiler row says which
+/// TIER the work arrived on, not just that it is large-stack work. This is the
+/// thread most worth naming: it is long-lived, so unlike the per-call threads it
+/// shows up in every profiler capture, `top -H` listing and debugger thread list
+/// for the process's whole life. Same 15-byte budget as [`COMPILE_THREAD_NAME`].
+pub const WORKER_THREAD_NAME: &str = "reify-engine-w";
+const _: () = assert!(
+    WORKER_THREAD_NAME.len() <= 15,
+    "thread name must fit Linux's 15-byte pthread_setname_np limit"
+);
+
 /// Run `f` to completion on a dedicated OS thread with a [`COMPILE_STACK_SIZE`]
 /// stack, BLOCKING the caller until it returns, and hand back its value.
 ///
@@ -207,4 +220,153 @@ where
         .name(ENGINE_THREAD_NAME.to_string())
         .stack_size(COMPILE_STACK_SIZE)
         .spawn(f)
+}
+
+// ── Persistent large-stack worker (task 5772) ────────────────────────────────
+
+/// A type-erased unit of work queued to the persistent worker.
+///
+/// `'static` because the queue outlives every submitter, so a job can never
+/// borrow submitter-stack data. The erased signature is `FnOnce()` regardless of
+/// the caller's `T`: the per-call result travels back over a reply channel
+/// captured INSIDE the job, not through this type.
+type Job = Box<dyn FnOnce() + Send + 'static>;
+
+/// The submit end of the persistent worker's job queue.
+///
+/// The [`std::sync::Mutex`] is defensive rather than required —
+/// `mpsc::Sender<T>` is `Sync` on current `std`, but nothing here needs to
+/// depend on that. The lock is held only across a `send` of an already-boxed
+/// job, so no user code ever runs under it and it is never held longer than a
+/// queue push.
+type JobSender = std::sync::Mutex<std::sync::mpsc::Sender<Job>>;
+
+/// The process-wide persistent worker, created at most once.
+///
+/// [`std::sync::OnceLock`] gives lazy creation (a session that never touches the
+/// engine never pays for the 256 MiB mapping) and exactly-once semantics.
+/// `None` records that the OS REFUSED the mapping, so every call degrades to
+/// inline execution instead of retrying a spawn that will keep failing.
+///
+/// Holding the `Sender` here forever is deliberate: the channel therefore never
+/// disconnects on its own, so the worker's `for job in rx` loop parks on an
+/// empty queue rather than exiting.
+static WORKER: std::sync::OnceLock<Option<JobSender>> = std::sync::OnceLock::new();
+
+/// Lazily create the persistent worker, yielding its queue — or `None` if the OS
+/// refused the [`COMPILE_STACK_SIZE`] mapping.
+///
+/// The spawn failure is recorded EXPLICITLY as `None` rather than inferred from
+/// a subsequently-dead channel: nothing documents that `Builder::spawn` drops
+/// the closure it could not run, and a leaked `Receiver` would make every `send`
+/// succeed into a queue nobody drains — i.e. a hang, the one outcome this module
+/// must never produce.
+fn worker_sender() -> Option<&'static JobSender> {
+    WORKER
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Job>();
+            match std::thread::Builder::new()
+                .name(WORKER_THREAD_NAME.to_string())
+                .stack_size(COMPILE_STACK_SIZE)
+                .spawn(move || {
+                    // Parks while the queue is empty. `rx` only ends when the
+                    // `Sender` in `WORKER` drops, which never happens, so this
+                    // loop lives as long as the process.
+                    for job in rx {
+                        job();
+                    }
+                }) {
+                Ok(_handle) => Some(std::sync::Mutex::new(tx)),
+                Err(e) => {
+                    // Same warning shape as `run_on_large_stack`'s inline fallback.
+                    eprintln!(
+                        "Warning: failed to spawn {WORKER_THREAD_NAME} thread ({e}); \
+                         large-stack engine work will run on the caller's \
+                         default-size stack instead"
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// Run `f` to completion on the process-wide PERSISTENT large-stack thread,
+/// BLOCKING the caller until it returns, and hand back its value.
+///
+/// This is the tier for HIGH-FREQUENCY engine work — the projection and
+/// incremental-re-eval commands (`set_parameter` fires per slider-drag frame).
+/// [`run_on_large_stack`] would give the same stack, but a fresh one per call:
+/// 256 MiB is far above glibc's ~40 MiB thread-stack cache ceiling, so that
+/// mapping is never recycled and every call pays a full `mmap` + guard-page
+/// `mprotect` + `munmap` (see the cost note on [`COMPILE_STACK_SIZE`]). This
+/// helper amortises all of it into ONE mapping for the process lifetime; the
+/// per-call cost becomes a queue push and a channel round-trip.
+///
+/// The worker is a never-joined daemon: it parks on an empty queue and exits
+/// with the process.
+///
+/// # Why `'static` (the API price of persistence)
+///
+/// [`run_on_large_stack`] uses a SCOPED thread, so its closure may borrow
+/// caller-stack data. A persistent worker cannot: the job outlives the frame
+/// that submitted it as far as the type system can see, so `f` and its result
+/// must be `'static`. In practice that costs one `Arc::clone` per call at the
+/// migrated sites — an atomic increment, set against the 256 MiB mapping this
+/// exists to eliminate. Keeping the borrow API would need the
+/// `crossbeam`/`rayon` trick of `unsafe`-transmuting the boxed job's lifetime,
+/// which is not a trade worth making for this.
+///
+/// # Non-reentrancy (and its corollary)
+///
+/// The queue has a SINGLE consumer, so a job that itself calls `run_on_worker`
+/// would deadlock: the inner submission can only run after the outer job
+/// returns. By the same argument, a caller must NOT already hold the engine
+/// mutex — the job would block acquiring it while the caller blocks on the
+/// reply. Neither is reachable from the migrated call sites (`commands::*_impl`
+/// are leaves that take the engine lock themselves via `with_engine_lock`, which
+/// is already non-reentrant for exactly these callers), so this is documented
+/// rather than enforced: a guard's failure mode would be a hang that poisons the
+/// shared worker for every other caller in the process.
+///
+/// # Degradation policy: never lose a result, never block
+///
+/// Mirrors [`run_on_large_stack`]'s spawn-failure policy. If the OS refuses the
+/// 256 MiB mapping, `f` runs INLINE on the caller's stack, so the worst case is
+/// exactly the pre-task-5357 behaviour. If the queue is dead, `send` HANDS THE
+/// JOB BACK and it likewise runs inline. And `recv` on a disconnected channel
+/// returns immediately, so no path here can block on a queue nobody drains.
+pub fn run_on_worker<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let Some(sender) = worker_sender() else {
+        // The OS refused the mapping (already warned once, in the initialiser).
+        return f();
+    };
+
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel::<T>();
+    let job: Job = Box::new(move || {
+        // A dropped receiver means the submitter is gone; nothing to report.
+        let _ = reply_tx.send(f());
+    });
+
+    // Poisoning is meaningless for a `Sender` — it holds no invariant a panic
+    // could leave broken — so recover the guard rather than propagating.
+    let send_result = sender
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .send(job);
+
+    if let Err(std::sync::mpsc::SendError(job)) = send_result {
+        // The worker is gone. `send` returned the job unrun and the reply
+        // channel is still live in this frame, so run it here: the result
+        // arrives over the same channel below. Degraded, never lost.
+        job();
+    }
+
+    reply_rx
+        .recv()
+        .expect("large-stack worker died without answering: it unwound mid-job")
 }
