@@ -861,6 +861,48 @@ fn bbox_all_finite_discriminates() {
 // JSON-Point3 (xyz) parsing (task 5937)
 // ---------------------------------------------------------------------------
 
+/// A point/direction triple returned by the kernel's JSON-Point3 queries,
+/// parsed from the wire string by [`parse_xyz`].
+///
+/// Field names match the JSON keys, so a call site can destructure exactly the
+/// axes it cares about: `let Xyz { z, .. } = ...`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // fields only read from has_occt integration-test binaries
+pub struct Xyz {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// Parse the JSON-Point3 string returned by the kernel's point/direction
+/// queries.
+#[allow(dead_code)] // only called from has_occt integration-test binaries
+pub fn parse_xyz(s: &str) -> Xyz {
+    const NAMES: [&str; 3] = ["x", "y", "z"];
+    let mut fields: [Option<f64>; 3] = [None; 3];
+
+    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
+    for pair in trimmed.split(',') {
+        let mut parts = pair.splitn(2, ':');
+        // `splitn` always yields at least one item, so the key is always present.
+        let key = parts.next().unwrap_or_default().trim().trim_matches('"');
+        let Some(slot) = NAMES.iter().position(|n| *n == key) else {
+            continue; // unrecognised key (e.g. a future extension): ignore
+        };
+        let Some(raw) = parts.next() else { continue };
+        let Ok(val) = raw.trim().parse::<f64>() else {
+            continue;
+        };
+        fields[slot] = Some(val);
+    }
+
+    Xyz {
+        x: fields[0].unwrap_or(f64::NAN),
+        y: fields[1].unwrap_or(f64::NAN),
+        z: fields[2].unwrap_or(f64::NAN),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Contract tests for the shared `Xyz` / `parse_xyz` helpers above. Like the
 // bbox ones, these `#[test]` fns run as `common::<name>` within the single
