@@ -125,6 +125,33 @@ crate::macros::registry! {
     }
 }
 
+/// The names of every row whose signature has no independent justification
+/// — the I-REG-7 ledger.
+///
+/// This is a **reviewed ratchet toward zero**, not a diagnostic: a
+/// [`Basis::Artifact`](crate::row::Basis::Artifact) row is legal, just
+/// conspicuous. The lint test below pins the returned set, so adding an
+/// unjustified row makes the count move visibly instead of passing silently,
+/// and PRD §7.3(7) requires each τ task text to enumerate its Artifact rows
+/// with one sentence each on why they were left unresolved.
+///
+/// α returns an EMPTY ledger: all seven seed rows traced to a Ruling or a
+/// Physics derivation.
+pub fn artifact_basis_rows() -> Vec<&'static str> {
+    rows()
+        .iter()
+        .filter(|r| r.basis.is_artifact())
+        .map(|r| r.name)
+        .collect()
+}
+
+/// How many rows carry [`Basis::Artifact`](crate::row::Basis::Artifact) — the
+/// ratchet metric on its own, for callers that want the number without the
+/// names.
+pub fn artifact_row_count() -> usize {
+    rows().iter().filter(|r| r.basis.is_artifact()).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
