@@ -37,7 +37,14 @@ pub use ffi::ffi::TopologyCacheBuildCounts;
 /// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
 /// tests can assert that a K-instance pattern performs exactly ONE boolean
 /// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
-/// single-pass change (and a seed for future long-boolean progress reporting).
+/// single-pass change.
+///
+/// This is a TEST-OBSERVABILITY hook, not a progress-reporting one.  Do not
+/// plumb it into GUI/CLI progress reporting: those paths drive OCCT through
+/// [`OcctKernelHandle`]'s dedicated worker thread (see the per-thread scope
+/// below), so a reporter on any other thread reads a permanent 0.  A
+/// cross-thread progress signal would need a separate process-global
+/// aggregate, deliberately not added here because nothing consumes one today.
 ///
 /// The counter is PER-THREAD: each thread has its own count, so a
 /// reset→operate→read window on one thread needs no serialization against

@@ -579,8 +579,11 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 // performed itself, and reset_boolean_pass_count() zeroes the CALLING thread's
 // count only.  Deterministic (an exact integer, not a tolerance) and non-flaky:
 // it lets tests assert that a K-instance pattern performs exactly ONE boolean
-// pass rather than K−1.  Also a first instrumentation seed for future
-// long-boolean progress reporting (Lever 4).
+// pass rather than K−1.  It is a TEST-OBSERVABILITY hook, NOT a progress-
+// reporting one: production callers drive OCCT through OcctKernelHandle's
+// dedicated worker thread, so a reporter on any other thread reads a permanent
+// 0.  A cross-thread progress signal would need its own process-global
+// aggregate, deliberately not added here because nothing consumes one today.
 //
 // Per-thread rather than process-global because task #5277 folded all
 // reify-kernel-occt integration tests into ONE `harness_occt` binary: a
@@ -592,7 +595,13 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 // the last.  It is sound because all four increment sites run synchronously on
 // the calling thread immediately after the corresponding Build() returns, so no
 // pass is ever attributed to a thread other than the one that performed it.
-thread_local uint64_t t_boolean_pass_count = 0;
+//
+// `static` (internal linkage) matches the file's convention for file-scope
+// state (cf. g_step_export_mutex): nothing outside this TU names the variable —
+// only the two accessors below — so exporting the TLS symbol would needlessly
+// widen the ABI surface and force the general-dynamic TLS access model
+// (a __tls_get_addr call) at every increment site instead of local-exec.
+static thread_local uint64_t t_boolean_pass_count = 0;
 
 void reset_boolean_pass_count() {
     t_boolean_pass_count = 0;
