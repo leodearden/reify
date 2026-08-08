@@ -364,8 +364,31 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let Some(sender) = worker_sender() else {
-        // The OS refused the mapping (already warned once, in the initialiser).
+    dispatch(worker_sender(), f)
+}
+
+/// Submit `f` to `sender`'s worker and block for its result — or, given `None`,
+/// run `f` INLINE on the caller's own stack.
+///
+/// This is [`run_on_worker`] with its "is there a worker?" question turned into
+/// a parameter, which is the whole point: it makes the DEGRADED arm reachable
+/// from a test. Task 5357 documented the same inline-fallback policy for
+/// [`run_on_large_stack`] but could not exercise it, because provoking a
+/// `pthread_create` failure from a unit test is not possible. Passing `None`
+/// here tests the seam instead of the OS.
+///
+/// `pub(crate)` is deliberate and sufficient: the tests are an in-crate
+/// `#[cfg(test)] mod tests`, so the seam adds no public API surface. Callers
+/// outside this module want [`run_on_worker`], which supplies the real worker.
+pub(crate) fn dispatch<F, T>(sender: Option<&JobSender>, f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let Some(sender) = sender else {
+        // No worker (the OS refused the mapping; already warned once, in the
+        // initialiser). Run inline — a panic here propagates naturally, so this
+        // arm needs no forwarding of its own.
         return f();
     };
 
