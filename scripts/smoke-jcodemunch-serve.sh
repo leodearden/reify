@@ -49,7 +49,6 @@ fi
 SERVE_URL="http://127.0.0.1:8901/mcp"
 MCP_TIMEOUT=15
 WATCHER_SERVICE="jcodemunch-watcher"
-SESSION_ID=""
 
 # Resolved during L-SERVE spike (task 4102, step-4) against the running serve.
 # Repo identifier: the leodearden/reify index in ~/.code-index (schema v16).
@@ -108,13 +107,14 @@ if ! grep -q '"jsonrpc"' "$init_body" 2>/dev/null; then
     exit 1
 fi
 
-# Extract server-assigned session-id from response headers (prefer server's value).
-server_session=$(grep -i '^mcp-session-id:' "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null \
-    | head -1 | sed 's/^[Mm][Cc][Pp]-[Ss]ession-[Ii][Dd]:[[:space:]]*//' | tr -d '\r' || true)
-if [[ -n "$server_session" ]]; then
-    SESSION_ID="$server_session"
-else
-    echo "FAIL [1]: initialize response carried no Mcp-Session-Id header." >&2
+# Extract server-assigned session-id from response headers. grep -i already
+# anchors to the right header line case-insensitively (HTTP header names are
+# case-insensitive per RFC 7230); strip everything up to the first colon so
+# any casing of "Mcp-Session-Id" is handled, not just the canonical form.
+SESSION_ID=$(grep -i '^mcp-session-id:' "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null \
+    | head -1 | sed -E 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
+if [[ -z "$SESSION_ID" ]]; then
+    echo "FAIL [1]: initialize response carried no Mcp-Session-Id header (jcodemunch serve is expected to assign one; see docs/prds/jcodemunch-substrate-restoration.capability-manifest.md server-assigned-session-id-is-the-contract)." >&2
     echo "       Response headers: $(cat "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null)" >&2
     exit 1
 fi
