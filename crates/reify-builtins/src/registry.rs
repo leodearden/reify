@@ -411,3 +411,139 @@ mod tests {
         assert!(name_group("not_a_builtin").is_empty());
     }
 }
+
+/// The I-REG-7 registry-crate lint: invariants over the row DATA itself.
+///
+/// Structured-data assertions, not docstring/prose matching — the ledger below
+/// is the enforcement, and the `Basis` doc-comment is deliberately NOT pinned
+/// by a prose test.
+#[cfg(test)]
+mod lint {
+    use super::*;
+    use crate::row::Basis;
+    use strum::{EnumCount, IntoEnumIterator};
+
+    /// PascalCase → snake_case, the transform the macro cannot perform itself.
+    fn to_snake_case(pascal: &str) -> String {
+        let mut out = String::with_capacity(pascal.len() + 4);
+        for (i, ch) in pascal.chars().enumerate() {
+            if ch.is_uppercase() {
+                if i != 0 {
+                    out.push('_');
+                }
+                out.extend(ch.to_lowercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    /// Every row carries a basis, and the string-carrying variants carry a
+    /// non-empty payload. A `Ruling` payload must be a canonical `#NNNN` task
+    /// cite — the same form the PTODO convention requires, checked here
+    /// against the rows rather than duplicating that gate.
+    #[test]
+    fn every_row_carries_a_well_formed_basis() {
+        for r in rows() {
+            match r.basis {
+                Basis::Ruling(cite) => {
+                    assert!(
+                        cite.len() > 1
+                            && cite.starts_with('#')
+                            && cite[1..].chars().all(|c| c.is_ascii_digit()),
+                        "{}: Ruling basis must be a canonical #NNNN task cite, got {cite:?}",
+                        r.name
+                    );
+                }
+                Basis::Physics(why) | Basis::Doc(why) => {
+                    assert!(
+                        !why.trim().is_empty(),
+                        "{}: a Physics/Doc basis must say WHY, not carry an empty string",
+                        r.name
+                    );
+                }
+                // Artifact carries no payload by construction — the tag itself
+                // is the statement. Counted by the ratchet below.
+                Basis::Artifact => {}
+            }
+        }
+    }
+
+    /// **The I-REG-7 ratchet.** The `Artifact` ledger is pinned to its expected
+    /// set, and the failure message reports the count AND the names so a future
+    /// τ that adds one sees the number move rather than a silent pass.
+    #[test]
+    fn artifact_basis_ledger_matches_the_reviewed_set() {
+        /// α's traced basis assignments leave ZERO unjustified rows. Per PRD
+        /// §7.3(7), an empty ledger ASSERTS zero Artifact rows across the parse
+        /// and analysis families — it is a claim, not an omission.
+        const EXPECTED_ARTIFACT_ROWS: &[&str] = &[];
+
+        let actual = artifact_basis_rows();
+        assert_eq!(
+            actual,
+            EXPECTED_ARTIFACT_ROWS.to_vec(),
+            "Artifact-basis ledger moved: {} row(s) now carry `basis: Artifact` \
+             ({actual:?}), expected {} ({EXPECTED_ARTIFACT_ROWS:?}). I-REG-7 makes \
+             this count a reviewed ratchet toward zero — if the new row is \
+             genuinely unjustifiable, add it here AND enumerate it in the task \
+             text with one sentence on why it was left unresolved.",
+            actual.len(),
+            EXPECTED_ARTIFACT_ROWS.len()
+        );
+        assert_eq!(
+            artifact_row_count(),
+            actual.len(),
+            "artifact_row_count must agree with artifact_basis_rows"
+        );
+    }
+
+    /// The macro takes each row's variant ident and its name literal
+    /// INDEPENDENTLY, so nothing but this test prevents
+    /// `ParseLength { name: "parse_lenght", .. }`.
+    ///
+    /// Iterates via `strum::IntoEnumIterator` so a new variant cannot escape by
+    /// simply not being listed here.
+    #[test]
+    fn every_variant_ident_matches_its_row_name() {
+        for id in BuiltinId::iter() {
+            let variant = format!("{id:?}");
+            let r = row(id);
+            assert_eq!(
+                to_snake_case(&variant),
+                r.name,
+                "BuiltinId::{variant} declares name {:?}, but its snake_case \
+                 form is {:?} — the macro takes the two independently, so a \
+                 typo in either shows up only here",
+                r.name,
+                to_snake_case(&variant)
+            );
+        }
+    }
+
+    /// The id enum and the row table stay total over each other.
+    #[test]
+    fn every_id_is_row_resolvable_and_the_counts_agree() {
+        assert_eq!(
+            BuiltinId::COUNT,
+            rows().len(),
+            "a BuiltinId variant without a row (or vice versa) means the two \
+             stopped sharing the registry! repetition"
+        );
+        for id in BuiltinId::iter() {
+            assert_eq!(row(id).id, id, "row({id:?}) must be {id:?}'s own row");
+        }
+    }
+
+    /// The snake_case transform itself, pinned on the shapes the seed rows use
+    /// — including the trailing-capital `ParseLengthR` case, which a naive
+    /// implementation gets wrong.
+    #[test]
+    fn snake_case_transform_handles_the_seed_shapes() {
+        assert_eq!(to_snake_case("ParseLength"), "parse_length");
+        assert_eq!(to_snake_case("ParseLengthR"), "parse_length_r");
+        assert_eq!(to_snake_case("VonMises"), "von_mises");
+        assert_eq!(to_snake_case("PrincipalStresses"), "principal_stresses");
+    }
+}
