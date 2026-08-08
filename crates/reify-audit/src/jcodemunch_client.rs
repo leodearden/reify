@@ -1781,6 +1781,28 @@ mod tests {
             fn requests(&self) -> Vec<Recorded> {
                 self.requests.lock().expect("stub request log").clone()
             }
+
+            /// The one recorded request whose JSON-RPC `method` is
+            /// `method`. Panics unless there is exactly one — zero or
+            /// several would make the caller's assertion vacuous or
+            /// ambiguous rather than wrong.
+            fn request_for(&self, method: &str) -> Recorded {
+                let mut matches: Vec<Recorded> = self
+                    .requests()
+                    .into_iter()
+                    .filter(|r| r.method() == method)
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "expected exactly one recorded `{method}` request; recorded: {:?}",
+                    self.requests()
+                        .iter()
+                        .map(|r| r.method().to_string())
+                        .collect::<Vec<_>>(),
+                );
+                matches.pop().expect("checked len == 1")
+            }
         }
 
         impl Drop for RecordingStub {
@@ -1826,6 +1848,46 @@ mod tests {
                 None,
                 "`initialize` must carry no mcp-session-id request header — \
                  the server assigns the session, the client never mints one",
+            );
+        }
+
+        /// Contract items 2 and 3: the client stores the `Mcp-Session-Id`
+        /// the server returned on `initialize` and replays exactly that
+        /// value on every subsequent POST.
+        ///
+        /// Asserted behaviourally — on the wire — rather than through a
+        /// getter, so the lock costs no new public surface.
+        #[test]
+        fn server_assigned_session_id_is_replayed_on_every_later_post() {
+            // Guard on the constant itself: a client-minted id is 32
+            // lowercase hex, so an equality assertion against this value
+            // can never be satisfied by one.
+            assert!(
+                !(ASSIGNED_SESSION.len() == 32
+                    && ASSIGNED_SESSION.chars().all(|c| c.is_ascii_hexdigit())),
+                "ASSIGNED_SESSION must not be shaped like a client-minted id, \
+                 or these assertions could pass for the wrong reason",
+            );
+
+            let stub = RecordingStub::start();
+            let client = JcodemunchClient::new(stub.url()).expect("handshake");
+
+            // The stub's fallback arm answers `200 {}`, so the decoded
+            // result is irrelevant here — the claim is about the request
+            // headers this call puts on the wire.
+            let _ = client.call_tool("get_layer_violations", json!({}));
+
+            assert_eq!(
+                stub.request_for("notifications/initialized").session_header(),
+                Some(ASSIGNED_SESSION),
+                "`notifications/initialized` must replay the server-assigned \
+                 session id verbatim",
+            );
+            assert_eq!(
+                stub.request_for("tools/call").session_header(),
+                Some(ASSIGNED_SESSION),
+                "every post-handshake call must replay the server-assigned \
+                 session id verbatim",
             );
         }
     }
