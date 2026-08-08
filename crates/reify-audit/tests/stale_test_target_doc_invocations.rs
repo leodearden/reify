@@ -54,8 +54,10 @@ fn crate_from_path(file: &str) -> Option<String> {
     Some(crate_name.to_string())
 }
 
-/// Extract every `--test <stem>` stem on `line`. A stem is `[A-Za-z0-9_]+`
-/// immediately following a space or `=` separator. Anything else after the
+/// Extract every `--test <stem>` stem on `line`. A stem is `[A-Za-z0-9_-]+`
+/// immediately following a space or `=` separator (cargo test-target names
+/// derive from file stems and may legitimately contain `-`; this character
+/// class must agree with `extract_p_crate`'s below). Anything else after the
 /// separator — including the `<` of a `--test <name>` metavariable
 /// placeholder, or end-of-line — yields an empty stem and is skipped.
 fn extract_stems(line: &str) -> Vec<String> {
@@ -81,7 +83,7 @@ fn extract_stems(line: &str) -> Vec<String> {
         }
         let stem: String = after_sep
             .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
             .collect();
         if stem.is_empty() {
             continue;
@@ -140,6 +142,13 @@ fn line_escaped(line: &str) -> bool {
 /// wins; when absent, falls back to the containing file's `crates/<crate>/`
 /// path so bare `cargo test --test <stem>` invocations (run from inside
 /// their crate dir) still resolve.
+///
+/// Known limitation: resolution always targets `crates/<crate>/tests/`. Two
+/// workspace members do not live under `crates/` (`gui/src-tauri`, package
+/// `reify-gui`; `tree-sitter-reify`), so a `-p reify-gui` / `-p
+/// tree-sitter-reify` doc invocation would be misreported as stale even if
+/// its target exists. No such invocation exists in tracked `crates/**/*.rs`
+/// today (verified); escape one with the marker below if it is ever added.
 fn scan(root: &Path, files: &[String]) -> Vec<Finding> {
     let mut findings = Vec::new();
     for file in files {
@@ -370,6 +379,128 @@ fn inline_allow_marker_suppresses_the_line() {
     assert_eq!(findings[0].stem, "escaped_stem");
 }
 
+/// Test A: hyphenated test stems.
+///
+/// Cargo test-target names derive from file stems and may legitimately
+/// contain `-` (`crates/<c>/tests/foo-bar.rs` -> `cargo test --test
+/// foo-bar`). `extract_stems`'s character class must include `-`, matching
+/// `extract_p_crate`'s already-inclusive class — otherwise a hyphenated stem
+/// truncates at the first `-` (`stale-bar` -> `stale`), which either
+/// false-resolves against an unrelated `stale.rs` or, as pinned here,
+/// misreports the truncated stem instead of the real one.
+///
+/// `crates/crate-a/src/live.rs` names a hyphenated stem with a matching
+/// `crates/crate-a/tests/foo-bar.rs` — contributes zero findings.
+/// `crates/crate-a/src/stale.rs` names a hyphenated stem with no matching
+/// test file — exactly one finding, whose `.stem` must be the full
+/// `stale-bar`, not truncated to `stale`.
+#[test]
+fn hyphenated_test_stem_resolves() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        "crates/crate-a/src/live.rs",
+        "//! Run with `cargo test --test foo-bar`\n", // stale-test-target:allow — synthetic fixture
+    );
+    write_file(root, "crates/crate-a/tests/foo-bar.rs", "// empty\n");
+
+    write_file(
+        root,
+        "crates/crate-a/src/stale.rs",
+        "//! Run with `cargo test --test stale-bar`\n", // stale-test-target:allow — synthetic fixture
+    );
+    // Deliberately NOT creating crates/crate-a/tests/stale-bar.rs.
+
+    let files = vec![
+        "crates/crate-a/src/live.rs".to_string(),
+        "crates/crate-a/tests/foo-bar.rs".to_string(),
+        "crates/crate-a/src/stale.rs".to_string(),
+    ];
+
+    let findings = scan(root, &files);
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly one finding; got {findings:?}"
+    );
+    assert_eq!(findings[0].crate_name, "crate-a");
+    assert_eq!(
+        findings[0].stem, "stale-bar",
+        "hyphenated stem must not truncate at '-': {:?}",
+        findings[0]
+    );
+    assert_eq!(findings[0].file, "crates/crate-a/src/stale.rs");
+}
+
+/// Test A: `=`-separated flag forms — `--test=<stem>` and `-p=<crate>`.
+///
+/// Both extractors already branch on `=` as an accepted separator (see
+/// `extract_stems`/`extract_p_crate`), but until now that branch was
+/// unpinned by any Test A case — a regression that dropped `=` handling
+/// would silently narrow the guard (every `--test=<stem>` doc invocation
+/// would stop being checked) while the suite stayed green.
+#[test]
+fn equals_separator_forms_are_extracted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        "crates/crate-a/src/x.rs",
+        "// cargo test -p=crate-b --test=absent_stem\n", // stale-test-target:allow — synthetic fixture
+    );
+    // Deliberately NOT creating crates/crate-b/tests/absent_stem.rs.
+
+    let files = vec!["crates/crate-a/src/x.rs".to_string()];
+
+    let findings = scan(root, &files);
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly one finding from the `=`-separated invocation; got {findings:?}"
+    );
+    assert_eq!(
+        findings[0].crate_name, "crate-b",
+        "`-p=crate` must be extracted via the `=` separator: {:?}",
+        findings[0]
+    );
+    assert_eq!(findings[0].stem, "absent_stem");
+}
+
+/// Test A: negative guard — `--test-threads`, `--tests`, and `--package`
+/// must not be mistaken for `--test <stem>` / `-p <crate>`.
+///
+/// `extract_stems` only matches when the character immediately after the
+/// `--test` needle is a separator (space/`=`); `extract_p_crate` requires
+/// the same immediately after `-p`. Both guards were previously asserted
+/// only in doc comments — this pins them on one line so a regression that
+/// loosened either match surfaces as a spurious finding here.
+#[test]
+fn cargo_flags_that_are_not_test_or_p_selectors_produce_no_findings() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        "crates/crate-a/src/x.rs",
+        "// cargo test --test-threads=1 --tests --package crate-a\n", // stale-test-target:allow — synthetic fixture
+    );
+
+    let files = vec!["crates/crate-a/src/x.rs".to_string()];
+
+    let findings = scan(root, &files);
+
+    assert!(
+        findings.is_empty(),
+        "--test-threads / --tests / --package must not be mistaken for \
+         --test <stem> / -p <crate>; got {findings:?}"
+    );
+}
+
 /// Test B: live anti-drift guard.
 ///
 /// Runs `scan()` over the real repo's tracked `crates/**/*.rs`. Graceful-skip
@@ -406,7 +537,7 @@ fn stale_test_target_doc_invocations_live() {
     // NOT is_dir(): in a task worktree `.git` is a regular FILE (a `gitdir:`
     // pointer), never a directory — an is_dir() check would silently skip
     // this test in exactly the environment the merge gate runs it in.
-    if !ws_root.join(".git").exists() && !ws_root.join(".git").is_file() {
+    if !ws_root.join(".git").exists() {
         eprintln!("stale_test_target_doc_invocations_live: skipping — not a git repo");
         return;
     }
@@ -438,7 +569,9 @@ fn stale_test_target_doc_invocations_live() {
         "ZERO stale --test <stem> doc invocations expected on the clean tree. \
          {} finding(s) found — either retarget the invocation to an existing \
          crates/<crate>/tests/<stem>.rs, or if it is prose (not a real \
-         invocation), add a trailing `// {ALLOW_MARKER} — reason`:\n{}",
+         invocation) or names a crate outside crates/ (e.g. reify-gui, \
+         tree-sitter-reify — see scan()'s doc), add a trailing \
+         `// {ALLOW_MARKER} — reason`:\n{}",
         findings.len(),
         findings
             .iter()
