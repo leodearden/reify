@@ -46,6 +46,7 @@
 // core stack; reify-builtins itself has no current trigger.
 #![allow(clippy::mutable_key_type)]
 
+pub mod macros;
 pub mod row;
 
 // ── flat root re-exports ─────────────────────────────────────────────────────

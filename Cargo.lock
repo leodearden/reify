@@ -4280,6 +4280,7 @@ name = "reify-builtins"
 version = "0.1.0"
 dependencies = [
  "reify-core",
+ "strum 0.26.3",
 ]
 
 [[package]]
