@@ -14,6 +14,12 @@
 //! compile-error RED — the recursion never executes). At GREEN the helper supplies
 //! the large stack, so the recursion survives. An impl lacking `stack_size` would
 //! abort the deep-recursion test, so the test genuinely drives the feature.
+//!
+//! That argument covers the persistent-worker section below verbatim (task 5772):
+//! its deep-recursion test invokes [`deep_recurse`] ONLY through
+//! `large_stack::run_on_worker`, whose symbol is absent at RED — so that RED is
+//! likewise a clean compile error and the ~16 MiB recursion never touches a
+//! default-size stack.
 
 /// A recursive frame that pins ~8 KiB of live stack per call and USES the
 /// recursive result (non-tail), defeating tail-call optimization and dead-frame
@@ -210,5 +216,141 @@ fn large_stack_threads_are_named_for_observability() {
         spawn_name.as_deref(),
         Some(ENGINE_THREAD_NAME),
         "spawn_on_large_stack's thread must be named for panic backtraces / profilers"
+    );
+}
+
+// ── Persistent large-stack worker (task 5772) ────────────────────────────────
+//
+// The third tier. `run_on_large_stack` / `spawn_on_large_stack` each spawn a
+// FRESH 256 MiB thread per call; 256 MiB is far above glibc's ~40 MiB
+// thread-stack cache ceiling, so that mapping is never recycled and every call
+// pays a full `mmap` + guard-page `mprotect` + `munmap`. Negligible against a
+// compile, pure overhead on the per-frame projection commands (`set_parameter`
+// fires per slider-drag frame). `run_on_worker` amortises it: ONE process-wide
+// large-stack thread, fed by a job queue, for the process lifetime.
+//
+// These tests pin exactly that difference — same large stack, different mapping
+// LIFETIME — plus the observability name the long-lived thread earns.
+
+/// (g) `run_on_worker` returns the closure's computed value and runs it on a
+/// thread DISTINCT from the caller, named [`crate::large_stack::WORKER_THREAD_NAME`].
+///
+/// Note the closure MOVES its captured data (`'static` bound) rather than
+/// borrowing a caller-stack local as `run_on_large_stack`'s scoped design
+/// permits — that is the deliberate API price of a persistent worker, and this
+/// test pins it by construction.
+#[test]
+fn run_on_worker_returns_value_and_runs_on_named_distinct_thread() {
+    use crate::large_stack::{WORKER_THREAD_NAME, run_on_worker};
+
+    let caller_id = std::thread::current().id();
+    // Owned by the caller and MOVED into the job — the worker outlives this
+    // frame, so it cannot borrow from it.
+    let data = vec![1u64, 2, 3, 4];
+
+    let (sum, inner_id, inner_name) = run_on_worker(move || {
+        let s: u64 = data.iter().sum();
+        (
+            s,
+            std::thread::current().id(),
+            std::thread::current().name().map(str::to_owned),
+        )
+    });
+
+    assert_eq!(
+        sum, 10,
+        "closure return value must be propagated back to the submitter"
+    );
+    assert_ne!(
+        inner_id, caller_id,
+        "closure must execute on the worker thread, not the submitter"
+    );
+    assert_eq!(
+        inner_name.as_deref(),
+        Some(WORKER_THREAD_NAME),
+        "the persistent worker must be named — it is long-lived, so it appears \
+         in every profiler capture and thread-list dump for the whole process"
+    );
+}
+
+/// (h) PERSISTENCE — the property that names this tier. Three successive
+/// `run_on_worker` calls all land on the SAME thread (one saved 256 MiB
+/// mapping), whereas two `run_on_large_stack` calls land on DIFFERENT threads
+/// (a fresh mapping each).
+///
+/// Both halves are deterministic: `ThreadId`s are guaranteed never to be reused
+/// within a process, even after a thread terminates, so an equal pair proves
+/// reuse and an unequal pair proves a fresh spawn.
+#[test]
+fn run_on_worker_reuses_one_persistent_thread_unlike_run_on_large_stack() {
+    use crate::large_stack::{run_on_large_stack, run_on_worker};
+
+    let first = run_on_worker(|| std::thread::current().id());
+    let second = run_on_worker(|| std::thread::current().id());
+    let third = run_on_worker(|| std::thread::current().id());
+
+    assert_eq!(
+        first, second,
+        "consecutive run_on_worker jobs must run on the SAME persistent thread"
+    );
+    assert_eq!(
+        second, third,
+        "the worker must stay the same thread across every submission"
+    );
+
+    // The explicit contrast: the per-call tier re-spawns every time. This is
+    // the cost `run_on_worker` exists to amortise away on high-frequency paths.
+    let per_call_a = run_on_large_stack(|| std::thread::current().id());
+    let per_call_b = run_on_large_stack(|| std::thread::current().id());
+    assert_ne!(
+        per_call_a, per_call_b,
+        "run_on_large_stack must keep its per-call spawn (a fresh thread each call)"
+    );
+    assert_ne!(
+        per_call_a, first,
+        "the per-call tier must not be silently delegating to the shared worker"
+    );
+}
+
+/// (i) LARGE STACK — deep recursion (~16 MiB) that would overflow the 2 MiB
+/// default stack runs to completion on the persistent worker, proving
+/// [`crate::large_stack::COMPILE_STACK_SIZE`] is applied to it and not just to
+/// the per-call helpers.
+///
+/// The recursion runs ONLY through the helper, so at RED (symbol absent) this is
+/// a compile error, never a SIGSEGV — see the module docs.
+#[test]
+fn run_on_worker_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::run_on_worker;
+
+    let result = run_on_worker(|| deep_recurse(DEEP_RECURSION_DEPTH));
+
+    assert_eq!(
+        result,
+        u64::from(DEEP_RECURSION_DEPTH) + 1,
+        "deep recursion must run to completion on the persistent worker's large stack"
+    );
+}
+
+/// (j) [`crate::large_stack::WORKER_THREAD_NAME`] fits Linux's 15-byte
+/// `pthread_setname_np` budget and is DISTINCT from both per-call tier names, so
+/// a profiler row or backtrace says which tier the work arrived on.
+#[test]
+fn worker_thread_name_is_distinct_and_fits_the_linux_budget() {
+    use crate::large_stack::{COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, WORKER_THREAD_NAME};
+
+    assert!(
+        WORKER_THREAD_NAME.len() <= 15,
+        "thread name must fit Linux's 15-byte pthread_setname_np limit \
+         (std SILENTLY ignores an over-long name), got {} bytes: {WORKER_THREAD_NAME:?}",
+        WORKER_THREAD_NAME.len()
+    );
+    assert_ne!(
+        WORKER_THREAD_NAME, COMPILE_THREAD_NAME,
+        "the persistent worker must be distinguishable from the per-call compile thread"
+    );
+    assert_ne!(
+        WORKER_THREAD_NAME, ENGINE_THREAD_NAME,
+        "the persistent worker must be distinguishable from the fire-and-forget engine thread"
     );
 }
