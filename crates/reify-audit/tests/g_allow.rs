@@ -36,19 +36,30 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     if audit.is_none() && common::git_env::in_replay_child() {
         panic!(
             "run_orphan_audit returned None inside the poisoned replay child. \
-             The audit script resolves its repo root with `git rev-parse \
-             --show-toplevel` (audit-orphan-producers.sh line 66), so the \
-             ambient GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE this child was \
-             spawned with redirected the entire scan into the harness's empty \
-             decoy tree; it matched no source files, emitted empty stdout, and \
-             run_orphan_audit turned that into None. This is exactly the \
-             regression the `.env_remove()` calls in \
-             crates/reify-test-support/src/orphan_audit.rs (task 5605) exist \
-             to prevent — check that `sanitize()` is still called on the \
-             command `build_audit_command` returns. Note that `python3 / git / \
-             script absent` is NOT a plausible explanation here: the parent \
-             process just ran this same test successfully before spawning this \
-             child."
+             Before task 5698, that meant the ambient \
+             GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE redirect had defeated the \
+             script outright: its `git rev-parse --show-toplevel` resolved \
+             into the harness's decoy tree, matched no source files, and \
+             run_orphan_audit turned the resulting empty stdout into None. As \
+             of task 5698 that redirect no longer reaches None: \
+             `run_orphan_audit_at`'s repo-root premise probe now panics on \
+             the SAME redirect, inside \
+             crates/reify-test-support/src/orphan_audit.rs and before the \
+             script is even spawned, because the child's own `git rev-parse \
+             --show-toplevel` resolves the decoy tree instead of the \
+             repository this call was asked to scan — see \
+             `orphan_audit_survives_ambient_hook_git_env`'s doc for that \
+             chain. That panic already fails this test via the replay's \
+             status assertion, so `run_orphan_audit` never gets a chance to \
+             return here. Landing on THIS branch instead means \
+             `run_orphan_audit` took its other remaining path, \
+             `EnvUnavailable` — a missing python3/git/script, or a \
+             `repo_root` that is not inside a git work tree at all — and \
+             this panic is kept only as defence-in-depth against that public \
+             contract, which still permits `None`, not because reaching it \
+             is expected. Note that `python3 / git / script absent` is NOT a \
+             plausible explanation here regardless: the parent process just \
+             ran this same test successfully before spawning this child."
         );
     }
 
@@ -81,13 +92,17 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 ///
 /// # The discrimination this test buys
 ///
-/// - Unsanitized spawn -> the script's `git rev-parse --show-toplevel` resolves
-///   into the harness's empty decoy tree -> no source files matched -> empty
-///   stdout -> `run_orphan_audit` returns `None` -> the replay-child-only
-///   `panic!` fires -> the child exits non-zero ->
+/// - Unsanitized spawn -> `run_orphan_audit_at`'s repo-root premise probe
+///   (itself routed through the same, now-broken sanitizer) resolves the
+///   ambient GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE redirect to the harness's
+///   decoy tree instead of the real repo root -> the probe's mismatch check
+///   fires -> `panic!("...would run against a DIFFERENT repository than
+///   requested...")`, inside `crates/reify-test-support/src/orphan_audit.rs`
+///   and before the script is even spawned -> the child exits non-zero ->
 ///   `replay_self_under_hook_git_env`'s status assertion fails -> RED.
-/// - Sanitized spawn -> the real repo root -> a JSON envelope ->
-///   `orphan_count == 0` -> the child is green -> GREEN.
+/// - Sanitized spawn -> the probe agrees with the real repo root -> the
+///   script actually runs -> a JSON envelope -> `orphan_count == 0` -> the
+///   child is green -> GREEN.
 ///
 /// Both branches were walked at the commit that introduced this test, by
 /// temporarily rewriting `reify_test_support`'s `sanitize()` body to drop its
@@ -96,13 +111,21 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
 /// line restored GREEN. That is the check to repeat if this test is ever
 /// suspected of having gone vacuous — it takes one line and one `cargo test`.
 ///
-/// That `panic!` is the entire reason this test has teeth. Without it `None`
-/// takes the graceful-skip `return`, which libtest counts as PASSED — and both
-/// of the replay harness's non-vacuity guards count a self-skip in `passed`,
-/// so NO value of `expected_min` could make the broken case RED. The skip
-/// stays the behaviour everywhere except inside the replay child, because
-/// `run_orphan_audit`'s skip protocol is a contract with eight callers across
-/// three crates covering environments where `python3`, `git` or the script is
+/// Before task 5698, that replay-child-only `panic!` in
+/// `reify_audit_pub_fns_are_g_allow_marked` was the entire reason this test
+/// had teeth: without it, `None` took the graceful-skip `return`, which
+/// libtest counts as PASSED — and both of the replay harness's non-vacuity
+/// guards count a self-skip in `passed`, so NO value of `expected_min` could
+/// have made the broken case RED. Task 5698 moved the teeth: the panic that
+/// actually fires today lives inside `run_orphan_audit_at` itself (the
+/// repo-root mismatch above), so the replay child now fails before
+/// `run_orphan_audit` even gets a chance to return `None`. The
+/// replay-child-only `panic!` survives as belt-and-braces against
+/// `run_orphan_audit`'s public contract, which still permits `None` — not
+/// because reaching it is expected for this scope today. The graceful skip
+/// stays the behaviour everywhere outside the replay child, because
+/// `run_orphan_audit`'s skip protocol is a contract with nine callers across
+/// two crates covering environments where `python3`, `git` or the script is
 /// genuinely absent.
 ///
 /// # The RED observation, recorded because a clean checkout no longer shows it
