@@ -232,6 +232,14 @@ where
 /// captured INSIDE the job, not through this type.
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+/// What a job sends back to its submitter: the computed value, or the panic
+/// payload its body raised.
+///
+/// Carrying the payload rather than a flattened string is what lets the
+/// submitter [`std::panic::resume_unwind`] the ORIGINAL panic, keeping
+/// [`run_on_worker`]'s semantics identical to [`run_on_large_stack`]'s.
+type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
+
 /// The submit end of the persistent worker's job queue.
 ///
 /// The [`std::sync::Mutex`] is defensive rather than required —
@@ -329,6 +337,21 @@ fn worker_sender() -> Option<&'static JobSender> {
 /// rather than enforced: a guard's failure mode would be a hang that poisons the
 /// shared worker for every other caller in the process.
 ///
+/// # Panic isolation (the one behavioural difference this tier requires)
+///
+/// Panic semantics are faithful — a panicking job re-raises its ORIGINAL payload
+/// on ITS submitter via [`std::panic::resume_unwind`], just as
+/// [`run_on_large_stack`] does — but the MECHANISM has to differ. Each job body
+/// runs under [`std::panic::catch_unwind`] INSIDE the job, so the worker's
+/// receive loop never observes an unwind and cannot be killed by user code.
+///
+/// The per-call helpers need none of this: there, an unwinding thread is the
+/// thread that was about to be joined anyway, so its death costs exactly one
+/// call. A shared worker's death would cost every FUTURE call in the process —
+/// one poisoned job would silently downgrade the whole GUI to inline execution
+/// on ~2 MiB tokio worker stacks, which is the hazard this module exists to
+/// remove.
+///
 /// # Degradation policy: never lose a result, never block
 ///
 /// Mirrors [`run_on_large_stack`]'s spawn-failure policy. If the OS refuses the
@@ -346,10 +369,17 @@ where
         return f();
     };
 
-    let (reply_tx, reply_rx) = std::sync::mpsc::channel::<T>();
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel::<JobReply<T>>();
     let job: Job = Box::new(move || {
+        // The catch lives INSIDE the job, so the worker's `for job in rx` loop
+        // can never observe an unwind and therefore cannot be killed by user
+        // code. `AssertUnwindSafe` is sound here because the job OWNS its
+        // captures and is consumed by this call — nothing observes them after a
+        // panic — and the payload is re-raised on the submitter below rather
+        // than swallowed.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         // A dropped receiver means the submitter is gone; nothing to report.
-        let _ = reply_tx.send(f());
+        let _ = reply_tx.send(outcome);
     });
 
     // Poisoning is meaningless for a `Sender` — it holds no invariant a panic
@@ -366,7 +396,18 @@ where
         job();
     }
 
-    reply_rx
-        .recv()
-        .expect("large-stack worker died without answering: it unwound mid-job")
+    match reply_rx.recv() {
+        Ok(Ok(value)) => value,
+        // Re-raise the ORIGINAL payload on the submitter, exactly as
+        // `run_on_large_stack` does after joining its scoped thread.
+        Ok(Err(payload)) => std::panic::resume_unwind(payload),
+        // Unreachable while the job catches its own unwind: the reply channel
+        // can only disconnect if the job was dropped unrun. `recv` on a
+        // disconnected channel returns AT ONCE, so this is a loud failure, not
+        // a block.
+        Err(_) => panic!(
+            "the {WORKER_THREAD_NAME} worker dropped a job without answering: \
+             its reply channel disconnected before a result arrived"
+        ),
+    }
 }
