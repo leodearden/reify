@@ -48,6 +48,7 @@ fi
 SERVE_URL="http://127.0.0.1:8901/mcp"
 MCP_TIMEOUT=15
 WATCHER_SERVICE="jcodemunch-watcher"
+SESSION_ID=""
 
 # Resolved during L-SERVE spike (task 4102, step-4) against the running serve.
 # Repo identifier: the leodearden/reify index in ~/.code-index (schema v16).
@@ -111,6 +112,10 @@ server_session=$(grep -i '^mcp-session-id:' "$SMOKE_TMPDIR/init_headers.txt" 2>/
     | head -1 | sed 's/^[Mm][Cc][Pp]-[Ss]ession-[Ii][Dd]:[[:space:]]*//' | tr -d '\r' || true)
 if [[ -n "$server_session" ]]; then
     SESSION_ID="$server_session"
+else
+    echo "FAIL [1]: initialize response carried no Mcp-Session-Id header." >&2
+    echo "       Response headers: $(cat "$SMOKE_TMPDIR/init_headers.txt" 2>/dev/null)" >&2
+    exit 1
 fi
 
 # POST notifications/initialized (fire-and-forget; server may return 202 or 200).
