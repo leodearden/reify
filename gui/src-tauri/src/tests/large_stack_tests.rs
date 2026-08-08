@@ -89,6 +89,20 @@ fn deep_recurse_if_on_thread(expected_name: &'static str, depth: u32) -> Result<
     Ok(deep_recurse(depth))
 }
 
+/// Render a caught panic payload as a string, so a test can assert on the
+/// ORIGINAL message rather than merely on "something panicked" — the latter is
+/// also true when a helper substitutes a failure of its own.
+///
+/// `panic!("literal")` yields a `&'static str` payload while a formatted
+/// `panic!("{x}")` yields a `String`, so both are tried.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".to_owned())
+}
+
 /// (a) `run_on_large_stack` returns the closure's computed value, runs the
 /// closure on a DISTINCT thread (not the caller), and permits the closure to
 /// borrow a caller-stack local by reference (proving the non-`'static` scoped
@@ -446,13 +460,9 @@ fn run_on_worker_propagates_the_original_job_panic_to_its_submitter() {
     }));
 
     let payload = result.expect_err("a panicking job must propagate out of run_on_worker");
-    let message = payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_owned());
     assert_eq!(
-        message, "boom",
+        panic_message(&*payload),
+        "boom",
         "the submitter must receive the JOB's original panic payload, not a \
          substitute raised by the helper"
     );
@@ -547,4 +557,59 @@ fn concurrent_submitters_share_one_worker_without_cross_talk() {
              must all land on the ONE persistent worker"
         );
     }
+}
+
+// ── Degraded (no-worker) arm (task 5772) ─────────────────────────────────────
+//
+// Task 5357 DOCUMENTED `run_on_large_stack`'s inline fallback for a refused
+// 256 MiB mapping but could not test it: `pthread_create` failure is not
+// provokable from a unit test, so the policy rested on prose alone. The worker
+// tier closes that gap by testing the SEAM instead of the OS — `dispatch(None,
+// f)` is precisely the "no worker available" arm — so the behaviour every tier
+// promises under stress is exercised rather than merely asserted.
+
+/// (n) The `None` arm returns the closure's value AND runs it inline, i.e. the
+/// closure observes the CALLER's own `ThreadId`.
+///
+/// Inline-ness is the load-bearing half: it is the precise claim the fallback
+/// policy makes — "the worst case is exactly the pre-task-5357 behaviour, never
+/// a lost result". A degraded arm that returned the right value from some other
+/// thread would satisfy the value check and still break the promise.
+#[test]
+fn dispatch_without_a_worker_runs_the_closure_inline_on_the_caller() {
+    use crate::large_stack::dispatch;
+
+    let caller_id = std::thread::current().id();
+
+    let (value, ran_on) = dispatch(None, || (99u32, std::thread::current().id()));
+
+    assert_eq!(
+        value, 99,
+        "the degraded arm must still return the closure's value — never a lost result"
+    );
+    assert_eq!(
+        ran_on, caller_id,
+        "with no worker the closure must run INLINE on the caller's own stack"
+    );
+}
+
+/// (o) A panic through the `None` arm still reaches the caller carrying its
+/// ORIGINAL payload, so panic semantics do not silently change at the moment the
+/// mechanism degrades — which is exactly when a caller can least afford a
+/// surprise.
+#[test]
+fn dispatch_without_a_worker_still_propagates_panics() {
+    use crate::large_stack::dispatch;
+    use std::panic::AssertUnwindSafe;
+
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        dispatch::<_, ()>(None, || panic!("degraded boom"));
+    }));
+
+    let payload = result.expect_err("a panic through the degraded arm must reach the caller");
+    assert_eq!(
+        panic_message(&*payload),
+        "degraded boom",
+        "the degraded arm must deliver the closure's ORIGINAL payload, like every other tier"
+    );
 }
