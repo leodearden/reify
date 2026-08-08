@@ -163,3 +163,51 @@ fn extracts_and_resolves_basic_stem() {
     assert_eq!(findings[0].file, "crates/crate-a/src/stale.rs");
     assert_eq!(findings[0].line, 1);
 }
+
+/// Test A: false-positive class (1) — cross-crate `-p` precedence.
+///
+/// `crates/crate-a/src/x.rs` documents two invocations that both name
+/// `-p crate-b`, the `crates/reify-test-support/src/temp_dirs.rs:146` shape.
+/// Line 1's stem resolves against `crate-b`'s test dir (which exists) even
+/// though the containing file lives under `crate-a` — zero findings for it.
+/// Line 2's stem resolves against neither — its finding must attribute
+/// `crate-b` (from the flag), not `crate-a` (from the containing path), so a
+/// real failure points the reader at the crate the invocation actually runs.
+#[test]
+fn cross_crate_p_flag_takes_precedence_over_containing_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write_file(
+        root,
+        "crates/crate-a/src/x.rs",
+        "// REIFY_KEEP_TEMP_DIRS=1 cargo test -p crate-b --test some_harness\n// cargo test -p crate-b --test absent_stem\n", // stale-test-target:allow — synthetic fixture
+    );
+    write_file(root, "crates/crate-b/tests/some_harness.rs", "// empty\n");
+    // Deliberately NOT creating crates/crate-a/tests/some_harness.rs — if the
+    // scanner attributed crate-a here (containing path) it would wrongly flag
+    // this correct, cross-crate invocation.
+
+    let files = vec![
+        "crates/crate-a/src/x.rs".to_string(),
+        "crates/crate-b/tests/some_harness.rs".to_string(),
+    ];
+
+    let findings = scan(root, &files);
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "expected exactly one finding (the absent_stem line); got {findings:?}"
+    );
+    assert_eq!(
+        findings[0].stem, "absent_stem",
+        "unexpected finding: {:?}",
+        findings[0]
+    );
+    assert_eq!(
+        findings[0].crate_name, "crate-b",
+        "finding must attribute the -p flag's crate, not the containing path's crate-a: {:?}",
+        findings[0]
+    );
+}
