@@ -6,6 +6,7 @@ license.workspace = true
 description = "Standard library: unit definitions and built-in functions"
 
 [dependencies]
+reify-builtins.workspace = true
 reify-core.workspace = true
 reify-gcode.workspace = true
 reify-ir.workspace = true
