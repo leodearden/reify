@@ -8,6 +8,14 @@
 //
 // Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
 // runtime Warning diagnostic.
+//
+// Declares its module explicitly: without it, `reify eval` also emits
+// W_MODULE_DECL_MISSING ("expected `module affine_scale_dim`"), whose message
+// text incidentally contains the substring "affine_scale" and would make a
+// bare `stderr.contains("affine_scale")` assertion pass even if the
+// affine_scale diagnostic itself were absent (task 6155).
+
+module affine_scale_dim
 
 structure def AffineScaleDim {
     let m = affine_scale(2mm, 1.0, 1.0)

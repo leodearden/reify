@@ -52,7 +52,7 @@ fn eval_affine_scale_zero_warns_degenerate() {
         "a zero factor is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains("affine_scale") && stderr.contains("degenerate"),
+        stderr.contains("affine_scale dropped: factor=0 produces a degenerate (det=0)"),
         "stderr should contain the affine_scale degenerate (det=0) warning; got: {stderr}"
     );
 }
@@ -94,7 +94,7 @@ fn eval_affine_scale_dimensioned_warns_dimensionless() {
         "a dimensioned factor is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains("affine_scale") && stderr.contains("dimensionless"),
+        stderr.contains("affine_scale: scale factors must be dimensionless (Real)"),
         "stderr should contain the affine_scale dimensionless-requirement warning; got: {stderr}"
     );
 }
