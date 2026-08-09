@@ -4590,6 +4590,58 @@ mod tests {
         assert!(eval_builtin("transform_exp", &[Value::Map(m)]).is_undef());
     }
 
+    /// transform_exp with DIMENSIONLESS linear dimension → Undef.
+    ///
+    /// RULING #6126 closes the LAST `LENGTH | DIMENSIONLESS` admission in the transform
+    /// family: a twist's `linear` half is `Vector3<Length>`, so a dimensionless linear
+    /// is rejected exactly like ANGLE or MASS.
+    ///
+    /// This positive-acceptance path was previously UNTESTED — every existing
+    /// `transform_exp` test builds a LENGTH twist, and the comment formerly sitting on
+    /// `transform_log_dimensionless_translation_returns_non_undef` mis-cited
+    /// `transform_exp_zero_twist_is_identity` as covering the dimensionless case.
+    #[test]
+    fn transform_exp_dimensionless_linear_returns_undef() {
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert!(
+            eval_builtin("transform_exp", &[twist]).is_undef(),
+            "RULING #6126: a twist's `linear` must be Vector3<Length>; \
+             DIMENSIONLESS is no longer admitted"
+        );
+    }
+
+    /// transform_exp with LENGTH linear dimension → accepted, translation stays LENGTH.
+    ///
+    /// The one-sidedness control for `transform_exp_dimensionless_linear_returns_undef`:
+    /// the narrowing must reject non-LENGTH without being "fixed" by rejecting
+    /// everything. Asserts both the accepted shape and that the emitted translation
+    /// components still carry `LENGTH`.
+    #[test]
+    fn transform_exp_length_linear_is_accepted() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        let result = eval_builtin("transform_exp", &[twist]);
+        let translation = match &result {
+            Value::Transform { translation, .. } => translation.as_ref(),
+            other => panic!("transform_exp on a LENGTH twist must yield a Transform; got {other:?}"),
+        };
+        let comps = match translation {
+            Value::Vector(items) => items,
+            other => panic!("translation must be a Vector; got {other:?}"),
+        };
+        assert_eq!(comps.len(), 3, "translation must have 3 components");
+        for (i, c) in comps.iter().enumerate() {
+            assert_eq!(
+                c.dimension(),
+                DimensionVector::LENGTH,
+                "translation component {i} must carry LENGTH; got {c:?}"
+            );
+        }
+    }
+
     /// transform_exp with NaN component → Undef.
     #[test]
     fn transform_exp_nan_angular_returns_undef() {
