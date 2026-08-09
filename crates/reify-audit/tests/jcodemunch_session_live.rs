@@ -308,13 +308,15 @@ fn parse_mcp_body(ctype: &str, body: &str) -> Value {
 /// The error type stays `ureq::Error` rather than a rendered string so B2 can
 /// match `Error::Status(404, _)` structurally — a substring match on the
 /// Display text would also accept a 404 mentioned anywhere in a transport
-/// error, which is exactly the looseness this assertion cannot afford.
+/// error, which is exactly the looseness this assertion cannot afford. It is
+/// boxed only to satisfy `clippy::result_large_err`; the variants stay
+/// matchable through the box.
 /// Failing to read the body of a response we did receive is a harness fault,
 /// not a claim under test, so it panics rather than folding into this Result.
 fn post_initialize(
     url: &str,
     session: Option<&str>,
-) -> Result<(u16, Option<String>, Value), ureq::Error> {
+) -> Result<(u16, Option<String>, Value), Box<ureq::Error>> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(30))
         .build();
@@ -389,17 +391,19 @@ fn live_serve_assigns_the_session_and_rejects_a_client_minted_one() {
             "initialize carrying a client-minted session id must be rejected by \
              {url}; got status {status} and body {body}",
         ),
-        Err(ureq::Error::Status(code, _)) => assert_eq!(
-            code, 404,
-            "initialize with a client-minted session id must be rejected 404 \
-             (Invalid or expired session ID); got status {code}",
-        ),
-        Err(ureq::Error::Transport(e)) => panic!(
-            "expected a 404 from {url} for the client-minted session id, got a \
-             transport error instead — the serve is unhealthy, so this arm \
-             proves nothing: {e}\n{}",
-            serve.output(),
-        ),
+        Err(err) => match *err {
+            ureq::Error::Status(code, _) => assert_eq!(
+                code, 404,
+                "initialize with a client-minted session id must be rejected 404 \
+                 (Invalid or expired session ID); got status {code}",
+            ),
+            ureq::Error::Transport(e) => panic!(
+                "expected a 404 from {url} for the client-minted session id, got a \
+                 transport error instead — the serve is unhealthy, so this arm \
+                 proves nothing: {e}\n{}",
+                serve.output(),
+            ),
+        },
     }
 
     // (b) the control: the SAME serve, the SAME payload, no session header.
