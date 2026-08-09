@@ -1492,6 +1492,8 @@ fn dimension_label(dim: DimensionVector) -> String {
 ///   - *zero factor* → degenerate (det=0, non-invertible) map.
 /// - **`transform_log`** (exactly 1 arg) — a `Transform` whose translation is not
 ///   `Vector3<Length>` (RULING #6126).
+/// - **`transform_exp`** (exactly 1 arg) — a twist whose `linear` half is not
+///   `Vector3<Length>` (RULING #6126).
 ///
 /// Invariant: the dimension arms consult [`TWIST_LINEAR_DIM`] — the SAME const the
 /// eval gates use — so the classifier cannot drift away from what eval actually
@@ -1550,6 +1552,35 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 "transform_log: a Transform's translation must be Vector3<Length>; got {} \
                  (a twist's `linear` half carries Length — RULING #6126)",
                 dimension_label(t_dim)
+            )))
+        }
+        "transform_exp" => {
+            if args.len() != 1 {
+                return None;
+            }
+            let map = match &args[0] {
+                Value::Map(m) => m,
+                _ => return None,
+            };
+            // A missing `linear` key is a SHAPE failure, not a dimension failure.
+            let linear_val = map.get(&Value::String("linear".to_string()))?;
+            // As on the transform_log arm, `decompose_vec3` returning None covers every
+            // non-dimension cause (not a 3-Vector, mixed component dimensions,
+            // non-numeric or non-finite components) — the no-mis-attribution guard.
+            let (_, lin_dim) = decompose_vec3(linear_val)?;
+            if lin_dim == TWIST_LINEAR_DIM {
+                return None;
+            }
+            // Deliberately NO guard on the `angular` half. Eval checks angular BEFORE
+            // linear, so a twist wrong in both halves is rejected by the angular gate
+            // and never reaches the linear one — but the linear fault is a TRUE
+            // statement either way, and reporting it unconditionally keeps this arm
+            // independent of #6080, which owns the angular half and will add its own
+            // arm.
+            Some(reify_core::Diagnostic::warning(format!(
+                "transform_exp: a twist's `linear` must be Vector3<Length>; got {} \
+                 (RULING #6126)",
+                dimension_label(lin_dim)
             )))
         }
         _ => None,
