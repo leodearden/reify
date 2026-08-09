@@ -286,4 +286,75 @@ assert "all-check set => passed through unchanged with DROPPED=0" \
 assert "all-grammar set => KEPT=0 and the filter refuses (never an empty probe-set)" \
     _want_filter_refuses "$_PS_ALL_GRAMMAR" "$_RUN_ROOT/all_grammar.filtered.json"
 
+# ── Block C: prd_gate_loud_substrate_skip ──────────────────────────────────
+echo "-- prd_gate_loud_substrate_skip (hermetic) --"
+
+# BOTH STREAMS ARE THE POINT. The precedent this follows
+# (tests/infra/test_target_per_lane_independence.sh:139-167) states the reason
+# in its own comment: "A quiet stderr-only SKIP line is easy to miss in CI
+# output, making a partial-coverage green run indistinguishable from full
+# coverage". These gates run under run_all.sh, whose per-test capture is the
+# archived verify log — a notice on only one stream is a notice half the
+# readers never see. So stdout and stderr are captured to SEPARATE files here
+# and each is checked independently; a single 2>&1 capture would pass just as
+# happily for a function that wrote to one stream twice.
+_LOUD_LABEL="test_prd_gate_corpus"
+_LOUD_REASON='cache/lock unwritable: Permission denied (os error 13) (~/.cache/tree-sitter/lock/reify.lock)'
+
+_want_loud_on_both_streams() {
+    local out="$_RUN_ROOT/loud.out" err="$_RUN_ROOT/loud.err"
+    : > "$out"
+    : > "$err"
+
+    if ! prd_gate_loud_substrate_skip "$_LOUD_LABEL" 1 2 "$_LOUD_REASON" \
+            > "$out" 2> "$err"; then
+        echo "expected prd_gate_loud_substrate_skip to return 0 (it is a notice, not a failure)"
+        return 1
+    fi
+
+    local stream f needle
+    for stream in stdout stderr; do
+        if [ "$stream" = "stdout" ]; then f="$out"; else f="$err"; fi
+        if [ ! -s "$f" ]; then
+            echo "$stream: empty — the notice must land on BOTH streams"
+            return 1
+        fi
+        # The banner must name: the gate, the dropped count, the kept count,
+        # and the reason VERBATIM (an abridged reason sends the reader hunting
+        # for a cause the log no longer contains).
+        for needle in "$_LOUD_LABEL" "$_LOUD_REASON"; do
+            if ! grep -qF -- "$needle" "$f"; then
+                echo "$stream: banner does not contain '$needle'"
+                echo "---- $stream ----"
+                cat "$f"
+                return 1
+            fi
+        done
+        # Counts are checked in context, not as bare digits: a bare "1"/"2"
+        # would match almost any prose and prove nothing.
+        if ! grep -qE '1 grammar' "$f"; then
+            echo "$stream: banner does not report '1 grammar' row(s) dropped"
+            cat "$f"
+            return 1
+        fi
+        if ! grep -qE '2 check' "$f"; then
+            echo "$stream: banner does not report '2 check' row(s) still running"
+            cat "$f"
+            return 1
+        fi
+    done
+
+    # Bannered, not a lone line — the framing is what makes it survive a wall
+    # of CI output.
+    if ! grep -q '####' "$out"; then
+        echo "stdout: no '####' banner framing"
+        cat "$out"
+        return 1
+    fi
+    return 0
+}
+
+assert "loud skip => bannered notice on BOTH stdout and stderr, naming gate/counts/reason, returns 0" \
+    _want_loud_on_both_streams
+
 test_summary
