@@ -10,12 +10,33 @@
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
 //!
-//! Contract C is NOT yet exhaustive: `sweep_revolve`'s axis origin
-//! (`geometry_ops`' `ox`/`oy`/`oz`, read via the bare-accepting
-//! `eval_named_arg_f64`) is the nearest un-gated LENGTH-semantic position, and
-//! `transform_translate`/`transform_rotate_around`/`curve_*` carry more. Task
-//! 5623 tracks that residual sweep; until it lands, adding a length-semantic
-//! arg here means adding it to that task's triage list too.
+//! Task 5743 extended Contract C to the R7 **raw-`Value`** positions — the 26
+//! length-semantic `GeometryOp` *fields* of the geometry primitives and
+//! profiles (21 primitive + 5 profile: `Box` width/height/depth, `Cylinder`
+//! radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
+//! `HalfSpace`'s `px`/`py`/`pz` point, `Rectangle`, `Circle`, `Ellipse`). Those
+//! go through `geometry_ops`' `required_length_value`, the raw-`Value`
+//! chokepoint, so they share this module's single [`length_spec`] and therefore
+//! its exact rejection wording. The same task attached
+//! `reify_core::DiagnosticCode::DimensionedArgRejected` to every
+//! `ArgSpec`-backed rejection emitted anywhere in `geometry_ops`.
+//!
+//! Contract C is STILL NOT exhaustive. Each remaining un-gated LENGTH-semantic
+//! position below names the LIVE task that owns it — a blanket "awaiting a
+//! future units PRD" would be an unowned residual, which decision D14 /
+//! INV-SF-5 bans. Adding a length-semantic arg here means adding it to the
+//! owning task's triage list too.
+//!
+//! | un-gated position | owner |
+//! |---|---|
+//! | `modify` + `sweep` slots: `fillet` radius, `chamfer` d, `chamfer_asymmetric` d1/d2, `shell` thickness, `thicken` offset, `offset_solid`/`offset_curve` distance, `extrude`/`extrude_symmetric` distance, `pipe` radius, `zone_slab` width | `#5744` |
+//! | `sweep_revolve`'s axis origin (`ox`/`oy`/`oz`, read via the bare-accepting `eval_named_arg_f64`), `transform_translate` `dx`/`dy`/`dz`, `transform_rotate_around` `px`/`py`/`pz`, and the `curve_*` coordinate args | `#5623` |
+//! | `ProfileKind::Polygon`'s variadic coordinate list, which routes through `eval_all_args_to_f64` and has no `ArgSpec` to check against | `#5661` |
+//! | severity residuals: promoting the quiet-degrade readers (`resolve_spec_arg` / `resolve_density_arg`) from `Warning` to `Error`, the non-finite-Length arm of `eval_named_arg_length`, and the inline non-`ArgSpec` `ArgRejection` sites plus Contract B | `#6157` |
+//!
+//! ANGLE positions are deliberately absent from that table: all angle gating
+//! belongs to PRD 3 by binding seam, and it reuses the SAME
+//! `DimensionedArgRejected` code rather than minting a per-dimension sibling.
 //!
 //! The helper is **value-level only**: it operates on an already-resolved
 //! `reify_ir::Value` and has no knowledge of `CompiledExpr` or `ValueMap`.
