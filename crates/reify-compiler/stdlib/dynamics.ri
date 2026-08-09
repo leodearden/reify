@@ -12,8 +12,8 @@
 //   - structure def MassProperties        (mass, com, inertia, origin;
 //                                          constraint mass >= 0kg)
 //   - trait JointForceValue               (marker for force payload variants)
-//   - structure def ScalarForce           : JointForceValue (magnitude : Real)
-//   - structure def ScalarTorque          : JointForceValue (magnitude : Real)
+//   - structure def ScalarForce           : JointForceValue (magnitude : Force)
+//   - structure def ScalarTorque          : JointForceValue (magnitude : Torque)
 //   - structure def CylForce              : JointForceValue (components : List<Real>)
 //   - structure def PlanarForce           : JointForceValue (components : List<Real>)
 //   - structure def SphereForce           : JointForceValue (components : List<Real>)
@@ -142,24 +142,37 @@ trait JointForceValue { }
 // ── JointForceValue variants ──────────────────────────────────────────────
 
 // ScalarForce — single-axis joint force (PRD §4.1, 1-DOF linear joint).
-// The `magnitude` is a dimensionless Real so the caller can supply any
-// SI-unit value; unit tracking is the η dispatcher's responsibility
-// (per PRD §4.2 arity/unit conventions).
+// The `magnitude` is a DIMENSIONED quantity (`Force`, i.e. newtons), not a
+// bare Real: unit correctness is carried by the type itself rather than being
+// tracked out-of-band by the η dispatcher (task 6098). Reading the field into
+// arithmetic is dimension-checked in both directions — `f.magnitude + 1.0N`
+// type-checks, `f.magnitude + 1.0` is a dimension mismatch. The η dispatcher
+// mints the field as a newton-dimensioned scalar to match
+// (crates/reify-stdlib/src/dynamics/eval.rs, `joint_force_value`).
+//
+// LIMITATION (not a TODO — no owning cite required here): constructor
+// ARGUMENTS are not dimension-checked today, so `ScalarForce(magnitude: 2.5)`
+// is accepted silently. Construction-site strictness is owned by
+// docs/prds/v0_6/dimensioned-construction-strictness.md; eval-side reader
+// gating by docs/prds/v0_6/dimension-checked-readers.md.
 //
 // LIST<REAL> NOTE: fixed-array syntax `[Real;N]` is unsupported in the
 // grammar (no ArrayType in ts_parser; no `param x : [..]` precedent in
-// stdlib). Scalar variants use a single Real; multi-component variants
-// (CylForce/PlanarForce/SphereForce) use List<Real>. Per PRD §4.2 the
-// per-kind arity is shape-validated by the η dispatcher.
+// stdlib). Multi-component variants (CylForce/PlanarForce/SphereForce) use
+// List<Real>. Per PRD §4.2 the per-kind arity is shape-validated by the η
+// dispatcher.
 structure def ScalarForce : JointForceValue {
-    param magnitude : Real
+    param magnitude : Force
 }
 
 // ScalarTorque — single-axis joint torque (PRD §4.1, 1-DOF rotary joint).
-// Same encoding rationale as ScalarForce; distinct type-tag so the η
-// dispatcher can distinguish force from torque without reading magnitude units.
+// Same encoding rationale as ScalarForce, with `magnitude : Torque` (N·m/rad).
+// The distinct type-tag still lets the η dispatcher tell force from torque
+// nominally; the dimensioned magnitudes now make the two non-unifiable in
+// arithmetic as well. `Torque` carries an Angle⁻¹ slot and is deliberately
+// distinct from Energy (J = N·m) — never spell it as Force·Length.
 structure def ScalarTorque : JointForceValue {
-    param magnitude : Real
+    param magnitude : Torque
 }
 
 // CylForce — cylindrical-joint force (PRD §4.1, 2-DOF: linear + rotary).
