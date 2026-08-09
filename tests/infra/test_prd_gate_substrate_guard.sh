@@ -357,4 +357,178 @@ _want_loud_on_both_streams() {
 assert "loud skip => bannered notice on BOTH stdout and stderr, naming gate/counts/reason, returns 0" \
     _want_loud_on_both_streams
 
+# ── Block D: end-to-end, against the REAL gate scripts ─────────────────────
+#
+# The unit blocks above prove the library's logic. This block proves the
+# WIRING: that the two gates actually consult it, and that an unusable
+# substrate produces a partial-but-real run instead of exit 70.
+#
+# WHY AN EXPLICIT REIFY_BIN HANDOFF. resolve_trusted_reify_bin trusts an
+# explicit REIFY_BIN outright (its precedence rule 1: a deliberate
+# operator/verify.sh handoff, not the auto-discovery path where
+# cross-candidate leftovers are the risk). Without the handoff these blocks
+# would skip on any lane whose target/.reify-bin-sha predates the branch's own
+# commits — i.e. on essentially every task lane, including this one, since a
+# shell-only branch never rebuilds the binary and so never restamps the sidecar.
+_e2e_reify_bin() {
+    if [ -n "${REIFY_BIN:-}" ] && [ -f "${REIFY_BIN}" ]; then
+        printf '%s\n' "$REIFY_BIN"; return 0
+    fi
+    if [ -f "$REPO_ROOT/target/release/reify" ]; then
+        printf '%s\n' "$REPO_ROOT/target/release/reify"; return 0
+    fi
+    if [ -f "$REPO_ROOT/target/debug/reify" ]; then
+        printf '%s\n' "$REPO_ROOT/target/debug/reify"; return 0
+    fi
+    return 1
+}
+
+# A tree-sitter that reproduces the MEASURED sandboxed-role cache denial:
+# grammar_cache_denied() requires BOTH a load-failure marker ("Failed to load
+# language") AND a permission marker ("Permission denied" / "os error 13"), so
+# a stub carrying only one half would be classified as an ordinary parse
+# failure and would test nothing. The signature text is written to a sibling
+# file and cat'd rather than embedded in the stub body — it is unindented and
+# quote-heavy, exactly the shape that a heredoc inside a heredoc mangles.
+_mk_cache_denial_stub() {
+    local stub="$_RUN_ROOT/ts_stub_denied" sig="$_RUN_ROOT/ts_stub_denied_stderr.txt"
+    cat > "$sig" <<'EOF'
+Error: Failed to load language for path "tests/prd-gate/fixtures/arrow_type.ri"
+Caused by: Failed to load language in current directory:
+Permission denied (os error 13) (/home/leo/.cache/tree-sitter/lock/reify-69604127a681544d.lock)
+EOF
+    {
+        printf '%s\n' '#!/bin/sh'
+        printf 'cat %s >&2\n' "$sig"
+        printf '%s\n' 'exit 1'
+    } > "$stub"
+    chmod +x "$stub"
+    printf '%s\n' "$stub"
+}
+
+# _gate_under_denied_substrate <gate_script> <gate_name> <want_probe_count>
+#
+# Drives the REAL gate with TREE_SITTER_BIN pointed at the cache-denial stub
+# and asserts the four things that together define "fixed":
+#   (a) exit 0 — a clean skip, not a verdict;
+#   (b) NOT exit 70 — checked explicitly and separately, because 70 is the
+#       specific spurious-FAIL this task exists to kill and a future refactor
+#       could regress to it while still failing (a) for some other reason;
+#   (c) the loud banner on STDOUT — a silent partial run is the failure mode
+#       the banner exists to prevent, so its absence must fail the test;
+#   (d) the gate's own GATE_PASS line reports <want_probe_count> probe(s) —
+#       proof of PER-ROW skipping. A whole-script `exit 0` would also satisfy
+#       (a) and (b); only this assertion distinguishes the two designs.
+#
+# LANE-ROBUST BY CONSTRUCTION: where the grammar was never generated the
+# preflight answers 75 from the absent parser.c without ever consulting the
+# stub, and the identical per-row path fires. So this block asserts the same
+# thing whether or not the lane has a grammar — which is why it is the PRIMARY
+# assertion and the full-run case below is the guarded one.
+_gate_under_denied_substrate() {
+    local gate="$1" name="$2" want="$3"
+    local bin stub out="$_RUN_ROOT/$2.denied.out" err="$_RUN_ROOT/$2.denied.err" rc=0
+
+    if ! bin="$(_e2e_reify_bin)"; then
+        echo "no reify binary available (target/{release,debug}/reify absent and REIFY_BIN unset)"
+        return 1
+    fi
+    stub="$(_mk_cache_denial_stub)"
+
+    REIFY_BIN="$bin" TREE_SITTER_BIN="$stub" bash "$gate" > "$out" 2> "$err" || rc=$?
+
+    if [ "$rc" -eq 70 ]; then
+        echo "gate exited 70 (HARNESS_ERROR) — the exact spurious FAIL this guard must prevent"
+        cat "$out"; cat "$err"
+        return 1
+    fi
+    if [ "$rc" -ne 0 ]; then
+        echo "gate exited $rc, want 0 (clean partial run)"
+        cat "$out"; cat "$err"
+        return 1
+    fi
+    if ! grep -q 'GRAMMAR probes SKIPPED' "$out"; then
+        echo "no loud substrate banner on stdout — a silent partial run"
+        cat "$out"
+        return 1
+    fi
+    if ! grep -qF "$want/$want probe(s)" "$out"; then
+        echo "gate did not report $want/$want probe(s) — check-kind rows were not run"
+        cat "$out"
+        return 1
+    fi
+    return 0
+}
+
+# _gate_with_usable_substrate <gate_script> <gate_name> <want_probe_count>
+#
+# NEGATIVE CONTROL: on a lane whose substrate really is usable, the gate must
+# run the FULL committed probe-set and print NO banner — i.e. this task changed
+# nothing about the healthy path.
+#
+# RUN AGAINST THE REAL TOOLCHAIN, WITH NO TREE_SITTER_BIN OVERRIDE. A stubbed
+# "clean" tree-sitter (exit 0, no output) cannot serve here: both committed
+# grammar probes expect observation "present", so an always-exit-0 stub would
+# make the corpus gate's grammar row verdict PASS — and the corpus gate asserts
+# every verdict is FAIL/UNPROVABLE, so the stub would FAIL the very gate this
+# control claims proves healthy. Stubbing would mean encoding, per gate, which
+# verdict each committed grammar row must produce — duplicating the probe-set's
+# own bookkeeping in a place that would rot silently. The real toolchain asserts
+# exactly "usable substrate ⇒ the gate behaves as it does today", which is the
+# gate's own committed contract and needs no new assumption.
+#
+# SELF-GUARDING, LOUDLY: this case genuinely requires a usable substrate, so on
+# a lane without one it announces its own skip rather than passing vacuously —
+# a skip-guard on a test of a skip-guard, made explicit.
+_gate_with_usable_substrate() {
+    local gate="$1" name="$2" want="$3"
+    local bin out="$_RUN_ROOT/$2.usable.out" err="$_RUN_ROOT/$2.usable.err" rc=0
+
+    if ! bin="$(_e2e_reify_bin)"; then
+        echo "no reify binary available (target/{release,debug}/reify absent and REIFY_BIN unset)"
+        return 1
+    fi
+
+    REIFY_BIN="$bin" bash "$gate" > "$out" 2> "$err" || rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+        echo "gate exited $rc on a usable substrate, want 0"
+        cat "$out"; cat "$err"
+        return 1
+    fi
+    if grep -q 'GRAMMAR probes SKIPPED' "$out"; then
+        echo "gate printed the substrate banner on a USABLE substrate — the guard is over-firing"
+        cat "$out"
+        return 1
+    fi
+    if ! grep -qF "$want/$want probe(s)" "$out"; then
+        echo "gate did not report the full $want/$want probe(s) on a usable substrate"
+        cat "$out"
+        return 1
+    fi
+    return 0
+}
+
+# _skip_usable_control <what> — the explicit, loud skip for the guarded case.
+_skip_usable_control() {
+    echo "  SKIP: $1 — this lane's grammar substrate is unusable, so the"
+    echo "        full-run negative control cannot be exercised here."
+    echo "        Reason: ${GRAMMAR_SUBSTRATE_REASON:-<none>}"
+    echo "        (the PRIMARY denied-substrate assertion above still ran)"
+}
+
+echo "-- end-to-end: tests/infra/test_prd_gate_corpus.sh --"
+
+_CORPUS_GATE="$SCRIPT_DIR/test_prd_gate_corpus.sh"
+
+assert "corpus gate under a denied substrate => exit 0 (not 70), loud banner, and its 2 check probes still run" \
+    _gate_under_denied_substrate "$_CORPUS_GATE" "corpus" 2
+
+if resolve_grammar_substrate "$REPO_ROOT"; then
+    assert "corpus gate on a usable substrate => full 3-probe committed set, no banner" \
+        _gate_with_usable_substrate "$_CORPUS_GATE" "corpus" 3
+else
+    _skip_usable_control "corpus gate full-run control"
+fi
+
 test_summary
