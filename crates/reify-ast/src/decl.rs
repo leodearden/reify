@@ -1547,6 +1547,90 @@ pub struct ParseError {
 }
 
 #[cfg(test)]
+mod parse_error_render_tests {
+    use super::ParseError;
+    use reify_core::SourceSpan;
+
+    /// A parse error a user cannot locate is only marginally better than silence.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// `SourceSpan` carries byte offsets only, and the CLI printed `err.message` alone — no
+    /// file, no line, no column. `render` is the single place that converts an offset into a
+    /// position a human can act on.
+    #[test]
+    fn parse_error_render_includes_line_and_column() {
+        let source =
+            "structure T {\n  let v = f(1)\n}\nfn f(i: Int) -> Real {\n  let x0 = 1\n  x0\n}\n";
+        let off = source.find("let x0").expect("fixture must contain 'let x0'") as u32;
+
+        let err = ParseError {
+            message: "missing ';' after `let` binding in function body".to_string(),
+            span: SourceSpan::new(off, off + 6),
+        };
+
+        let rendered = err.render(source);
+
+        // `let x0` is on line 5, indented two spaces, so column 3 — both 1-based.
+        assert!(
+            rendered.starts_with("5:3:"),
+            "expected the rendered error to lead with its 1-based line:column position \
+             `5:3:`; got {rendered:?}",
+        );
+        assert!(
+            rendered.contains("missing ';'"),
+            "the rendered error must still carry its message; got {rendered:?}",
+        );
+        assert!(
+            !rendered.contains('\n'),
+            "a rendered parse error must be a single line — a multi-line render means source \
+             is being echoed back into the diagnostic; got {rendered:?}",
+        );
+    }
+
+    /// Offset 0 is the boundary the loop in `byte_offset_to_line_col` never enters: it must
+    /// still report `1:1`, not `0:0`.
+    #[test]
+    fn parse_error_render_at_offset_zero_is_one_one() {
+        let source = "fn f() -> Int { 1 }\n";
+        let err = ParseError {
+            message: "syntax error in source file".to_string(),
+            span: SourceSpan::new(0, 2),
+        };
+
+        let rendered = err.render(source);
+        assert!(
+            rendered.starts_with("1:1:"),
+            "byte offset 0 must render as the 1-based position `1:1:`; got {rendered:?}",
+        );
+    }
+
+    /// A prelude-sentinel span must degrade, never abort.
+    ///
+    /// `SourceSpan::PRELUDE_SENTINEL_OFFSET` (`u32::MAX`) lies far past the end of any real
+    /// source. `byte_offset_to_line_col` short-circuits it to `(1, 1)` ahead of its
+    /// `debug_assert!(offset <= source.len())`, but only if `render` passes the sentinel
+    /// through unclamped — clamping it to `source.len()` first would silently turn a
+    /// "no user-file location" marker into a bogus end-of-file position.
+    #[test]
+    fn parse_error_render_tolerates_the_prelude_sentinel() {
+        let source = "fn f() -> Int { 1 }\n";
+        let sentinel = SourceSpan::PRELUDE_SENTINEL_OFFSET as u32;
+        let err = ParseError {
+            message: "syntax error in source file".to_string(),
+            span: SourceSpan::new(sentinel, sentinel),
+        };
+
+        let rendered = err.render(source);
+        assert!(
+            rendered.starts_with("1:1:"),
+            "a prelude-sentinel span must render as the `1:1:` no-user-file-location \
+             fallback rather than panicking or reporting an end-of-file position; \
+             got {rendered:?}",
+        );
+    }
+}
+
+#[cfg(test)]
 mod number_class_tests {
     use super::{classify_number_literal, NumberClass};
 
