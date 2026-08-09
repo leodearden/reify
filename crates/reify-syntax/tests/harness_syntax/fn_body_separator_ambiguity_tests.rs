@@ -89,7 +89,10 @@ fn nested_fault_in_fn_body_does_not_silently_drop_the_binding() {
 /// The malformed fn-body sources this module governs. Shared by the message-quality sweep so
 /// a new fixture added to one assertion is covered by the other.
 const MALFORMED_FN_BODY_SOURCES: &[(&str, &str)] = &[
-    ("nested missing value", "fn f(x: Int) -> Int { let y = ; x }"),
+    (
+        "nested missing value",
+        "fn f(x: Int) -> Int { let y = ; x }",
+    ),
     (
         "nested missing value, structure member",
         "structure S {\n  fn f(x: Int) -> Int { let y = ; x }\n}",
@@ -134,8 +137,12 @@ fn missing_semicolon_after_fn_let_is_located_at_the_let_line() {
 
     // Offsets via `str::find` — never hard-coded, so the test does not go stale when the
     // fixture is edited (convention from `auto_type_arg_tests.rs`).
-    let let_off = source.find("let x0").expect("fixture must contain 'let x0'") as u32;
-    let absorbed_end = (source.find("x0 * sgn").expect("fixture must contain 'x0 * sgn'")
+    let let_off = source
+        .find("let x0")
+        .expect("fixture must contain 'let x0'") as u32;
+    let absorbed_end = (source
+        .find("x0 * sgn")
+        .expect("fixture must contain 'x0 * sgn'")
         + "x0 * sgn(i, 0)".len()) as u32;
     let fn_kw_off = source.find("fn f(").expect("fixture must contain 'fn f('") as u32;
 
@@ -211,7 +218,11 @@ fn t9_t20_sibling_fns_each_get_their_own_error() {
 
     let m = reify_syntax::parse(source, ModulePath::single("t"));
 
-    let separator: Vec<_> = m.errors.iter().filter(|e| e.message.contains("';'")).collect();
+    let separator: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("';'"))
+        .collect();
 
     // (a) One diagnostic per absorbing `let` — not one blob for the whole file.
     assert_eq!(
@@ -307,5 +318,60 @@ fn fn_body_parse_error_messages_do_not_echo_source_blocks() {
                 e.message,
             );
         }
+    }
+}
+
+/// The mandatory anti-false-positive companion to every negative test above: none of the new
+/// guards may start rejecting valid programs.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// Refusing a faulty parse is only half the invariant — a parser that refused everything
+/// would satisfy the negative tests trivially while being useless. The `function_signature`
+/// and quantity-literal cases are the two specifically at risk: a bodyless trait signature
+/// legitimately lowers to `body: None` and must not trip the fn-arm fault guard, and
+/// well-formed juxtaposition like `2mm * 3` must not trip the `let`-anchored separator
+/// diagnostic.
+#[test]
+fn well_formed_fn_bodies_produce_no_diagnostics() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "one separated let",
+            "fn f(x: Int) -> Int { let y = 2; y + x }",
+        ),
+        (
+            "several separated lets, multi-line",
+            "fn f(x: Int) -> Int {\n  let a = 1;\n  let b = 2;\n  let c = 3;\n  a + b + c + x\n}\n",
+        ),
+        ("no lets at all", "fn f(x: Int) -> Int { x + 1 }"),
+        ("expression body", "fn f(x: Int) -> Int = x + 1"),
+        ("typed let", "fn f(x: Int) -> Int { let y: Int = 2; y + x }"),
+        (
+            "fn member inside a structure",
+            "structure S {\n  fn f(x: Int) -> Int { let y = 2; y + x }\n}\n",
+        ),
+        (
+            "trait default body plus a bodyless signature",
+            "trait T {\n  fn provided(x: Int) -> Int { let y = 2; y + x }\n  fn required(x: Int) -> Int\n}\n",
+        ),
+        (
+            "well-formed quantity-literal juxtaposition",
+            "fn f() -> Length {\n  let a = 2mm;\n  a * 3\n}\n",
+        ),
+        (
+            "two well-formed sibling fns",
+            "fn g(i: Int) -> Int {\n  let a = 2;\n  a * i\n}\nfn h(i: Int) -> Int {\n  let b = 3;\n  b + i\n}\n",
+        ),
+    ];
+
+    for (label, src) in cases {
+        let m = reify_syntax::parse(src, ModulePath::single("t"));
+        assert!(
+            m.errors.is_empty(),
+            "{label}: a well-formed function body was rejected — the fn-body fault guards are \
+             over-eager, which breaks valid programs.\n\
+             diagnostics: {:?}\n\
+             source:\n{src}",
+            triples(&m),
+        );
     }
 }

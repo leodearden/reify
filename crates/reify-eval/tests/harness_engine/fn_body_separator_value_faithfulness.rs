@@ -276,3 +276,41 @@ fn separated_twins_are_all_clean() {
         );
     }
 }
+
+/// Real designs in the repository must still build.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+/// this is the guard against the severity flip in `forward_parse_errors` turning a formerly
+/// tolerated warning into a broken build. Both fixtures are fn-heavy — `m5_user_function.ri`
+/// declares a user fn and calls it from a structure, `integration_full_v01.ri` declares two
+/// overloaded fns alongside fields and constraints — so they exercise exactly the seam this
+/// task changed, at the granularity a user would notice.
+#[test]
+fn clean_corpus_still_compiles_and_evaluates() {
+    let examples: &[&str] = &[
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/m5_user_function.ri"
+        ),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/integration_full_v01.ri"
+        ),
+    ];
+
+    for path in examples {
+        let source =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path} should exist: {e}"));
+
+        // `compile_source_with_stdlib` panics on any parse error, which is itself half the
+        // guard: these examples must continue to parse cleanly.
+        let compiled = reify_test_support::compile_source_with_stdlib(&source);
+        let errors = error_diags(&compiled.diagnostics);
+        assert!(
+            errors.is_empty(),
+            "{path}: a checked-in example stopped compiling. Promoting parse errors to \
+             ERROR severity may not break real designs.\n\
+             errors: {errors:?}",
+        );
+    }
+}
