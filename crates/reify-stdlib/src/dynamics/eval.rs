@@ -1000,13 +1000,25 @@ fn slice_generalized(arg: &Value, dof_counts: &[usize]) -> Option<Vec<Vec<f64>>>
 /// τ-arity mismatch against the kind's DOF count.
 fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
     let components = |t: &[f64]| Value::List(t.iter().map(|&x| Value::Real(x)).collect());
-    let scalar = |type_name: &str, t: &[f64]| -> Option<Value> {
+    // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
+    // / `: Torque` in stdlib/dynamics.ri (task 6098), so mint them dimensioned —
+    // same shape `make_mass_properties` already uses for `mass`. A bare
+    // `Value::Real` here would pass `reify check` but evaluate to undef with an
+    // OpContractViolation as soon as the field is read into dimensioned
+    // arithmetic.
+    let scalar = |type_name: &str, dimension: DimensionVector, t: &[f64]| -> Option<Value> {
         if t.len() != 1 {
             return None;
         }
         Some(mint_instance(
             type_name,
-            vec![("magnitude".to_string(), Value::Real(t[0]))],
+            vec![(
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: t[0],
+                    dimension,
+                },
+            )],
         ))
     };
     let multi = |type_name: &str, t: &[f64], dof: usize| -> Option<Value> {
@@ -1019,8 +1031,10 @@ fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
         ))
     };
     match kind {
-        "revolute" => scalar("ScalarTorque", tau),
-        "prismatic" => scalar("ScalarForce", tau),
+        // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is deliberately distinct
+        // from ENERGY — use the registry vector, never a FORCE·LENGTH product.
+        "revolute" => scalar("ScalarTorque", DimensionVector::TORQUE, tau),
+        "prismatic" => scalar("ScalarForce", DimensionVector::FORCE, tau),
         "cylindrical" => multi("CylForce", tau, 2),
         "planar" => multi("PlanarForce", tau, 3),
         "spherical" => multi("SphereForce", tau, 3),
