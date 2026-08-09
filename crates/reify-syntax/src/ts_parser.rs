@@ -147,6 +147,55 @@ fn first_fault_strictly_inside(node: tree_sitter::Node<'_>) -> Option<tree_sitte
     }
 }
 
+/// Collect every INNERMOST fault (`ERROR` / `MISSING`) node strictly inside `node`'s subtree,
+/// in source order.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+/// tree-sitter's recovery routinely collapses several independently-broken declarations into a
+/// SINGLE enclosing `ERROR` node. Measured on two sibling fns that each omit their `;`, the
+/// whole file becomes one `(ERROR [0,0]-[7,1])` whose second declaration — keyword, params,
+/// its own `let`, and its own fault — is nested one level deeper inside an
+/// `(ERROR [51..91])`. One collapsed node is therefore not one fault, and reporting only the
+/// outermost leaves the later declaration's break entirely undiagnosed.
+///
+/// "Innermost" is what makes the result usable: an enclosing `ERROR`'s span is precisely the
+/// whole-declaration blob position these diagnostics exist to get away from, so a fault is
+/// recorded only once the walk can descend no further. Equivalently, the walk descends
+/// wherever `has_error()` reports something broken below — INCLUDING through fault nodes,
+/// since recovery debris can contain an entire further declaration — and records a fault only
+/// at the point of no further descent. Clean subtrees are pruned in O(1) by the same
+/// `has_error()` test, so the cost is proportional to the broken part of the tree.
+///
+/// Iterative, matching the tree-walk pattern used elsewhere in this file: recursion here would
+/// be bounded only by CST depth.
+///
+/// Returns an empty vector when no fault exists strictly below `node` — including the common
+/// case where `node` is itself an `ERROR` leaf.
+fn faults_strictly_inside(node: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
+    let mut out = Vec::new();
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return out;
+    }
+    loop {
+        let cur = cursor.node();
+        if cur.has_error() && cursor.goto_first_child() {
+            continue; // something is broken deeper down — keep narrowing
+        }
+        if cur.is_error() || cur.is_missing() {
+            out.push(cur); // innermost: nothing broken strictly below it
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() || cursor.node() == node {
+                return out;
+            }
+        }
+    }
+}
+
 /// Find the LAST anonymous `let` token inside `node`'s subtree that starts strictly before
 /// byte offset `before`.
 ///
@@ -306,16 +355,74 @@ impl<'a> Lowering<'a> {
     /// the ABSORBED line, one row too late; only the `let` token sits on the ABSORBING line
     /// — the line a user must actually edit. Spanning `[let_token.start, fault.start)` also
     /// highlights exactly the text that was silently fused.
+    ///
+    /// Emits one diagnostic per ABSORBING `let`, not per `ERROR` node: recovery collapses
+    /// several broken declarations into one node (see [`faults_strictly_inside`]), so a
+    /// first-fault-only report silently drops every later declaration's break. Deduplicating by
+    /// anchoring `let` keeps the recovery debris around a single break from multiplying into
+    /// several diagnostics for the same missing separator.
     fn diagnose_error_node(&self, node: tree_sitter::Node, context: &str) {
-        let fault = first_fault_strictly_inside(node).unwrap_or(node);
-        match last_let_token_before(node, fault.start_byte()) {
-            Some(let_tok) => self.push_error(
-                "missing ';' after `let` binding in function body".to_string(),
-                SourceSpan::new(let_tok.start_byte() as u32, fault.start_byte() as u32),
-            ),
-            // No `let` to blame — report the fault itself, span-narrowed and with no source
-            // echo (mechanism M3).
-            None => self.push_error(format!("syntax error in {context}"), self.span(fault)),
+        /// Upper bound on diagnostics from a single `ERROR` node, so a badly broken file
+        /// cannot bury its first real error under recovery noise. Truncation is always
+        /// announced — never silent.
+        const MAX_DIAGNOSTICS: usize = 8;
+
+        let mut faults = faults_strictly_inside(node);
+        if faults.is_empty() {
+            // An `ERROR` leaf with nothing broken below it is its own single fault.
+            faults.push(node);
+        }
+
+        // Anchoring `let` start bytes already reported; bounded by MAX_DIAGNOSTICS, so a
+        // linear `contains` is cheaper than a set.
+        let mut reported_lets: Vec<usize> = Vec::new();
+        let mut generic_reported = false;
+        let mut emitted = 0usize;
+        let mut suppressed_at: Option<tree_sitter::Node> = None;
+
+        for fault in faults {
+            match last_let_token_before(node, fault.start_byte()) {
+                Some(let_tok) => {
+                    let anchor = let_tok.start_byte();
+                    if reported_lets.contains(&anchor) {
+                        continue;
+                    }
+                    if emitted >= MAX_DIAGNOSTICS {
+                        suppressed_at = Some(fault);
+                        break;
+                    }
+                    reported_lets.push(anchor);
+                    self.push_error(
+                        "missing ';' after `let` binding in function body".to_string(),
+                        SourceSpan::new(anchor as u32, fault.start_byte() as u32),
+                    );
+                    emitted += 1;
+                }
+                // No `let` to blame — report the fault itself, span-narrowed and with no source
+                // echo (mechanism M3). At most one such report per `ERROR` node, so unrelated
+                // malformed input does not start emitting a diagnostic per debris node.
+                None => {
+                    if generic_reported {
+                        continue;
+                    }
+                    if emitted >= MAX_DIAGNOSTICS {
+                        suppressed_at = Some(fault);
+                        break;
+                    }
+                    generic_reported = true;
+                    self.push_error(format!("syntax error in {context}"), self.span(fault));
+                    emitted += 1;
+                }
+            }
+        }
+
+        if let Some(fault) = suppressed_at {
+            // Anchored at the first SUPPRESSED fault, not at `node`: a whole-node span here
+            // would reintroduce the blob location this method exists to eliminate.
+            self.push_error(
+                format!("syntax error in {context} (further errors suppressed)"),
+                self.span(fault),
+            );
         }
     }
 
