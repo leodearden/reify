@@ -1037,6 +1037,17 @@ impl<'a> GeometryConstraintSink<'a> {
 /// runs, so the named violation precedes the kernel failure; and when
 /// `corner_r` reads an `auto` cell the solver picks it up too, so a
 /// solver-driven radius is genuinely constrained rather than merely reported.
+/// Both halves — the check verdict and the solve — are pinned end-to-end by
+/// `reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs`.
+///
+/// **Exception**: a `Type::Error` `corner_r` is left alone entirely — no
+/// diagnostic, no constraint. It only ever arrives on the param-driven path
+/// (`const_length_m` cannot fold a non-Scalar) and it always arrives with a
+/// root-cause error already on the list, so a predicate over poison would add
+/// only a redundant Indeterminate warning. This is the `is_error()`
+/// short-circuit `Type::Error`'s own doc asks every consumer site for, and it is
+/// deliberately narrower than "not a Scalar": a merely wrongly-typed radius
+/// (e.g. `Bool`) is reported by nothing else, so it keeps its constraint.
 ///
 /// The two paths are deliberately exclusive. On the all-constant path the
 /// static check is strictly stronger — a `Violated` verdict does not abort the
@@ -1068,10 +1079,31 @@ fn validate_rounded_corner_constraint(
         // At least one arg is param-driven (non-constant) — hand the predicate
         // to the runtime checker and the solver instead of dropping it.
         //
-        // The zero is built dimension-matched to `corner_r` so the comparison
-        // is dimensionally sound; a non-Scalar result type (which the type
-        // checker should already have rejected upstream) falls back to a plain
-        // dimensionless zero rather than fabricating a dimension.
+        // ...unless `corner_r` is the `Type::Error` poison value, which is the
+        // short-circuit every consumer site owes it (see `Type::Error`'s doc).
+        // Compilation CONTINUES past a recorded type error, so this arm really
+        // is reachable: `rounded_rect(40mm, 30mm, nonexistent)` compiles the
+        // argument to `Type::Error` and lands here with "unresolved name"
+        // already on the diagnostic list. A predicate built over poison
+        // evaluates to `Undef`, so it would stack an Indeterminate-constraint
+        // warning on top of the real error — noise in `reify check` exactly when
+        // its output is least readable, saying nothing the root-cause error
+        // does not already say.
+        if corner_r.result_type.is_error() {
+            return true;
+        }
+        // Deliberately narrow: any OTHER non-Scalar type still gets its
+        // constraint. A well-formed but wrongly-typed radius — `param corner_r:
+        // Bool = true` — is reported by NOTHING today (it compiles clean, no
+        // error and no warning), so the Indeterminate verdict this predicate
+        // yields is the designer's only signal naming the constructor and the
+        // argument before the geometry fails opaquely inside the kernel.
+        // Skipping it there would restore precisely the silent skip #5665
+        // exists to remove.
+        //
+        // The zero is dimension-matched to `corner_r` so the comparison is
+        // dimensionally sound; a non-Scalar has no dimension to match, so it
+        // falls back to a plain dimensionless zero rather than fabricating one.
         let zero = match &corner_r.result_type {
             reify_core::Type::Scalar { dimension } => CompiledExpr::literal(
                 Value::Scalar {

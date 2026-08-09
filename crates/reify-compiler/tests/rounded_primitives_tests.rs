@@ -1004,13 +1004,22 @@ fn extrude_accepts_rounded_rect_rejects_rounded_box() {
 
 // ─── param-driven corner_r: runtime constraint synthesis (task #5665) ─────────
 
-/// Locate the single `structure def S` template in a compiled module.
-fn template_s(compiled: &reify_compiler::CompiledModule) -> &reify_compiler::TopologyTemplate {
-    compiled
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected a template named S")
+/// Compile `source`, assert it produced no error diagnostics, and return its
+/// `name`d template.
+///
+/// The by-name lookup is `reify_test_support::compile_template`'s rather than a
+/// local re-implementation; this only adds the clean-compile assertion (the same
+/// one [`compile_no_errors`] makes) so a param-driven call's constraints can be
+/// asserted without also asserting the module compiled. `name` is a parameter,
+/// not a hardcoded `"S"`, so the helper carries over to any entity.
+fn compile_template_no_errors(source: &str, name: &str) -> reify_compiler::TopologyTemplate {
+    let (template, diagnostics) = reify_test_support::compile_template(source, name);
+    let errors = reify_test_support::collect_errors(&diagnostics);
+    assert!(
+        errors.is_empty(),
+        "expected no error diagnostics, got: {errors:#?}"
+    );
+    template
 }
 
 /// A param-driven `corner_r` must not be silently waved through.
@@ -1033,8 +1042,7 @@ fn rounded_rect_param_driven_corner_r_emits_runtime_constraint() {
 }"#;
     // The param-driven path must still compile clean — the point of the
     // runtime constraint is to CHECK the radius, not to false-flag it.
-    let compiled = compile_no_errors(source);
-    let template = template_s(&compiled);
+    let template = compile_template_no_errors(source, "S");
 
     assert_eq!(
         template.constraints.len(),
@@ -1069,11 +1077,82 @@ fn rounded_rect_param_driven_corner_r_emits_runtime_constraint() {
     let source_const = r#"structure def S {
     let body = rounded_rect(40mm, 30mm, 5mm)
 }"#;
-    let compiled_const = compile_no_errors(source_const);
+    let template_const = compile_template_no_errors(source_const, "S");
     assert!(
-        template_s(&compiled_const).constraints.is_empty(),
+        template_const.constraints.is_empty(),
         "an all-constant rounded_rect call must not synthesize a runtime constraint, got: {:#?}",
-        template_s(&compiled_const).constraints
+        template_const.constraints
+    );
+}
+
+/// A `Type::Error` `corner_r` must synthesize NOTHING.
+///
+/// Compilation continues past a recorded type error, so the emission branch is
+/// genuinely reachable with the poison type: `rounded_rect(40mm, 30mm,
+/// nonexistent)` compiles the argument to `Type::Error` and reaches the branch
+/// with "unresolved name" already on the diagnostic list. A predicate built over
+/// poison evaluates to `Undef`, i.e. an Indeterminate-constraint warning stacked
+/// on top of the genuine error — noise at exactly the moment `reify check`'s
+/// output is least readable, saying nothing the root-cause error does not.
+///
+/// RED before the `is_error()` short-circuit lands: one constraint, not zero.
+#[test]
+fn type_error_corner_r_synthesizes_no_runtime_constraint() {
+    let source = r#"structure def S {
+    let body = rounded_rect(40mm, 30mm, nonexistent)
+}"#;
+    let (template, diagnostics) = reify_test_support::compile_template(source, "S");
+
+    // Precondition — the half that makes the skip sound: the designer is
+    // already being told what is wrong. If this ever stops erroring, dropping
+    // the constraint would be dropping the ONLY signal and the guard would have
+    // to go with it.
+    assert!(
+        !reify_test_support::collect_errors(&diagnostics).is_empty(),
+        "an unresolved name must be an error in its own right — the skip below \
+         is only sound because this fires; got: {diagnostics:#?}"
+    );
+
+    assert!(
+        template.constraints.is_empty(),
+        "a Type::Error corner_r must not also synthesize a runtime constraint, got: {:#?}",
+        template.constraints
+    );
+}
+
+/// NEGATIVE HALF — that skip must stay keyed on `Type::Error`, NOT on "not a
+/// Scalar".
+///
+/// A `Bool` radius reaches the same branch with its own type intact, and —
+/// measured, not assumed — the module compiles CLEAN: no error and no warning
+/// names it anywhere. So the synthesized constraint is the designer's only
+/// signal identifying the constructor and the argument before the geometry fails
+/// opaquely inside the kernel. Widening the guard to every non-Scalar type would
+/// delete that signal and restore exactly the silent skip #5665 removes.
+///
+/// (What the constraint then DECIDES — `Indeterminate`, the predicate having
+/// evaluated to `Undef` — is pinned runtime-side in
+/// `reify-eval/tests/harness_geometry/rounded_corner_runtime_constraint.rs`.)
+#[test]
+fn wrongly_typed_but_error_free_corner_r_keeps_its_constraint() {
+    let source = r#"structure def S {
+    param corner_r: Bool = true
+    let body = rounded_rect(40mm, 30mm, corner_r)
+}"#;
+    let (template, diagnostics) = reify_test_support::compile_template(source, "S");
+
+    assert!(
+        diagnostics.is_empty(),
+        "premise: a Bool corner_r is reported by nothing today — if that ever \
+         changes, re-derive whether this constraint is still the only signal; \
+         got: {diagnostics:#?}"
+    );
+    assert_eq!(
+        corner_labels(&template),
+        vec!["rounded_rect_corner_r_valid_0"],
+        "a wrongly-typed corner_r that nothing else reports must keep its \
+         constraint, got: {:#?}",
+        template.constraints
     );
 }
 
@@ -1094,8 +1173,7 @@ fn multiple_param_driven_rounded_calls_get_distinct_self_identifying_labels() {
     let block = rounded_box(40mm, 30mm, 20mm, corner_r)
     let shim = rounded_rect(60mm, 50mm, corner_r)
 }"#;
-    let compiled = compile_no_errors(source);
-    let template = template_s(&compiled);
+    let template = compile_template_no_errors(source, "S");
 
     assert_eq!(
         template.constraints.len(),
@@ -1135,9 +1213,9 @@ fn multiple_param_driven_rounded_calls_get_distinct_self_identifying_labels() {
     );
 }
 
-/// The corner-radius labels of a compiled `structure def S`, in emission order.
-fn corner_labels(compiled: &reify_compiler::CompiledModule) -> Vec<String> {
-    template_s(compiled)
+/// The corner-radius labels of a compiled template, in emission order.
+fn corner_labels(template: &reify_compiler::TopologyTemplate) -> Vec<String> {
+    template
         .constraints
         .iter()
         .map(|c| {
@@ -1172,13 +1250,13 @@ fn geometry_let_reused_as_boolean_arg_emits_one_constraint() {
     let plate = rounded_box(40mm, 30mm, 20mm, corner_r)
     let cut = difference(plate, box(10mm, 10mm, 10mm))
 }"#;
-    let compiled = compile_no_errors(source);
+    let template = compile_template_no_errors(source, "S");
     assert_eq!(
-        corner_labels(&compiled),
+        corner_labels(&template),
         vec!["rounded_box_corner_r_valid_0"],
         "one rounded_box call reused as a boolean arg must synthesize exactly \
          one constraint, got: {:#?}",
-        template_s(&compiled).constraints
+        template.constraints
     );
 
     // A deeper reuse chain: `plate` is consumed twice more. A one-shot flag on
@@ -1190,13 +1268,13 @@ fn geometry_let_reused_as_boolean_arg_emits_one_constraint() {
     let a = difference(plate, box(10mm, 10mm, 10mm))
     let b = union(a, plate)
 }"#;
-    let compiled_chain = compile_no_errors(source_chain);
+    let template_chain = compile_template_no_errors(source_chain, "S");
     assert_eq!(
-        corner_labels(&compiled_chain),
+        corner_labels(&template_chain),
         vec!["rounded_box_corner_r_valid_0"],
         "reusing the same geometry let three times must still synthesize one \
          constraint, got: {:#?}",
-        template_s(&compiled_chain).constraints
+        template_chain.constraints
     );
 }
 
@@ -1217,14 +1295,14 @@ fn distinct_rounded_calls_with_identical_args_keep_separate_constraints() {
     let a = rounded_box(40mm, 30mm, 20mm, corner_r)
     let b = rounded_box(40mm, 30mm, 20mm, corner_r)
 }"#;
-    let compiled = compile_no_errors(source);
-    let labels = corner_labels(&compiled);
+    let template = compile_template_no_errors(source, "S");
+    let labels = corner_labels(&template);
     assert_eq!(
         labels.len(),
         2,
         "two distinct source calls each need their own constraint even with \
          identical argument text, got: {:#?}",
-        template_s(&compiled).constraints
+        template.constraints
     );
     let unique: std::collections::HashSet<&str> =
         labels.iter().map(String::as_str).collect();
@@ -1257,13 +1335,13 @@ fn guarded_geometry_let_reused_as_boolean_arg_still_emits_one_constraint() {
     }
     let cut = difference(plate, box(10mm, 10mm, 10mm))
 }"#;
-    let compiled = compile_no_errors(source);
+    let template = compile_template_no_errors(source, "S");
     assert_eq!(
-        corner_labels(&compiled),
+        corner_labels(&template),
         vec!["rounded_box_corner_r_valid_0"],
         "a guarded rounded_box let reaches the sink only via the re-inline \
          path — it must emit exactly one constraint, not zero and not two, \
          got: {:#?}",
-        template_s(&compiled).constraints
+        template.constraints
     );
 }
