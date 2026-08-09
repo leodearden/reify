@@ -1,0 +1,23 @@
+// transform_log_dimensionless.ri — CLI eval fixture: a dimensionless Transform
+// translation is rejected on the transform_log ↔ transform_exp seam.
+//
+// RULING #6126: a twist's `linear` half is Vector3<Length>, and mirrored, a
+// Transform's translation crossing this seam carries LENGTH and only LENGTH.
+// vec3(1.0, 2.0, 3.0) is dimensionless, so transform_log returns Value::Undef and
+// the post-Undef geometry diagnose hook must emit on stderr:
+//   warning: transform_log: a Transform's translation must be Vector3<Length>; got dimensionless ...
+// `reify eval` still exits 0 (the diagnostic is a Warning, not an Error).
+//
+// Lives in tests/fixtures/ (NOT examples/) since it intentionally triggers a
+// runtime Warning diagnostic.
+//
+// The `module` declaration is load-bearing for the test, not decoration: without
+// it, W_MODULE_DECL_MISSING quotes the expected module name (= the file stem,
+// which contains "transform_log") on stderr, and the assertion that the
+// diagnostic NAMES the rejecting builtin would pass incidentally.
+
+module transform_log_dimensionless
+
+structure def TransformLogDimensionless {
+    let twist = transform_log(transform3(orient_identity(), vec3(1.0, 2.0, 3.0)))
+}

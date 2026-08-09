@@ -5396,6 +5396,123 @@ mod tests {
         );
     }
 
+    // ── diagnose: transform_log dimension arm (RULING #6126) ──────────────────
+    // The narrowed gate must not degrade to a SILENT Undef: when a Transform's
+    // translation is not Vector3<Length>, the classifier names the offending
+    // dimension. It stays silent (None) for every NON-dimension Undef cause, so an
+    // unrelated failure is never mis-attributed to a dimension problem.
+
+    /// Helper: a Transform with the given translation components.
+    fn make_transform_with_translation(components: [Value; 3]) -> Value {
+        Value::Transform {
+            rotation: Box::new(make_identity_orientation()),
+            translation: Box::new(Value::Vector(components.to_vec())),
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_log_dimensionless_translation_names_dimension() {
+        let t = make_transform_with_translation([
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Real(3.0),
+        ]);
+        let diag = super::diagnose("transform_log", &[t])
+            .expect("a dimensionless translation must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "the dimension rejection degrades to Undef within one primitive, so it is a \
+             Warning (not an Error)"
+        );
+        for needle in ["transform_log", "Length", "dimensionless"] {
+            assert!(
+                diag.message.contains(needle),
+                "message must contain {needle:?}, got: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_log_angle_translation_names_angle() {
+        let t = make_transform_with_translation([
+            Value::angle(1.0),
+            Value::angle(2.0),
+            Value::angle(3.0),
+        ]);
+        let diag = super::diagnose("transform_log", &[t])
+            .expect("an ANGLE translation must produce a diagnostic");
+        assert!(
+            diag.message.contains("Angle"),
+            "the message must NAME the offending dimension rather than hardcode one \
+             string, got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_log_length_translation_returns_none() {
+        let t = make_transform_with_translation([
+            Value::length(1.0),
+            Value::length(2.0),
+            Value::length(3.0),
+        ]);
+        assert!(
+            super::diagnose("transform_log", &[t]).is_none(),
+            "a valid Vector3<Length> translation must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_log_degenerate_quaternion_returns_none() {
+        // LENGTH translation (so the dimension is fine) but a quaternion whose squared
+        // norm is below the 1e-24 gate — eval returns Undef for a NON-dimension reason,
+        // and the classifier must not mis-attribute it.
+        let t = Value::Transform {
+            rotation: Box::new(Value::Orientation {
+                w: 1e-13,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }),
+            translation: Box::new(Value::Vector(vec![Value::length(1.0); 3])),
+        };
+        assert!(
+            eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            "precondition: the degenerate quaternion must make eval return Undef"
+        );
+        assert!(
+            super::diagnose("transform_log", &[t]).is_none(),
+            "a degenerate-quaternion Undef must not be reported as a dimension problem"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_log_non_transform_arg_returns_none() {
+        assert!(
+            super::diagnose("transform_log", &[Value::Real(1.0)]).is_none(),
+            "a non-Transform argument is a shape failure, not a dimension failure"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_log_wrong_arity_returns_none() {
+        let t = make_transform_with_translation([
+            Value::Real(1.0),
+            Value::Real(1.0),
+            Value::Real(1.0),
+        ]);
+        assert!(
+            super::diagnose("transform_log", &[t.clone(), t]).is_none(),
+            "wrong arity stays silent, like the affine_scale / transform3 convention"
+        );
+        assert!(
+            super::diagnose("transform_log", &[]).is_none(),
+            "zero args stays silent"
+        );
+    }
+
     // ── affine_compose tests (step-3 RED / step-4 GREEN) ──────────────────────
 
     /// Build a `Value::AffineMap` directly for test purposes.
