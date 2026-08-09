@@ -6,7 +6,11 @@
 //! return type of zero-arg function" warning.
 //!
 //! Structurally mirrors `tests/affine_constructor_typing_tests.rs`, the sibling
-//! family's template.
+//! family's template. The family's membership rationale (why an explicit list
+//! and never a prefix rule; why `frame_at` and the four decomposers are
+//! excluded) is stated ONCE, on
+//! `reify_compiler::orientation_signatures::ORIENTATION_TYPED_FN_NAMES` — the
+//! docs here name only what each individual test pins.
 //!
 //! Concretely, the fallback mistyped these call sites:
 //! - `orient_identity()` / `frame3_identity()` / `transform3_identity()` — zero
@@ -19,28 +23,36 @@
 //!
 //! RED until the `is_orientation_typed_fn` arm is wired into the ladder.
 
+use reify_compiler::CompiledModule;
 use reify_core::Type;
 use reify_test_support::{compile_source, compile_source_with_stdlib, get_let_expr_in};
 
-/// Compile `source` and return the `result_type` of value cell `cell_name` in
-/// template `template_name`. Same traversal the affine sibling test does inline.
-fn find_cell_type(source: &str, template_name: &str, cell_name: &str) -> Type {
-    let compiled = compile_source(source);
-    let host = compiled
-        .templates
-        .iter()
-        .find(|t| t.name == template_name)
-        .unwrap_or_else(|| panic!("template '{template_name}' not found"));
-    let cell = host
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member.as_str() == cell_name)
-        .unwrap_or_else(|| panic!("value cell '{cell_name}' not found in {template_name}"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("cell '{cell_name}' has no default_expr"))
+/// `result_type` of value cell `cell_name` in template `template_name` of an
+/// ALREADY-COMPILED module.
+///
+/// Takes `&CompiledModule` rather than a `&str` source so each test compiles its
+/// fixture exactly ONCE and then looks up every cell against that one module —
+/// the per-cell-recompile shape this file previously used cost O(cells) full
+/// stdlib compiles for O(1) work, against a harness-consolidation PRD whose
+/// whole point is cutting merge-gate compile cost. Traversal itself is
+/// delegated to `reify_test_support::get_let_expr_in` (templates.find →
+/// value_cells.find → default_expr), which is the shared utility for exactly
+/// this lookup.
+fn cell_type(module: &CompiledModule, template_name: &str, cell_name: &str) -> Type {
+    get_let_expr_in(module, template_name, cell_name)
         .result_type
         .clone()
+}
+
+/// Every "cannot infer return type" diagnostic in `module`, in source order.
+/// Empty is the contract for all of this family's call sites.
+fn infer_warnings(module: &CompiledModule) -> Vec<&str> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("cannot infer return type"))
+        .map(|d| d.message.as_str())
+        .collect()
 }
 
 /// Dimensionless numeric args keep these sources independent of the stdlib unit
@@ -67,6 +79,7 @@ const ORIENT_HOST: &str = r#"
 /// All ten Orientation producers type as `Type::Orientation(3)`.
 #[test]
 fn orientation_constructors_type_as_orientation_3() {
+    let module = compile_source(ORIENT_HOST);
     for cell in [
         "identity",
         "quaternion",
@@ -80,7 +93,7 @@ fn orientation_constructors_type_as_orientation_3() {
         "slerp",
     ] {
         assert_eq!(
-            find_cell_type(ORIENT_HOST, "OrientHost", cell),
+            cell_type(&module, "OrientHost", cell),
             Type::Orientation(3),
             "cell '{cell}' must type as Orientation(3)"
         );
@@ -96,9 +109,10 @@ fn frame_constructors_type_as_frame_3() {
             let fi = frame3_identity()
         }
     "#;
+    let module = compile_source(source);
     for cell in ["f", "fi"] {
         assert_eq!(
-            find_cell_type(source, "FrameHost", cell),
+            cell_type(&module, "FrameHost", cell),
             Type::Frame(3),
             "cell '{cell}' must type as Frame(3)"
         );
@@ -106,8 +120,8 @@ fn frame_constructors_type_as_frame_3() {
 }
 
 /// All six Transform producers type as `Type::Transform(3)` — explicitly
-/// including `frame_to_frame`, which despite its `frame_` prefix returns
-/// `Value::Transform` (`geometry.rs:512`), not a Frame.
+/// including `frame_to_frame`, whose `frame_` prefix is the trap documented on
+/// `ORIENTATION_TYPED_FN_NAMES`.
 #[test]
 fn transform_constructors_type_as_transform_3() {
     let source = r#"
@@ -120,9 +134,10 @@ fn transform_constructors_type_as_transform_3() {
             let f2f      = frame_to_frame(frame3_identity(), frame3_identity())
         }
     "#;
+    let module = compile_source(source);
     for cell in ["t", "ti", "compose", "inverse", "exp", "f2f"] {
         assert_eq!(
-            find_cell_type(source, "TransformHost", cell),
+            cell_type(&module, "TransformHost", cell),
             Type::Transform(3),
             "cell '{cell}' must type as Transform(3)"
         );
@@ -130,7 +145,7 @@ fn transform_constructors_type_as_transform_3() {
     // Guard the prefix trap specifically: frame_to_frame must NOT be grouped
     // with the Frame producers.
     assert_ne!(
-        find_cell_type(source, "TransformHost", "f2f"),
+        cell_type(&module, "TransformHost", "f2f"),
         Type::Frame(3),
         "frame_to_frame must type as Transform(3), not Frame(3)"
     );
@@ -141,7 +156,8 @@ fn transform_constructors_type_as_transform_3() {
 /// silently gave the whole call that Vector type.
 #[test]
 fn orient_axis_angle_does_not_type_as_vector() {
-    let ty = find_cell_type(ORIENT_HOST, "OrientHost", "axis_angle");
+    let module = compile_source(ORIENT_HOST);
+    let ty = cell_type(&module, "OrientHost", "axis_angle");
     assert_eq!(
         ty,
         Type::Orientation(3),
@@ -165,15 +181,11 @@ fn zero_arg_orientation_constructors_emit_no_infer_warning() {
             let t = transform3_identity()
         }
     "#;
-    let compiled = compile_source(source);
-    let warning = compiled
-        .diagnostics
-        .iter()
-        .find(|d| d.message.contains("cannot infer return type"));
+    let module = compile_source(source);
+    let warnings = infer_warnings(&module);
     assert!(
-        warning.is_none(),
-        "zero-arg orientation constructors must not emit the infer warning, got: {:?}",
-        warning.map(|d| &d.message)
+        warnings.is_empty(),
+        "zero-arg orientation constructors must not emit the infer warning, got: {warnings:#?}"
     );
 }
 
@@ -188,7 +200,8 @@ fn nested_transform3_over_orient_identity_types_as_transform_3() {
             let t = transform3(orient_identity(), vec3(0.0, 0.0, 0.0))
         }
     "#;
-    let ty = find_cell_type(source, "NestedHost", "t");
+    let module = compile_source(source);
+    let ty = cell_type(&module, "NestedHost", "t");
     assert_eq!(
         ty,
         Type::Transform(3),
@@ -200,21 +213,54 @@ fn nested_transform3_over_orient_identity_types_as_transform_3() {
     );
 }
 
-/// The task's headline acceptance criterion, pinned inside the suite so it
-/// cannot silently regress independently of a manual `reify check` run.
+/// The real `prj/printer_v01/printer.ri`, resolved from this crate's manifest
+/// dir. Mirrors the `DEV_CAPSTAN` constant in
+/// `crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs`, the existing
+/// precedent for gating on a REAL design file rather than a reconstruction.
+const PRINTER_RI: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../prj/printer_v01/printer.ri"
+);
+
+/// The task's headline acceptance criterion, pinned against the ACTUAL file it
+/// was measured on: compiling `prj/printer_v01/printer.ri` emits ZERO "cannot
+/// infer return type" diagnostics (it emitted 25 before this family existed).
 ///
-/// Reproduces the `prj/printer_v01/printer.ri` usage shape — repeated
-/// `orient_identity()` bindings, `orient_axis_angle(axis, angle)`,
-/// `transform3(orient_identity(), vec3(..))`, `frame3(point3(..),
-/// orient_identity())`, and a nested `transform_compose(transform3(..),
-/// transform3(..))` — and asserts BOTH halves of the criterion:
+/// The synthetic `printer_shaped_source_emits_zero_infer_warnings` below stays
+/// as the focused per-shape lock — it pins WHICH constructor shapes resolve and
+/// to what. This test is the criterion itself, and unlike the synthetic proxy it
+/// cannot silently unlock when printer.ri grows a new zero-arg builtin call.
 ///
-/// (a) ZERO "cannot infer return type" diagnostics. Verified achievable by this
-///     task alone: `orient_identity()` is the only zero-arg call syntax present
-///     in printer.ri (25 sites), and that warning is emitted solely from the
-///     first-arg fallback's `unwrap_or_else` branch.
-/// (b) The nested cells carry the right type END-TO-END, proving the fix
-///     composes through nesting rather than only at leaf call sites.
+/// Failure here does NOT necessarily mean this family regressed: a newly-added
+/// unclaimed zero-arg builtin anywhere in printer.ri fails it too. That is the
+/// point — the criterion is a property of the file, not of one name list — so
+/// the assertion prints every offending diagnostic.
+#[test]
+fn real_printer_ri_emits_zero_infer_warnings() {
+    let source = std::fs::read_to_string(PRINTER_RI)
+        .unwrap_or_else(|e| panic!("cannot read {PRINTER_RI}: {e}"));
+    let module = compile_source_with_stdlib(&source);
+    let warnings = infer_warnings(&module);
+    assert!(
+        warnings.is_empty(),
+        "compiling the real prj/printer_v01/printer.ri must emit ZERO 'cannot \
+         infer return type' warnings (was 25); got {}: {warnings:#?}",
+        warnings.len()
+    );
+}
+
+/// The per-shape lock behind the headline criterion, over a reconstruction of
+/// printer.ri's usage shapes — repeated `orient_identity()` bindings,
+/// `orient_axis_angle(axis, angle)`, `transform3(orient_identity(), vec3(..))`,
+/// `frame3(point3(..), orient_identity())`, and a nested
+/// `transform_compose(transform3(..), transform3(..))`. It asserts BOTH:
+///
+/// (a) ZERO "cannot infer return type" diagnostics for these specific shapes —
+///     that warning is emitted solely from the first-arg fallback's
+///     `unwrap_or_else` branch;
+/// (b) the nested cells carry the right type END-TO-END, proving the fix
+///     composes through nesting rather than only at leaf call sites — which the
+///     real-file test above cannot show, since it only counts diagnostics.
 ///
 /// Uses `compile_source_with_stdlib` so the dimensioned literals (`1m`, `90deg`,
 /// `0mm`) printer.ri actually passes resolve — the arguments are the real thing,
@@ -237,35 +283,30 @@ fn printer_shaped_source_emits_zero_infer_warnings() {
     "#;
     let module = compile_source_with_stdlib(source);
 
-    // (a) the headline criterion.
-    let infer_warnings: Vec<&str> = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.contains("cannot infer return type"))
-        .map(|d| d.message.as_str())
-        .collect();
+    // (a) no call site in these shapes reaches the zero-arg fallback.
+    let warnings = infer_warnings(&module);
     assert!(
-        infer_warnings.is_empty(),
+        warnings.is_empty(),
         "printer-shaped source must emit ZERO 'cannot infer return type' \
-         warnings (was 25 across prj/printer_v01/printer.ri); got: {infer_warnings:#?}"
+         warnings (was 25 across prj/printer_v01/printer.ri); got: {warnings:#?}"
     );
 
     // (b) the types compose through nesting, not just at leaf call sites.
     for cell in ["a_upper", "a_lower", "b_upper", "b_lower", "stacked"] {
         assert_eq!(
-            find_stdlib_cell_type(source, "PrinterShaped", cell),
+            cell_type(&module, "PrinterShaped", cell),
             Type::Transform(3),
             "cell '{cell}' must type as Transform(3) end-to-end"
         );
     }
     assert_eq!(
-        find_stdlib_cell_type(source, "PrinterShaped", "rot_to_y"),
+        cell_type(&module, "PrinterShaped", "rot_to_y"),
         Type::Orientation(3),
         "orient_axis_angle(axis, angle) must type as Orientation(3), not the \
          axis argument's Vector type"
     );
     assert_eq!(
-        find_stdlib_cell_type(source, "PrinterShaped", "mount"),
+        cell_type(&module, "PrinterShaped", "mount"),
         Type::Frame(3),
         "frame3(point3(..), orient_identity()) must type as Frame(3), not the \
          point argument's type"
@@ -293,14 +334,6 @@ fn printer_shaped_source_emits_zero_infer_warnings() {
 // resolve — the wrong types the fallback adopted (`Scalar<Length>` /
 // `Point3<Length>`) are only reproducible with real dimensioned arguments.
 
-/// Compile with the stdlib prelude and return `cell_name`'s `result_type`.
-fn find_stdlib_cell_type(source: &str, template_name: &str, cell_name: &str) -> Type {
-    let module = compile_source_with_stdlib(source);
-    get_let_expr_in(&module, template_name, cell_name)
-        .result_type
-        .clone()
-}
-
 /// `plane_xy(10mm)` types as `Type::Plane`, NOT the `Scalar<Length>` of its
 /// offset argument.
 #[test]
@@ -312,8 +345,9 @@ fn axis_aligned_plane_constructors_type_as_plane() {
             let pyz = plane_yz(5mm)
         }
     "#;
+    let module = compile_source_with_stdlib(source);
     for cell in ["pxy", "pxz", "pyz"] {
-        let ty = find_stdlib_cell_type(source, "PlaneHost", cell);
+        let ty = cell_type(&module, "PlaneHost", cell);
         assert_eq!(
             ty,
             Type::Plane,
@@ -347,8 +381,9 @@ fn axis_aligned_axis_constructors_type_as_axis() {
             let az = axis_z(point3(0mm, 0mm, 0mm))
         }
     "#;
+    let module = compile_source_with_stdlib(source);
     for cell in ["ax", "ay", "az"] {
-        let ty = find_stdlib_cell_type(source, "AxisHost", cell);
+        let ty = cell_type(&module, "AxisHost", cell);
         assert_eq!(
             ty,
             Type::Axis,
