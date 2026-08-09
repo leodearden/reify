@@ -1293,6 +1293,11 @@ needs a NEW test binary, its registration must land same-diff or as a hard upstr
   dimension-blind after this PRD. This is 5627's candidate-2 territory (the
   `reify-core/src/ty.rs` quantity-slot convention) and needs its own ruling. **α records the
   count; the decomposer files a follow-up task — it is not a leaf of this PRD.**
+  **RULED (task 5766), no longer open:** `Vector`/`Point`/`Matrix`/`Tensor` now reject a
+  quantity-slot conflict, `Field` is held loose by decision. The rule, its rationale and its
+  known residual live in the "Point / Vector quantity-slot convention" section of
+  `crates/reify-core/src/ty.rs` — the single normative home; deliberately not restated here.
+  §6.4's scope-boundary text above remains accurate as PRD-4-era history and is unchanged.
 - **Typed-IR newtypes for dimensioned fields** (research doc Q3 option B). Recorded endgame,
   not this PRD.
 - **Gates 6–10** (§2.1) — already strict; untouched.
