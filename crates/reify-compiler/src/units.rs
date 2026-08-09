@@ -5367,6 +5367,77 @@ mod tests {
         );
     }
 
+    /// Disjointness regression-lock for the DATUM constructor vocabulary — the
+    /// sibling of `orientation_typed_fn_names_are_disjoint_from_other_families`
+    /// directly above, for the family this change extended with the six
+    /// axis-aligned neighbours.
+    ///
+    /// The datum family has no name SLICE (it is a resolver,
+    /// `datum_constructor_result_type`), so the fixture below is the local stand-in
+    /// for one. Without this lock the six new names had no disjointness cover at
+    /// all: if a future task added e.g. `axis_x` to `GEOMETRY_QUERY_NAMES` or any
+    /// other slice whose arm sits EARLIER in the `expr.rs` `NoUserFunctions`
+    /// ladder, that arm would silently win and the datum arm would go dead with no
+    /// failing test. This vocabulary already carries one deliberate cross-family
+    /// overlap (`offset`, below), so that is a live hazard class rather than a
+    /// theoretical one.
+    ///
+    /// **`offset` is deliberately NOT in the fixture.** It is genuinely in BOTH
+    /// this vocabulary and `RELATION_FN_NAMES`; the collision is resolved by an
+    /// arity gate (arity-2 → `Type::Plane` here, arity-3 → `Type::Relation`
+    /// there), pinned by `datum_constructor_vocabulary_survives_the_neighbour_extension`
+    /// below. Asserting blanket absence for it would contradict that design.
+    #[test]
+    fn datum_constructor_names_are_disjoint_from_other_families() {
+        // The arity-blind datum names — every entry of the resolver's match
+        // except the arity-gated `offset`.
+        const DATUM_NAMES: &[&str] = &[
+            "midplane",
+            "plane_through",
+            "axis_through",
+            "frame_at",
+            "plane_xy",
+            "plane_xz",
+            "plane_yz",
+            "axis_x",
+            "axis_y",
+            "axis_z",
+        ];
+        for name in DATUM_NAMES {
+            // Premise guard: each fixture entry really is claimed by the datum
+            // resolver, so an absence assert below is meaningful.
+            assert!(
+                datum_constructor_result_type(name, &[]).is_some(),
+                "fixture drift: {name:?} is no longer claimed by \
+                 datum_constructor_result_type"
+            );
+            assert!(!GEOMETRY_FUNCTION_NAMES.contains(name), "{name:?} in GEOMETRY_FUNCTION_NAMES");
+            assert!(!GEOMETRY_QUERY_HELPER_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_HELPER_NAMES");
+            assert!(!GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_KINEMATIC_QUERY_NAMES");
+            assert!(!GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name), "{name:?} in GEOMETRY_TOPOLOGY_SELECTOR_NAMES");
+            assert!(!GEOMETRY_QUERY_NAMES.contains(name), "{name:?} in GEOMETRY_QUERY_NAMES");
+            assert!(!DYNAMICS_QUERY_NAMES.contains(name), "{name:?} in DYNAMICS_QUERY_NAMES");
+            assert!(!DYNAMICS_CONSTRUCTOR_NAMES.contains(name), "{name:?} in DYNAMICS_CONSTRUCTOR_NAMES");
+            assert!(!AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name), "{name:?} in AFFINE_MAP_CONSTRUCTOR_NAMES");
+            assert!(!TOLERANCING_MARKER_NAMES.contains(name), "{name:?} in TOLERANCING_MARKER_NAMES");
+            assert!(!MATH_CONSTRUCTION_NAMES.contains(name), "{name:?} in MATH_CONSTRUCTION_NAMES");
+            assert!(!MATH_OPERATION_NAMES.contains(name), "{name:?} in MATH_OPERATION_NAMES");
+            assert!(!MATH_TRANSCENDENTAL_NAMES.contains(name), "{name:?} in MATH_TRANSCENDENTAL_NAMES");
+            assert!(!JOINT_TYPED_FN_NAMES.contains(name), "{name:?} in JOINT_TYPED_FN_NAMES");
+            assert!(!ANALYSIS_FN_NAMES.contains(name), "{name:?} in ANALYSIS_FN_NAMES");
+            assert!(!RELATION_FN_NAMES.contains(name), "{name:?} in RELATION_FN_NAMES");
+            assert!(!PARSE_FN_NAMES.contains(name), "{name:?} in PARSE_FN_NAMES");
+            assert!(!FEA_ENVELOPE_NAMES.contains(name), "{name:?} in FEA_ENVELOPE_NAMES");
+            assert!(!FIELD_OP_NAMES.contains(name), "{name:?} in FIELD_OP_NAMES");
+            assert!(
+                !ORIENTATION_TYPED_FN_NAMES.contains(name),
+                "{name:?} in ORIENTATION_TYPED_FN_NAMES — the reciprocal of the \
+                 frame_at assert in \
+                 orientation_typed_fn_names_are_disjoint_from_other_families"
+            );
+        }
+    }
+
     // ── Datum-neighbour audit (task 5344) ────────────────────────────────────
     //
     // The six axis-aligned construction datums `plane_xy`/`plane_xz`/`plane_yz`
