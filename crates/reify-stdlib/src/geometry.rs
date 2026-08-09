@@ -160,7 +160,7 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
 /// LENGTH and only LENGTH; every other dimension — DIMENSIONLESS included — is
 /// rejected as `Value::Undef` and explained by [`diagnose`].
 ///
-/// Grounds (decision D11 of `docs/prds/units-length-gate-completion`): after the
+/// Grounds (decision D11 of `docs/prds/v0_6/units-length-gate-completion.md`): after the
 /// `Real` → `Scalar{DIMENSIONLESS}` unification, an "also admits DIMENSIONLESS"
 /// gate means "also admits bare numbers", which is an affordance for exactly the
 /// unit-less numerical work this seam should not silently accept. This was the last
