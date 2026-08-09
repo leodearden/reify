@@ -276,7 +276,7 @@ fn joint_force_value_refinement_set_is_exactly_six_structures() {
 // ─── JointForceValue variants ─────────────────────────────────────────────────
 
 #[test]
-fn scalar_force_has_one_real_param_and_refines_joint_force_value() {
+fn scalar_force_has_one_force_param_and_refines_joint_force_value() {
     let template = find_structure("ScalarForce");
     assert_eq!(
         template.trait_bounds,
@@ -293,13 +293,17 @@ fn scalar_force_has_one_real_param_and_refines_joint_force_value() {
     assert_eq!(mag.id.member, "magnitude");
     assert_eq!(
         mag.cell_type,
-        Type::dimensionless_scalar(),
-        "ScalarForce.magnitude should be Type::dimensionless_scalar()"
+        Type::Scalar {
+            dimension: DimensionVector::FORCE,
+        },
+        "ScalarForce.magnitude carries the joint force as a dimensioned quantity \
+         (task 6098): it should be Type::Scalar{{ dimension: FORCE }}, not the \
+         former dimensionless Real"
     );
 }
 
 #[test]
-fn scalar_torque_has_one_real_param_and_refines_joint_force_value() {
+fn scalar_torque_has_one_torque_param_and_refines_joint_force_value() {
     let template = find_structure("ScalarTorque");
     assert_eq!(
         template.trait_bounds,
@@ -314,10 +318,17 @@ fn scalar_torque_has_one_real_param_and_refines_joint_force_value() {
     );
     let mag = params[0];
     assert_eq!(mag.id.member, "magnitude");
+    // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is deliberately distinct
+    // from ENERGY (= Force·Length) — see reify-core dimension.rs. Assert the
+    // registry vector directly; never compose FORCE·LENGTH here.
     assert_eq!(
         mag.cell_type,
-        Type::dimensionless_scalar(),
-        "ScalarTorque.magnitude should be Type::dimensionless_scalar()"
+        Type::Scalar {
+            dimension: DimensionVector::TORQUE,
+        },
+        "ScalarTorque.magnitude carries the joint torque as a dimensioned \
+         quantity (task 6098): it should be Type::Scalar{{ dimension: TORQUE }}, \
+         not the former dimensionless Real"
     );
 }
 
@@ -603,4 +614,107 @@ structure def Probe {
             mp.cell_type
         );
     }
+}
+
+// ─── Task 6098 — dimensioned ScalarForce/ScalarTorque magnitude ──────────────
+//
+// The user-observable signal of retyping `ScalarForce.magnitude : Real` to
+// `: Force` (and `ScalarTorque.magnitude` to `: Torque`) is what the
+// *expression* dimension checker says when the field is READ:
+//
+//   before: `f.magnitude + 1.0N`  → "dimension mismatch in addition: Real vs
+//                                    Scalar[m·kg·s^-2]"; `+ 1.0` was clean.
+//   after:  `f.magnitude + 1.0N`  → clean; `+ 1.0` is the mismatch.
+//
+// These tests assert on the READ, never on the construction: passing a bare
+// `2.5` into a dimensioned ctor slot is accepted silently today. Constructor
+// argument strictness is owned by
+// docs/prds/v0_6/dimensioned-construction-strictness.md and is deliberately
+// out of scope here, so `ScalarForce(magnitude: 2.5)` below is a supported
+// spelling, not an oversight.
+
+/// Collect the `Severity::Error` diagnostic messages from a stdlib-aware
+/// compile of `source`. Shared by the four task-6098 field-read signal tests.
+fn stdlib_compile_error_messages(source: &str) -> Vec<String> {
+    compile_source_with_stdlib(source)
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn scalar_force_magnitude_reads_as_a_force_dimensioned_quantity() {
+    // Newton-dimensioned arithmetic on the read field is well-typed.
+    let source = r#"
+structure def Probe {
+    let f = ScalarForce(magnitude: 2.5)
+    let x = f.magnitude + 1.0N
+}
+"#;
+    let errors = stdlib_compile_error_messages(source);
+    assert!(
+        errors.is_empty(),
+        "reading ScalarForce.magnitude into Newton-dimensioned arithmetic must \
+         type-check once magnitude is declared `: Force` (task 6098); got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn scalar_force_magnitude_read_rejects_bare_real_arithmetic() {
+    // The other direction: a bare dimensionless Real no longer unifies.
+    let source = r#"
+structure def Probe {
+    let f = ScalarForce(magnitude: 2.5)
+    let x = f.magnitude + 1.0
+}
+"#;
+    let errors = stdlib_compile_error_messages(source);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("dimension mismatch in addition")),
+        "adding a bare Real to a Force-typed ScalarForce.magnitude must be a \
+         dimension mismatch (task 6098); got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn scalar_torque_magnitude_reads_as_a_torque_dimensioned_quantity() {
+    // `Nm` (units.ri) is the Torque literal — N·m/rad, distinct from Energy.
+    let source = r#"
+structure def Probe {
+    let t = ScalarTorque(magnitude: 1.5)
+    let x = t.magnitude + 1.0Nm
+}
+"#;
+    let errors = stdlib_compile_error_messages(source);
+    assert!(
+        errors.is_empty(),
+        "reading ScalarTorque.magnitude into N·m-dimensioned arithmetic must \
+         type-check once magnitude is declared `: Torque` (task 6098); got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn scalar_torque_magnitude_read_rejects_bare_real_arithmetic() {
+    let source = r#"
+structure def Probe {
+    let t = ScalarTorque(magnitude: 1.5)
+    let x = t.magnitude + 1.0
+}
+"#;
+    let errors = stdlib_compile_error_messages(source);
+    assert!(
+        errors
+            .iter()
+            .any(|m| m.contains("dimension mismatch in addition")),
+        "adding a bare Real to a Torque-typed ScalarTorque.magnitude must be a \
+         dimension mismatch (task 6098); got: {:?}",
+        errors
+    );
 }
