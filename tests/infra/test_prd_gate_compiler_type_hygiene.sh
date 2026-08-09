@@ -13,16 +13,29 @@
 # semantics.
 #
 # Skip-guards (hybrid of the two existing prd_gate wrappers):
-#   - reify binary: REIFY_BIN env var, or target/release/reify, or
-#     target/debug/reify, PLUS a target/.reify-bin-sha freshness check proving
-#     the resolved binary's build-time HEAD matches the current tree (task
-#     #5133 — see scripts/reify-bin-freshness.sh; guards against a
-#     cross-candidate leftover binary in the shared _merge-verify warm lane).
-#     An explicit REIFY_BIN handoff bypasses the freshness check.
-#   - tree-sitter-reify/src/parser.c (grammar must be generated) — probe 1 is a
-#     grammar probe (SpecLike<Foo> parses).
-#   - tree-sitter CLI on PATH (the grammar probe calls 'tree-sitter parse').
-# A missing toolchain is a clean SKIP (exit 0), never a spurious FAIL.
+#   - reify binary (WHOLE-SCRIPT skip): REIFY_BIN env var, or
+#     target/release/reify, or target/debug/reify, PLUS a target/.reify-bin-sha
+#     freshness check proving the resolved binary's build-time HEAD matches the
+#     current tree (task #5133 — see scripts/reify-bin-freshness.sh; guards
+#     against a cross-candidate leftover binary in the shared _merge-verify warm
+#     lane). An explicit REIFY_BIN handoff bypasses the freshness check. This one
+#     gates the whole script because probes of BOTH kinds run `reify`.
+#   - grammar substrate (PER-ROW skip, task 5897): one
+#     `prd-capability-check.py --grammar-substrate-status` preflight, replacing
+#     the two hand-rolled guards this file used to carry (an isfile() on
+#     tree-sitter-reify/src/parser.c and a `command -v` on the tree-sitter CLI).
+#     Probe 1 is a grammar probe (SpecLike<Foo> parses) and needs the substrate;
+#     the other six are check probes and do not.
+#
+# A MISSING TOOLCHAIN IS STILL A CLEAN SKIP (exit 0), NEVER A SPURIOUS FAIL —
+# but, since 5897, a clean PER-ROW skip. An unusable grammar substrate drops the
+# one grammar row and STILL RUNS AND ASSERTS the six check rows, which never
+# touch the substrate (build_command sends them to `reify check`, only grammar
+# probes to `tree-sitter parse`). The older whole-script `exit 0` discarded all
+# six. The degradation is announced with a loud banner on both stdout and
+# stderr, because a quiet skip makes a partial-coverage green run
+# indistinguishable from a full one. A missing reify BINARY remains a
+# whole-script skip: nothing here can run without it.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob, and runs
 # under the merge --scope all gate (no verify-pipeline-infra-tests.txt edit
@@ -52,21 +65,40 @@ source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
 resolve_trusted_reify_bin "$REPO_ROOT" || { echo "SKIP: $REIFY_BIN_SKIP_REASON"; exit 0; }
 _REIFY_BIN="$REIFY_BIN_RESOLVED"
 
-# Probe 1 is a grammar probe (SpecLike<Foo> parses) — it needs the generated
-# grammar and the tree-sitter CLI. Mirror the corpus gate's guards so a missing
-# toolchain is a clean SKIP rather than a HARNESS_ERROR (exit 70) → spurious FAIL.
-if [ ! -f "$REPO_ROOT/tree-sitter-reify/src/parser.c" ]; then
-    echo "SKIP: tree-sitter grammar not built — need tree-sitter-reify/src/parser.c"
-    exit 0
-fi
-
-_TS_BIN="${TREE_SITTER_BIN:-tree-sitter}"
-if ! command -v "$_TS_BIN" >/dev/null 2>&1; then
-    echo "SKIP: tree-sitter CLI ('$_TS_BIN') not on PATH — grammar probe requires 'tree-sitter parse'"
-    exit 0
-fi
-
 PROBE_SET="$REPO_ROOT/tests/prd-gate/compiler-type-hygiene-probe-set.json"
+
+# ── Grammar-substrate preflight (task 5897) ────────────────────────────────
+# Probe 1 is a grammar probe (SpecLike<Foo> parses) — it needs the generated
+# grammar AND a tree-sitter that can load it. This one call answers both, plus
+# the case the old parser.c/`command -v` pair could not see: a present CLI and a
+# present grammar that tree-sitter still cannot LOAD, because a sandboxed role's
+# landlock write set does not grant ~/.cache/tree-sitter/lock/. That produced a
+# HARNESS_ERROR → exit 70 → spurious gate FAIL.
+#
+# The filtered probe-set is fed to BOTH the checker argument and the CORPUS_PATH
+# env var, so the completeness assertion below — which derives expected_count
+# from the JSON at CORPUS_PATH, deliberately, as the single source of truth —
+# recalibrates for free. The embedded python needs no change at all.
+source "$REPO_ROOT/scripts/prd-gate-substrate-guard.sh"
+if ! resolve_grammar_substrate "$REPO_ROOT"; then
+    _FILTERED_PROBE_SET="$(mktemp "${TMPDIR:-/tmp}/prd-gate-hygiene-filtered-XXXXXX.json")"
+    trap 'rm -f "$_FILTERED_PROBE_SET"' EXIT
+
+    if ! prd_gate_probe_set_drop_grammar "$PROBE_SET" "$_FILTERED_PROBE_SET"; then
+        # Degenerate: nothing left to run. Not reachable with today's probe-set
+        # (1 grammar + 6 check), but an all-grammar set must skip the script
+        # rather than hand the checker an empty probe-set, which it rejects with
+        # exit 64 — a gate FAIL, i.e. the very spurious RED this guard prevents.
+        prd_gate_loud_substrate_skip "test_prd_gate_compiler_type_hygiene" \
+            "$PRD_GATE_DROPPED_COUNT" 0 "$GRAMMAR_SUBSTRATE_REASON"
+        echo "SKIP: every probe is a grammar probe — nothing left to run"
+        exit 0
+    fi
+
+    prd_gate_loud_substrate_skip "test_prd_gate_compiler_type_hygiene" \
+        "$PRD_GATE_DROPPED_COUNT" "$PRD_GATE_KEPT_COUNT" "$GRAMMAR_SUBSTRATE_REASON"
+    PROBE_SET="$_FILTERED_PROBE_SET"
+fi
 
 # ── Run prd-capability-check.py with --json ────────────────────────────────
 # Capture stdout (JSON) only; stderr flows to terminal for diagnostics.
