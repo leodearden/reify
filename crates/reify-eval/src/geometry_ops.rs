@@ -3572,13 +3572,12 @@ fn profile_rectangle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::RectangleProfile {
-        width: eval_arg("width")?,
-        height: eval_arg("height")?,
+        width: length_arg("width")?,
+        height: length_arg("height")?,
     })
 }
 
@@ -3590,12 +3589,11 @@ fn profile_circle(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::CircleProfile {
-        radius: eval_arg("radius")?,
+        radius: length_arg("radius")?,
     })
 }
 
@@ -3625,13 +3623,12 @@ fn profile_ellipse(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::EllipseProfile {
-        semi_major: eval_arg("semi_major")?,
-        semi_minor: eval_arg("semi_minor")?,
+        semi_major: length_arg("semi_major")?,
+        semi_minor: length_arg("semi_minor")?,
     })
 }
 
