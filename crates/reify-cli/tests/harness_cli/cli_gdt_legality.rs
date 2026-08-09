@@ -223,8 +223,9 @@ fn check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once() {
         1,
         "the GD&T legality pass contributes its diagnostics ONCE via the realization's \
          internal `Engine::check` and once more via `cmd_check`'s own fold-in; D2 \
-         requires the two to collapse to a single printed line — got {occurrences}.\n\
-         stdout: {stdout}\nstderr: {stderr}"
+         requires exactly one printed line, which `strip_diagnostics_reproduced_by` \
+         achieves by withdrawing the realization's copy before the fold-in — got \
+         {occurrences}.\nstdout: {stdout}\nstderr: {stderr}"
     );
 
     // The GdtIllegalModifier escalation still fires (unchanged by the merge —
@@ -251,9 +252,14 @@ fn check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once() {
 /// This is the counterpart of
 /// `check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once`: that
 /// test pins that the legality pass's two RUNS (the realization's internal
-/// `Engine::check` and `cmd_check`'s own fold-in) collapse; this one pins that
-/// two distinct CALLOUTS do not. Both must hold at once, which is exactly what
-/// makes the primary label span part of the dedup identity load-bearing.
+/// `Engine::check` and `cmd_check`'s own fold-in) yield one line; this one pins
+/// that two distinct CALLOUTS yield two. Both must hold at once, and no local
+/// dedup key can separate the two cases — the span is deliberately NOT part of
+/// `DiagKey` (measured: the duplicated `mirror(...)` 'ox' error carries two
+/// different spans for one problem). That is why `cmd_check` withdraws the
+/// realization's copy of the pass wholesale via
+/// `strip_diagnostics_reproduced_by` and lets its own run be the single source,
+/// instead of deduping the two runs against each other.
 ///
 /// Kernel-independent: the legality pass is a static lint over post-eval
 /// values, so it produces the same two callouts with or without OCCT.

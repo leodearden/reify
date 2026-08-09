@@ -695,8 +695,9 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         // The `compile_geometry_op` argument validation that produces these
-        // diagnostics is itself kernel-independent (reify-eval
-        // geometry_ops.rs:349 — no `OCCT_AVAILABLE` guard), but whether the
+        // diagnostics is itself kernel-independent
+        // (`geometry_ops::required_length_arg`'s `LengthArg::Invalid` arm —
+        // no `OCCT_AVAILABLE` guard anywhere on it), but whether the
         // realization loop is reached at all under a stub build is NOT measured
         // here, so follow the C1 convention used by
         // `cli_dfm_overhang.rs::check_dfm_plus_repr_within_combined_arm` and
@@ -758,7 +759,8 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
 /// `ConstraintIndeterminate` for it; and at the base commit `build()`'s result
 /// was discarded wholesale, so build's own copy of that claim had no route to
 /// stderr.  D2 opened one — and D2's merge is ONE-DIRECTIONAL by construction:
-/// build()'s internal task-4229 retain (engine_build.rs:5000-5004) drops only
+/// build()'s internal task-4229 retain (in
+/// `engine_build::build_with_geometry_output`) drops only
 /// the warnings BUILD itself upgraded, and `merge_post_build_verdicts`
 /// (main.rs) retains only over check()'s OWN list, for the entries IT upgraded.
 /// Nothing in either pass knows about the later, authoritative `check()`, which
@@ -921,7 +923,8 @@ fn check_purpose_surfaces_geometry_compile_error() {
 /// the invariant travels with it.  The `<id>` token is exactly the right needle
 /// because `report_constraint_results` prints `constraint_display_label(entry)`
 /// — the same label-preferring string the checker embeds in
-/// `constraint {…} indeterminate: …` (reify-constraints/src/lib.rs:187).
+/// `constraint {…} indeterminate: …`
+/// (`reify_constraints::SimpleConstraintChecker::check`).
 ///
 /// STATED HONESTLY: unlike its sub-path (b) sibling this is expected GREEN both
 /// before and after the fix — a regression LOCK, not a RED.  Two targeted probes
@@ -931,11 +934,14 @@ fn check_purpose_surfaces_geometry_compile_error() {
 /// recheck and the CLI's `check_constraints_with_values(&values)` run against
 /// the SAME post-realization value map (and build's own retain already dropped
 /// what it upgraded), so the two lists normally agree — whereas on sub-path (b)
-/// `Engine::check()` opens with a fresh `self.eval(module)`
-/// (engine_constraints.rs:1841) and is a genuinely independent, stronger
+/// `engine_constraints::Engine::check` opens with a fresh `self.eval(module)`
+/// and is a genuinely independent, stronger
 /// authority.  A residual divergence path does exist on (c) (the UnifiedDag
-/// `declined` set, engine_build.rs:4952-4966), so the symmetric filter ships as
-/// defence-in-depth and this test is what stops the two sub-paths drifting.
+/// auto-constraint `declined` set, inside
+/// `engine_build::build_with_geometry_output`'s
+/// `engine_fixpoint::BuildScheduler::UnifiedDag` arm), so the symmetric filter
+/// ships as defence-in-depth and this test is what stops the two sub-paths
+/// drifting.
 #[test]
 fn check_purpose_does_not_contradict_definite_verdicts() {
     let (status, stdout, stderr) = common::run_with_args(&[
