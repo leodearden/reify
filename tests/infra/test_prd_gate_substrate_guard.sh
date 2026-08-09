@@ -167,4 +167,118 @@ assert "unusable checker (exit 75) => returns 1, OK=0, reason has the 'unusable:
 assert "unexpected exit code (64) => returns 1, OK=0, and the reason names the code" \
     _want_unusable_reason_contains "$_ROOT_64" "64" "unexpected"
 
+# ── Block B: prd_gate_probe_set_drop_grammar ───────────────────────────────
+echo "-- prd_gate_probe_set_drop_grammar (hermetic, synthetic probe-sets) --"
+
+# _mk_probe_set <name> <kind> [<kind>...] — writes a synthetic probe-set with
+# one probe per <kind> under $_RUN_ROOT/<name>.json and echoes the path. Each
+# probe carries a distinct capability/fixture and a non-trivial `expected`
+# (including a nested `match`), so a filter that rebuilt probes field-by-field
+# instead of passing them through whole would be caught by the deep-equality
+# check below rather than passing on a lucky subset of fields.
+_mk_probe_set() {
+    local name="$1"
+    shift
+    local path="$_RUN_ROOT/$name.json"
+    printf '%s\n' "$@" | python3 -c '
+import json, sys
+kinds = [ln.strip() for ln in sys.stdin if ln.strip()]
+probes = []
+for i, kind in enumerate(kinds):
+    probes.append({
+        "capability": f"{5897 + i} synthetic {kind} capability",
+        "probe_kind": kind,
+        "fixture": f"tests/prd-gate/fixtures/synthetic_{kind}_{i}.ri",
+        "expected": {"observation": "present", "match": {"stderr": f"E_SYNTH_{i}"}},
+        "notes": f"row {i}",
+    })
+json.dump({"probes": probes}, open(sys.argv[1], "w"), indent=2)
+' "$path" || return 1
+    printf '%s\n' "$path"
+}
+
+# _want_filtered <src> <dst> <want_kept> <want_dropped> — runs the filter,
+# expecting it to SUCCEED, then checks the counts and the content contract.
+_want_filtered() {
+    local src="$1" dst="$2" want_kept="$3" want_dropped="$4"
+    if ! prd_gate_probe_set_drop_grammar "$src" "$dst"; then
+        echo "expected prd_gate_probe_set_drop_grammar to return 0, got non-zero"
+        return 1
+    fi
+    if [ "${PRD_GATE_KEPT_COUNT:-<unset>}" != "$want_kept" ]; then
+        echo "PRD_GATE_KEPT_COUNT=${PRD_GATE_KEPT_COUNT:-<unset>}, want $want_kept"
+        return 1
+    fi
+    if [ "${PRD_GATE_DROPPED_COUNT:-<unset>}" != "$want_dropped" ]; then
+        echo "PRD_GATE_DROPPED_COUNT=${PRD_GATE_DROPPED_COUNT:-<unset>}, want $want_dropped"
+        return 1
+    fi
+    # Content contract, checked on PARSED json (formatting is not the contract):
+    #   1. dst["probes"] is deep-equal to src's non-grammar probes, IN ORDER —
+    #      so every field of every kept probe survives untouched;
+    #   2. dst still parses as a probe-set through the checker's own
+    #      load_probe_set, i.e. the top-level {"probes": [...]} shape is intact.
+    #      Asserted against the REAL loader rather than a re-implementation of
+    #      its rules, which would be free to agree with a wrong filter.
+    python3 - "$src" "$dst" "$REPO_ROOT" <<'PYEOF'
+import importlib.util, json, sys
+
+src_path, dst_path, repo_root = sys.argv[1], sys.argv[2], sys.argv[3]
+src = json.load(open(src_path))
+dst = json.load(open(dst_path))
+
+want = [p for p in src["probes"] if p.get("probe_kind") != "grammar"]
+if dst.get("probes") != want:
+    print("filtered probes differ from src's non-grammar probes (order/content):")
+    print("  got : " + json.dumps(dst.get("probes")))
+    print("  want: " + json.dumps(want))
+    sys.exit(1)
+
+spec = importlib.util.spec_from_file_location(
+    "pcc", f"{repo_root}/scripts/prd-capability-check.py")
+pcc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(pcc)
+try:
+    loaded = pcc.load_probe_set(open(dst_path).read())
+except Exception as e:
+    print(f"checker's own load_probe_set rejected the filtered set: {e}")
+    sys.exit(1)
+if len(loaded) != len(want):
+    print(f"load_probe_set read {len(loaded)} probes, want {len(want)}")
+    sys.exit(1)
+PYEOF
+}
+
+# _want_filter_refuses <src> <dst> — the degenerate all-grammar case: nothing
+# to keep, so the filter must FAIL rather than hand the checker an empty
+# probe-set (which it rejects with exit 64 — a gate FAIL, not a skip).
+_want_filter_refuses() {
+    local src="$1" dst="$2"
+    if prd_gate_probe_set_drop_grammar "$src" "$dst"; then
+        echo "expected prd_gate_probe_set_drop_grammar to return non-zero on an all-grammar set, got 0"
+        return 1
+    fi
+    if [ "${PRD_GATE_KEPT_COUNT:-<unset>}" != "0" ]; then
+        echo "PRD_GATE_KEPT_COUNT=${PRD_GATE_KEPT_COUNT:-<unset>}, want 0"
+        return 1
+    fi
+    return 0
+}
+
+# Mirrors the shape of the real corpus-probe-set.json: 1 grammar + 2 check,
+# grammar FIRST, so a filter that dropped by index rather than by kind would be
+# indistinguishable here — hence the deep-equality check above.
+_PS_MIXED="$(_mk_probe_set mixed grammar check check)"
+_PS_ALL_CHECK="$(_mk_probe_set all_check check check check)"
+_PS_ALL_GRAMMAR="$(_mk_probe_set all_grammar grammar grammar)"
+
+assert "1 grammar + 2 check => keeps exactly the 2 check probes, in order, field-for-field" \
+    _want_filtered "$_PS_MIXED" "$_RUN_ROOT/mixed.filtered.json" 2 1
+
+assert "all-check set => passed through unchanged with DROPPED=0" \
+    _want_filtered "$_PS_ALL_CHECK" "$_RUN_ROOT/all_check.filtered.json" 3 0
+
+assert "all-grammar set => KEPT=0 and the filter refuses (never an empty probe-set)" \
+    _want_filter_refuses "$_PS_ALL_GRAMMAR" "$_RUN_ROOT/all_grammar.filtered.json"
+
 test_summary
