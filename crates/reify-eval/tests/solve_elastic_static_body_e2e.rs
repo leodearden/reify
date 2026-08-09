@@ -581,6 +581,212 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
     }
 }
 
+/// [`MULTI_CASE_BODY_SOURCE`] with ONE no-op `structure` declared AHEAD of the
+/// solving structure — and, deliberately, NO `RepresentationWithin` bound
+/// (task 5951).
+///
+/// `FeaLeading` owns no geometry, no compute node and no constraint. Its only
+/// effect is to add one iteration to `build()`'s per-template loop before
+/// `FeaBodyMultiCase`'s body realizes. `structure FeaMeshTolerance { param
+/// nominal : Real = 1.0 }` in [`NON_PRISMATIC_MULTI_CASE_BODY_SOURCE`] is
+/// byte-identical in shape — which is exactly the point: that fixture's
+/// leading structure, not its tolerance bound, is what emptied the `cases` map.
+/// Keeping this fixture bound-free states the defect with the tolerance
+/// contract removed entirely, so no future reader can re-derive the wrong
+/// attribution from it.
+#[cfg(has_gmsh)]
+const MULTI_CASE_BODY_WITH_LEADING_TEMPLATE_SOURCE: &str = r#"
+structure FeaLeading {
+    param nominal : Real = 1.0
+}
+
+structure FeaBodyMultiCase {
+    let material = Steel_AISI_1045()
+    let body     = box(1000mm, 100mm, 100mm)
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "tip", force: 1000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let lc2 = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "tip", force: 2000.0)],
+        supports: [FixedSupport(target: "root")],
+    )
+    let result = solve_load_cases(material, body, [lc1, lc2], ElasticOptions())
+}
+"#;
+
+/// `cfg(has_gmsh)`: task 5951 acceptance — a template declared AHEAD of the
+/// solving structure must not strand the body-arg solve.
+///
+/// This is the tolerance-INDEPENDENT, shape-INDEPENDENT statement of the
+/// defect. The fixture is the green
+/// [`multi_case_body_solve_shares_one_realization_across_cases`]'s box source
+/// verbatim, plus one no-op leading `structure` and nothing else — same body,
+/// same material, same two load cases, no `RepresentationWithin`. It is RED at
+/// this commit's grandparent and green here.
+///
+/// The mechanism, measured: `redispatch_geometry_consuming_compute_nodes` runs
+/// once per template and scans ALL compute nodes on every call, so during
+/// `FeaLeading`'s iteration it reached the solve while `body` was still a
+/// SYMBOLIC `kernel_handle: None` placeholder. It recorded a content-free
+/// `realization_inputs`, which tripped the one-shot
+/// `realization_inputs.is_empty()` candidate gate — and the LATER, correct pass
+/// for `FeaBodyMultiCase`'s own template was then skipped forever. The cell
+/// kept the stdlib inline `MultiCaseResult()` fallback: `cases = Map({})`, with
+/// NO diagnostic (`solve_multi_case_trampoline`'s pre-hydration body-path guard
+/// returns `Failed { diagnostics: vec![] }` by design, and the `ReprKind::BRep`
+/// projection arm is identity-only per PRD §4 D1).
+///
+/// The kernel-agnostic unit-level statement of the same contract lives in
+/// `tests/redispatch_template_order_regression.rs`; this test closes it on the
+/// real OCCT+gmsh path.
+#[cfg(has_gmsh)]
+#[test]
+fn multi_case_body_solve_survives_a_preceding_template() {
+    use reify_core::{Severity, ValueCellId};
+    use reify_ir::Value;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping multi_case_body_solve_survives_a_preceding_template: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    // Same helper as the B9 tests: fresh engine, manual trampolines,
+    // `register_volume_mesh_demand`, `ensure_gmsh_kernel`, and the
+    // provenance-vs-counter cross-check. The delta itself is not asserted here —
+    // with no tolerance contract it is 0 by the deliberate "no tolerance
+    // contract → no caching" semantic, which is the counter's business and not
+    // this test's.
+    let (_delta, build_result) =
+        build_multi_case_and_count_realizations(MULTI_CASE_BODY_WITH_LEADING_TEMPLATE_SOURCE);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the leading-template build, got: {errors:?}"
+    );
+
+    let result_cell = ValueCellId::new("FeaBodyMultiCase", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaBodyMultiCase.result not found in build values"));
+    let cases_map = match result_val {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(inner)) => inner.clone(),
+            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!(
+            "solve_load_cases result must be a MultiCaseResult Value::Map, got: {other:?}"
+        ),
+    };
+    assert_eq!(
+        cases_map.len(),
+        2,
+        "cases map must have exactly 2 entries (operating, overload) even though a \
+         template precedes the solving structure; got {}. An EMPTY map here is the \
+         #5951 strand: a premature per-template redispatch consumed the symbolic \
+         handle and latched the node out, leaving the stdlib inline \
+         `MultiCaseResult()` fallback — silently, with no Error diagnostic",
+        cases_map.len()
+    );
+
+    for case_name in ["operating", "overload"] {
+        let case_val = cases_map
+            .get(&Value::String(case_name.to_string()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "cases map must contain \"{case_name}\"; got: {:?}",
+                    cases_map.keys().collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            !matches!(case_val, Value::Undef),
+            "case \"{case_name}\" must not be Undef"
+        );
+
+        let disp = sampled_field(case_val, "displacement");
+        assert_eq!(
+            disp.axis_grids.len(),
+            3,
+            "case \"{case_name}\": displacement must be a 3D Regular grid, got {} axes",
+            disp.axis_grids.len()
+        );
+        // NOT `all(is_finite)`. On the REALIZED path the §7a grid spans the tet
+        // mesh AABB, so grid points that fall outside the solid carry the PRD §3
+        // outside-solid sentinel `f64::NAN` BY DESIGN — see
+        // `compute_targets/elastic_static.rs:143-144`. Measured on this fixture:
+        // 3165 of 8967 components are the sentinel, and the already-green
+        // sibling `multi_case_body_solve_shares_one_realization_across_cases`
+        // (same body, no leading template) reports the byte-identical
+        // `len=8967 nonfinite=3165 axes=[61,7,7]` while passing. An
+        // all-finite bar would therefore fail the GREEN path too — it measures
+        // the sampler's AABB coverage, not the redispatch this test pins.
+        //
+        // The meaningful bar is: real in-solid samples exist, and the only
+        // non-finite values are the documented NaN sentinel (never ±inf, which
+        // WOULD mean the solve diverged).
+        assert!(
+            !disp.data.is_empty(),
+            "case \"{case_name}\": displacement data must be non-empty"
+        );
+        assert!(
+            disp.data.iter().any(|v| v.is_finite()),
+            "case \"{case_name}\": displacement must carry at least one finite \
+             in-solid sample — an all-sentinel field means the solve never ran \
+             on the realized mesh"
+        );
+        assert!(
+            disp.data.iter().all(|v| v.is_finite() || v.is_nan()),
+            "case \"{case_name}\": displacement may only be finite or the PRD §3 \
+             out-of-solid NaN sentinel; a ±inf means the solve diverged"
+        );
+        assert_ne!(
+            disp.data.len() / 3,
+            SYNTHETIC_GRID_NODES,
+            "case \"{case_name}\": must NOT reproduce the {SYNTHETIC_GRID_NODES}-node \
+             synthetic grid — the realized VolumeMesh must drive the §7a grid, which \
+             is the whole point of the redispatch this test pins"
+        );
+        // The positive half of the same statement: the realized-AABB heuristic
+        // drove the grid, exactly as it does on the green no-leading-template
+        // sibling (61×7×7 for the 1 m × 100 mm × 100 mm box).
+        assert_eq!(
+            disp.data.len() / 3,
+            61 * 7 * 7,
+            "case \"{case_name}\": §7a grid node count must equal the realized-AABB \
+             heuristic 2989, the same grid the green sibling produces"
+        );
+
+        let stress = sampled_field(case_val, "stress");
+        assert!(
+            !stress.data.is_empty() && stress.data.iter().any(|v| v.is_finite()),
+            "case \"{case_name}\": stress must be non-empty and carry at least one \
+             finite in-solid sample"
+        );
+        assert!(
+            stress.data.iter().all(|v| v.is_finite() || v.is_nan()),
+            "case \"{case_name}\": stress may only be finite or the PRD §3 \
+             out-of-solid NaN sentinel; a ±inf means the solve diverged"
+        );
+
+        assert_eq!(
+            extract_field(case_val, "converged"),
+            Some(Value::Bool(true)),
+            "case \"{case_name}\": the shared realized-mesh solve must converge"
+        );
+    }
+}
+
 /// Single-case **NON-PRISMATIC** body fixture (task 4152, step-12).
 /// Structurally identical to `MULTI_CASE_BODY_SOURCE` above and to
 /// `fixtures/fea_body_cantilever.ri` — the ONLY material change is the `let body`
@@ -1082,7 +1288,7 @@ fn non_prismatic_two_case_build_realizes_body_exactly_once() {
 /// assertions to make it pass sooner.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #5951 — a demanded-tolerance bound is required for realization_entries to move, but that same bound silently empties the multi-case solve's `cases` map; B9's (1)/(2) run green in non_prismatic_two_case_build_realizes_body_exactly_once, (3)+ cannot"]
+#[ignore = "blocked on #5951 — the `cases`-map strand this cited is FIXED (steps 1-4: the map now populates 2 entries and (3) passes), but (4)'s `all(is_finite)` clause rests on a FALSE premise and still fails. Measured un-ignored: `len=336 nonfinite=252 axes=[4,4,7]` — 75% NaN. Those NaNs are not divergence: `compute_targets/elastic_static.rs:143-144` documents `f64::NAN` as the PRD §3 OUT-OF-SOLID SENTINEL, and the already-green sibling `multi_case_body_solve_shares_one_realization_across_cases` reports 3165/8967 sentinels while PASSING. So an all-finite bar fails the green path too; it measures sampler AABB coverage, not the solve. This doc's `do not adjust the assertions` bar means correcting (4) needs a ruling, not an implementer edit"]
 fn multi_case_non_prismatic_body_caches_one_realization_for_both_cases() {
     use reify_core::{Severity, ValueCellId};
     use reify_ir::Value;
