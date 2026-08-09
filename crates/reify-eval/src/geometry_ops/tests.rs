@@ -3681,6 +3681,261 @@
         );
     }
 
+    // ---- units-length β (task 5743 step-11): the 5 profile slots ----
+
+    /// The β slice's three gated profiles, as `(kind, &[arg name])` in the op's
+    /// own field order. `Polygon` is deliberately ABSENT — see
+    /// `compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf`.
+    ///
+    /// Arg names are the compiler's, read from the lowering arms in
+    /// `reify-compiler/src/geometry.rs`: `ellipse` takes `semi_major` /
+    /// `semi_minor`, NOT `a` / `b`.
+    const BETA_PROFILE_SLOTS: &[(reify_compiler::ProfileKind, &[&str])] = &[
+        (
+            reify_compiler::ProfileKind::Rectangle,
+            &["width", "height"],
+        ),
+        (reify_compiler::ProfileKind::Circle, &["radius"]),
+        (
+            reify_compiler::ProfileKind::Ellipse,
+            &["semi_major", "semi_minor"],
+        ),
+    ];
+
+    /// Helper: build one of [`BETA_PROFILE_SLOTS`]' profiles with `slot` bound
+    /// to `expr` and every sibling bound to a valid LENGTH.
+    fn beta_profile_with(
+        kind: reify_compiler::ProfileKind,
+        arg_names: &[&str],
+        slot: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Profile {
+            kind,
+            args: arg_names
+                .iter()
+                .map(|name| {
+                    let bound = if *name == slot {
+                        expr.clone()
+                    } else {
+                        literal_length(0.05)
+                    };
+                    ((*name).to_string(), bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// Helper: read the field named `slot` out of a compiled profile
+    /// `GeometryOp`.
+    fn beta_profile_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
+        use reify_ir::GeometryOp as G;
+        let found = match (op, slot) {
+            (G::RectangleProfile { width, .. }, "width") => Some(width),
+            (G::RectangleProfile { height, .. }, "height") => Some(height),
+            (G::CircleProfile { radius }, "radius") => Some(radius),
+            (G::EllipseProfile { semi_major, .. }, "semi_major") => Some(semi_major),
+            (G::EllipseProfile { semi_minor, .. }, "semi_minor") => Some(semi_minor),
+            _ => None,
+        };
+        found
+            .unwrap_or_else(|| panic!("no slot '{slot}' on {op:?}"))
+            .clone()
+    }
+
+    /// Contract C1's THREE-STATE mapping at the 5 profile LENGTH slots —
+    /// `rectangle` width/height, `circle` radius, `ellipse`
+    /// semi_major/semi_minor — asserted through `compile_geometry_op`, the sole
+    /// IR-build funnel (contract C2).
+    ///
+    /// Identical in shape to the primitive tables above, because a profile
+    /// dimension is length-semantic for exactly the same reason a primitive
+    /// dimension is: `Value::as_f64` reads a bare component as SI METRES, so
+    /// `circle(10)` is a 10-metre-radius circle unless the chokepoint stops it.
+    /// Extruded into a solid, that error is as expensive as any primitive's.
+    ///
+    /// RED until step-12 routes `profile_rectangle` / `profile_circle` /
+    /// `profile_ellipse` through `required_length_value`.
+    #[test]
+    fn compile_geometry_op_profile_length_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+
+        for (kind, arg_names) in BETA_PROFILE_SLOTS {
+            for slot in arg_names.iter() {
+                let at = format!("{kind}.{slot}");
+
+                // (i) ACCEPTED — stored unchanged, no diagnostics.
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_profile_with(*kind, arg_names, slot, literal_length(0.02)),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let op = result
+                    .unwrap_or_else(|e| panic!("{at}: a LENGTH Scalar must be accepted, got: {e}"));
+                assert_eq!(
+                    beta_profile_stored_slot(&op, slot),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "{at}: the stored field must stay a LENGTH Scalar with a \
+                     byte-identical SI value"
+                );
+                assert!(
+                    diagnostics.is_empty(),
+                    "{at}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+                );
+
+                // (ii) REJECTED — bare Real / bare Int / bare ZERO (D1: `0` is
+                // NOT special-cased) / wrong-dimension Scalar.
+                for (label, expr) in [
+                    ("bare Real", literal_f64(0.02)),
+                    (
+                        "bare Int",
+                        reify_ir::CompiledExpr::literal(
+                            reify_ir::Value::Int(20),
+                            reify_core::Type::dimensionless_scalar(),
+                        ),
+                    ),
+                    ("bare ZERO", literal_f64(0.0)),
+                    (
+                        "wrong-dimension Scalar (MASS)",
+                        literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                    ),
+                ] {
+                    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                    let result = compile_geometry_op(
+                        &beta_profile_with(*kind, arg_names, slot, expr),
+                        &values,
+                        &[],
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &mut diagnostics,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "{at} / {label}: must drop the op, got: {result:?}"
+                    );
+
+                    let rejections: Vec<&Diagnostic> = diagnostics
+                        .iter()
+                        .filter(|d| d.message.contains("argument expects Length"))
+                        .collect();
+                    assert_eq!(
+                        rejections.len(),
+                        1,
+                        "{at} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                    );
+                    let rej = rejections[0];
+                    assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                    assert_eq!(
+                        rej.code,
+                        Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                        "{rej:?}"
+                    );
+                    assert!(
+                        rej.message.contains(&kind.to_string())
+                            && rej.message.contains(slot)
+                            && rej
+                                .message
+                                .contains("pass a dimensioned length such as `5mm`"),
+                        "{at} / {label}: must name the builtin, the arg and carry the \
+                         migration hint; got: {:?}",
+                        rej.message
+                    );
+                }
+
+                // (iii) UNDEFINED — the DISTINCT unresolved wording, and no
+                // rejection diagnostic (D10 / INV-SF-1).
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_profile_with(*kind, arg_names, slot, literal_undef()),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{at}: an Undef dimension must drop the op"));
+                assert!(
+                    err.contains("unresolved (Undef)") && err.contains(*slot),
+                    "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                     not \"missing or non-Length\"; got: {err:?}"
+                );
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("argument expects Length")),
+                    "{at}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    /// SCOPE BOUNDARY: `polygon`'s coordinate pairs are NOT gated by this leaf.
+    ///
+    /// `profile_polygon` is the one profile that does not read named args at
+    /// all — it routes its whole variadic list through `eval_all_args_to_f64`,
+    /// which flattens to raw `f64` and has no `ArgSpec` to check against.
+    /// Gating a variadic coordinate list is a different shape of change (it
+    /// needs a per-pair accept loop and its own corpus migration) and belongs
+    /// to task 5661, not here.
+    ///
+    /// So `polygon(0,0, 10,0, 10,10)` must still compile with bare coordinates
+    /// and ZERO diagnostics. This assertion exists so that an over-broad gate —
+    /// one that reached into `eval_all_args_to_f64` on the theory that "a
+    /// profile coordinate is a length too" — is caught HERE, at the leaf that
+    /// drew the boundary, rather than in review or by 5661's own tests.
+    #[test]
+    fn compile_geometry_op_polygon_coords_are_not_gated_by_this_leaf() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = CompiledGeometryOp::Profile {
+            kind: reify_compiler::ProfileKind::Polygon,
+            args: vec![
+                ("x1".into(), literal_f64(0.0)),
+                ("y1".into(), literal_f64(0.0)),
+                ("x2".into(), literal_f64(0.01)),
+                ("y2".into(), literal_f64(0.0)),
+                ("x3".into(), literal_f64(0.01)),
+                ("y3".into(), literal_f64(0.01)),
+            ],
+        };
+        let compiled = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("polygon coordinates are out of this leaf's slice (task 5661) and must compile");
+
+        let reify_ir::GeometryOp::PolygonProfile { points } = compiled else {
+            panic!("expected GeometryOp::PolygonProfile, got {compiled:?}");
+        };
+        assert_eq!(
+            points,
+            vec![[0.0, 0.0], [0.01, 0.0], [0.01, 0.01]],
+            "polygon must keep flattening its bare coordinate pairs unchanged"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "bare polygon coordinates must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+    }
+
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
     /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
     /// LENGTH Scalar passes.
