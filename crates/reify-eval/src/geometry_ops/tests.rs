@@ -3170,6 +3170,190 @@
         );
     }
 
+    // ---- units-length β (task 5743 step-7): the R7 chokepoint at the box slots ----
+
+    /// Helper: a `PrimitiveKind::Box` op whose `slot` arg is `expr` and whose
+    /// other two dimensions are valid LENGTHs. Lets each slot's three-state
+    /// table vary ONLY the value under test.
+    fn box_primitive_with(slot: &str, expr: reify_ir::CompiledExpr) -> CompiledGeometryOp {
+        let arg = |name: &str| -> (String, reify_ir::CompiledExpr) {
+            (
+                name.into(),
+                if name == slot {
+                    expr.clone()
+                } else {
+                    literal_length(0.05)
+                },
+            )
+        };
+        CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::Box,
+            args: vec![arg("width"), arg("height"), arg("depth")],
+        }
+    }
+
+    /// Contract C1's THREE-STATE mapping at every `box` length slot, asserted
+    /// through `compile_geometry_op` — the sole IR-build funnel (contract C2).
+    ///
+    /// Each of `width` / `height` / `depth` is exercised independently, so a
+    /// gate applied to only one slot cannot pass this test.
+    ///
+    /// (i)  ACCEPTED — a LENGTH `Scalar` yields `Ok`, and the stored
+    ///      `GeometryOp::Box` field is a LENGTH `Value::Scalar` whose `si_value`
+    ///      is BYTE-IDENTICAL to the input SI metres (the chokepoint must not
+    ///      re-scale or re-wrap).
+    /// (ii) REJECTED — a bare `Real`, a bare `Int`, a bare ZERO and a
+    ///      wrong-dimension (MASS) `Scalar` each yield `Err`, push exactly one
+    ///      `Severity::Error` carrying `DimensionedArgRejected` with the `5mm`
+    ///      hint, and name both the builtin and the offending argument.
+    ///      Bare ZERO is in the table on purpose: PRD boundary row 3 / decision
+    ///      D1 says `0` is NOT special-cased. It is the likeliest thing for a
+    ///      well-meaning "but zero has no units" patch to carve out, and
+    ///      carving it out reopens the hazard for `box(0, 0, 0)`.
+    /// (iii) UNDEFINED — `Value::Undef` yields `Err` whose message is the
+    ///      EXISTING distinct `"argument 'width' for box is unresolved (Undef)"`
+    ///      wording, NOT the "missing or non-Length" text, and pushes NO
+    ///      rejection diagnostic (D10 / INV-SF-1: loud at the chokepoint, quiet
+    ///      at `accept_arg`). During solver iteration an Undef cell is expected
+    ///      transient state, so claiming "non-Length" for it would be wrong.
+    ///
+    /// RED until step-8 routes `prim_box` through `required_length_value`: today
+    /// every one of these bare values is silently stored in the `GeometryOp`
+    /// field and read as SI METRES downstream — `box(20, 20, 10)` is a 20-metre
+    /// box, which is exactly the 1000× hazard this leaf closes.
+    #[test]
+    fn compile_geometry_op_box_length_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+
+        for slot in ["width", "height", "depth"] {
+            // (i) ACCEPTED.
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &box_primitive_with(slot, literal_length(0.02)),
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            let op = result
+                .unwrap_or_else(|e| panic!("{slot}: a LENGTH Scalar must be accepted, got: {e}"));
+            let reify_ir::GeometryOp::Box {
+                width,
+                height,
+                depth,
+            } = op
+            else {
+                panic!("{slot}: expected GeometryOp::Box, got {op:?}");
+            };
+            let stored = match slot {
+                "width" => width,
+                "height" => height,
+                _ => depth,
+            };
+            assert_eq!(
+                stored,
+                reify_ir::Value::Scalar {
+                    si_value: 0.02,
+                    dimension: reify_core::DimensionVector::LENGTH,
+                },
+                "{slot}: the stored field must stay a LENGTH Scalar with a \
+                 byte-identical SI value"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "{slot}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+            );
+
+            // (ii) REJECTED.
+            for (label, expr) in [
+                ("bare Real", literal_f64(0.02)),
+                (
+                    "bare Int",
+                    reify_ir::CompiledExpr::literal(
+                        reify_ir::Value::Int(20),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                ),
+                // D1 / PRD boundary row 3: zero is NOT special-cased.
+                ("bare ZERO", literal_f64(0.0)),
+                (
+                    "wrong-dimension Scalar (MASS)",
+                    literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                ),
+            ] {
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &box_primitive_with(slot, expr),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                assert!(
+                    result.is_err(),
+                    "{slot} / {label}: must drop the op, got: {result:?}"
+                );
+
+                let rejections: Vec<&Diagnostic> = diagnostics
+                    .iter()
+                    .filter(|d| d.message.contains("argument expects Length"))
+                    .collect();
+                assert_eq!(
+                    rejections.len(),
+                    1,
+                    "{slot} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                );
+                let rej = rejections[0];
+                assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                assert_eq!(
+                    rej.code,
+                    Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                    "{rej:?}"
+                );
+                assert!(
+                    rej.message.to_lowercase().contains("box")
+                        && rej.message.contains(slot)
+                        && rej
+                            .message
+                            .contains("pass a dimensioned length such as `5mm`"),
+                    "{slot} / {label}: must name the builtin, the arg and carry the \
+                     migration hint; got: {:?}",
+                    rej.message
+                );
+            }
+
+            // (iii) UNDEFINED.
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &box_primitive_with(slot, literal_undef()),
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("{slot}: an Undef dimension must drop the op"));
+            assert!(
+                err.contains("unresolved (Undef)") && err.contains(slot),
+                "{slot}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                 not \"missing or non-Length\"; got: {err:?}"
+            );
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("argument expects Length")),
+                "{slot}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+            );
+        }
+    }
+
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
     /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
     /// LENGTH Scalar passes.
