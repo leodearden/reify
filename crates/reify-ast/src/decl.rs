@@ -1546,6 +1546,36 @@ pub struct ParseError {
     pub span: SourceSpan,
 }
 
+impl ParseError {
+    /// Render as `line:col: message`, both 1-based, using the source text the span indexes.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// a parse error a user cannot locate is only marginally better than silence. `SourceSpan`
+    /// carries byte offsets only; this is the single place that converts them for human
+    /// output, so every caller reports positions the same way.
+    ///
+    /// Degrades rather than aborting on a span that does not index `source`:
+    ///
+    /// - The prelude sentinel ([`SourceSpan::PRELUDE_SENTINEL_OFFSET`]) is passed through
+    ///   UNCLAMPED, because [`reify_core::byte_offset_to_line_col`] short-circuits it to
+    ///   `(1, 1)` — the canonical "no user-file location" fallback — ahead of its own
+    ///   `debug_assert`. Clamping it first would turn that marker into a bogus end-of-file
+    ///   position.
+    /// - Any other out-of-range offset (a stale span, or one belonging to a different file)
+    ///   is clamped to `source.len()`, which keeps `byte_offset_to_line_col`'s
+    ///   `debug_assert!(offset <= source.len())` from panicking in debug builds.
+    pub fn render(&self, source: &str) -> String {
+        let offset = self.span.start as usize;
+        let offset = if offset == SourceSpan::PRELUDE_SENTINEL_OFFSET {
+            offset
+        } else {
+            offset.min(source.len())
+        };
+        let (line, col) = reify_core::byte_offset_to_line_col(source, offset);
+        format!("{line}:{col}: {}", self.message)
+    }
+}
+
 #[cfg(test)]
 mod parse_error_render_tests {
     use super::ParseError;
@@ -1561,7 +1591,9 @@ mod parse_error_render_tests {
     fn parse_error_render_includes_line_and_column() {
         let source =
             "structure T {\n  let v = f(1)\n}\nfn f(i: Int) -> Real {\n  let x0 = 1\n  x0\n}\n";
-        let off = source.find("let x0").expect("fixture must contain 'let x0'") as u32;
+        let off = source
+            .find("let x0")
+            .expect("fixture must contain 'let x0'") as u32;
 
         let err = ParseError {
             message: "missing ';' after `let` binding in function body".to_string(),

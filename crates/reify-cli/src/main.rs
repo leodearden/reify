@@ -192,7 +192,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 
     if !parsed.errors.is_empty() {
         for err in &parsed.errors {
-            eprintln!("Parse error: {}", err.message);
+            eprintln!("Parse error: {}", err.render(&source));
         }
         return Err(ExitCode::FAILURE);
     }
@@ -251,7 +251,7 @@ fn parse_and_compile_with_cfg(
 
     if !parsed.errors.is_empty() {
         for err in &parsed.errors {
-            eprintln!("Parse error: {}", err.message);
+            eprintln!("Parse error: {}", err.render(&source));
         }
         return Err(ExitCode::FAILURE);
     }
