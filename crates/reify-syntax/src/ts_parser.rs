@@ -105,6 +105,20 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
     if !node.has_error() {
         return None; // O(1) prune — no error anywhere in this subtree
     }
+    first_fault_strictly_inside(node)
+}
+
+/// As [`first_error_or_missing_descendant`], but never returns `node` itself — it looks
+/// STRICTLY INSIDE the subtree.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+/// needed when `node` is already known to be an `ERROR`, where the self-match short-circuit
+/// would return the enclosing blob — whose start byte is precisely the whole-declaration
+/// position the diagnostic is trying to get away from. `diagnose_error_node` needs the
+/// innermost fault so it can anchor to the `let` that precedes it.
+///
+/// Returns `None` when no ERROR/MISSING node exists below `node`.
+fn first_fault_strictly_inside(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
     // Iterative pre-order DFS: descend into subtrees that contain an error,
     // skip clean subtrees in O(1), and terminate when we ascend back to `node`.
     let mut cursor = node.walk();
@@ -128,6 +142,46 @@ fn first_error_or_missing_descendant(node: tree_sitter::Node<'_>) -> Option<tree
             }
             if !cursor.goto_parent() || cursor.node() == node {
                 return None;
+            }
+        }
+    }
+}
+
+/// Find the LAST anonymous `let` token inside `node`'s subtree that starts strictly before
+/// byte offset `before`.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// When a missing `;` makes tree-sitter fuse a `let` RHS with the following statement, the
+/// recovered fault node sits on the ABSORBED line — one row after the line that actually
+/// needs editing. The `let` keyword is the absorbing line's anchor, so it, not the fault, is
+/// what a diagnostic must point at.
+///
+/// The search is confined to `node`'s subtree, so an unrelated well-formed `let` elsewhere in
+/// the file can never be blamed for a fault it does not enclose. Pre-order DFS visits nodes in
+/// source order, so the last match found is the closest preceding `let`.
+fn last_let_token_before(
+    node: tree_sitter::Node<'_>,
+    before: usize,
+) -> Option<tree_sitter::Node<'_>> {
+    let mut best: Option<tree_sitter::Node<'_>> = None;
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return None;
+    }
+    loop {
+        let cur = cursor.node();
+        if !cur.is_named() && cur.kind() == "let" && cur.start_byte() < before {
+            best = Some(cur);
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() || cursor.node() == node {
+                return best;
             }
         }
     }
@@ -233,6 +287,36 @@ impl<'a> Lowering<'a> {
     fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
         let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
         self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Diagnose an `ERROR` node, anchoring the report to the `let` binding whose missing `;`
+    /// caused tree-sitter's recovery to fuse two statements.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+    ///
+    /// The former behaviour spanned the WHOLE `ERROR` node and interpolated its entire source
+    /// slice into the message. For the shape this task exists to fix, that meant one
+    /// four-line diagnostic covering an entire `fn` declaration — and for a file with two
+    /// broken sibling fns, ONE diagnostic covering BOTH, which is how the error came to be
+    /// reported against an unrelated later line.
+    ///
+    /// Span choice, measured on the t9 shape
+    /// `fn f(i: Int) -> Real {\n  let x0 = cos(0deg)\n  x0 * sgn(i, 0)\n}`:
+    /// the enclosing ERROR spans the whole declaration; the first fault descendant sits on
+    /// the ABSORBED line, one row too late; only the `let` token sits on the ABSORBING line
+    /// — the line a user must actually edit. Spanning `[let_token.start, fault.start)` also
+    /// highlights exactly the text that was silently fused.
+    fn diagnose_error_node(&self, node: tree_sitter::Node, context: &str) {
+        let fault = first_fault_strictly_inside(node).unwrap_or(node);
+        match last_let_token_before(node, fault.start_byte()) {
+            Some(let_tok) => self.push_error(
+                "missing ';' after `let` binding in function body".to_string(),
+                SourceSpan::new(let_tok.start_byte() as u32, fault.start_byte() as u32),
+            ),
+            // No `let` to blame — report the fault itself, span-narrowed and with no source
+            // echo (mechanism M3).
+            None => self.push_error(format!("syntax error in {context}"), self.span(fault)),
+        }
     }
 
     /// Lower a `function_definition` / `function_signature` subtree, refusing it outright
@@ -592,10 +676,7 @@ impl<'a> Lowering<'a> {
                     // leak past a syntax error to the next successfully-parsed declaration.
                     let _ = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    self.diagnose_error_node(child, "source file");
                 }
                 _ => self.warn_unexpected_child(child, "source file"),
             }
@@ -2469,10 +2550,7 @@ impl<'a> Lowering<'a> {
                 self.lower_forall_statement(child)
             ),
             "ERROR" => {
-                self.push_error(
-                    format!("syntax error: {}", self.node_text(child)),
-                    self.span(child),
-                );
+                self.diagnose_error_node(child, "structure body");
                 None
             }
             _ => None,
