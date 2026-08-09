@@ -38,15 +38,22 @@
 //!
 //! ## Test shape
 //!
-//! Both cases compile a module declaring one `@optimized` probe consuming a
-//! `let body = box(..)`, and register a recording `ComputeFn` for it. The only
-//! difference is whether a no-op `structure` is declared AHEAD of the consumer.
-//! The assertion is identical in both: at least one probe invocation must see a
-//! KERNEL-BACKED (`kernel_handle: Some(_)`) geometry arg — i.e. the
-//! post-hydration redispatch actually ran.
+//! Every case compiles the same module — one `@optimized` probe consuming a
+//! `let body = box(..)` — and registers a recording `ComputeFn` for it. Each
+//! pair varies exactly one thing and asserts the same property in both halves,
+//! so nothing but the varied factor can explain a difference.
 //!
-//! The control case isolates template ordering and nothing else: same body,
-//! same probe, same kernel, same assertion.
+//! 1. **Ordering pair** — varies whether a no-op `structure` is declared AHEAD
+//!    of the consumer. Both halves must see at least one probe invocation
+//!    carrying a KERNEL-BACKED (`kernel_handle: Some(_)`) geometry arg, i.e.
+//!    the post-hydration redispatch actually ran.
+//! 2. **Content pair** — varies whether the kernel can tessellate. The write
+//!    that trips the Phase-1 latch must only ever happen when the rebuilt
+//!    `RealizationReadHandle`s carry real content: with a non-tessellating
+//!    kernel the node's `realization_inputs` must stay EMPTY (still a
+//!    candidate); with a tessellating one they must be recorded as before
+//!    (so the guard cannot be satisfied by suppressing the redispatch
+//!    wholesale).
 
 use std::cell::RefCell;
 
@@ -156,25 +163,134 @@ structure Leading {
 }
 "#;
 
-/// Build the module, register the probe, and run `build()` against a mock
-/// kernel. Returns the build diagnostics for the caller to assert on.
+/// A geometry kernel that REALIZES but cannot TESSELLATE.
 ///
-/// `MockGeometryKernel::execute` accepts any op and mints a real
+/// `execute` mirrors `MockGeometryKernel::execute` (mint a fresh
+/// `GeometryHandleId`, report `BRepKind::Solid`), so `let body = box(..)`
+/// realizes for real and its value cell hydrates to
+/// `Value::GeometryHandle { kernel_handle: Some(_), .. }`. `tessellate`
+/// always fails, so Part A's pre-tessellation in
+/// `redispatch_geometry_consuming_compute_nodes` cannot populate the
+/// projection store, the realization stays at its `ReprKind::BRep` default,
+/// and `project_realization_read_handle` takes the identity-only BRep arm:
+/// a `RealizationReadHandle` whose `content()` is `None`.
+///
+/// That is the second half of the #5951 defect, isolated from template
+/// ordering: a handle that IS kernel-backed but carries nothing real.
+///
+/// Defined locally rather than added to `reify-test-support` because it exists
+/// only to pin this contract.
+struct NonTessellatingKernel {
+    next_id: u64,
+}
+
+impl reify_ir::GeometryKernel for NonTessellatingKernel {
+    fn execute(
+        &mut self,
+        op: &reify_ir::GeometryOp,
+    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+        let id = reify_ir::GeometryHandleId(self.next_id);
+        self.next_id += 1;
+        let repr = match op {
+            reify_ir::GeometryOp::LineSegment { .. }
+            | reify_ir::GeometryOp::Arc { .. }
+            | reify_ir::GeometryOp::Helix { .. }
+            | reify_ir::GeometryOp::InterpCurve { .. }
+            | reify_ir::GeometryOp::BezierCurve { .. }
+            | reify_ir::GeometryOp::NurbsCurve { .. } => Some(reify_ir::BRepKind::Wire),
+            _ => Some(reify_ir::BRepKind::Solid),
+        };
+        Ok(reify_ir::GeometryHandle { id, repr })
+    }
+
+    fn query(
+        &self,
+        _query: &reify_ir::GeometryQuery,
+    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+        Err(reify_ir::QueryError::QueryFailed(
+            "NonTessellatingKernel stages no query results".into(),
+        ))
+    }
+
+    fn export(
+        &self,
+        _handle: reify_ir::GeometryHandleId,
+        _format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), reify_ir::ExportError> {
+        writer
+            .write_all(b"MOCK_EXPORT_DATA")
+            .map_err(|e| reify_ir::ExportError::FormatError(e.to_string()))
+    }
+
+    fn tessellate(
+        &self,
+        _handle: reify_ir::GeometryHandleId,
+        _tolerance: f64,
+    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+        Err(reify_ir::TessError::TessellationFailed(
+            "NonTessellatingKernel never tessellates — the projection store \
+             stays empty so the realization projects to content: None"
+                .into(),
+        ))
+    }
+}
+
+/// Build the module, register the probe, and run `build()` against `kernel`.
+///
+/// Returns the engine (so callers can inspect the post-build graph) and the
+/// build diagnostics.
+///
+/// With `MockGeometryKernel`, `execute` accepts any op and mints a real
 /// `GeometryHandleId`, so `let body = box(..)` realizes unconditionally and
 /// `post_process_geometry_handle_cells` hydrates the cell with
 /// `kernel_handle: Some(_)` — no OCCT required.
-fn build_with_probe(source: &str) -> Vec<reify_core::Diagnostic> {
+fn build_with_probe_using(
+    source: &str,
+    kernel: Box<dyn reify_ir::GeometryKernel>,
+) -> (reify_eval::Engine, Vec<reify_core::Diagnostic>) {
     let compiled = reify_test_support::parse_and_compile(source);
-    let kernel = reify_test_support::MockGeometryKernel::new();
     let mut engine = reify_eval::Engine::new(
         Box::new(reify_constraints::SimpleConstraintChecker),
-        Some(Box::new(kernel)),
+        Some(kernel),
     );
     engine.register_compute_fn(
         "test::redispatch-order-probe",
         order_probe_fn as reify_eval::ComputeFn,
     );
-    engine.build(&compiled, ExportFormat::Step).diagnostics
+    let diagnostics = engine.build(&compiled, ExportFormat::Step).diagnostics;
+    (engine, diagnostics)
+}
+
+/// [`build_with_probe_using`] against the default tessellating mock kernel,
+/// keeping only the diagnostics.
+fn build_with_probe(source: &str) -> Vec<reify_core::Diagnostic> {
+    build_with_probe_using(
+        source,
+        Box::new(reify_test_support::MockGeometryKernel::new()),
+    )
+    .1
+}
+
+/// The `realization_inputs` recorded on the probe's compute node in the
+/// post-build snapshot graph.
+///
+/// This is the state the Phase-1 candidate gate reads
+/// (`realization_inputs.is_empty()`): EMPTY means the node is still a
+/// redispatch candidate, non-empty means the one-shot latch has been tripped
+/// and no later pass will ever revisit it.
+fn probe_node_realization_inputs(engine: &reify_eval::Engine) -> Vec<usize> {
+    let state = engine
+        .eval_state()
+        .expect("build() must leave an EvaluationState behind");
+    state
+        .snapshot
+        .graph
+        .compute_nodes
+        .iter()
+        .filter(|(_, n)| n.target == "test::redispatch-order-probe")
+        .map(|(_, n)| n.realization_inputs.len())
+        .collect()
 }
 
 /// Shared assertion: the post-hydration redispatch must have delivered a
@@ -265,4 +381,116 @@ fn redispatch_reaches_kernel_backed_body_when_the_consumer_is_the_first_template
     );
 
     assert_probe_saw_kernel_backed_body("control (no leading template)", &recorded());
+}
+
+/// Task #5951 (RED after fix (A), GREEN after fix (B)): the Phase-1 latch must
+/// never be tripped by a write that carried nothing real.
+///
+/// Fix (A) filters SYMBOLIC handles, but a KERNEL-BACKED handle whose
+/// realization projects to no content slips straight through it. The kernel
+/// here realizes the body for real (`kernel_handle: Some(_)`) and then fails
+/// `tessellate`, so Part A's pre-tessellation cannot populate the projection
+/// store and `project_realization_read_handle` returns a handle with
+/// `content(): None`.
+///
+/// Before fix (B), `redispatch_geometry_consuming_compute_nodes` still wrote
+/// those content-free inputs onto the node and still re-dispatched, tripping
+/// the one-shot `realization_inputs.is_empty()` candidate gate. The node was
+/// then permanently excluded from every later pass — including one that could
+/// have delivered real content — and, per the BRep arm's identity-only
+/// contract (PRD §4 D1), nothing anywhere reported it.
+///
+/// Note this case carries NO leading structure: the consumer is template 0.
+/// It isolates the content half of the defect from the ordering half.
+#[test]
+fn latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content() {
+    reset_records();
+    let (engine, diagnostics) = build_with_probe_using(
+        CONSUMER_STRUCTURE,
+        Box::new(NonTessellatingKernel { next_id: 1 }),
+    );
+
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a kernel that cannot tessellate must not fail the build outright — \
+         the degradation this test pins is silent, not diagnosed: {errors:?}"
+    );
+
+    let records = recorded();
+    assert!(
+        !records.is_empty(),
+        "the @optimized probe must be invoked at least once; it was never \
+         dispatched (records: {records:?})"
+    );
+
+    // (a) Observable at the trampoline: the same `realization_inputs` that get
+    //     written onto the node are the ones handed to `run_compute_dispatch`,
+    //     so a content-free write is visible here.
+    let contentless: Vec<_> = records
+        .iter()
+        .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
+        .collect();
+    assert!(
+        contentless.is_empty(),
+        "no probe invocation may be handed non-empty `realization_inputs` in \
+         which every `RealizationReadHandle::content()` is None. Such a write \
+         delivers nothing to the trampoline yet still trips the Phase-1 \
+         `realization_inputs.is_empty()` one-shot latch, permanently and \
+         SILENTLY stranding the node on its degraded first-dispatch result \
+         (task #5951 fix (B)). Offending invocations: {contentless:?} of all \
+         records: {records:?}"
+    );
+
+    // (b) Observable in the post-build graph: the candidate gate is untripped,
+    //     so a later pass — a later template's iteration, a later build tick —
+    //     can still do the real work.
+    assert_eq!(
+        probe_node_realization_inputs(&engine),
+        vec![0],
+        "the probe's compute node must still have EMPTY `realization_inputs` \
+         after a build that could not project any content, so it remains a \
+         redispatch candidate. A non-empty value here is the latch trip: the \
+         Phase-1 gate skips this node from now on, forever."
+    );
+}
+
+/// Positive control for fix (B) (GREEN before and after): when the projection
+/// DOES yield real content, the write must still happen.
+///
+/// Same module, same probe — only the kernel differs. `MockGeometryKernel`
+/// tessellates successfully, so Part A populates the projection store, the
+/// rebuilt handle carries `Some(RealizedContent::SurfaceMesh(..))`, and the
+/// node is legitimately dispatched with real inputs and legitimately latched.
+///
+/// Pairing this with the test above pins fix (B) as a guard on *contentless*
+/// writes specifically — not a blanket suppression that would stop the
+/// redispatch from ever recording its inputs.
+#[test]
+fn latch_is_tripped_normally_when_the_rebuilt_inputs_carry_realized_content() {
+    reset_records();
+    let (engine, _diagnostics) = build_with_probe_using(
+        CONSUMER_STRUCTURE,
+        Box::new(reify_test_support::MockGeometryKernel::new()),
+    );
+
+    let records = recorded();
+    assert!(
+        records
+            .iter()
+            .any(|r| r.realization_inputs_len > 0 && r.any_realized_content),
+        "at least one probe invocation must be handed `realization_inputs` \
+         carrying real projected content — otherwise fix (B) has over-fired \
+         and suppressed the legitimate redispatch write. Records: {records:?}"
+    );
+
+    assert_eq!(
+        probe_node_realization_inputs(&engine),
+        vec![1],
+        "a redispatch that DID deliver content must record its \
+         `realization_inputs` on the node as before"
+    );
 }
