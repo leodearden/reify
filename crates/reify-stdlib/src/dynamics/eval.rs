@@ -2281,6 +2281,107 @@ mod tests {
         );
     }
 
+    // ── task 6098: the minted scalar magnitudes are DIMENSIONED ───────────────
+    //
+    // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
+    // / `: Torque` in stdlib/dynamics.ri.  `joint_force_value` is the sole
+    // producer of these instances, so it must mint `Value::Scalar` rather than
+    // a bare `Value::Real` — a bare Real in a dimensioned slot passes
+    // `reify check` clean but evaluates to `undef` with an
+    // `OpContractViolation` the moment the field is read into dimensioned
+    // arithmetic, i.e. the declared type would be a silent runtime lie.
+    //
+    // These assertions destructure the VARIANT deliberately.  Going through
+    // `cell_f64` / `num` would be vacuous: both already accept `Value::Scalar`
+    // and strip the dimension, so they cannot tell the two shapes apart (which
+    // is exactly why the ~17 existing read sites need no migration).
+
+    /// Pull a field out of a `StructureInstance`, asserting its `type_name`.
+    fn minted_field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
+        match v {
+            Value::StructureInstance(d) => {
+                assert_eq!(d.type_name, type_name, "expected a {type_name} instance");
+                d.fields
+                    .get(member)
+                    .unwrap_or_else(|| panic!("{type_name} missing field `{member}`"))
+            }
+            other => panic!("expected a {type_name} StructureInstance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn joint_force_value_mints_dimensioned_scalar_magnitudes() {
+        // prismatic → ScalarForce { magnitude: Scalar<FORCE> }
+        let r = joint_force_value("prismatic", &[2.5]).expect("prismatic/1");
+        match minted_field(&r, "ScalarForce", "magnitude") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 2.5).abs() < 1e-12,
+                    "ScalarForce.magnitude si_value should be τ[0] = 2.5, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::FORCE,
+                    "ScalarForce.magnitude is declared `: Force` in stdlib/dynamics.ri, \
+                     so the η dispatcher must mint it newton-dimensioned"
+                );
+            }
+            other => panic!(
+                "ScalarForce.magnitude must be a dimensioned Value::Scalar, not a \
+                 bare Real (task 6098); got {other:?}"
+            ),
+        }
+
+        // revolute → ScalarTorque { magnitude: Scalar<TORQUE> }
+        // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is distinct from ENERGY;
+        // assert the registry vector directly, never a FORCE·LENGTH composition.
+        let r = joint_force_value("revolute", &[0.4905]).expect("revolute/1");
+        match minted_field(&r, "ScalarTorque", "magnitude") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.4905).abs() < 1e-12,
+                    "ScalarTorque.magnitude si_value should be τ[0] = 0.4905, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TORQUE,
+                    "ScalarTorque.magnitude is declared `: Torque` in stdlib/dynamics.ri, \
+                     so the η dispatcher must mint it N·m-dimensioned"
+                );
+            }
+            other => panic!(
+                "ScalarTorque.magnitude must be a dimensioned Value::Scalar, not a \
+                 bare Real (task 6098); got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn joint_force_value_leaves_multi_component_kinds_dimensionless() {
+        // The List<Real> multi-component variants are explicitly out of scope
+        // for task 6098; this guards against the dimensioning leaking into them.
+        let r = joint_force_value("cylindrical", &[1.0, 2.0]).expect("cylindrical/2");
+        match minted_field(&r, "CylForce", "components") {
+            Value::List(comps) => {
+                assert_eq!(comps.len(), 2, "CylForce component count");
+                for (i, c) in comps.iter().enumerate() {
+                    assert!(
+                        matches!(c, Value::Real(_)),
+                        "CylForce.components is declared `List<Real>` and must stay \
+                         dimensionless; component {i} was {c:?}"
+                    );
+                }
+            }
+            other => panic!("CylForce.components must be a Value::List, got {other:?}"),
+        }
+    }
+
     // ── step-7 RED: closed-chain inverse_dynamics routing smoke test ───────────
     //
     // Verifies that `inverse_dynamics_lower` routes a closed-chain mechanism to a
