@@ -7,27 +7,15 @@
 //! see `tests/infra/test_harness_kloc_cap.sh` C1 header and
 //! `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1 — kept there, not restated here.
 //!
-//! Test ids change with the layout, though no `#[test]` fn is added or removed: the binary
-//! id is now `reify-compiler::harness_geometry_solver` (was `reify-compiler::<file>`) and the
-//! nextest test name gained a module prefix, `<file>::<test>` (was bare `<test>` — every
-//! `#[test]` fn here sits at file top level). So a hand-written `binary(…)`/`test(=…)`
-//! selector naming a former id must be updated; verify.sh's failed-only retry is unaffected
-//! — it derives `test(=…)` at run time from its own attempt-0 and refuses on tree drift (see
-//! `scripts/verify.sh` retry_failed_only).
+//! Test ids change with the layout (no `#[test]` fn added or removed, invariant I3) — see
+//! `tests/infra/test_harness_kloc_cap.sh` C1.
 //!
-//! Crate-local: this harness owns the shared `common` helper — declared ONCE here, because
-//! a per-file `mod common;` would load the same source repeatedly in one compile unit
-//! (`clippy::duplicate_mod`). Only `structural_physical_tests` consumes it, as
-//! `use crate::common;`.
-//!
-//! Crate-local sweep note — the `geometry*` sweep below deliberately skipped
-//! `geometry_chunk_smoke.rs`, leaving it standalone so task #5477 could relocate it itself
-//! (`docs/prds/v0_6/doc-chunk-truth-enforcement.md` §α) and keep its own signal — the removal
-//! of that file's baseline row — non-vacuous. #5477 has since landed (9ce705c5f3): the file
-//! now lives in `harness_doc_chunks/`, and no top-level `tests/*.rs` matches this cluster's
-//! prefixes any more. The sweep is complete; nothing here is left to "fix".
-#[path = "common/mod.rs"]
-mod common;
+//! Crate-local: this unit deliberately does NOT include the shared `tests/common/` helper.
+//! Its one former consumer, `structural_physical_tests`, now calls
+//! `reify_test_support::compile_source_with_stdlib` directly (`common`'s wrapper was a pure
+//! delegate to it, and that file already imported it for nine other call sites) and inlines
+//! its single `expect_binop` use — so the unit no longer pays 363 external lines, which
+//! rule (a) counts against the C2 cap, for two call sites.
 #[path = "harness_geometry_solver/fdm_as_printed_stdlib_compile.rs"]
 mod fdm_as_printed_stdlib_compile;
 #[path = "harness_geometry_solver/fdm_correlations_stdlib_compile.rs"]

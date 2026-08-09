@@ -8,17 +8,13 @@
 //! see `tests/infra/test_harness_kloc_cap.sh` C1 header and
 //! `docs/prds/merge-gate-compile-cost.md` §3 W1 / §5 C1 — kept there, not restated here.
 //!
-//! Test ids change with the layout, though no `#[test]` fn is added or removed: the binary
-//! id is now `reify-compiler::harness_result_annotation` (was `reify-compiler::<file>`) and
-//! the nextest test name gained a module prefix, `<file>::<test>` (was bare `<test>` — every
-//! `#[test]` fn here sits at file top level). So a hand-written `binary(…)`/`test(=…)`
-//! selector naming a former id must be updated; verify.sh's failed-only retry is unaffected
-//! — it derives `test(=…)` at run time from its own attempt-0 and refuses on tree drift (see
-//! `scripts/verify.sh` retry_failed_only).
+//! Test ids change with the layout (no `#[test]` fn added or removed, invariant I3) — see
+//! `tests/infra/test_harness_kloc_cap.sh` C1.
 //!
-//! Crate-local: unlike the other two CMP-2 roots, this harness deliberately does NOT declare
-//! the shared `common` helper — no member consumes it, and declaring it would charge this
-//! unit 363 external lines for a module nothing references.
+//! Crate-local: this harness deliberately does NOT declare the shared `common` helper — no
+//! member consumes it, and declaring it would charge this unit 363 external lines, which
+//! rule (a) counts against the C2 cap, for a module nothing references. (Of the three CMP-2
+//! roots only `harness_units_materials` includes it, for its seven real consumers.)
 #[path = "harness_result_annotation/annotation_compile_tests.rs"]
 mod annotation_compile_tests;
 #[path = "harness_result_annotation/annotation_materialization_args_tests.rs"]
