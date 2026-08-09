@@ -654,6 +654,18 @@
                 reify_core::Severity::Warning,
                 "(c) diagnostic must be Warning severity"
             );
+            // units-length β (task 5743 step-5): Contract A's rejection gains the
+            // SAME shared code as the LENGTH chokepoint — one runtime code across
+            // dimensions, per PRD Open Question 1 — while keeping Warning severity,
+            // because this reader quiet-degrades to None with no paired op-compile
+            // Error (see `resolve_scalar_bound_arg_eval_and_diagnostics`'s doc).
+            // RED until step-6.
+            assert_eq!(
+                diags[0].code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "(c) density rejection must carry the shared code; got: {:?}",
+                diags[0]
+            );
         }
 
         // (d) ValueRef → Scalar{LENGTH} → None + 1 Warning [keep reject]
@@ -836,6 +848,27 @@
     /// the expected dimension is Accepted (0 diags); a defined-but-wrong value
     /// (wrong dimension, dimensionless, or non-Scalar) is Rejected with exactly
     /// one Warning naming the builtin, the arg, and the expected type.
+    ///
+    /// EXTENDED by units-length β (task 5743 step-5): the Rejected arms now also
+    /// carry `DiagnosticCode::DimensionedArgRejected`, so INV-SF-6 holds
+    /// everywhere an `ArgSpec` rejection is emitted — while the severity stays
+    /// `Severity::Warning` and the helper still returns `None`.
+    ///
+    /// The severity asymmetry against `eval_named_arg_length` (promoted to Error
+    /// in step-4) is DELIBERATE, not an oversight, and is asserted here so it
+    /// cannot be silently "fixed":
+    ///
+    /// `resolve_spec_arg` returns `Option<f64>` and its callers CONTINUE on
+    /// `None` with no paired op-compile Error — quiet degradation, build
+    /// proceeds. Promoting it would therefore flip `reify eval` from exit 0 to
+    /// exit 1 for `edges_at_height` z/tol, `geo_equiv` tol, `faces_by_normal`
+    /// tol (an ANGLE position owned by PRD 3) and the density ladder. None of
+    /// those is in this leaf's 26-slot slice or in PRD §6's boundary rows, and
+    /// nobody in this PRD owns their migration. Sharing the CODE while splitting
+    /// the SEVERITY scopes INV-SF-2's promotion to the positions this leaf owns;
+    /// the promotion is filed as a follow-up.
+    ///
+    /// RED until step-6 attaches the code: today `diags[0].code` is `None`.
     #[test]
     fn resolve_scalar_bound_arg_eval_and_diagnostics() {
         // (a) inline ANGLE literal → Some(rad), 0 diagnostics.
@@ -905,7 +938,18 @@
                 1,
                 "(c) must push exactly 1 Warning, got: {diags:?}"
             );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(c) severity stays Warning — see this test's doc comment for why \
+                 the quiet-degrade readers are NOT promoted with step-4's chokepoint"
+            );
+            assert_eq!(
+                diags[0].code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "(c) the shared runtime code rides the Warning too (INV-SF-6); got: {:?}",
+                diags[0]
+            );
             let msg = diags[0].message.to_lowercase();
             assert!(
                 msg.contains("edges_at_height"),
@@ -945,7 +989,19 @@
                 1,
                 "(d) must push exactly 1 Warning, got: {diags:?}"
             );
-            assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+            assert_eq!(
+                diags[0].severity,
+                reify_core::Severity::Warning,
+                "(d) severity stays Warning — `faces_by_normal` tol is an ANGLE \
+                 position owned by PRD 3, outside this leaf's slice"
+            );
+            assert_eq!(
+                diags[0].code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "(d) ONE shared runtime code across dimensions — PRD 3 (ANGLE) reuses \
+                 THIS variant rather than minting a per-dimension sibling; got: {:?}",
+                diags[0]
+            );
             let msg = diags[0].message.to_lowercase();
             assert!(
                 msg.contains("faces_by_normal"),
