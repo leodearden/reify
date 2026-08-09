@@ -627,19 +627,19 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
             let (wx, wy, wz) = (ang_comps[0], ang_comps[1], ang_comps[2]);
             // Extract linear: must be Vector3 with a single shared dimension.
             //
-            // Twist linear convention (polymorphic, mirrored on transform_log):
-            //   • LENGTH       — canonical (matches Twist type in the doc reference)
-            //   • DIMENSIONLESS — accepted for unit-less twists / numerical work
-            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            // Twist linear convention (RULING #6126): `linear` must be
+            // `Vector3<Length>`. Any other dimension — DIMENSIONLESS included — returns
+            // Undef here AND is explained by `diagnose`, which names the offending
+            // dimension rather than leaving a bare OpContractViolation note.
             //
-            // transform_log applies the identical LENGTH|DIMENSIONLESS gate and
-            // preserves the dimension on output, so the log↔exp round-trip is
-            // symmetric on both accept and reject.
+            // `transform_log` applies the identical `TWIST_LINEAR_DIM` gate to a
+            // Transform's translation, so both ends of the log↔exp seam agree on what
+            // they admit.
             let (lin_comps, lin_dim) = match decompose_vec3(linear_val) {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            if lin_dim != DimensionVector::LENGTH && lin_dim != DimensionVector::DIMENSIONLESS {
+            if lin_dim != TWIST_LINEAR_DIM {
                 return Some(Value::Undef);
             }
             let (lx, ly, lz) = (lin_comps[0], lin_comps[1], lin_comps[2]);
