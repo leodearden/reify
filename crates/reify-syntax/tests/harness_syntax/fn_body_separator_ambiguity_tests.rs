@@ -86,6 +86,32 @@ fn nested_fault_in_fn_body_does_not_silently_drop_the_binding() {
     );
 }
 
+/// The malformed fn-body sources this module governs. Shared by the message-quality sweep so
+/// a new fixture added to one assertion is covered by the other.
+const MALFORMED_FN_BODY_SOURCES: &[(&str, &str)] = &[
+    ("nested missing value", "fn f(x: Int) -> Int { let y = ; x }"),
+    (
+        "nested missing value, structure member",
+        "structure S {\n  fn f(x: Int) -> Int { let y = ; x }\n}",
+    ),
+    (
+        "t9 shape — ident-led absorbed line",
+        "structure T {\n  let v = f(1)\n}\nfn f(i: Int) -> Real {\n  let x0 = cos(0deg)\n  x0 * sgn(i, 0)\n}\n",
+    ),
+    (
+        "quantity-led absorbed line",
+        "fn f() -> Length {\n  let a = 2mm\n  3mm * a\n}\n",
+    ),
+    (
+        "unary-minus-led absorbed line",
+        "fn f(i: Int) -> Real {\n  let a = 2\n  -a\n}\n",
+    ),
+    (
+        "large body, ~15 lines, separator omitted after the first let",
+        "fn f(i: Int) -> Real {\n  let a0 = 1\n  let a1 = 2;\n  let a2 = 3;\n  let a3 = 4;\n  let a4 = 5;\n  let a5 = 6;\n  let a6 = 7;\n  let a7 = 8;\n  let a8 = 9;\n  let a9 = 10;\n  let b0 = 11;\n  let b1 = 12;\n  a0 + a1 + i\n}\n",
+    ),
+];
+
 /// Render every diagnostic as a `(message, start, end)` triple so a failure is diagnosable
 /// from the test output alone.
 fn triples(m: &reify_ast::ParsedModule) -> Vec<(&str, u32, u32)> {
@@ -162,4 +188,49 @@ fn missing_semicolon_after_fn_let_is_located_at_the_let_line() {
         blob.map(|e| (&e.message, e.span.start, e.span.end)),
         triples(&m),
     );
+}
+
+/// Diagnostics for this class must be readable one-liners, never swaths of echoed source
+/// (mechanism M3's source-echo half).
+///
+/// The old `"ERROR"` arms interpolated the whole node's text, so reporting a four-line
+/// function produced a four-line message, and a two-function collapse produced one message
+/// containing both declarations in full. A diagnostic that reprints the file is not a
+/// diagnostic.
+///
+/// Scoped to the fn-body sources deliberately. The acceptance criteria scope the general
+/// parse-error-quality cleanup to "at least for this class"; the remaining ERROR arms
+/// (constraint / port / connect / guarded-block bodies) and `check_and_lower!` keep the old
+/// shape and are filed as follow-up work.
+#[test]
+fn fn_body_parse_error_messages_do_not_echo_source_blocks() {
+    for (label, src) in MALFORMED_FN_BODY_SOURCES {
+        let m = reify_syntax::parse(src, ModulePath::single("t"));
+        assert!(
+            !m.errors.is_empty(),
+            "{label}: fixture produced no diagnostics at all, so it no longer exercises the \
+             message-quality property.\nsource:\n{src}",
+        );
+        for e in &m.errors {
+            assert!(
+                !e.message.contains('\n'),
+                "{label}: diagnostic message spans multiple lines — it is echoing a block of \
+                 source rather than describing the fault.\nmessage: {:?}",
+                e.message,
+            );
+            assert!(
+                e.message.len() <= 200,
+                "{label}: diagnostic message is {} bytes — unbounded source interpolation.\n\
+                 message: {:?}",
+                e.message.len(),
+                e.message,
+            );
+            assert!(
+                !e.message.contains("fn f("),
+                "{label}: diagnostic message contains the declaration header it is reporting \
+                 about, i.e. it echoes `node_text`.\nmessage: {:?}",
+                e.message,
+            );
+        }
+    }
 }
