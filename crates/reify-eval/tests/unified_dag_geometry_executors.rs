@@ -858,14 +858,27 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 #[test]
 fn unified_dag_residue_realizations_dispatch_exactly_once() {
     // `let a` / `let b` form a Length-typed mutual cycle (the `+ 1mm` literal
-    // anchors both to `Length`), so `r = box(a, …)` type-checks while `a` itself
-    // is cyclic (→ `Undef` at eval, → residue at planning).
+    // anchors both to `Length`), so `r` type-checks while `a` itself is cyclic
+    // (→ `Undef` at eval, → residue at planning).
+    //
+    // `r` reads the cyclic `a` through the FILLET RADIUS, not through a box
+    // dimension. This test is about the scheduler's exactly-once residue
+    // dispatch, and it needs `r`'s Box to actually REACH the kernel to prove
+    // that. Task 5743 (units-length β) gated the 26 primitive/profile
+    // length-semantic slots at `required_length_value`, where decision D10 /
+    // INV-SF-1 makes an `Undef` FAIL the op rather than be stored — so the
+    // original `box(a, 5mm, 5mm)` fixture now drops `r` entirely and this test
+    // could no longer observe the fallback-append branch at all. (The old
+    // comment "robust to `r`'s Undef width" describes exactly the silently
+    // stored Undef that β closed.) The fillet radius is a MODIFY slot, un-gated
+    // by β and owned by #5744, so it still carries a cyclic Undef and keeps `r`
+    // a residue — preserving this test's subject rather than weakening it.
     let source = r#"structure S {
     let a = b + 1mm
     let b = a + 1mm
     let p = box(10mm, 10mm, 10mm)
     let q = box(20mm, 20mm, 20mm)
-    let r = box(a, 5mm, 5mm)
+    let r = fillet(box(5mm, 5mm, 5mm), a)
 }"#;
 
     // Capture the op recorder BEFORE the kernel is boxed/moved into the engine
