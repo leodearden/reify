@@ -151,6 +151,32 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
     Some((w / norm, x / norm, y / norm, z / norm))
 }
 
+/// The one and only dimension admitted on the linear half of a twist — and,
+/// mirrored, on a `Transform`'s translation where it crosses the `transform_log`
+/// ↔ `transform_exp` seam.
+///
+/// RULING #6126 (Leo, 2026-08-07): a twist is
+/// `Map { angular: Vector3<…>, linear: Vector3<Length> }`. The linear half carries
+/// LENGTH and only LENGTH; every other dimension — DIMENSIONLESS included — is
+/// rejected as `Value::Undef` and explained by [`diagnose`].
+///
+/// Grounds (decision D11 of `docs/prds/units-length-gate-completion`): after the
+/// `Real` → `Scalar{DIMENSIONLESS}` unification, an "also admits DIMENSIONLESS"
+/// gate means "also admits bare numbers", which is an affordance for exactly the
+/// unit-less numerical work this seam should not silently accept. This was the last
+/// `LENGTH | DIMENSIONLESS` admission in the transform family.
+///
+/// This const is the SINGLE source of truth, consulted by the `transform_log` eval
+/// arm, the `transform_exp` eval arm, and both of [`diagnose`]'s arms — so the eval
+/// gates and the post-`Undef` classifier cannot drift apart (the same hazard the
+/// `stackup::parse_chain` / `parse_chain_checked` split answers).
+///
+/// NOT applicable to `joint_jacobian`: its columns share the `{angular, linear}`
+/// Map shape but are ∂pose/∂q, not twists (a revolute column's linear part is
+/// m/rad), so they must never be held to this constant (#6102 gives them their own
+/// structure).
+const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
+
 /// Build a translation/twist component preserving the carried dimension:
 /// `DIMENSIONLESS → Value::Real(v)`, otherwise `Value::Scalar { si_value, dim }`.
 ///
@@ -682,15 +708,15 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            // Transform translation convention (polymorphic, mirrored on transform_exp):
-            //   • LENGTH        — canonical (matches Transform type in the doc reference)
-            //   • DIMENSIONLESS — accepted for unit-less transforms / numerical work
-            //   • Any other dim (ANGLE, MASS, …) → rejected as Undef
+            // Transform translation convention (RULING #6126): the translation must be
+            // Vector3<Length> — LENGTH and nothing else, DIMENSIONLESS included. A
+            // non-LENGTH translation returns Undef here AND is explained by `diagnose`,
+            // which names the offending dimension rather than leaving a bare
+            // OpContractViolation note.
             //
-            // transform_exp applies the identical LENGTH|DIMENSIONLESS gate on the
-            // twist linear field and preserves the dimension on output, so the
-            // log↔exp round-trip is symmetric on both accept and reject.
-            if t_dim != DimensionVector::LENGTH && t_dim != DimensionVector::DIMENSIONLESS {
+            // `transform_exp` applies the identical `TWIST_LINEAR_DIM` gate to a twist's
+            // `linear` field, so both ends of the log↔exp seam agree on what they admit.
+            if t_dim != TWIST_LINEAR_DIM {
                 return Some(Value::Undef);
             }
             let (tx, ty, tz) = (t[0], t[1], t[2]);
