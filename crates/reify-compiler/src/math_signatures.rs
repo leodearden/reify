@@ -164,53 +164,37 @@ pub(crate) fn math_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type {
                 quantity: Box::new(quantity),
             }
         }
-        // `vec3(x,y,z)` → Vector{n:3, quantity} — quantity from first variadic
-        // scalar component (mirrors eval construct_point_or_vector(args, 3, false)
-        // in reify-stdlib/src/geometry.rs:936). n is fixed from the name.
-        "vec3" => Type::Vector {
-            n: 3,
-            quantity: Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            ),
-        },
-        // `vec2(x,y)` → Vector{n:2, quantity} — same pattern as vec3.
-        "vec2" => Type::Vector {
-            n: 2,
-            quantity: Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            ),
-        },
-        // `point3(x,y,z)` → Point{n:3, quantity} — the exact twin of the `vec3`
-        // arm above (mirrors eval construct_point_or_vector(args, 3, TRUE) in
-        // reify-stdlib/src/geometry.rs; `vec3` passes `false`). n is fixed from
-        // the name, the quantity slot comes from the first variadic component.
+        // The four FIXED-`n` component constructors, collapsed into one arm
+        // because eval collapses them too: all four are
+        // `construct_point_or_vector(args, n, is_point)` in
+        // reify-stdlib/src/geometry.rs:936 — same helper, same arity, differing
+        // only in `n` and one bool.
+        //   vec3(x,y,z)   → Vector{n:3, quantity}
+        //   vec2(x,y)     → Vector{n:2, quantity}
+        //   point3(x,y,z) → Point {n:3, quantity}
+        //   point2(x,y)   → Point {n:2, quantity}
+        // `n` is fixed from the NAME; only the quantity slot comes from the
+        // first variadic scalar component.
         //
-        // This also makes the VALUE constructor agree with the same-named TYPE
-        // constructor: `Type::point3(q)` is an established `reify_core` helper
-        // for `Type::Point { n: 3, quantity: q }`, so `point3` already means
-        // this in type position (e.g. `closest_point`/`centroid` resolve to
-        // `Type::point3(Type::length())` in `units.rs`).
-        "point3" => Type::Point {
-            n: 3,
-            quantity: Box::new(
+        // The point twins also make the VALUE constructor agree with the
+        // same-named TYPE constructor: `Type::point3(q)` is an established
+        // `reify_core` helper for `Type::Point { n: 3, quantity: q }`, so
+        // `point3` already means this in type position (e.g.
+        // `closest_point`/`centroid` resolve to `Type::point3(Type::length())`
+        // in `units.rs`).
+        "vec3" | "vec2" | "point3" | "point2" => {
+            let n = if name.ends_with('3') { 3 } else { 2 };
+            let quantity = Box::new(
                 first
                     .map(|a| a.result_type.clone())
                     .unwrap_or_else(Type::dimensionless_scalar),
-            ),
-        },
-        // `point2(x,y)` → Point{n:2, quantity} — same pattern as point3.
-        "point2" => Type::Point {
-            n: 2,
-            quantity: Box::new(
-                first
-                    .map(|a| a.result_type.clone())
-                    .unwrap_or_else(Type::dimensionless_scalar),
-            ),
-        },
+            );
+            if name.starts_with("point") {
+                Type::Point { n, quantity }
+            } else {
+                Type::Vector { n, quantity }
+            }
+        }
         // `diag(list)` → N×N Tensor (same N/quantity recovery as `vec`).
         "diag" => {
             let (n, quantity) = first.map_or((0, Type::dimensionless_scalar()), list_shape);
