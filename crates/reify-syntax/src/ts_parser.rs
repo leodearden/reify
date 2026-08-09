@@ -367,11 +367,36 @@ impl<'a> Lowering<'a> {
         ContentHash::of_str(self.node_text(node))
     }
 
+    /// A short, single-line excerpt of a node's source text, safe to interpolate into a
+    /// diagnostic message.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    /// a diagnostic that reprints a block of source is unreadable, and on a recovered parse
+    /// the node in question can span an entire declaration. Truncates at the first newline,
+    /// then to at most 40 characters, appending an ellipsis when anything was cut.
+    ///
+    /// Truncation is on a CHARACTER boundary via `char_indices`, never a byte slice: the
+    /// source is UTF-8 and `&s[..40]` would panic mid-codepoint on any non-ASCII input.
+    fn snippet(&self, node: tree_sitter::Node) -> String {
+        const MAX_CHARS: usize = 40;
+        let text = self.node_text(node);
+        let (first_line, had_newline) = match text.find('\n') {
+            Some(i) => (&text[..i], true),
+            None => (text, false),
+        };
+        match first_line.char_indices().nth(MAX_CHARS) {
+            Some((byte_idx, _)) => format!("{}…", &first_line[..byte_idx]),
+            None if had_newline => format!("{first_line}…"),
+            None => first_line.to_string(),
+        }
+    }
+
     /// Emit a diagnostic for an unexpected named child in a lowering context.
     ///
     /// Skips anonymous tokens and extras (comments). For named, non-extra
     /// children that don't match any expected arm, pushes an error with the
-    /// child's kind and source text.
+    /// child's kind and a BOUNDED excerpt of its source text (see [`Self::snippet`] —
+    /// INV-SF-7, task #5392). The `unexpected '<kind>' in <context>` prefix is unchanged.
     fn warn_unexpected_child(&mut self, child: tree_sitter::Node, context: &str) {
         if child.is_named() && !child.is_extra() {
             self.push_error(
@@ -379,7 +404,7 @@ impl<'a> Lowering<'a> {
                     "unexpected '{}' in {}: {}",
                     child.kind(),
                     context,
-                    self.node_text(child)
+                    self.snippet(child)
                 ),
                 self.span(child),
             );
