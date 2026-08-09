@@ -1058,11 +1058,10 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // `cost(self.descendants)` == `[rivets.line_cost].sum`. Both sides must be
     // read from the SAME cell or the comparison is not apples-to-apples.
     //
-    // The parent's own `let total_cost : Money = cost(self.descendants)` is
-    // deliberately NOT a candidate here: it stays unresolved post-solve in
-    // BOTH halves, a known engine gap pinned executably by
+    // The parent's own `let total_cost` is deliberately NOT a candidate
+    // here — see
     // `parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves`
-    // (immediately below) and tracked by #5835.
+    // (immediately below) / #5835.
     let line_cost = ValueCellId::new("Rivet", "line_cost");
 
     let merged_cost = scalar_si(&merged, &line_cost, "merged");
@@ -1164,10 +1163,10 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
              — got no entry",
         );
         // UNRESOLVED — the actual claim. Assert the negative shape (not a
-        // resolved `Scalar`, `Real`, or `Int` — every numeric `Value`
-        // variant) rather than pinning today's exact `Value::Undef`
-        // spelling, so this pins "not a usable number", not one particular
-        // non-Scalar variant.
+        // resolved numeric scalar shape — `Scalar`, `Real`, or `Int`, the
+        // only variants a `Money` cell could plausibly resolve to) rather
+        // than pinning today's exact `Value::Undef` spelling, so this pins
+        // "not a usable number", not one particular non-Scalar variant.
         assert!(
             !matches!(
                 cell,
