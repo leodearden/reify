@@ -3354,6 +3354,333 @@
         }
     }
 
+    // ---- units-length β (task 5743 step-9): the remaining 18 primitive slots ----
+
+    /// The β slice's remaining seven primitives, each as
+    /// `(kind, &[(arg name, is_length_semantic)])` in the op's own field order.
+    ///
+    /// The `bool` is the SLICE BOUNDARY made data: `true` marks a slot this leaf
+    /// gates, `false` marks one it must leave alone. Only `half_space` carries
+    /// `false` entries — `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal, not a
+    /// point in space, and the same split is already documented at
+    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    ///
+    /// Arg names are the compiler's, read from the lowering arms in
+    /// `reify-compiler/src/geometry.rs` — `outer_r`/`inner_r` (not
+    /// `outer_radius`), `px`/`py`/`pz` (not `ox`/`oy`/`oz`).
+    const BETA_PRIMITIVE_SLOTS: &[(reify_compiler::PrimitiveKind, &[(&str, bool)])] = &[
+        (
+            reify_compiler::PrimitiveKind::Cylinder,
+            &[("radius", true), ("height", true)],
+        ),
+        (reify_compiler::PrimitiveKind::Sphere, &[("radius", true)]),
+        (
+            reify_compiler::PrimitiveKind::Tube,
+            &[("outer_r", true), ("inner_r", true), ("height", true)],
+        ),
+        (
+            reify_compiler::PrimitiveKind::Cone,
+            &[
+                ("bottom_radius", true),
+                ("top_radius", true),
+                ("height", true),
+            ],
+        ),
+        (
+            reify_compiler::PrimitiveKind::Wedge,
+            &[
+                ("width", true),
+                ("depth", true),
+                ("height", true),
+                ("top_width", true),
+            ],
+        ),
+        (
+            reify_compiler::PrimitiveKind::Torus,
+            &[("major_radius", true), ("minor_radius", true)],
+        ),
+        (
+            reify_compiler::PrimitiveKind::HalfSpace,
+            &[
+                ("px", true),
+                ("py", true),
+                ("pz", true),
+                // NOT gated: a dimensionless unit normal.
+                ("nx", false),
+                ("ny", false),
+                ("nz", false),
+            ],
+        ),
+    ];
+
+    /// Helper: build one of [`BETA_PRIMITIVE_SLOTS`]' primitives with `slot`
+    /// bound to `expr` and every other arg bound to a valid value for its own
+    /// kind — a LENGTH `Scalar` for a length-semantic slot, a bare `Real` for a
+    /// dimensionless one. Lets each slot's three-state table vary ONLY the
+    /// value under test.
+    fn beta_primitive_with(
+        kind: reify_compiler::PrimitiveKind,
+        arg_names: &[(&str, bool)],
+        slot: &str,
+        expr: reify_ir::CompiledExpr,
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Primitive {
+            kind,
+            args: arg_names
+                .iter()
+                .map(|(name, is_length)| {
+                    let bound = if *name == slot {
+                        expr.clone()
+                    } else if *is_length {
+                        literal_length(0.05)
+                    } else {
+                        literal_f64(1.0)
+                    };
+                    ((*name).to_string(), bound)
+                })
+                .collect(),
+        }
+    }
+
+    /// Helper: read the field named `slot` out of a compiled primitive
+    /// `GeometryOp`. Keeps the slot table above the single source of truth for
+    /// which names exist, instead of repeating a destructuring `let else` per
+    /// primitive.
+    fn beta_stored_slot(op: &reify_ir::GeometryOp, slot: &str) -> reify_ir::Value {
+        use reify_ir::GeometryOp as G;
+        let found = match (op, slot) {
+            (G::Cylinder { radius, .. }, "radius") => Some(radius),
+            (G::Cylinder { height, .. }, "height") => Some(height),
+            (G::Sphere { radius }, "radius") => Some(radius),
+            (G::Tube { outer_r, .. }, "outer_r") => Some(outer_r),
+            (G::Tube { inner_r, .. }, "inner_r") => Some(inner_r),
+            (G::Tube { height, .. }, "height") => Some(height),
+            (G::Cone { bottom_radius, .. }, "bottom_radius") => Some(bottom_radius),
+            (G::Cone { top_radius, .. }, "top_radius") => Some(top_radius),
+            (G::Cone { height, .. }, "height") => Some(height),
+            (G::Wedge { width, .. }, "width") => Some(width),
+            (G::Wedge { depth, .. }, "depth") => Some(depth),
+            (G::Wedge { height, .. }, "height") => Some(height),
+            (G::Wedge { top_width, .. }, "top_width") => Some(top_width),
+            (G::Torus { major_radius, .. }, "major_radius") => Some(major_radius),
+            (G::Torus { minor_radius, .. }, "minor_radius") => Some(minor_radius),
+            (G::HalfSpace { px, .. }, "px") => Some(px),
+            (G::HalfSpace { py, .. }, "py") => Some(py),
+            (G::HalfSpace { pz, .. }, "pz") => Some(pz),
+            _ => None,
+        };
+        found
+            .unwrap_or_else(|| panic!("no slot '{slot}' on {op:?}"))
+            .clone()
+    }
+
+    /// Contract C1's THREE-STATE mapping at the 18 remaining primitive LENGTH
+    /// slots — `cylinder` radius/height, `sphere` radius, `tube`
+    /// outer_r/inner_r/height, `cone` bottom_radius/top_radius/height, `wedge`
+    /// width/depth/height/top_width, `torus` major_radius/minor_radius and
+    /// `half_space` px/py/pz — asserted through `compile_geometry_op`, the sole
+    /// IR-build funnel (contract C2).
+    ///
+    /// This is the box test's table, driven over the slot table rather than
+    /// re-spelled per primitive. Every slot is exercised INDEPENDENTLY (the
+    /// other args stay valid), so a gate applied to only some slots of a
+    /// primitive — say `tube`'s two radii but not its `height` — cannot pass.
+    ///
+    /// RED until step-10 routes the seven remaining `prim_*` fns through
+    /// `required_length_value`: today each bare value is stored in the
+    /// `GeometryOp` field unchallenged and read as SI METRES downstream, so
+    /// `cylinder(10, 20)` is a 10-metre-radius cylinder.
+    #[test]
+    fn compile_geometry_op_remaining_primitive_length_slots_follow_the_three_state_contract() {
+        let values = ValueMap::new();
+
+        for (kind, arg_names) in BETA_PRIMITIVE_SLOTS {
+            for (slot, is_length) in arg_names.iter() {
+                if !*is_length {
+                    // Slice boundary — covered by the dedicated negative test
+                    // below, not by this rejection table.
+                    continue;
+                }
+                let at = format!("{kind}.{slot}");
+
+                // (i) ACCEPTED — stored unchanged, no diagnostics.
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_primitive_with(*kind, arg_names, slot, literal_length(0.02)),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let op = result
+                    .unwrap_or_else(|e| panic!("{at}: a LENGTH Scalar must be accepted, got: {e}"));
+                assert_eq!(
+                    beta_stored_slot(&op, slot),
+                    reify_ir::Value::Scalar {
+                        si_value: 0.02,
+                        dimension: reify_core::DimensionVector::LENGTH,
+                    },
+                    "{at}: the stored field must stay a LENGTH Scalar with a \
+                     byte-identical SI value"
+                );
+                assert!(
+                    diagnostics.is_empty(),
+                    "{at}: an accepted LENGTH must push ZERO diagnostics; got: {diagnostics:?}"
+                );
+
+                // (ii) REJECTED — the same four shapes as the box table, incl.
+                // bare ZERO (D1 / PRD boundary row 3: `0` is NOT special-cased).
+                for (label, expr) in [
+                    ("bare Real", literal_f64(0.02)),
+                    (
+                        "bare Int",
+                        reify_ir::CompiledExpr::literal(
+                            reify_ir::Value::Int(20),
+                            reify_core::Type::dimensionless_scalar(),
+                        ),
+                    ),
+                    ("bare ZERO", literal_f64(0.0)),
+                    (
+                        "wrong-dimension Scalar (MASS)",
+                        literal_scalar(0.02, reify_core::DimensionVector::MASS),
+                    ),
+                ] {
+                    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                    let result = compile_geometry_op(
+                        &beta_primitive_with(*kind, arg_names, slot, expr),
+                        &values,
+                        &[],
+                        &[],
+                        &HashMap::new(),
+                        &HashMap::new(),
+                        &mut diagnostics,
+                    );
+                    assert!(
+                        result.is_err(),
+                        "{at} / {label}: must drop the op, got: {result:?}"
+                    );
+
+                    let rejections: Vec<&Diagnostic> = diagnostics
+                        .iter()
+                        .filter(|d| d.message.contains("argument expects Length"))
+                        .collect();
+                    assert_eq!(
+                        rejections.len(),
+                        1,
+                        "{at} / {label}: exactly ONE rejection diagnostic; got: {diagnostics:?}"
+                    );
+                    let rej = rejections[0];
+                    assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+                    assert_eq!(
+                        rej.code,
+                        Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                        "{rej:?}"
+                    );
+                    assert!(
+                        rej.message.contains(&kind.to_string())
+                            && rej.message.contains(slot)
+                            && rej
+                                .message
+                                .contains("pass a dimensioned length such as `5mm`"),
+                        "{at} / {label}: must name the builtin, the arg and carry the \
+                         migration hint; got: {:?}",
+                        rej.message
+                    );
+                }
+
+                // (iii) UNDEFINED — the DISTINCT unresolved wording, and no
+                // rejection diagnostic (D10 / INV-SF-1).
+                let mut diagnostics: Vec<Diagnostic> = Vec::new();
+                let result = compile_geometry_op(
+                    &beta_primitive_with(*kind, arg_names, slot, literal_undef()),
+                    &values,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &mut diagnostics,
+                );
+                let err = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{at}: an Undef dimension must drop the op"));
+                assert!(
+                    err.contains("unresolved (Undef)") && err.contains(*slot),
+                    "{at}: Undef must use the DISTINCT unresolved wording naming the arg, \
+                     not \"missing or non-Length\"; got: {err:?}"
+                );
+                assert!(
+                    !diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("argument expects Length")),
+                    "{at}: Undef must push NO rejection diagnostic; got: {diagnostics:?}"
+                );
+            }
+        }
+    }
+
+    /// SLICE BOUNDARY, and the load-bearing half of step-9: `half_space`'s
+    /// `nx`/`ny`/`nz` are a DIMENSIONLESS unit normal — a direction, not a point
+    /// — so they must STILL accept bare numbers after the origin triple is
+    /// gated.
+    ///
+    /// The fixture is the exact shape of `examples/half_space.ri:18`,
+    /// `half_space(0mm, 0mm, 0mm, 0, 0, 1)`: dimensioned point, bare normal. It
+    /// must compile with ZERO diagnostics, and each normal component must be
+    /// stored as the bare `Real` it was written as — re-wrapping `nz` as a
+    /// LENGTH `Scalar` would be just as wrong as rejecting it.
+    ///
+    /// Without this assertion an over-broad gate that also caught the normal
+    /// would pass the rejection table above while breaking the shipped corpus.
+    /// The same dimensionless-direction carve-out is already documented at
+    /// `required_length_origin3` for the co-located `ax`/`ay`/`az` triple.
+    #[test]
+    fn compile_geometry_op_half_space_normal_stays_dimensionless() {
+        let values = ValueMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+        let op = CompiledGeometryOp::Primitive {
+            kind: reify_compiler::PrimitiveKind::HalfSpace,
+            args: vec![
+                ("px".into(), literal_length(0.0)),
+                ("py".into(), literal_length(0.0)),
+                ("pz".into(), literal_length(0.0)),
+                ("nx".into(), literal_f64(0.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(1.0)),
+            ],
+        };
+        let compiled = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect("half_space(0mm,0mm,0mm, 0,0,1) is the shipped corpus shape and must compile");
+
+        let reify_ir::GeometryOp::HalfSpace { nx, ny, nz, .. } = compiled else {
+            panic!("expected GeometryOp::HalfSpace, got {compiled:?}");
+        };
+        assert_eq!(
+            (nx, ny, nz),
+            (
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ),
+            "the unit normal must be stored as the bare Reals it was written as, \
+             neither rejected nor re-wrapped as a LENGTH Scalar"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a bare unit normal must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+    }
+
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
     /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
     /// LENGTH Scalar passes.
