@@ -216,6 +216,58 @@ impl<'a> Lowering<'a> {
         self.errors.borrow_mut().push(ParseError { message, span });
     }
 
+    /// Push a parse error for a faulty subtree, narrowing the span to the first
+    /// ERROR/MISSING descendant so the diagnostic points at the fault itself
+    /// rather than at the whole enclosing construct.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392: when a subtree carries an ERROR or MISSING node the lowered
+    /// AST no longer corresponds to the source, so the construct must be refused
+    /// loudly rather than lowered best-effort. Dropping it silently is what let a
+    /// missing `;` in a function body evaporate a `let` binding and change the
+    /// program's value with no diagnostic at all.
+    ///
+    /// Deliberately does NOT interpolate `node_text` into the message: echoing a
+    /// multi-line slice of source is what made these diagnostics unreadable and
+    /// mislocated. `message` must be a fixed, one-line description.
+    fn push_fault_error(&self, node: tree_sitter::Node, message: impl Into<String>) {
+        let anchor = first_error_or_missing_descendant(node).unwrap_or(node);
+        self.push_error(message.into(), self.span(anchor));
+    }
+
+    /// Lower a `function_definition` / `function_signature` subtree, refusing it outright
+    /// when it carries a CST fault and guaranteeing that such a fault always produces at
+    /// least one diagnostic.
+    ///
+    /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+    /// task #5392. Two properties, both required:
+    ///
+    /// - **Refusal.** A faulty subtree yields `None`, so the caller never pushes a
+    ///   declaration whose AST disagrees with its source. This matches what every other
+    ///   member kind already gets from `check_and_lower!`; the fn arms were the sole
+    ///   exception, which is how a nested MISSING node evaporated a `let` binding in
+    ///   silence.
+    /// - **Loudness.** The inner lowering is still run FIRST, purely for its diagnostics,
+    ///   so specific, well-located messages it already emits (e.g. "syntax error in type
+    ///   argument list", or the fn-body separator diagnostics) are preserved verbatim.
+    ///   `push_fault_error` fires only as a backstop, when that pass stayed silent — a
+    ///   blanket pre-emptive guard would REPLACE the precise message with a vague one.
+    ///
+    /// A well-formed bodyless `function_signature` is not faulty and lowers unchanged to
+    /// `body: None`.
+    fn lower_function_checked(&self, node: tree_sitter::Node) -> Option<FnDef> {
+        if !(node.is_error() || node.has_error()) {
+            return self.lower_function(node);
+        }
+        let before = self.errors.borrow().len();
+        // Run for diagnostics only; the result is deliberately discarded.
+        let _ = self.lower_function(node);
+        if self.errors.borrow().len() == before {
+            self.push_fault_error(node, "syntax error in function definition");
+        }
+        None
+    }
+
     /// Extract the source text for a node.
     fn node_text(&self, node: tree_sitter::Node) -> &'a str {
         &self.source[node.start_byte()..node.end_byte()]
@@ -377,10 +429,17 @@ impl<'a> Lowering<'a> {
                         self.declarations.push(Declaration::Enum(decl));
                     }
                 }
+                // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                // task #5392: routed through `lower_function_checked` so a faulty subtree is
+                // refused AND diagnosed, like every sibling arm's `check_and_lower!`. Without
+                // that guard a `function_definition` carrying a nested MISSING node (e.g.
+                // `fn f(x: Int) -> Int { let y = ; x }`) lowered cleanly with the malformed
+                // binding silently dropped — zero diagnostics for a module whose values no
+                // longer match its source.
                 "function_definition" => {
                     let annotations = std::mem::take(&mut pending_annotations);
                     let _ = std::mem::take(&mut pending_cfg);
-                    if let Some(mut decl) = self.lower_function(child) {
+                    if let Some(mut decl) = self.lower_function_checked(child) {
                         decl.annotations = annotations;
                         self.declarations.push(Declaration::Function(decl));
                     }
@@ -2172,18 +2231,33 @@ impl<'a> Lowering<'a> {
         let mut let_bindings = Vec::new();
 
         // Collect fn_let_binding children (zero for the expression form).
+        //
+        // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+        // task #5392: a binding that fails to lower is REPORTED, never dropped. The former
+        // `if kind == "fn_let_binding" && let Some(..)` shape had no else arm, so a
+        // malformed binding vanished from the AST with no diagnostic — the module then
+        // evaluated to a value its source never described.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            if child.kind() == "fn_let_binding"
-                && let Some(let_decl) = self.lower_fn_let_binding(child)
-            {
-                let_bindings.push(let_decl);
+            if child.kind() == "fn_let_binding" {
+                match self.lower_fn_let_binding(child) {
+                    Some(let_decl) => let_bindings.push(let_decl),
+                    None => self.push_fault_error(child, "invalid let binding in function body"),
+                }
             }
         }
 
         // The result expression is the 'result' field — present in both arms.
-        let result_node = node.child_by_field_name("result")?;
-        let result_expr = self.lower_expr(result_node)?;
+        // Same INV-SF-7 rule: a body we cannot lower is refused with a diagnostic, not
+        // returned as a bare `None` that the caller silently discards.
+        let Some(result_node) = node.child_by_field_name("result") else {
+            self.push_fault_error(node, "function body has no result expression");
+            return None;
+        };
+        let Some(result_expr) = self.lower_expr(result_node) else {
+            self.push_fault_error(node, "function body has no result expression");
+            return None;
+        };
 
         Some(FnBody {
             let_bindings,
@@ -2338,8 +2412,17 @@ impl<'a> Lowering<'a> {
                 .map(MemberDecl::AssociatedType),
             // Trait-body fn members: `fn f(self) -> T { ... }` (function_definition)
             // or `fn req(self) -> T` (bodyless function_signature).
+            //
+            // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+            // task #5392: this was the ONE member kind without a `has_error()` guard, so a
+            // fault inside a member fn body evaporated silently. Routed through
+            // `lower_function_checked` rather than `check_and_lower!` so the diagnostic
+            // avoids that macro's `node_text` source echo and so a more specific inner
+            // message is not overwritten by a vague outer one. A bodyless
+            // `function_signature` is well-formed and lowers to `body: None` as before —
+            // the guard fires on CST faults, never on a legitimately absent body.
             "function_definition" | "function_signature" => {
-                self.lower_function(child).map(MemberDecl::Fn)
+                self.lower_function_checked(child).map(MemberDecl::Fn)
             }
             "port_declaration" => check_and_lower!(
                 self,

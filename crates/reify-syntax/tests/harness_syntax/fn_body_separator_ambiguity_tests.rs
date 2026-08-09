@@ -73,10 +73,7 @@ fn nested_fault_in_fn_body_does_not_silently_drop_the_binding() {
     let module = reify_syntax::parse(src, ModulePath::single("t"));
 
     let binding_survived = module.declarations.iter().any(|d| match d {
-        Declaration::Function(f) => f
-            .body
-            .as_ref()
-            .is_some_and(|b| !b.let_bindings.is_empty()),
+        Declaration::Function(f) => f.body.as_ref().is_some_and(|b| !b.let_bindings.is_empty()),
         _ => false,
     });
 
