@@ -7,16 +7,17 @@
 //! name→nominal-type resolver ([`orientation_typed_fn_result_type`]).
 //!
 //! These constructors all map to a FIXED nominal type independent of their
-//! arguments: `orient_*` producers → `Type::Orientation(3)`, `transform*` →
-//! `Type::Transform(3)`, `frame3` → `Type::Frame(3)`. Without this arm they fall
-//! through the `expr.rs` `NoUserFunctions` ladder to the first-arg fallback,
-//! which mistypes them (e.g. `orient_axis_angle(vec3, angle)` → `Vector{3}`,
-//! `transform3(orient, vec3)` → the orient arg's type) and emits the "cannot
-//! infer return type of zero-arg function" warning for `orient_identity()`.
+//! arguments. Without this arm they fall through the `expr.rs`
+//! `NoUserFunctions` ladder to the first-arg fallback, which mistypes them and
+//! warns on the zero-arg members.
+//!
+//! [`ORIENTATION_TYPED_FN_NAMES`]'s doc comment is the SINGLE SOURCE OF TRUTH
+//! for this family's membership and the rationale behind it — which names are
+//! in, which are deliberately out, and the two traps encoded in the list.
+//! Everything else in this crate that needs that rationale (the `expr.rs`
+//! ladder arm, the tests below) points there rather than restating it.
 //!
 //! Mirrors the `joint_signatures.rs` module structure (task 4311 recipe).
-//! Scaffolding stubs — the name slice and resolver are populated in the
-//! subsequent TDD steps.
 
 use reify_core::Type;
 
@@ -109,14 +110,8 @@ pub(crate) fn is_orientation_typed_fn(name: &str) -> bool {
 /// families, because every result type here is argument-INDEPENDENT: there is
 /// no argument whose type or count could change the answer.
 ///
-/// Per-name mapping:
-/// - `orient_identity`, `orient_quaternion`, `orient_euler`, `orient_basis`,
-///   `orient_look_at`, `orient_axis_angle`, `orient_exp`, `orient_inverse`,
-///   `orient_compose`, `orient_slerp` → `Type::Orientation(3)`
-/// - `frame3`, `frame3_identity` → `Type::Frame(3)`
-/// - `transform3`, `transform3_identity`, `transform_compose`,
-///   `transform_inverse`, `transform_exp`, `frame_to_frame` →
-///   `Type::Transform(3)`
+/// The per-name mapping is the grouping documented on
+/// [`ORIENTATION_TYPED_FN_NAMES`], one match arm per group.
 ///
 /// ## Cell-type / value-kind agreement
 ///
@@ -158,9 +153,8 @@ pub(crate) fn orientation_typed_fn_result_type(name: &str) -> Type {
 
         // ── Section (3): Transform producers (6) → Transform(3) ──────────────
         // Eval: reify_stdlib::geometry::eval_geometry → Value::Transform.
-        // `frame_to_frame` belongs HERE, not in section (2): despite the
-        // `frame_` prefix it returns the rigid motion BETWEEN two frames
-        // (geometry.rs:512), i.e. a Transform.
+        // `frame_to_frame` belongs HERE, not in section (2) — see trap 1 on
+        // ORIENTATION_TYPED_FN_NAMES.
         "transform3"
         | "transform3_identity"
         | "transform_compose"
@@ -180,9 +174,18 @@ mod tests {
     /// Independent fixture — the 18 expected names in the family. Deliberately
     /// does NOT reference `ORIENTATION_TYPED_FN_NAMES` so a drift in that slice
     /// is caught against this independent list (mirrors
-    /// `joint_signatures::tests::EXPECTED_NAMES`). Re-derived from the eval
-    /// dispatchers `reify_stdlib::orientation::eval_orientation` (13 arms: 10
-    /// producers + 3 decomposers) and `reify_stdlib::geometry::eval_geometry`.
+    /// `joint_signatures::tests::EXPECTED_NAMES`).
+    ///
+    /// Derived BY HAND, once, from the eval dispatchers
+    /// `reify_stdlib::orientation::eval_orientation` (13 arms: 10 producers + 3
+    /// decomposers) and `reify_stdlib::geometry::eval_geometry`. That derivation
+    /// is NOT enforced by any test: `reify-compiler` does not depend on
+    /// `reify-stdlib` (not even at dev scope) and `reify-stdlib` exports no
+    /// enumerable list of its dispatch arm names, so a new `orient_*` producer
+    /// added there would silently fall back to the first-arg mistyping this
+    /// module exists to fix. Closing that gap needs a `reify-stdlib` dev-dep and
+    /// an exported name list — both outside task 5344's file scope; filed as a
+    /// follow-up.
     const EXPECTED_NAMES: [&str; 18] = [
         // Orientation producers (10) → Type::Orientation(3)
         "orient_identity",
@@ -204,9 +207,7 @@ mod tests {
         "transform_compose",
         "transform_inverse",
         "transform_exp",
-        // NOTE the `frame_` prefix — `frame_to_frame` returns Value::Transform
-        // (geometry.rs:512), NOT a Frame. Prefix-based classification would put
-        // it in the wrong group; see the decomposer test below.
+        // `frame_` prefix, Transform group — trap 1 on ORIENTATION_TYPED_FN_NAMES.
         "frame_to_frame",
     ];
 
@@ -224,23 +225,13 @@ mod tests {
         }
     }
 
-    /// The FOUR decomposers are deliberately EXCLUDED from the family. Each
-    /// shares an `orient_`/`transform_` prefix with a genuine producer but
-    /// returns a DIFFERENT value kind, so a `starts_with("orient_")` /
-    /// `starts_with("transform_")` prefix rule would newly MISTYPE all four.
-    /// That is precisely why [`ORIENTATION_TYPED_FN_NAMES`] must stay an
-    /// explicit list and never become a prefix predicate.
+    /// The FOUR decomposers are deliberately EXCLUDED — see the
+    /// no-prefix-rule section of [`ORIENTATION_TYPED_FN_NAMES`] for why.
     ///
-    /// Kinds re-derived from the evaluators:
-    /// - `orient_log` → `Value::Vector` (rotation vector / log map),
-    ///   `orientation.rs:203`;
-    /// - `orient_to_euler` → `Value::List` of Angles, `orientation.rs:264`;
-    /// - `orient_to_axis_angle` → `Value::Map{angle, axis}`, `orientation.rs:440`;
-    /// - `transform_log` → `Value::Map` (twist), `geometry.rs:677`.
-    ///
-    /// The two `Value::Map` cases have no clean `Type` variant and
-    /// `orient_log`'s quantity slot needs a dimension ruling, so per-name typing
-    /// for the decomposers is out of scope here (tracked as a follow-up).
+    /// The eval sites the exclusion was derived from, for re-checking it:
+    /// `orient_log` `orientation.rs:203`, `orient_to_euler`
+    /// `orientation.rs:264`, `orient_to_axis_angle` `orientation.rs:440`,
+    /// `transform_log` `geometry.rs:677`.
     #[test]
     fn is_orientation_typed_fn_rejects_the_four_decomposers() {
         assert!(
@@ -261,11 +252,8 @@ mod tests {
         );
     }
 
-    /// `frame_at` is NOT a member: it is already typed `Type::Frame(3)` by
-    /// `units.rs::datum_constructor_result_type`, which claims it as part of the
-    /// DATUM constructor family. Including it here would double-classify the
-    /// name across two resolvers, so the exclusion is load-bearing rather than
-    /// an oversight.
+    /// `frame_at` is NOT a member — see the `frame_at` exclusion note on
+    /// [`ORIENTATION_TYPED_FN_NAMES`]. Load-bearing, not an oversight.
     #[test]
     fn is_orientation_typed_fn_rejects_frame_at() {
         assert!(
@@ -366,9 +354,10 @@ mod tests {
 
     // ── Result-type resolution (step-3 RED / step-4 GREEN) ───────────────────
 
-    /// One explicit assert per name, all 18, pinning the three target types.
-    /// Written out longhand rather than looped so a wrong mapping names the
-    /// exact function in the failure output.
+    /// All 18 names, pinning the three target types. Looped over the three
+    /// target groups rather than asserted per name; the assert message
+    /// interpolates `{name}`, so a wrong mapping still names the exact function
+    /// in the failure output.
     #[test]
     fn orientation_typed_fn_result_type_maps_each_name_to_its_nominal_type() {
         // Orientation producers (10) → Type::Orientation(3).
@@ -438,10 +427,9 @@ mod tests {
         );
     }
 
-    /// Guards the `frame_` prefix trap: `frame_to_frame` computes the rigid
-    /// motion mapping one frame onto another, so it returns `Value::Transform`
-    /// (`geometry.rs:512`) and must type as `Type::Transform(3)` — NOT
-    /// `Type::Frame(3)`, which a prefix-based grouping would wrongly assign.
+    /// Guards trap 1 on [`ORIENTATION_TYPED_FN_NAMES`]: `frame_to_frame` must
+    /// type as `Type::Transform(3)`, NOT the `Type::Frame(3)` a prefix-based
+    /// grouping would wrongly assign.
     #[test]
     fn frame_to_frame_result_type_is_transform_not_frame() {
         assert_eq!(
@@ -485,16 +473,13 @@ mod tests {
     #[test]
     fn every_orientation_fn_name_maps_to_a_non_scalar_result_type() {
         for name in ORIENTATION_TYPED_FN_NAMES {
-            let ty = orientation_typed_fn_result_type(name);
+            // `Type::dimensionless_scalar()` IS a `Type::Scalar`, so this single
+            // negative covers the `_` arm's exact return value as well as any
+            // other scalar spelling a future arm could produce.
             assert!(
-                !matches!(ty, Type::Scalar { .. }),
+                !matches!(orientation_typed_fn_result_type(name), Type::Scalar { .. }),
                 "{name} fell through to the unreachable `_` scalar arm — every \
                  family member must have an explicit match arm"
-            );
-            assert_ne!(
-                ty,
-                Type::dimensionless_scalar(),
-                "{name} resolved to dimensionless_scalar (the `_` arm)"
             );
         }
     }

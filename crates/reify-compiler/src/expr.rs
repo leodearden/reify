@@ -3581,32 +3581,19 @@ fn compile_expr_guarded_with_expected_inner(
                         parse_fn_result_type(name)
                     } else if is_orientation_typed_fn(name) {
                         // Orientation / transform / frame constructor family
-                        // (task 5344) — 18 names, fixed-nominal result:
-                        //   10 orient_* producers    → Type::Orientation(3)
-                        //   frame3 / frame3_identity → Type::Frame(3)
-                        //   transform3 / transform3_identity /
-                        //     transform_compose / transform_inverse /
-                        //     transform_exp / frame_to_frame
-                        //                            → Type::Transform(3)
-                        // Eval dispatch is name-based in reify_stdlib
-                        // (orientation::eval_orientation for orient_*,
-                        // geometry::eval_geometry for the frame/transform
-                        // names); the call STAYS a FunctionCall.
+                        // (task 5344) — 18 names, each with a FIXED nominal
+                        // result type. Eval dispatch is name-based in
+                        // reify_stdlib (orientation::eval_orientation for
+                        // orient_*, geometry::eval_geometry for the
+                        // frame/transform names); the call STAYS a FunctionCall.
                         //
                         // Set the cell type up-front. This REPLACES the wrong
                         // first-arg fallback below, which mistyped every call
-                        // site in the family:
-                        //   orient_identity() / frame3_identity() /
-                        //   transform3_identity() — zero args, so the fallback's
-                        //     unwrap_or_else fired: typed Real PLUS a "cannot
-                        //     infer return type" warning per call site (25 of
-                        //     them in prj/printer_v01/printer.ri, the acceptance
-                        //     criterion for this task);
-                        //   orient_axis_angle(axis, angle) — silently Vector{3},
-                        //     adopted from the rotation-AXIS first argument;
-                        //   transform3(orient, vec) — silently whatever the
-                        //     orientation argument had typed as;
-                        //   frame3(point, orient) — silently Point.
+                        // site in the family — the zero-arg members (typed Real
+                        // PLUS a "cannot infer return type" warning per site, 25
+                        // of them in prj/printer_v01/printer.ri) and the n-arg
+                        // ones alike (orient_axis_angle silently adopted its
+                        // rotation-AXIS argument's Vector{3}).
                         //
                         // Cell TYPE matches the eval VALUE KIND exactly
                         // (Type::Orientation(3) ⇄ Value::Orientation, Frame ⇄
@@ -3616,15 +3603,13 @@ fn compile_expr_guarded_with_expected_inner(
                         // it previously did not: eval was already producing a
                         // Value::Orientation into a cell statically typed Real.
                         //
-                        // The FOUR DECOMPOSERS (orient_log → Vector,
-                        // orient_to_euler → List, orient_to_axis_angle → Map,
-                        // transform_log → Map) are deliberately NOT in the family
-                        // (see ORIENTATION_TYPED_FN_NAMES) — hence an explicit
-                        // list, never a prefix rule. `frame_at` is likewise
-                        // excluded: datum_constructor_result_type already claims
-                        // it. The family is pinned disjoint from all sibling
-                        // families by the units.rs disjointness test, so this
-                        // arm's position in the ladder is unobservable.
+                        // Membership and its rationale (why an explicit list and
+                        // never a prefix rule; the four excluded decomposers;
+                        // the frame_at exclusion; the two traps) are documented
+                        // ONCE, on ORIENTATION_TYPED_FN_NAMES. The family is
+                        // pinned disjoint from all sibling families by the
+                        // units.rs disjointness test, so this arm's position in
+                        // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
                     } else {
                         compiled_args
