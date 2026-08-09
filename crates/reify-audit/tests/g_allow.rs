@@ -279,15 +279,14 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
         sanitized.stderr,
     );
 
-    let envelope: serde_json::Value =
-        serde_json::from_str(&sanitized.stdout).unwrap_or_else(|e| {
-            panic!(
-                "stripping the hook git environment produced non-empty output that \
+    let envelope: serde_json::Value = serde_json::from_str(&sanitized.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stripping the hook git environment produced non-empty output that \
                  is not valid JSON: {e}\n--- sanitized stdout (truncated) \
                  ---\n{:.400}",
-                sanitized.stdout,
-            )
-        });
+            sanitized.stdout,
+        )
+    });
 
     assert!(
         envelope["orphan_count"].as_u64().is_some(),
