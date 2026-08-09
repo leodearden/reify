@@ -190,6 +190,81 @@ fn missing_semicolon_after_fn_let_is_located_at_the_let_line() {
     );
 }
 
+/// Two sibling functions, each missing its own separator, must each get their OWN diagnostic
+/// inside their OWN declaration.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+///
+/// Measured: tree-sitter collapses BOTH declarations into a single `(ERROR [0,0]-[7,1])`
+/// carrying two independent fault descendants (`(ERROR [2,2]-[2,3])` for `g`'s absorbed line
+/// and `(ERROR [6,2]-[6,3])` for `h`'s). Reporting only the first — or worse, the enclosing
+/// blob — is exactly how the probe saw a parse error attributed to an unrelated later line.
+/// One collapsed ERROR node is not one fault.
+#[test]
+fn t9_t20_sibling_fns_each_get_their_own_error() {
+    let source = "fn g(i: Int) -> Real {\n  let a = 2\n  a * sgn(i, 0)\n}\nfn h(i: Int) -> Real {\n  let b = 3\n  b + 1\n}\n";
+
+    // Offsets via `str::find`, never hard-coded.
+    let let_a = source.find("let a").expect("fixture must contain 'let a'") as u32;
+    let let_b = source.find("let b").expect("fixture must contain 'let b'") as u32;
+    let fn_h = source.find("fn h(").expect("fixture must contain 'fn h('") as u32;
+
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+
+    let separator: Vec<_> = m.errors.iter().filter(|e| e.message.contains("';'")).collect();
+
+    // (a) One diagnostic per absorbing `let` — not one blob for the whole file.
+    assert_eq!(
+        separator.len(),
+        2,
+        "INV-SF-7 violated — two sibling functions each omit the `;` after their own `let`, so \
+         two separator diagnostics are required; got {}. A single collapsed ERROR node is not a \
+         single fault.\n\
+         got: {:?}",
+        separator.len(),
+        triples(&m),
+    );
+
+    // (b) `g`'s fault stays inside `g` and does not leak into `h`'s lines.
+    let in_g = separator
+        .iter()
+        .filter(|e| e.span.start >= let_a && e.span.end <= fn_h)
+        .count();
+    assert_eq!(
+        in_g,
+        1,
+        "expected exactly one separator diagnostic confined to `g`'s absorbing region \
+         (bytes {let_a}..{fn_h}, i.e. from `let a` up to the `fn h` header); got {in_g}.\n\
+         got: {:?}",
+        triples(&m),
+    );
+
+    // (c) `h`'s fault is reported at `h`'s own `let`.
+    let in_h = separator.iter().filter(|e| e.span.start >= let_b).count();
+    assert_eq!(
+        in_h,
+        1,
+        "expected exactly one separator diagnostic anchored at or after `let b` (byte \
+         {let_b}); got {in_h}. `h`'s missing separator has no diagnostic of its own.\n\
+         got: {:?}",
+        triples(&m),
+    );
+
+    // (d) No diagnostic straddles both declarations.
+    let straddler = separator
+        .iter()
+        .find(|e| e.span.start < let_a && e.span.end > let_b);
+    assert!(
+        straddler.is_none(),
+        "a separator diagnostic spans BOTH functions (start < {let_a} and end > {let_b}) — it \
+         is the whole-file blob span, so its reported location belongs to neither fault.\n\
+         offender: {:?}\n\
+         got: {:?}",
+        straddler.map(|e| (&e.message, e.span.start, e.span.end)),
+        triples(&m),
+    );
+}
+
 /// Diagnostics for this class must be readable one-liners, never swaths of echoed source
 /// (mechanism M3's source-echo half).
 ///
