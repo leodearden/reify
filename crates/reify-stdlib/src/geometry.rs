@@ -4277,10 +4277,11 @@ mod tests {
 
     /// transform_log with MASS-dimension translation → Undef.
     ///
-    /// The gate is `t_dim != LENGTH && t_dim != DIMENSIONLESS`. MASS flows through the
-    /// same rejection branch as ANGLE, ensuring the test suite covers more than one
-    /// non-accepted dimension so a future narrowing of the gate (e.g. adding ANGLE as a
-    /// special case) cannot silently pass.
+    /// The gate is `t_dim != LENGTH` per RULING #6126 — LENGTH is the single admitted
+    /// dimension. MASS flows through the same rejection branch as ANGLE, so MASS and
+    /// ANGLE remain covered as two distinct non-admitted dimensions and no future
+    /// re-widening of the gate (e.g. re-admitting one dimension as a special case) can
+    /// silently pass.
     #[test]
     fn transform_log_mass_dim_translation_returns_undef() {
         let t = Value::Transform {
@@ -4303,14 +4304,15 @@ mod tests {
         assert!(eval_builtin("transform_log", &[t]).is_undef());
     }
 
-    /// transform_log with DIMENSIONLESS translation → accepted (non-Undef).
+    /// transform_log with DIMENSIONLESS translation → Undef.
     ///
-    /// DIMENSIONLESS is the second accepted dimension alongside LENGTH. This positive
-    /// case pins that the gate does NOT reject dimensionless translations, complementing
-    /// the `transform_exp_zero_twist_is_identity` test which already verifies the
-    /// round-trip for the DIMENSIONLESS case.
+    /// RULING #6126: a twist's `linear` half is `Vector3<Length>`, and mirrored, a
+    /// Transform's translation on the log↔exp seam carries LENGTH and only LENGTH.
+    /// DIMENSIONLESS is therefore no longer admitted — after the `Real` →
+    /// `Scalar{DIMENSIONLESS}` unification, "admits DIMENSIONLESS" means "admits bare
+    /// numbers", which is the affordance this ruling removes.
     #[test]
-    fn transform_log_dimensionless_translation_returns_non_undef() {
+    fn transform_log_dimensionless_translation_returns_undef() {
         let t = Value::Transform {
             rotation: Box::new(make_identity_orientation()),
             translation: Box::new(Value::Vector(vec![
@@ -4320,8 +4322,9 @@ mod tests {
             ])),
         };
         assert!(
-            !eval_builtin("transform_log", &[t]).is_undef(),
-            "transform_log must accept DIMENSIONLESS translation"
+            eval_builtin("transform_log", &[t]).is_undef(),
+            "RULING #6126: a Transform's translation must be Vector3<Length>; \
+             DIMENSIONLESS is no longer admitted"
         );
     }
 
