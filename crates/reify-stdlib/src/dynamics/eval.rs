@@ -2310,24 +2310,11 @@ mod tests {
     // and strip the dimension, so they cannot tell the two shapes apart (which
     // is exactly why the ~17 existing read sites need no migration).
 
-    /// Pull a field out of a `StructureInstance`, asserting its `type_name`.
-    fn minted_field<'a>(v: &'a Value, type_name: &str, member: &str) -> &'a Value {
-        match v {
-            Value::StructureInstance(d) => {
-                assert_eq!(d.type_name, type_name, "expected a {type_name} instance");
-                d.fields
-                    .get(member)
-                    .unwrap_or_else(|| panic!("{type_name} missing field `{member}`"))
-            }
-            other => panic!("expected a {type_name} StructureInstance, got {other:?}"),
-        }
-    }
-
     #[test]
     fn joint_force_value_mints_dimensioned_scalar_magnitudes() {
         // prismatic → ScalarForce { magnitude: Scalar<FORCE> }
         let r = joint_force_value("prismatic", &[2.5]).expect("prismatic/1");
-        match minted_field(&r, "ScalarForce", "magnitude") {
+        match field(&r, "ScalarForce", "magnitude") {
             Value::Scalar {
                 si_value,
                 dimension,
@@ -2353,7 +2340,7 @@ mod tests {
         // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is distinct from ENERGY;
         // assert the registry vector directly, never a FORCE·LENGTH composition.
         let r = joint_force_value("revolute", &[0.4905]).expect("revolute/1");
-        match minted_field(&r, "ScalarTorque", "magnitude") {
+        match field(&r, "ScalarTorque", "magnitude") {
             Value::Scalar {
                 si_value,
                 dimension,
@@ -2379,20 +2366,30 @@ mod tests {
     #[test]
     fn joint_force_value_leaves_multi_component_kinds_dimensionless() {
         // The List<Real> multi-component variants are explicitly out of scope
-        // for task 6098; this guards against the dimensioning leaking into them.
-        let r = joint_force_value("cylindrical", &[1.0, 2.0]).expect("cylindrical/2");
-        match minted_field(&r, "CylForce", "components") {
-            Value::List(comps) => {
-                assert_eq!(comps.len(), 2, "CylForce component count");
-                for (i, c) in comps.iter().enumerate() {
-                    assert!(
-                        matches!(c, Value::Real(_)),
-                        "CylForce.components is declared `List<Real>` and must stay \
-                         dimensionless; component {i} was {c:?}"
-                    );
+        // for task 6098; this guards against the dimensioning leaking into
+        // them. All three go through the same `multi` closure, so all three
+        // are checked — a single-kind spot check would understate the guard.
+        for (kind, type_name, dof) in [
+            ("cylindrical", "CylForce", 2usize),
+            ("planar", "PlanarForce", 3),
+            ("spherical", "SphereForce", 3),
+        ] {
+            let tau: Vec<f64> = (0..dof).map(|i| 1.0 + i as f64).collect();
+            let r = joint_force_value(kind, &tau)
+                .unwrap_or_else(|| panic!("{kind}/{dof} should mint a {type_name}"));
+            match field(&r, type_name, "components") {
+                Value::List(comps) => {
+                    assert_eq!(comps.len(), dof, "{type_name} component count");
+                    for (i, c) in comps.iter().enumerate() {
+                        assert!(
+                            matches!(c, Value::Real(_)),
+                            "{type_name}.components is declared `List<Real>` and must \
+                             stay dimensionless; component {i} was {c:?}"
+                        );
+                    }
                 }
+                other => panic!("{type_name}.components must be a Value::List, got {other:?}"),
             }
-            other => panic!("CylForce.components must be a Value::List, got {other:?}"),
         }
     }
 
