@@ -1508,8 +1508,8 @@ fn type_carries_dim_param(t: &Type) -> bool {
 /// and an argument type.
 ///
 /// Local mirror of `reify_compiler::type_compat::heads_unifiable`, kept
-/// VERBATIM with it. reify-expr's library deps are only reify-core + reify-ir
-/// (reify-compiler is a dev-dep), so the compiler helper cannot be imported
+/// VERBATIM with it. reify-compiler is only a `[dev-dependencies]` entry of
+/// reify-expr, so the compiler helper cannot be imported from library code
 /// here — the two MUST be kept in sync. If they drift, compile-time and
 /// eval-time overload selection disagree on which of two same-named generic
 /// overloads a call resolves to, which is the esc-4231-120/126 / esc-4093-152
@@ -1554,10 +1554,12 @@ fn type_carries_dim_param(t: &Type) -> bool {
 /// The drift guard is the second-best fix. The best one is to delete the mirror
 /// outright by hoisting this helper (and the three `type_carries_*` ones) into
 /// `reify-core` beside `Type` — already a real, non-dev dependency of BOTH
-/// crates, so the "cannot be imported" constraint above does not apply to it —
-/// and importing the single definition on each side. That is a cross-crate move
-/// touching a third crate, deliberately not attempted here; a follow-up is filed
-/// for it.
+/// crates, so the "cannot be imported" constraint above does not apply to it.
+/// All four are pure functions of `&reify_core::Type` and depend on nothing
+/// else, so the move is mechanical: one definition in reify-core plus a `use`
+/// on each side, after which both this mirror and its drift guard are deleted.
+/// That is a cross-crate move touching a third crate outside this task's file
+/// locks, deliberately not attempted here and filed as task #5689.
 pub fn heads_unifiable(param: &Type, arg: &Type) -> bool {
     match (param, arg) {
         // Type-param / dim-param leaves: wildcard slots, always compatible.
@@ -1834,11 +1836,21 @@ pub fn find_matching_compiled_function<'a>(
     //
     // ONE pass, not two chained ones: `first_wildcard` remembers tier 3's answer
     // (the first wildcard-eligible candidate in table order) as the scan goes, so
-    // the fall-through is free. A `.find(head).or_else(|| ..find(wildcard))` pair
-    // re-walks the whole table and re-runs both predicates on the *common* case —
-    // any subject whose head matches nothing, which is exactly what the
-    // fall-through pin covers — and `fns` on the eval hot path is the merged
-    // prelude table (hundreds of entries).
+    // the fall-through needs no SECOND walk. A
+    // `.find(head).or_else(|| ..find(wildcard))` pair re-walks the whole table and
+    // re-runs both predicates on the *common* case — any subject whose head
+    // matches nothing, which is exactly what the fall-through pin covers — and
+    // `fns` on the eval hot path is the merged prelude table (hundreds of
+    // entries).
+    //
+    // Cost, stated plainly for anyone profiling this path: on a head match the
+    // loop exits early, but on FALL-THROUGH it now scans `fns` to the end, where
+    // the pre-tier-2 `.find(wildcard)` returned at the first wildcard-eligible
+    // candidate. That regression is accepted: the per-entry cost of an entry that
+    // is not a candidate is the `f.name == name` comparison in `arity_match`
+    // (arity and both predicates are only reached by same-name entries, of which
+    // an overload set has a handful), and tier 1 above already walks the whole
+    // table on any call that reaches tier 2 at all.
     let mut first_wildcard = None;
     for f in fns.iter().filter(arity_match).filter(wildcard) {
         if head(&f) {
