@@ -389,10 +389,30 @@ pub(crate) fn required_length_arg(
     }
 }
 
-/// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar` for the
-/// IR spacing slots (`LinearPattern`/`LinearPattern2D`), whose representation
-/// is deliberately unchanged by this check — the kernel still reads a
-/// dimensioned spacing `Value`.
+/// As [`required_length_arg`], re-wrapped as a LENGTH `Value::Scalar`.
+///
+/// This is the **R7 raw-Value chokepoint**: the single place a length-semantic
+/// `reify_ir::GeometryOp` *field* is produced. Every such field goes through
+/// here — the IR spacing slots (`LinearPattern`/`LinearPattern2D`), and since
+/// task 5743 the primitive and profile dimensions (`Box` width/height/depth,
+/// `Cylinder` radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
+/// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`). The stored
+/// representation is deliberately unchanged by the check — the kernel still
+/// reads a dimensioned `Value` — so gating a slot is a one-line swap of its
+/// `eval_arg` closure for a `length_arg` one, and inherits C1's three-state
+/// mapping, its wording, and its `Undef` handling for free.
+///
+/// DESIGN ALTERNATIVE CONSIDERED AND REJECTED (decision D3, recorded at the
+/// implementation site so it is findable from the code rather than only from
+/// the PRD): make the IR **typed by construction** — a dimensioned newtype over
+/// the length-semantic `Value` fields, so a bare `Real` in a length slot is a
+/// COMPILE error in Rust instead of a runtime rejection. That is the ENDGAME
+/// and it is strictly stronger than this guard, which can only catch what
+/// actually flows through it. It is deliberately NOT built here because it
+/// touches 46 `reify-ir` `GeometryOp` fields, both geometry kernels and a
+/// 24k-line test module, and because it is best folded into the separate
+/// `Real` → `Scalar{DIMENSIONLESS}` unification rather than done twice. See
+/// `docs/prds/v0_6/units-length-gate-completion.md` §3 D3.
 pub(crate) fn required_length_value(
     name: &str,
     kind_label: impl std::fmt::Display + Copy,
@@ -1579,14 +1599,13 @@ fn prim_box(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Box {
-        width: eval_arg("width")?,
-        height: eval_arg("height")?,
-        depth: eval_arg("depth")?,
+        width: length_arg("width")?,
+        height: length_arg("height")?,
+        depth: length_arg("depth")?,
     })
 }
 

@@ -291,9 +291,9 @@ const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
 fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
     let args = match k {
         PrimitiveKind::Box => vec![
-            ("width".to_string(), lit(0.01)),
-            ("height".to_string(), lit(0.02)),
-            ("depth".to_string(), lit(0.03)),
+            ("width".to_string(), lit_len(0.01)),
+            ("height".to_string(), lit_len(0.02)),
+            ("depth".to_string(), lit_len(0.03)),
         ],
         PrimitiveKind::Cylinder => vec![
             ("radius".to_string(), lit(0.01)),
@@ -339,15 +339,147 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
         PrimitiveKind::Box => r#"Ok(
     Box {
-        width: Real(
-            0.01,
-        ),
-        height: Real(
-            0.02,
-        ),
-        depth: Real(
-            0.03,
-        ),
+        width: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        height: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
+        depth: Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PrimitiveKind::Cylinder => r#"Ok(
