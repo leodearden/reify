@@ -190,18 +190,22 @@ pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> 
 
 /// Run `scripts/audit-orphan-producers.sh --scope <scope> --quiet --format
 /// json` TWICE against one shared [`decoy_repo`]: once with the hook poison
-/// ambient in the child, once with exactly those vars `env_remove`d. Returns
-/// `(poisoned_stdout, sanitized_stdout)`.
+/// ambient in the child, once with the full
+/// [`reify_audit::git_env::REPO_REDIRECT_VARS`] set `env_remove`d — the same
+/// baseline `reify_test_support::sanitize` strips in production, not just the
+/// three vars this helper poisons. Returns `(poisoned_stdout,
+/// sanitized_stdout)`.
 ///
-/// The claim a caller pins with this is a DELTA — "the same command, differing
-/// only in whether those variables are stripped" — so both commands are built
-/// from one closure against one decoy. That makes the identity structural
-/// rather than a comment two call sites could drift apart on. For the same
-/// reason the sanitized half derives its `env_remove` names by iterating
-/// [`hook_git_env`] instead of re-typing `GIT_DIR`/`GIT_WORK_TREE`/
-/// `GIT_INDEX_FILE`: "poisoned set == stripped set" is then a fact about the
-/// code, and it inherits `hook_git_env`'s assertion that every member is one
-/// [`reify_audit::git_env::REPO_REDIRECT_VARS`] strips.
+/// Both commands are built from one closure against one decoy, so the poison
+/// is the only difference between them apart from that fuller strip —
+/// structural rather than a comment two call sites could drift apart on. The
+/// sanitized half first removes the three poisoned vars by iterating
+/// [`hook_git_env`] rather than re-typing `GIT_DIR`/`GIT_WORK_TREE`/
+/// `GIT_INDEX_FILE` (so "poisoned set is a subset of stripped set" is a fact
+/// about the code, inheriting `hook_git_env`'s own assertion that every
+/// member is one [`reify_audit::git_env::REPO_REDIRECT_VARS`] strips), then
+/// removes the remaining `REPO_REDIRECT_VARS` entries so the baseline matches
+/// what production's `sanitize()` actually spawns with.
 ///
 /// # Graceful-skip protocol
 ///
@@ -281,6 +285,16 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(String
     let mut sanitized_cmd = build();
     poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
     for (name, _) in hook_git_env(&decoy) {
+        sanitized_cmd.env_remove(name);
+    }
+    // Match production's full baseline, not just the three vars this helper
+    // poisons: `reify_test_support::sanitize` strips all of
+    // `REPO_REDIRECT_VARS` before every real spawn. Redundant for the three
+    // above (already removed) but cheap, and it closes the gap where
+    // GIT_OBJECT_DIRECTORY/GIT_ALTERNATE_OBJECT_DIRECTORIES/GIT_COMMON_DIR/
+    // GIT_NAMESPACE/GIT_PREFIX would otherwise survive from the ambient
+    // environment into a run this test calls "sanitized".
+    for name in reify_audit::git_env::REPO_REDIRECT_VARS {
         sanitized_cmd.env_remove(name);
     }
 
