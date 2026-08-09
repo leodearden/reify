@@ -269,7 +269,17 @@ pub(crate) enum LengthArg {
 /// | `Value::Undef` (unresolved param/cell)     | [`LengthArg::Unresolved`] | no — quiet degradation |
 /// | finite LENGTH `Scalar`                     | [`LengthArg::Length`]  | no                      |
 /// | non-finite LENGTH `Scalar` (NaN / ±inf)    | [`LengthArg::Invalid`] | yes — `Severity::Warning` |
-/// | bare `Real`/`Int`, wrong-dimension `Scalar`| [`LengthArg::Invalid`] | yes — `Severity::Warning` |
+/// | bare `Real`/`Int`, wrong-dimension `Scalar`| [`LengthArg::Invalid`] | yes — `Severity::Error` + [`reify_core::DiagnosticCode::DimensionedArgRejected`] |
+///
+/// The last two rows differ deliberately, and the table is written to describe
+/// the code rather than an aspiration. Only the DIMENSION rejection is promoted
+/// to `Error` + code by task 5743 (contract C1(iv)): it is the one backed by an
+/// `arg_acceptance::ArgRejection`, whose `message` solely owns the wording the
+/// code documents. A non-finite LENGTH `Scalar` was `Accepted` by `accept_arg`
+/// — it IS a Length, it is merely NaN/±inf — so it produces no `ArgRejection`
+/// and cannot carry a dimension-rejection code; its promotion is tracked with
+/// the other severity residuals in task 5743's follow-up rather than smuggled in
+/// here.
 ///
 /// Callers go through [`required_length_arg`] / [`required_length_value`],
 /// which map each non-`Length` state to its own `Err` message so
@@ -310,7 +320,34 @@ pub(crate) fn eval_named_arg_length(
         }
         Acceptance::Undefined => LengthArg::Unresolved,
         Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(&kind_label.to_string(), name)));
+            // SEVERITY: deliberately PROMOTED to Error (task 5743, units-length β).
+            //
+            // Contract C1(iv) requires the eval-layer rejection ITSELF to carry
+            // Error severity, so `reify eval` exits nonzero through the PURE
+            // severity gate at `reify-cli/src/main.rs` (INV-SF-2 — that gate is a
+            // fold over Severity::Error with no per-code escalation list, so a new
+            // code needs no registration there). The alternative considered and
+            // REJECTED was leaving this a Warning and leaning on the paired
+            // op-compile Error: it satisfies the exit code by accident rather than
+            // by contract, and it labels a fail-closed rejection as advisory.
+            //
+            // The promotion is an exit-code NO-OP today: every caller routes the
+            // resulting `Err` through `engine_build`'s "failed to compile geometry
+            // operation" Error, which already drops the op. Only the severity LABEL
+            // moves — so this is safe to land ahead of the slot migration.
+            //
+            // Because this is the SHARED helper, the retrofit lands at every
+            // already-shipped Contract C site at once: pattern spacing
+            // (linear_pattern / linear_pattern_2d), the mirror-plane origin, the
+            // circular-pattern axis origin, and the arbitrary-pattern offsets.
+            //
+            // The wording is untouched — `ArgRejection::message` remains its sole
+            // owner (see `DiagnosticCode::DimensionedArgRejected`'s doc), so the
+            // ANGLE (PRD 3) and reader (PRD 5) follow-ups inherit identical text.
+            diagnostics.push(
+                Diagnostic::error(rej.message(&kind_label.to_string(), name))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
             LengthArg::Invalid
         }
     }
