@@ -626,12 +626,18 @@ structure def Probe {
 //                                    Scalar[m·kg·s^-2]"; `+ 1.0` was clean.
 //   after:  `f.magnitude + 1.0N`  → clean; `+ 1.0` is the mismatch.
 //
-// These tests assert on the READ, never on the construction: passing a bare
-// `2.5` into a dimensioned ctor slot is accepted silently today. Constructor
-// argument strictness is owned by
+// These tests assert on the READ, never on the construction: what makes the
+// read `Force`-typed is the declared param type, not the argument. The
+// fixtures nonetheless construct with dimensioned literals
+// (`ScalarForce(magnitude: 2.5N)`) so the exemplar source is eval-sound as
+// well as compile-clean — a bare `2.5` in that slot is accepted silently by
+// the compiler but leaves a `Value::Real` in a dimensioned field, which
+// evaluates to `undef` with an OpContractViolation the moment the very
+// expression these tests certify is actually run. Constructor argument
+// strictness (i.e. rejecting that bare `2.5` at compile time) is owned by
 // docs/prds/v0_6/dimensioned-construction-strictness.md and is deliberately
-// out of scope here, so `ScalarForce(magnitude: 2.5)` below is a supported
-// spelling, not an oversight.
+// out of scope here; that unchecked-ctor-arg limitation is recorded as prose,
+// never encoded into a fixture.
 
 /// Collect the `Severity::Error` diagnostic messages from a stdlib-aware
 /// compile of `source`. Shared by the four task-6098 field-read signal tests.
@@ -649,7 +655,7 @@ fn scalar_force_magnitude_reads_as_a_force_dimensioned_quantity() {
     // Newton-dimensioned arithmetic on the read field is well-typed.
     let source = r#"
 structure def Probe {
-    let f = ScalarForce(magnitude: 2.5)
+    let f = ScalarForce(magnitude: 2.5N)
     let x = f.magnitude + 1.0N
 }
 "#;
@@ -667,7 +673,7 @@ fn scalar_force_magnitude_read_rejects_bare_real_arithmetic() {
     // The other direction: a bare dimensionless Real no longer unifies.
     let source = r#"
 structure def Probe {
-    let f = ScalarForce(magnitude: 2.5)
+    let f = ScalarForce(magnitude: 2.5N)
     let x = f.magnitude + 1.0
 }
 "#;
@@ -687,7 +693,7 @@ fn scalar_torque_magnitude_reads_as_a_torque_dimensioned_quantity() {
     // `Nm` (units.ri) is the Torque literal — N·m/rad, distinct from Energy.
     let source = r#"
 structure def Probe {
-    let t = ScalarTorque(magnitude: 1.5)
+    let t = ScalarTorque(magnitude: 1.5Nm)
     let x = t.magnitude + 1.0Nm
 }
 "#;
@@ -704,7 +710,7 @@ structure def Probe {
 fn scalar_torque_magnitude_read_rejects_bare_real_arithmetic() {
     let source = r#"
 structure def Probe {
-    let t = ScalarTorque(magnitude: 1.5)
+    let t = ScalarTorque(magnitude: 1.5Nm)
     let x = t.magnitude + 1.0
 }
 "#;
@@ -717,4 +723,56 @@ structure def Probe {
          dimension mismatch (task 6098); got: {:?}",
         errors
     );
+}
+
+#[test]
+fn scalar_force_and_scalar_torque_magnitudes_do_not_unify_across_families() {
+    // The headline benefit claimed by stdlib/dynamics.ri's ScalarTorque note:
+    // the two magnitudes are now non-unifiable in *arithmetic*, not just
+    // distinguishable by nominal type-tag. Exercised at the expression level
+    // (the four tests above only cover dimensioned-vs-bare-Real in each
+    // direction; the structural `cell_type` assertions cover it only
+    // indirectly).
+    //
+    // The Torque-vs-Energy case is the same claim's sharp edge: `Torque`
+    // carries an Angle⁻¹ slot (N·m/rad), so it must NOT unify with `J`
+    // (Energy = N·m) either, even though the two read the same on paper.
+    for (label, source) in [
+        (
+            "Force magnitude + a Torque literal",
+            r#"
+structure def Probe {
+    let f = ScalarForce(magnitude: 2.5N)
+    let x = f.magnitude + 1.0Nm
+}
+"#,
+        ),
+        (
+            "Torque magnitude + a Force literal",
+            r#"
+structure def Probe {
+    let t = ScalarTorque(magnitude: 1.5Nm)
+    let x = t.magnitude + 1.0N
+}
+"#,
+        ),
+        (
+            "Torque magnitude + an Energy literal",
+            r#"
+structure def Probe {
+    let t = ScalarTorque(magnitude: 1.5Nm)
+    let x = t.magnitude + 1.0J
+}
+"#,
+        ),
+    ] {
+        let errors = stdlib_compile_error_messages(source);
+        assert!(
+            errors
+                .iter()
+                .any(|m| m.contains("dimension mismatch in addition")),
+            "{label} must be a dimension mismatch (task 6098); got: {:?}",
+            errors
+        );
+    }
 }

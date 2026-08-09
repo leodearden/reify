@@ -150,9 +150,13 @@ trait JointForceValue { }
 // mints the field as a newton-dimensioned scalar to match
 // (crates/reify-stdlib/src/dynamics/eval.rs, `joint_force_value`).
 //
-// LIMITATION (not a TODO — no owning cite required here): constructor
-// ARGUMENTS are not dimension-checked today, so `ScalarForce(magnitude: 2.5)`
-// is accepted silently. Construction-site strictness is owned by
+// Spell the constructor argument dimensioned too — `ScalarForce(magnitude:
+// 2.5N)`. LIMITATION (not a TODO — no owning cite required here): constructor
+// ARGUMENTS are not dimension-checked today, so a bare `ScalarForce(magnitude:
+// 2.5)` is accepted silently by the compiler; it then leaves an undimensioned
+// value in the field, which evaluates to `undef` with an OpContractViolation
+// as soon as the field is read into dimensioned arithmetic. Construction-site
+// strictness is owned by
 // docs/prds/v0_6/dimensioned-construction-strictness.md; eval-side reader
 // gating by docs/prds/v0_6/dimension-checked-readers.md.
 //
