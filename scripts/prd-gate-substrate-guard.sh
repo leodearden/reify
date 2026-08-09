@@ -186,3 +186,43 @@ PYEOF
 
     [ "$PRD_GATE_KEPT_COUNT" -gt 0 ]
 }
+
+# prd_gate_loud_substrate_skip <gate_label> <dropped> <kept> <reason>
+#
+# Emits a bannered notice that <dropped> grammar-kind row(s) did NOT run, that
+# <kept> check-kind row(s) DID, and why. Always returns 0: a partial run on an
+# unusable substrate is a legitimate, expected outcome — this only makes the
+# degradation impossible to miss rather than silent.
+#
+# WRITTEN TO BOTH STREAMS, deliberately, adopting
+# tests/infra/test_target_per_lane_independence.sh's _skip precedent and its
+# stated rationale: "A quiet stderr-only SKIP line is easy to miss in CI
+# output, making a partial-coverage green run indistinguishable from full
+# coverage." stdout so it lands in the run summary/log that run_all.sh
+# archives; stderr so it survives a caller that consumes stdout.
+#
+# ADAPTED IN ONE RESPECT from that precedent: this reports a PARTIAL
+# degradation rather than a whole-group skip, so it names both counts and does
+# NOT exit. The caller keeps running its remaining probes.
+#
+# The reason is printed VERBATIM and unwrapped. It routinely carries a filesystem
+# path or an errno string, and a reflowed or abridged one sends the reader
+# hunting for a cause the log no longer contains.
+prd_gate_loud_substrate_skip() {
+    local gate_label="$1" dropped="$2" kept="$3" reason="$4"
+    local warn_block
+    warn_block="$(cat <<EOF
+
+################################################################
+# WARN: ${gate_label} — GRAMMAR probes SKIPPED (substrate unusable)
+# ${dropped} grammar row(s) did NOT run; ${kept} check row(s) DID run
+# and are fully asserted below, so this is a PARTIAL-coverage green
+# run, not a full one.
+# Reason: ${reason}
+################################################################
+EOF
+)"
+    printf '%s\n' "$warn_block"
+    printf '%s\n' "$warn_block" >&2
+    return 0
+}
