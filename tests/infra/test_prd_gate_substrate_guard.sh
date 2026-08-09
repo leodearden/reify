@@ -531,4 +531,25 @@ else
     _skip_usable_control "corpus gate full-run control"
 fi
 
+echo "-- end-to-end: tests/infra/test_prd_gate_compiler_type_hygiene.sh --"
+
+# THE TWO GATES ARE ASSERTED SEPARATELY, NOT SHARED. This one asserts all-PASS
+# (every §8 boundary-table row is green on one commit); the corpus gate asserts
+# all-FAIL/UNPROVABLE (a historical-false-premise corpus). Their success lines
+# and probe counts differ, so a single shared e2e block would have to be
+# parameterized on the very thing most likely to break — and would pass while
+# checking the wrong gate's contract. The probe-set is 1 grammar + 6 check, so
+# a denied substrate must still run 6.
+_HYGIENE_GATE="$SCRIPT_DIR/test_prd_gate_compiler_type_hygiene.sh"
+
+assert "hygiene gate under a denied substrate => exit 0 (not 70), loud banner, and its 6 check probes still run" \
+    _gate_under_denied_substrate "$_HYGIENE_GATE" "hygiene" 6
+
+if resolve_grammar_substrate "$REPO_ROOT"; then
+    assert "hygiene gate on a usable substrate => full 7-probe committed set, no banner" \
+        _gate_with_usable_substrate "$_HYGIENE_GATE" "hygiene" 7
+else
+    _skip_usable_control "hygiene gate full-run control"
+fi
+
 test_summary
