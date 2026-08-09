@@ -874,34 +874,30 @@ fn bbox_all_finite_discriminates() {
 // `parse_xyz`, `sweep_guided_integration.rs`'s `parse_centroid`) and three
 // inline decodes (in `closest_point_on_shape_integration.rs`,
 // `analytic_datum_tests.rs` and `face_differential_integration.rs`'s
-// `geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal`). The
-// duplication was filed as a finding during task 5893's review and resolved
-// here, mirroring how 5893 itself consolidated the bounding-box parsers.
+// `geometry_query_face_normal_at_on_top_face_of_box_encodes_z_normal`),
+// mirroring how task 5893 consolidated the bounding-box parsers above.
 //
 // TWO COPIES ARE DELIBERATELY LEFT IN PLACE — this is settled judgement, not an
 // unfinished sweep:
 //
-//  1. `src/lib.rs:4950 parse_centroid_json` CANNOT be migrated. It sits inside
-//     `#[cfg(all(test, has_occt))] mod tests` (opened at `src/lib.rs:4856`), so
-//     it compiles into the *unit*-test crate, whereas this module compiles into
-//     the *integration*-test crate — a separate compilation unit that `src/`
-//     cannot import. Task 5893 left the adjacent `parse_bbox_field`
-//     (`src/lib.rs:4969`) in place for exactly this reason; that is precedent,
-//     not oversight. Correcting the record for task 5937's own premise: its
-//     description called this copy a parser that "lives in production source
-//     rather than the test harness", which it is not — it is a unit-test helper
-//     that merely lives in `src/`, so no task should be filed to "move the
-//     production parser". (The genuine production parser for this wire format
-//     is `reify-eval`'s `topology_selectors::parse_xyz_value`, a different
-//     crate with a `Result` rather than panic contract; out of scope here.)
+//  1. `parse_centroid_json` — a unit-test helper that merely lives in `src/`,
+//     NOT production code — CANNOT be migrated: it sits inside `src/lib.rs`'s
+//     `#[cfg(all(test, has_occt))] mod tests`, so it compiles into the
+//     *unit*-test crate, whereas this module compiles into the
+//     *integration*-test crate, a separate compilation unit that `src/` cannot
+//     import. Task 5893 left the adjacent `parse_bbox_field` in place for
+//     exactly this reason; that is precedent, not oversight. The genuine
+//     production parser for this wire format is `reify-eval`'s
+//     `topology_selectors::parse_xyz_value`, a different crate with a `Result`
+//     rather than panic contract, out of scope here.
 //
 //  2. `face_differential_integration.rs`'s hand-rolled `serde_json` decode in
 //     `face_outward_unit_normal_for_test_returns_unit_outward_normal_for_sphere_face`
-//     (at :221) is NOT migrated by design. That decode IS the cross-check
-//     contract of assertion (c): it pins the typed helper against the
-//     JSON-encoded production query path using an INDEPENDENT decoder, so
-//     routing both sides through one shared parser would hollow the assertion
-//     out. The site carries its own do-not-consolidate marker.
+//     is NOT migrated by design. That decode IS the cross-check contract of the
+//     assertion it serves: it pins the typed helper against the JSON-encoded
+//     production query path using an INDEPENDENT decoder, so routing both sides
+//     through one shared parser would hollow the assertion out. The site
+//     carries its own do-not-consolidate marker.
 //
 // Consequently `serde_json` REMAINS a required dev-dependency of this crate.
 // ---------------------------------------------------------------------------
@@ -924,8 +920,8 @@ pub struct Xyz {
 ///
 /// Wire format: `{"x":<f>,"y":<f>,"z":<f>}`, shared by five query variants —
 /// `Centroid`, `EdgeTangent`, `FaceNormal`, `FaceNormalAt` and
-/// `ClosestPointOnShape`, all of which route through `centroid_json`
-/// (`src/lib.rs:274`) or an identical `format!`.
+/// `ClosestPointOnShape`, all of which route through this crate's
+/// `centroid_json` or an identical `format!`.
 ///
 /// Keys parse with or without surrounding quotes, whitespace around `:` and `,`
 /// is trimmed, and unrecognised keys are ignored. A repeated key takes
@@ -987,24 +983,16 @@ pub fn parse_xyz(s: &str) -> Xyz {
 
 /// Unwrap the result of a JSON-Point3 query into an [`Xyz`].
 ///
-/// Takes the already-produced `Result` rather than a kernel plus a handle id
-/// because the call sites use two unrelated kernel types — `OcctKernel`
-/// (`src/lib.rs:3628`) and `OcctKernelHandle` (`src/handle.rs:370`) — with no
-/// `Deref` between them. Both expose
-/// `pub fn query(&self, &GeometryQuery) -> Result<Value, QueryError>`, so
-/// accepting the `Result` lets ONE helper serve both without introducing a
-/// trait or duplicating an accessor per kernel type.
-///
-/// Generic over `E: Debug` rather than hard-coding `QueryError` so this module
-/// need not import reify-ir's error enum, and so a future change to that enum
-/// does not ripple into the shared test module.
+/// Takes the already-produced `Result`, and is generic over `E: Debug` rather
+/// than hard-coding `QueryError`, for the reasons stated once on [`bbox_of`].
+/// It diverges from that helper in one respect only, stated here:
 ///
 /// `query_label` names the query variant (e.g. `"Centroid"`, `"FaceNormal"`)
-/// and is interpolated into BOTH panic paths below. It diverges from
-/// [`bbox_of`]'s fixed message deliberately: that helper's call sites all
-/// issued `GeometryQuery::BoundingBox`, whereas this wire format is shared by
-/// five variants, so a fixed string would erase which query failed. The
-/// eval-side production parser for this same format
+/// and is interpolated into BOTH panic paths below, where [`bbox_of`] uses a
+/// fixed message. That helper's call sites all issued
+/// `GeometryQuery::BoundingBox`, whereas this wire format is shared by five
+/// variants, so a fixed string would erase which query failed. The eval-side
+/// production parser for this same format
 /// (`reify_eval::topology_selectors::parse_xyz_value`) threads such a label for
 /// the same reason.
 ///
@@ -1033,9 +1021,9 @@ pub fn xyz_of<E: std::fmt::Debug>(query_result: Result<Value, E>, query_label: &
 // `harness_occt` test binary.
 // ---------------------------------------------------------------------------
 
-/// Build a JSON-Point3 string EXACTLY the way the kernel does
-/// (`crates/reify-kernel-occt/src/lib.rs:274`, `fn centroid_json`): each
-/// component goes through `f64` **Display**, which is not a JSON number encoder.
+/// Build a JSON-Point3 string EXACTLY the way this crate's `centroid_json`
+/// does: each component goes through `f64` **Display**, which is not a JSON
+/// number encoder.
 fn producer_format_xyz(x: f64, y: f64, z: f64) -> String {
     format!("{{\"x\":{},\"y\":{},\"z\":{}}}", x, y, z)
 }
@@ -1056,14 +1044,12 @@ fn parse_xyz_reads_all_three_fields() {
 }
 
 /// (b) Non-finite components parse — the contract that distinguishes this
-/// helper from a `serde_json`-based one.
+/// helper from a `serde_json`-based one; see [`parse_xyz`] for why.
 ///
 /// The assertion on the raw string comes first deliberately: it pins the
 /// PRODUCER's `f64` Display formatting, not merely this parser's tolerance, so
 /// the test fails if someone later swaps `centroid_json` to a real JSON
-/// encoder. `<f64 as Display>` emits the bare tokens `inf` / `-inf` / `NaN`,
-/// which strict JSON forbids and `serde_json::from_str` rejects outright, while
-/// `<f64 as FromStr>` accepts exactly those tokens.
+/// encoder.
 #[test]
 fn parse_xyz_accepts_non_finite_components() {
     let s = producer_format_xyz(f64::NEG_INFINITY, f64::INFINITY, f64::NAN);
@@ -1098,10 +1084,8 @@ fn parse_xyz_tolerates_whitespace_and_quoted_keys() {
 }
 
 /// (d) An absent key PANICS naming the field — it must NOT silently return
-/// `f64::NAN`, which is what `sweep_guided_integration.rs`'s parser did and
-/// which would make a downstream `(z - target).abs() < tol` quietly evaluate
-/// false, surfacing a malformed kernel response as a confusing geometry
-/// assertion rather than a parse failure.
+/// `f64::NAN`, which is what `sweep_guided_integration.rs`'s parser did; see
+/// [`parse_xyz`] for why that default was rejected.
 #[test]
 #[should_panic(expected = "z")]
 fn parse_xyz_panics_on_missing_field() {
@@ -1137,15 +1121,14 @@ fn xyz_of_unwraps_ok_string() {
 
     // E = FakeQueryError — a second instantiation of the `E: Debug` parameter,
     // which is what lets one helper serve both `OcctKernel::query` and
-    // `OcctKernelHandle::query` (unrelated types with no `Deref` between them).
+    // `OcctKernelHandle::query`.
     let via_other = xyz_of(Ok::<_, FakeQueryError>(Value::String(s)), "Centroid");
     assert_eq!(via_other, expected);
 }
 
-/// (b) A failed query panics NAMING THE QUERY. This is `query_label`'s whole
-/// reason for existing: unlike `bbox_of`, whose seven call sites all issued
-/// `GeometryQuery::BoundingBox`, this helper serves five different query
-/// variants, so a fixed panic string would erase which one failed.
+/// (b) A failed query panics NAMING THE QUERY — the behaviour `query_label`
+/// exists for; see [`xyz_of`] for why it diverges from [`bbox_of`]'s fixed
+/// message.
 #[test]
 #[should_panic(expected = "FaceNormal")]
 fn xyz_of_error_panic_names_the_query() {
