@@ -50,7 +50,7 @@
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 use tempfile::TempDir;
 
 /// Environment variable marking the replayed child process, so the replay
@@ -188,13 +188,24 @@ pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> 
     cmd
 }
 
+/// stdout, exit status, and stderr from one
+/// [`audit_script_stdout_poisoned_and_sanitized`] invocation — enough for a
+/// caller's assertion message to name the actual cause of an unexpected
+/// result instead of sending a reader to reproduce the run by hand.
+#[allow(dead_code)]
+pub struct AuditRun {
+    pub stdout: String,
+    pub status: ExitStatus,
+    pub stderr: String,
+}
+
 /// Run `scripts/audit-orphan-producers.sh --scope <scope> --quiet --format
 /// json` TWICE against one shared [`decoy_repo`]: once with the hook poison
 /// ambient in the child, once with the full
 /// [`reify_audit::git_env::REPO_REDIRECT_VARS`] set `env_remove`d — the same
 /// baseline `reify_test_support::sanitize` strips in production, not just the
-/// three vars this helper poisons. Returns `(poisoned_stdout,
-/// sanitized_stdout)`.
+/// three vars this helper poisons. Returns `(poisoned, sanitized)` as
+/// [`AuditRun`]s.
 ///
 /// Both commands are built from one closure against one decoy, so the poison
 /// is the only difference between them apart from that fuller strip —
@@ -224,10 +235,13 @@ pub fn poison_with_hook_git_env<'a>(cmd: &'a mut Command, decoy: &DecoyRepo) -> 
 /// hazard.
 ///
 /// Spawn failures are hard failures, matching `run_orphan_audit`. Exit status
-/// is deliberately ignored: all three runs exit 0 (measured), so the signal is
-/// entirely in stdout and belongs in the caller's assertions.
+/// is not asserted by this helper's own logic — all three runs exit 0
+/// (measured), so the signal is entirely in stdout — but it is carried on
+/// [`AuditRun`] regardless, so a caller whose stdout-based assertion fails can
+/// report the actual status and stderr instead of sending a reader to
+/// reproduce the run by hand.
 #[allow(dead_code)]
-pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(String, String)> {
+pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, AuditRun)> {
     // CARGO_MANIFEST_DIR is evaluated in THIS crate, which always sits at
     // <repo>/crates/reify-audit; two `.parent()` walks reach the repo root.
     // Same shape and depth as `reify_test_support::run_orphan_audit`.
@@ -298,11 +312,15 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(String
         sanitized_cmd.env_remove(name);
     }
 
-    let run = |mut cmd: Command, label: &str| -> String {
+    let run = |mut cmd: Command, label: &str| -> AuditRun {
         let out = cmd.output().unwrap_or_else(|e| {
             panic!("failed to invoke audit-orphan-producers.sh ({label}): {e}")
         });
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        AuditRun {
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            status: out.status,
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
     };
 
     let poisoned = run(poisoned_cmd, "poisoned");
