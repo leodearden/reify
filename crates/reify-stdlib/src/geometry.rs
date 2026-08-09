@@ -1466,40 +1466,94 @@ fn eval_frame_at(args: &[Value]) -> Value {
 // Quaternion helpers used by frame_to_frame — re-imported from orientation module.
 use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate};
 
-/// Pure classifier (post-`Value::Undef` hook) for affine-constructor calls,
+/// Human-readable name for a dimension, for use in diagnostic messages.
+///
+/// `DimensionVector::canonical_name()` yields `"Length"` / `"Angle"` / `"Mass"` from
+/// the `NAMED_DIMENSIONS` table, and deliberately returns `None` for DIMENSIONLESS,
+/// whose `Display` renders `"dimensionless"`. This is what lets a message NAME the
+/// offending dimension instead of hardcoding one string.
+fn dimension_label(dim: DimensionVector) -> String {
+    dim.canonical_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| dim.to_string())
+}
+
+/// Pure classifier (post-`Value::Undef` hook) for geometry builtin calls,
 /// mirroring `stackup::diagnose` / `fea::diagnose`. `reify-expr`'s `FunctionCall`
 /// arm calls this (re-exported as `geometry_diagnose`) when a stdlib builtin
 /// returns `Value::Undef`, and pushes any returned `Diagnostic` into the
 /// `EvalContext` runtime sink so `reify eval` can print it.
 ///
-/// Only `affine_scale` with exactly 3 args is diagnosed, distinguishing its two
-/// user-correctable failure causes (the third — arity — stays silent, like the
-/// `transform3` convention):
-/// - **dimensioned factor** → violates the G6 dimensionless-linear-part contract;
-/// - **zero factor** → degenerate (det=0, non-invertible) map.
+/// Names served:
+/// - **`affine_scale`** (exactly 3 args), distinguishing its two user-correctable
+///   failure causes (the third — arity — stays silent, like the `transform3`
+///   convention):
+///   - *dimensioned factor* → violates the G6 dimensionless-linear-part contract;
+///   - *zero factor* → degenerate (det=0, non-invertible) map.
+/// - **`transform_log`** (exactly 1 arg) — a `Transform` whose translation is not
+///   `Vector3<Length>` (RULING #6126).
+///
+/// Invariant: the dimension arms consult [`TWIST_LINEAR_DIM`] — the SAME const the
+/// eval gates use — so the classifier cannot drift away from what eval actually
+/// rejects.
+///
+/// Invariant: this hook fires on EVERY `Value::Undef` from these builtins, not just
+/// dimension rejections, so each arm stays SILENT (`None`) on every non-dimension
+/// cause — wrong arity, wrong argument shape, a degenerate or non-finite
+/// quaternion, non-finite components — rather than mis-attributing an unrelated
+/// failure to a dimension problem. Concretely: only emit when the decomposition
+/// SUCCEEDS and the recovered dimension differs from the admitted one.
 ///
 /// Severity is `Warning` with no `DiagnosticCode`, mirroring the existing
 /// degenerate-scale rejection in `reify_eval::geometry_ops` (TransformKind::Scale).
+/// (A dimension rejection degrades to `Undef` within one primitive, which is the
+/// discriminator `docs/prds/v0_6/dimension-checked-readers.md` §6 decision 1 uses to
+/// assign Warning rather than Error; that PRD also owns minting
+/// `DiagnosticCode::ArgDimensionMismatch`, so no code is minted here.)
 /// Returns `None` for any other name, wrong arity, or valid input.
 pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
-    if name != "affine_scale" || args.len() != 3 {
-        return None;
+    match name {
+        "affine_scale" => {
+            if args.len() != 3 {
+                return None;
+            }
+            // Check dimensioned factors first so a dimensioned-and-otherwise-fine factor
+            // reports the dimensionless requirement rather than a spurious zero message.
+            if args.iter().any(|a| !a.dimension().is_dimensionless()) {
+                return Some(reify_core::Diagnostic::warning(
+                    "affine_scale: scale factors must be dimensionless (Real); a dimensioned \
+                     factor was dropped (the linear part of an affine map is dimensionless)",
+                ));
+            }
+            if args.iter().any(|a| a.as_f64() == Some(0.0)) {
+                return Some(reify_core::Diagnostic::warning(
+                    "affine_scale dropped: factor=0 produces a degenerate (det=0) \
+                     non-invertible map (every scale factor must be non-zero)",
+                ));
+            }
+            None
+        }
+        "transform_log" => {
+            if args.len() != 1 {
+                return None;
+            }
+            // `decompose_transform` returning None covers every non-dimension cause:
+            // a non-Transform argument, a non-Orientation or non-finite rotation, a
+            // translation that is not a 3-Vector, mixed component dimensions, and
+            // non-numeric or non-finite components. Staying silent there is the
+            // no-mis-attribution guard.
+            let (_, _, t_dim) = decompose_transform(&args[0])?;
+            if t_dim == TWIST_LINEAR_DIM {
+                return None;
+            }
+            Some(reify_core::Diagnostic::warning(format!(
+                "transform_log: a Transform's translation must be Vector3<Length>; got {} \
+                 (a twist's `linear` half carries Length — RULING #6126)",
+                dimension_label(t_dim)
+            )))
+        }
+        _ => None,
     }
-    // Check dimensioned factors first so a dimensioned-and-otherwise-fine factor
-    // reports the dimensionless requirement rather than a spurious zero message.
-    if args.iter().any(|a| !a.dimension().is_dimensionless()) {
-        return Some(reify_core::Diagnostic::warning(
-            "affine_scale: scale factors must be dimensionless (Real); a dimensioned \
-             factor was dropped (the linear part of an affine map is dimensionless)",
-        ));
-    }
-    if args.iter().any(|a| a.as_f64() == Some(0.0)) {
-        return Some(reify_core::Diagnostic::warning(
-            "affine_scale dropped: factor=0 produces a degenerate (det=0) \
-             non-invertible map (every scale factor must be non-zero)",
-        ));
-    }
-    None
 }
 
 #[cfg(test)]
