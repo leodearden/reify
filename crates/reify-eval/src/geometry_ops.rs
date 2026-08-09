@@ -1617,13 +1617,12 @@ fn prim_cylinder(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Cylinder {
-        radius: eval_arg("radius")?,
-        height: eval_arg("height")?,
+        radius: length_arg("radius")?,
+        height: length_arg("height")?,
     })
 }
 
@@ -1635,12 +1634,11 @@ fn prim_sphere(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Sphere {
-        radius: eval_arg("radius")?,
+        radius: length_arg("radius")?,
     })
 }
 
@@ -1652,14 +1650,13 @@ fn prim_tube(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Tube {
-        outer_r: eval_arg("outer_r")?,
-        inner_r: eval_arg("inner_r")?,
-        height: eval_arg("height")?,
+        outer_r: length_arg("outer_r")?,
+        inner_r: length_arg("inner_r")?,
+        height: length_arg("height")?,
     })
 }
 
@@ -1671,14 +1668,13 @@ fn prim_cone(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Cone {
-        bottom_radius: eval_arg("bottom_radius")?,
-        top_radius: eval_arg("top_radius")?,
-        height: eval_arg("height")?,
+        bottom_radius: length_arg("bottom_radius")?,
+        top_radius: length_arg("top_radius")?,
+        height: length_arg("height")?,
     })
 }
 
@@ -1690,15 +1686,14 @@ fn prim_wedge(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Wedge {
-        width: eval_arg("width")?,
-        depth: eval_arg("depth")?,
-        height: eval_arg("height")?,
-        top_width: eval_arg("top_width")?,
+        width: length_arg("width")?,
+        depth: length_arg("depth")?,
+        height: length_arg("height")?,
+        top_width: length_arg("top_width")?,
     })
 }
 
@@ -1710,13 +1705,12 @@ fn prim_torus(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
-        eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
+    let mut length_arg = |name: &str| -> Result<reify_ir::Value, String> {
+        required_length_value(name, kind, args, values, functions, meta_map, diagnostics)
     };
     Ok(reify_ir::GeometryOp::Torus {
-        major_radius: eval_arg("major_radius")?,
-        minor_radius: eval_arg("minor_radius")?,
+        major_radius: length_arg("major_radius")?,
+        minor_radius: length_arg("minor_radius")?,
     })
 }
 
@@ -1728,14 +1722,35 @@ fn prim_half_space(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // `half_space` is the ONE primitive whose args are split across the units
+    // boundary, so it keeps BOTH closures.
+    //
+    // `(px, py, pz)` is a point on the boundary plane — length-semantic, and
+    // gated: a bare component would be read as SI METRES by `Value::as_f64`
+    // (the `12` vs `12mm` 1000× hazard). `(nx, ny, nz)` is the outward unit
+    // NORMAL — a dimensionless direction, which stays on the bare-accepting
+    // `eval_named_arg` path. That is the same split already documented at
+    // `required_length_origin3` for the co-located `ax`/`ay`/`az` and
+    // `nx`/`ny`/`nz` triples, and `examples/half_space.ri` depends on it:
+    // `half_space(0mm, 0mm, 0mm, 0, 0, 1)`.
+    //
+    // BORROW ORDERING (the reason the point triple is read into locals up
+    // front rather than via a second closure): each `required_length_value`
+    // call takes `&mut diagnostics`, and the `eval_arg` closure below captures
+    // `diagnostics` mutably for its whole lifetime — so the triple must be
+    // fully read BEFORE that closure is declared. Reading it into locals
+    // satisfies that ordering by construction instead of by convention.
+    let px = required_length_value("px", kind, args, values, functions, meta_map, diagnostics)?;
+    let py = required_length_value("py", kind, args, values, functions, meta_map, diagnostics)?;
+    let pz = required_length_value("pz", kind, args, values, functions, meta_map, diagnostics)?;
     let mut eval_arg = |name: &str| -> Result<reify_ir::Value, String> {
         eval_named_arg(name, kind, args, values, functions, meta_map, diagnostics)
             .ok_or_else(|| format!("missing required argument '{}' for {}", name, kind))
     };
     Ok(reify_ir::GeometryOp::HalfSpace {
-        px: eval_arg("px")?,
-        py: eval_arg("py")?,
-        pz: eval_arg("pz")?,
+        px,
+        py,
+        pz,
         nx: eval_arg("nx")?,
         ny: eval_arg("ny")?,
         nz: eval_arg("nz")?,
