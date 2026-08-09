@@ -58,6 +58,8 @@ mod enum_type_param_lowering_tests;
 mod field_tests;
 #[path = "harness_syntax/fn_body_expr_parser_tests.rs"]
 mod fn_body_expr_parser_tests;
+#[path = "harness_syntax/fn_body_separator_ambiguity_tests.rs"]
+mod fn_body_separator_ambiguity_tests;
 #[path = "harness_syntax/fn_param_default_tests.rs"]
 mod fn_param_default_tests;
 #[path = "harness_syntax/forall_statement_tests.rs"]
