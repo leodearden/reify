@@ -265,14 +265,8 @@ fn build_result(solve: &FormFindSolve) -> Value {
         .iter()
         .map(|&p| super::point3_length(p))
         .collect();
-    // member_forces are FORCE-dimensioned via the unit reference force density
-    // gauge q_ref ≡ 1 N/m: qᵢ itself is the DIMENSIONLESS nullity-invariant ratio
-    // (dimension-checked-readers Leg B, upheld by task #6095), so tagging the SI
-    // number qᵢ·Lᵢ(m) as newtons IS the choice q_ref = 1 N/m, and
-    // Nᵢ = qᵢ·Lᵢ·q_ref matches the `member_forces : List<Force>` declaration.
-    // Canonical statement: the "Dimensional bridge" paragraph in
-    // crates/reify-compiler/stdlib/tensegrity.ri (one normative home; do not
-    // restate the rule here).
+    // FORCE via the q_ref ≡ 1 N/m gauge — see the "Dimensional bridge" paragraph
+    // in crates/reify-compiler/stdlib/tensegrity.ri.
     let member_forces = super::scalar_list(&solve.member_forces, DimensionVector::FORCE);
     let force_densities: Vec<Value> = solve
         .force_densities
