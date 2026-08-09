@@ -197,6 +197,124 @@ fn missing_semicolon_after_fn_let_is_located_at_the_let_line() {
     );
 }
 
+/// The same fn-body fault in MEMBER position gets the same located, non-echoing diagnostic.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+///
+/// A structure member `fn` collapses into an `ERROR` inside the structure body, which is a
+/// DIFFERENT dispatch arm from the top-level collapse the sibling tests cover: the members
+/// loop matches `"ERROR"` itself and so shadows `lower_member`'s own `"ERROR"` arm. Measured
+/// before that arm was converted, this fixture reported
+/// `2:3: syntax error: fn f(i: Int) -> Real {\n…` — five lines of echoed source, anchored to
+/// the `fn` header instead of the absorbing `let`, and running past the end of the function to
+/// swallow the following `let v = 1` member. A user reading it would edit the wrong line.
+#[test]
+fn missing_semicolon_in_a_member_fn_is_located_and_does_not_swallow_later_members() {
+    let source = "structure T {\n  fn f(i: Int) -> Real {\n    let x0 = 1\n    x0 * 2\n  }\n  let v = 1\n}\n";
+
+    // Offsets via `str::find` — never hard-coded (convention from `auto_type_arg_tests.rs`).
+    let let_off = source
+        .find("let x0")
+        .expect("fixture must contain 'let x0'") as u32;
+    let absorbed_end = (source
+        .find("x0 * 2")
+        .expect("fixture must contain 'x0 * 2'")
+        + "x0 * 2".len()) as u32;
+    let fn_kw_off = source.find("fn f(").expect("fixture must contain 'fn f('") as u32;
+    let later_member = source
+        .find("let v = 1")
+        .expect("fixture must contain 'let v = 1'") as u32;
+
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+
+    // (a) Something must be reported at all.
+    assert!(
+        !m.errors.is_empty(),
+        "INV-SF-7 violated — omitting the `;` after `let x0` in a MEMBER fn produced NO \
+         diagnostic.\nsource:\n{source}",
+    );
+
+    // (b) The message must name the actual cause, exactly as in top-level position.
+    let separator_errors: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("';'") && e.message.contains("let"))
+        .collect();
+    assert!(
+        !separator_errors.is_empty(),
+        "expected a diagnostic naming the missing `;` after a `let` binding in a member fn; \
+         a member-position fault must not be reported more vaguely than the top-level one.\n\
+         got: {:?}",
+        triples(&m),
+    );
+
+    // (c) It must be LOCAL to the absorbing region, not anchored to the `fn` header.
+    let localised = separator_errors
+        .iter()
+        .any(|e| e.span.start >= let_off && e.span.end <= absorbed_end);
+    assert!(
+        localised,
+        "expected a separator diagnostic whose span lies inside the absorbing region \
+         (bytes {let_off}..{absorbed_end}); every one either starts before the `let` (the `fn` \
+         header / whole-member blob) or runs past the absorbed expression.\n\
+         got: {:?}",
+        triples(&m),
+    );
+
+    // (d) The whole-member blob span must be gone: nothing may start at or before `fn`.
+    let blob = m.errors.iter().find(|e| e.span.start <= fn_kw_off);
+    assert!(
+        blob.is_none(),
+        "a diagnostic still starts at or before the `fn` keyword (byte {fn_kw_off}), i.e. it \
+         spans the whole member rather than the absorbing line.\n\
+         offender: {:?}\ngot: {:?}",
+        blob.map(|e| (&e.message, e.span.start, e.span.end)),
+        triples(&m),
+    );
+
+    // (e) No diagnostic may SPAN from the broken member across into the following one: that
+    // blob span is what made a later, entirely well-formed `let v = 1` look broken too.
+    let swallower = m
+        .errors
+        .iter()
+        .find(|e| e.span.start < later_member && e.span.end > later_member);
+    assert!(
+        swallower.is_none(),
+        "a diagnostic spans from the broken member across into the following, well-formed \
+         `let v = 1` (byte {later_member}); the fault must stay inside the member that has it.\n\
+         offender: {:?}\ngot: {:?}",
+        swallower.map(|e| (&e.message, e.span.start, e.span.end)),
+        triples(&m),
+    );
+
+    // (e2) And no diagnostic may CLAIM a missing `;` against that following member. Recovery
+    // debris does land there (tree-sitter emits a second ERROR at `v`), so a narrow generic
+    // "syntax error in structure body" is honest and permitted — but "missing ';' after `let`"
+    // is a specific causal claim, and `let v = 1` has no separator problem. Misattributing it
+    // sends the user to edit a line that is already correct.
+    let misattributed = m
+        .errors
+        .iter()
+        .find(|e| e.message.contains("';'") && e.span.start >= later_member);
+    assert!(
+        misattributed.is_none(),
+        "a missing-`;` diagnostic is anchored at the following, well-formed `let v = 1` \
+         (byte {later_member}) — that member has no separator problem; only the earlier \
+         `let x0` does.\noffender: {:?}\ngot: {:?}",
+        misattributed.map(|e| (&e.message, e.span.start, e.span.end)),
+        triples(&m),
+    );
+
+    // (f) And it must not echo a block of source (mechanism M3), matching the top-level class.
+    for e in &m.errors {
+        assert!(
+            !e.message.contains('\n') && e.message.len() <= 200 && !e.message.contains("fn f("),
+            "member-position diagnostic echoes source instead of describing the fault: {:?}",
+            (&e.message, e.span.start, e.span.end),
+        );
+    }
+}
+
 /// Two sibling functions, each missing its own separator, must each get their OWN diagnostic
 /// inside their OWN declaration.
 ///

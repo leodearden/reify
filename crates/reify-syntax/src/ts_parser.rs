@@ -381,7 +381,19 @@ impl<'a> Lowering<'a> {
         let mut suppressed_at: Option<tree_sitter::Node> = None;
 
         for fault in faults {
-            match last_let_token_before(node, fault.start_byte()) {
+            // A missing `;` is only a plausible cause when the fault sits on a LATER LINE than
+            // the `let` — that fusing of two lines is the whole mechanism (see
+            // `last_let_token_before`). Once recovery has derailed at the first fault, later
+            // debris can land on the same line as an entirely well-formed binding; measured on
+            // `structure T { fn f(..) { let x0 = 1 <NL> x0 * 2 } let v = 1 }`, tree-sitter emits
+            // a second `ERROR` at `v`, whose nearest preceding `let` is the well-formed
+            // `let v = 1`. Blaming it would report "missing ';'" against a line that has no
+            // separator problem — the same point-at-an-unrelated-line defect this method exists
+            // to remove. Such a fault falls through to the generic branch instead: honest about
+            // the debris, silent about a cause it cannot support.
+            let anchoring_let = last_let_token_before(node, fault.start_byte())
+                .filter(|let_tok| fault.start_position().row > let_tok.start_position().row);
+            match anchoring_let {
                 Some(let_tok) => {
                     let anchor = let_tok.start_byte();
                     if reported_lets.contains(&anchor) {
@@ -2713,10 +2725,18 @@ impl<'a> Lowering<'a> {
                 "ERROR" => {
                     // Consume pending annotations so they don't leak past a syntax error.
                     let _ = std::mem::take(&mut pending_annotations);
-                    self.push_error(
-                        format!("syntax error: {}", self.node_text(child)),
-                        self.span(child),
-                    );
+                    // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md),
+                    // task #5392. This arm SHADOWS `lower_member`'s own `"ERROR"` arm: an
+                    // `ERROR` child is matched here and never reaches it, so converting only
+                    // that one left every member-position fault reporting the old
+                    // blob-spanning, source-echoing message. Measured before this change, a
+                    // member fn whose `let` was missing its `;` reported
+                    // `2:3: syntax error: fn f(i: Int) -> Real {\n…` — five lines of echoed
+                    // source, anchored to the `fn` header rather than the absorbing `let`, and
+                    // swallowing the following member. A member fn collapses into an `ERROR`
+                    // here exactly as a top-level one collapses in `lower_source_file`, so it
+                    // gets the same let-anchored treatment.
+                    self.diagnose_error_node(child, "structure body");
                 }
                 _ => {
                     // Drain pending annotations before lowering the member.
