@@ -37,3 +37,55 @@ fn eval_transform_log_dimensionless_warns_length_required() {
         "stderr should name the OFFENDING dimension; got: {stderr}"
     );
 }
+
+/// `reify eval` on a dimensionless twist `linear` half emits the
+/// Vector3<Length>-requirement Warning on stderr, and still exits 0 — the mirror
+/// of the `transform_log` case, so both ends of the seam explain their rejection.
+#[test]
+fn eval_transform_exp_dimensionless_warns_length_required() {
+    let path = common::fixture_path("transform_exp_dimensionless.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "a dimension rejection is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("transform_exp"),
+        "stderr should name the builtin that rejected; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Length"),
+        "stderr should name the REQUIRED dimension; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("dimensionless"),
+        "stderr should name the OFFENDING dimension; got: {stderr}"
+    );
+}
+
+/// The over-narrowing guard: a Length transform round-trips through
+/// `transform_log` → `transform_exp` and a pure-rotation (identity) transform is
+/// still accepted, with NO dimension Warning on stderr.
+///
+/// `transform3_identity` builds `Value::length(0.0)` translations, so identity and
+/// pure-rotation transforms carry LENGTH zeros and survive the narrowing.
+#[test]
+fn eval_transform_twist_length_round_trip_emits_no_dimension_warning() {
+    let path = common::fixture_path("transform_twist_length_round_trip.ri");
+    let (status, stdout, stderr) = common::run_subcommand("eval", &path);
+
+    assert!(
+        status.success(),
+        "the Length round-trip must stay green;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    // 1mm → 0.001 m: the linear half survives the seam carrying its metre value.
+    assert!(
+        stdout.contains("0.001 m"),
+        "stdout should show the metre-valued linear component;\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("must be Vector3<Length>"),
+        "a Length twist must NOT provoke the dimension warning (over-narrowing guard); got: {stderr}"
+    );
+}

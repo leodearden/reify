@@ -5550,6 +5550,93 @@ mod tests {
         );
     }
 
+    // ── diagnose: transform_exp dimension arm (RULING #6126) ──────────────────
+    // The mirror of the transform_log arm, on the twist's `linear` half.
+
+    #[test]
+    fn diagnose_transform_exp_dimensionless_linear_names_dimension() {
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("a dimensionless linear must produce a diagnostic");
+        assert_eq!(
+            diag.severity,
+            reify_core::Severity::Warning,
+            "the dimension rejection degrades to Undef within one primitive, so it is a \
+             Warning (not an Error)"
+        );
+        for needle in ["transform_exp", "linear", "Length", "dimensionless"] {
+            assert!(
+                diag.message.contains(needle),
+                "message must contain {needle:?}, got: {}",
+                diag.message
+            );
+        }
+    }
+
+    #[test]
+    fn diagnose_transform_exp_mass_linear_names_mass() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::MASS);
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("a MASS linear must produce a diagnostic");
+        assert!(
+            diag.message.contains("Mass"),
+            "a second distinct dimension proves the label is DERIVED, not hardcoded, \
+             got: {}",
+            diag.message
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_exp_length_linear_returns_none() {
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
+        assert!(
+            super::diagnose("transform_exp", &[twist]).is_none(),
+            "a valid Vector3<Length> linear must not produce a diagnostic"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_exp_missing_linear_key_returns_none() {
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(
+            Value::String("angular".to_string()),
+            Value::Vector(vec![Value::Real(0.0); 3]),
+        );
+        assert!(
+            super::diagnose("transform_exp", &[Value::Map(m)]).is_none(),
+            "a missing `linear` key is a SHAPE failure, not a dimension failure"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_exp_non_map_arg_returns_none() {
+        assert!(
+            super::diagnose("transform_exp", &[Value::Real(1.0)]).is_none(),
+            "a non-Map argument is a shape failure, not a dimension failure"
+        );
+    }
+
+    #[test]
+    fn diagnose_transform_exp_wrong_arity_returns_none() {
+        let twist = make_twist(
+            [0.0, 0.0, 0.0],
+            [1.0, 2.0, 3.0],
+            DimensionVector::DIMENSIONLESS,
+        );
+        assert!(
+            super::diagnose("transform_exp", &[twist.clone(), twist]).is_none(),
+            "wrong arity stays silent, like the affine_scale / transform3 convention"
+        );
+        assert!(
+            super::diagnose("transform_exp", &[]).is_none(),
+            "zero args stays silent"
+        );
+    }
+
     #[test]
     fn diagnose_transform_log_wrong_arity_returns_none() {
         let t = make_transform_with_translation([
