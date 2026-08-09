@@ -2890,6 +2890,230 @@
         }
     }
 
+    /// Helper: build a `CompiledExpr` literal that evaluates to `Value::Undef`.
+    ///
+    /// The carried `Type` is irrelevant to `eval_expr` (which clones the
+    /// `Value`); `Type::length()` is used so the expression is shaped exactly
+    /// like the ones a real solver-iteration cell produces before it resolves.
+    fn literal_undef() -> reify_ir::CompiledExpr {
+        reify_ir::CompiledExpr::literal(reify_ir::Value::Undef, reify_core::Type::length())
+    }
+
+    // ---- units-length β (task 5743 step-3): the eval_named_arg_length retrofit ----
+    //
+    // These drive the SHARED `eval_named_arg_length` chokepoint through real,
+    // already-shipped Contract C callers (`linear_pattern` spacing and the
+    // `mirror` plane origin) rather than calling the helper in isolation, so the
+    // retrofit is proven where users actually meet it. The same edit reaches
+    // `linear_pattern_2d`, `circular_pattern` and the arbitrary-pattern offsets.
+
+    /// The `eval_named_arg_length` REJECTION is a `Severity::Error` carrying
+    /// `DiagnosticCode::DimensionedArgRejected`, and its wording is still
+    /// produced ONLY by `arg_acceptance::ArgRejection::message`.
+    ///
+    /// Covers all three rejection shapes at a shipped spacing slot: a bare
+    /// `Value::Int`, a bare `Value::Real`, and a defined-but-wrong-dimension
+    /// `Scalar`. For each, EXACTLY ONE rejection diagnostic is pushed (no
+    /// cascade), it is `Error` severity, it carries the new code, and it still
+    /// names the builtin, the arg, `"Length"`, and the byte-unchanged migration
+    /// hint that `length_spec` owns.
+    ///
+    /// RED until step-4 promotes the emit at `geometry_ops.rs`'s
+    /// `eval_named_arg_length` from `Diagnostic::warning(..)` to
+    /// `Diagnostic::error(..).with_code(..)`: today the severity is `Warning`
+    /// and the code is `None`.
+    #[test]
+    fn eval_named_arg_length_rejection_is_error_with_dimensioned_arg_rejected_code() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        for (label, spacing_expr) in [
+            (
+                "bare Int",
+                reify_ir::CompiledExpr::literal(
+                    reify_ir::Value::Int(20),
+                    reify_core::Type::dimensionless_scalar(),
+                ),
+            ),
+            ("bare Real", literal_f64(0.02)),
+            (
+                "wrong-dimension Scalar (MASS)",
+                literal_scalar(0.02, reify_core::DimensionVector::MASS),
+            ),
+        ] {
+            let op = linear_pattern_with_spacing(spacing_expr);
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &step_handles,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "{label} spacing must drop the op, got: {result:?}"
+            );
+
+            let rejections: Vec<&Diagnostic> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("argument expects Length"))
+                .collect();
+            assert_eq!(
+                rejections.len(),
+                1,
+                "{label}: exactly ONE rejection diagnostic (no cascade); got: {diagnostics:?}"
+            );
+            let rej = rejections[0];
+
+            assert_eq!(
+                rej.severity,
+                reify_core::Severity::Error,
+                "{label}: contract C1(iv) requires the eval-layer rejection ITSELF to be \
+                 Error severity, so `reify eval` exits nonzero through the pure severity \
+                 gate; got: {rej:?}"
+            );
+            assert_eq!(
+                rej.code,
+                Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+                "{label}: the rejection must carry the shared runtime code; got: {rej:?}"
+            );
+
+            // Wording is byte-unchanged and still owned solely by
+            // `ArgRejection::message` — the retrofit moves severity + code, never text.
+            // NB: the kind_label a `PatternKind::Linear` op carries is `"linear"`,
+            // not `"linear_pattern"` — measured from the live diagnostic, not assumed.
+            for needle in [
+                "linear",
+                "spacing",
+                "Length",
+                "pass a dimensioned length such as `5mm`",
+            ] {
+                assert!(
+                    rej.message.contains(needle),
+                    "{label}: rejection message must contain {needle:?}; got: {:?}",
+                    rej.message
+                );
+            }
+        }
+    }
+
+    /// The retrofit is at the SHARED helper, so it lands at every Contract C
+    /// caller at once — pinned here at the `mirror` plane origin, a different
+    /// shipped call site from the spacing test above. A gate applied only to the
+    /// pattern-spacing path would pass that test and fail this one.
+    ///
+    /// RED until step-4.
+    #[test]
+    fn eval_named_arg_length_retrofit_reaches_mirror_origin_too() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                // BARE origin x — the other two components are proper Lengths.
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_err(), "bare mirror origin must drop the op");
+
+        let rej = diagnostics
+            .iter()
+            .find(|d| d.message.contains("argument expects Length"))
+            .unwrap_or_else(|| panic!("expected a Length rejection; got: {diagnostics:?}"));
+        assert_eq!(rej.severity, reify_core::Severity::Error, "{rej:?}");
+        assert_eq!(
+            rej.code,
+            Some(reify_core::DiagnosticCode::DimensionedArgRejected),
+            "{rej:?}"
+        );
+        assert!(
+            rej.message.contains("ox") && rej.message.contains("mirror"),
+            "{:?}",
+            rej.message
+        );
+    }
+
+    /// The two NON-rejection states of `eval_named_arg_length` are untouched by
+    /// the retrofit — neither pushes ANY diagnostic.
+    ///
+    /// (a) A finite LENGTH `Scalar` is `Accepted`: the op compiles, spacing is
+    ///     stored as a dimensioned `Value`, and diagnostics stay EMPTY. Without
+    ///     this arm an over-broad "always emit an Error" change would pass the
+    ///     rejection tests above.
+    /// (b) `Value::Undef` is `Undefined`: the value layer stays QUIET (decision
+    ///     D10 / INV-SF-1 — loud at the chokepoint, quiet at `accept_arg`), so
+    ///     no rejection diagnostic is pushed even though the op is dropped with
+    ///     the DISTINCT `is unresolved (Undef)` wording. During solver iteration
+    ///     an Undef cell is expected transient state, and asserting
+    ///     `"non-Length"` for it would be actively wrong.
+    #[test]
+    fn eval_named_arg_length_accepted_and_undefined_paths_push_no_diagnostics() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        // (a) Accepted — dimensioned spacing.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_pattern_with_spacing(literal_length(0.02)),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(result.is_ok(), "dimensioned spacing must compile: {result:?}");
+        assert!(
+            diagnostics.is_empty(),
+            "an Accepted LENGTH Scalar must push ZERO diagnostics; got: {diagnostics:?}"
+        );
+
+        // (b) Undefined — quiet at the value layer, distinct Err at the chokepoint.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &linear_pattern_with_spacing(literal_undef()),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef spacing must drop the op");
+        assert!(
+            err.contains("unresolved (Undef)"),
+            "Undef must use the DISTINCT unresolved wording, not \"missing or non-Length\"; \
+             got: {err:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("argument expects Length")),
+            "Undef must push NO rejection diagnostic (D10 quiet value layer); got: {diagnostics:?}"
+        );
+    }
+
     /// A WRONG-DIMENSION `Value::Scalar` spacing must be rejected exactly like a
     /// bare `Value::Real` — `accept_arg`'s dimension check is strict, so only a
     /// LENGTH Scalar passes.
