@@ -33,33 +33,22 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     // than a skip. Outside it, `run_orphan_audit`'s documented graceful-skip
     // protocol is untouched — see `orphan_audit_survives_ambient_hook_git_env`
     // for why the scoping is the whole point.
+    //
+    // As of task 5698 this branch is unreachable via the poisoned path itself
+    // for this scope: a broken sanitizer now panics earlier, inside
+    // `run_orphan_audit_at` (see `orphan_audit_survives_ambient_hook_git_env`'s
+    // doc for that chain), before `run_orphan_audit` gets a chance to return
+    // `None`. Kept as defence-in-depth against `run_orphan_audit`'s public
+    // contract, which still permits `None` via `EnvUnavailable` (missing
+    // python3/git/script, or a `repo_root` outside any git work tree) — not
+    // because reaching it is expected today.
     if audit.is_none() && common::git_env::in_replay_child() {
         panic!(
-            "run_orphan_audit returned None inside the poisoned replay child. \
-             Before task 5698, that meant the ambient \
-             GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE redirect had defeated the \
-             script outright: its `git rev-parse --show-toplevel` resolved \
-             into the harness's decoy tree, matched no source files, and \
-             run_orphan_audit turned the resulting empty stdout into None. As \
-             of task 5698 that redirect no longer reaches None: \
-             `run_orphan_audit_at`'s repo-root premise probe now panics on \
-             the SAME redirect, inside \
-             crates/reify-test-support/src/orphan_audit.rs and before the \
-             script is even spawned, because the child's own `git rev-parse \
-             --show-toplevel` resolves the decoy tree instead of the \
-             repository this call was asked to scan — see \
-             `orphan_audit_survives_ambient_hook_git_env`'s doc for that \
-             chain. That panic already fails this test via the replay's \
-             status assertion, so `run_orphan_audit` never gets a chance to \
-             return here. Landing on THIS branch instead means \
-             `run_orphan_audit` took its other remaining path, \
-             `EnvUnavailable` — a missing python3/git/script, or a \
-             `repo_root` that is not inside a git work tree at all — and \
-             this panic is kept only as defence-in-depth against that public \
-             contract, which still permits `None`, not because reaching it \
-             is expected. Note that `python3 / git / script absent` is NOT a \
-             plausible explanation here regardless: the parent process just \
-             ran this same test successfully before spawning this child."
+            "run_orphan_audit returned None inside the poisoned replay child \
+             — unexpected as of task 5698 (see the comment above this check). \
+             `python3`/`git`/script absent is implausible regardless: the \
+             parent process just ran this same test successfully before \
+             spawning this child."
         );
     }
 
