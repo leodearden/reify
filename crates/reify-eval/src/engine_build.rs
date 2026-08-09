@@ -9965,6 +9965,40 @@ impl Engine {
                 continue;
             }
 
+            // Task #5951: the second precondition on the write below, and the
+            // durable invariant behind it.
+            //
+            // Phase 1's `realization_inputs.is_empty()` candidate gate is a
+            // ONE-SHOT LATCH: the moment this pass records non-empty inputs,
+            // every later per-template call skips the node forever. So the
+            // latch must only ever be tripped by a write that actually carried
+            // realized content. If every rebuilt handle projects to `None`,
+            // this pass has nothing to deliver — Part A's pre-tessellation
+            // above could not populate the projection store, so the trampoline
+            // would run on an empty body exactly as it did at first dispatch.
+            // Writing anyway buys nothing and costs everything: the node is
+            // stranded on its degraded first-dispatch result (for the stdlib
+            // inline-fallback shape, a silently empty result), permanently and
+            // with NO diagnostic — the `ReprKind::BRep` arm of
+            // `project_realization_read_handle` is identity-only by design
+            // (PRD §4 D1) and `degrade_projection`'s Warning is never reached.
+            //
+            // `continue`ing instead leaves the node a redispatch candidate, so
+            // a later per-template call — or a later build tick — can still do
+            // the real work. That converts a permanent silent strand into a
+            // retried one, and it holds for ANY future path into this pass,
+            // not just the symbolic-handle door the gate above closes.
+            //
+            // `proj_diags` are extended above and deliberately left alone: this
+            // guard suppresses a WRITE, never a diagnostic the projection
+            // already chose to emit.
+            if realization_read_handles
+                .iter()
+                .all(|h| h.content().is_none())
+            {
+                continue;
+            }
+
             // Step 1: update the snapshot ComputeNodeData's realization_inputs.
             // This is the non-empty-realization_inputs gate (step-1 test).
             if let Some(state) = self.eval_state.as_mut()
