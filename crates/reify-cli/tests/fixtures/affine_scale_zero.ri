@@ -9,10 +9,14 @@
 // runtime Warning diagnostic.
 //
 // Declares its module explicitly: without it, `reify eval` also emits
-// W_MODULE_DECL_MISSING ("expected `module affine_scale_zero`"), whose
-// message text incidentally contains the substring "affine_scale" and would
-// make a bare `stderr.contains("affine_scale")` assertion pass even if the
-// affine_scale diagnostic itself were absent (task 6155).
+// W_MODULE_DECL_MISSING ("expected `module affine_scale_zero`"), whose text
+// contains the substring "affine_scale". The old CLI assertion was the
+// conjunction `contains("affine_scale") && contains("degenerate")`, so that
+// warning independently supplied the first conjunct and left only
+// "degenerate" doing real work — half-strength, not vacuous (the module
+// warning says neither "degenerate" nor "dimensionless", so the real
+// diagnostic could not have been absent). Hence the decl here plus a single
+// contiguous anchor in cli_affine_eval.rs (task 6155).
 
 module affine_scale_zero
 
