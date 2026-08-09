@@ -129,3 +129,60 @@ resolve_grammar_substrate() {
     GRAMMAR_SUBSTRATE_REASON="grammar-substrate preflight returned an unexpected exit code ${rc} (expected 0=usable or ${_PRD_GATE_SUBSTRATE_UNUSABLE_RC}=unusable) — treating the substrate as unusable; output: ${out:-<none>}"
     return 1
 }
+
+# prd_gate_probe_set_drop_grammar <src_json> <dst_json>
+#
+# Writes <dst_json>: <src_json> with every probe_kind=="grammar" probe removed
+# and every other probe PASSED THROUGH WHOLE, in its original order. Sets
+# PRD_GATE_KEPT_COUNT / PRD_GATE_DROPPED_COUNT.
+#
+# Probes are copied as opaque objects rather than rebuilt field-by-field, so a
+# probe-set gaining a field tomorrow keeps working here with no edit — and, more
+# importantly, so this filter can never quietly alter a row it claims only to
+# have carried across.
+#
+# Returns 1 when NOTHING would be kept (an all-grammar probe-set). The caller
+# must whole-script skip in that case: an empty probe-set is not a degraded run,
+# it is a usage error the checker rejects with exit 64 — which both gates map to
+# a gate FAIL, i.e. exactly the spurious RED this library exists to prevent.
+# (Neither committed probe-set is all-grammar today; the guard is here so a
+# future one that is cannot turn a skip into a failure.)
+prd_gate_probe_set_drop_grammar() {
+    local src="$1" dst="$2"
+
+    PRD_GATE_KEPT_COUNT=0
+    PRD_GATE_DROPPED_COUNT=0
+
+    local counts
+    counts="$(python3 - "$src" "$dst" <<'PYEOF'
+import json, sys
+
+src_path, dst_path = sys.argv[1], sys.argv[2]
+with open(src_path) as f:
+    data = json.load(f)
+
+probes = data.get("probes", [])
+kept = [p for p in probes if p.get("probe_kind") != "grammar"]
+dropped = len(probes) - len(kept)
+
+# Only the "probes" key is rewritten; any sibling top-level key the probe-set
+# grows later rides along untouched.
+out = dict(data, probes=kept)
+with open(dst_path, "w") as f:
+    json.dump(out, f, indent=2)
+    f.write("\n")
+
+print(f"{len(kept)} {dropped}")
+PYEOF
+)" || {
+        # A src that is missing, unreadable, or not JSON. Report zero kept so
+        # the caller takes the same refuse-and-skip path as an all-grammar set
+        # rather than proceeding with a dst that may not exist.
+        return 1
+    }
+
+    PRD_GATE_KEPT_COUNT="${counts% *}"
+    PRD_GATE_DROPPED_COUNT="${counts#* }"
+
+    [ "$PRD_GATE_KEPT_COUNT" -gt 0 ]
+}

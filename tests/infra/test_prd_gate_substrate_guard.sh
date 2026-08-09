@@ -235,8 +235,13 @@ if dst.get("probes") != want:
     sys.exit(1)
 
 spec = importlib.util.spec_from_file_location(
-    "pcc", f"{repo_root}/scripts/prd-capability-check.py")
+    "prd_capability_check", f"{repo_root}/scripts/prd-capability-check.py")
 pcc = importlib.util.module_from_spec(spec)
+# Register in sys.modules BEFORE exec_module — the same idiom, for the same
+# reason, as scripts/test_prd_capability_check.py:34-39: @dataclass resolves
+# cls.__module__ through sys.modules at decoration time, so an unregistered
+# module raises AttributeError on the checker's first dataclass.
+sys.modules["prd_capability_check"] = pcc
 spec.loader.exec_module(pcc)
 try:
     loaded = pcc.load_probe_set(open(dst_path).read())
