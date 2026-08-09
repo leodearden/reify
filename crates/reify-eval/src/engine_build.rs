@@ -9742,8 +9742,25 @@ impl Engine {
     ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
     ///
     /// Gate (narrow regression scope): only nodes with `realization_inputs.is_empty()`
-    /// AND at least one arg evaluating to `Value::GeometryHandle` are re-dispatched.
+    /// AND at least one arg evaluating to a KERNEL-BACKED
+    /// `Value::GeometryHandle { kernel_handle: Some(_), .. }` are re-dispatched.
     /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
+    ///
+    /// The `kernel_handle: Some(_)` requirement is load-bearing (task #5951).
+    /// This pass runs ONCE PER TEMPLATE — it is called from inside `build()`'s
+    /// `for (t_idx, template)` loop and scans ALL compute nodes on every call,
+    /// not just the current template's. So when a template is declared AHEAD of
+    /// a geometry-consuming one, this runs while that consumer's body is still
+    /// a SYMBOLIC `kernel_handle: None` placeholder (minted by
+    /// `mint_symbolic_geometry_handles_into_values`). Accepting such a
+    /// placeholder as "hydrated" wrote a content-free `realization_inputs`,
+    /// which tripped the one-shot `realization_inputs.is_empty()` candidate
+    /// gate above and permanently stranded the node's degraded first-dispatch
+    /// result — silently, because the `ReprKind::BRep` arm of
+    /// `project_realization_read_handle` is identity-only by design (PRD §4 D1)
+    /// and emits no diagnostic. Skipping the candidate instead leaves
+    /// `realization_inputs` EMPTY, so the later post-hydration pass for the
+    /// consumer's own template still fires.
     fn redispatch_geometry_consuming_compute_nodes(
         &mut self,
         module: &reify_compiler::CompiledModule,
@@ -9844,12 +9861,27 @@ impl Engine {
                     .collect()
             };
 
-            // Gate: at least one arg must now be a GeometryHandle (body was
-            // hydrated by `post_process_geometry_handle_cells` above).
-            if !arg_values
-                .iter()
-                .any(|v| matches!(v, reify_ir::Value::GeometryHandle { .. }))
-            {
+            // Gate: at least one arg must now be a KERNEL-BACKED GeometryHandle
+            // (body was hydrated by `post_process_geometry_handle_cells` above).
+            //
+            // Task #5951: `kernel_handle: Some(_)` is required, not incidental.
+            // A `kernel_handle: None` handle is the SYMBOLIC placeholder minted
+            // by `mint_symbolic_geometry_handles_into_values` for a body that
+            // has not realized yet — which is exactly what this per-template
+            // pass sees for a consumer declared AFTER the template currently
+            // being built. Treating it as hydrated wrote a content-free
+            // `realization_inputs` and latched the Phase-1 candidate gate,
+            // stranding the node forever. `continue`ing leaves that gate
+            // untripped so a later pass can do the real work.
+            if !arg_values.iter().any(|v| {
+                matches!(
+                    v,
+                    reify_ir::Value::GeometryHandle {
+                        kernel_handle: Some(_),
+                        ..
+                    }
+                )
+            }) {
                 continue;
             }
 
@@ -9911,8 +9943,21 @@ impl Engine {
             // Rebuild realization_inputs from the hydrated arg_values.
             // After the pre-tessellation pass above, BRep bodies hit the store
             // and project_realization_read_handle returns Some(SurfaceMesh).
+            //
+            // Task #5951: probe through `realization_probe_args`, the task γ /
+            // #4954 symbolic-handle downgrade, exactly as the two `@optimized`
+            // dispatch sites in `engine_eval.rs` do — making this the third
+            // consistent call site instead of the one that bypassed the guard.
+            // The gate above already skips a candidate with no kernel-backed
+            // arg, so this is belt-and-braces: it keeps a symbolic handle out
+            // of `realization_inputs` even in a MIXED-arg node (one hydrated
+            // body plus one still-symbolic sibling), and keeps the invariant
+            // true if the gate is ever widened. The RAW `arg_values` are left
+            // untouched for `run_compute_dispatch`/`persistent_cache_key`, so
+            // the trampoline still sees the real arg shape.
+            let probe_args = crate::engine_eval::realization_probe_args(&arg_values);
             let (realization_inputs, realization_read_handles, proj_diags) =
-                self.build_compute_realization_inputs(&arg_values, &graph_snapshot);
+                self.build_compute_realization_inputs(&probe_args, &graph_snapshot);
             diagnostics.extend(proj_diags);
 
             if realization_inputs.is_empty() {
