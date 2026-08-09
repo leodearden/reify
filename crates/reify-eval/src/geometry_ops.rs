@@ -8647,7 +8647,12 @@ fn resolve_density_arg(
         Acceptance::Accepted(si) => Some(si),
         Acceptance::Undefined => None,
         Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(helper_name, "density")));
+            // Contract A. Same shared code as the LENGTH chokepoint (INV-SF-6),
+            // deliberately still `Severity::Warning` — see `resolve_spec_arg`.
+            diagnostics.push(
+                Diagnostic::warning(rej.message(helper_name, "density"))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
             None
         }
     }
@@ -8780,7 +8785,29 @@ fn resolve_spec_arg(
         Acceptance::Accepted(si) => Some(si),
         Acceptance::Undefined => None,
         Acceptance::Rejected(rej) => {
-            diagnostics.push(Diagnostic::warning(rej.message(builtin, arg_name)));
+            // SEVERITY SPLIT — deliberate, and the reason is load-bearing
+            // (task 5743, units-length β / decision D9).
+            //
+            // This emit gains the shared `DimensionedArgRejected` code so
+            // INV-SF-6 holds everywhere an `ArgSpec` rejection is emitted, but
+            // KEEPS `Severity::Warning`, unlike the promoted chokepoint at
+            // `eval_named_arg_length` (which returns a hard `Err` that drops the
+            // op). The difference is in kind, not in taste: this helper returns
+            // `Option<f64>` and its callers CONTINUE on `None` with no paired
+            // op-compile Error, so promoting it would flip `reify eval` from exit
+            // 0 to exit 1 for `edges_at_height` z/tol, `geo_equiv` tol,
+            // `faces_by_normal` tol (an ANGLE position owned by PRD 3) and the
+            // density ladder — positions no PRD §6 boundary row covers and whose
+            // migration this leaf does not own. The promotion is filed as a
+            // follow-up rather than smuggled in with the code.
+            //
+            // Structurally this covers Contract C's `resolve_length_scalar_arg`,
+            // the arbitrary-dimension `resolve_scalar_dim_arg`, and the hint-less
+            // ANGLE spec that PRD 3 will later give a migration hint.
+            diagnostics.push(
+                Diagnostic::warning(rej.message(builtin, arg_name))
+                    .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
+            );
             None
         }
     }
