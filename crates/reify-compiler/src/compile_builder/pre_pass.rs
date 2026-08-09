@@ -15,16 +15,29 @@ use crate::annotations::is_known_module_pragma;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::type_resolution::convert_type_params;
 
-/// Forward every entry in `parsed.errors` as a warning diagnostic on `ctx`.
+/// Forward every entry in `parsed.errors` as an ERROR diagnostic on `ctx`.
 ///
-/// Parse errors are reported as warnings (not errors) because the parser has
-/// already produced a (partial) tree — compilation continues best-effort and
-/// any hard failures surface as errors from the phase that can't resolve the
-/// malformed declaration.
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// A `ParseError` means the CST carried an ERROR or MISSING node, so the lowered AST no
+/// longer corresponds to the source: a declaration may have been dropped, or two statements
+/// fused into one. Any value computed from such a module is untrustworthy, and the danger is
+/// precisely that it is not obviously wrong — a call whose target vanished can resolve to a
+/// same-named prelude fn and return a plausible number, or fall through to undef.
+///
+/// These were warnings, on the reasoning that the parser had produced a partial tree and
+/// later phases would raise errors for anything they could not resolve. Measured, that does
+/// not hold: a fn-body `let` missing its `;` collapses the whole declaration, every later
+/// phase resolves happily against what remains, and the module compiles "clean" with a
+/// different answer.
+///
+/// This ALIGNS the single-module path with the module-DAG path, which already returns
+/// `Diagnostic::error` and refuses (`module_dag.rs`'s parse-error arms). The two paths
+/// disagreeing was the leak: the same malformed source was refused when imported and
+/// silently accepted when compiled alone.
 pub(crate) fn forward_parse_errors(ctx: &mut CompilationCtx, parsed: &ParsedModule) {
     for err in &parsed.errors {
         ctx.diagnostics.push(
-            Diagnostic::warning(format!("parse error: {}", err.message))
+            Diagnostic::error(format!("parse error: {}", err.message))
                 .with_label(DiagnosticLabel::new(err.span, "parse error")),
         );
     }
