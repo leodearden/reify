@@ -85,3 +85,81 @@ fn nested_fault_in_fn_body_does_not_silently_drop_the_binding() {
          source:\n{src}",
     );
 }
+
+/// Render every diagnostic as a `(message, start, end)` triple so a failure is diagnosable
+/// from the test output alone.
+fn triples(m: &reify_ast::ParsedModule) -> Vec<(&str, u32, u32)> {
+    m.errors
+        .iter()
+        .map(|e| (e.message.as_str(), e.span.start, e.span.end))
+        .collect()
+}
+
+/// The missing-separator diagnostic must NAME the cause and point at the ABSORBING `let`
+/// line — not at the whole declaration, and not at the absorbed line one row later.
+///
+/// This is the verbatim t9 shape from the probe. Measured: tree-sitter collapses the entire
+/// `function_definition` into `(ERROR [3,0]-[6,1])`, inside which recovery fuses the `let`
+/// RHS with the following line into one `binary_expression`. Reporting that whole blob is
+/// what made the error appear to point at an unrelated later line.
+#[test]
+fn missing_semicolon_after_fn_let_is_located_at_the_let_line() {
+    let source = "structure T {\n  let v = f(1)\n}\nfn f(i: Int) -> Real {\n  let x0 = cos(0deg)\n  x0 * sgn(i, 0)\n}\n";
+
+    // Offsets via `str::find` — never hard-coded, so the test does not go stale when the
+    // fixture is edited (convention from `auto_type_arg_tests.rs`).
+    let let_off = source.find("let x0").expect("fixture must contain 'let x0'") as u32;
+    let absorbed_end = (source.find("x0 * sgn").expect("fixture must contain 'x0 * sgn'")
+        + "x0 * sgn(i, 0)".len()) as u32;
+    let fn_kw_off = source.find("fn f(").expect("fixture must contain 'fn f('") as u32;
+
+    let m = reify_syntax::parse(source, ModulePath::single("t"));
+
+    // (a) Something must be reported at all.
+    assert!(
+        !m.errors.is_empty(),
+        "INV-SF-7 violated — omitting the `;` after `let x0` produced NO diagnostic.\n\
+         source:\n{source}",
+    );
+
+    // (b) The message must explain the actual cause, not emit a generic "syntax error".
+    let separator_errors: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("';'") && e.message.contains("let"))
+        .collect();
+    assert!(
+        !separator_errors.is_empty(),
+        "expected a diagnostic naming the missing `;` after a `let` binding; the reported \
+         errors explain nothing actionable.\n\
+         got: {:?}",
+        triples(&m),
+    );
+
+    // (c) That diagnostic must be LOCAL to the absorbing region: it may not start at the
+    // `fn` keyword (whole-declaration blob) nor run past the absorbed expression.
+    let localised = separator_errors
+        .iter()
+        .any(|e| e.span.start >= let_off && e.span.end <= absorbed_end);
+    assert!(
+        localised,
+        "expected a separator diagnostic whose span lies inside the absorbing region \
+         (bytes {let_off}..{absorbed_end} — from `let x0` through the absorbed \
+         `x0 * sgn(i, 0)`); every one either starts before the `let` or runs past the \
+         absorbed expression.\n\
+         got: {:?}",
+        triples(&m),
+    );
+
+    // (d) Belt and braces: the whole-declaration blob span must be gone entirely.
+    let blob = m.errors.iter().find(|e| e.span.start < fn_kw_off + 1);
+    assert!(
+        blob.is_none(),
+        "a diagnostic still starts at or before the `fn` keyword (byte {fn_kw_off}), i.e. it \
+         spans the whole declaration rather than the absorbing line.\n\
+         offender: {:?}\n\
+         got: {:?}",
+        blob.map(|e| (&e.message, e.span.start, e.span.end)),
+        triples(&m),
+    );
+}
