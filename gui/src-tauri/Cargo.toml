@@ -39,7 +39,16 @@ tower-lsp.workspace = true
 tauri = { workspace = true, optional = true }
 tauri-plugin-dialog = { version = "2", optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
-tokio = { workspace = true, features = ["process", "time"] }
+# `sync` and `rt` are named HERE, by the crate that uses them, rather than being
+# inherited from another crate in the same build. `main.rs` already uses
+# `tokio::sync::Mutex`, and `large_stack.rs`/`lsp_bridge.rs` use
+# `tokio::sync::oneshot` + `tokio::runtime::Handle` (task 5772). Those compiled
+# before only via cross-crate feature unification — the workspace root declares
+# `sync`/`rt-multi-thread`, and cargo builds tokio once with the UNION of every
+# dependent's features. That is a silent dependency on some other crate in the
+# build keeping them enabled, and it breaks the moment `reify-gui` is built with
+# a narrower feature slice.
+tokio = { workspace = true, features = ["process", "time", "sync", "rt"] }
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
