@@ -95,7 +95,7 @@ const _: () = assert!(
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
-/// Thread name for [`run_on_worker`]'s single PERSISTENT large-stack thread.
+/// Thread name for the persistent ENGINE lane — [`run_on_worker`]'s thread.
 ///
 /// Distinct from both per-call names so a backtrace or profiler row says which
 /// TIER the work arrived on, not just that it is large-stack work. This is the
@@ -105,6 +105,19 @@ const _: () = assert!(
 pub const WORKER_THREAD_NAME: &str = "reify-engine-w";
 const _: () = assert!(
     WORKER_THREAD_NAME.len() <= 15,
+    "thread name must fit Linux's 15-byte pthread_setname_np limit"
+);
+
+/// Thread name for the persistent LSP lane — [`LSP_LANE`]'s thread.
+///
+/// A SECOND long-lived thread earns a second name for the same reason the first
+/// did, and more sharply: the two lanes exist precisely so a keystroke-frequency
+/// stall and a geometry-evaluation stall are different events, and a shared name
+/// would make them indistinguishable in exactly the capture where telling them
+/// apart matters. Same 15-byte budget as [`COMPILE_THREAD_NAME`].
+pub const LSP_WORKER_THREAD_NAME: &str = "reify-lsp-w";
+const _: () = assert!(
+    LSP_WORKER_THREAD_NAME.len() <= 15,
     "thread name must fit Linux's 15-byte pthread_setname_np limit"
 );
 
@@ -249,55 +262,102 @@ type JobReply<T> = Result<T, Box<dyn std::any::Any + Send>>;
 /// queue push.
 type JobSender = std::sync::Mutex<std::sync::mpsc::Sender<Job>>;
 
-/// The process-wide persistent worker, created at most once.
+/// One persistent large-stack worker: a NAME plus the queue feeding it.
 ///
-/// [`std::sync::OnceLock`] gives lazy creation (a session that never touches the
-/// engine never pays for the 256 MiB mapping) and exactly-once semantics.
-/// `None` records that the OS REFUSED the mapping, so every call degrades to
-/// inline execution instead of retrying a spawn that will keep failing.
+/// A lane is created lazily on first use and lives for the process. Everything
+/// about the mechanism — the 256 MiB stack, the single-consumer queue, the
+/// explicit `None`-on-spawn-failure record, the never-dropped `Sender` — is
+/// shared by every lane; a lane is an INSTANCE, not a variant.
 ///
-/// Holding the `Sender` here forever is deliberate: the channel therefore never
-/// disconnects on its own, so the worker's `for job in rx` loop parks on an
-/// empty queue rather than exiting.
-static WORKER: std::sync::OnceLock<Option<JobSender>> = std::sync::OnceLock::new();
-
-/// Lazily create the persistent worker, yielding its queue — or `None` if the OS
-/// refused the [`COMPILE_STACK_SIZE`] mapping.
+/// # Why more than one lane
 ///
-/// The spawn failure is recorded EXPLICITLY as `None` rather than inferred from
-/// a subsequently-dead channel: nothing documents that `Builder::spawn` drops
-/// the closure it could not run, and a leaked `Receiver` would make every `send`
-/// succeed into a queue nobody drains — i.e. a hang, the one outcome this module
-/// must never produce.
-fn worker_sender() -> Option<&'static JobSender> {
-    WORKER
-        .get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel::<Job>();
-            match std::thread::Builder::new()
-                .name(WORKER_THREAD_NAME.to_string())
-                .stack_size(COMPILE_STACK_SIZE)
-                .spawn(move || {
-                    // Parks while the queue is empty. `rx` only ends when the
-                    // `Sender` in `WORKER` drops, which never happens, so this
-                    // loop lives as long as the process.
-                    for job in rx {
-                        job();
-                    }
-                }) {
-                Ok(_handle) => Some(std::sync::Mutex::new(tx)),
-                Err(e) => {
-                    // Same warning shape as `run_on_large_stack`'s inline fallback.
-                    eprintln!(
-                        "Warning: failed to spawn {WORKER_THREAD_NAME} thread ({e}); \
-                         large-stack engine work will run on the caller's \
-                         default-size stack instead"
-                    );
-                    None
-                }
-            }
-        })
-        .as_ref()
+/// The alternative — one thread for all large-stack work — is a latency
+/// regression, not a simplification. LSP dispatch never takes the engine mutex,
+/// so it shares no state with engine work and serializing the two buys nothing;
+/// but a single-consumer queue would make a `textDocument/hover` queue behind an
+/// in-flight `set_parameter` geometry evaluation (hundreds of ms to seconds).
+/// Since `lsp_request` fires on effectively every keystroke and cursor move,
+/// that head-of-line blocking would land on the highest-frequency path in the
+/// GUI, where today the two run concurrently on the tokio runtime.
+///
+/// A second lane costs one extra thread whose 256 MiB stack is a virtual-address
+/// reservation committed page-by-page — near-zero RSS until used — and it is
+/// created only if something actually submits to it.
+pub(crate) struct Lane {
+    /// The lane thread's name, for backtraces, `top -H` and profiler rows.
+    name: &'static str,
+    /// The lazily-created queue. `None` records that the OS REFUSED the mapping.
+    queue: std::sync::OnceLock<Option<JobSender>>,
 }
+
+impl Lane {
+    /// Declare a lane. `const` so lanes can be `static`s created at no runtime
+    /// cost; the thread itself is not spawned until [`Lane::sender`] is first
+    /// called.
+    const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            queue: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Lazily create this lane's worker, yielding its queue — or `None` if the
+    /// OS refused the [`COMPILE_STACK_SIZE`] mapping.
+    ///
+    /// [`std::sync::OnceLock`] gives lazy creation (a session that never touches
+    /// this lane never pays for the 256 MiB mapping) and exactly-once semantics.
+    ///
+    /// The spawn failure is recorded EXPLICITLY as `None` rather than inferred
+    /// from a subsequently-dead channel: nothing documents that `Builder::spawn`
+    /// drops the closure it could not run, and a leaked `Receiver` would make
+    /// every `send` succeed into a queue nobody drains — i.e. a hang, the one
+    /// outcome this module must never produce.
+    ///
+    /// Holding the `Sender` in the `OnceLock` forever is deliberate: the channel
+    /// therefore never disconnects on its own, so the lane's `for job in rx`
+    /// loop parks on an empty queue rather than exiting.
+    pub(crate) fn sender(&'static self) -> Option<&'static JobSender> {
+        self.queue
+            .get_or_init(|| {
+                let (tx, rx) = std::sync::mpsc::channel::<Job>();
+                let name = self.name;
+                match std::thread::Builder::new()
+                    .name(name.to_string())
+                    .stack_size(COMPILE_STACK_SIZE)
+                    .spawn(move || {
+                        // Parks while the queue is empty. `rx` only ends when
+                        // the `Sender` in the `OnceLock` drops, which never
+                        // happens, so this loop lives as long as the process.
+                        for job in rx {
+                            job();
+                        }
+                    }) {
+                    Ok(_handle) => Some(std::sync::Mutex::new(tx)),
+                    Err(e) => {
+                        // Same warning shape as `run_on_large_stack`'s inline
+                        // fallback.
+                        eprintln!(
+                            "Warning: failed to spawn {name} thread ({e}); that \
+                             lane's work will run on the caller's default-size \
+                             stack instead"
+                        );
+                        None
+                    }
+                }
+            })
+            .as_ref()
+    }
+}
+
+/// The ENGINE lane: the projection / incremental-re-eval Tauri commands, fed by
+/// [`run_on_worker`]. Named [`WORKER_THREAD_NAME`].
+pub(crate) static ENGINE_LANE: Lane = Lane::new(WORKER_THREAD_NAME);
+
+/// The LSP lane: `lsp_request` dispatch. Named [`LSP_WORKER_THREAD_NAME`].
+///
+/// Separate from [`ENGINE_LANE`] so a hover never queues behind a geometry
+/// evaluation — see [`Lane`]'s "Why more than one lane".
+pub(crate) static LSP_LANE: Lane = Lane::new(LSP_WORKER_THREAD_NAME);
 
 /// Run `f` to completion on the process-wide PERSISTENT large-stack thread,
 /// BLOCKING the caller until it returns, and hand back its value.
@@ -364,29 +424,31 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    dispatch(worker_sender(), f)
+    dispatch(ENGINE_LANE.sender(), f)
 }
 
-/// Submit `f` to `sender`'s worker and block for its result — or, given `None`,
+/// Submit `f` to `sender`'s lane and block for its result — or, given `None`,
 /// run `f` INLINE on the caller's own stack.
 ///
 /// This is [`run_on_worker`] with its "is there a worker?" question turned into
-/// a parameter, which is the whole point: it makes the DEGRADED arm reachable
-/// from a test. Task 5357 documented the same inline-fallback policy for
+/// a parameter, which does double duty. It makes the DEGRADED arm reachable from
+/// a test — task 5357 documented the same inline-fallback policy for
 /// [`run_on_large_stack`] but could not exercise it, because provoking a
-/// `pthread_create` failure from a unit test is not possible. Passing `None`
-/// here tests the seam instead of the OS.
+/// `pthread_create` failure from a unit test is not possible, so passing `None`
+/// here tests the seam instead of the OS. And it makes the submission logic
+/// LANE-AGNOSTIC: a second lane is a second `Option<&JobSender>` argument, not a
+/// second code path, which is what keeps "one worker design" literally true.
 ///
 /// `pub(crate)` is deliberate and sufficient: the tests are an in-crate
 /// `#[cfg(test)] mod tests`, so the seam adds no public API surface. Callers
-/// outside this module want [`run_on_worker`], which supplies the real worker.
+/// outside this module want [`run_on_worker`], which supplies the engine lane.
 pub(crate) fn dispatch<F, T>(sender: Option<&JobSender>, f: F) -> T
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
     let Some(sender) = sender else {
-        // No worker (the OS refused the mapping; already warned once, in the
+        // No lane (the OS refused the mapping; already warned once, in the
         // initialiser). Run inline — a panic here propagates naturally, so this
         // arm needs no forwarding of its own.
         return f();
@@ -413,7 +475,7 @@ where
         .send(job);
 
     if let Err(std::sync::mpsc::SendError(job)) = send_result {
-        // The worker is gone. `send` returned the job unrun and the reply
+        // The lane's worker is gone. `send` returned the job unrun and the reply
         // channel is still live in this frame, so run it here: the result
         // arrives over the same channel below. Degraded, never lost.
         job();
@@ -427,10 +489,11 @@ where
         // Unreachable while the job catches its own unwind: the reply channel
         // can only disconnect if the job was dropped unrun. `recv` on a
         // disconnected channel returns AT ONCE, so this is a loud failure, not
-        // a block.
+        // a block. Deliberately lane-agnostic: `dispatch` is shared by every
+        // lane, and naming one of them here would misreport the other.
         Err(_) => panic!(
-            "the {WORKER_THREAD_NAME} worker dropped a job without answering: \
-             its reply channel disconnected before a result arrived"
+            "a large-stack lane dropped a job without answering: its reply \
+             channel disconnected before a result arrived"
         ),
     }
 }
