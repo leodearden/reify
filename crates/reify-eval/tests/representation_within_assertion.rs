@@ -74,6 +74,80 @@ structure Checker {
 }
 "#;
 
+/// A module whose `RepresentationWithin` subject param carries a **default**
+/// (`= MyGeom()`), so every operand is genuinely *defined* at check time.
+///
+/// That default is load-bearing for the non-measuring-surface tests below.
+/// Without it (as in [`INTERCEPTION_SOURCE`]) the language-level checker's
+/// reason for an Indeterminate is the correctly-attributed `undefined inputs:
+/// Checker.subject`; only a DEFINED `StructureInstance` operand reaches the
+/// `classify_undef` branch that emits the *misattributed* `operator undefined
+/// for these operand kinds: StructureInstance` — which is exactly the message
+/// task ζ (C-SURFACE 1) exists to eliminate.
+///
+/// A single constraint, so the whole batch is RepresentationWithin.
+///
+/// `mm` is a built-in length unit — no stdlib needed (matching
+/// `INTERCEPTION_SOURCE`'s style; `um` would require stdlib).
+const NON_MEASURING_SURFACE_SOURCE: &str = r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom = MyGeom()
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#;
+
+// ── ζ / C-SURFACE 1: non-measuring surface ───────────────────────────────────
+
+/// C-SURFACE (1): a `RepresentationWithin` shape must never fall through to the
+/// language-level `ConstraintChecker` on a surface that never measured.
+///
+/// A fresh `make_simple_engine()` has an EMPTY `achieved_repr_tol` and
+/// `capture_repr_tol: false` — i.e. it *is* the non-measuring `reify build`
+/// surface, so no injection seam is needed here.
+///
+/// RED before ζ's guard reorder: `dispatch_constraints`' two-conjunct fast-path
+/// guard fires (map empty, registry empty) and early-returns to
+/// `SimpleConstraintChecker`, which emits the misattributed
+/// `operator undefined for these operand kinds: StructureInstance`.
+#[test]
+fn non_measuring_surface_does_not_reach_language_checker() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    // A fresh engine already has an empty `achieved_repr_tol` — deliberately no
+    // `set_achieved_repr_tol_for_test` call here.
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: a surface that never measured yields Indeterminate — never a false Violated"
+    );
+
+    let offenders: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("operator undefined for these operand kinds"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "C-SURFACE 1: a RepresentationWithin assertion must not reach the \
+         language-level ConstraintChecker on a non-measuring surface — the checker \
+         has no access to achieved_repr_tol and misattributes the Indeterminate to \
+         the operand kinds. Offending diagnostics: {offenders:#?}"
+    );
+}
+
 // ── BT1: over-bound → Violated ────────────────────────────────────────────────
 
 /// BT1: achieved value ABOVE the bound (5e-3 m > 1 mm = 1e-3 m) → `Violated`.
