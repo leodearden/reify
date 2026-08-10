@@ -351,9 +351,21 @@ unaffected: `transform3_identity` builds `Length` zeros.
 > carries `Length` and only `Length`. Grounds: decision D11 of
 > `docs/prds/v0_6/units-length-gate-completion.md` — after the `Real` →
 > `Scalar{Dimensionless}` unification, "also admits `Dimensionless`" means "also
-> admits bare numbers". This was the last `Length | Dimensionless` admission in
-> the transform family. The rejection is a `Warning` (the op degrades to `Undef`
-> within one primitive), so `reify eval` still exits 0.
+> admits bare numbers". This closes the last `Length | Dimensionless` disjunction
+> **on this seam**, which is the whole of the ruling's scope. The rejection is a
+> `Warning` (the op degrades to `Undef` within one primitive), so `reify eval`
+> still exits 0.
+
+**Scope: this seam only.** The gate above is *not* evidence that the transform
+family is uniformly `Length`-only. `transform3`'s signature above declares
+`translation: Vector3<Length>`, but the evaluator applies no dimension check to
+it — only a 3-component `Vector` shape check — and `transform_compose` /
+`transform_inverse` propagate whatever dimension they are handed. So
+`transform3(orient_identity(), vec3(1.0, 2.0, 3.0))` still constructs, composes,
+and inverts without complaint; the rejection surfaces only downstream at
+`transform_log`. That asymmetry is deliberate and owned elsewhere — task #6089
+rules `Transform` translation `Length` and stamps the constructor arms, and
+#5747 (R12/R8) narrows the affine and pose-decode readers.
 
 By CONTRAST, `joint_jacobian` (§13.1) shares the `Map { angular, linear }` shape
 but its columns are ∂pose/∂q, **not** twists — a revolute column's linear part is
