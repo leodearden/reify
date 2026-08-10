@@ -219,6 +219,53 @@ arc-measure primitive, not a quotient), #6126/#6089 (translation stays
 Length, never swept into angle), #5799 (TORQUE = N·m/rad), and
 #5825→#5844 (moment of inertia carries rad⁻²).
 
+## INV-AD-1 `angle-crossings-explicit`
+
+**Rule**: Any proposal that gives a derived or geometric ratio an Angle
+type is wrong unless it introduces `rad` at a named primitive, channel,
+or helper. A bare quotient producer never yields Angle on its own.
+
+**Checkable design question(s)**: Does this feature type anything Angle
+whose producer is a quotient — and if so, which named crossing asserts
+the arc measure? Is there any path to an Angle-typed value in this
+feature that does not pass through a named primitive/channel/helper?
+
+**Evidence**: inverse trig and `phase`/`arg` return `Type::angle()` at
+the static layer (`crates/reify-compiler/src/math_signatures.rs:357,
+:375`) and tag `DimensionVector::ANGLE` at eval
+(`crates/reify-stdlib/src/trig.rs:20-35`) — every shipped Angle producer
+is a named site, never a bare quotient.
+
+**House pattern**: `asin`/`atan2` (shipped,
+`crates/reify-stdlib/src/trig.rs:20-35`); `orient_log`
+(`crates/reify-stdlib/src/orientation.rs:203`) as the ruled-pending
+exemplar (#6080) — a 2·atan2 arc-measure primitive, not a quotient, not
+yet Angle-tagged at eval; and #6164's `ElasticResult.rotation` = curl/2
+channel, cited as RULED, PENDING (#6164) — confirmed absent from
+`crates/reify-compiler/stdlib/solver_elastic.ri` today, so never
+describe it as shipped.
+
+## INV-AD-2 `quotient-pure-derivative-algebra`
+
+**Rule**: No operator over fields or tensors ever manufactures `rad`
+from a spatial or temporal derivative. Operator registry rows
+(gradient, divergence, curl, laplacian) stay pure quotient — basis
+`Ruling("#6164")`.
+
+**Checkable design question(s)**: Does this feature add or retype an
+operator row such that `rad` appears in a codomain the domain did not
+carry?
+
+**Evidence**: `dim_quotient_type` / `differential_codomain`
+(`crates/reify-core/src/field_calculus.rs:84+`), consumed by every
+differential-operator arm (`crates/reify-compiler/src/units.rs:1190`
+gradient, `:1204` divergence) — verified rad-free: the result dimension
+is always the codomain/domain quotient, never a named angle unit.
+
+**House pattern**: `differential_codomain` itself is the standing
+precedent for quotient purity — the shape every future field/tensor
+operator row copies.
+
 ## Census seam
 
 Reify's confusion-codebook entries
