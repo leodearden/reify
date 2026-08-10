@@ -125,10 +125,17 @@ lane_x_flock_acquire() {
     fi
 
     # N-slot shuffle-acquire loop — delegated to scripts/lib_slot_acquire.sh,
-    # called with N=1 (the coarse single-slot variant) and no REASON (3-arg;
-    # no @@REIFY_CLOCK_*@@ markers — the cold-lane wait is not part of any
-    # verify's clock-stop accounting).
-    if slot_acquire "$LOCK" 1 "$WAIT"; then
+    # called with N=1 (the coarse single-slot variant).
+    #
+    # The 4th REASON stays EMPTY by design — no @@REIFY_CLOCK_*@@ markers,
+    # because the cold-lane wait is not part of any verify's clock-stop
+    # accounting, and supplying one would newly exclude this wait from
+    # dark-factory's verify timeout budget. The empty arg is load-bearing, not
+    # padding: it is the established way to say "no clock markers here".
+    #
+    # The 5th TIMEOUT_REASON is separate precisely so this call can name its
+    # deadline sentinel without touching that clock-stop behaviour.
+    if slot_acquire "$LOCK" 1 "$WAIT" "" "lane_x_slot_starvation"; then
         _REIFY_LANE_X_FLOCK_HELD=1
         echo "lib_lane_x_flock.sh: acquired Lane-X lock (LOCK=${LOCK}) after ${SLOT_ACQUIRE_ELAPSED}s" >&2
         return 0
