@@ -20,7 +20,7 @@
 | μ | **6177** | high | γ1, γ2, δ, ζ, η | leaf · **integration gate** |
 
 **Machine-readable twin:** `docs/prds/v0_6/precision-nominal-representation-guarantee.capability-manifest.yaml`
-(12 labels · 64 capability bindings · **0 FAIL** · 42 mechanical `delivered_check`s, 22 `manual`).
+(12 labels · 66 capability bindings · **0 FAIL** · 43 mechanical `delivered_check`s, 23 `manual`).
 
 **G3 grammar gate: N/A.** This PRD adds **no novel syntax** — every `.ri` construct it
 relies on (`#precision(<Length>)`, `RepresentationWithin(subject, B)`, `structure`/`param`/
@@ -28,14 +28,64 @@ relies on (`#precision(<Length>)`, `RepresentationWithin(subject, B)`, `structur
 fixtures. No grammar fixture is fabricated; per `references/grammar-gate.md` the gate is a
 no-op here and is recorded as such rather than as a passing fixture.
 
-**D3 harness (`scripts/prd-decompose-verify.mjs`) was NOT invoked.** The Workflow tool is
-disabled for this session by an explicit operator directive. Every binding below was
-therefore verified **by hand, by direct read of tracked source at `0560ca6f0a`**, with the
-exact `git grep` / `sed` anchors recorded per row. Two rows (η, δ) are `PASS-with-amendment`:
-the substrate read *falsified* the PRD's scoping and the correction is written verbatim into
-the filed task as a **BINDING DECOMPOSE AMENDMENT**. No row is bound to a script that does
-not exist, and no row is marked PASS on the strength of a sibling leaf's future work — every
-producer cited is either wired on `main` today or an **upstream** task in the same batch.
+**Verification was done in two passes.** Pass 1 (at filing time): every binding below verified
+**by hand, by direct read of tracked source at `0560ca6f0a`**, with the exact `git grep` / `sed`
+anchors recorded per row, plus all 42 mechanical `delivered_check`s executed. Two rows (η, δ)
+came back `PASS-with-amendment`: the substrate read *falsified* the PRD's scoping, and the
+correction is written verbatim into the filed task as a **BINDING DECOMPOSE AMENDMENT**.
+No row is bound to a script that does not exist, and no row is marked PASS on the strength of
+a sibling leaf's future work — every producer cited is either wired on `main` today or an
+**upstream** task in the same batch.
+
+Pass 2 (after filing): the **D3 γ-verification workflow was run** — see *D3 verdict* below. It
+executed real probes and changed three things. The corrections are recorded in the affected
+rows and written into the affected tasks.
+
+---
+
+## D3 verdict — `scripts/prd-decompose-verify.mjs`, run `wf_c00d1e3e-262` (2026-08-10)
+
+12 agents · Enumerator → Prover ‖ Adversary → Synthesize over 3 leaves (η, γ1+γ2, κ) — the
+leaves whose premises are observable **today**. The harness's probe kinds are
+`grammar` / `check` / `ir` only, so it cannot drive `reify build`; the export-surface probes
+below were run by hand alongside it.
+
+**Verdict: `blocks: true`, 12 FAIL rows, all `role: adversary`.** Read carefully before acting
+on that: in this harness an adversary `FAIL` means *"the premise as worded is false"*, not
+*"the probe errored"*. Six of the twelve (all on the γ leaf) carry **no `command`, no
+`exit_code` and no text** — and two of those contradict a direct measurement below. They are
+recorded as **unsubstantiated and not acted on**. The remaining six are evidence-backed and
+each produced a task amendment.
+
+**Binary-staleness control.** `prd-capability-check.py` resolves `target/release/reify` (Jul 28,
+stale — 11 commits have since touched the probe-relevant files) ahead of `target/debug/reify`.
+Every load-bearing probe was therefore **re-run by hand with `REIFY_BIN` pinned to the fresh
+debug build**; the two agree everywhere they overlap (notably the non-circular achieved value,
+`6.202e-4 m`, measured independently by both).
+
+### What D3 confirmed
+
+| Claim | Evidence |
+|---|---|
+| **§1.1 reproduces verbatim at HEAD** | 1 m sphere, `#precision(0.3mm)`, `RepresentationWithin(subject, 1mm)`: `reify check` → `OK` + `All constraints satisfied.` + exit 0, while `reify build -o out.stl` → `INDETERMINATE` + `Wrote out.stl (15284 bytes)` + `Triangles: 304` + **exit 0**. 304 triangles for a 1 m sphere is the hardcoded 0.1 m deflection. |
+| **ζ's misattribution reproduces verbatim** | `warning: constraint CurvedBallCheck#constraint[0] indeterminate: operator undefined for these operand kinds: StructureInstance`, exit 0 — **but only when the checker's `subject` param carries a default**; without one you get `undefined inputs: <Struct>.subject`, a *different* misattribution. Recorded into task ζ (6169). |
+| **§2's dominant 2.07× tread branch** | measured **2.067×** at `d/R = 3e-4` (`#precision(0.3mm)` → achieved `6.202e-4 m`). |
+| **The F1 two-mode split** | independently re-derived by the adversary from `main.rs`, and confirmed empirically: Mode A prints a `Triangles:` line, Mode B does not and writes to the occurrence's path. |
+| **κ's circularity mechanism** | circular layout achieved `2.058e-3 m` against a 1 mm bound (≈ 2.058·B), and **30× finer `#precision` leaves the achieved value byte-identical** — the REPLACE-not-fold mechanism proved by experiment, not inferred. |
+
+### What D3 changed
+
+| # | Finding | Effect |
+|---|---|---|
+| **D3-1** | κ's anti-pattern is **not** "tautologically violated". A bound landing on a §2 downward tooth is *satisfied*: moving it 0.08 % (`0.5955mm → 0.5960mm`) flips VIOLATED → SATISFIED. | κ (6175) amended — wording must become "**generically** violated". |
+| **D3-2** | The trap is **sphere-class-specific**. The identical circular layout is SATISFIED on a cylinder and on a planar box — exactly as §2's per-class table predicts (only the sphere class exceeds `achieved/requested = 1`). | κ amended — the exemplar must carry a surface-class qualifier or the tool will contradict the doc. |
+| **D3-3** | The trigger is the **declaration site**, not a `self` subject (`extract_output_tolerance_bound` filters on `id.entity`; the subject is never consulted) — **and there is a SILENT variant**: bound declared inside geometry-owning `Sphere` with subject typed as a different structure `Peer` reports `OK` + exit 0 while `Sphere`'s own mesh is **silently coarsened 3.3× past its `#precision`**. | κ amended. This silent variant is a new INV-SF-3 hazard not in the PRD. |
+| **D3-4** | In Mode A, `std::fs::write` (`main.rs:~1062`) happens **before** `has_error_diagnostic` is evaluated (`:1105-1107`). An Error alone flips the exit code but the out-of-spec file is already on disk. | η (6170) amended — withholding the file requires gating the write itself. |
+| **D3-5** | §3.1(f)'s "nothing regresses" covers the **occurrence-driven path only**. The CLI `-o` surface needs no `Output` occurrence, so *any* bounded module is a candidate there. | η amended — re-check Mode A compatibility rather than inheriting §3.1(f). |
+| **D3-6** | `d/R = 5e-2` measures **1.201×** — off all three of §2's named branches (§2's sweeps span ≈ `3e-4 … 6.5e-4`). | α (6166) seeded with both envelope points; sizing this fourth regime is α's remit. |
+
+None of these falsify the PRD's **direction** (E + F + D) or any contract in §5. D3-1..D3-3 change
+what task κ must *write*; D3-4/D3-5 sharpen how η must be *built*; D3-6 is input data for α.
 
 ---
 
@@ -201,7 +251,7 @@ cost/reach knob, never a soundness constant (§4.2).
 | γ2-2 | `Info` severity exists and is printed | `crates/reify-core/src/diagnostics.rs:3908` `pub fn info`; `Severity` at `:98`; `report_eval_output` (`main.rs:2763`) prints every diagnostic to stderr regardless of severity. | PASS |
 | γ2-3 | `DiagnosticCode` can be attached (INV-SF-6) | `diagnostics.rs:3928` `pub fn with_code(mut self, code: DiagnosticCode) -> Self`. | PASS |
 | γ2-4 | `eval_representation_within`'s return type can widen `Option<Diagnostic>` → `Vec<Diagnostic>` without a foreign consumer break | Sole production caller is `engine_constraints.rs:365` (inside `dispatch_constraints`); remaining callers are `tolerance_combine.rs`'s own `#[cfg(test)]` block (`:1351, :1374, :1403, :1425, :1446`). Blast radius is one crate. | PASS |
-| γ2-5 | **Rejection / cap-hit is observed, not assumed** (G6 branch 4) | BT-4's fixture is committed and its premise re-derived arithmetically: `examples/representation_within.ri` is a **1 m** sphere at `#precision(50mm)` with a **1 µm** bound. At `REFINE_ATTEMPT_CAP = 4`, `d` reaches `50/2⁴ = 3.125 mm`; achieved ≈ `2.07 × 3.125 mm ≈ 6.5 mm` — **three orders above** the 1 µm bound, so the cap is genuinely exhausted. The Error path is exercised by an existing committed file, not a hypothetical. | PASS |
+| γ2-5 | **Rejection / cap-hit is observed, not assumed** (G6 branch 4) | BT-4's fixture is committed, and D3 **measured** it rather than leaving it arithmetic: `reify check examples/representation_within.ri` → exit 1, `sampled facet deviation 6.006e-2 m exceeds bound 1.000e-6 m`. Reaching 1 µm from `6.006e-2 m` needs a ~`6e4×` reduction ≈ **16 halvings** against a cap of 4 (`16×`), so the cap is exhausted with an enormous margin. *(Correction: the manifest first derived this as `2.07 × 3.125 mm ≈ 6.5 mm`, using the 2.07× tread ratio. The measured ratio at this coarse regime is **1.201×**, not 2.07× — see D3-6. The conclusion is unchanged and far stronger than the original arithmetic suggested.)* | PASS |
 | γ2-6 | BT-4 is a **cap-hit**, not a C-FLOOR refusal — the two Error paths are distinguishable | At `S = 1 m` the f32 floor is `1.19e-7 m = 0.119 µm`; BT-4's bound is `1 µm` = **8.4 × above** it, so C-FLOOR does not fire. BT-6 (`1e-9 m` on a 1 m part) is `119 ×` **below** it and fires. Distinct fixtures, distinct diagnostics, no aliasing. | PASS (`floor: 1e-6 > 1.19e-7`; `1e-9 ≤ 1.19e-7` ⇒ BT-6 refuses **by design**) |
 | γ2-7 | **INV-SF-2 caveat** — the cap-hit Error does not itself drive `reify check`'s exit | `reify check` decides exit from constraint outcomes alone (`finish_check`; recorded as a known INV-SF-2 gap in `docs/legibility/design-invariants.md` INV-SF-2 *Evidence*). γ2's cap-hit case is **already `Violated`**, so the non-zero exit comes from the verdict, not the severity. γ2 introduces **no new** INV-SF-2 violation, but must not be implemented on the assumption that the Error alone exits. Written into the task. | PASS (bound, with the assumption named) |
 
@@ -229,6 +279,8 @@ cost/reach knob, never a soundness constant (§4.2).
 | # | Capability asserted | Evidence | Verdict |
 |---|---|---|---|
 | η1 | **Rejection mechanism exists and fires** (G6 branch 4) | `main.rs:1106-1107` `let has_error_diagnostic = result.diagnostics.iter().any(\|d\| d.severity == Severity::Error);` → `:1108-1112` `if build_is_success(&outcome, has_error_diagnostic) { SUCCESS } else { FAILURE }`. The Mode-B twin is the same shape at `:1259-1265`. **Both gates read on `main` today** — η rides a live mechanism, it does not invent one. | PASS |
+| η6 | **The refusal cannot withhold the file by severity alone** (D3-4, new) | In Mode A, `cmd_build` runs `std::fs::write(path, &data)` at `main.rs:~1062` and only *then* evaluates `has_error_diagnostic` at `:1105-1107`. An Error diagnostic therefore flips the **exit code** while the out-of-spec artifact is **already on disk**. BT-7a requires only that the file is not *presented as success*, so exit-code-only is a defensible v1 — but the choice must be deliberate, and withholding the bytes means gating the write itself (main.rs is already in η's charter per F1). | PASS (hazard named) |
+| η7 | **§3.1(f)'s "nothing regresses" is narrower than stated** (D3-5, new) | The zero-`.ri`-pairs-a-bound-with-an-export measurement covers the **occurrence-driven (Mode B)** path only. The CLI `-o` surface needs no `Output` occurrence, so *every* bounded module is a candidate there — including the three committed bound-carrying fixtures. Compatibility on Mode A must be re-checked at implementation time rather than inherited from §3.1(f). | PASS (claim narrowed) |
 | η2 | **Rejection is observed ABSENT today** (the vacuity check) | Zero `.ri` in the repo pairs a bound with an export: all five files carrying `RepresentationWithin` — `crates/reify-cli/tests/fixtures/{dfm_with_repr_within,representation_within_satisfied}.ri`, `examples/{fea_bracket_member_access,representation_within}.ri`, `examples/tolerancing/gdt_pass_weave.ri` — return **0** matches for `Output\|STLOutput\|StepOutput`. Re-measured at `0560ca6f0a`. η therefore breaks no existing fixture and fires only on the currently-silent case. | PASS |
 | η3 | The refusal predicate is already implemented | `main.rs:2462` `fn module_has_representation_within(module: &CompiledModule) -> bool`, unit-tested at `:3610`. Engine-side twin arrives with β's `compute_representation_bounds`, but η **needs neither β nor 6085 nor any measurement** — the boolean is sufficient, which is why η is dependency-free. | PASS |
 | η4 | The named producer covers the surface the signal names | **FALSIFIED — see F1.** `build_outputs`/`build_outputs_with_result` are Mode **B** only; `reify build -o out.stl` is Mode **A** (`Engine::build`, `main.rs:1031`). Resolved by widening η to both modes + adding `crates/reify-cli/src/main.rs` to the lock charter; the PRD's "no CLI file is touched" Lock note is corrected to Mode B only. | **PASS-with-amendment** |
@@ -261,7 +313,7 @@ cost/reach knob, never a soundness constant (§4.2).
 | κ1 | The corpus compile gate exists and is the signal | `crates/reify-compiler/tests/examples_smoke.rs` — auto-compiles `examples/best_practices/`. | PASS |
 | κ2 | The index-consistency test exists by the exact name the signal cites | `crates/reify-compiler/tests/examples_smoke.rs:548` `fn best_practices_index_matches_corpus_directory()`. **Bound to a test that exists**, not a script that might. | PASS |
 | κ3 | The three index sites exist | `examples/best_practices/INDEX.md` ✓ and `.claude/skills/reify-design/SKILL.md` ✓ (docs-truth arm 3 — a one-line index entry, not an inline playbook). | PASS |
-| κ4 | The anti-pattern κ documents is real | `engine_build.rs:6200-6201` — `let req_tol = demanded_tols[t_idx][r_idx].unwrap_or_else(\|\| Self::effective_tessellation_tolerance(module));`. A **replace**, never a min-fold, so a bound on the geometry-owning template displaces `#precision` outright and the assertion is tautologically violated. The circular layout κ warns against is a live trap. **Text drift:** §3.1(c) writes this as `unwrap_or(…)` at `:6205`; the landed form is `unwrap_or_else(\|\| Self::…)` at `:6201`. Semantically identical — §3.1(c)'s conclusion stands verbatim, only the spelling and line differ. | PASS |
+| κ4 | The anti-pattern κ documents is real | **Mechanism confirmed by execution (D3), wording falsified three ways.** Code: `engine_build.rs:6200-6201` `let req_tol = demanded_tols[t_idx][r_idx].unwrap_or_else(\|\| Self::effective_tessellation_tolerance(module));` — a **replace**, never a min-fold. *(Text drift: §3.1(c) writes `unwrap_or(…)` at `:6205`; landed form is `unwrap_or_else(\|\| Self::…)` at `:6201` — semantically identical.)* Measured: circular layout achieved `2.058e-3 m` vs a 1 mm bound (≈ 2.058·B) → VIOLATED, while **30× finer `#precision` leaves the achieved value byte-identical** — REPLACE proved, not inferred; non-circular control at the same `#precision` achieved `6.202e-4 m` → Satisfied. **But** (D3-1) it is *not* tautological — a bound on a §2 tooth is satisfied (`0.5955mm→0.5960mm` flips the verdict); (D3-2) it is *sphere-class-specific* — cylinder and planar box are SATISFIED in the same layout; (D3-3) the trigger is the *declaration site*, not a `self` subject, **and a silent variant exists** that reports `OK` while coarsening the declaring structure's mesh 3.3×. All four written into task κ. | PASS |
 
 ### λ — Prose sites *(deps: γ1, γ2)*
 

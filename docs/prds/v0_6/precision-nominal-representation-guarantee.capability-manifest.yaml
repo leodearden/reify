@@ -3,15 +3,15 @@ schema_version: 1
 tasks:
 - label: α
   task_id: 6166
-  title: 'precision-nominal α: calibrate the refine envelope + per-iteration cost;
-    choose REFINE_ATTEMPT_CAP'
+  title: 'precision-nominal α: calibrate the refine envelope + per-iteration cost; choose
+    REFINE_ATTEMPT_CAP'
   capabilities:
   - name: violation-message-carries-the-achieved-value
-    binding: The probe recipe (bound on a SEPARATE checker structure, read the achieved
-      value off the "sampled facet deviation <X> m exceeds bound" message) is executable
-      today — eval_representation_within at crates/reify-eval/src/tolerance_combine.rs:266
-      returns (Satisfaction, Option<Diagnostic>) and the violation message carries
-      the sampled value. Shipped by tasks 4198/4199, both done.
+    binding: The probe recipe (bound on a SEPARATE checker structure, read the achieved value
+      off the "sampled facet deviation <X> m exceeds bound" message) is executable today —
+      eval_representation_within at crates/reify-eval/src/tolerance_combine.rs:266 returns
+      (Satisfaction, Option<Diagnostic>) and the violation message carries the sampled value.
+      Shipped by tasks 4198/4199, both done.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -20,10 +20,10 @@ tasks:
       - crates/reify-eval/src/tolerance_combine.rs
       expect: present
   - name: precision-threaded-bit-exact-no-reify-prescale
-    binding: The measured achieved/requested ratio is attributable to OCCT, not to
-      a reify-side pre-scale — the 0.8 SAFETY_FACTOR (tolerance_budget.rs:34) does
-      not fire on the empty-conversion BRep->BRep path (dispatcher.rs:548-561, per_stage_tolerance_for_plan
-      empty-chain pass-through). PRD §3 row, re-read at 0560ca6f0a.
+    binding: The measured achieved/requested ratio is attributable to OCCT, not to a reify-side
+      pre-scale — the 0.8 SAFETY_FACTOR (tolerance_budget.rs:34) does not fire on the empty-conversion
+      BRep->BRep path (dispatcher.rs:548-561, per_stage_tolerance_for_plan empty-chain pass-through).
+      PRD §3 row, re-read at 0560ca6f0a.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -32,10 +32,10 @@ tasks:
       - crates/reify-eval/src/tolerance_budget.rs
       expect: present
   - name: stl-export-is-useless-as-a-probe-vector
-    binding: 'NEGATIVE, observed present: crates/reify-kernel-occt/src/lib.rs:4073
-      DEFAULT_STL_TESSELLATION_TOLERANCE: f64 = 0.1, consumed at :4099 :4106 :4157
-      — a hardcoded constant with no #precision read. Substantiates α''s warning that
-      `reify build -o *.stl` cannot be used to measure the envelope.'
+    binding: 'NEGATIVE, observed present: crates/reify-kernel-occt/src/lib.rs:4073 DEFAULT_STL_TESSELLATION_TOLERANCE:
+      f64 = 0.1, consumed at :4099 :4106 :4157 — a hardcoded constant with no #precision read.
+      Substantiates α''s warning that `reify build -o *.stl` cannot be used to measure the
+      envelope.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -44,10 +44,10 @@ tasks:
       - crates/reify-kernel-occt/src/lib.rs
       expect: present
   - name: alpha-asserts-no-numeric-bound
-    binding: α PRODUCES the cap and the cost statement rather than asserting them,
-      so G6 branch 1 does not fire. D measures rather than predicts (§4.2 termination
-      holds for any finite K), so an unexpected overshoot regime changes iteration
-      count only, never correctness — α structurally cannot falsify the design.
+    binding: α PRODUCES the cap and the cost statement rather than asserting them, so G6 branch
+      1 does not fire. D measures rather than predicts (§4.2 termination holds for any finite
+      K), so an unexpected overshoot regime changes iteration count only, never correctness
+      — α structurally cannot falsify the design.
     verdict: PASS
     delivered_check:
       kind: manual
@@ -55,8 +55,8 @@ tasks:
         is a committed docs/notes/ note plus a chosen REFINE_ATTEMPT_CAP value.
 - label: β
   task_id: 6167
-  title: 'precision-nominal β: bound pre-pass (compute_representation_bounds) + shared
-    realization_belongs_to predicate'
+  title: 'precision-nominal β: bound pre-pass (compute_representation_bounds) + shared realization_belongs_to
+    predicate'
   capabilities:
   - name: shape-matcher-exists-and-is-wired
     binding: crates/reify-eval/src/tolerance_combine.rs:116 pub(crate) fn match_representation_within_shape
@@ -69,9 +69,9 @@ tasks:
       - crates/reify-eval/src/tolerance_combine.rs
       expect: present
   - name: struct-name-available-pre-tessellation
-    binding: tolerance_combine.rs:116-196 — struct_name comes from arg0.result_type
-      = Type::StructureRef(name), i.e. the subject's DECLARED type, statically available
-      before any mesh exists. The bound table can therefore be built as a pre-pass.
+    binding: tolerance_combine.rs:116-196 — struct_name comes from arg0.result_type = Type::StructureRef(name),
+      i.e. the subject's DECLARED type, statically available before any mesh exists. The bound
+      table can therefore be built as a pre-pass.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -80,10 +80,10 @@ tasks:
       - crates/reify-eval/src/tolerance_combine.rs
       expect: present
   - name: type-name-fallback-is-extractable
-    binding: tolerance_combine.rs:320 fn resolve_repr_tol_key — value-based path first,
-      then the "{struct_name}#realization[" prefix scan with max over matches. Present
-      and wired (called at :276); realization_belongs_to is extracted from it so loop
-      and assertion share one predicate (C-BOUND-1).
+    binding: tolerance_combine.rs:320 fn resolve_repr_tol_key — value-based path first, then
+      the "{struct_name}#realization[" prefix scan with max over matches. Present and wired
+      (called at :276); realization_belongs_to is extracted from it so loop and assertion
+      share one predicate (C-BOUND-1).
     verdict: PASS
     delivered_check:
       kind: grep
@@ -92,25 +92,23 @@ tasks:
       - crates/reify-eval/src/tolerance_combine.rs
       expect: present
   - name: drift-guarantee-is-tested-downstream-not-upstream
-    binding: BT-1 (task μ) asserts refined-set == evaluated-set. μ DEPENDS ON the
-      chain containing β, so the test is downstream of the producer — the correct
-      DAG direction, not an inversion.
+    binding: BT-1 (task μ) asserts refined-set == evaluated-set. μ DEPENDS ON the chain containing
+      β, so the test is downstream of the producer — the correct DAG direction, not an inversion.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a DAG-direction property, verified by the wired add_dependency edges
-        rather than by any pattern in tracked source.
+      reason: a DAG-direction property, verified by the wired add_dependency edges rather
+        than by any pattern in tracked source.
 - label: γ1
   task_id: 6171
-  title: 'precision-nominal γ1: measure-and-refine loop at the tessellate call site
-    (C-LOOP/KEEP/CAP/FLOOR/GLOBAL/ZERO)'
+  title: 'precision-nominal γ1: measure-and-refine loop at the tessellate call site (C-LOOP/KEEP/CAP/FLOOR/GLOBAL/ZERO)'
   capabilities:
   - name: metric-wired-on-production-path-and-takes-no-tolerance-arg
     binding: 'Anti-orphan: measure_mesh_deviation is wired into the production tessellate
-      walk at crates/reify-eval/src/geometry_ops.rs:10953, not merely declared. Trait
-      method crates/reify-geometry/src/lib.rs:111; C++ producer crates/reify-kernel-occt/cpp/occt_wrapper.cpp:6510;
-      FFI crates/reify-kernel-occt/src/ffi.rs:1329. Takes NO tolerance argument —
-      structural anti-circularity.'
+      walk at crates/reify-eval/src/geometry_ops.rs:10953, not merely declared. Trait method
+      crates/reify-geometry/src/lib.rs:111; C++ producer crates/reify-kernel-occt/cpp/occt_wrapper.cpp:6510;
+      FFI crates/reify-kernel-occt/src/ffi.rs:1329. Takes NO tolerance argument — structural
+      anti-circularity.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -120,8 +118,8 @@ tasks:
       expect: present
   - name: tessellate-closure-holds-kernel-placedid-mesh-entitypath
     binding: geometry_ops.rs:10935-10956 — the closure signature `&mut |kernel, placed_id,
-      entity_path, default_visible, t, r, diag|` carries all four simultaneously.
-      This is the unique site where the loop can sit.
+      entity_path, default_visible, t, r, diag|` carries all four simultaneously. This is
+      the unique site where the loop can sit.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -130,9 +128,9 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: present
   - name: per-realization-deflection-available-to-halve
-    binding: crates/reify-eval/src/engine_build.rs:6168 compute_tessellation_budgets
-      produces tessellation_budgets[t][r], consumed at geometry_ops.rs:10936-10937.
-      C-CAP halves this value.
+    binding: crates/reify-eval/src/engine_build.rs:6168 compute_tessellation_budgets produces
+      tessellation_budgets[t][r], consumed at geometry_ops.rs:10936-10937. C-CAP halves this
+      value.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -141,33 +139,32 @@ tasks:
       - crates/reify-eval/src/engine_build.rs
       expect: present
   - name: retessellating-same-handle-is-legal
-    binding: RealizationCache keys KernelHandle on (entity, repr, demanded_tol); the
-      loop re-calls kernel.tessellate on the SAME handle and never re-runs geometry
-      ops, so no cache key changes and no invalidation is needed (§4.9). Repeat invocation
-      is an exercised path — engine_build.rs:7996, :8928, :9190, :9733.
+    binding: RealizationCache keys KernelHandle on (entity, repr, demanded_tol); the loop
+      re-calls kernel.tessellate on the SAME handle and never re-runs geometry ops, so no
+      cache key changes and no invalidation is needed (§4.9). Repeat invocation is an exercised
+      path — engine_build.rs:7996, :8928, :9190, :9733.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a cache-key non-change property; the useful evidence is the absence
-        of a tolerance component in the tessellate call, which is already covered
-        by the tessellate-closure check above.
+      reason: a cache-key non-change property; the useful evidence is the absence of a tolerance
+        component in the tessellate call, which is already covered by the tessellate-closure
+        check above.
   - name: end-to-end-capability-set-is-upstream-or-on-main
-    binding: 'G6 branch 3. Metric: on main (wired, above). Per-realization budget
-      array: on main. Bound table: task β, UPSTREAM. Cap constant: task α, UPSTREAM.
-      Narrowed measure site: task δ, UPSTREAM (see F2/ordering in the .md). Nothing
-      γ1''s signal needs is owned by a task that depends on γ1.'
+    binding: 'G6 branch 3. Metric: on main (wired, above). Per-realization budget array: on
+      main. Bound table: task β, UPSTREAM. Cap constant: task α, UPSTREAM. Narrowed measure
+      site: task δ, UPSTREAM (see F2/ordering in the .md). Nothing γ1''s signal needs is owned
+      by a task that depends on γ1.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a DAG-direction property over the batch's own edges; verified by the
-        wired add_dependency edges, not by a pattern in tracked source.
+      reason: a DAG-direction property over the batch's own edges; verified by the wired add_dependency
+        edges, not by a pattern in tracked source.
   - name: numeric-floor-bound-greater-than-f32-quantization
-    binding: 'G6 branch 1. f32 ULP at coordinate magnitude S is 2^-23 * S ~= 1.19e-7
-      * S; occt_wrapper.cpp:6360-6362 emits vertices as static_cast<float>(p.X/Y/Z())
-      so sample points inherit the quantization. Corroborated by the shipped PLANAR_FLOOR
-      = 1e-5 doc''s "~1e-6 m f32 quantization" note (tolerance_combine.rs:232). floor:
-      bound > 1.19e-7 * S, ENFORCED AT RUNTIME by C-FLOOR rather than asserted in
-      prose.'
+    binding: 'G6 branch 1. f32 ULP at coordinate magnitude S is 2^-23 * S ~= 1.19e-7 * S;
+      occt_wrapper.cpp:6360-6362 emits vertices as static_cast<float>(p.X/Y/Z()) so sample
+      points inherit the quantization. Corroborated by the shipped PLANAR_FLOOR = 1e-5 doc''s
+      "~1e-6 m f32 quantization" note (tolerance_combine.rs:232). floor: bound > 1.19e-7 *
+      S, ENFORCED AT RUNTIME by C-FLOOR rather than asserted in prose.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -176,21 +173,21 @@ tasks:
       - crates/reify-kernel-occt/cpp/occt_wrapper.cpp
       expect: present
   - name: termination-without-pinning-K
-    binding: Pure geometric bisection gives a_n <= K*d0*2^-n -> 0 for ANY finite regime
-      supremum K, so termination does not depend on α's measured value (§4.2). The
-      corrective step d*(B/achieved) is rejected on non-monotonicity, no termination
-      proof, and unbounded cost.
+    binding: Pure geometric bisection gives a_n <= K*d0*2^-n -> 0 for ANY finite regime supremum
+      K, so termination does not depend on α's measured value (§4.2). The corrective step
+      d*(B/achieved) is rejected on non-monotonicity, no termination proof, and unbounded
+      cost.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a mathematical property of the loop, checkable only by reading the landed
-        loop body; no stable pattern expresses it.
+      reason: a mathematical property of the loop, checkable only by reading the landed loop
+        body; no stable pattern expresses it.
   - name: unbounded-module-untouched-is-structural
-    binding: 'NEGATIVE SIGNAL, structurally guaranteed: set_capture_repr_tol(true)
-      has EXACTLY ONE production call site — crates/reify-cli/src/main.rs:607, inside
-      cmd_check, gated on module_has_representation_within(&compiled) at :600. Every
-      other occurrence in tracked source is a comment or a tests/ call. GUI and `reify
-      build` never set it, so F''s scoping is structural, not new gating code.'
+    binding: 'NEGATIVE SIGNAL, structurally guaranteed: set_capture_repr_tol(true) has EXACTLY
+      ONE production call site — crates/reify-cli/src/main.rs:607, inside cmd_check, gated
+      on module_has_representation_within(&compiled) at :600. Every other occurrence in tracked
+      source is a comment or a tests/ call. GUI and `reify build` never set it, so F''s scoping
+      is structural, not new gating code.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -199,9 +196,9 @@ tasks:
       - crates/reify-cli/src/main.rs
       expect: present
   - name: zero-bound-comparator-unchanged
-    binding: 'C-ZERO reuses the shipped comparator verbatim: tolerance_combine.rs:285
-      `let eff = if bound <= 0.0 { PLANAR_FLOOR } else { bound };` with PLANAR_FLOOR
-      = 1e-5 at :232.'
+    binding: 'C-ZERO reuses the shipped comparator verbatim: tolerance_combine.rs:285 `let
+      eff = if bound <= 0.0 { PLANAR_FLOOR } else { bound };` with PLANAR_FLOOR = 1e-5 at
+      :232.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -210,9 +207,9 @@ tasks:
       - crates/reify-eval/src/tolerance_combine.rs
       expect: present
   - name: reset-choke-point-exists-for-repr-refine-log
-    binding: engine_build.rs:3171 destructures achieved_repr_tol in the per-build
-      reset; :3251 clears it; INV-BUILD-1 documented at :3112. repr_refine_log lands
-      as a sibling field in the SAME destructure, so it cannot be forgotten.
+    binding: engine_build.rs:3171 destructures achieved_repr_tol in the per-build reset; :3251
+      clears it; INV-BUILD-1 documented at :3112. repr_refine_log lands as a sibling field
+      in the SAME destructure, so it cannot be forgotten.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -228,9 +225,9 @@ tasks:
     binding: 'C-LOG''s routing is FORCED, not preferred. Producer side: engine_constraints.rs:674
       fn push_constraint_result folds ConstraintResult.diagnostics.messages into CheckResult.diagnostics
       -> report_eval_output (crates/reify-cli/src/main.rs:2756-2766). Converse confirmed:
-      main.rs:626 calls engine.tessellate_realizations(&compiled) as a BARE STATEMENT
-      — the TessellateResult is discarded, so a tessellate-channel diagnostic is unreachable
-      (PRD §3.1(a)).'
+      main.rs:626 calls engine.tessellate_realizations(&compiled) as a BARE STATEMENT — the
+      TessellateResult is discarded, so a tessellate-channel diagnostic is unreachable (PRD
+      §3.1(a)).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -239,10 +236,10 @@ tasks:
       - crates/reify-eval/src/engine_constraints.rs
       expect: present
   - name: info-severity-exists-and-is-printed
-    binding: crates/reify-core/src/diagnostics.rs:3908 pub fn info; Severity at :98;
-      report_eval_output (main.rs:2763) prints every diagnostic to stderr regardless
-      of severity, so Info reaches the user without a verbosity flag (there is none
-      — cmd_check rejects any flag beyond --strict/--purpose/--cfg, main.rs:475-513).
+    binding: crates/reify-core/src/diagnostics.rs:3908 pub fn info; Severity at :98; report_eval_output
+      (main.rs:2763) prints every diagnostic to stderr regardless of severity, so Info reaches
+      the user without a verbosity flag (there is none — cmd_check rejects any flag beyond
+      --strict/--purpose/--cfg, main.rs:475-513).
     verdict: PASS
     delivered_check:
       kind: grep
@@ -251,10 +248,9 @@ tasks:
       - crates/reify-core/src/diagnostics.rs
       expect: present
   - name: diagnostic-code-attachable-INV-SF-6
-    binding: 'crates/reify-core/src/diagnostics.rs:3928 pub fn with_code(mut self,
-      code: DiagnosticCode) -> Self. Every new γ2 diagnostic carries a code, and γ2
-      also retrofits a code onto the existing code-less RepresentationWithin violation
-      message.'
+    binding: 'crates/reify-core/src/diagnostics.rs:3928 pub fn with_code(mut self, code: DiagnosticCode)
+      -> Self. Every new γ2 diagnostic carries a code, and γ2 also retrofits a code onto the
+      existing code-less RepresentationWithin violation message.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -263,10 +259,10 @@ tasks:
       - crates/reify-core/src/diagnostics.rs
       expect: present
   - name: signature-widening-blast-radius-is-one-crate
-    binding: 'eval_representation_within''s return type widens Option<Diagnostic>
-      -> Vec<Diagnostic>. Sole PRODUCTION caller is engine_constraints.rs:365 (inside
-      dispatch_constraints); every remaining caller is tolerance_combine.rs''s own
-      #[cfg(test)] block (:1351 :1374 :1403 :1425 :1446). No foreign consumer breaks.'
+    binding: 'eval_representation_within''s return type widens Option<Diagnostic> -> Vec<Diagnostic>.
+      Sole PRODUCTION caller is engine_constraints.rs:365 (inside dispatch_constraints); every
+      remaining caller is tolerance_combine.rs''s own #[cfg(test)] block (:1351 :1374 :1403
+      :1425 :1446). No foreign consumer breaks.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -275,12 +271,13 @@ tasks:
       - crates/reify-eval/src/engine_constraints.rs
       expect: present
   - name: cap-hit-rejection-is-observed-not-assumed
-    binding: 'G6 branch 4. BT-4''s fixture is COMMITTED and its premise re-derived
-      arithmetically: examples/representation_within.ri is a 1 m sphere at #precision(50mm)
-      with a 1um bound. At REFINE_ATTEMPT_CAP = 4, d reaches 50/2^4 = 3.125 mm and
-      achieved ~= 2.07 * 3.125 mm ~= 6.5 mm — three orders above the bound, so the
-      cap is genuinely exhausted and the Error path is exercised by an existing file
-      rather than a hypothetical.'
+    binding: 'D3-MEASURED, not merely derived. `reify check examples/representation_within.ri`
+      -> exit 1, `sampled facet deviation 6.006e-2 m exceeds bound 1.000e-6 m`. Reaching 1um
+      from 6.006e-2 m needs a ~6e4x reduction ~= 16 halvings against a cap of 4 (16x), so
+      the cap is exhausted with an enormous margin. CORRECTION: this row originally derived
+      the cap-hit as 2.07 * 3.125mm ~= 6.5mm using the 2.07x tread ratio; the MEASURED ratio
+      at this coarse regime (d/R = 5e-2) is 1.201x, not 2.07x. Conclusion unchanged and far
+      stronger than the original arithmetic implied.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -289,26 +286,26 @@ tasks:
       - examples/representation_within.ri
       expect: present
   - name: cap-hit-and-floor-refusal-are-distinguishable
-    binding: 'At S = 1 m the f32 floor is 1.19e-7 m = 0.119um. BT-4''s bound (1um)
-      is 8.4x ABOVE it, so C-FLOOR does not fire and BT-4 is a genuine cap-hit. BT-6''s
-      bound (1e-9 m) is 119x BELOW it and refuses by design. Distinct fixtures, distinct
-      diagnostics, no aliasing. floor: 1e-6 > 1.19e-7; 1e-9 <= 1.19e-7.'
+    binding: 'At S = 1 m the f32 floor is 1.19e-7 m = 0.119um. BT-4''s bound (1um) is 8.4x
+      ABOVE it, so C-FLOOR does not fire and BT-4 is a genuine cap-hit. BT-6''s bound (1e-9
+      m) is 119x BELOW it and refuses by design. Distinct fixtures, distinct diagnostics,
+      no aliasing. floor: 1e-6 > 1.19e-7; 1e-9 <= 1.19e-7.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: an arithmetic relation between two bounds and a scale-dependent floor;
-        no stable pattern in tracked source expresses it.
+      reason: an arithmetic relation between two bounds and a scale-dependent floor; no stable
+        pattern in tracked source expresses it.
   - name: INV-SF-2-caveat-check-exit-is-verdict-driven-not-severity-driven
-    binding: '`reify check` decides exit from constraint outcomes alone (finish_check)
-      — a KNOWN INV-SF-2 gap recorded in docs/legibility/design-invariants.md INV-SF-2
-      Evidence. γ2''s cap-hit case is ALREADY Violated, so the non-zero exit comes
-      from the verdict, not the severity. γ2 introduces no new INV-SF-2 violation
-      but must not be implemented on the assumption that the Error alone exits.'
+    binding: '`reify check` decides exit from constraint outcomes alone (finish_check) — a
+      KNOWN INV-SF-2 gap recorded in docs/legibility/design-invariants.md INV-SF-2 Evidence.
+      γ2''s cap-hit case is ALREADY Violated, so the non-zero exit comes from the verdict,
+      not the severity. γ2 introduces no new INV-SF-2 violation but must not be implemented
+      on the assumption that the Error alone exits.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a negative implementation constraint (do not rely on severity for check's
-        exit); expressible only as task text, not as a pattern.
+      reason: a negative implementation constraint (do not rely on severity for check's exit);
+        expressible only as task text, not as a pattern.
 - label: δ
   task_id: 6168
   title: 'precision-nominal δ: narrow measure_mesh_deviation to bounded subjects'
@@ -325,14 +322,13 @@ tasks:
       - crates/reify-eval/src/geometry_ops.rs
       expect: present
   - name: bound-table-cannot-reach-the-site-without-an-engine-build-threading-change
-    binding: 'PASS-WITH-AMENDMENT. FALSIFIES the PRD §9 δ Modules line, which names
-      only geometry_ops.rs. The tessellate closure holds NO CompiledModule; capture_repr_tol
-      and achieved_repr_tol are threaded explicitly from engine_build.rs — passed
-      at :5927-5928, declared as helper params at :6282 / :6289, forwarded at :6720-6721.
-      β''s bound table must travel the same wire. RESOLVED by amendment F2: δ''s metadata.files
-      gains crates/reify-eval/src/engine_build.rs and the three threading sites are
-      named in the task text. Same crate, same signal, same deliverable — lock charter
-      only.'
+    binding: 'PASS-WITH-AMENDMENT. FALSIFIES the PRD §9 δ Modules line, which names only geometry_ops.rs.
+      The tessellate closure holds NO CompiledModule; capture_repr_tol and achieved_repr_tol
+      are threaded explicitly from engine_build.rs — passed at :5927-5928, declared as helper
+      params at :6282 / :6289, forwarded at :6720-6721. β''s bound table must travel the same
+      wire. RESOLVED by amendment F2: δ''s metadata.files gains crates/reify-eval/src/engine_build.rs
+      and the three threading sites are named in the task text. Same crate, same signal, same
+      deliverable — lock charter only.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -341,10 +337,10 @@ tasks:
       - crates/reify-eval/src/engine_build.rs
       expect: present
   - name: negative-assertion-is-structural-not-wall-clock
-    binding: 'G6 branch 4. The regression test asserts the achieved_repr_tol KEY SET
-      equals the bounded subjects'' keys. Accessor exists: engine_admin.rs:608 pub
-      fn achieved_repr_tol(&self, occurrence: &str) -> Option<f64>, plus set_achieved_repr_tol_for_test
-      at :2540 for the twin direction. No wall-clock upper bound is asserted, so tests/infra/test_no_new_wallclock_upper_bounds.sh
+    binding: 'G6 branch 4. The regression test asserts the achieved_repr_tol KEY SET equals
+      the bounded subjects'' keys. Accessor exists: engine_admin.rs:608 pub fn achieved_repr_tol(&self,
+      occurrence: &str) -> Option<f64>, plus set_achieved_repr_tol_for_test at :2540 for the
+      twin direction. No wall-clock upper bound is asserted, so tests/infra/test_no_new_wallclock_upper_bounds.sh
       stays green (§6 gate-cost rule).'
     verdict: PASS
     delivered_check:
@@ -355,9 +351,8 @@ tasks:
       expect: present
   - name: narrowing-cannot-change-a-verdict
     binding: resolve_repr_tol_key only ever reads keys matching "{struct_name}#realization["
-      for a struct_name that HAS a bound (tolerance_combine.rs:320-360), so unbounded
-      keys are unreadable by construction. Strictly less work, strictly the same verdicts
-      (§4.7).
+      for a struct_name that HAS a bound (tolerance_combine.rs:320-360), so unbounded keys
+      are unreadable by construction. Strictly less work, strictly the same verdicts (§4.7).
     verdict: PASS
     delivered_check:
       kind: grep
@@ -367,8 +362,8 @@ tasks:
       expect: present
   - name: no-production-reader-depends-on-unbounded-keys
     binding: Only doc reference found is crates/reify-eval/src/lib.rs:1061; no production
-      caller of Engine::achieved_repr_tol(). Confirming this before landing is PRD
-      Open Question 3 — tactical, recorded, not a blocking premise.
+      caller of Engine::achieved_repr_tol(). Confirming this before landing is PRD Open Question
+      3 — tactical, recorded, not a blocking premise.
     verdict: PASS
     delivered_check:
       kind: manual
@@ -376,19 +371,18 @@ tasks:
         every non-caller; recorded as PRD Open Question 3.
 - label: ζ
   task_id: 6169
-  title: 'precision-nominal ζ: attributable Indeterminate on surfaces that do not
-    measure (C-SURFACE 1)'
+  title: 'precision-nominal ζ: attributable Indeterminate on surfaces that do not measure
+    (C-SURFACE 1)'
   capabilities:
   - name: todays-misattributed-reason-is-observed
-    binding: 'G6 branch 4, NEGATIVE ASSERTION. Measured verbatim in PRD §3.2 (`reify
-      build --verbose` -> "warning: constraint SphereCheck#constraint[0] indeterminate:
-      operator undefined for these operand kinds: StructureInstance", exit 0), and
-      STRUCTURALLY RE-DERIVED at 0560ca6f0a — stronger than a re-run: (i) set_capture_repr_tol
-      has one production call site, in cmd_check only (main.rs:607), so build leaves
-      achieved_repr_tol empty; (ii) dispatch_constraints'' fast-path guard fires on
-      exactly that condition (engine_constraints.rs:334); (iii) the assertion falls
-      through to the language checker, which emits that literal string at crates/reify-constraints/src/lib.rs:201.
-      All three links present and wired.'
+    binding: 'G6 branch 4, NEGATIVE ASSERTION. Measured verbatim in PRD §3.2 (`reify build
+      --verbose` -> "warning: constraint SphereCheck#constraint[0] indeterminate: operator
+      undefined for these operand kinds: StructureInstance", exit 0), and STRUCTURALLY RE-DERIVED
+      at 0560ca6f0a — stronger than a re-run: (i) set_capture_repr_tol has one production
+      call site, in cmd_check only (main.rs:607), so build leaves achieved_repr_tol empty;
+      (ii) dispatch_constraints'' fast-path guard fires on exactly that condition (engine_constraints.rs:334);
+      (iii) the assertion falls through to the language checker, which emits that literal
+      string at crates/reify-constraints/src/lib.rs:201. All three links present and wired.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -398,9 +392,9 @@ tasks:
       expect: present
   - name: peel-can-be-lifted-above-the-fast-path-guard
     binding: The peel and the guard live in the same fn, dispatch_constraints (engine_constraints.rs:313);
-      the guard is a plain early-return at :334 (`if self.achieved_repr_tol.is_empty()
-      && self.optimization_registry.is_empty()`) and the peel loop begins :363. Reordering
-      is local to one function.
+      the guard is a plain early-return at :334 (`if self.achieved_repr_tol.is_empty() &&
+      self.optimization_registry.is_empty()`) and the peel loop begins :363. Reordering is
+      local to one function.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -409,34 +403,33 @@ tasks:
       - crates/reify-eval/src/engine_constraints.rs
       expect: present
   - name: zero-allocation-hot-path-is-preserved
-    binding: Documented invariant C2 at engine_constraints.rs:310-312; the fast path
-      builds no rw_slots. PRD Open Question 2 leaves the shape (a precomputed per-check
-      boolean) TACTICAL — no premise rests on a specific implementation.
+    binding: Documented invariant C2 at engine_constraints.rs:310-312; the fast path builds
+      no rw_slots. PRD Open Question 2 leaves the shape (a precomputed per-check boolean)
+      TACTICAL — no premise rests on a specific implementation.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: an allocation-shape property; the chosen mechanism is deliberately left
-        tactical by PRD Open Question 2, so pinning a pattern here would over-specify.
+      reason: an allocation-shape property; the chosen mechanism is deliberately left tactical
+        by PRD Open Question 2, so pinning a pattern here would over-specify.
   - name: info-severity-keeps-zeta-INV-SF-2-safe
-    binding: C-LOG's Indeterminate row is Info, not Warning/Error, so no Error is
-      emitted on a healthy path and no exit code changes on `reify build`, `reify
-      eval` or the GUI. INV-SF-2 severity-hygiene corollary honoured.
+    binding: C-LOG's Indeterminate row is Info, not Warning/Error, so no Error is emitted
+      on a healthy path and no exit code changes on `reify build`, `reify eval` or the GUI.
+      INV-SF-2 severity-hygiene corollary honoured.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a severity choice in code not yet written; checkable only against the
-        landed diagnostic construction.
+      reason: a severity choice in code not yet written; checkable only against the landed
+        diagnostic construction.
 - label: η
   task_id: 6170
-  title: 'precision-nominal η: export refuses rather than shipping an unenforced bound
-    (C-SURFACE 2)'
+  title: 'precision-nominal η: export refuses rather than shipping an unenforced bound (C-SURFACE
+    2)'
   capabilities:
   - name: rejection-mechanism-exists-and-fires-today
-    binding: G6 branch 4, POSITIVE half. main.rs:1106-1107 `let has_error_diagnostic
-      = result.diagnostics.iter().any(|d| d.severity == Severity::Error);` -> :1108-1112
-      `if build_is_success(&outcome, has_error_diagnostic) { SUCCESS } else { FAILURE
-      }`. The Mode-B twin is the same shape at :1259-1265. Both gates read on main
-      today, so η rides a LIVE mechanism rather than inventing one.
+    binding: G6 branch 4, POSITIVE half. main.rs:1106-1107 `let has_error_diagnostic = result.diagnostics.iter().any(|d|
+      d.severity == Severity::Error);` -> :1108-1112 `if build_is_success(&outcome, has_error_diagnostic)
+      { SUCCESS } else { FAILURE }`. The Mode-B twin is the same shape at :1259-1265. Both
+      gates read on main today, so η rides a LIVE mechanism rather than inventing one.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -445,23 +438,22 @@ tasks:
       - crates/reify-cli/src/main.rs
       expect: present
   - name: rejection-observed-absent-today-vacuity-check
-    binding: 'G6 branch 4, VACUITY half. Zero .ri in the repo pairs a bound with an
-      export: all five files carrying RepresentationWithin — crates/reify-cli/tests/fixtures/{dfm_with_repr_within,representation_within_satisfied}.ri,
+    binding: 'G6 branch 4, VACUITY half. Zero .ri in the repo pairs a bound with an export:
+      all five files carrying RepresentationWithin — crates/reify-cli/tests/fixtures/{dfm_with_repr_within,representation_within_satisfied}.ri,
       examples/{fea_bracket_member_access,representation_within}.ri, examples/tolerancing/gdt_pass_weave.ri
-      — return 0 matches for Output|STLOutput|StepOutput. Re-measured at 0560ca6f0a
-      (PRD §3.1(f)). η breaks no existing fixture and fires only on the currently-silent
-      case.'
+      — return 0 matches for Output|STLOutput|StepOutput. Re-measured at 0560ca6f0a (PRD §3.1(f)).
+      η breaks no existing fixture and fires only on the currently-silent case.'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: 'expect: absent over *.ri would INVERT once task μ lands BT-7b''s bound-plus-STLOutput
-        fixture, turning a correct check into a false failure. Kept manual deliberately
-        rather than binding a self-falsifying grep.'
+        fixture, turning a correct check into a false failure. Kept manual deliberately rather
+        than binding a self-falsifying grep.'
   - name: refusal-predicate-already-implemented
-    binding: 'main.rs:2462 fn module_has_representation_within(module: &CompiledModule)
-      -> bool, unit-tested at :3610. η needs NEITHER β NOR 6085 NOR any measurement
-      — the boolean is sufficient, which is precisely why η is dependency-free and
-      is the highest-value leaf in the PRD.'
+    binding: 'main.rs:2462 fn module_has_representation_within(module: &CompiledModule) ->
+      bool, unit-tested at :3610. η needs NEITHER β NOR 6085 NOR any measurement — the boolean
+      is sufficient, which is precisely why η is dependency-free and is the highest-value
+      leaf in the PRD.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -470,17 +462,16 @@ tasks:
       - crates/reify-cli/src/main.rs
       expect: present
   - name: named-producer-does-not-cover-the-surface-the-signal-names
-    binding: 'PASS-WITH-AMENDMENT. FALSIFIES the PRD §9 η Modules line and Lock note.
-      `reify build` has TWO disjoint export modes. Mode A (imperative, `-o`): CLI
-      main.rs:1020-1031 -> Engine::build -> build_with_geometry_output(.., emit=true)
-      at engine_build.rs:3925. Mode B (declarative `: Output` occurrences): CLI main.rs:1145
-      -> Engine::build_outputs_with_result at engine_build.rs:5094. η''s signal, §1.1''s
-      motivating failure and BT-7''s command are all `reify build -o out.stl` = Mode
-      A; η''s Modules line names Mode B only. Shipping η as scoped would close it
-      green while `reify build -o out.stl` still writes a 0.1 m-deflection STL at
-      exit 0. RESOLVED by amendment F1: extent widened to BOTH modes, metadata.files
-      gains crates/reify-cli/src/main.rs, and the "no CLI file is touched" Lock note
-      is corrected to Mode B only.'
+    binding: 'PASS-WITH-AMENDMENT. FALSIFIES the PRD §9 η Modules line and Lock note. `reify
+      build` has TWO disjoint export modes. Mode A (imperative, `-o`): CLI main.rs:1020-1031
+      -> Engine::build -> build_with_geometry_output(.., emit=true) at engine_build.rs:3925.
+      Mode B (declarative `: Output` occurrences): CLI main.rs:1145 -> Engine::build_outputs_with_result
+      at engine_build.rs:5094. η''s signal, §1.1''s motivating failure and BT-7''s command
+      are all `reify build -o out.stl` = Mode A; η''s Modules line names Mode B only. Shipping
+      η as scoped would close it green while `reify build -o out.stl` still writes a 0.1 m-deflection
+      STL at exit 0. RESOLVED by amendment F1: extent widened to BOTH modes, metadata.files
+      gains crates/reify-cli/src/main.rs, and the "no CLI file is touched" Lock note is corrected
+      to Mode B only.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -489,14 +480,13 @@ tasks:
       - crates/reify-eval/src/engine_build.rs
       expect: present
   - name: mode-A-refusal-must-not-regress-eval-or-check
-    binding: 'Engine::build (engine_build.rs:3925 -> build_with_geometry_output(..,
-      emit=true)) is NOT export-exclusive: it is also called by cmd_check''s geometry-precondition
-      arm (main.rs:621, result discarded via `let _ =`) and by cmd_eval''s geometry
-      path (main.rs:1573, whose result.diagnostics DO reach the user and DO feed a
-      Severity::Error exit gate). emit_geometry_output does not discriminate — all
-      three call sites pass true. Mode A''s refusal must therefore be sited at the
-      EXPORTING call site. Must-not-regress check: `reify check` and `reify eval`
-      on the three bound-carrying fixtures are unchanged.'
+    binding: 'Engine::build (engine_build.rs:3925 -> build_with_geometry_output(.., emit=true))
+      is NOT export-exclusive: it is also called by cmd_check''s geometry-precondition arm
+      (main.rs:621, result discarded via `let _ =`) and by cmd_eval''s geometry path (main.rs:1573,
+      whose result.diagnostics DO reach the user and DO feed a Severity::Error exit gate).
+      emit_geometry_output does not discriminate — all three call sites pass true. Mode A''s
+      refusal must therefore be sited at the EXPORTING call site. Must-not-regress check:
+      `reify check` and `reify eval` on the three bound-carrying fixtures are unchanged.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -504,26 +494,51 @@ tasks:
       paths:
       - crates/reify-cli/src/main.rs
       expect: present
+  - name: refusal-cannot-withhold-the-file-by-severity-alone
+    binding: D3-4, NEW. In Mode A, cmd_build runs std::fs::write(path, &data) at main.rs:~1062
+      and only THEN evaluates has_error_diagnostic at :1105-1107. An Error diagnostic flips
+      the EXIT CODE while the out-of-spec artifact is ALREADY ON DISK. BT-7a requires only
+      that the file is not presented as success, so exit-code-only is a defensible v1 -- but
+      the choice must be deliberate, and withholding the bytes means gating the write itself
+      (main.rs is already in eta's charter per F1).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: std::fs::write\(path, &data\)
+      paths:
+      - crates/reify-cli/src/main.rs
+      expect: present
+  - name: section-3-1-f-no-regression-claim-is-mode-B-only
+    binding: D3-5, NEW. PRD 3.1(f)'s zero-.ri-pairs-a-bound-with-an-export measurement covers
+      the OCCURRENCE-DRIVEN (Mode B) path only. The CLI -o surface needs no Output occurrence,
+      so every bounded module is a candidate there -- including the three committed bound-carrying
+      fixtures. Re-check Mode A compatibility at implementation time rather than inheriting
+      3.1(f)'s conclusion.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a scope correction to a claim about the repo's .ri corpus; the corrected claim
+        is a statement about which CLI surface the measurement covers, not a pattern in tracked
+        source.
 - label: θ
   task_id: 6173
   title: 'precision-nominal θ: enforce the bound on export once 6085 lands the tessellation-tolerance
     plumbing'
   capabilities:
   - name: dag-direction-6085-is-upstream
-    binding: 'Anti-inversion. Task 6085 is wired as a REAL add_dependency edge (same
-      project => integer dependencies table, not metadata.external_deps, per preferences_cross_prd_deps_real_edges).
-      Status re-read at decompose: pending. The plumbing θ consumes is upstream, never
-      downstream.'
+    binding: 'Anti-inversion. Task 6085 is wired as a REAL add_dependency edge (same project
+      => integer dependencies table, not metadata.external_deps, per preferences_cross_prd_deps_real_edges).
+      Status re-read at decompose: pending. The plumbing θ consumes is upstream, never downstream.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a DAG-direction property over a live task edge; verified via the wired
-        add_dependency, not via tracked source.
+      reason: a DAG-direction property over a live task edge; verified via the wired add_dependency,
+        not via tracked source.
   - name: consumed-capability-is-genuinely-absent-today
     binding: 'Confirms the dependency is load-bearing rather than decorative: crates/reify-kernel-occt/src/lib.rs:4073
-      DEFAULT_STL_TESSELLATION_TOLERANCE: f64 = 0.1, hardcoded at all three export
-      call sites (:4099 :4106 :4157). No #precision and no demanded tolerance reaches
-      kernel.export(). 6085 owns both that constant and its wrong "0.1 mm" doc comment.'
+      DEFAULT_STL_TESSELLATION_TOLERANCE: f64 = 0.1, hardcoded at all three export call sites
+      (:4099 :4106 :4157). No #precision and no demanded tolerance reaches kernel.export().
+      6085 owns both that constant and its wrong "0.1 mm" doc comment.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -532,18 +547,18 @@ tasks:
       - crates/reify-kernel-occt/src/lib.rs
       expect: present
   - name: files-deferred-to-architect
-    binding: 'metadata.files = [] deliberately — θ''s footprint depends on 6085''s
-      landed ExportOptions shape (PRD §9, Open Question 5). [] is first-class: BRE
-      acquires the real footprint before editing. scripts/lock-charter-guard.sh check
-      (empty list) -> exit 0, verified at decompose.'
+    binding: 'metadata.files = [] deliberately — θ''s footprint depends on 6085''s landed
+      ExportOptions shape (PRD §9, Open Question 5). [] is first-class: BRE acquires the real
+      footprint before editing. scripts/lock-charter-guard.sh check (empty list) -> exit 0,
+      verified at decompose.'
     verdict: PASS
     delivered_check:
       kind: manual
       reason: an empty lock charter is the absence of a declaration; nothing to grep.
   - name: numeric-floor-inherited-from-C-FLOOR
-    binding: 'θ reuses C-LOOP on the export path, so its numeric assertion ("an exported
-      STL measures within B") carries γ1''s floor: bound > 1.19e-7 * S, enforced at
-      runtime by the same C-FLOOR guard.'
+    binding: 'θ reuses C-LOOP on the export path, so its numeric assertion ("an exported STL
+      measures within B") carries γ1''s floor: bound > 1.19e-7 * S, enforced at runtime by
+      the same C-FLOOR guard.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -554,21 +569,21 @@ tasks:
     (registry-verified)'
   capabilities:
   - name: target-chunks-exist-and-this-is-an-add-not-an-update
-    binding: crates/reify-mcp/src/tools/chunks/ contains constraints.md and syntax.md.
-      `git grep -niE "representationwithin|#precision" -- 'crates/reify-mcp/src/tools/chunks/*.md'`
-      returns ZERO hits — PRD §3.1(d) re-confirmed at 0560ca6f0a. The docs-truth arm
-      1 deliverable is an ADD.
+    binding: crates/reify-mcp/src/tools/chunks/ contains constraints.md and syntax.md. `git
+      grep -niE "representationwithin|#precision" -- 'crates/reify-mcp/src/tools/chunks/*.md'`
+      returns ZERO hits — PRD §3.1(d) re-confirmed at 0560ca6f0a. The docs-truth arm 1 deliverable
+      is an ADD.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: 'the natural check (expect: absent for RepresentationWithin in the chunks)
-        INVERTS the moment ι lands, which is the whole point of the task. Kept manual
-        rather than binding a self-falsifying grep.'
+      reason: 'the natural check (expect: absent for RepresentationWithin in the chunks) INVERTS
+        the moment ι lands, which is the whole point of the task. Kept manual rather than
+        binding a self-falsifying grep.'
   - name: documented-signatures-are-compile-checkable
-    binding: 'Docs-truth arm 1 acceptance — each documented signature must compile
-      as written in a smoke .ri. RepresentationWithin(subject, B) and #precision(<Length>)
-      are exercised by five committed .ri files today, so the smoke has live exemplars
-      to mirror rather than inventing a signature.'
+    binding: 'Docs-truth arm 1 acceptance — each documented signature must compile as written
+      in a smoke .ri. RepresentationWithin(subject, B) and #precision(<Length>) are exercised
+      by five committed .ri files today, so the smoke has live exemplars to mirror rather
+      than inventing a signature.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -577,19 +592,17 @@ tasks:
       - examples/representation_within.ri
       expect: present
   - name: discoverability-acceptance-is-non-vacuous
-    binding: Docs-truth arm 4. The intent-level phrasing ("make sure the exported
-      mesh is within 0.05 mm of the true surface") has ZERO chunk presence today,
-      so the discoverability acceptance cannot pass vacuously against pre-existing
-      text.
+    binding: Docs-truth arm 4. The intent-level phrasing ("make sure the exported mesh is
+      within 0.05 mm of the true surface") has ZERO chunk presence today, so the discoverability
+      acceptance cannot pass vacuously against pre-existing text.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: intent-level findability is a judgment about phrasing, not a pattern
-        match; it is the docs-truth gate's explicitly qualitative arm.
+      reason: intent-level findability is a judgment about phrasing, not a pattern match;
+        it is the docs-truth gate's explicitly qualitative arm.
   - name: ordered-after-the-mechanism-it-documents
-    binding: Real add_dependency edges on γ1, γ2, ζ and η. The docs-truth decompose
-      rule (doc leaves wired same-diff or as real edges, never ordered by prose) is
-      satisfied.
+    binding: Real add_dependency edges on γ1, γ2, ζ and η. The docs-truth decompose rule (doc
+      leaves wired same-diff or as real edges, never ordered by prose) is satisfied.
     verdict: PASS
     delivered_check:
       kind: manual
@@ -621,8 +634,8 @@ tasks:
       expect: present
   - name: three-index-sites-exist
     binding: examples/best_practices/INDEX.md present; .claude/skills/reify-design/SKILL.md
-      present (docs-truth arm 3 — a one-line index entry pointing at the corpus file,
-      never an inline playbook).
+      present (docs-truth arm 3 — a one-line index entry pointing at the corpus file, never
+      an inline playbook).
     verdict: PASS
     delivered_check:
       kind: grep
@@ -631,15 +644,21 @@ tasks:
       - examples/best_practices/INDEX.md
       expect: present
   - name: documented-anti-pattern-is-real
-    binding: 'PRD 3.1(c): crates/reify-eval/src/engine_build.rs:6200-6201 `let req_tol
-      = demanded_tols[t_idx][r_idx].unwrap_or_else(|| Self::effective_tessellation_tolerance(module));`
-      — an unwrap_or_else, so a bound on the geometry-owning template REPLACES #precision
-      outright rather than min-folding, making the assertion tautologically violated.
-      The circular layout that kappa warns against is a live trap, not a hypothetical.
-      TEXT DRIFT: the PRD writes this as `unwrap_or(...)` at :6205; the landed form
-      is `unwrap_or_else(|| Self::...)` at :6201. Semantically identical (both REPLACE,
-      neither min-folds), so 3.1(c)''s conclusion stands verbatim — only the literal
-      spelling and line differ.'
+    binding: 'D3-VERIFIED (workflow wf_c00d1e3e-262). MECHANISM CONFIRMED BY EXECUTION: circular
+      layout achieved 2.058e-3 m vs a 1mm bound (~2.058*B) -> VIOLATED, and 30x finer #precision
+      leaves the achieved value BYTE-IDENTICAL, proving REPLACE-not-fold; non-circular control
+      at the same #precision achieved 6.202e-4 m -> Satisfied. Code: engine_build.rs:6200-6201
+      unwrap_or_else(|| Self::effective_tessellation_tolerance(module)) (PRD 3.1(c) writes
+      unwrap_or at :6205 -- semantically identical). WORDING FALSIFIED 3 WAYS, all written
+      into task 6175: (D3-1) NOT tautological -- a bound on a section-2 downward tooth is
+      SATISFIED (0.5955mm -> 0.5960mm flips VIOLATED -> SATISFIED); (D3-2) SPHERE-CLASS-SPECIFIC
+      -- cylinder and planar box are SATISFIED in the identical layout, as section 2''s per-class
+      table predicts (only the sphere class exceeds achieved/requested = 1); (D3-3) the trigger
+      is the DECLARATION SITE, not a self subject (extract_output_tolerance_bound filters
+      on id.entity; the subject is never consulted) -- AND a SILENT VARIANT exists: bound
+      declared inside geometry-owning Sphere with subject typed as a different structure Peer
+      reports OK + exit 0 while Sphere''s own mesh is silently coarsened 3.3x past its #precision.
+      That silent variant is a new INV-SF-3 hazard absent from the PRD.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -649,13 +668,13 @@ tasks:
       expect: present
 - label: λ
   task_id: 6176
-  title: 'precision-nominal λ: correct the four prose sites that imply #precision
-    bounds achieved deviation'
+  title: 'precision-nominal λ: correct the four prose sites that imply #precision bounds achieved
+    deviation'
   capabilities:
   - name: language-spec-claim-is-present-verbatim
-    binding: docs/reify-language-spec.md §12.2 reads "**`#precision`** -- hint to
-      toolchain about numeric precision:" followed by a lone `#precision(float64)`
-      block — the Length form (the one with semantics) is ABSENT. Re-read at 0560ca6f0a.
+    binding: docs/reify-language-spec.md §12.2 reads "**`#precision`** -- hint to toolchain
+      about numeric precision:" followed by a lone `#precision(float64)` block — the Length
+      form (the one with semantics) is ABSENT. Re-read at 0560ca6f0a.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -664,9 +683,9 @@ tasks:
       - docs/reify-language-spec.md
       expect: present
   - name: stdlib-reference-sentence-is-present-verbatim
-    binding: docs/reify-stdlib-reference.md carries "Use a finer `#precision` directive
-      to reduce the measurement gap." inside the PRD §8.3 sampled-lower-bound caveat
-      block. λ deletes it and replaces it with the nominal-vs-guarantee split.
+    binding: docs/reify-stdlib-reference.md carries "Use a finer `#precision` directive to
+      reduce the measurement gap." inside the PRD §8.3 sampled-lower-bound caveat block. λ
+      deletes it and replaces it with the nominal-vs-guarantee split.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -676,8 +695,8 @@ tasks:
       expect: present
   - name: pragmas-doc-is-a-shipped-record-pointer-only
     binding: docs/prds/pragmas.md present; its Items section is at :20. λ adds a one-line
-      pointer to this PRD for the nominal semantics — deliberately NOT a rewrite,
-      because it is a shipped record.
+      pointer to this PRD for the nominal semantics — deliberately NOT a rewrite, because
+      it is a shipped record.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -686,10 +705,10 @@ tasks:
       - docs/prds/pragmas.md
       expect: present
   - name: example-header-contract-is-preserved-not-contradicted
-    binding: examples/representation_within.ri's header documents `reify check ->
-      exit non-zero, "VIOLATED"`. Post-γ1/γ2 that file is a CAP-HIT (see γ2's cap-hit-rejection
-      binding), so the verdict stays Violated and the exit stays non-zero — λ adds
-      the attempts/cap prose without contradicting the file's own documented contract.
+    binding: examples/representation_within.ri's header documents `reify check -> exit non-zero,
+      "VIOLATED"`. Post-γ1/γ2 that file is a CAP-HIT (see γ2's cap-hit-rejection binding),
+      so the verdict stays Violated and the exit stays non-zero — λ adds the attempts/cap
+      prose without contradicting the file's own documented contract.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -699,26 +718,26 @@ tasks:
       expect: present
   - name: scope-isolation-from-5976-5977-6058-holds
     binding: 'λ touches NONE of crates/reify-cli/tests/fixtures/*.ri or cli_dfm_overhang.rs.
-      STATUS DRIFT FOUND AT DECOMPOSE: 5976 and 5977 are done (PRD §7 and the decompose
-      brief both say in-progress) and 6058 is in-progress (PRD §7 says pending). The
-      drift is favourable — the file owners have landed — and changes nothing: λ stays
-      scoped away and takes NO dependency on them, per the brief.'
+      STATUS DRIFT FOUND AT DECOMPOSE: 5976 and 5977 are done (PRD §7 and the decompose brief
+      both say in-progress) and 6058 is in-progress (PRD §7 says pending). The drift is favourable
+      — the file owners have landed — and changes nothing: λ stays scoped away and takes NO
+      dependency on them, per the brief.'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a lock-charter property of λ's own metadata.files, not a property of
-        tracked source. scripts/lock-charter-guard.sh check was run over λ's four
-        paths at decompose time (ACCEPT); nothing in the tree expresses the isolation.
+      reason: a lock-charter property of λ's own metadata.files, not a property of tracked
+        source. scripts/lock-charter-guard.sh check was run over λ's four paths at decompose
+        time (ACCEPT); nothing in the tree expresses the isolation.
   - name: sampling-gap-numbers-are-the-honest-ones
-    binding: <= 1.0046 measured across 48 configurations; 16/15 = 1.0667 provable,
-      and provable ONLY for the sphere-vertex quadratic-identity family (shown unchanged
-      for saddles, NOT proved for arbitrary B-rep faces). λ documents both numbers
-      with that scope caveat rather than projecting 16/15 repo-wide (§4.3).
+    binding: <= 1.0046 measured across 48 configurations; 16/15 = 1.0667 provable, and provable
+      ONLY for the sphere-vertex quadratic-identity family (shown unchanged for saddles, NOT
+      proved for arbitrary B-rep faces). λ documents both numbers with that scope caveat rather
+      than projecting 16/15 repo-wide (§4.3).
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a prose-accuracy requirement about which numbers appear with which scope
-        caveat; not mechanically expressible.
+      reason: a prose-accuracy requirement about which numbers appear with which scope caveat;
+        not mechanically expressible.
 - label: μ
   task_id: 6177
   title: 'precision-nominal μ: two-way boundary tests BT-1…BT-10'
@@ -734,13 +753,12 @@ tasks:
       - crates/reify-eval/tests/representation_within_assertion.rs
       expect: present
   - name: binaries-already-registered-so-no-drift-guard-task-is-needed
-    binding: .config/nextest.toml:113-114 — filter = 'package(reify-kernel-occt) |
-      package(reify-kernel-conformance) | package(reify-eval) | package(reify-cli)
-      | package(reify-config)', test-group = 'occt' (cap at :35). Landing in these
-      binaries means NO new crates/*/tests/*.rs and NO new tests/infra/test_*.sh,
-      so the overlay's gate-test drift-guard trigger does not fire and there is no
-      registration task that could be ordered AFTER the test-adding task. The esc-4914-162
-      A3-before-A6 shape is structurally impossible in this batch.
+    binding: .config/nextest.toml:113-114 — filter = 'package(reify-kernel-occt) | package(reify-kernel-conformance)
+      | package(reify-eval) | package(reify-cli) | package(reify-config)', test-group = 'occt'
+      (cap at :35). Landing in these binaries means NO new crates/*/tests/*.rs and NO new
+      tests/infra/test_*.sh, so the overlay's gate-test drift-guard trigger does not fire
+      and there is no registration task that could be ordered AFTER the test-adding task.
+      The esc-4914-162 A3-before-A6 shape is structurally impossible in this batch.
     verdict: PASS
     delivered_check:
       kind: grep
@@ -749,42 +767,41 @@ tasks:
       - .config/nextest.toml
       expect: present
   - name: no-wall-clock-upper-bound-rule-is-enforceable
-    binding: tests/infra/test_no_new_wallclock_upper_bounds.sh present. BT-4's cost
-      check is recorded as a task measurement, never a gate assertion (§6 gate-cost
-      rule).
+    binding: tests/infra/test_no_new_wallclock_upper_bounds.sh present. BT-4's cost check
+      is recorded as a task measurement, never a gate assertion (§6 gate-cost rule).
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: tests/infra/test_no_new_wallclock_upper_bounds.sh exists but is NOT
-        marked executable (mode 0664) and scans only tests/infra/*.sh, so it can neither
-        be bound as kind=script nor mechanically cover μ's Rust assertions. Binding
-        it would be a check that does not do what the row claims.
+      reason: tests/infra/test_no_new_wallclock_upper_bounds.sh exists but is NOT marked executable
+        (mode 0664) and scans only tests/infra/*.sh, so it can neither be bound as kind=script
+        nor mechanically cover μ's Rust assertions. Binding it would be a check that does
+        not do what the row claims.
   - name: every-BT-capability-is-upstream-of-mu
     binding: γ1, γ2, δ, ζ and η are all real add_dependency edges; BT-1's shared predicate
-      arrives from β transitively via γ1/δ. No BT depends on a task that depends on
-      μ — anti-inversion holds for all ten scenarios.
+      arrives from β transitively via γ1/δ. No BT depends on a task that depends on μ — anti-inversion
+      holds for all ten scenarios.
     verdict: PASS
     delivered_check:
       kind: manual
       reason: a DAG-direction property over the batch's own edges.
   - name: BT-3-byte-identity-is-the-right-regime
-    binding: Byte-identity is asserted ONLY for the unbounded module — a path that
-      never enters the loop (structurally guaranteed by the single set_capture_repr_tol
-      call site). The refined result is ITERATIVE, so per decisions_byte_identity_iterative_vs_closedform
+    binding: Byte-identity is asserted ONLY for the unbounded module — a path that never enters
+      the loop (structurally guaranteed by the single set_capture_repr_tol call site). The
+      refined result is ITERATIVE, so per decisions_byte_identity_iterative_vs_closedform
       byte-identity is deliberately NOT claimed there; BT-10 asserts determinism instead.
       Correct regime split, not an oversight.
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: a regime judgment (iterative vs closed-form) about which assertion applies
-        to which scenario; not mechanically expressible.
+      reason: a regime judgment (iterative vs closed-form) about which assertion applies to
+        which scenario; not mechanically expressible.
   - name: BT-7-as-written-mixes-the-two-export-modes
-    binding: 'PASS-WITH-AMENDMENT. FALSIFIES PRD §6 BT-7. Its precondition names an
-      STLOutput occurrence (Mode B) while its command is `reify build -o out.stl`
-      (Mode A) — see η''s named-producer binding and F1 in the .md. RESOLVED by splitting
-      into BT-7a (Mode A, `-o`, no Output occurrence required), BT-7b (Mode B, STLOutput
-      occurrence, plain `reify build`) and BT-7c (non-regression: `reify eval` / `reify
-      check` on a bounded module unchanged). Written verbatim into μ.'
+    binding: 'PASS-WITH-AMENDMENT. FALSIFIES PRD §6 BT-7. Its precondition names an STLOutput
+      occurrence (Mode B) while its command is `reify build -o out.stl` (Mode A) — see η''s
+      named-producer binding and F1 in the .md. RESOLVED by splitting into BT-7a (Mode A,
+      `-o`, no Output occurrence required), BT-7b (Mode B, STLOutput occurrence, plain `reify
+      build`) and BT-7c (non-regression: `reify eval` / `reify check` on a bounded module
+      unchanged). Written verbatim into μ.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -793,10 +810,9 @@ tasks:
       - crates/reify-eval/src/engine_build.rs
       expect: present
   - name: BT-5-C-KEEP-check-is-expressible
-    binding: measure_mesh_deviation is recomputable on any mesh via the trait method
-      (crates/reify-geometry/src/lib.rs:111) and TessellateResult.meshes carries the
-      retained mesh, so "verdict == metric recomputed on the retained mesh" is directly
-      assertable.
+    binding: measure_mesh_deviation is recomputable on any mesh via the trait method (crates/reify-geometry/src/lib.rs:111)
+      and TessellateResult.meshes carries the retained mesh, so "verdict == metric recomputed
+      on the retained mesh" is directly assertable.
     verdict: PASS
     delivered_check:
       kind: grep
