@@ -332,12 +332,54 @@ const CHUNK_PATH: &str = concat!(
 /// guards (the in-GUI assistant not discovering the oracle at all) is about the
 /// SECTION existing, so the section is what gets scanned. Mirrors
 /// `stdlib_chunk_geometry_ops_smoke.rs`'s `CHUNK_SECTION`.
+///
+/// Matched by NORMALISED WORDS, not byte equality — see [`heading_matches`]. This
+/// is a discoverability guard, so retitling the section (reordering the two nouns,
+/// changing `&` to `and`, changing case) must not fail it.
 const ORACLE_SECTION: &str = "## Interference & Clearance Queries";
 
 fn read_chunk() -> String {
     std::fs::read_to_string(CHUNK_PATH).unwrap_or_else(|e| {
         panic!("{CHUNK_PATH} must be readable ({e}) — update CHUNK_PATH if the chunk moved")
     })
+}
+
+/// Significant words of a markdown heading: lowercased, `#` markers stripped,
+/// split on every non-alphanumeric run. `"## Interference & Clearance Queries"` →
+/// `["interference", "clearance", "queries"]`.
+fn heading_words(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_start_matches('#')
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Does `line` name the section `heading` refers to?
+///
+/// NORMALISED-WORD CONTAINMENT, deliberately not byte equality: every word of
+/// `heading` must appear somewhere in `line`, in any order, ignoring case and
+/// punctuation. So `"## Clearance & Interference Queries"` and
+/// `"## Interference and Clearance Queries"` both still match.
+///
+/// The reason is that this file's subject is DISCOVERABILITY — whether the chunk
+/// documents the oracle at all — never the chunk's wording. The sibling
+/// `stdlib_chunk_geometry_ops_smoke.rs` states the house rule: these are name-
+/// existence checks against code registries, "deliberately NOT a wording/content
+/// pin on the chunk's prose". Byte equality would break that: a purely cosmetic
+/// retitle would go RED and the panic would then tell the author the oracle is
+/// undocumented when it plainly is.
+///
+/// Residual sensitivity, stated so it is not mistaken for robustness: DROPPING a
+/// word (retitling to `"## Interference & Clearance"`) still fails, because
+/// containment cannot distinguish that from the section being gone. The panic
+/// message names `ORACLE_SECTION` as the knob for exactly that case.
+fn heading_matches(line: &str, heading: &str) -> bool {
+    let wanted = heading_words(heading);
+    let present = heading_words(line);
+    !wanted.is_empty() && wanted.iter().all(|word| present.contains(word))
 }
 
 /// The body of the `## `-level section headed by `heading`, from that heading
@@ -371,7 +413,7 @@ fn section_body(markdown: &str, heading: &str) -> String {
             if in_section {
                 break;
             }
-            in_section = line.trim_end() == heading;
+            in_section = heading_matches(line, heading);
             continue;
         }
         if in_section {
@@ -427,16 +469,28 @@ const GEOMETRY_ORACLE_NAMES: &[&str] = &["intersects", "distance"];
 /// adding it there immediately fails the coverage half until the chunk documents
 /// it. Mirrors the sibling suite's
 /// `every_implemented_geometry_op_is_documented_in_a_chunk`.
+///
+/// SET equality, not sequence equality — both sides are sorted before comparing.
+/// Order in `GEOMETRY_KINEMATIC_QUERY_NAMES` carries no meaning
+/// (`is_geometry_kinematic_query` is a bare `.contains()` over it), so a no-op
+/// reordering there — alphabetising it, say — must not fail a test whose whole
+/// subject is which names EXIST. Order-sensitivity here would be a false
+/// positive whose message actively misdirects, telling the reader to add or
+/// document a name when nothing was added or removed.
 #[test]
 fn documented_oracle_list_covers_the_whole_kinematic_registry() {
+    let mut documented = KINEMATIC_ORACLE_NAMES.to_vec();
+    let mut registry = reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES.to_vec();
+    documented.sort_unstable();
+    registry.sort_unstable();
     assert_eq!(
-        KINEMATIC_ORACLE_NAMES,
-        reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES,
-        "KINEMATIC_ORACLE_NAMES must list the kinematic-query registry exactly. A query was \
-         added to (or removed from) reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES without \
-         updating this list — so {CHUNK_PATH}'s `{ORACLE_SECTION}` section is not required to \
-         document it, and the in-GUI assistant will keep reading it as a MISSING CAPABILITY \
-         (task 5389). Add the name here AND document its call form in the chunk."
+        documented, registry,
+        "KINEMATIC_ORACLE_NAMES must list the kinematic-query registry exactly (as a SET — both \
+         sides are sorted here, so a pure reordering is fine). A query was added to (or removed \
+         from) reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES without updating this list — so \
+         {CHUNK_PATH}'s `{ORACLE_SECTION}` section is not required to document it, and the in-GUI \
+         assistant will keep reading it as a MISSING CAPABILITY (task 5389). Add the name here \
+         AND document its call form in the chunk."
     );
 }
 
@@ -449,16 +503,28 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // section is gone, so gutting it is RED rather than vacuously green.
     let section = section_body(&markdown, ORACLE_SECTION);
 
-    // (a) COVERAGE. Each name must appear as a backticked CALL form (`name(`),
-    // not merely as a bare word — geometry.md already contained the word
-    // "distance" before task 5389, but only as the unrelated
-    // `extrude(profile, distance)` parameter name, which taught a reader
-    // nothing about the query. Requiring the open paren pins the doc to a
-    // usable call form. (Placement WITHIN the section is not further
-    // constrained: a name mentioned only in the traps subsection would still
-    // satisfy this. Section presence is the property under test.)
+    // (a) COVERAGE. Each name must appear as a CALL form (`name(`) rather than a
+    // bare word — geometry.md already contained the word "distance" before task
+    // 5389, but only as the unrelated `extrude(profile, distance)` parameter
+    // name, which taught a reader nothing about the query. The open paren is what
+    // excludes that false positive (`extrude(profile, distance)` has no
+    // `distance(` in it), and it is all this needle asks for.
+    //
+    // NO leading backtick is required, deliberately. Demanding one would pin doc
+    // TYPOGRAPHY: writing the same call form as `**`min_clearance`**(s, …)`, or
+    // moving it into a markdown table cell, would go RED with zero capability
+    // regression and a panic claiming the oracle is undocumented. Per the house
+    // rule this file inherits, prose formatting is not the subject. The real
+    // weight is carried by (b) below, by `section_body`'s anti-vacuity panic, and
+    // by `reify_tagged_fences_in_geometry_chunk_compile`'s per-name sentinels,
+    // which require each call form inside a COMPILING fence — a strictly stronger
+    // property than any string match here.
+    //
+    // (Placement WITHIN the section is not further constrained: a name mentioned
+    // only in the traps subsection would still satisfy this. Section presence is
+    // the property under test.)
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
-        let call_form = format!("`{name}(");
+        let call_form = format!("{name}(");
         assert!(
             section.contains(&call_form),
             "{CHUNK_PATH}'s `{ORACLE_SECTION}` section does not document the \
