@@ -3106,6 +3106,21 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// Millimetres per metre — the single metre→millimetre conversion point for
+/// the 3MF writer.
+///
+/// **Export length regime.** Reify model space is SI METRES. Reify's
+/// declaration-carrying export formats emit MILLIMETRES, the CAD/3MF interop
+/// default, so that the unit a file DECLARES and the coordinates it CARRIES
+/// agree. [`write_3mf`] declares `unit="millimeter"`, so it applies this
+/// factor at the vertex-emit site; the STEP writer makes the same promise
+/// through OCCT's per-model length units (see `export_step` in
+/// `reify-kernel-occt`'s `occt_wrapper.cpp`).
+///
+/// The STL writers deliberately do NOT use this — see the contract comments on
+/// [`write_stl_binary`] / [`write_stl_ascii`].
+const MM_PER_METRE_F32: f32 = 1000.0;
+
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
 /// Returns `None` if `idx` is out of bounds.
 fn mesh_vertex(vertices: &[f32], idx: u32) -> Option<[f32; 3]> {
@@ -3308,6 +3323,14 @@ impl ThreeMfWarning {
 
 /// Write `mesh` to the 3MF format (OPC ZIP package).
 ///
+/// **Units:** takes a `Mesh` whose vertices are SI METRES (reify model space)
+/// and emits a package declaring `unit="millimeter"`, converting the
+/// coordinates by [`MM_PER_METRE_F32`] as it writes them. The declaration and
+/// the payload therefore agree: a 0.030 m cube is written as 30 mm and reads
+/// back as 30 mm in any 3MF consumer. Scaling here — at the site that makes
+/// the `unit=` promise — rather than in the callers is what makes the promise
+/// un-bypassable: no caller can obtain a mislabelled package.
+///
 /// Produces a valid 3MF/OPC ZIP holding three parts:
 ///
 /// - `[Content_Types].xml` — OPC content-type declarations
@@ -3330,9 +3353,10 @@ impl ThreeMfWarning {
 /// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
 /// `include_colors` is set (geometry is still written).
 ///
-/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
-/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
-/// that require IEEE-finite coordinates will reject such packages.
+/// **NaN/Inf coordinates:** non-finite `f32` values stay non-finite through
+/// the metre→millimetre multiply and are written as-is via `{}` formatting
+/// (matching `write_stl_ascii` behavior).  3MF consumers that require
+/// IEEE-finite coordinates will reject such packages.
 pub fn write_3mf(
     mesh: &Mesh,
     opts: ThreeMfOptions,
@@ -3437,10 +3461,17 @@ pub fn write_3mf(
                 Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
             })?;
             line_buf.clear();
+            // Metres → millimetres, so the emitted coordinates match the
+            // `unit="millimeter"` declared above. See `MM_PER_METRE_F32`.
             // Using std::fmt::Write on String is infallible.
             let _ = std::fmt::write(
                 &mut line_buf,
-                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+                format_args!(
+                    "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                    v[0] * MM_PER_METRE_F32,
+                    v[1] * MM_PER_METRE_F32,
+                    v[2] * MM_PER_METRE_F32
+                ),
             );
             zw.write_all(line_buf.as_bytes())?;
         }
