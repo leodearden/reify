@@ -602,7 +602,14 @@ mod bvh_tests {
     /// Node index: `ix*(M+1)²+iy*(M+1)+iz`; physical coords: `(ix/M, iy/M, iz/M)`.
     /// Per-hex Freudenthal decomposition uses the (1,1,1)-corner diagonal n6,
     /// matching the existing 6-tet fixture in `tests::resample_data_ordering_…`.
-    fn make_box_of_tets(m: usize) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+    ///
+    /// Hexes are emitted x-outer/z-inner, 6 consecutive tets each, so hex
+    /// `(cx,cy,cz)` owns `elems[6*((cx*M + cy)*M + cz) .. +6]` — relied on by
+    /// `miss_diag_tests` to punch a coverage hole in one specific hex.
+    ///
+    /// `pub(super)` so the sibling `miss_diag_tests` module can reuse this one
+    /// reference tiling rather than authoring a second tet fixture (#6154).
+    pub(super) fn make_box_of_tets(m: usize) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
         let m1 = m + 1;
         let mut nodes = Vec::with_capacity(m1 * m1 * m1);
         for ix in 0..=m {
@@ -891,5 +898,191 @@ mod bvh_tests {
             c8 = stats_s3_m8.point_in_tet_tests,
             c4 = stats_s3.point_in_tet_tests,
         );
+    }
+}
+
+/// Task #6154 — the grid-miss diagnostic instrument.
+///
+/// These three fixtures exist to prove ONE property before the instrument is
+/// pointed at the realized box: that it can tell a **coverage hole** apart from
+/// **boundary round-off**. Both show up as `f64::NAN` in the sampled data and
+/// are indistinguishable by a raw NaN count — which is exactly why the raw
+/// count (1055 of 2989 nodes on the realized box) explains nothing on its own.
+///
+/// - (a) full tiling, grid == mesh AABB  → zero misses at all;
+/// - (b) one INTERIOR hex removed        → miss in the `interior` bucket, margin O(0.5);
+/// - (c) grid 1e-7 wider than the mesh   → misses only in face/edge/corner, margin O(1e-7).
+#[cfg(test)]
+mod miss_diag_tests {
+    // These imports drive the RED compile error in step-1; they resolve in step-2.
+    use super::bvh_tests::make_box_of_tets;
+    use super::{GridSpec, classify_grid_misses, nearest_miss_margin, resample_nodal_to_grid};
+
+    /// Stride-3 nodal values. The classifier reads only NaN-ness, so the actual
+    /// magnitudes are irrelevant — a ramp keeps every value finite and distinct
+    /// so an interpolated hit can never be mistaken for a sentinel.
+    fn ramp(n_nodes: usize) -> Vec<f64> {
+        (0..n_nodes * 3).map(|i| i as f64).collect()
+    }
+
+    /// The §7a production tolerance, mirrored so these fixtures exercise the
+    /// same containment slack the realized path uses.
+    const TOL: f64 = 1e-9;
+
+    /// (a) FULL TILING — the grid spans exactly the mesh AABB, and every grid
+    /// point coincides with a mesh node (`i/4` is exact in binary), so nothing
+    /// may be reported as out-of-solid. This is the instrument's zero.
+    #[test]
+    fn miss_report_full_tiling_reports_zero_misses() {
+        let (nodes, elems) = make_box_of_tets(4);
+        let vals = ramp(nodes.len());
+        let grid = GridSpec {
+            bounds_min: [0.0; 3],
+            bounds_max: [1.0; 3],
+            counts: [4, 4, 4],
+        };
+        let sf = resample_nodal_to_grid(&nodes, &elems, &vals, 3, &grid, "u", TOL);
+        let report = classify_grid_misses(&sf, 3);
+
+        assert_eq!(report.n_grid, 125, "5×5×5 grid nodes over [0,1]³");
+        assert_eq!(
+            report.n_missed, 0,
+            "a mesh that tiles its own AABB must leave NO out-of-solid grid point; \
+             got {} misses (interior={}, face={}, edge={}, corner={})",
+            report.n_missed, report.missed_interior, report.missed_face, report.missed_edge,
+            report.missed_corner,
+        );
+        assert_eq!(
+            report.missed_interior + report.missed_face + report.missed_edge + report.missed_corner,
+            report.n_missed,
+            "bucket reconciliation identity must hold even at zero",
+        );
+    }
+
+    /// (b) INTERIOR HOLE — a genuine COVERAGE defect. Removing the 6 tets of the
+    /// interior hex `(1,1,1)` opens a cubic void spanning `[0.25,0.5]³`. On an
+    /// 8×8×8-element grid (spacing 0.125) exactly one grid point — index (3,3,3),
+    /// the void's centre (0.375, 0.375, 0.375) — falls strictly inside it.
+    ///
+    /// Index (3,3,3) is extreme on NO axis, so it must land in the `interior`
+    /// bucket, and its nearest-miss margin must be O(½ tet), not O(round-off).
+    #[test]
+    fn miss_report_interior_hole_lands_in_interior_bucket_with_large_margin() {
+        const M: usize = 4;
+        let (nodes, elems_full) = make_box_of_tets(M);
+
+        // Hex (cx,cy,cz) owns 6 consecutive elems at 6*((cx*M + cy)*M + cz).
+        let (cx, cy, cz) = (1usize, 1usize, 1usize);
+        let lo = 6 * ((cx * M + cy) * M + cz);
+        let elems: Vec<[usize; 4]> = elems_full
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !(lo..lo + 6).contains(i))
+            .map(|(_, e)| *e)
+            .collect();
+        assert_eq!(
+            elems.len(),
+            elems_full.len() - 6,
+            "exactly one hex (6 tets) must have been removed",
+        );
+
+        let vals = ramp(nodes.len());
+        let grid = GridSpec {
+            bounds_min: [0.0; 3],
+            bounds_max: [1.0; 3],
+            counts: [8, 8, 8],
+        };
+        let sf = resample_nodal_to_grid(&nodes, &elems, &vals, 3, &grid, "u", TOL);
+        let report = classify_grid_misses(&sf, 3);
+
+        assert_eq!(report.n_grid, 729, "9×9×9 grid nodes");
+        assert!(
+            report.missed_interior > 0,
+            "a coverage hole must surface in the INTERIOR bucket — that is the \
+             signature that distinguishes it from boundary round-off; got \
+             interior={}, face={}, edge={}, corner={}",
+            report.missed_interior, report.missed_face, report.missed_edge, report.missed_corner,
+        );
+        assert!(
+            report.missed_indices.contains(&[3, 3, 3]),
+            "the void centre (0.375,0.375,0.375) = index (3,3,3) must be reported \
+             missed; got missed_indices = {:?}",
+            report.missed_indices,
+        );
+
+        // The discriminator: a coverage hole is O(½ tet) deep, not O(ulp).
+        let centre = [0.375, 0.375, 0.375];
+        let margin = nearest_miss_margin(&nodes, &elems, centre);
+        assert!(
+            margin < 0.0,
+            "the void centre must be outside every remaining tet, got margin {margin}",
+        );
+        assert!(
+            margin.abs() > 1e-3,
+            "a COVERAGE hole must produce a large-magnitude negative margin \
+             (O(½ tet) in barycentric units), got {margin} — a margin this small \
+             would mean boundary round-off, not a missing element",
+        );
+    }
+
+    /// (c) BOUNDARY ROUND-OFF — no coverage defect at all. The mesh still tiles
+    /// `[0,1]³`; only the GRID is 1e-7 wider on each side. With counts [4,4,4]
+    /// the axis points are `-1e-7 + i·0.25000005`, so indices 1..=3 stay strictly
+    /// inside and only indices 0 and 4 fall marginally outside.
+    ///
+    /// So every miss is index-extreme on ≥1 axis, and the split is fully
+    /// determined by combinatorics on a 5×5×5 grid:
+    ///   0 extreme axes → 3³ = 27 interior (all HITS);
+    ///   1 → C(3,1)·2·3² = 54 face;  2 → C(3,2)·2²·3 = 36 edge;  3 → 2³ = 8 corner.
+    /// 54 + 36 + 8 = 98 misses, and `missed_interior` must be exactly 0.
+    #[test]
+    fn miss_report_boundary_roundoff_spares_the_interior_with_tiny_margins() {
+        const EPS: f64 = 1e-7;
+        let (nodes, elems) = make_box_of_tets(4);
+        let vals = ramp(nodes.len());
+        let grid = GridSpec {
+            bounds_min: [-EPS; 3],
+            bounds_max: [1.0 + EPS; 3],
+            counts: [4, 4, 4],
+        };
+        let sf = resample_nodal_to_grid(&nodes, &elems, &vals, 3, &grid, "u", TOL);
+        let report = classify_grid_misses(&sf, 3);
+
+        assert_eq!(report.n_grid, 125, "5×5×5 grid nodes");
+        assert_eq!(
+            report.missed_interior, 0,
+            "pure boundary round-off must leave EVERY index-interior grid point \
+             finite; a non-zero interior count here would mean the mesh failed to \
+             tile its own AABB, which is a different defect entirely",
+        );
+        assert_eq!(report.missed_face, 54, "1 extreme axis: C(3,1)·2·3² = 54");
+        assert_eq!(report.missed_edge, 36, "2 extreme axes: C(3,2)·2²·3 = 36");
+        assert_eq!(report.missed_corner, 8, "3 extreme axes: 2³ = 8");
+        assert_eq!(
+            report.n_missed, 98,
+            "every index-boundary point of the 5×5×5 grid, and only those",
+        );
+        assert_eq!(
+            report.missed_interior + report.missed_face + report.missed_edge + report.missed_corner,
+            report.n_missed,
+            "bucket reconciliation identity",
+        );
+
+        // The discriminator, mirrored: round-off misses are O(EPS / tet-edge)
+        // ≈ 4e-7 in barycentric units — four orders of magnitude below (b).
+        assert_eq!(report.missed_points.len(), report.n_missed);
+        for (p, idx) in report.missed_points.iter().zip(&report.missed_indices) {
+            let margin = nearest_miss_margin(&nodes, &elems, *p);
+            assert!(
+                margin < 0.0,
+                "missed point {p:?} at index {idx:?} must be outside every tet, \
+                 got margin {margin}",
+            );
+            assert!(
+                margin.abs() < 1e-4,
+                "boundary round-off must produce a TINY negative margin; point \
+                 {p:?} at index {idx:?} gave {margin}, which is coverage-hole scale",
+            );
+        }
     }
 }
