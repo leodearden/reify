@@ -1510,9 +1510,10 @@ structure SphereCheck {
 /// and 0.60mm — three off-trend rows that would have shown a tooth. Reading the
 /// near-uniform envelope ratio as "very close to LINEAR" and concluding adjacent
 /// values can't swing far apart is FALSE and unsafe — do not assume that: the
-/// full sweep found swings up to 2.74x between neighbours a few micrometres
-/// apart (e.g. 0.5955mm → 1.223e-3 m vs. 0.5960mm → 4.541e-4 m, a 0.08% change
-/// in the request). 0.50mm's 0.76x reading in this table is one such tooth, not
+/// full sweep found swings up to 2.78x between neighbours. Even neighbours
+/// only 0.5 micrometres apart can swing 2.69x (0.5955mm → 1.223e-3 m vs.
+/// 0.5960mm → 4.541e-4 m, a 0.08% change in the request). 0.50mm's 0.76x
+/// reading in this table is one such tooth, not
 /// an isolated exception. The envelope trend still puts the 1e-3 m bound
 /// crossing at ~0.4815mm, explaining why 0.49mm and 0.51mm violate here — but a
 /// tooth elsewhere in the range can flip that reading, so re-measure the actual

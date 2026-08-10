@@ -77,8 +77,9 @@
 // VIOLATE the 1.000e-3 m bound while 0.50mm between them passes at a 2.63x
 // margin — a 2.66x-2.77x swing in achieved deviation across a ±2% change in
 // #precision here (the 388-point sweep's largest measured adjacent swing
-// overall is 2.74x, e.g. 0.5955mm → 1.223e-3 m vs. 0.5960mm → 4.541e-4 m for a
-// 0.08% change in the request).  FARTHER BELOW THE BOUND the measured points
+// overall is 2.78x, at 0.68mm → 5.156e-4 m vs. 0.69mm → 1.434e-3 m; a separate
+// pair 0.08% apart in the request, 0.5955mm → 1.223e-3 m vs. 0.5960mm →
+// 4.541e-4 m, swings 2.69x).  FARTHER BELOW THE BOUND the measured points
 // happen to track ~2.08x #precision (0.25mm → 5.198e-4, 0.30mm → 6.202e-4,
 // 0.35mm → 7.271e-4), but that local ratio is an observation of the upper
 // envelope, not a guarantee — the teeth recur across the whole range, and
