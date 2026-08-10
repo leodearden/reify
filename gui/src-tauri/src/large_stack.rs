@@ -497,3 +497,108 @@ where
         ),
     }
 }
+
+/// Run `f` on the persistent LSP lane WITHOUT blocking the calling tokio worker,
+/// resolving to its value.
+///
+/// The async sibling of [`run_on_worker`], for `lsp_request` — an `async fn`
+/// Tauri command that fires on effectively every keystroke and cursor move.
+/// [`run_on_worker`] would park its caller in `mpsc::recv()`; on the tauri
+/// runtime that pins a worker for the whole LSP round trip, which is precisely
+/// what an async command must not do. Awaiting a
+/// [`tokio::sync::oneshot`](tokio::sync::oneshot) reply instead RELEASES the
+/// worker while the lane thread computes.
+///
+/// Everything else is shared with the blocking seam: the same [`LSP_LANE`], the
+/// same boxed [`Job`], the same catch-inside-the-job protocol and [`JobReply`]
+/// payload, the same panic fidelity. Only the reply channel differs.
+///
+/// This is not a new concurrency design: `debug_server::run_on_engine` already
+/// bridges an async caller to a large-stack thread with exactly
+/// [`spawn_on_large_stack`] + a `oneshot`. This amortises that bridge onto a
+/// persistent lane instead of paying a fresh 256 MiB mapping per call.
+pub async fn run_on_lsp_worker<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    dispatch_async(LSP_LANE.sender(), f).await
+}
+
+/// Submit `f` to `sender`'s lane and AWAIT its result — or, given `None`, run `f`
+/// INLINE on the caller and resolve immediately.
+///
+/// The async counterpart of [`dispatch`], and `pub(crate)` for the same reason:
+/// turning "is there a lane?" into a parameter is what makes the degraded arm
+/// reachable from a test rather than requiring a real `pthread_create` failure.
+///
+/// # Degradation policy: never lose a result, never hang an `.await`
+///
+/// Both of [`dispatch`]'s arms are preserved, which matters more here — a
+/// blocking submitter that degrades merely runs slower, whereas a hung future
+/// would leave the frontend's `invoke` promise unresolved forever (a silently
+/// dead editor pane):
+///
+/// * `None` lane (the OS refused the 256 MiB mapping): run `f` inline. The
+///   worst case is exactly today's behaviour — the LSP request on a tokio
+///   worker's ~2 MiB stack.
+/// * `SendError(job)`: the queue handed the job BACK unrun, so run it in this
+///   frame where the oneshot sender is still live. The result still arrives over
+///   the same channel.
+///
+/// And a `RecvError` is a loud panic rather than a hang: a disconnected
+/// `oneshot` resolves AT ONCE, so the `.await` below can never park forever.
+pub(crate) async fn dispatch_async<F, T>(sender: Option<&JobSender>, f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let Some(sender) = sender else {
+        // No lane (already warned once, in the lane initialiser). Run inline —
+        // a panic here propagates naturally, so this arm needs no forwarding of
+        // its own.
+        return f();
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<JobReply<T>>();
+    let job: Job = Box::new(move || {
+        // Identical to `dispatch`'s job body: the catch lives INSIDE the job, so
+        // the lane's `for job in rx` loop can never observe an unwind and cannot
+        // be killed by user code. `AssertUnwindSafe` is sound because the job
+        // OWNS its captures and is consumed by this call — nothing observes them
+        // after a panic — and the payload is re-raised on the submitter below
+        // rather than swallowed.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        // A dropped receiver means the awaiting task is gone; nothing to report.
+        let _ = reply_tx.send(outcome);
+    });
+
+    // Poisoning is meaningless for a `Sender` — it holds no invariant a panic
+    // could leave broken — so recover the guard rather than propagating. The
+    // lock is released before the `.await` below (it is a std `Mutex`, and is
+    // held only across this queue push).
+    let send_result = sender
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .send(job);
+
+    if let Err(std::sync::mpsc::SendError(job)) = send_result {
+        // The lane's worker is gone. Run the handed-back job here; the oneshot
+        // sender it captured is still live, so the result arrives below.
+        job();
+    }
+
+    match reply_rx.await {
+        Ok(Ok(value)) => value,
+        // Re-raise the ORIGINAL payload on the awaiting task, so panic semantics
+        // are identical to every other tier's.
+        Ok(Err(payload)) => std::panic::resume_unwind(payload),
+        // Unreachable while the job catches its own unwind: the oneshot can only
+        // disconnect if the job was dropped unrun. A disconnected `oneshot`
+        // resolves AT ONCE, so this is a loud failure, not a hung future.
+        Err(_) => panic!(
+            "a large-stack lane dropped a job without answering: its oneshot \
+             reply channel disconnected before a result arrived"
+        ),
+    }
+}
