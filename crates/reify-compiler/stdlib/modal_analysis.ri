@@ -115,12 +115,15 @@ structure def NoDamping : DampingDescriptor { }
 // transient response can be integrated mode-by-mode in real arithmetic
 // rather than requiring a full complex-eigenvalue solve.
 //
-// Param semantics (PRD §4.2):
-//   alpha — mass-proportional damping coefficient (units 1/s). Damps low
-//           frequencies more than high. Often calibrated from measured
-//           damping ratio at the fundamental mode.
-//   beta  — stiffness-proportional damping coefficient (units s). Damps
-//           high frequencies more than low. Useful for suppressing
+// Param semantics (PRD §4.2). Both units are carried by the DECLARATION
+// below — `Frequency` (= s⁻¹) and `Time` — not by this prose, so they
+// cannot drift out of step with the type (task #6093, following the
+// `Mode.frequency` precedent):
+//   alpha — mass-proportional damping coefficient. Damps low frequencies
+//           more than high. Often calibrated from measured damping ratio
+//           at the fundamental mode.
+//   beta  — stiffness-proportional damping coefficient. Damps high
+//           frequencies more than low. Useful for suppressing
 //           high-frequency numerical noise from explicit time integration.
 //
 // Explicitly NOT constrained: alpha / beta are conventionally non-negative
@@ -132,8 +135,8 @@ structure def NoDamping : DampingDescriptor { }
 //
 // PRD reference: docs/prds/v0_3/modal-analysis.md §4.2.
 structure def RayleighDamping : DampingDescriptor {
-    param alpha : Real
-    param beta : Real
+    param alpha : Frequency
+    param beta : Time
 }
 
 // ── Mode ─────────────────────────────────────────────────────────────────────
