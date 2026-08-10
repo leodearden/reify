@@ -27,7 +27,7 @@
 //! and reads from the populated map.
 
 use reify_core::ConstraintNodeId;
-use reify_core::{ContentHash, DimensionVector, Type};
+use reify_core::{ContentHash, DiagnosticCode, DimensionVector, Severity, Type};
 use reify_eval::graph::ConstraintNodeData;
 use reify_eval::tolerance_combine::extract_output_tolerance_bound;
 use reify_ir::{CompiledExpr, PersistentMap, Satisfaction};
@@ -145,6 +145,90 @@ fn non_measuring_surface_does_not_reach_language_checker() {
          language-level ConstraintChecker on a non-measuring surface — the checker \
          has no access to achieved_repr_tol and misattributes the Indeterminate to \
          the operand kinds. Offending diagnostics: {offenders:#?}"
+    );
+}
+
+/// INV-SF-4 + INV-SF-6: the Indeterminate must be ATTRIBUTABLE and CODED.
+///
+/// Removing the misattributed reason is only half the contract — a bare,
+/// unexplained INDETERMINATE is an INV-SF-4 violation of its own flavour. The
+/// surface that could not answer must say so, and point at the one that can.
+///
+/// The message assertions deliberately pin only the load-bearing tokens
+/// ("does not measure", "reify check") rather than the full sentence, so a
+/// later rewording pass does not break this gate.
+///
+/// RED after the guard reorder: nothing yet pushes a diagnostic onto the peel's
+/// Indeterminate result.
+#[test]
+fn non_measuring_surface_yields_attributable_indeterminate() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: a surface that never measured yields Indeterminate — never a false Violated"
+    );
+
+    // The two halves of the contract are pinned together: the misattributed
+    // reason must be gone AND an attributable one must be present.
+    let offenders: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("operator undefined for these operand kinds"))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "C-SURFACE 1: the language-level checker must not answer for this \
+         constraint. Offending diagnostics: {offenders:#?}"
+    );
+
+    let attributions: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Checker#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one diagnostic must name Checker#constraint[0] and \
+         explain the Indeterminate. Got: {:#?}",
+        result.diagnostics
+    );
+    let attribution = attributions[0];
+
+    assert_eq!(
+        attribution.severity,
+        Severity::Info,
+        "C-LOG emission-table row 5: severity is Info — not Warning, and (per \
+         INV-SF-2's severity-hygiene corollary) never Error on a path a healthy \
+         design routinely hits. Got: {attribution:#?}"
+    );
+    assert_eq!(
+        attribution.code,
+        Some(DiagnosticCode::ConstraintIndeterminate),
+        "INV-SF-6: the diagnostic must carry a machine-readable code. Got: {attribution:#?}"
+    );
+    assert!(
+        attribution.message.contains("does not measure"),
+        "INV-SF-4: the message must name the SURFACE as the reason, not the \
+         operands. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        attribution.message.contains("reify check"),
+        "INV-SF-4: the message must point at the remedy — the surface that does \
+         measure. Got: {:?}",
+        attribution.message
     );
 }
 
