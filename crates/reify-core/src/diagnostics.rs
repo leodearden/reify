@@ -6002,6 +6002,95 @@ mod tests {
         assert_eq!(s, "\"OpContractViolation\"");
     }
 
+    // --- CtorUnknownField / CtorArity tests (task 5303 — struct-ctor-conformance ε;
+    //     E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY) ---
+    // Pairs with the two structural emit sites in the `StructureInstanceCtor`
+    // by-name binder in `crates/reify-compiler/src/expr.rs` (the sites that
+    // previously appended an unknown named arg / an over-arity positional arg
+    // leniently as `__arg{i}` with no diagnostic at all).
+    // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
+    // covered by `diagnostic_code_derives` above; only the variant-specific
+    // round-trip and serde wire-format tests are added here.
+    //
+    // NOTE on severity: the `with_code` round-trip tests below build via
+    // `Diagnostic::error(..)` purely to mirror the `OpContractViolation`
+    // precedent's shape — they pin that `with_code` preserves the code and does
+    // not perturb the severity it was handed. They deliberately do NOT pin the
+    // severity these codes are EMITTED at: that is read from
+    // `CTOR_FIELD_CONFORMANCE_SEVERITY` (`crates/reify-compiler/src/conformance/mod.rs`,
+    // Warning at ε, Error at δ) and is pinned by the ε probes in
+    // `crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, so
+    // δ's one-const flip does not have to touch this file.
+
+    /// `DiagnosticCode::CtorUnknownField` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with. Catches a future enum reorganisation
+    /// that drops or renames the variant.
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorUnknownField);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorUnknownField));
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(
+            format!("{:?}", DiagnosticCode::CtorUnknownField),
+            "CtorUnknownField"
+        );
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorUnknownField` serializes
+    /// as `"CtorUnknownField"` (PascalCase, from `rename_all = "PascalCase"`).
+    ///
+    /// This pins the LSP wire identifier: `crates/reify-lsp/src/convert.rs`
+    /// routes `DiagnosticCode` to its LSP form through serde precisely so new
+    /// variants need no registration there, which makes this string the
+    /// externally-visible contract for the code.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_unknown_field_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorUnknownField).unwrap();
+        assert_eq!(s, "\"CtorUnknownField\"");
+    }
+
+    /// `DiagnosticCode::CtorArity` round-trips through
+    /// `Diagnostic::error(...).with_code(...)`, preserving both the code and the
+    /// severity it was constructed with.
+    #[test]
+    fn diagnostic_code_ctor_arity_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x").with_code(DiagnosticCode::CtorArity);
+        assert_eq!(d.code, Some(DiagnosticCode::CtorArity));
+        assert_eq!(d.severity, Severity::Error);
+        assert_eq!(format!("{:?}", DiagnosticCode::CtorArity), "CtorArity");
+    }
+
+    /// Under `feature = "serde"`, `DiagnosticCode::CtorArity` serializes as
+    /// `"CtorArity"` (PascalCase, from `rename_all = "PascalCase"`). Same LSP
+    /// wire-identifier rationale as
+    /// [`diagnostic_code_ctor_unknown_field_serde_pascal_case`].
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_ctor_arity_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::CtorArity).unwrap();
+        assert_eq!(s, "\"CtorArity\"");
+    }
+
+    /// `CtorUnknownField` and `CtorArity` are DISTINCT codes, and distinct from
+    /// [`DiagnosticCode::ArgTypeMismatch`] — the three facts a single bad ctor
+    /// call can carry (wrong type / unknown field name / too many args) must stay
+    /// separately countable, which is what the ε cross-talk probe in
+    /// `struct_ctor_field_conformance_tests.rs` asserts on and what β's corpus
+    /// survey buckets by.
+    #[test]
+    fn ctor_structural_codes_are_distinct_from_each_other_and_from_arg_type_mismatch() {
+        assert_ne!(DiagnosticCode::CtorUnknownField, DiagnosticCode::CtorArity);
+        assert_ne!(
+            DiagnosticCode::CtorUnknownField,
+            DiagnosticCode::ArgTypeMismatch
+        );
+        assert_ne!(DiagnosticCode::CtorArity, DiagnosticCode::ArgTypeMismatch);
+    }
+
     // --- ReservedTypeName tests (task 4591 — W_RESERVED_TYPE_NAME) ---
     // Pairs with the lint pass in
     // `crates/reify-compiler/src/compile_builder/reserved_name_lint.rs`.
