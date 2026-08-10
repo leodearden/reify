@@ -225,6 +225,53 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
     }
 }
 
+/// Wait for a notification with the given `method` whose `params.uri`
+/// equals `uri`, skipping any other messages (responses, or notifications
+/// for other documents) received in between.
+///
+/// Used as a deterministic barrier in place of a fixed-duration sleep: e.g.
+/// after sending a `didChange`, waiting for the matching
+/// `publishDiagnostics` notification proves the server actually finished
+/// processing that change — `did_change` in crates/reify-lsp/src/server.rs
+/// always calls `publish_diagnostics` as its last step, after the
+/// unknown-URI `eprintln!` and the diagnostics computation — rather than
+/// hoping a wall-clock delay was long enough under CPU load. Note that
+/// `ClientSink::publish_diagnostics` (crates/reify-lsp/src/server.rs)
+/// schedules the actual send via `tokio::spawn` rather than sending
+/// inline; this does not weaken the barrier, since that spawn is itself
+/// sequenced strictly after the eprintln/computation within the same
+/// `did_change` invocation, so seeing the notification on stdout still
+/// proves everything before it in that invocation already ran.
+///
+/// Same 30s timeout and CPU-saturation rationale as `wait_for_response`
+/// above.
+fn wait_for_notification(rx: &mpsc::Receiver<serde_json::Value>, method: &str, uri: &str) {
+    let timeout = std::time::Duration::from_secs(30);
+    loop {
+        match rx.recv_timeout(timeout) {
+            Ok(msg) => {
+                if msg.get("method").and_then(|v| v.as_str()) == Some(method)
+                    && msg["params"]["uri"].as_str() == Some(uri)
+                {
+                    return;
+                }
+                // Otherwise it's a response, or a notification for a
+                // different document (e.g. an earlier phase's own
+                // publishDiagnostics); keep waiting.
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("timed out after 30s waiting for {method} notification for uri={uri}")
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "reader thread disconnected (LSP process may have crashed) \
+                     while waiting for {method} notification for uri={uri}"
+                )
+            }
+        }
+    }
+}
+
 /// Full interactive LSP session through the real `reify lsp` binary, driven
 /// over stdio with real JSON-RPC framing.
 ///
@@ -250,6 +297,23 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
 /// The assertions below on the returned `stderr` are therefore load-bearing,
 /// not diagnostic: they prove the drain actually ran to completion under
 /// real backpressure, not just that the happy path (small/no stderr) works.
+///
+/// Phase 4b synchronizes with `wait_for_notification`, blocking on the
+/// `publishDiagnostics` notification for the huge URI, rather than a fixed
+/// sleep: tower-lsp dispatches requests/notifications with a concurrency
+/// level > 1, so a wall-clock delay is not a reliable proxy for "the server
+/// has processed this specific message" under the CPU-saturation conditions
+/// this file already designs around (see `wait_for_response`'s doc comment).
+///
+/// This test's chatty-stderr trigger is coupled to reify-lsp's current
+/// behavior: the exact `eprintln!` wording in server.rs, and the fact that
+/// an unbounded, client-controlled URI is logged verbatim. That coupling is
+/// deliberate (see the design decision on generating backpressure through
+/// the real binary rather than a stub) and is exactly what the non-vacuity
+/// guard below is for — if reify-lsp's logging ever changes (including a
+/// fix that truncates the logged URI, which would itself be reasonable),
+/// this guard fails loudly and needs re-pointing rather than silently
+/// passing on zero bytes.
 #[test]
 fn lsp_full_interactive_loop_through_binary() {
     let _lock = acquire_lsp_test_lock();
@@ -414,7 +478,18 @@ fn lsp_full_interactive_loop_through_binary() {
     });
     send_jsonrpc(&mut stdin, &did_change_unknown_uri.to_string());
 
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Deterministic barrier (see rustdoc above): block until the server
+    // publishes diagnostics for the huge URI, proving did_change's handler
+    // — including the unknown-URI eprintln! — has already run, instead of
+    // hoping a fixed sleep was long enough. NOTE: in the undrained
+    // (pre-fix) regression scenario this eprintln! blocks forever on pipe
+    // backpressure, so did_change never reaches publish_diagnostics and
+    // this call times out after its own 30s rather than reaching
+    // `wait_for_exit`'s timeout below — still a failing test, just via a
+    // different panic site, and (as with the known hazard on the timeout
+    // test below) the still-blocked child is left for the test process to
+    // clean up on exit rather than killed inline.
+    wait_for_notification(&rx, "textDocument/publishDiagnostics", &huge_uri);
 
     // 5) Shutdown + exit
     let shutdown = serde_json::json!({
