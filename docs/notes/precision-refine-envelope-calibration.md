@@ -366,8 +366,9 @@ Cost scales as 1/deflection (§2.1, re-measured: 2.03× per halving) and bisecti
 > alone**. The cost of a capped **run** is ~2× that. This corrects the figure; it does
 > not challenge §4.2's reasoning, which is unchanged.
 
-Worst-case wall clock on the re-baselined sphere (11.66 s at 0.3 mm, median):
-**N = 3 → 14× → ~2.7 min**; **N = 4 → 31× → ~6.0 min**.
+Worst-case wall clock on the re-baselined sphere (11.66 s at 0.3 mm, median), both rows
+counting the initial pass so they are comparable:
+**N = 3 → 15× → ~2.9 min**; **N = 4 → 31× → ~6.0 min**.
 
 ### 3.3 Decision — keep the cap at 4
 
