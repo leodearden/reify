@@ -3993,9 +3993,13 @@ impl<'a> Lowering<'a> {
     ///   1. **Pow** — `base ^ exponent`. Probed first because the pow arm also
     ///      carries an `op` field (the `^`), but is uniquely identified by the
     ///      presence of `base` + `exponent` fields.
-    ///   2. **Mul/Div** — `left (*|/) right`, left-associative. Dispatch on the
+    ///   2. **Mul/Div** — `left (*|·|/) right`, left-associative. Dispatch on the
     ///      operator's source TEXT, not node kind: the `op` field aliases the two
-    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`).
+    ///      external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
+    ///      `child_by_field_name` never resolves — which is why the slice is read
+    ///      at all. `*` and `·` (U+00B7) are two spellings of one operator and
+    ///      both yield [`UnitExpr::Mul`] (task #5784, PRD
+    ///      `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2).
     ///   3. **Paren / bare unit** — a parenthesised `unit_expr` is unwrapped
     ///      transparently (no `Paren` variant — parens carry no semantics); a
     ///      `unit_name` child becomes [`UnitExpr::Unit`].
@@ -4014,12 +4018,28 @@ impl<'a> Lowering<'a> {
             return Some(UnitExpr::Pow(Box::new(base), exponent));
         }
 
-        // 2. Mul/Div: `left (*|/) right`, left-associative. The `op` field aliases
+        // 2. Mul/Div: `left (*|·|/) right`, left-associative. The `op` field aliases
         //    the external-scanner tokens (`_unit_mul_op` / `_unit_div_op`), which
         //    `child_by_field_name` does NOT expose — so detect the arm by the
         //    `left`+`right` fields and read the operator from the source slice
         //    between the two operands. Units are contiguous (no whitespace inside
-        //    a unit_expr), so that slice is exactly `*` or `/`.
+        //    a unit_expr), so that slice is exactly `*`, `·` or `/`.
+        //
+        //    `·` (U+00B7 MIDDLE DOT) is the SI-conventional multiply and lowers to
+        //    the SAME `UnitExpr::Mul` as `*` — task #5784 / PRD
+        //    `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2, which is
+        //    what lets `Display for DimensionVector` output (`7850 kg·m^-3`) be
+        //    read back in.
+        //
+        //    Matched EXACTLY, not by `contains`, and the fallthrough DIAGNOSES
+        //    rather than returning a bare `None`. A silent `None` here propagates
+        //    through `lower_quantity_literal` and `lower_let` as a DROPPED member,
+        //    and `check_and_lower!` never notices because it keys off a CST that
+        //    `is_error()` — so an operator the scanner accepts but this match does
+        //    not recognise becomes a diagnostic-free missing binding. That is the
+        //    INV-SF-7 `parse-is-value-faithful` failure shape
+        //    (`docs/legibility/design-invariants.md`), so the arm is closed
+        //    structurally instead of being patched one operator at a time.
         if let (Some(left_node), Some(right_node)) = (
             node.child_by_field_name("left"),
             node.child_by_field_name("right"),
@@ -4029,12 +4049,16 @@ impl<'a> Lowering<'a> {
             let op_text = self
                 .source
                 .get(left_node.end_byte()..right_node.start_byte())?;
-            return if op_text.contains('/') {
-                Some(UnitExpr::Div(Box::new(left), Box::new(right)))
-            } else if op_text.contains('*') {
-                Some(UnitExpr::Mul(Box::new(left), Box::new(right)))
-            } else {
-                None
+            return match op_text.trim() {
+                "/" => Some(UnitExpr::Div(Box::new(left), Box::new(right))),
+                "*" | "·" => Some(UnitExpr::Mul(Box::new(left), Box::new(right))),
+                other => {
+                    self.push_error(
+                        format!("unrecognized unit operator `{other}` in unit expression"),
+                        self.span(node),
+                    );
+                    None
+                }
             };
         }
 
