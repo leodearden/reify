@@ -615,6 +615,91 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_ARG_TYPE_MISMATCH`
     /// (see `docs/prds/type-hygiene.md` ζ §"Compile-time arg-type guard").
     ArgTypeMismatch,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies a NAMED argument whose
+    /// name matches no `Param` cell on the target structure — the site that
+    /// previously appended the argument leniently as `__arg{i}` with no
+    /// diagnostic at all.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_UNKNOWN_FIELD: unknown named argument '{field}' in call to
+    /// '{Ctor}'; '{Ctor}' has no parameter with that name"`
+    ///
+    /// The `E_CTOR_UNKNOWN_FIELD: ` prefix is part of the message because
+    /// `reify check` renders `{severity}: {message}` and never prints the
+    /// `DiagnosticCode`; the prefix is what makes the mnemonic observable at the
+    /// CLI (in-file emit-site precedent: `E_FALLBACK_TYPE: ` / `E_PRIV_MEMBER_ACCESS`).
+    /// The label sits at the offending argument's own span (PRD §6 C3), reading
+    /// `"unknown named argument"`.
+    ///
+    /// Multiplicity: exactly ONE diagnostic per unknown named argument (an
+    /// unknown field name is a per-argument author error and each typo needs its
+    /// own span to be actionable), satisfying PRD §6 C2(ii) "at most one
+    /// diagnostic per (arg, fact)". A duplicate of a *known* parameter is NOT an
+    /// unknown field and keeps its own pre-existing duplicate-named-arg Error.
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**. The emit site never hard-codes a severity, so δ stays a literal
+    /// one-const flip. PRD §6 C2(i) type anti-cascade deliberately does NOT gate
+    /// this code: an unknown field name is a structural fact decidable without
+    /// reference to any argument's type, so a poisoned argument must not suppress
+    /// it (the typo often *caused* the downstream type error).
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`] (and not folded into it): that code
+    /// reports an expected-vs-found TYPE for an argument that legitimately binds
+    /// to a parameter, whereas here the named parameter does not exist at all —
+    /// there is no expected type to report, and the fix is a rename rather than a
+    /// value change. Minting a dedicated code (following the `SelectorKindMismatch`
+    /// minting precedent) lets the β corpus survey and the δ flip count
+    /// structural author errors separately from type errors.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_UNKNOWN_FIELD`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 11).
+    CtorUnknownField,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (the `StructureInstanceCtor`
+    /// by-name binder reached from the `ExprKind::FunctionCall` arm; task 5303,
+    /// struct-ctor-conformance ε).
+    /// Emitted when a structure-constructor call supplies more POSITIONAL
+    /// arguments than the target structure has unbound `Param` slots — the site
+    /// that previously appended each surplus argument leniently as
+    /// `__arg{call_idx}` with no diagnostic at all.
+    ///
+    /// Canonical message form:
+    /// `"E_CTOR_ARITY: {Ctor}() expects at most {nparams} {argument|arguments},
+    /// got {nargs}"`
+    ///
+    /// The `{argument|arguments}` noun and the `"expects … , got …"` shape are
+    /// reused verbatim from `crates/reify-compiler/src/arg_check.rs` so ctor
+    /// arity reads identically to builtin arity; the accompanying label text is
+    /// that module's centralised `"wrong number of arguments"`. The
+    /// `E_CTOR_ARITY: ` prefix is part of the message for the same CLI-visibility
+    /// reason described on [`Self::CtorUnknownField`].
+    ///
+    /// Multiplicity: exactly ONE diagnostic per CALL SITE, anchored at the FIRST
+    /// over-arity positional argument. Arity is a call-level fact — `W("a","b","c")`
+    /// against a 1-param structure is one mistake, not three — matching every
+    /// existing arity diagnostic in the repo (`arg_check.rs` emits one per call,
+    /// never one per surplus argument).
+    ///
+    /// Severity: emitted at the task-5302 `CTOR_FIELD_CONFORMANCE_SEVERITY` knob
+    /// (`crates/reify-compiler/src/conformance/mod.rs`) — **Warning at ε, Error
+    /// at δ**, never a hard-coded severity, so δ stays a literal one-const flip.
+    /// PRD §6 C2(i) type anti-cascade does NOT gate this code either: an argument
+    /// count is decidable with no reference to any argument's type.
+    ///
+    /// Distinct from [`Self::ArgTypeMismatch`]: a surplus positional argument has no
+    /// parameter slot, hence no expected type to compare against — the fact
+    /// reported is the call's shape, not a value's type. Distinct also from the
+    /// `arg_check.rs` builtin arity errors, which are hard-coded `Severity::Error`
+    /// for *builtin* calls; this code covers structure constructors and must move
+    /// with the ctor-conformance knob.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_CTOR_ARITY`
+    /// (see `docs/prds/struct-ctor-field-type-conformance.md` §7 row 12).
+    CtorArity,
     /// Origin: `crates/reify-eval/src/topology_attribute_resolver.rs::resolve_unique_by_attribute`.
     /// Emitted as a `Warning` when the v0.2 attribute-based selector resolver matches
     /// zero or multiple sub-shapes after a topology change (i.e. the unique-attribute
