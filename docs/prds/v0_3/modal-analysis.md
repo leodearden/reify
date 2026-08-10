@@ -212,8 +212,8 @@ structure def NoDamping : DampingDescriptor {
 }
 
 structure def RayleighDamping : DampingDescriptor {
-    param alpha : Real    // mass-proportional coefficient (1/s)
-    param beta  : Real    // stiffness-proportional coefficient (s)
+    param alpha : Frequency    // mass-proportional coefficient
+    param beta  : Time         // stiffness-proportional coefficient
 }
 ```
 
