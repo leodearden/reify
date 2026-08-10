@@ -4049,12 +4049,38 @@ mod tests {
 
     /// A `RayleighDamping { alpha, beta }` instance — the damped shape
     /// `extract_damping` discriminates by `type_name`.
+    ///
+    /// Both fields are DIMENSIONED (`Frequency` = s⁻¹, `Time`), matching the
+    /// stdlib declaration since task #6093 retyped them off the `Real`
+    /// placeholder, and matching what the migrated corpus now evaluates to.
+    /// Mirrors what task 4548 did for `Mode.frequency`: retype the declaration
+    /// and move the fixture builder in the same change, so the in-crate tests
+    /// stop exercising a shape real input no longer produces — the fixture
+    /// drift that lets a future reader-tightening pass unit tests and fail on
+    /// the corpus.
+    ///
+    /// `read_scalar_si` folds `Value::Scalar { si_value }` and `Value::Real` to
+    /// the same f64, so every assertion downstream of this builder sees
+    /// identical numbers; the reader itself stays deliberately tolerant
+    /// (gating it belongs to docs/prds/v0_6/dimension-checked-readers.md).
     fn rayleigh_damping(alpha: f64, beta: f64) -> Value {
         struct_instance(
             "RayleighDamping",
             vec![
-                ("alpha".to_string(), Value::Real(alpha)),
-                ("beta".to_string(), Value::Real(beta)),
+                (
+                    "alpha".to_string(),
+                    Value::Scalar {
+                        si_value: alpha,
+                        dimension: DimensionVector::FREQUENCY,
+                    },
+                ),
+                (
+                    "beta".to_string(),
+                    Value::Scalar {
+                        si_value: beta,
+                        dimension: DimensionVector::TIME,
+                    },
+                ),
             ],
         )
     }
