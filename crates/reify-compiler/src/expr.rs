@@ -2834,6 +2834,43 @@ fn compile_expr_guarded_with_expected_inner(
                         ));
                     }
                 }
+                // Over-arity positional args: diagnose once for the call, then keep
+                // the pre-existing lenient __arg{call_idx} fallback (task 5303, ε —
+                // PRD §7 row 12). Same diagnostics-only posture as the unknown-named
+                // arg site above: the pushes below are unchanged, and the `defaults`
+                // computation that follows is untouched (under-arity covered by
+                // param defaults stays legal — ε tightens the surplus direction only).
+                //
+                // Exactly ONE diagnostic per call site, not one per surplus arg:
+                // arity is a call-LEVEL fact (`W("a","b","c")` against a 1-param def
+                // is one mistake), matching arg_check.rs, which emits one arity
+                // diagnostic per call. Anchored at the FIRST surplus arg.
+                //
+                // Wording and the label text are lifted from arg_check.rs — including
+                // its singular/plural rule, keyed on the EXPECTED count — so ctor
+                // arity reads identically to builtin arity. Its helper fns cannot be
+                // called here: all three hard-code `Diagnostic::error`, and ε must
+                // emit at the ctor-conformance knob.
+                if let Some(&first_extra) = extra_positional_idxs.first() {
+                    let noun = if nparams == 1 { "argument" } else { "arguments" };
+                    diagnostics.push(
+                        crate::conformance::diag_at(
+                            crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                            format!(
+                                "E_CTOR_ARITY: {}() expects at most {} {}, got {}",
+                                name,
+                                nparams,
+                                noun,
+                                args.len()
+                            ),
+                        )
+                        .with_code(DiagnosticCode::CtorArity)
+                        .with_label(DiagnosticLabel::new(
+                            args[first_extra].span,
+                            "wrong number of arguments",
+                        )),
+                    );
+                }
                 // Lenient fallback: over-arity positional args appended as
                 // __arg{call_idx}, matching the unknown-named-arg fallback above.
                 for call_idx in extra_positional_idxs {
