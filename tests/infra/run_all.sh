@@ -1394,6 +1394,23 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # `.out` re-emission.
     _H2_POOL_CLOCK_REASON="test_slot_starvation"
 
+    # Slot-TIMEOUT reason token for the same wait (task #6024), passed as
+    # slot_acquire's optional 5th arg. DELIBERATELY DISTINCT from the clock
+    # reason above, and the two must not be collapsed into one:
+    #   - the CLOCK reason stays `test_slot_starvation` for the reason stated
+    #     above -- DF's clock-stop parser already recognizes that token;
+    #   - the TIMEOUT reason is its own value because this pool wait is the ONE
+    #     finite-WAIT path absent from dark-factory's grounded basename
+    #     allowlist (lib_test_semaphore | cargo-test-occt-gated |
+    #     lib_lane_x_flock), so the @@REIFY_SLOT_TIMEOUT@@ sentinel is its only
+    #     classification route, and a token shared with the test-semaphore path
+    #     would make a starved POOL indistinguishable from a starved test slot.
+    # The sentinel rides the worker subshell's inherited parent stderr for the
+    # same reason the clock markers do (see the `.out` note above), and is
+    # outside _RA_CLOCK_SANITIZE's `@@REIFY_CLOCK_` prefix, so it survives
+    # re-emission by design.
+    _H2_POOL_TIMEOUT_REASON="run_all_pool_starvation"
+
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
     # observability / strictly additive (INV-4): unlike the load-bearing
     # knobs above, a malformed value fails OPEN to 30 instead of exiting --
@@ -1657,7 +1674,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # Soft acquire: on deadline (75) proceed unslotted -- never skip a
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
-            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" || _h2_slot_rc=$?
+            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" || _h2_slot_rc=$?
             bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
