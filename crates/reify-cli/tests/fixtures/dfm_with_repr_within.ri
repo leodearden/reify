@@ -53,16 +53,38 @@
 //
 // RETUNING #precision — MEASURE, DO NOT INTERPOLATE.  #precision is threaded
 // bit-exact into OCCT's BRepMesh_IncrementalMesh linear-deflection argument, and
-// OCCT meshes each edge into an INTEGER segment count, so the achieved deviation
-// is a SAWTOOTH in #precision.  NEAR THE BOUND the sawtooth dominates: 0.49mm
-// (1.013e-3) and 0.51mm (1.056e-3) both VIOLATE the 1.000e-3 m bound while 0.50mm
-// between them passes at a 2.63x margin — a ~2.7x swing in achieved deviation
-// across a ±2% change in #precision.  FARTHER BELOW THE BOUND the measured points
+// the achieved deviation is a STAIRCASE in #precision, not a sawtooth and not
+// linear (CORRECTED 2026-08-10, gate 6060/esc-6060-1, 388-point sweep; Mem0
+// 4a6b70db — this note is the SINGLE SOURCE OF TRUTH for the staircase and its
+// mechanism; `representation_within_assertion.rs` points here rather than
+// restating it). Treads follow an upper envelope at ~2.075x the requested
+// deflection, punctuated by narrow PERIODIC downward teeth at ~0.758x — real
+// and recurring, not isolated: near 0.65mm the period is ~0.022mm with ~8.5um
+// width (~39% duty cycle); near 0.30mm the period is ~0.006mm.
+//
+// Mechanism: NOT per-edge integer segment counts. A same-sweep control on
+// `cylinder(1000mm, 2000mm)`, whose curved face IS edge-segment-quantised,
+// comes back perfectly smooth (ratio 0.493-0.500, zero teeth), which falsifies
+// that explanation. The real mechanism is a two-ladder phase collision on the
+// SPHERE FACE: interior surface nodes are truncation-quantised at
+// 0.7*ArcAngularStep (BRepMesh_SphereRangeSplitter.cxx:25-27) while the seam
+// meridian edge is tessellated at HALF the deflection
+// (BRepMesh_CurveTessellator.cxx:74) — the 0.70000-vs-0.70711 mismatch between
+// those two constants drifts the two node ladders in and out of phase as
+// #precision varies, producing the teeth.
+//
+// NEAR THE BOUND this dominates: 0.49mm (1.013e-3) and 0.51mm (1.056e-3) both
+// VIOLATE the 1.000e-3 m bound while 0.50mm between them passes at a 2.63x
+// margin — a 2.66x-2.77x swing in achieved deviation across a ±2% change in
+// #precision here (the 388-point sweep's largest measured adjacent swing
+// overall is 2.74x, e.g. 0.5955mm → 1.223e-3 m vs. 0.5960mm → 4.541e-4 m for a
+// 0.08% change in the request).  FARTHER BELOW THE BOUND the measured points
 // happen to track ~2.08x #precision (0.25mm → 5.198e-4, 0.30mm → 6.202e-4,
-// 0.35mm → 7.271e-4), but that local ratio is an observation, not a guarantee —
-// and extrapolating it is exactly what makes the isolated 0.50mm tooth look safe.
-// 0.3mm was chosen because BOTH its neighbours also clear the bound, not because
-// it is a smooth optimum.
+// 0.35mm → 7.271e-4), but that local ratio is an observation of the upper
+// envelope, not a guarantee — the teeth recur across the whole range, and
+// extrapolating the envelope is exactly what makes a tooth like 0.50mm's look
+// like a one-off. 0.3mm was chosen because BOTH its neighbours also clear the
+// bound, not because it is a smooth optimum.
 //
 // To re-derive any candidate: hold #precision at the candidate on a bare
 // `sphere(1000mm)`, tighten the RepresentationWithin bound below the expected
@@ -104,7 +126,7 @@ structure def OverhangRule : DFMRule {
 /// The measured facet-chord deviation, its margin against the 1mm bound, and the
 /// procedure for retuning #precision are in the header note "#precision and the
 /// RepresentationWithin margin" — read it before changing the pragma, because the
-/// response is a sawtooth and is not interpolatable.
+/// response is a staircase with periodic teeth and is not interpolatable.
 structure Sphere {
     let r = sphere(1000mm)
 }

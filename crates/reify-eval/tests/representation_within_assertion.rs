@@ -1500,23 +1500,34 @@ structure SphereCheck {
 ///   0.30mm → 6.202e-4    (chosen)             0.51mm → 1.056e-3  VIOLATES
 /// ```
 ///
-/// Every point except 0.50mm sits at 2.067x-2.081x the requested deflection — a
-/// 0.65% spread, i.e. very close to LINEAR. (An earlier revision of this doc
-/// called the curve a "sawtooth" that swings ~3x between adjacent values; no
-/// measurement here supports that, and it is corrected rather than repeated.)
-/// The linear trend puts the 1e-3 m bound crossing at ~0.4815mm, which is what
-/// makes 0.49mm and 0.51mm violate. 0.50mm is the one measured exception at
-/// 0.76x; OCCT meshes each edge into an INTEGER segment count, so isolated steps
-/// like it are possible and linearity is not guaranteed outside the measured
-/// range — re-measure rather than extrapolate far. BT7's pre-condition carries
-/// the recipe.
+/// CORRECTED 2026-08-10 (gate 6060/esc-6060-1, 388-point sweep; Mem0 4a6b70db —
+/// supersedes both an earlier "sawtooth" label and the "very close to LINEAR"
+/// label this comment used to carry). Seven of these eight points sit at
+/// 2.067x-2.081x the requested deflection, but that is a sample of the upper
+/// ENVELOPE only, not linearity: this 8-point grid is too coarse to resolve the
+/// narrow periodic downward teeth (~0.758x) that punctuate that envelope, and
+/// the table this file's author was given had already dropped 0.44mm, 0.46mm,
+/// and 0.60mm — three off-trend rows that would have shown a tooth. Reading the
+/// near-uniform envelope ratio as "very close to LINEAR" and concluding adjacent
+/// values can't swing far apart is FALSE and unsafe — do not assume that: the
+/// full sweep found swings up to 2.74x between neighbours a few micrometres
+/// apart (e.g. 0.5955mm → 1.223e-3 m vs. 0.5960mm → 4.541e-4 m, a 0.08% change
+/// in the request). 0.50mm's 0.76x reading in this table is one such tooth, not
+/// an isolated exception. The envelope trend still puts the 1e-3 m bound
+/// crossing at ~0.4815mm, explaining why 0.49mm and 0.51mm violate here — but a
+/// tooth elsewhere in the range can flip that reading, so re-measure the actual
+/// candidate rather than trusting the envelope. The mechanism (a sphere-face
+/// two-ladder phase collision, not per-edge integer quantization) is documented
+/// once, in `dfm_with_repr_within.ri`'s "#precision and the RepresentationWithin
+/// margin" header note — see there rather than here. BT7's pre-condition
+/// carries the recipe.
 ///
 /// 0.3mm was chosen over finer values purely for wall-clock: it is ~3x cheaper to
 /// tessellate than 0.1mm (measured 3.0x-3.75x across runs; the ratio moves with
 /// machine load) and still passes, as do both its measured neighbours, so there
 /// is no cliff within ±17%. The faster 0.48mm/0.50mm were rejected: 0.48mm clears
-/// the bound by only 0.12%, and 0.50mm passes only as an isolated off-trend point
-/// with violations on both sides.
+/// the bound by only 0.12%, and 0.50mm passes only as an off-trend point with
+/// violations on both sides.
 const OCCT_SOURCE_FINE: &str = r#"
 #precision(0.3mm)
 structure Sphere {
