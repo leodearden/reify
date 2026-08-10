@@ -2700,7 +2700,9 @@ structure def Root {
 /// ε therefore covers expression-position constructors only. Closing the sub-path
 /// hole means adding an unknown-field check to the `PendingBoundCheck` walker — a
 /// different mechanism in a different file, with its own double-emission risk
-/// (PRD §10 Q4) — so it is a follow-up, not part of this diff. This test exists so
+/// (PRD §10 Q4) — so it is a follow-up (#6191), not part of this diff. Note the
+/// over-arity half is unreachable there regardless: `sub p = W("a", "b")` does not
+/// parse. This test exists so
 /// that boundary is a recorded, asserted fact: if a later change DOES make the sub
 /// path reach the binder, this test fails and forces the double-emission question
 /// to be answered rather than silently regressed into.
