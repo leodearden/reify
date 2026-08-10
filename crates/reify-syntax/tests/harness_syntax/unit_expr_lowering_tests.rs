@@ -188,3 +188,170 @@ fn digit_after_slash_stays_binop() {
         other => panic!("expected BinOp, got {:?}", other),
     }
 }
+
+// ── Pair 3: U+00B7 MIDDLE DOT as unit-multiply (task #5784, angle-units leaf κ) ──
+//
+// `Display for DimensionVector` joins base-unit parts with `·`, so `reify eval`
+// emits `7850 kg·m^-3` and `5 m^2·kg·s^-2·rad^-1`.  Leaf κ makes those strings
+// readable back in: the external scanner emits UNIT_MUL_OP for `·` as well as `*`,
+// and `lower_unit_expr` maps both spellings to the SAME `UnitExpr::Mul`.
+//
+// The twin assertions (`unit_of("…·…") == unit_of("…*…")`) are the literal wording
+// of this task's user-observable signal, and are what leaf μ's round-trip property
+// test will build on.
+
+#[test]
+fn middot_mul_lowers_like_star_mul() {
+    // 5N·m → Mul(N, m)
+    assert_eq!(unit_of("5N·m"), mul(bare("N"), bare("m")));
+    assert_eq!(unit_of("5N·m"), unit_of("5N*m"));
+}
+
+#[test]
+fn middot_mixed_with_div_is_left_associative() {
+    // 5N·m/rad → Div(Mul(N, m), rad) — `/` is the outermost operator.
+    assert_eq!(
+        unit_of("5N·m/rad"),
+        div(mul(bare("N"), bare("m")), bare("rad"))
+    );
+    assert_eq!(unit_of("5N·m/rad"), unit_of("5N*m/rad"));
+}
+
+#[test]
+fn middot_chain_with_exponents_lowers_like_star_chain() {
+    // 5m^2·kg·s^-2 → Mul(Mul(Pow(m,2), kg), Pow(s,-2))
+    assert_eq!(
+        unit_of("5m^2·kg·s^-2"),
+        mul(mul(pow(bare("m"), 2), bare("kg")), pow(bare("s"), -2))
+    );
+    assert_eq!(unit_of("5m^2·kg·s^-2"), unit_of("5m^2*kg*s^-2"));
+}
+
+#[test]
+fn middot_density_and_acceleration_lower_like_star_twins() {
+    // The two shapes `Display for DimensionVector` actually emits.
+    assert_eq!(unit_of("7850kg·m^-3"), mul(bare("kg"), pow(bare("m"), -3)));
+    assert_eq!(unit_of("7850kg·m^-3"), unit_of("7850kg*m^-3"));
+    assert_eq!(unit_of("9.81m·s^-2"), mul(bare("m"), pow(bare("s"), -2)));
+    assert_eq!(unit_of("9.81m·s^-2"), unit_of("9.81m*s^-2"));
+}
+
+// ── The anti-silent-drop lock ────────────────────────────────────────────────
+//
+// This is the assertion that distinguishes "correct" from "silently dropped", and
+// it is the reason leaf κ is not just a one-token scanner edit.  Widening the
+// scanner alone makes the CST CLEAN while `lower_unit_expr` still fails to
+// recognise the `·` operator slice and returns `None`; that `None` propagates
+// through `lower_quantity_literal` and `lower_let` as a DROPPED member, and
+// `check_and_lower!` never fires because it keys off `is_error()`/`has_error()` on
+// a CST that no longer has an error.  The result is a structure with ZERO members
+// and ZERO diagnostics — the exact INV-SF-7 `parse-is-value-faithful`
+// ("well-typed WRONG value") shape.  A `unit_of`-style assertion alone cannot
+// catch it: it panics with "structure has no members", which reads like a parse
+// failure rather than a faithfulness violation.
+
+/// Parse `source` and return (declaration count, member count of the first
+/// structure, parse-error messages).
+fn parse_shape(source: &str) -> (usize, usize, Vec<String>) {
+    let module = reify_syntax::parse(
+        source,
+        reify_core::ModulePath::single("unit_expr_lowering_test"),
+    );
+    let errors: Vec<String> = module.errors.iter().map(|e| e.message.clone()).collect();
+    let decl_count = module.declarations.len();
+    let member_count = match module.declarations.first() {
+        Some(Declaration::Structure(s)) => s.members.len(),
+        _ => 0,
+    };
+    (decl_count, member_count, errors)
+}
+
+#[test]
+fn middot_let_member_is_present_and_diagnostic_free() {
+    let (decls, members, errors) = parse_shape("structure def S { let x = 5N·m }");
+    assert!(
+        errors.is_empty(),
+        "`5N·m` must lower without any parse diagnostic; got {errors:?}"
+    );
+    assert_eq!(decls, 1, "expected exactly one declaration");
+    assert_eq!(
+        members, 1,
+        "`let x = 5N·m` must survive lowering as a member — zero members with zero \
+         diagnostics is the silent-drop failure this lock exists to catch"
+    );
+    // The `*` twin is the reference: the two spellings must be indistinguishable.
+    assert_eq!(
+        parse_shape("structure def S { let x = 5N*m }"),
+        (decls, members, errors),
+        "`5N·m` and `5N*m` must produce identical module shapes"
+    );
+}
+
+#[test]
+fn middot_fixture_bindings_all_survive_lowering() {
+    // The three bindings of tests/prd-gate/fixtures/unit_middot_mul.ri, inline.
+    let (decls, members, errors) = parse_shape(
+        "structure def UnitMiddotMul {\n\
+         \x20   let torque_like = 5N·m\n\
+         \x20   let with_div    = 5N·m/rad\n\
+         \x20   let composed    = 5m^2·kg·s^-2\n\
+         }",
+    );
+    assert!(errors.is_empty(), "expected no parse diagnostics, got {errors:?}");
+    assert_eq!(decls, 1);
+    assert_eq!(
+        members, 3,
+        "all THREE `·`-bearing lets must survive lowering; a lower count means \
+         members were dropped silently"
+    );
+}
+
+// ── Negative locks: adjacency, mirroring the `*` fixtures above ──────────────
+//
+// Each must produce a LOUD failure — a parse diagnostic, or a BinOp that does not
+// collapse into one quantity_literal.  What none of them may produce is a
+// diagnostic-free structure with a missing member.
+
+/// Shared assertion for the adjacency negatives: whatever else happens, the
+/// binding must not vanish without a diagnostic.
+fn assert_not_silently_dropped(source: &str) {
+    let (_, members, errors) = parse_shape(source);
+    assert!(
+        members > 0 || !errors.is_empty(),
+        "`{source}` produced a diagnostic-free structure with no members — a \
+         silent drop, which is never an acceptable outcome"
+    );
+}
+
+#[test]
+fn space_after_middot_stays_binop() {
+    // `5N· m` — whitespace after `·` breaks unit contiguity, so `·` is not a
+    // unit-multiply here and there is no general `·` operator to fall back to.
+    assert_not_silently_dropped("structure def S { let x = 5N· m }");
+    let (_, _, errors) = parse_shape("structure def S { let x = 5N· m }");
+    assert!(
+        !errors.is_empty(),
+        "`5N· m` must produce a parse diagnostic — `·` is not a general operator"
+    );
+}
+
+#[test]
+fn space_before_middot_stays_binop() {
+    assert_not_silently_dropped("structure def S { let x = 5N ·m }");
+    let (_, _, errors) = parse_shape("structure def S { let x = 5N ·m }");
+    assert!(
+        !errors.is_empty(),
+        "`5N ·m` must produce a parse diagnostic — `·` is not a general operator"
+    );
+}
+
+#[test]
+fn digit_after_middot_stays_binop() {
+    // `5N·3` — a digit is not a unit-start character (mirrors `digit_after_slash_stays_binop`).
+    assert_not_silently_dropped("structure def S { let x = 5N·3 }");
+    let (_, _, errors) = parse_shape("structure def S { let x = 5N·3 }");
+    assert!(
+        !errors.is_empty(),
+        "`5N·3` must produce a parse diagnostic — `·` must not bind to a digit"
+    );
+}

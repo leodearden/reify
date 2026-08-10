@@ -44,3 +44,6 @@ mod torque_unit_tests;
 // does not re-declare one.
 #[path = "harness_units/ri_literal_roundtrip.rs"]
 mod ri_literal_roundtrip;
+
+#[path = "harness_units/unit_middot_mul_tests.rs"]
+mod unit_middot_mul_tests;
