@@ -1,25 +1,36 @@
 // G3 grammar fixture for docs/prds/v0_6/angle-units-surface-convergence.md cluster C
 // (ratified decision 7a: accept U+00B7 MIDDLE DOT as a unit-multiply operator).
 //
-// THIS FIXTURE FAILS `tree-sitter parse --quiet` TODAY, BY DESIGN.
-// Measured at HEAD dc83d4fd60: exit 1, with a 3-byte ERROR node spanning the UTF-8
-// `·` on each of the three `let` lines below (e.g. `(ERROR [23, 24] - [23, 27])`).
-// U+00B7 appears nowhere in tree-sitter-reify/grammar.js or src/scanner.c; the
-// unit-multiply external token `UNIT_MUL_OP` fires only on ASCII `*`
-// (scanner.c:244-258, guarded by `is_unit_start` at :101).
+// grammar_confirmed: true — leaf κ (task #5784, "Scanner accepts U+00B7 as
+// unit-multiply") LANDED the acceptance. This fixture now parses AND compiles
+// clean: `tree-sitter parse --quiet` exits 0, and `reify eval` prints all three
+// bindings. The external token `UNIT_MUL_OP` fires on ASCII `*` OR U+00B7, both
+// gated identically by `is_unit_start` (tree-sitter-reify/src/scanner.c), and
+// `lower_unit_expr` maps both spellings to the same `UnitExpr::Mul`, so each
+// binding below evaluates identically to its `*`-spelled twin.
 //
-// grammar_confirmed: false — upstream grammar-producer task is this PRD's leaf κ
-// ("Scanner accepts U+00B7 as unit-multiply"). Every downstream leaf asserting
-// middle-dot round-trip depends on κ.
+// (Historical: this fixture was committed RED, failing with a 3-byte ERROR node
+// over the `·` on each `let` line, because U+00B7 appeared nowhere in the
+// grammar or scanner.)
 //
-// Why it matters: `Display for DimensionVector` (reify-core/src/dimension.rs:626)
+// CONSUMED BY crates/reify-compiler/tests/harness_units/unit_middot_mul_tests.rs,
+// which reads this file from disk and asserts (i) zero Error diagnostics, (ii)
+// all three value cells PRESENT — the anti-silent-drop lock — and (iii) each
+// cell's (si_value, dimension) equal to its `*`-twin's. Because a tracked `.rs`
+// names this fixture, it is ALSO listed in scripts/verify.sh's
+// `_RUST_COUPLED_RI_FIXTURES`; test_verify_scope.sh's PG-DRIFT scenario derives
+// that set by grepping tracked `.rs` files and goes RED if the two drift apart.
+// Editing the three `let` lines below therefore changes test inputs — don't.
+//
+// Why it matters: `Display for DimensionVector` (reify-core/src/dimension.rs)
 // joins base-unit parts with U+00B7, so `reify eval` prints `7850 kg·m^-3` and
-// `5 m^2·kg·s^-2·rad^-1` — strings Reify cannot read back. Replacing `·` with `*`
-// makes them parse and evaluate identically (probe-verified), so the middle dot is
-// the ONLY blocker on that surface.
+// `5 m^2·kg·s^-2·rad^-1` — strings Reify could not read back. The middle dot was
+// the ONLY blocker on that surface, and κ removed it: those unit strings now
+// parse and evaluate identically to their `*`-spelled forms.
 //
-// Expected after κ: `tree-sitter parse --quiet` exits 0, and `5N·m` evaluates
-// identically to `5N*m`.
+// STILL OPEN — κ closed the READ direction only. Normalizing what the curated
+// labels EMIT is leaf λ, and the `·` round-trip property test is leaf μ (#5789).
+// `Display` is deliberately unchanged here.
 
 structure def UnitMiddotMul {
     let torque_like = 5N·m

@@ -309,3 +309,311 @@ structure S {
           unit: (unit_expr
             (unit_name)))
         right: (number_literal)))))
+
+################################################################################
+# U+00B7 MIDDLE DOT (`·`) as unit_mul — task #5784, angle-units leaf κ
+#
+# PRD docs/prds/v0_6/angle-units-surface-convergence.md cluster C, ratified
+# decision 7a. The external scanner's UNIT_MUL_OP token now fires on ASCII `*`
+# OR U+00B7, both gated identically by `is_unit_start` (scanner.c). `·` is the
+# SI-conventional multiply, and `Display for DimensionVector` emits it — so
+# accepting it is what makes `reify eval` output such as `7850 kg·m^-3` readable
+# back in. `·` and `*` lower to the SAME `UnitExpr::Mul`, hence the identical
+# trees below and their `*`-spelled twins earlier in this file.
+#
+# THESE ROWS ARE DOCUMENTATION, NOT ENFORCEMENT. No gate anywhere executes this
+# corpus: scripts/verify.sh never invokes `tree-sitter test`, and
+# tree-sitter-reify/package.json has no scripts block. The LIVE regression signal
+# for everything below is tree-sitter-reify/tests/unit_middot_mul_grammar_tests.rs,
+# which cargo nextest runs.
+#
+# Every expected tree here was transcribed from a real parse, never hand-written,
+# and verified green with `tree-sitter test` (10/10 at the time of writing; run
+# `bash scripts/tree-sitter-generate.sh` first, or it aborts with "No language
+# found" — the generated parser is gitignored).
+#
+# The `(UNEXPECTED 183)` tokens in the negative rows (183 = 0xB7) are a GLR
+# error-recovery RENDERING ARTIFACT, not a language contract — only the presence
+# of an error is contractual. They must be re-pinned from the `tree-sitter test`
+# diff ONLY: `tree-sitter parse` renders the same node as a nested
+# `(ERROR (ERROR))`, and copying that form in produces a pin that fails
+# `tree-sitter test`. See the same warning, and the same artifact drifting across
+# grammar changes, in test/corpus/imaginary_literal.txt:11-22.
+################################################################################
+
+================================================================================
+unit_expr: Mul(N, m)  [5N·m] — U+00B7 unit_mul
+================================================================================
+
+structure S {
+  let x = 5N·m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+unit_expr: Div(Mul(N, m), rad)  [5N·m/rad] — U+00B7 mixed with `/`, left-assoc
+================================================================================
+
+structure S {
+  let x = 5N·m/rad
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            left: (unit_expr
+              (unit_name))
+            right: (unit_expr
+              (unit_name)))
+          right: (unit_expr
+            (unit_name)))))))
+
+================================================================================
+unit_expr: Mul(kg, Pow(m, -3))  [7850kg·m^-3] — the density string Display emits
+================================================================================
+
+structure S {
+  let x = 7850kg·m^-3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            base: (unit_expr
+              (unit_name))
+            exponent: (signed_integer)))))))
+
+================================================================================
+unit_expr: Mul(m, Pow(s, -2))  [9.81m·s^-2] — U+00B7 after a decimal magnitude
+================================================================================
+
+structure S {
+  let x = 9.81m·s^-2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            base: (unit_expr
+              (unit_name))
+            exponent: (signed_integer)))))))
+
+================================================================================
+unit_expr: Mul(Mul(Mul(Pow(m,2), kg), Pow(s,-2)), Pow(rad,-1))  [5m^2·kg·s^-2·rad^-1]
+================================================================================
+
+structure S {
+  let x = 5m^2·kg·s^-2·rad^-1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            left: (unit_expr
+              left: (unit_expr
+                base: (unit_expr
+                  (unit_name))
+                exponent: (signed_integer))
+              right: (unit_expr
+                (unit_name)))
+            right: (unit_expr
+              base: (unit_expr
+                (unit_name))
+              exponent: (signed_integer)))
+          right: (unit_expr
+            base: (unit_expr
+              (unit_name))
+            exponent: (signed_integer)))))))
+
+================================================================================
+negative: 5N·3 — U+00B7 peeks a digit, `is_unit_start` fails, scanner rolls back
+================================================================================
+
+structure S {
+  let x = 5N·3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))
+    (ERROR
+      (UNEXPECTED 183)
+      (number_literal))))
+
+================================================================================
+negative: 5N· m — whitespace AFTER U+00B7 breaks unit contiguity (PRD §3.1)
+================================================================================
+
+structure S {
+  let x = 5N· m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))
+    (ERROR
+      (UNEXPECTED 183))))
+
+================================================================================
+negative: 5N · m — whitespace BEFORE U+00B7 breaks unit contiguity
+================================================================================
+
+structure S {
+  let x = 5N · m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))
+    (ERROR
+      (UNEXPECTED 183))))
+
+================================================================================
+negative: 5 · 3 — the B7 boundary: Reify has NO general `·` binary operator
+================================================================================
+
+structure S {
+  let x = 5 · 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (number_literal))
+    (ERROR
+      (UNEXPECTED 183)
+      (number_literal))))
+
+================================================================================
+boundary: two adjacent lets, the first U+00B7-bearing — two separate declarations
+================================================================================
+
+structure S {
+  let a = 5N·m
+  let b = 3m
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          left: (unit_expr
+            (unit_name))
+          right: (unit_expr
+            (unit_name)))))
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))))
+
+================================================================================
+boundary: dangling U+00B7 must NOT absorb the next statement
+================================================================================
+
+structure S {
+  let a = 5N·
+  let b = 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (structure_definition
+    name: (identifier)
+    (let_declaration
+      name: (identifier)
+      value: (quantity_literal
+        value: (number_literal)
+        unit: (unit_expr
+          (unit_name))))
+    (ERROR
+      (UNEXPECTED 183))
+    (let_declaration
+      name: (identifier)
+      value: (number_literal))))
