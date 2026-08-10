@@ -2702,6 +2702,51 @@ describe('debug bridge tree-node expand/collapse', () => {
     expect(result.error).toContain('design');
     expect(result.error).toContain('constraint');
   });
+
+  // (j) closes the coverage gap under driveTreeNode's CSS escape — the one of
+  // the three escape sites in bridge.ts with no test of its own. (f) above
+  // reaches the same not-found branch but with a metacharacter-free path, so
+  // nothing today would notice if the escape were dropped: an unescaped quote or
+  // backslash interpolated into the `[data-testid="…"]` selector makes
+  // document.querySelector THROW a DOMException, which the dispatcher surfaces
+  // as an opaque `{error: '<parser message>'}` — a hostile or simply typo'd path
+  // reading as a bridge malfunction rather than as "no such node".
+  //
+  // Same hostile-input list and same "not-found rather than parser-throw"
+  // assertion as (s) in the set_fea_channel block, which pins the sibling ladder
+  // in pickFeaChannelSelect.
+  it('(j) a path containing selector metacharacters returns the not-found error, not a CSS-parser throw', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Register both accessors reporting NOT-expanded and inject NO control, so
+    // expand_tree_node necessarily takes the `expandedNow !== wantExpanded`
+    // branch — the ONLY branch that runs the escape — and then fails the lookup.
+    // A fixture whose state already matched would skip the escape entirely and
+    // prove nothing.
+    const designExpanded = new Set<string>();
+    const constraintExpanded = new Set<string>();
+    window.__REIFY_DEBUG__!.designTree = { expanded: () => designExpanded };
+    window.__REIFY_DEBUG__!.constraintPanel = { expandedNodes: () => constraintExpanded };
+
+    const badPaths = ['Bracket."1"', 'Bracket.\\1', 'Bracket.1"]'];
+
+    for (const [i, path] of badPaths.entries()) {
+      // The branch precondition, asserted rather than assumed.
+      expect(designExpanded.has(path)).toBe(false);
+      expect(constraintExpanded.has(path)).toBe(false);
+
+      const design = await dispatch(9010 + i, 'expand_tree_node', { path });
+      expect(design).toEqual({ error: `tree node control not found: ${path}` });
+
+      // Both panels feed the same escape through a different testid prefix.
+      const constraint = await dispatch(9020 + i, 'expand_tree_node', {
+        path,
+        panel: 'constraint',
+      });
+      expect(constraint).toEqual({ error: `tree node control not found: ${path}` });
+    }
+  });
 });
 
 // ─── F2 LSP probe handlers (steps 7-14) ─────────────────────────────────────
