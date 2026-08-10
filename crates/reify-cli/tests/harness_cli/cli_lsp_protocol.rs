@@ -465,3 +465,66 @@ fn lsp_full_interactive_loop_through_binary() {
          the stderr drain is broken. Captured stderr: {stderr}"
     );
 }
+
+/// Pins `wait_for_exit`'s timeout branch (kill → reap → join → interpolate),
+/// which has ZERO coverage from `lsp_full_interactive_loop_through_binary`
+/// above: `reify lsp` always exits cleanly, so nothing ever drives the
+/// deadline-exceeded path. If that path regressed, the whole harness would
+/// HANG rather than fail — the worst failure mode for this file — so it is
+/// pinned here with a cheap non-LSP stub instead of relying on incidental
+/// coverage.
+///
+/// The stub is `/bin/sh -c "printf 'REIFY_6161_TIMEOUT_MARKER\n' >&2; exec
+/// sleep 30"`: it writes a recognisable marker to stderr and then blocks
+/// well past the 1s deadline given to `wait_for_exit`. `exec` preserves the
+/// pid, so the pid `wait_for_exit` kills is exactly the process holding the
+/// stderr write end, which is what guarantees the reader thread reaches
+/// EOF instead of blocking forever.
+///
+/// `#[should_panic(expected = ...)]` matching the marker pins three things
+/// at once: the timeout branch panics rather than looping forever, the
+/// reader join returned rather than hanging (proving kill-then-reap ran
+/// *before* the join, not after), and the child's stderr was drained and
+/// interpolated into the panic message.
+///
+/// Measured premise (direct experiment, not assumed): the stub does not
+/// exit before a 1s deadline; kill() then wait() then joining the reader
+/// returns exactly "REIFY_6161_TIMEOUT_MARKER\n" in 1.01s.
+///
+/// Precedent: crates/reify-fdm/tests/slice.rs:326-358 and :371-400 already
+/// drive `/bin/sh -c '...; exec sleep 30'` stub children from Rust tests
+/// under `#[cfg(unix)]`.
+///
+/// Known hazard: if the timeout branch ever regressed to joining BEFORE
+/// killing, this test would HANG instead of failing, surfacing as a
+/// nextest slow-timeout rather than an assertion failure. That is an
+/// accepted, documented trade-off for exercising the real branch rather
+/// than a mock of it.
+///
+/// Does not take `acquire_lsp_test_lock()`: this stub is not an LSP
+/// process, needs no tokio runtime, and taking the lock would serialise a
+/// 1s test behind the 30s LSP test for no benefit.
+#[cfg(unix)]
+#[test]
+#[should_panic(expected = "REIFY_6161_TIMEOUT_MARKER")]
+fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
+    let mut child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf 'REIFY_6161_TIMEOUT_MARKER\n' >&2; exec sleep 30",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn /bin/sh stub");
+
+    let mut stderr_pipe = child.stderr.take().expect("stderr");
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        stderr_pipe.read_to_end(&mut buf).ok();
+        buf
+    });
+
+    wait_for_exit(&mut child, 1, stderr_reader);
+}
