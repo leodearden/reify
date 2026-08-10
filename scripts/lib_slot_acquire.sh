@@ -95,7 +95,30 @@ slot_emit_event() {
 }
 
 # ---------------------------------------------------------------------------
-# slot_acquire LOCK_BASE N WAIT [REASON]
+# slot_emit_timeout REASON LOCK_BASE SLOTS WAITED
+#   Emit the slot-acquisition-timeout sentinel to stderr, ONCE, from the
+#   finite-WAIT deadline site below.  Format:
+#     @@REIFY_SLOT_TIMEOUT@@ reason=<REASON> lock=<LOCK_BASE> slots=<SLOTS> waited=<WAITED>
+#
+#   Byte-identical in SHAPE to clock_emit_stop (lib_clock_stop.sh:140-142): a
+#   single printf whose format string starts the marker token at COLUMN 0, a
+#   literal trailing \n, and a >&2 redirect.  That is not stylistic -- it is the
+#   emission contract dark-factory's SEMAPHORE_TIMEOUT classifier keys on, whose
+#   matcher is line-anchored on the token as the FIRST token of its own line.
+#   Never append this mid-line to another message.
+#
+#   DISTINCT FAMILY from @@REIFY_CLOCK_*@@: unpaired and terminal ("this wait
+#   failed"), not a STOP/START span transition ("exclude this span from the
+#   verify timeout budget").  It deliberately falls outside run_all.sh's
+#   `@@REIFY_CLOCK_`-prefixed sanitizer so it survives re-emission.
+# ---------------------------------------------------------------------------
+slot_emit_timeout() {
+    printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s lock=%s slots=%s waited=%s\n' \
+        "$1" "$2" "$3" "$4" >&2
+}
+
+# ---------------------------------------------------------------------------
+# slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON]
 #   N-slot shuffle-acquire loop.  Opens and holds FD 9 in the CALLER's shell
 #   on success (sourced function — not a subshell — so `exec 9>>` mutates the
 #   caller's FD table directly, preserving the single-FD-9 invariant).
@@ -131,6 +154,13 @@ slot_acquire() {
     local _n="$2"
     local _wait="$3"
     local _reason="${4:-}"   # OPTIONAL: non-empty → emit @@REIFY_CLOCK_*@@ markers
+    # OPTIONAL 5th: reason token carried by the deadline sentinel only.  SEPARATE
+    # from _reason because _reason is load-bearing for CLOCK-STOP accounting --
+    # making a deliberately-3-arg caller pass one just to name its timeout would
+    # newly exclude its wait from dark-factory's verify timeout budget.  The
+    # ${_reason:-slot_acquire} fallback keeps every existing 3-/4-arg caller
+    # working, set -u safe, and guarantees a non-empty reason field on the wire.
+    local _timeout_reason="${5:-${_reason:-slot_acquire}}"
 
     # Output globals — always defined after return (set -u safe on both paths).
     SLOT_ACQUIRE_SLOT=""
@@ -213,6 +243,17 @@ slot_acquire() {
                 # STOP may have been emitted above (_sa_waited=1) but START is
                 # intentionally NOT emitted here — exit-75 implicitly closes
                 # the STOP span (see lib_clock_stop.sh FINITE-WAIT TIMEOUT note).
+                #
+                # The slot-timeout sentinel is emitted HERE and nowhere else:
+                # this is the single deadline site every finite-WAIT caller
+                # shares, and it sits INSIDE the `_unlimited -eq 0` branch, so
+                # "never emitted under WAIT=unlimited" and "never emitted on an
+                # uncontended acquire" are structural rather than conditional.
+                # `_now` was just read by the deadline check above, so the
+                # waited= value costs no extra clock read.  SLOT_ACQUIRE_ELAPSED
+                # deliberately stays 0 on this path (the documented output-globals
+                # contract); the elapsed value travels in waited= only.
+                slot_emit_timeout "$_timeout_reason" "$_lock_base" "$_n" "$(( _now - _start ))"
                 return 75
             fi
         fi
