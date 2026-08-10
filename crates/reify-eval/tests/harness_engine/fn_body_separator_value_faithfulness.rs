@@ -130,34 +130,36 @@ fn twins_differ_only_by_the_separator() {
     }
 }
 
-/// Compile and evaluate `source` through the PRODUCTION single-module path, then hand back its
-/// diagnostics verbatim.
+/// Compile `source` through the PRODUCTION single-module path — `parse_with_stdlib` +
+/// `compile_with_stdlib`, which is what the CLI and GUI do.
 ///
-/// Two test-support helpers are deliberately bypassed here, because each would hide the very
-/// behaviour under test:
+/// Two test-support helpers are deliberately bypassed here, because each would distort the
+/// very measurement under test:
 ///
 /// - `eval_source` routes through `parse_or_panic`, which asserts `parsed.errors.is_empty()`
 ///   and so panics before any value exists to compare.
-/// - `compile_source_with_stdlib_allow_parse_errors` PREPENDS its own
-///   `Diagnostic::error` per parse error (`helpers.rs`'s `parse_errors_as_diagnostics`). That
-///   is a test-only severity upgrade: production's `forward_parse_errors`
-///   (`compile_builder/pre_pass.rs`) emits the same parse errors as `Diagnostic::warning`.
-///   Measuring severity through that helper would report a hard refusal that real callers of
-///   `reify_compiler::compile_with_stdlib` never see — the exact leak this test exists to
-///   close.
+/// - `compile_source_with_stdlib_allow_parse_errors` PREPENDS its own `Diagnostic::error` per
+///   parse error (`helpers.rs`'s `parse_errors_as_diagnostics`) and THEN calls
+///   `compile_with_stdlib`, whose `forward_parse_errors` (`compile_builder/pre_pass.rs`) now
+///   pushes an ERROR for each of the same parse errors. Since task #5392 the two agree on
+///   severity, so the helper no longer differs in KIND — it differs in COUNT, reporting every
+///   parse error twice. A test whose subject is "what diagnostics does a real caller actually
+///   see" cannot measure through a helper that doubles them.
 ///
-/// So this calls `parse_with_stdlib` + `compile_with_stdlib` directly, which is what the CLI
-/// and GUI do, and evaluates with the same `MockConstraintChecker` engine the other e2e tests
-/// use (`result_fallback_e2e.rs`'s manual pipeline).
-fn compile_and_eval_as_production_does(
-    source: &str,
-) -> (Vec<reify_core::Diagnostic>, reify_eval::EvalResult) {
+/// Evaluation is deliberately NOT done here. Every variant in this corpus is refused, so
+/// driving the engine over IR lowered from a CST that carries ERROR/MISSING nodes would be
+/// wasted work in the common path and a plausible source of unrelated panics that would be
+/// misattributed to INV-SF-7. Callers that reach the value-comparison arm call
+/// [`eval_as_production_does`] explicitly.
+fn compile_as_production_does(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-    let compiled = reify_compiler::compile_with_stdlib(&parsed);
-    let diagnostics = compiled.diagnostics.clone();
-    let mut engine = make_engine();
-    let result = engine.eval(&compiled);
-    (diagnostics, result)
+    reify_compiler::compile_with_stdlib(&parsed)
+}
+
+/// Evaluate an already-compiled module with the same `MockConstraintChecker` engine the other
+/// e2e tests use (`result_fallback_e2e.rs`'s manual pipeline).
+fn eval_as_production_does(compiled: &reify_compiler::CompiledModule) -> reify_eval::EvalResult {
+    make_engine().eval(compiled)
 }
 
 /// Do two values agree?
@@ -197,19 +199,32 @@ fn values_agree(a: &Value, b: &Value) -> bool {
 
 /// INV-SF-7, the whole point of task #5392: omitting a separator must either be REFUSED or be
 /// value-preserving. It may never be quietly accepted with a different answer.
+///
+/// Both arms are conforming, so the assertions below are per-variant. The `refused` tally at
+/// the end is a NON-VACUITY guard, not a third requirement: as of #5392 every variant takes
+/// the refusal arm, which means the value-comparison arm never executes and the test would
+/// silently stop testing anything if that stayed unnoticed. Pinning the split makes any
+/// change visible. If it fires because a variant became clean-compiling, the correct response
+/// is to confirm the value comparison above now covers that variant and update the count —
+/// never to delete the guard.
 #[test]
 fn adjacent_token_variation_cannot_silently_change_a_value() {
+    let mut refused = 0usize;
+
     for v in VARIANTS {
-        let (diagnostics, result) = compile_and_eval_as_production_does(v.no_sep);
+        let compiled = compile_as_production_does(v.no_sep);
+        let diagnostics = compiled.diagnostics.clone();
 
         // A hard error is a CONFORMING outcome — "a parse error at the ambiguity site" is
         // precisely the acceptance criterion's second arm.
         if !error_diags(&diagnostics).is_empty() {
+            refused += 1;
             continue;
         }
 
         // No error, so the compile claims this program is well-formed. Then its value is a
         // claim about the source, and it must match what the source plainly says.
+        let result = eval_as_production_does(&compiled);
         let id = ValueCellId::new(v.structure, v.member);
         let got = result.values.get(&id).cloned().unwrap_or_else(|| {
             panic!(
@@ -240,6 +255,17 @@ fn adjacent_token_variation_cannot_silently_change_a_value() {
             v.intended,
         );
     }
+
+    assert_eq!(
+        refused,
+        VARIANTS.len(),
+        "corpus split changed: {refused} of {} variants were refused. As of #5392 every \
+         variant is refused, so the value-comparison arm above never runs; if a variant now \
+         compiles cleanly, check that the comparison covered it and update this count \
+         deliberately. Do not delete this guard — without it the test can silently become \
+         vacuous.",
+        VARIANTS.len(),
+    );
 }
 
 /// The mandatory clean-input guard: the fix must not degenerate into "reject everything".
@@ -277,40 +303,49 @@ fn separated_twins_are_all_clean() {
     }
 }
 
-/// Real designs in the repository must still build.
+/// A real design that calls a user-defined function must still produce its VALUE.
 ///
 /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
-/// this is the guard against the severity flip in `forward_parse_errors` turning a formerly
-/// tolerated warning into a broken build. Both fixtures are fn-heavy — `m5_user_function.ri`
-/// declares a user fn and calls it from a structure, `integration_full_v01.ri` declares two
-/// overloaded fns alongside fields and constraints — so they exercise exactly the seam this
-/// task changed, at the granularity a user would notice.
+/// the guard against the severity flip in `forward_parse_errors` turning a formerly tolerated
+/// warning into a broken build.
+///
+/// Scope is deliberately one fixture, and deliberately at the EVAL layer.
+/// `crates/reify-compiler/tests/examples_smoke.rs` already walks all of `examples/`
+/// recursively — asserting `parsed.errors.is_empty()` and zero `Severity::Error` diagnostics
+/// from `compile_with_stdlib`, behind an auditable `SKIP_SET` — so it is the corpus-wide guard
+/// against the severity flip and a second hand-picked list here would be strictly weaker.
+/// What it does NOT do is run the engine. `m5_user_function.ri` declares `fn area` and calls
+/// it from `Panel.surface_area`, so evaluating that cell is the shortest path from "the parser
+/// still accepts a user fn" to "the value it computes is still there".
 #[test]
-fn clean_corpus_still_compiles_and_evaluates() {
-    let examples: &[&str] = &[
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/m5_user_function.ri"
-        ),
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/integration_full_v01.ri"
-        ),
-    ];
+fn a_design_calling_a_user_fn_still_evaluates_its_cell() {
+    const PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/m5_user_function.ri"
+    );
 
-    for path in examples {
-        let source =
-            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path} should exist: {e}"));
+    let source =
+        std::fs::read_to_string(PATH).unwrap_or_else(|e| panic!("{PATH} should exist: {e}"));
 
-        // `compile_source_with_stdlib` panics on any parse error, which is itself half the
-        // guard: these examples must continue to parse cleanly.
-        let compiled = reify_test_support::compile_source_with_stdlib(&source);
-        let errors = error_diags(&compiled.diagnostics);
-        assert!(
-            errors.is_empty(),
-            "{path}: a checked-in example stopped compiling. Promoting parse errors to \
-             ERROR severity may not break real designs.\n\
-             errors: {errors:?}",
-        );
-    }
+    // `compile_source_with_stdlib` panics on any parse error, which is itself half the guard:
+    // this example must continue to parse cleanly.
+    let compiled = reify_test_support::compile_source_with_stdlib(&source);
+    let errors = error_diags(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "{PATH}: a checked-in example stopped compiling. Promoting parse errors to ERROR \
+         severity may not break real designs.\n\
+         errors: {errors:?}",
+    );
+
+    // `Panel.surface_area = area(width, height)` with `width = 200`, `height = 100`. Both
+    // params are declared `Real` but defaulted from integer literals, so the product carries
+    // the `Int` discriminant — measured, not assumed.
+    let value = cell_value(&eval_source(&source), "Panel", "surface_area");
+    assert!(
+        values_agree(&value, &Value::Int(20_000)),
+        "{PATH}: `Panel.surface_area` is computed by the user fn `area`, so a fn-body \
+         regression shows up here as a changed or undefined value rather than as a \
+         diagnostic. got: {value:?}",
+    );
 }
