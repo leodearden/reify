@@ -80,8 +80,10 @@ fn wait_for_exit(
 /// Join a pipe-reader thread and render its bytes as lossy UTF-8 for a panic
 /// message. Lossy rather than strict: this is diagnostic output, so a child
 /// that emitted a partial multi-byte sequence before dying must still be
-/// readable. Mirrors the `drain(reader, label)` helper in mcp_integration.rs
-/// (task 5389, commit 2ae9055cf3).
+/// readable. Mirrors the same spawn-readers-before-write/wait, drain-lossily
+/// pattern being applied to `mcp_roundtrip` in mcp_integration.rs under
+/// #5389 — not a shared helper (that file has no `drain(reader, label)` of
+/// its own at present; each file reimplements the pattern locally).
 fn drain(reader: thread::JoinHandle<Vec<u8>>, label: &str) -> String {
     let bytes = reader
         .join()
@@ -264,17 +266,22 @@ fn lsp_full_interactive_loop_through_binary() {
     let mut stderr_pipe = child.stderr.take().expect("stderr");
 
     // Spawn the stdout AND stderr reader threads immediately after spawn(),
-    // before any stdin writes. This ordering is load-bearing (mirrors the fix
-    // applied to mcp_roundtrip in mcp_integration.rs, task 5389 commits
-    // 1a0c644ec2 / 2ae9055cf3), not stylistic: a child that writes enough
-    // stderr to fill its pipe buffer blocks in write() and never gets around
-    // to reading stdin or exiting, so draining stderr only after the
-    // write/wait phase reintroduces the same deadlock class on the other
-    // pipe. The margin is far thinner than the nominal 64 KiB pipe capacity
-    // suggests — once fs.pipe-user-pages-soft (16384 pages) is exceeded the
-    // kernel shrinks each NEW pipe to a single page, and a 24-way-parallel
-    // workspace nextest run does this routinely (F_GETPIPE_SZ measured at
-    // 8192 bytes mid-run).
+    // before any stdin writes. This ordering is load-bearing (mirrors the
+    // shared spawn-readers-before-write/wait pattern being applied to
+    // mcp_roundtrip in mcp_integration.rs under #5389), not stylistic: a
+    // child that writes enough stderr to fill its pipe buffer blocks in
+    // write() and never gets around to reading stdin or exiting, so
+    // draining stderr only after the write/wait phase reintroduces the
+    // same deadlock class on the other pipe. The margin is far thinner
+    // than the nominal 64 KiB pipe capacity suggests — once
+    // fs.pipe-user-pages-soft (16384 pages) is exceeded the kernel shrinks
+    // each NEW pipe to a single page, and a 24-way-parallel workspace
+    // nextest run does this routinely (F_GETPIPE_SZ measured at 8192 bytes
+    // mid-run). This ordering claim is enforced by tests, not just
+    // documented: phase 4b below (in this test) pins the drain itself
+    // under real backpressure, and
+    // `wait_for_exit_timeout_branch_drains_and_reports_stderr` pins the
+    // kill-then-reap-then-join ordering on the timeout path.
     let rx = spawn_reader(stdout);
     let stderr_reader = thread::spawn(move || {
         let mut buf = Vec::new();
