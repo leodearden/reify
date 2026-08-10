@@ -11,12 +11,24 @@
 # CONTRACT UNDER TEST (scripts/lib_slot_acquire.sh):
 #   On the finite-WAIT rc=75 branch -- and ONLY there -- slot_acquire emits
 #   exactly ONE line to stderr whose FIRST TOKEN is at COLUMN 0:
-#     <SENTINEL> reason=<R> lock=<LOCK_BASE> slots=<N> waited=<secs>
+#     <SENTINEL> reason=<R> slots=<N> waited=<secs> disposition=<D> lock=<LOCK_BASE>
 #   where <SENTINEL> is the '@@REIFY_SLOT_' prefix followed by 'TIMEOUT@@'
 #   (assembled at runtime below -- see SELF-POLLUTION DISCIPLINE). It is never
 #   emitted under WAIT=unlimited, never on an uncontended fast-path acquire, and
 #   never folded into the existing human-readable deadline messages -- those are
 #   dark-factory's OTHER grounded anchors and must stay verbatim.
+#
+#   Two field-level properties are pinned as their own cases because both are
+#   invisible in the happy path:
+#     - lock= is TERMINAL. It is the one operator-controlled field, so it is the
+#       one that can carry whitespace; last position means a space-bearing path
+#       extends the line instead of shifting reason=/slots=/waited=/disposition=
+#       out from under a field-position parser (A9).
+#     - disposition= distinguishes "the caller aborted with 75" (fatal -- the
+#       three wrapper paths) from "the deadline passed and the work ran anyway"
+#       (soft -- run_all.sh's pool worker, C). Without it the wire cannot tell a
+#       degraded-but-fine pool from a genuine starvation abort, which would
+#       recreate the misclassification this task exists to remove, inverted.
 #
 # SELF-POLLUTION DISCIPLINE (mandatory -- this test must not become the very
 # incident it prevents):
@@ -146,10 +158,82 @@ assert "A1b: stderr carries EXACTLY ONE slot-timeout sentinel line (got $A_ANY_C
     test "$A_ANY_COUNT" -eq 1
 assert "A3: the sentinel sits at COLUMN 0 -- dark-factory's line anchor (got $A_COL0_COUNT)" \
     test "$A_COL0_COUNT" -eq 1
-assert "A2a: sentinel carries reason=/lock=/slots=/waited= in that order, waited= is digits" \
-    _has_line "$A_ERR" "^${SP}TIMEOUT@@ reason=occt_slot_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+assert "A2a: sentinel carries reason=/slots=/waited=/disposition=/lock= in that order, waited= is digits" \
+    _has_line "$A_ERR" "^${SP}TIMEOUT@@ reason=occt_slot_starvation slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
+# A2a's trailing `$` already pins lock= as the LAST field; this pins its VALUE,
+# literally (grep -F), since a lock path is full of ERE metacharacters.
 assert "A2b: the lock= field carries the LOCK_BASE actually passed" \
-    _has_text "$A_ERR" "lock=${A_LOCK} "
+    _has_text "$A_ERR" "lock=${A_LOCK}"
+assert "A2c: an un-specified disposition defaults to fatal (pre-existing callers unchanged)" \
+    _has_line "$A_ERR" " disposition=fatal "
+
+echo ""
+echo "--- A7/A8: the TIMEOUT_REASON fallback chain, both branches ---"
+
+# No in-repo caller takes either branch after task 6024 -- every call site passes
+# an explicit 5th arg. That is exactly why they are pinned HERE: the fallback is
+# still reachable by any future or out-of-tree caller, and whatever token it
+# produces lands on a CROSS-REPO wire. Untested-but-observable is the gap.
+
+# A7: 3-arg call -> the literal `slot_acquire` fallback token.
+A7_LOCK="$TMPA/a7.lock"
+A7_ERR="$TMPA/a7.err"
+_hold_slot "$A7_LOCK" 1
+A7_EXIT=0
+timeout 30 bash -c '
+    source "$1/lib_slot_acquire.sh"
+    slot_acquire "$2" 1 1
+' _ "$SCRIPTS_DIR" "$A7_LOCK" 2>"$A7_ERR" || A7_EXIT=$?
+_reap_slot "$A7_LOCK" 1
+
+assert "A7a: a bare 3-arg call still deadlines with 75 (got $A7_EXIT)" \
+    test "$A7_EXIT" -eq 75
+assert "A7b: with neither REASON nor TIMEOUT_REASON the wire carries reason=slot_acquire" \
+    _has_line "$A7_ERR" "^${SP}TIMEOUT@@ reason=slot_acquire slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
+
+# A8: 4-arg call -> TIMEOUT_REASON inherits the clock REASON.
+A8_LOCK="$TMPA/a8.lock"
+A8_ERR="$TMPA/a8.err"
+_hold_slot "$A8_LOCK" 1
+A8_EXIT=0
+REIFY_CLOCK_HEARTBEAT_SECS=3600 timeout 30 bash -c '
+    source "$1/lib_slot_acquire.sh"
+    slot_acquire "$2" 1 1 "a8_inherited_probe"
+' _ "$SCRIPTS_DIR" "$A8_LOCK" 2>"$A8_ERR" || A8_EXIT=$?
+_reap_slot "$A8_LOCK" 1
+
+assert "A8a: a 4-arg call still deadlines with 75 (got $A8_EXIT)" \
+    test "$A8_EXIT" -eq 75
+assert "A8b: with no TIMEOUT_REASON the clock REASON is inherited onto the sentinel" \
+    _has_line "$A8_ERR" "^${SP}TIMEOUT@@ reason=a8_inherited_probe slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
+
+echo ""
+echo "--- A9: a whitespace-bearing LOCK_BASE cannot shift any other field ---"
+
+# LOCK_BASE is the one OPERATOR-controlled field on every path (the REIFY_*_LOCK
+# knobs and their ${TMPDIR:-/tmp}-derived defaults), so it is the only value that
+# can contain whitespace. Emitting it LAST is what keeps a space-bearing path
+# from shifting reason=/slots=/waited=/disposition= out from under a
+# field-position parser. This case is the guard on that ordering choice: move
+# lock= back into the middle and the shape assertion below goes RED.
+A9_DIR="$TMPA/a9 dir"
+mkdir -p "$A9_DIR"
+A9_LOCK="$A9_DIR/a9 lock.lock"
+A9_ERR="$TMPA/a9.err"
+_hold_slot "$A9_LOCK" 1
+A9_EXIT=0
+timeout 30 bash -c '
+    source "$1/lib_slot_acquire.sh"
+    slot_acquire "$2" 1 1 "" "occt_slot_starvation"
+' _ "$SCRIPTS_DIR" "$A9_LOCK" 2>"$A9_ERR" || A9_EXIT=$?
+_reap_slot "$A9_LOCK" 1
+
+assert "A9a: a space-bearing lock base still deadlines with 75 (got $A9_EXIT)" \
+    test "$A9_EXIT" -eq 75
+assert "A9b: every fixed field is intact and unshifted despite the spaces" \
+    _has_line "$A9_ERR" "^${SP}TIMEOUT@@ reason=occt_slot_starvation slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
+assert "A9c: the whole space-bearing path survives verbatim in the terminal lock= field" \
+    _has_text "$A9_ERR" "lock=${A9_LOCK}"
 
 echo ""
 echo "--- A4: uncontended fast-path acquire is silent (negative control) ---"
@@ -195,7 +279,7 @@ echo "--- A6: the sentinel survives run_all.sh's clock sanitizer (drift guard) -
 # neuter the cross-repo seam, and turns this assertion RED instead.
 RA_SANITIZE_EXPR="$(sed -n "s/^_RA_CLOCK_SANITIZE='\(.*\)'\$/\1/p" "$RUN_ALL" | head -1)"
 A6_OUT="$TMPA/a6.out"
-printf '%sTIMEOUT@@ reason=run_all_pool_starvation lock=/tmp/x.lock slots=1 waited=3\n' "$SP" \
+printf '%sTIMEOUT@@ reason=run_all_pool_starvation slots=1 waited=3 disposition=soft lock=/tmp/x.lock\n' "$SP" \
     | sed "${RA_SANITIZE_EXPR:-s/^//}" > "$A6_OUT"
 
 assert "A6a: run_all.sh's clock-sanitizer expression was extracted (non-vacuity)" \
@@ -218,6 +302,46 @@ echo "=== B: each wrapper declares its OWN timeout reason, additively ==="
 # delete three working detectors while adding one. B3 pins them with ^-anchored
 # patterns and B4 pins that the sentinel is a SEPARATE line, so a later refactor
 # cannot quietly merge the two.
+
+# --- B0: scripts/lib_test_semaphore.sh -> reason=test_slot_starvation
+# The highest-traffic call site (every verify test phase goes through it), and
+# the one whose 5th arg is a deliberate literal duplicate of its 4th -- so a
+# future edit that drops it would fall silently through the A7/A8 fallback chain
+# and still emit a plausible-looking token. Covered behaviourally like B1/B2 so
+# that edit goes RED here instead of being discovered on the DF side.
+B0_LOCK="$TMPA/b0.lock"
+B0_ERR="$TMPA/b0.err"
+B0_MSGS="$TMPA/b0.msgs"
+B0_MSG_RE='^lib_test_semaphore\.sh: failed to acquire test slot within 1s \(LOCK='
+
+_hold_slot "$B0_LOCK" 1
+
+B0_EXIT=0
+# DISABLE explicitly emptied: an ambient REIFY_TEST_SEMAPHORE_DISABLE=1 would
+# short-circuit the acquire entirely and make every assertion below vacuous.
+REIFY_TEST_SEMAPHORE_LOCK="$B0_LOCK" REIFY_TEST_SEMAPHORE_CONCURRENCY=1 \
+    REIFY_TEST_SEMAPHORE_WAIT=1 REIFY_TEST_SEMAPHORE_DISABLE= \
+    REIFY_CLOCK_HEARTBEAT_SECS=3600 \
+    timeout 30 bash -c '
+        source "$1/lib_test_semaphore.sh"
+        test_semaphore_acquire
+    ' _ "$SCRIPTS_DIR" 2>"$B0_ERR" || B0_EXIT=$?
+
+_reap_slot "$B0_LOCK" 1
+
+{ grep -E -- "$B0_MSG_RE" "$B0_ERR" || true; } > "$B0_MSGS"
+
+assert "B0a: test_semaphore_acquire on a held slot returns 75 (got $B0_EXIT)" \
+    test "$B0_EXIT" -eq 75
+assert "B0b: test-semaphore deadline sentinel carries reason=test_slot_starvation, at column 0" \
+    _has_line "$B0_ERR" "^${SP}TIMEOUT@@ reason=test_slot_starvation slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
+assert "B0c: test-semaphore human deadline message is unchanged (DF's grounded anchor)" \
+    test -s "$B0_MSGS"
+assert "B0d: the test-semaphore sentinel is a SEPARATE line, not appended to that message" \
+    _lacks_text "$B0_MSGS" "$SENTINEL"
+
+echo ""
+echo "--- B1: scripts/lib_lane_x_flock.sh -> reason=lane_x_slot_starvation ---"
 
 # --- B1: scripts/lib_lane_x_flock.sh -> reason=lane_x_slot_starvation
 B1_LOCK="$TMPA/b1.lock"
@@ -244,7 +368,7 @@ _reap_slot "$B1_LOCK" 1
 assert "B1a: lane_x_flock_acquire on a held lock returns 75 (got $B1_EXIT)" \
     test "$B1_EXIT" -eq 75
 assert "B1b: lane-x deadline sentinel carries reason=lane_x_slot_starvation, at column 0" \
-    _has_line "$B1_ERR" "^${SP}TIMEOUT@@ reason=lane_x_slot_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+    _has_line "$B1_ERR" "^${SP}TIMEOUT@@ reason=lane_x_slot_starvation slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
 assert "B3a: lane-x human deadline message is unchanged (DF's grounded anchor)" \
     test -s "$B1_MSGS"
 assert "B4a: the lane-x sentinel is a SEPARATE line, not appended to that message" \
@@ -271,7 +395,7 @@ _reap_slot "$B2_LOCK" 1
 assert "B2a: the OCCT wrapper on a held slot exits 75 (got $B2_EXIT)" \
     test "$B2_EXIT" -eq 75
 assert "B2b: OCCT deadline sentinel carries reason=occt_slot_starvation, at column 0" \
-    _has_line "$B2_ERR" "^${SP}TIMEOUT@@ reason=occt_slot_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+    _has_line "$B2_ERR" "^${SP}TIMEOUT@@ reason=occt_slot_starvation slots=1 waited=[0-9]+ disposition=fatal lock=.+$"
 assert "B3b: OCCT human deadline message is unchanged, ERROR: prefix intact (DF's grounded anchor)" \
     test -s "$B2_MSGS"
 assert "B4b: the OCCT sentinel is a SEPARATE line, not appended to that message" \
@@ -326,13 +450,17 @@ _hold_slot "$C_POOL_LOCK" 1
 
 # POOL_WAIT=1 makes the worker's slot_acquire deadline in ~1s. The pool is a
 # SOFT admission, so the member still runs unslotted and run_all still exits 0 --
-# the sentinel is the ONLY observable, which is exactly the point.
+# the sentinel is the ONLY observable, which is exactly the point. C4 pins that
+# exit-0 half rather than leaving it as prose: C1/C3 are all emitted BEFORE the
+# member runs, so every one of them would still pass if a pool-slot deadline
+# became fatal (the regression run_all.sh's own soft-admission comment guards).
+C_RC=0
 RUN_ALL_CLASSIFICATION_MANIFEST="$TMPC/classification.manifest" \
     REIFY_RUN_ALL_POOL_LOCK="$C_POOL_LOCK" \
     REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
     REIFY_RUN_ALL_POOL_WAIT=1 \
     REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
-    timeout 300 bash "$RUN_ALL" "$TMPC" > "$RA_OUT" 2>&1 || true
+    timeout 300 bash "$RUN_ALL" "$TMPC" > "$RA_OUT" 2>&1 || C_RC=$?
 
 _reap_slot "$C_POOL_LOCK" 1
 
@@ -349,8 +477,16 @@ assert "C3b: the fixture member actually ran" \
     _has_text "$RA_OUT" "--- Running: test_marker_member.sh ---"
 
 assert "C1: pool deadline sentinel reaches run_all's own output with reason=run_all_pool_starvation, at column 0" \
-    _has_line "$RA_OUT" "^${SP}TIMEOUT@@ reason=run_all_pool_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+    _has_line "$RA_OUT" "^${SP}TIMEOUT@@ reason=run_all_pool_starvation slots=1 waited=[0-9]+ disposition=soft lock=.+$"
 assert "C2: that sentinel is never rewritten to the QUOTED form (it rode the inherited parent fd 2)" \
     _lacks_text "$RA_OUT" "@@REIFY_QUOTED_SLOT_"
+# C4/C5 are the two halves of "a soft deadline is not a starvation abort". C4 is
+# the BEHAVIOUR (the run completed anyway); C5 is that the behaviour is legible
+# ON THE WIRE, which is the only half a consumer in another repo can see. The
+# three wrapper paths emit disposition=fatal (B0b/B1b/B2b) for the same reason.
+assert "C4: soft admission -- run_all still exits 0 despite the pool deadline (got $C_RC)" \
+    test "$C_RC" -eq 0
+assert "C5: the pool sentinel says disposition=soft, so the wire distinguishes it from an abort" \
+    _has_line "$RA_OUT" "^${SP}TIMEOUT@@ .* disposition=soft "
 
 test_summary

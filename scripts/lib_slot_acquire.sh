@@ -6,7 +6,7 @@
 #   scripts/cargo-test-occt-gated.sh (OCCT concurrency gate, standalone runner)
 #
 # FUNCTIONS (defined when sourced):
-#   slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON]
+#   slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON] [TIMEOUT_DISPOSITION]
 #                                  — shuffle-acquire loop; holds FD 9 in the
 #                                    CALLER's shell on success. Returns 0 on
 #                                    success (slot held), 75 (EX_TEMPFAIL) on
@@ -15,13 +15,13 @@
 #                                      SLOT_ACQUIRE_ELAPSED — wall seconds waited
 #   slot_emit_event VERB [SLOT]    — opt-in event-log append (complete no-op
 #                                    when REIFY_SLOT_EVENT_LOG is unset).
-#   slot_emit_timeout R L S W      — the slot-timeout sentinel (see below);
+#   slot_emit_timeout R S W D L    — the slot-timeout sentinel (see below);
 #                                    called from the deadline site only.
 #
 # SLOT-TIMEOUT MARKER:
 #   On the finite-WAIT deadline (the rc=75 path) slot_acquire emits ONE line to
 #   stderr, first token at COLUMN 0:
-#     @@REIFY_SLOT_TIMEOUT@@ reason=<R> lock=<LOCK_BASE> slots=<N> waited=<secs>
+#     @@REIFY_SLOT_TIMEOUT@@ reason=<R> slots=<N> waited=<secs> disposition=<D> lock=<LOCK_BASE>
 #   dark-factory's SEMAPHORE_TIMEOUT classifier matches it LINE-ANCHORED, so it
 #   must never be appended mid-line to another message; the human-readable
 #   deadline messages the three wrapper callers print are DF's other grounded
@@ -110,10 +110,10 @@ slot_emit_event() {
 }
 
 # ---------------------------------------------------------------------------
-# slot_emit_timeout REASON LOCK_BASE SLOTS WAITED
+# slot_emit_timeout REASON SLOTS WAITED DISPOSITION LOCK_BASE
 #   Emit the slot-acquisition-timeout sentinel to stderr, ONCE, from the
 #   finite-WAIT deadline site below.  Format:
-#     @@REIFY_SLOT_TIMEOUT@@ reason=<REASON> lock=<LOCK_BASE> slots=<SLOTS> waited=<WAITED>
+#     @@REIFY_SLOT_TIMEOUT@@ reason=<REASON> slots=<SLOTS> waited=<WAITED> disposition=<DISPOSITION> lock=<LOCK_BASE>
 #
 #   Byte-identical in SHAPE to clock_emit_stop (lib_clock_stop.sh:140-142): a
 #   single printf whose format string starts the marker token at COLUMN 0, a
@@ -122,18 +122,37 @@ slot_emit_event() {
 #   matcher is line-anchored on the token as the FIRST token of its own line.
 #   Never append this mid-line to another message.
 #
+#   FIELD ORDER IS LOAD-BEARING -- lock= is emitted LAST.  Every other field is
+#   a repo-controlled token from a closed vocabulary, but LOCK_BASE is
+#   OPERATOR-controlled on every path (REIFY_OCCT_LOCK / REIFY_LANE_X_FLOCK_LOCK
+#   / REIFY_RUN_ALL_POOL_LOCK / REIFY_TEST_SEMAPHORE_LOCK, and the
+#   ${TMPDIR:-/tmp}-derived defaults), so it is the one value that can contain
+#   whitespace.  Terminal placement means a space-bearing path can only extend
+#   the line, never shift reason=/slots=/waited=/disposition= out from under a
+#   field-position parser -- and it also lets a consumer read lock= as
+#   "everything after the marker", losslessly.  Pinned by the space-bearing
+#   lock-base case in tests/infra/test_slot_timeout_marker.sh (A9).
+#
+#   NON-FATAL BY CONSTRUCTION (`|| return 0`), matching slot_emit_event's
+#   established idiom.  This runs immediately before `return 75` in a function
+#   whose EX_TEMPFAIL contract every wrapper keys on, and whose run_all.sh pool
+#   caller must proceed to run its member unslotted.  A failed write to fd 2
+#   (EPIPE on a dead log reader, ENOSPC on a redirected stderr file) must never
+#   be able to substitute an ERR-exit for that contract: diagnostics never
+#   change control flow.
+#
 #   DISTINCT FAMILY from @@REIFY_CLOCK_*@@: unpaired and terminal ("this wait
 #   failed"), not a STOP/START span transition ("exclude this span from the
 #   verify timeout budget").  It deliberately falls outside run_all.sh's
 #   `@@REIFY_CLOCK_`-prefixed sanitizer so it survives re-emission.
 # ---------------------------------------------------------------------------
 slot_emit_timeout() {
-    printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s lock=%s slots=%s waited=%s\n' \
-        "$1" "$2" "$3" "$4" >&2
+    printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s slots=%s waited=%s disposition=%s lock=%s\n' \
+        "$1" "$2" "$3" "$4" "$5" >&2 || return 0
 }
 
 # ---------------------------------------------------------------------------
-# slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON]
+# slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON] [TIMEOUT_DISPOSITION]
 #   N-slot shuffle-acquire loop.  Opens and holds FD 9 in the CALLER's shell
 #   on success (sourced function — not a subshell — so `exec 9>>` mutates the
 #   caller's FD table directly, preserving the single-FD-9 invariant).
@@ -166,6 +185,20 @@ slot_emit_timeout() {
 #                  required supplying one.  Pass "" as REASON alongside a
 #                  TIMEOUT_REASON to say "no clock markers, but name my
 #                  deadline".  Vocabulary: docs/notes/verify-pipeline-knobs.md.
+#     TIMEOUT_DISPOSITION — OPTIONAL 6th arg, `fatal` (default) or `soft`.
+#                  What the CALLER does with the rc=75, carried on the sentinel
+#                  so a consumer can tell the two apart.  `fatal`: the caller
+#                  aborts and propagates 75 (all three wrapper paths).  `soft`:
+#                  the caller proceeds unslotted and the work still runs to
+#                  completion (tests/infra/run_all.sh's pool worker, whose
+#                  soft-admission contract is "never skip a test, never hang").
+#                  Defaulting to `fatal` keeps every pre-existing caller's wire
+#                  shape meaning exactly what it did before this field existed.
+#                  NOTE (cross-repo): dark-factory's SEMAPHORE_TIMEOUT detector
+#                  is presence/line-anchored and does NOT yet read this field,
+#                  so a soft deadline is still classified as a starvation
+#                  verdict today; the field exists so the DF side CAN gate on it
+#                  without a second reify-side wire change.
 #
 #   On success  — SLOT_ACQUIRE_SLOT=<N>, SLOT_ACQUIRE_ELAPSED=<secs>,
 #                 FD 9 held open, slot_emit_event ACQUIRE called; returns 0.
@@ -188,7 +221,15 @@ slot_acquire() {
     # newly exclude its wait from dark-factory's verify timeout budget.  The
     # ${_reason:-slot_acquire} fallback keeps every existing 3-/4-arg caller
     # working, set -u safe, and guarantees a non-empty reason field on the wire.
+    # Both fallback branches are exercised directly by A7/A8 in
+    # tests/infra/test_slot_timeout_marker.sh -- the literal `slot_acquire` token
+    # is a value a consumer can observe, so it is pinned like any other.
     local _timeout_reason="${5:-${_reason:-slot_acquire}}"
+    # OPTIONAL 6th: what the caller DOES with the 75 -- `fatal` (abort and
+    # propagate, the default and what all three wrapper paths do) or `soft`
+    # (proceed unslotted; run_all.sh's pool worker). Defaulting to fatal keeps
+    # every pre-existing caller's wire shape meaning what it already did.
+    local _timeout_disposition="${6:-fatal}"
 
     # Output globals — always defined after return (set -u safe on both paths).
     SLOT_ACQUIRE_SLOT=""
@@ -281,7 +322,11 @@ slot_acquire() {
                 # waited= value costs no extra clock read.  SLOT_ACQUIRE_ELAPSED
                 # deliberately stays 0 on this path (the documented output-globals
                 # contract); the elapsed value travels in waited= only.
-                slot_emit_timeout "$_timeout_reason" "$_lock_base" "$_n" "$(( _now - _start ))"
+                # The emitter is non-fatal by construction (see its header), so
+                # a failed write to fd 2 can never pre-empt the `return 75`
+                # below -- the EX_TEMPFAIL contract every caller keys on.
+                slot_emit_timeout "$_timeout_reason" "$_n" "$(( _now - _start ))" \
+                    "$_timeout_disposition" "$_lock_base"
                 return 75
             fi
         fi

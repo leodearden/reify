@@ -1411,6 +1411,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # re-emission by design.
     _H2_POOL_TIMEOUT_REASON="run_all_pool_starvation"
 
+    # Slot-timeout DISPOSITION for the same wait (slot_acquire's optional 6th
+    # arg). `soft` -- not the `fatal` default the three wrapper paths take --
+    # because this is the ONLY caller whose rc=75 is not an abort: the worker
+    # proceeds unslotted, the member still runs, and run_all still exits 0 (the
+    # soft-admission contract asserted at the acquire site below). Without this
+    # field the sentinel would be indistinguishable from a genuine starvation
+    # abort, so a merely-degraded pool would read on the wire exactly like the
+    # infra-hold class task #6024 exists to make identifiable -- inverted.
+    # dark-factory's detector does not gate on the field yet (it is
+    # presence-anchored); emitting it is what makes that gate possible without a
+    # second reify-side wire change.
+    _H2_POOL_TIMEOUT_DISPOSITION="soft"
+
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
     # observability / strictly additive (INV-4): unlike the load-bearing
     # knobs above, a malformed value fails OPEN to 30 instead of exiting --
@@ -1674,7 +1687,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # Soft acquire: on deadline (75) proceed unslotted -- never skip a
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
-            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" || _h2_slot_rc=$?
+            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
             bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
