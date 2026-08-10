@@ -224,6 +224,16 @@ fn main() {
     // Note: we do NOT watch src/parser.c — it's a generated output managed by
     // this build script. Watching it would cause double execution.
     println!("cargo:rerun-if-changed=grammar.js");
+    // Re-run if the hand-written external scanner changes (task #5784).
+    // Cargo narrows a build script's watch set to EXACTLY the emitted
+    // `rerun-if-changed` list, and `cc` emits no per-source directives of its
+    // own (verified against the vendored cc-1.2.62: zero `rerun-if-changed`
+    // occurrences in its sources).  Without this line a scanner.c-only edit
+    // does not re-run this build script, so the C object is never recompiled
+    // and every RED/GREEN observation reads a STALE scanner.  Unlike
+    // src/parser.c above, scanner.c is hand-written input — not an output this
+    // script writes — so watching it cannot cause double execution.
+    println!("cargo:rerun-if-changed=src/scanner.c");
 
     // Auto-generate from grammar.js when missing or stale.
     let output_paths: Vec<std::path::PathBuf> =
