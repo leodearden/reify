@@ -17,7 +17,11 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { describeRpcFailure, openFileWithRetry } from "./smokeDriverGuards.mjs";
+import {
+  describeRpcFailure,
+  describeUnscopedAmbiguity,
+  openFileWithRetry,
+} from "./smokeDriverGuards.mjs";
 import { isInBandError } from "./rpcEnvelope.mjs";
 
 const FIXTURE = "/repo/gui/test/fixtures/find_uses_smoke.ri";
@@ -266,6 +270,87 @@ describe("describeRpcFailure — the diagnosis smoke_multi_pane_e2e.mjs was miss
     // any `error` key. Asserting both sides means the two cannot drift silently.
     expect(isInBandError({ error: 500 })).toBe(false);
     expect(describeRpcFailure({ error: 500 }, "store_state")).toBeNull();
+  });
+});
+
+describe("describeUnscopedAmbiguity — the anti-vacuity precondition for #5891 scoping", () => {
+  const TEST_ID = "fea-mode-enable-toggle";
+  const opts = { testId: TEST_ID, expectedMatchCount: 2 };
+
+  it("returns null when the unscoped probe really did find both panes' toggles", () => {
+    // The live shape: dom_query's own literal plus paneDiagnostics' {viewportId,
+    // matchCount}, which bridge.ts:339 emits ONLY above one match.
+    const payload = {
+      exists: true,
+      visible: true,
+      tagName: "input",
+      matchCount: 2,
+      viewportId: "design-main",
+    };
+    expect(describeUnscopedAmbiguity(payload, opts)).toBeNull();
+  });
+
+  it("delegates a null payload to describeRpcFailure, naming the tool and testId", () => {
+    const diagnosis = describeUnscopedAmbiguity(null, opts);
+    expect(diagnosis).toContain("returned null");
+    expect(diagnosis).toContain(TEST_ID);
+  });
+
+  it("surfaces a §2a in-band error VERBATIM rather than reporting exists: undefined", () => {
+    const diagnosis = describeUnscopedAmbiguity({ error: "boom" }, opts);
+    expect(diagnosis).toContain("boom");
+    expect(diagnosis).toContain(TEST_ID);
+  });
+
+  it("names an ABSENT testid distinctly from a count mismatch", () => {
+    // exists:false is dom_query's collapse of both absence errors (bridge.ts:793).
+    // "the toolbar never rendered" and "only one pane rendered it" are different
+    // repairs, so they must not share wording.
+    const diagnosis = describeUnscopedAmbiguity({ exists: false }, opts);
+    expect(diagnosis).toContain("no element");
+    expect(diagnosis).not.toContain("vacuous");
+  });
+
+  it("names the VACUITY when only one element matched — the load-bearing branch", () => {
+    // paneDiagnostics returns {} at matchCount <= 1, so an ABSENT matchCount on an
+    // existing element means exactly one match. Without this branch the whole
+    // scoped no-bleed scenario would pass trivially in a future where only one
+    // pane rendered a toolbar: there would be nothing for scoping to disambiguate.
+    const diagnosis = describeUnscopedAmbiguity({ exists: true }, opts);
+    expect(diagnosis).toContain("vacuous");
+    expect(diagnosis).toContain(TEST_ID);
+  });
+
+  it("names BOTH the expected and the observed count on a mismatch", () => {
+    const diagnosis = describeUnscopedAmbiguity(
+      { exists: true, matchCount: 3, viewportId: "design-main" },
+      opts,
+    );
+    expect(diagnosis).toContain("3");
+    expect(diagnosis).toContain("2");
+  });
+
+  it("type-checks matchCount before comparing, so a STRING count cannot slip through", () => {
+    // The one-sided-guard hazard smoke_multi_pane_e2e.mjs:237-245 documents at
+    // length: `'2' < 2` and `undefined < 2` are both FALSE, so a magnitude-only
+    // guard reports green on a malformed payload. JSON.stringify in the message is
+    // what distinguishes "not a number" from a plain count mismatch.
+    const diagnosis = describeUnscopedAmbiguity(
+      { exists: true, matchCount: "2", viewportId: "design-main" },
+      opts,
+    );
+    expect(diagnosis).toContain('"2"');
+  });
+
+  it("names a first match attributed to NO pane — scoping cannot work unstamped", () => {
+    // resolveByTestId reads viewportId off `el.closest('[data-viewport-id]')`
+    // (bridge.ts:307), so null means the element carries no pane ancestor at all.
+    const diagnosis = describeUnscopedAmbiguity(
+      { exists: true, matchCount: 2, viewportId: null },
+      opts,
+    );
+    expect(diagnosis).toContain("attributed to no pane");
+    expect(diagnosis).toContain("null");
   });
 });
 
