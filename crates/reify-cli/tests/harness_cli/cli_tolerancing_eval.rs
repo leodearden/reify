@@ -67,6 +67,19 @@ fn eval_std_tolerancing_surface_example_succeeds() {
          here means the call site's argument order no longer matches the builtin's \
          decode;\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    // Same guard for the other route to the same number: it7_via_grade reads
+    // ISOToleranceGrade.tolerance_value, i.e. the call site inside the *prelude*
+    // (crates/reify-compiler/stdlib/tolerancing.ri) rather than the one in this
+    // example.  Measured live (24.98µm, equal to it7_width) once the prelude was
+    // migrated, which also settles that a non-`pub` prelude structure does fold
+    // its derived let for a user module.  Without this, a stale prelude call site
+    // would regress silently exactly as the example's did.
+    assert!(
+        !stdout.contains("it7_via_grade = undef"),
+        "it7_via_grade must materialise ISOToleranceGrade.tolerance_value, not undef — \
+         an undef here means the prelude's iso_it_tolerance call site has drifted from \
+         the builtin's decode;\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 
     // ── Effective tolerance zone cell ─────────────────────────────────────────
     assert!(
