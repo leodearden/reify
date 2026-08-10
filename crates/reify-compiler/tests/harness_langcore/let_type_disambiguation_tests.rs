@@ -13,7 +13,7 @@
 use reify_compiler::DefaultKind;
 use reify_core::{Diagnostic, DimensionVector, Type};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::{compile_source, errors_only};
+use reify_test_support::{compile_source, errors_only, get_value_cell_in};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -211,17 +211,7 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     // The cell should be a Let kind.
     assert_eq!(
@@ -381,17 +371,7 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -548,16 +528,7 @@ structure S : MixedLets {
     // The injected cell for `a` must have its inferred Length type, confirming
     // Pass 2's `compile_expr` saw `b : Length` in scope and typed `b + 1mm`
     // correctly.
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-    let a_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "a")
-        .expect("expected value_cell 'a' injected from trait MixedLets");
+    let a_cell = get_value_cell_in(&module, "S", "a");
     assert_eq!(
         a_cell.cell_type,
         Type::Scalar {
@@ -609,16 +580,7 @@ structure S : WithParam {
     // The injected cell for `a` must carry the inferred Length type, confirming
     // Pass 2's `compile_expr` saw `x : Length` in scope and typed `x + 1mm`
     // as Length (not Real, which would indicate Pass 1 missed the Param arm).
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-    let a_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "a")
-        .expect("expected value_cell 'a' injected from trait WithParam");
+    let a_cell = get_value_cell_in(&module, "S", "a");
     assert_eq!(
         a_cell.cell_type,
         Type::Scalar {
@@ -672,17 +634,7 @@ structure S : T {
         errors
     );
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait T");
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -1046,17 +998,7 @@ structure S : HasX {
     let errors = errors_only(&module);
     assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -1119,17 +1061,7 @@ structure S : HasX {
         errors
     );
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
@@ -1182,17 +1114,7 @@ fn assert_let_real_literal(literal: &str, expected_value: f64, label: &str) {
         errors
     );
 
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == "S")
-        .expect("expected template S");
-
-    let x_cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == "x")
-        .expect("expected value_cell 'x' to be injected from trait HasX");
+    let x_cell = get_value_cell_in(&module, "S", "x");
 
     assert_eq!(
         x_cell.cell_type,
