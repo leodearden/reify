@@ -613,3 +613,199 @@ fn dispatch_without_a_worker_still_propagates_panics() {
         "the degraded arm must deliver the closure's ORIGINAL payload, like every other tier"
     );
 }
+
+// ── Named LANES: one mechanism, two instances (task 5772) ────────────────────
+//
+// `lsp_request` also needs a large stack, and the task asks for ONE worker
+// design rather than two divergent large-stack approaches. Taken as "one
+// THREAD", though, that would be a latency regression: LSP dispatch never takes
+// the engine mutex, so it shares nothing with engine work, yet a single-consumer
+// queue would make a hover or completion queue behind an in-flight
+// `set_parameter` geometry evaluation (hundreds of ms to seconds) — head-of-line
+// blocking on the highest-frequency path in the GUI.
+//
+// So the mechanism is generalized into a named LANE: one code path, two `static`
+// instances. These tests pin that "one mechanism" and "two threads" are BOTH
+// true — a second lane must be a second INSTANCE, not a second design, and must
+// inherit every property the engine lane already proves (large stack, panic
+// isolation, per-lane amortisation).
+
+/// (p) The LSP lane runs its jobs on its OWN named thread
+/// ([`crate::large_stack::LSP_WORKER_THREAD_NAME`]), distinct from the caller.
+///
+/// The name is the observability half: a long-lived thread appears in every
+/// profiler capture and `top -H` listing for the process's whole life, so a lane
+/// that reported `reify-engine-w` — or `<unnamed>` — would make a keystroke-path
+/// stall indistinguishable from a geometry-evaluation stall.
+#[test]
+fn lsp_lane_runs_jobs_on_its_own_named_thread() {
+    use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, dispatch};
+
+    let caller_id = std::thread::current().id();
+    // Owned and MOVED — a lane outlives the frame that submitted to it, exactly
+    // as the engine lane's `'static` bound requires.
+    let data = vec![10u64, 20, 30];
+
+    let (sum, inner_id, inner_name) = dispatch(LSP_LANE.sender(), move || {
+        let s: u64 = data.iter().sum();
+        (
+            s,
+            std::thread::current().id(),
+            std::thread::current().name().map(str::to_owned),
+        )
+    });
+
+    assert_eq!(
+        sum, 60,
+        "the LSP lane must propagate its closure's value back to the submitter"
+    );
+    assert_ne!(
+        inner_id, caller_id,
+        "the LSP lane must run its job on a lane thread, not degrade to an inline call"
+    );
+    assert_eq!(
+        inner_name.as_deref(),
+        Some(LSP_WORKER_THREAD_NAME),
+        "the LSP lane's thread must carry its OWN name, so a profiler row says \
+         which lane stalled"
+    );
+}
+
+/// (q) [`crate::large_stack::LSP_WORKER_THREAD_NAME`] is distinct from every
+/// other large-stack thread name and fits Linux's 15-byte `pthread_setname_np`
+/// budget (`std` SILENTLY ignores an over-long name, so this must be asserted
+/// rather than assumed).
+#[test]
+fn lsp_worker_thread_name_is_distinct_and_fits_the_linux_budget() {
+    use crate::large_stack::{
+        COMPILE_THREAD_NAME, ENGINE_THREAD_NAME, LSP_WORKER_THREAD_NAME, WORKER_THREAD_NAME,
+    };
+
+    assert!(
+        LSP_WORKER_THREAD_NAME.len() <= 15,
+        "thread name must fit Linux's 15-byte pthread_setname_np limit, got {} bytes: \
+         {LSP_WORKER_THREAD_NAME:?}",
+        LSP_WORKER_THREAD_NAME.len()
+    );
+    for (other, what) in [
+        (WORKER_THREAD_NAME, "the persistent ENGINE lane"),
+        (COMPILE_THREAD_NAME, "the per-call compile thread"),
+        (ENGINE_THREAD_NAME, "the fire-and-forget engine thread"),
+    ] {
+        assert_ne!(
+            LSP_WORKER_THREAD_NAME, other,
+            "the LSP lane must be distinguishable from {what}"
+        );
+    }
+}
+
+/// (r) The two lanes are genuinely SEPARATE threads, while each lane amortises
+/// its own single thread across submissions.
+///
+/// Both halves matter and neither implies the other. "Different threads" is the
+/// no-head-of-line-blocking property that justified splitting the lanes at all;
+/// "same thread within a lane" is the amortisation property that makes it a lane
+/// rather than a per-call spawn. `ThreadId`s are never reused within a process,
+/// so equality proves reuse and inequality proves a distinct thread.
+#[test]
+fn the_two_lanes_are_separate_threads_each_amortised() {
+    use crate::large_stack::{LSP_LANE, dispatch, run_on_worker};
+
+    let caller_id = std::thread::current().id();
+
+    let engine_a = run_on_worker(|| std::thread::current().id());
+    let engine_b = run_on_worker(|| std::thread::current().id());
+    let lsp_a = dispatch(LSP_LANE.sender(), || std::thread::current().id());
+    let lsp_b = dispatch(LSP_LANE.sender(), || std::thread::current().id());
+
+    // Non-vacuity: a degraded lane reports the CALLER's id, which would make the
+    // "same thread within a lane" assertions trivially true and the "different
+    // lanes" assertion trivially false. Rule that out before reading either.
+    assert_ne!(
+        engine_a, caller_id,
+        "the engine lane must not have degraded to an inline call"
+    );
+    assert_ne!(
+        lsp_a, caller_id,
+        "the LSP lane must not have degraded to an inline call"
+    );
+
+    assert_eq!(
+        engine_a, engine_b,
+        "consecutive engine-lane jobs must share ONE persistent thread"
+    );
+    assert_eq!(
+        lsp_a, lsp_b,
+        "consecutive LSP-lane jobs must share ONE persistent thread"
+    );
+    assert_ne!(
+        engine_a, lsp_a,
+        "the lanes must be separate threads — sharing one would make a hover \
+         queue behind an in-flight geometry evaluation, which is the regression \
+         the lane split exists to prevent"
+    );
+}
+
+/// (s) LARGE STACK — the LSP lane survives ~16 MiB of recursion, 8x the 2 MiB
+/// default a tokio worker gives it today. An impl that built the lane without
+/// [`crate::large_stack::COMPILE_STACK_SIZE`] fails here.
+///
+/// Per the module docs' "no violent RED" doctrine the recursion is reached ONLY
+/// through [`deep_recurse_if_on_thread`], so a degraded lane yields a clean
+/// assertion failure instead of overflowing and SIGABRTing the whole binary.
+#[test]
+fn lsp_lane_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::{LSP_LANE, LSP_WORKER_THREAD_NAME, dispatch};
+
+    let result = dispatch(LSP_LANE.sender(), || {
+        deep_recurse_if_on_thread(LSP_WORKER_THREAD_NAME, DEEP_RECURSION_DEPTH)
+    });
+
+    let depth_reached = result.unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(
+        depth_reached,
+        u64::from(DEEP_RECURSION_DEPTH) + 1,
+        "deep recursion must run to completion on the LSP lane's large stack"
+    );
+}
+
+/// (t) The LSP lane inherits the engine lane's panic isolation: a panicking job
+/// re-raises its ORIGINAL payload on ITS submitter, and the lane thread SURVIVES
+/// to serve later submissions.
+///
+/// This is the property that must not be lost when a mechanism is instantiated
+/// twice. A poisoned LSP job that killed the lane would silently downgrade every
+/// FUTURE keystroke to inline execution on a ~2 MiB tokio stack — the exact
+/// hazard the module exists to remove, re-introduced through the back door.
+#[test]
+fn lsp_lane_is_panic_isolated_and_survives() {
+    use crate::large_stack::{LSP_LANE, dispatch};
+    use std::panic::AssertUnwindSafe;
+
+    let caller_id = std::thread::current().id();
+    let before = dispatch(LSP_LANE.sender(), || std::thread::current().id());
+    assert_ne!(
+        before, caller_id,
+        "the pre-panic job must run on the lane, not inline on the caller"
+    );
+
+    let poisoned = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        dispatch::<_, ()>(LSP_LANE.sender(), || panic!("lsp boom"));
+    }));
+    let payload = poisoned.expect_err("a panicking LSP-lane job must reach its submitter");
+    assert_eq!(
+        panic_message(&*payload),
+        "lsp boom",
+        "the submitter must receive the JOB's original payload, not a substitute"
+    );
+
+    let (value, after) = dispatch(LSP_LANE.sender(), || (5u32, std::thread::current().id()));
+    assert_eq!(
+        value, 5,
+        "the LSP lane must keep answering submissions after a poisoned job"
+    );
+    assert_eq!(
+        after, before,
+        "the SAME LSP lane thread must survive the panic"
+    );
+}
