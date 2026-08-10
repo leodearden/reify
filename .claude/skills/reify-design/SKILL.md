@@ -85,6 +85,12 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   `constraint s*s == 1` (s = ±1). Note `auto` is a binding *value* — `auto s : Real` is a
   parse error — and strict `auto` goes `undef` here because two roots defeat the uniqueness
   re-solve. → `discrete_choice.ri`
+- **Turning a ratio into an angle — and why the `* 1rad`**: write the crossing explicitly.
+  `let theta : Angle = (s/r) * 1rad` to enter Angle, `theta / 1rad` to leave; arc length is
+  `r * theta / 1rad`. No-space literal only (`1 rad` is a parse error). Not optional: `let theta
+  : Angle = s / r` and `let arc : Length = r * theta` are both hard errors, and unannotated
+  `let arc = r * theta` silently yields `m·rad`, not a Length. `omega = 2*pi * f * 1rad` is a
+  separate class (2π rad/cycle; there is no `cycle` unit). → `angle_crossings.ri`
 
 A green `reify check` is weaker than it looks: geometry-argument dimension errors and
 wrong-arity datum constructors (`plane_yz(0mm, 0mm)`, `axis_z(vec3(…))`) produce no
