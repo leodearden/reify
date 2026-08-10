@@ -40,20 +40,53 @@ fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
 
 /// Wait for a child process to exit with a timeout.
 /// Panics with a clear message if the deadline expires instead of hanging CI.
-fn wait_for_exit(child: &mut Child, timeout_secs: u64) -> ExitStatus {
+///
+/// Also joins `stderr_reader` (the background thread draining the child's
+/// stderr pipe — see the load-bearing ordering comment where it is spawned)
+/// and returns its captured text alongside the exit status. `reify lsp`'s
+/// stderr is the only channel it uses to report startup/runtime failures, so
+/// discarding it would make any future failure of this test a black box. On
+/// the timeout path the child is killed and then reaped: kill() only sends
+/// the signal, and reaping is what closes the stderr pipe's write end so the
+/// reader thread's `read_to_end()` returns instead of blocking forever.
+fn wait_for_exit(
+    child: &mut Child,
+    timeout_secs: u64,
+    stderr_reader: thread::JoinHandle<Vec<u8>>,
+) -> (ExitStatus, String) {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait().expect("try_wait failed") {
-            Some(status) => return status,
+            Some(status) => {
+                let stderr = drain(stderr_reader, "stderr");
+                return (status, stderr);
+            }
             None => {
-                assert!(
-                    Instant::now() < deadline,
-                    "child process did not exit within {timeout_secs}s"
-                );
+                if Instant::now() >= deadline {
+                    child.kill().ok();
+                    child.wait().ok();
+                    let stderr = drain(stderr_reader, "stderr");
+                    panic!(
+                        "child process did not exit within {timeout_secs}s\n\
+                         --- child stderr ---\n{stderr}\n--- end child stderr ---"
+                    );
+                }
                 thread::sleep(Duration::from_millis(50));
             }
         }
     }
+}
+
+/// Join a pipe-reader thread and render its bytes as lossy UTF-8 for a panic
+/// message. Lossy rather than strict: this is diagnostic output, so a child
+/// that emitted a partial multi-byte sequence before dying must still be
+/// readable. Mirrors the `drain(reader, label)` helper in mcp_integration.rs
+/// (task 5389, commit 2ae9055cf3).
+fn drain(reader: thread::JoinHandle<Vec<u8>>, label: &str) -> String {
+    let bytes = reader
+        .join()
+        .unwrap_or_else(|_| panic!("{label} reader thread panicked"));
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Read all JSON-RPC messages from stdout in a background thread.
@@ -203,9 +236,26 @@ fn lsp_full_interactive_loop_through_binary() {
 
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
+    let mut stderr_pipe = child.stderr.take().expect("stderr");
 
-    // Spawn a background reader to consume all messages (responses + notifications)
+    // Spawn the stdout AND stderr reader threads immediately after spawn(),
+    // before any stdin writes. This ordering is load-bearing (mirrors the fix
+    // applied to mcp_roundtrip in mcp_integration.rs, task 5389 commits
+    // 1a0c644ec2 / 2ae9055cf3), not stylistic: a child that writes enough
+    // stderr to fill its pipe buffer blocks in write() and never gets around
+    // to reading stdin or exiting, so draining stderr only after the
+    // write/wait phase reintroduces the same deadlock class on the other
+    // pipe. The margin is far thinner than the nominal 64 KiB pipe capacity
+    // suggests — once fs.pipe-user-pages-soft (16384 pages) is exceeded the
+    // kernel shrinks each NEW pipe to a single page, and a 24-way-parallel
+    // workspace nextest run does this routinely (F_GETPIPE_SZ measured at
+    // 8192 bytes mid-run).
     let rx = spawn_reader(stdout);
+    let stderr_reader = thread::spawn(move || {
+        let mut buf = Vec::new();
+        stderr_pipe.read_to_end(&mut buf).ok();
+        buf
+    });
 
     // 1) Initialize
     let init_request = serde_json::json!({
@@ -336,9 +386,9 @@ fn lsp_full_interactive_loop_through_binary() {
     // wait_for_response's CPU-saturation rationale above), not a
     // shutdown-speed assertion: a genuine hang still exceeds this bound
     // and fails, so widening it loses no discrimination.
-    let status = wait_for_exit(&mut child, 30);
+    let (status, stderr) = wait_for_exit(&mut child, 30, stderr_reader);
     assert!(
         status.success(),
-        "reify lsp should exit cleanly after full interactive loop"
+        "reify lsp should exit cleanly after full interactive loop (stderr: {stderr})"
     );
 }
