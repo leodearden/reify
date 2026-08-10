@@ -727,6 +727,38 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
+/// Retrieve the compiled `default_expr` of any value cell by name from a template you already hold.
+///
+/// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
+/// `param`s alike — since lookup keys on the cell's member name, not its kind. A
+/// defaultless cell (e.g. an `auto` param) panics; see # Panics.
+///
+/// Reach for this when you're already holding a `&TopologyTemplate` directly — e.g. from
+/// [`compile_first_template`] or [`compile_template`], both of which return an *owned*
+/// `TopologyTemplate` and consume the compiled module in the process, so they cannot feed
+/// [`get_let_expr_in`]/[`get_let_expr`] (which both take `&CompiledModule`). This is the
+/// lowest-level helper in the family: [`get_let_expr_in`] resolves a named template from a
+/// module and then delegates to this function.
+///
+/// # Panics
+/// - `"no value cell named '{cell_name}' in template '{template.name}'"` if the cell is absent.
+/// - `"value cell '{cell_name}' in '{template.name}' has no default expr"` if `default_expr` is `None`.
+pub fn get_let_expr_in_template<'a>(
+    template: &'a TopologyTemplate,
+    cell_name: &str,
+) -> &'a CompiledExpr {
+    let cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!("no value cell named '{cell_name}' in template '{}'", template.name)
+        });
+    cell.default_expr.as_ref().unwrap_or_else(|| {
+        panic!("value cell '{cell_name}' in '{}' has no default expr", template.name)
+    })
+}
+
 /// Retrieve the compiled `default_expr` of any value cell by name from a named template.
 ///
 /// Resolves any value cell carrying a `default_expr` — `let` bindings and defaulted
