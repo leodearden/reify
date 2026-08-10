@@ -94,55 +94,31 @@ fn compile_linear_pattern_produces_realization() {
     );
 }
 
-/// A geometry-let `linear_pattern` target resolves to `GeomRef::Sub`, and the
-/// matching `target` arg types as `Geometry`.
+/// A geometry-let `linear_pattern` target resolves to `GeomRef::Sub("elem")`
+/// rather than degrading to the positional `GeomRef::Step(0)` fallback, read
+/// straight off the public `CompiledGeometryOp::Pattern` surface. Task 5389 —
+/// this is the durable guard behind `examples/pattern_composition.ri`'s corrected
+/// claim that geometry lets ARE valid pattern targets (task 1715 + task 5009).
 ///
-/// Task 5389. What actually discriminates here is the STRUCTURAL fact: `row`
-/// lowers to `Pattern { target: GeomRef::Sub("elem"), .. }` rather than falling
-/// back to the positional `GeomRef::Step(0)`. The single arm that produces it is
-/// `geometry.rs`'s task-#4668 sibling-let pre-check (`if let Ident(arg_name) =
-/// … && scope.geometry_realization_names.contains(arg_name)` → `GeomRef::Sub`);
-/// disable it and control falls through to `compile_geometry_call`, which
-/// INLINES `elem` as a fresh `Primitive { kind: Box }` sub-op — so `operations[0]`
-/// stops being a `Pattern` at all and the destructure below fails.
-///
-/// The arg-name/type check is a SECONDARY public-surface shape assertion:
-/// `args[0].0` is a hardcoded `"target"` literal in every Pattern arm of
-/// `geometry.rs`, and its `result_type` comes from `compile_expr` independently
-/// of the `geom_refs` map that decides Sub-vs-Step, so on its own it is
-/// near-tautological and would NOT have caught that regression.
-///
-/// That structural fact is also pinned, with its `circular_pattern` / `mirror`
-/// siblings, by
-/// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`
-/// (task 1715's own test), which stays the canonical home for pattern-target
-/// coverage and is what `examples/pattern_composition.ri`'s corrected header
-/// cites. The overlap is deliberate and cheap: this one reads the fact
-/// straight off the public `CompiledGeometryOp::Pattern` surface, whereas
-/// `let_scope_tests.rs` goes through the `ExpectedOp`/`Tgt` harness, which
-/// abstracts both the `GeomRef` and the arg types away.
-///
-/// (`result_type` rather than the arg's `kind` because `CompiledExprKind` is
-/// crate-private and is not worth widening for a test.)
-///
-/// `20mm`, not a bare `20` — same task-5652 LENGTH-slot reason as the fixtures
-/// above; a bare int is a compile-time `ArgTypeMismatch`.
+/// The same structural fact, with its `circular_pattern`/`mirror` siblings, is
+/// the canonical coverage in
+/// `tests/harness_langcore/let_scope_tests.rs::linear_pattern_let_bound_ops`,
+/// which is what that example's header cites; this one exists only because it
+/// reads `GeomRef` off the public API instead of through the `ExpectedOp`/`Tgt`
+/// harness, which abstracts it away. Spacing is `20mm`, not a bare `20` — same
+/// task-5652 LENGTH-slot reason as the fixtures above.
 #[test]
-fn geometry_let_pattern_target_arg_types_as_geometry() {
+fn geometry_let_pattern_target_resolves_to_geom_ref_sub() {
     let source = r#"structure S {
     let elem = box(10mm, 10mm, 10mm)
     let row = linear_pattern(elem, 1, 0, 0, 4, 20mm)
 }"#;
-    let parsed = reify_syntax::parse(
-        source,
-        reify_core::ModulePath::single("test_geolet_linpat"),
-    );
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_geolet_linpat"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
         parsed.errors
     );
-
     let compiled = compile(&parsed);
     let errors: Vec<_> = compiled
         .diagnostics
@@ -156,51 +132,29 @@ fn geometry_let_pattern_target_arg_types_as_geometry() {
         errors
     );
 
-    // Each geometry let compiles to its own realization, so `elem` is NOT inlined
-    // into `row`'s operations list — hence the lookup by name, not by index.
-    let realizations = &compiled
-        .templates
-        .first()
-        .expect("`structure S` must compile to at least one template")
-        .realizations;
+    // Each geometry let compiles to its OWN realization, so `elem` is not inlined
+    // into `row`'s operations — hence the lookup by name rather than by index.
+    let realizations = &compiled.templates[0].realizations;
     let row = realizations
         .iter()
         .find(|r| r.name.as_deref() == Some("row"))
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a realization named `row`, got {:?}",
-                realizations
-                    .iter()
-                    .map(|r| r.name.as_deref())
-                    .collect::<Vec<_>>()
-            )
-        });
-
-    let op = row
-        .operations
-        .first()
-        .expect("expected `row` to lower to at least one operation");
-    let CompiledGeometryOp::Pattern { target, args, .. } = op else {
-        panic!("expected `row` to lower to a Pattern op, got {:?}", op);
+        .unwrap_or_else(|| panic!("expected a realization named `row`, got {:?}", realizations));
+    let CompiledGeometryOp::Pattern { target, args, .. } = &row.operations[0] else {
+        panic!(
+            "expected `row` to lower to a Pattern op, got {:?}",
+            row.operations[0]
+        );
     };
 
-    // THE PINNED FACT: `elem` was recognised as a geometry let, so the pattern
-    // target resolves by name rather than degrading to the positional
-    // `GeomRef::Step(0)` fallback that `geometry.rs`'s pattern-target resolver
-    // documents (and which surfaces at runtime as an unresolvable-step crash).
     assert_eq!(
         target,
         &GeomRef::Sub("elem".to_string()),
-        "expected `row`'s pattern target to resolve to the geometry let `elem` by name"
+        "expected `row`'s pattern target to resolve to the geometry let `elem` by NAME; \
+         `GeomRef::Step(0)` is the silent fallback whose runtime symptom is an \
+         unresolvable-step crash"
     );
-
-    // Secondary, and weaker on its own (see the docstring): the public
-    // `args` surface still exposes the named `target` slot typed as Geometry.
-    let (arg_name, arg_expr) = args
-        .first()
-        .expect("expected the Pattern op to carry at least the named `target` arg");
     assert_eq!(
-        (arg_name.as_str(), &arg_expr.result_type),
+        (args[0].0.as_str(), &args[0].1.result_type),
         ("target", &reify_core::Type::Geometry),
         "expected args[0] to be the named `target` slot typed as Geometry"
     );

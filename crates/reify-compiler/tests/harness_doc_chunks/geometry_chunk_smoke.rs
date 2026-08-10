@@ -76,10 +76,20 @@
 //! `stdlib_chunk_geometry_ops_smoke.rs` into one test binary, and the two now
 //! carry near-identical scaffolding: a `geometry.md` path const (here
 //! `CHUNK_PATH`, there `GEOMETRY_CHUNK_PATH`), a loud-panic-never-skip
-//! `read_chunk`, and a `## `-heading section scanner. The right fix is a shared
-//! `chunk_io` module declared from `tests/harness_doc_chunks.rs`, which is
-//! outside task 5389's locked file set — filed as a follow-up rather than done
-//! here.
+//! `read_chunk`, and a `## `-heading section scanner. Worse than mere
+//! duplication, the two scanners DISAGREE — the one here is fence-aware (a
+//! `## ` line inside a fence is content, not a boundary) and matches headings by
+//! normalised words, while the sibling's is neither, so which slicing semantics
+//! you get depends on which module's test fires.
+//!
+//! The right fix is a shared `chunk_io` module declared from
+//! `tests/harness_doc_chunks.rs`, holding the path consts, `read_chunk(path)`
+//! and the fence-aware `section_body`. That needs edits to
+//! `tests/harness_doc_chunks.rs` and `stdlib_chunk_geometry_ops_smoke.rs`,
+//! neither of which is in task 5389's locked file set, so it is deferred rather
+//! than done here — filed as ticket `tkt_0RS9A7843SBQ4BZX1A2ACY5TC1` (curator
+//! runs asynchronously, so that is a ticket id, not yet a task id). Delete this
+//! section when the extraction lands.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
