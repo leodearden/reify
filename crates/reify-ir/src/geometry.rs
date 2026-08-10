@@ -10608,6 +10608,94 @@ mod tests {
         assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
     }
 
+    /// 3MF export must keep its unit DECLARATION and its vertex PAYLOAD in
+    /// agreement: reify model space is SI metres, the package declares
+    /// `unit="millimeter"`, so the vertices it carries must be millimetres.
+    ///
+    /// The two halves DISAGREE today, and that asymmetry IS the defect. The
+    /// declaration half already passes — `write_3mf` hardcodes
+    /// `unit="millimeter"` — while the payload half fails, because the vertex
+    /// buffer is emitted verbatim with no metre→millimetre conversion. A 30 mm
+    /// cube is written as 0.030 and read by any 3MF consumer as 30 µm — a
+    /// 1000× shrink, the same mislabel as the STEP half of this bug.
+    ///
+    /// The 1e-3 mm bound is derived, not guessed: `Mesh::vertices` is
+    /// `Vec<f32>`, whose ulp at 30.0 is 2^-23·2^4 ≈ 1.9e-6 mm, so the 1e-6
+    /// bound used for the f64 STEP path would be unsatisfiable here. 1e-3
+    /// clears f32 representation error ~500× and still sits ~4 orders below
+    /// the 0.030-vs-30.0 gap it guards, so it cannot pass while the bug lives.
+    #[test]
+    fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
+        use std::io::Cursor;
+
+        // A 30 mm cube expressed in reify's SI-metre model space: the unit
+        // cube's [0,1]^3 corners scaled to [0,0.030]^3. Topology unchanged.
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // `write_3mf` stores entries with CompressionMethod::Stored, so the
+        // default-features-off `zip` dependency can read them back as-is.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+
+        // (1) DECLARATION half — passes today, and is otherwise unasserted
+        // anywhere in the tree.
+        assert!(
+            model_xml.contains("unit=\"millimeter\""),
+            "3MF model part should declare unit=\"millimeter\""
+        );
+
+        // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
+        // folded into a per-axis AABB.
+        fn attr(tail: &str, name: &str) -> Option<f64> {
+            // Attributes appear in x, y, z order inside one element, and this
+            // element's three attributes all precede the next element's, so
+            // the FIRST match after the split point is the right one.
+            let key = format!("{name}=\"");
+            let start = tail.find(&key)? + key.len();
+            let end = tail[start..].find('"')? + start;
+            tail[start..end].parse::<f64>().ok()
+        }
+
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        let mut n_verts = 0usize;
+        for tail in model_xml.split("<vertex ").skip(1) {
+            let coords = [
+                attr(tail, "x").expect("vertex must carry a parsable x"),
+                attr(tail, "y").expect("vertex must carry a parsable y"),
+                attr(tail, "z").expect("vertex must carry a parsable z"),
+            ];
+            n_verts += 1;
+            for axis in 0..3 {
+                min[axis] = min[axis].min(coords[axis]);
+                max[axis] = max[axis].max(coords[axis]);
+            }
+        }
+        assert_eq!(n_verts, 8, "a cube should emit 8 <vertex> elements");
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-3,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared 3MF package, but the vertex AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
     #[test]
     fn write_3mf_malformed_mesh_returns_err() {
         // 4 indices — not a multiple of 3; must be rejected.
