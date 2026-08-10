@@ -312,6 +312,54 @@ channels all carry angular values today with no declared convention
 (`crates/reify-eval/src/modal_ops.rs:1300`) and
 `eigenvalue_to_frequency_hz` as the declared-bridge precedents.
 
+### Crossing catalogue and identities
+
+**The crossing catalogue** — every named site where η = 1 rad enters,
+its mechanism, and an honest shipped / ruled-pending / chartered
+status:
+
+| Crossing | η enters at | Mechanism | Status |
+|---|---|---|---|
+| inverse trig / `phase` / `arg` | return type | `math_signatures.rs` + eval Angle tag | shipped |
+| `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
+| geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
+| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
+| `ElasticResult.rotation` = curl/2 | named channel | #6164 | ruled, pending |
+| `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | chartered |
+| MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |
+| joint-DOF unwrap; unit literals (`45deg`, `1rad`) | literal/decode sites | shipped | shipped |
+| hand-rolled `.ri` crossings | `expr * 1rad` (and `expr / 1rad` to leave) | unit arithmetic (probed) | shipped, undocumented (corpus example → leaf γ) |
+| frequency ↔ angular frequency | 2π rad/cycle — a distinct constant, not η (see below) | FREQUENCY ≠ ANGULAR_VELOCITY forces it in `.ri`; Rust marshalling boundaries stay f64 with declared comments | shipped (typed layer), declaration chartered as leaf ι |
+| IO boundaries (STEP, FFI, MCP, GUI) | rad=1 SI erasure — correct numerically, must be declared | angle-dimension-completion leaves ι/υ | chartered |
+
+**Textbook identities under the law** (the quotient algebra yields the
+η-free right-hand side; a named helper or the author's `* 1rad` supplies
+the crossing):
+
+- s = rθ/η
+- v = (ω×r)/η
+- r = η/κ
+- γ ≈ η·(∂u_x/∂y + ∂u_y/∂x)
+- H = η·∇²φ/2 (future helper — greenfield; no code computes this today)
+- κ = η·|dT/ds| (future helper — greenfield; no code computes this today)
+
+**The #5825 arc-length discharge.** Task #5825 (done) carved out
+exactly this case: *"`arc = r * theta` evaluating to `m·rad` rather
+than Length. Irreducible under any radian-as-dimension scheme without
+an explicit conversion constant, broken today, unaffected by this
+ruling. Needs its own task — do NOT fold it in."* This family is that
+task, for the teaching half only. The idiom is `r * theta / 1rad`: to
+enter a crossing, multiply by `1rad`; to leave one, divide by `1rad` —
+always the **no-space** literal form, `1rad`. The spaced form `1 rad`
+is a parse error (probe-verified) — deliberate, not a gap: see INV-SF-7
+`parse-is-value-faithful`, which owns the quantity-literal juxtaposition
+seam that makes `1rad` vs `1 rad` a meaningful distinction rather than
+whitespace noise. No enforcement is possible or chartered for the
+arc-length case itself — the teaching above is the whole deliverable.
+Executable substrate: the committed fixture
+`tests/prd-gate/fixtures/angle_crossing_idiom.ri` (read-only here; leaf
+γ owns its probe row).
+
 ## Census seam
 
 Reify's confusion-codebook entries
