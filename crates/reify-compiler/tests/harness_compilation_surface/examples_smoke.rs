@@ -244,6 +244,15 @@ fn all_examples_parse_and_compile_with_stdlib() {
 /// Sites listed in [`CTOR_CONFORMANCE_MIGRATION_DEBT`] are waived per `(file,
 /// param)` pair; see [`CTOR_CONFORMANCE_GATE_REMEDY`] for what a firing
 /// diagnostic means and which of the three remedies applies.
+///
+/// Since task 5303 (ε) the gate ALSO covers the two structural ctor codes,
+/// `CtorUnknownField` and `CtorArity` — i.e. no shipped example may carry a
+/// typo'd constructor field name or a silently-dropped surplus positional
+/// argument either. Extending it was conditional on a measurement, because ε
+/// was explicitly not allowed to fix corpus sites (γ owns corpus fix-forward)
+/// and the waiver list is migration debt, not an escape hatch for new codes:
+/// the corpus was measured CLEAN under both new codes, so the tightening was
+/// free, added no `CTOR_CONFORMANCE_MIGRATION_DEBT` entry, and δ inherits it.
 #[test]
 fn no_example_emits_ctor_field_conformance_diagnostics() {
     let walk = ctor_conformance_corpus_walk();
@@ -510,7 +519,7 @@ fn smoke_one(path: &Path, rel_key: &str, failures: &mut Vec<(String, String)>) {
 }
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance pass (tasks 5302 / 4584 / 4598 / 4622 / 4444).
+/// field-conformance surface (tasks 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
 ///
 /// Kept deliberately in sync with the identically-named helper in
 /// `struct_ctor_field_conformance_tests.rs`; integration tests are separate
@@ -526,6 +535,8 @@ fn is_ctor_conformance_code(code: Option<reify_core::diagnostics::DiagnosticCode
                 | DiagnosticCode::TypeNotConformingToTrait
                 | DiagnosticCode::TypeNotConformingToStructureRef
                 | DiagnosticCode::TypeNotConformingToVector
+                | DiagnosticCode::CtorUnknownField
+                | DiagnosticCode::CtorArity
         )
     )
 }
