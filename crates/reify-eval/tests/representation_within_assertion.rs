@@ -136,7 +136,10 @@ fn non_measuring_surface_does_not_reach_language_checker() {
     let offenders: Vec<&str> = result
         .diagnostics
         .iter()
-        .filter(|d| d.message.contains("operator undefined for these operand kinds"))
+        .filter(|d| {
+            d.message
+                .contains("operator undefined for these operand kinds")
+        })
         .map(|d| d.message.as_str())
         .collect();
     assert!(
@@ -183,7 +186,10 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
     let offenders: Vec<&str> = result
         .diagnostics
         .iter()
-        .filter(|d| d.message.contains("operator undefined for these operand kinds"))
+        .filter(|d| {
+            d.message
+                .contains("operator undefined for these operand kinds")
+        })
         .map(|d| d.message.as_str())
         .collect();
     assert!(
