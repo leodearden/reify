@@ -203,4 +203,78 @@ assert "A6a: run_all.sh's clock-sanitizer expression was extracted (non-vacuity)
 assert "A6b: the sentinel survives that sanitizer unrewritten, still at column 0" \
     _has_line "$A6_OUT" "^${SP}TIMEOUT@@ "
 
+echo ""
+echo "=== B: each wrapper declares its OWN timeout reason, additively ==="
+
+# Driven BEHAVIOURALLY (a real contended acquire through each wrapper), never by
+# a source grep: the reason token is a cross-repo wire value, so what matters is
+# what actually reaches stderr.
+#
+# B3 is the load-bearing REGRESSION half. The two human-readable deadline
+# messages below are dark-factory's OTHER grounded anchors -- its
+# _SLOT_ACQUIRE_DEADLINE_RE pins the script basename, the optional `ERROR: `
+# prefix and the `within <N>s` shape, each "grounded in a line reify emits
+# TODAY". Rewording them, or folding the sentinel into them, would silently
+# delete three working detectors while adding one. B3 pins them with ^-anchored
+# patterns and B4 pins that the sentinel is a SEPARATE line, so a later refactor
+# cannot quietly merge the two.
+
+# --- B1: scripts/lib_lane_x_flock.sh -> reason=lane_x_slot_starvation
+B1_LOCK="$TMPA/b1.lock"
+B1_ERR="$TMPA/b1.err"
+B1_MSGS="$TMPA/b1.msgs"
+# ^-anchored, matching dark-factory's own anchor shape for this line.
+B1_MSG_RE='^lib_lane_x_flock\.sh: failed to acquire Lane-X lock within 1s \(LOCK='
+
+_hold_slot "$B1_LOCK" 1
+
+B1_EXIT=0
+REIFY_LANE_X_FLOCK_LOCK="$B1_LOCK" REIFY_LANE_X_FLOCK_WAIT=1 \
+    timeout 30 bash -c '
+        source "$1/lib_lane_x_flock.sh"
+        lane_x_flock_acquire
+    ' _ "$SCRIPTS_DIR" 2>"$B1_ERR" || B1_EXIT=$?
+
+_reap_slot "$B1_LOCK" 1
+
+# Extract the human-message line(s) to their own file so B4 can assert on them
+# with a quiet predicate; B3's `test -s` is what makes B4 non-vacuous.
+{ grep -E -- "$B1_MSG_RE" "$B1_ERR" || true; } > "$B1_MSGS"
+
+assert "B1a: lane_x_flock_acquire on a held lock returns 75 (got $B1_EXIT)" \
+    test "$B1_EXIT" -eq 75
+assert "B1b: lane-x deadline sentinel carries reason=lane_x_slot_starvation, at column 0" \
+    _has_line "$B1_ERR" "^${SP}TIMEOUT@@ reason=lane_x_slot_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+assert "B3a: lane-x human deadline message is unchanged (DF's grounded anchor)" \
+    test -s "$B1_MSGS"
+assert "B4a: the lane-x sentinel is a SEPARATE line, not appended to that message" \
+    _lacks_text "$B1_MSGS" "$SENTINEL"
+
+echo ""
+echo "--- B2: scripts/cargo-test-occt-gated.sh -> reason=occt_slot_starvation ---"
+
+B2_LOCK="$TMPA/b2.lock"
+B2_ERR="$TMPA/b2.err"
+B2_MSGS="$TMPA/b2.msgs"
+B2_MSG_RE='^ERROR: cargo-test-occt-gated\.sh: failed to acquire OCCT slot within 1s \(LOCK='
+
+_hold_slot "$B2_LOCK" 1
+
+B2_EXIT=0
+REIFY_OCCT_LOCK="$B2_LOCK" REIFY_OCCT_CONCURRENCY=1 REIFY_OCCT_LOCK_WAIT=1 \
+    timeout 30 bash "$SCRIPTS_DIR/cargo-test-occt-gated.sh" true 2>"$B2_ERR" || B2_EXIT=$?
+
+_reap_slot "$B2_LOCK" 1
+
+{ grep -E -- "$B2_MSG_RE" "$B2_ERR" || true; } > "$B2_MSGS"
+
+assert "B2a: the OCCT wrapper on a held slot exits 75 (got $B2_EXIT)" \
+    test "$B2_EXIT" -eq 75
+assert "B2b: OCCT deadline sentinel carries reason=occt_slot_starvation, at column 0" \
+    _has_line "$B2_ERR" "^${SP}TIMEOUT@@ reason=occt_slot_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+assert "B3b: OCCT human deadline message is unchanged, ERROR: prefix intact (DF's grounded anchor)" \
+    test -s "$B2_MSGS"
+assert "B4b: the OCCT sentinel is a SEPARATE line, not appended to that message" \
+    _lacks_text "$B2_MSGS" "$SENTINEL"
+
 test_summary
