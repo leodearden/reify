@@ -3952,7 +3952,12 @@ describe('reify.grammar snippets — joint definitions', () => {
  * ledger movement would ever reveal it if they did not.
  */
 describe('reify.grammar snippets — `·` as unit multiplication', () => {
-  // Corpus-attested VERBATIM: tests/prd-gate/fixtures/unit_middot_mul.ri:25.
+  // Corpus-attested VERBATIM: the `torque_like` binding of
+  // tests/prd-gate/fixtures/unit_middot_mul.ri. Cited by BINDING NAME, not by
+  // line: task #5784 refreshed that fixture's header and shifted every line
+  // number, and verify.sh's _RUST_COUPLED_RI_FIXTURES comment records why the
+  // repo avoids file:line citations — nothing validates them and they rot on
+  // the first edit.
   it('parses a middot-composed unit', () => {
     const src = 'structure def S { let torque_like = 5N·m }';
     expect(countErrorNodes(src)).toBe(0);
@@ -3960,7 +3965,7 @@ describe('reify.grammar snippets — `·` as unit multiplication', () => {
   });
 
   /**
-   * :26. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
+   * The `with_div` binding. Asserted on a COUNT: the `/rad` is part of the UNIT, not a division,
    * so the wrong tree — one quantity divided by an identifier — would also
    * reach 0 errors and an error count alone would sail past it.
    */
