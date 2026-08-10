@@ -240,3 +240,154 @@ export function describeUnscopedAmbiguity(payload, { testId, expectedMatchCount 
 
   return null;
 }
+
+/**
+ * Diagnose one `dom_query` presence probe: healthy, boolean-valued, and equal to
+ * `expectedExists` — or the first of those that failed.
+ *
+ * THE BOOLEAN CHECK IS THE POINT, not the equality one. {@link describeRpcFailure}
+ * documents its own blind spot (a NON-STRING `error` such as `{error: 500}` is not
+ * §2a and folds to "healthy"), so a guard that went straight to `payload.exists
+ * !== false` would read such a payload as "not present" and certify a PASS from a
+ * failed RPC. `dom_query` answers `exists: true | false` for resolvable and
+ * unresolvable testids alike, so anything else is not a `dom_query` result at all.
+ *
+ * @param {any} payload  The decoded `dom_query` result.
+ * @param {string} label  Names the probe (tool, testid, pane, and when) in the message.
+ * @param {boolean} expectedExists  What this probe must have observed.
+ * @param {string} mismatch  The caller's own wording for "healthy, but the wrong
+ *        answer" — each call site's mismatch means something different, and a
+ *        generic "expected false, got true" would say none of it.
+ * @returns {string | null}
+ */
+function describeExistsProbe(payload, label, expectedExists, mismatch) {
+  const failure = describeRpcFailure(payload, label);
+  if (failure) return failure;
+  if (typeof payload.exists !== "boolean") {
+    return (
+      `${label} did not report a boolean exists (got ${JSON.stringify(payload.exists)}) — ` +
+      `dom_query answers exists:true|false for resolvable and unresolvable testids alike, so ` +
+      `anything else means the payload is not a dom_query result. Comparing it directly would let ` +
+      `it read as "not present" and certify a silent pass.`
+    );
+  }
+  if (payload.exists !== expectedExists) return mismatch;
+  return null;
+}
+
+/**
+ * Diagnose a viewportId-scoped `click_element` on a per-pane TOGGLE: a message
+ * naming how the cross-pane property broke, or `null` when the driven pane
+ * changed and the other pane did not.
+ *
+ * THE LIVE COUNTERPART of the jsdom pin in `gui/src/__tests__/debugBridge.test.tsx`
+ * ("(a) a viewportId-scoped click_element drives that pane only — no cross-pane
+ * bleed"). That case reads `pane1.state.enabled` and `designMain.state.enabled`
+ * straight off the stores; a driver cannot, because THE WIRE EXPOSES NO PER-PANE
+ * FEA STATE — `store_state` projects `viewports[id]` as `{meshCount}` alone, no
+ * `get_fea_mode_state` tool exists, and `dom_query`'s literal
+ * (`{exists, visible, text, tagName, bounds, ...paneDiagnostics}`) cannot read
+ * `checked`. So the ONLY observable proxy for a pane's `enabled` flag is
+ * conditional rendering: `FeaModeToolbar.tsx` gates its body on
+ * `<Show when={!collapsed() && props.store.state.enabled}>` and renders
+ * `fea-mode-channel-select` unconditionally inside it — an empty `<For>` option
+ * list when there are no channels, but the `<select>` itself is present.
+ *
+ * THAT PROXY HAS ONE PRECONDITION, and it is the caller's to keep: the driver must
+ * never click `fea-mode-collapse-toggle`. Collapsing makes `bodyTestId` absent for
+ * a reason unrelated to `enabled`, which would turn this guard's central reading
+ * into a silent lie rather than a failure.
+ *
+ * Assert on `exists` only, never on `visible`: `visible` folds in `rect.width > 0`,
+ * and an option-less `<select>`'s intrinsic width is a WebKit default rather than
+ * anything this property is about. `exists` maps one-to-one onto the `<Show>` gate.
+ *
+ * Branch table, in order — the order is a CONTRACT, pinned by the suite:
+ *   1. unhealthy `clickResult`          → {@link describeRpcFailure}'s verbatim text
+ *   2. `clickResult.ok !== true`        → answered and declined
+ *   3. `clickResult.matchCount` present → the scope did not disambiguate
+ *   4. `otherBefore.exists !== false`   → dirty baseline; no verdict is possible
+ *   5. `drivenAfter.exists !== true`    → the click never landed
+ *   6. `otherAfter.exists !== false`    → CROSS-PANE BLEED
+ *
+ * BRANCH 3 IS WHY A BARE `{ok: true}` IS EVIDENCE, not just an absence: since
+ * `paneDiagnostics` emits `{viewportId, matchCount}` only ABOVE one match, a click
+ * made while several candidates exist in the DOM — which the caller must have
+ * established first, that is what `describeUnscopedAmbiguity` is for — answers
+ * bare `{ok: true}` ONLY if `viewportId` narrowed the resolve to exactly one. The
+ * pair's presence says the pane was still guessed, one level down.
+ *
+ * BRANCH 5 PRECEDES BRANCH 6 deliberately: a click that never landed also explains
+ * the other pane's state, so reporting the bleed first would send the operator
+ * after the wrong cause.
+ *
+ * Never throws, whatever the shape of the four payloads.
+ *
+ * @param {object} options
+ * @param {string} options.drivenPaneId  The `viewportId` the click was scoped to.
+ * @param {string} options.otherPaneId   The pane that must be untouched.
+ * @param {string} options.bodyTestId    The testid whose presence proxies `enabled`.
+ * @param {any} options.clickResult      Decoded scoped `click_element` result.
+ * @param {any} options.drivenAfter      `dom_query(bodyTestId, drivenPaneId)` AFTER.
+ * @param {any} options.otherBefore      `dom_query(bodyTestId, otherPaneId)` BEFORE.
+ * @param {any} options.otherAfter       `dom_query(bodyTestId, otherPaneId)` AFTER.
+ * @returns {string | null} The diagnosis, or `null` when the property holds.
+ */
+export function describeScopedToggleNoBleed({
+  drivenPaneId,
+  otherPaneId,
+  bodyTestId,
+  clickResult,
+  drivenAfter,
+  otherBefore,
+  otherAfter,
+}) {
+  const clickLabel = `click_element(viewportId: '${drivenPaneId}')`;
+  const clickFailure = describeRpcFailure(clickResult, clickLabel);
+  if (clickFailure) return clickFailure;
+
+  if (clickResult.ok !== true) {
+    return `${clickLabel} did not report ok: ${JSON.stringify(clickResult)}`;
+  }
+
+  if (clickResult.matchCount !== undefined) {
+    return (
+      `${clickLabel} still resolved ${clickResult.matchCount} elements ` +
+      `(first match attributed to viewportId ${JSON.stringify(clickResult.viewportId)}) — ` +
+      `paneDiagnostics reports that pair ONLY above one match, so the viewportId scope failed to ` +
+      `disambiguate and the driven pane was still guessed.`
+    );
+  }
+
+  const dirtyBaseline = describeExistsProbe(
+    otherBefore,
+    `dom_query('${bodyTestId}', viewportId: '${otherPaneId}') pre-click`,
+    false,
+    `the no-bleed baseline was already dirty: ${otherPaneId}'s ${bodyTestId} was present BEFORE the ` +
+      `click scoped to ${drivenPaneId}, so "still present afterwards" proves nothing and an ` +
+      `unchanged verdict would be meaningless. Re-run against a freshly launched GUI.`,
+  );
+  if (dirtyBaseline) return dirtyBaseline;
+
+  const notLanded = describeExistsProbe(
+    drivenAfter,
+    `dom_query('${bodyTestId}', viewportId: '${drivenPaneId}') post-click`,
+    true,
+    `the scoped click did not land on ${drivenPaneId}: its ${bodyTestId} is still absent afterwards, ` +
+      `so that pane's FEA body never opened. Reported before any cross-pane verdict, since a click ` +
+      `that never landed also explains the other pane's state.`,
+  );
+  if (notLanded) return notLanded;
+
+  const bleed = describeExistsProbe(
+    otherAfter,
+    `dom_query('${bodyTestId}', viewportId: '${otherPaneId}') post-click`,
+    false,
+    `CROSS-PANE BLEED: the click scoped to ${drivenPaneId} also changed ${otherPaneId} — its ` +
+      `${bodyTestId} appeared, so that pane's FEA mode was enabled too. This is precisely the ` +
+      `pre-#5891 behaviour, where an unscoped resolver drove whichever pane matched first.`,
+  );
+  if (bleed) return bleed;
+
+  return null;
+}
