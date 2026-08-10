@@ -360,6 +360,43 @@ Executable substrate: the committed fixture
 `tests/prd-gate/fixtures/angle_crossing_idiom.ri` (read-only here; leaf
 γ owns its probe row).
 
+### The 2π rad/cycle distinction (D4)
+
+Frequency ↔ angular frequency is its own crossing class, **not** η.
+ω = 2π·f·(1rad) carries 2π rad/cycle — a distinct constant from the
+η = 1 rad crossing above; never conflate the two. The typed layer
+already forces the distinction: FREQUENCY ≠ ANGULAR_VELOCITY in `.ri`,
+so an author cannot silently swap one for the other. Rust-side f64
+marshalling boundaries (where the typed distinction does not reach)
+stay f64 and gain a doctrine-citing comment instead of a retype
+(chartered as leaf ι) — declaring the convention, not converting the
+representation.
+
+### ANGULAR_MOMENTUM: algebra without a chartered constant (D3, §11)
+
+L = Iω = J·s/rad, and τ = dL/dt closes to TORQUE (probed against the
+#5844 rad⁻² MOI). This algebra is recorded here so a future task does
+not have to re-derive it — but no ANGULAR_MOMENTUM constant is
+chartered by this family: it has zero producers and zero consumers
+anywhere in the repo today, and minting a dimension with neither would
+create a pure orphan. Promote it to a chartered constant when a
+producer or consumer materializes.
+
+### Enforcement honesty (D7)
+
+The crossing idiom is **teachable but not yet mandatory**. `sin(2.5)`
+and `param x : Angle = 2.5` both pass silently **today**, because a
+bare dimensionless value widens into any declared dimension — nothing
+in this family changes that. Mandatoriness is owned elsewhere: the
+real-dimensionless-unification decision D5, and the
+*angle-units-surface-convergence* PRD's own leaves β/γ/δ/ε (unlanded —
+a distinct PRD from this family's angle-dimension-completion
+programme, with its own independent leaf lettering). No enforcement
+work is chartered by this family; those siblings are cited by name
+only — their contracts are not restated here. The enforcement
+*direction* this doctrine cites is strict dimension equality
+(units-length-gate-completion D11, #5747).
+
 ## Census seam
 
 Reify's confusion-codebook entries
