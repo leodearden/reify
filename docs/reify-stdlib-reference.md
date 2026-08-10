@@ -1236,7 +1236,7 @@ structure def ISOToleranceGrade {
     param grade : Int
     param nominal_min : Length
     param nominal_max : Length
-    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)  // ISO 286-1 IT5–IT18, nominal ≤500mm
+    let tolerance_value = iso_it_tolerance(nominal_min, nominal_max, grade)  // ISO 286-1 IT5–IT18, nominal ≤500mm
 }
 ```
 
