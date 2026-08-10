@@ -232,6 +232,142 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
     );
 }
 
+/// A module with NO `RepresentationWithin` at all — the universal
+/// non-assertion case that must keep taking the C2 fast path.
+const NO_ASSERTION_SOURCE: &str = r#"
+structure Plain {
+    param w : Real = 5.0
+    constraint w > 0.0
+}
+"#;
+
+/// Returns the messages of every diagnostic carrying the attribution's
+/// load-bearing tokens — the population the new Info is allowed to occupy.
+fn attribution_diagnostics(result: &reify_eval::CheckResult) -> Vec<&str> {
+    result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("does not measure") || d.message.contains("reify check"))
+        .map(|d| d.message.as_str())
+        .collect()
+}
+
+/// Regression guard: a MEASURING surface whose subject key is simply
+/// unresolvable keeps today's silent Indeterminate (C1).
+///
+/// This is the direct guard on "`reify check` output must be unchanged". An
+/// implementation that attributed every Indeterminate — forgetting the
+/// `achieved_repr_tol.is_empty()` gate — would fail here, because tessellation
+/// demonstrably DID run on this surface; the map just holds no entry for this
+/// subject, which is a different fact needing a different (existing) answer.
+#[test]
+fn measuring_surface_indeterminate_carries_no_attribution_diagnostic() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    let mut engine = make_simple_engine();
+
+    // Non-empty map (a tessellation ran) that does NOT resolve "MyGeom".
+    engine.set_achieved_repr_tol_for_test(BTreeMap::from([(
+        "Unrelated#realization[0]".to_string(),
+        1e-9_f64,
+    )]));
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1 unchanged: an unresolvable subject key is still Indeterminate"
+    );
+
+    let attributions = attribution_diagnostics(&result);
+    assert!(
+        attributions.is_empty(),
+        "the surface-attribution diagnostic must NOT reach a surface that DID \
+         measure — this one tessellated, it simply has no entry for this subject. \
+         Attaching it here would change `reify check` output. Got: {attributions:#?}"
+    );
+}
+
+/// Regression guard: a MEASURING surface with a resolvable, under-bound subject
+/// is `Satisfied` and gains no attribution diagnostic.
+///
+/// Mirrors `dispatch_interception_under_bound_yields_satisfied` for the
+/// defaulted-subject source, so the happy `reify check` path is pinned against
+/// the new code too.
+#[test]
+fn measuring_surface_satisfied_is_unchanged() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    let mut engine = make_simple_engine();
+
+    // 1e-9 m ≪ 1mm = 1e-3 m bound → Satisfied.
+    engine.set_achieved_repr_tol_for_test(BTreeMap::from([(
+        "MyGeom#realization[0]".to_string(),
+        1e-9_f64,
+    )]));
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Satisfied,
+        "achieved 1e-9 m < bound 1mm (1e-3 m) → Satisfied"
+    );
+
+    let attributions = attribution_diagnostics(&result);
+    assert!(
+        attributions.is_empty(),
+        "a Satisfied verdict needs no explanation — the attribution diagnostic is \
+         scoped to Indeterminate-because-nothing-measured. Got: {attributions:#?}"
+    );
+}
+
+/// Regression guard: the universal non-assertion module still takes the C2 fast
+/// path and stays silent.
+///
+/// This pins that the third conjunct added to the fast-path guard did not
+/// change the outcome for a module with no `RepresentationWithin`.
+///
+/// The *zero-allocation* property of that conjunct is argued structurally, not
+/// asserted here: `entries.iter().any(..)` allocates nothing, and
+/// `match_representation_within_shape` rejects at Gate 2 — on `expr.kind` or on
+/// the `function_name != "RepresentationWithin"` compare — strictly before its
+/// only allocation. Gate cost is not wall-clock asserted, so this test pins the
+/// observable behaviour and leaves the cost argument to that function's gates.
+#[test]
+fn non_assertion_module_hot_path_is_unchanged() {
+    let compiled = parse_and_compile(NO_ASSERTION_SOURCE);
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    let entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Plain" && e.id.index == 0)
+        .expect("must have Plain#constraint[0] (w > 0.0)");
+    assert_eq!(
+        entry.satisfaction,
+        Satisfaction::Satisfied,
+        "w=5.0 > 0.0 → Satisfied, exactly as before the guard gained its third conjunct"
+    );
+    assert!(
+        result.diagnostics.is_empty(),
+        "C2: a module with no RepresentationWithin must emit no diagnostics at \
+         all — the fast path is byte-identical. Got: {:#?}",
+        result.diagnostics
+    );
+}
+
 // ── BT1: over-bound → Violated ────────────────────────────────────────────────
 
 /// BT1: achieved value ABOVE the bound (5e-3 m > 1 mm = 1e-3 m) → `Violated`.
