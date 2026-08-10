@@ -29,6 +29,14 @@
  *                 (independent per-pane cameras).
  *   Row 6       — best-effort: reload persistence (guard with try/skip; ε already
  *                 owns deterministic persistence coverage).
+ *   #5891       — click_element({testId:'fea-mode-enable-toggle', viewportId:'pane-1'})
+ *                 opens ONLY pane-1's FEA body; design-main's stays closed
+ *                 (cross-pane no-bleed for the viewportId-scoped testid resolvers).
+ *                 Per-pane FEA state is read via `fea-mode-channel-select` PRESENCE,
+ *                 not via store_state: the wire exposes no FEA state at all
+ *                 (viewports[id] is {meshCount} alone) and dom_query cannot read
+ *                 `checked`. Led by an UNSCOPED probe that must report matchCount==2,
+ *                 without which the scoped assertions would pass vacuously.
  *
  * NOTE: entity_path string values are matched by presence-in-meshKeys rather than
  * hard-equality to stay robust to realization-index formatting.
@@ -39,7 +47,12 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
-import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
+import {
+  describeRpcFailure,
+  describeScopedToggleNoBleed,
+  describeUnscopedAmbiguity,
+  openFileWithRetry,
+} from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -319,10 +332,86 @@ async function main() {
   console.log('  OK: design-main camera unchanged after orbit on pane-1 (independent cameras)');
 
   // ════════════════════════════════════════════════════════════════════════════
-  // Scenario 5: BEST-EFFORT reload persistence (row 6)
+  // Scenario 5: CROSS-PANE TESTID SCOPING (#5891) — scoped click drives ONE pane
+  // ════════════════════════════════════════════════════════════════════════════
+  //
+  // The live counterpart of the jsdom pin in gui/src/__tests__/debugBridge.test.tsx
+  // ("(a) a viewportId-scoped click_element drives that pane only"). Every verdict
+  // below is computed in ./smokeDriverGuards.mjs, where vitest covers its truth
+  // table; this file needs a live GUI, so nothing inline here ever could be. What
+  // remains here is RPC sequencing.
+  //
+  // THIS SCENARIO MUST NEVER CLICK 'fea-mode-collapse-toggle'. The per-pane
+  // observable is `fea-mode-channel-select` PRESENCE, and FeaModeToolbar gates its
+  // body on `!collapsed() && enabled` — collapsing would make the select absent for
+  // a reason unrelated to `enabled` and silently invalidate the probe rather than
+  // fail it.
+
+  log('Scenario 5: viewportId-scoped click_element drives ONE pane (#5891)…');
+
+  // ANTI-VACUITY PRECONDITION, first: both panes must really carry the toggle.
+  // paneDiagnostics reports {viewportId, matchCount} only above one match, so this
+  // is what makes the scoped assertions below load-bearing rather than trivially
+  // true. UNSCOPED on purpose — no viewportId param.
+  const ambiguity = await rpc('dom_query', { testId: 'fea-mode-enable-toggle' });
+  console.log('  unscoped dom_query(fea-mode-enable-toggle):', JSON.stringify(ambiguity));
+  const ambiguityFailure = describeUnscopedAmbiguity(ambiguity, {
+    testId: 'fea-mode-enable-toggle',
+    expectedMatchCount: 2,
+  });
+  if (ambiguityFailure) fail(ambiguityFailure);
+  console.log('  OK: fea-mode-enable-toggle is ambiguous across 2 panes (scoping has real work)');
+  // INFORMATIONAL ONLY — never asserted. This names the pane a pre-#5891 unscoped
+  // click would have driven, which is useful context, but pane DOM order is
+  // emergent from MultiViewport's <For each={props.panes}> and is not a contract.
+  console.log(`  (an unscoped click would have driven '${ambiguity.viewportId}')`);
+
+  // CLEAN-BASELINE probe: design-main's FEA body must be CLOSED before the click.
+  const feaBefore = await rpc('dom_query', { testId: 'fea-mode-channel-select', viewportId: 'design-main' });
+  console.log('  design-main FEA body before click:', JSON.stringify(feaBefore));
+
+  // THE SCOPED CLICK. A bare {ok:true} while TWO candidates exist in the DOM is
+  // itself the evidence that viewportId narrowed the resolve to exactly one.
+  const feaClick = await rpc('click_element', { testId: 'fea-mode-enable-toggle', viewportId: 'pane-1' });
+  console.log('  click_element(fea-mode-enable-toggle, pane-1):', JSON.stringify(feaClick));
+
+  await sleep(100);  // let Solid's reactive update commit, as after orbit_camera above
+
+  // Read BOTH panes after the click — the driven one, then the one that must not have moved.
+  const drivenAfter = await rpc('dom_query', { testId: 'fea-mode-channel-select', viewportId: 'pane-1' });
+  const otherAfter = await rpc('dom_query', { testId: 'fea-mode-channel-select', viewportId: 'design-main' });
+  console.log('  pane-1 FEA body after click:', JSON.stringify(drivenAfter));
+  console.log('  design-main FEA body after click:', JSON.stringify(otherAfter));
+
+  const noBleedFailure = describeScopedToggleNoBleed({
+    drivenPaneId: 'pane-1',
+    otherPaneId: 'design-main',
+    bodyTestId: 'fea-mode-channel-select',
+    clickResult: feaClick,
+    drivenAfter,
+    otherBefore: feaBefore,
+    otherAfter,
+  });
+  if (noBleedFailure) fail(noBleedFailure);
+  console.log('  OK: scoped click opened ONLY pane-1 FEA body; design-main unchanged (#5891 no bleed)');
+
+  // RESTORE the baseline. click_element calls el.click(), which is a TOGGLE and
+  // not an idempotent set, so leaving pane-1 enabled would leak mutated UI state
+  // into the scenario below and into any manual inspection after the run. A restore
+  // hiccup is NON-FATAL: it must not turn a genuine PASS into a failure.
+  const feaRestore = await rpc('click_element', { testId: 'fea-mode-enable-toggle', viewportId: 'pane-1' });
+  const feaRestoreFailure = describeRpcFailure(feaRestore, "click_element('pane-1') FEA restore");
+  if (feaRestoreFailure || feaRestore?.ok !== true) {
+    console.log(`  NOTE (non-fatal): FEA toggle restore did not report ok — pane-1 may be left enabled: ${feaRestoreFailure ?? JSON.stringify(feaRestore)}`);
+  } else {
+    console.log('  OK: pane-1 FEA toggle restored to its pre-scenario state');
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // Scenario 6: BEST-EFFORT reload persistence (row 6)
   // ════════════════════════════════════════════════════════════════════════════
 
-  log('Scenario 5 (best-effort): reload persistence — sizeWeight persists (row 6)…');
+  log('Scenario 6 (best-effort): reload persistence — sizeWeight persists (row 6)…');
   // ε (task 4768) already owns deterministic persistence coverage. This is a
   // best-effort live check only — skip gracefully if no reload RPC is available.
   try {
