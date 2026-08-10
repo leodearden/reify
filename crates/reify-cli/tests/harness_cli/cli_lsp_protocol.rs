@@ -223,6 +223,31 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
     }
 }
 
+/// Full interactive LSP session through the real `reify lsp` binary, driven
+/// over stdio with real JSON-RPC framing.
+///
+/// Beyond protocol coverage (initialize capabilities, didOpen, didChange
+/// with violating/valid sources, shutdown/exit), this test pins the
+/// stderr-drain fix for the harness's own subprocess handling: phase 4b
+/// below sends a `textDocument/didChange` for a URI that was never opened,
+/// with a deliberately huge (160 KiB) path. `DocumentStore::update`
+/// (crates/reify-lsp/src/document.rs) returns `false` for any unknown URI,
+/// which makes `did_change`'s handler (crates/reify-lsp/src/server.rs:226)
+/// `eprintln!` the URI verbatim — one ~160 KiB write to the child's stderr
+/// pipe, entirely client-controlled.
+///
+/// Measured A/B on this binary (target/debug/reify):
+///   - undrained (pre-fix) shape: stderr piped but never taken/drained —
+///     child does not exit within 20s; the main thread parks in
+///     `wchan=pipe_write` (same signature as the stdout hang task 5389
+///     root-caused).
+///   - drained (post-fix) shape: reader thread spawned before the
+///     write/wait phase — child exits `rc=0` in 0.05s with 163_895 bytes of
+///     stderr captured.
+///
+/// The assertions below on the returned `stderr` are therefore load-bearing,
+/// not diagnostic: they prove the drain actually ran to completion under
+/// real backpressure, not just that the happy path (small/no stderr) works.
 #[test]
 fn lsp_full_interactive_loop_through_binary() {
     let _lock = acquire_lsp_test_lock();
@@ -363,6 +388,27 @@ fn lsp_full_interactive_loop_through_binary() {
 
     std::thread::sleep(std::time::Duration::from_millis(200));
 
+    // 4b) didChange for a never-opened URI with a deliberately huge path.
+    // DocumentStore::update returns false for any URI that was never opened
+    // via didOpen, so did_change's handler (server.rs:226) eprintln!s the
+    // URI verbatim — a ~160 KiB write to the child's stderr pipe, applying
+    // the backpressure that pins the drain fix (see rustdoc above).
+    let huge_uri = format!("file:///tmp/{}.ri", "a".repeat(160 * 1024));
+    let did_change_unknown_uri = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {
+                "uri": huge_uri,
+                "version": 4
+            },
+            "contentChanges": [{ "text": valid_source }]
+        }
+    });
+    send_jsonrpc(&mut stdin, &did_change_unknown_uri.to_string());
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
     // 5) Shutdown + exit
     let shutdown = serde_json::json!({
         "jsonrpc": "2.0",
@@ -390,5 +436,32 @@ fn lsp_full_interactive_loop_through_binary() {
     assert!(
         status.success(),
         "reify lsp should exit cleanly after full interactive loop (stderr: {stderr})"
+    );
+
+    // Non-vacuity guard: proves phase 4b's huge-URI didChange really did put
+    // the child's stderr pipe under backpressure. Without this, a future
+    // reify-lsp change that stops logging unknown-URI didChange calls would
+    // leave this test silently pinning nothing while still passing green.
+    // A failure here means the chatty-stderr trigger has moved and this
+    // regression guard needs re-pointing — NOT that the drain itself broke.
+    assert!(
+        stderr.len() >= 128 * 1024,
+        "expected >=128KiB of captured stderr from phase 4b's huge-URI didChange \
+         (measured 163_895 bytes when this guard was written), got {} bytes. This means \
+         the chatty-stderr trigger has moved (reify-lsp's unknown-URI didChange path no \
+         longer logs ~160KiB to stderr) and this regression guard needs re-pointing — it \
+         does NOT mean the stderr drain is broken. Captured stderr: {stderr}",
+        stderr.len()
+    );
+    // Proves the captured bytes came from the intended production path
+    // (server.rs's unknown-URI didChange handler) rather than incidental
+    // noise. A failure here likewise means the trigger moved, not that the
+    // drain broke.
+    assert!(
+        stderr.contains("didChange for unknown URI"),
+        "expected captured stderr to contain the unknown-URI diagnostic emitted by \
+         reify-lsp's did_change handler (server.rs:226). This means the chatty-stderr \
+         trigger has moved and this regression guard needs re-pointing — it does NOT mean \
+         the stderr drain is broken. Captured stderr: {stderr}"
     );
 }
