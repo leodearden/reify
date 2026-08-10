@@ -219,6 +219,11 @@ arc-measure primitive, not a quotient), #6126/#6089 (translation stays
 Length, never swept into angle), #5799 (TORQUE = N·m/rad), and
 #5825→#5844 (moment of inertia carries rad⁻²).
 
+**Registry alias.** `docs/invariants.md` rolls this family up under a
+single row, INV-DIM-1 (Enforcement `doc+test`) — an id-keyed audit
+resolves INV-DIM-1 and INV-AD-1..4 to the same doctrine; INV-DIM-1
+names no fifth invariant of its own.
+
 ## INV-AD-1 `angle-crossings-explicit`
 
 **Rule**: Any proposal that gives a derived or geometric ratio an Angle
@@ -233,8 +238,12 @@ feature that does not pass through a named primitive/channel/helper?
 **Evidence**: inverse trig and `phase`/`arg` return `Type::angle()` at
 the static layer (`crates/reify-compiler/src/math_signatures.rs:357,
 :375`) and tag `DimensionVector::ANGLE` at eval
-(`crates/reify-stdlib/src/trig.rs:20-35`) — every shipped Angle producer
-is a named site, never a bare quotient.
+(`crates/reify-stdlib/src/trig.rs:20-35`); the geometry queries `angle`
+and `angle_between_surfaces` are the same shape — `Type::angle()` at
+`crates/reify-compiler/src/units.rs:349` (`angle_between_surfaces`) and
+`:1308` (`angle`), tagged `DimensionVector::ANGLE` at
+`crates/reify-compiler/src/relation_signatures.rs:394` — every shipped
+Angle producer is a named site, never a bare quotient.
 
 **House pattern**: `asin`/`atan2` (shipped,
 `crates/reify-stdlib/src/trig.rs:20-35`); `orient_log`
@@ -314,6 +323,16 @@ channels all carry angular values today with no declared convention
 
 ### Crossing catalogue and identities
 
+**Canonical copy: this section.** `docs/prds/v0_6/angle-dimension-completion.md`
+§4 carries a near-identical table as its own content contract for this
+doctrine — D6 charters the doctrine landing in *both invariant
+surfaces* (this file and `docs/invariants.md`), not a third copy in
+the PRD. Treat the PRD's table as derived: update the catalogue here
+first, and refresh the PRD copy in the same change if it is touched.
+The Status column below is mutable by design as sibling leaves (α, σ,
+ι, υ, and #6080/#6164) land — exactly the condition under which two
+unmarked copies would silently diverge.
+
 **The crossing catalogue** — every named site where η = 1 rad enters,
 its mechanism, and an honest shipped / ruled-pending / chartered
 status:
@@ -327,7 +346,7 @@ status:
 | `ElasticResult.rotation` = curl/2 | named channel | #6164 | ruled, pending |
 | `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | chartered |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |
-| joint-DOF unwrap; unit literals (`45deg`, `1rad`) | literal/decode sites | shipped | shipped |
+| joint-DOF unwrap; unit literals (`45deg`, `1rad`) | literal/decode sites | unit-literal lowering + joint-DOF decode sites | shipped |
 | hand-rolled `.ri` crossings | `expr * 1rad` (and `expr / 1rad` to leave) | unit arithmetic (probed) | shipped, undocumented (corpus example → leaf γ) |
 | frequency ↔ angular frequency | 2π rad/cycle — a distinct constant, not η (see below) | FREQUENCY ≠ ANGULAR_VELOCITY forces it in `.ri`; Rust marshalling boundaries stay f64 with declared comments | shipped (typed layer), declaration chartered as leaf ι |
 | IO boundaries (STEP, FFI, MCP, GUI) | rad=1 SI erasure — correct numerically, must be declared | angle-dimension-completion leaves ι/υ | chartered |
@@ -388,7 +407,10 @@ The crossing idiom is **teachable but not yet mandatory**. `sin(2.5)`
 and `param x : Angle = 2.5` both pass silently **today**, because a
 bare dimensionless value widens into any declared dimension — nothing
 in this family changes that. Mandatoriness is owned elsewhere: the
-real-dimensionless-unification decision D5, and the
+real-dimensionless-unification decision D5 (current ruling:
+`docs/prds/v0_6/dimensioned-construction-strictness.md` §0 — D5's own
+three-position reversal history is at that decision's "D5 status"
+section), and the
 *angle-units-surface-convergence* PRD's own leaves β/γ/δ/ε (unlanded —
 a distinct PRD from this family's angle-dimension-completion
 programme, with its own independent leaf lettering). No enforcement
