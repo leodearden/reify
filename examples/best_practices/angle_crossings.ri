@@ -1,0 +1,87 @@
+module angle_crossings
+
+// angle_crossings.ri — IDIOM: an angle reading of a geometric ratio is an
+// explicit crossing — multiply by `1rad` to ENTER Angle, divide by `1rad` to
+// LEAVE it.
+//
+//     let theta : Angle  = (s / r) * 1rad      // ENTER: ratio -> Angle
+//     let ratio          = theta / 1rad        // LEAVE: Angle -> ratio
+//     let arc   : Length = r * theta / 1rad    // s = r*theta/eta
+//
+// ANTI-PATTERN this replaces:
+//     let theta : Angle  = s / r               // don't
+//     let arc   : Length = r * theta           // don't
+//     let x              = 2.5 * 1 rad         // don't (spaced literal)
+//
+// Neither of the first two is a style preference — both are hard errors, and
+// the third does not parse. Measured with a built `reify check`:
+//
+//     let   theta : Angle = s / r
+//         -> error: let binding 'theta' declared `Scalar[rad]` but its
+//            initializer evaluates to `Real`; declared type and initializer
+//            type must agree
+//     param theta : Angle = s / r
+//         -> error: parameter 'theta' declared `Scalar[rad]` but its
+//            initializer evaluates to `Real`; declared type and initializer
+//            dimension must agree
+//     let   arc   : Length = r * theta
+//         -> error: let binding 'arc' declared `Scalar[m]` but its initializer
+//            evaluates to `Scalar[m·rad]`; declared type and initializer type
+//            must agree
+//     let   x = 2.5 * 1 rad
+//         -> Parse error: syntax error: rad
+//
+// Drop the annotation on the arc-length case and the error becomes silence
+// instead: `let arc = r * theta` evaluates clean to `0.005 m·rad` — a value
+// that is not a Length and will not compose with one. That is the #5825
+// arc-length case; the `/ 1rad` is what discharges it.
+//
+// ALWAYS THE NO-SPACE LITERAL FORM — `1rad`, never `1 rad`.
+//
+// Verified contracts:
+//
+//   ENTERING and LEAVING are the same one constant, eta = 1 rad, applied in
+//   the two directions. `(s / r)` is dimensionless; `* 1rad` is the named
+//   crossing that asserts the quotient is an arc measure. Nothing else in the
+//   language will manufacture `rad` for you from a ratio — see
+//   `docs/legibility/design-invariants.md`, INV-AD-1 `angle-crossings-explicit`
+//   and INV-AD-2 `quotient-pure-derivative-algebra`. The named-crossing
+//   catalogue is in that file under "Crossing catalogue and identities"; this
+//   exemplar is the hand-rolled `.ri` row of it.
+//
+//   `omega` is a DIFFERENT crossing class. 2*pi*f*1rad carries 2*pi rad/cycle,
+//   not eta — see "The 2π rad/cycle distinction (D4)" in the same file. There
+//   is no `cycle` unit to write; the typed layer is what forces the
+//   distinction, because Frequency and AngularVelocity are different types and
+//   one will not silently stand in for the other.
+//
+//   WHY TORQUE IS N·m/rad and not N·m (#5799): same crossing. Work is
+//   tau * theta, and theta carries rad, so tau must carry rad^-1 for the
+//   product to close on Energy. INV-AD-1 is the general form of that argument.
+//
+// HONEST ABOUT ENFORCEMENT — this is enforced at an ANNOTATED binding over an
+// EXPRESSION, not universally. A bare LITERAL still widens silently:
+//     param theta : Angle = 2.5      -> evaluates to `2.5`, dimension erased
+//     sin(<dimensionless 2.5>)       -> 0.5984721441039565, accepted
+// So the annotations below are load-bearing: each one is the assertion. See
+// "Enforcement honesty (D7)" in `docs/legibility/design-invariants.md` for what
+// is and is not mandatory today.
+
+structure def AngleCrossings {
+    param s : Length    = 5mm
+    param r : Length    = 2mm
+    param f : Frequency = 50Hz
+
+    // THE IDIOM: `* 1rad` to enter, `/ 1rad` to leave. Each annotation is an
+    // assertion — remove the crossing and the binding stops compiling.
+    let theta : Angle           = (s / r) * 1rad                    // 2.5 rad
+    let ratio                   = theta / 1rad                      // 2.5
+    let arc   : Length          = r * theta / 1rad                  // 0.005 m
+    let omega : AngularVelocity = 2.0 * 3.14159265358979 * f * 1rad // 314.159265358979 rad·s^-1
+
+    constraint r > 0mm
+    constraint s > r
+    constraint arc > 0mm
+    constraint ratio > 1
+    constraint f > 0Hz
+}
