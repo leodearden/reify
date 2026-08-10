@@ -17,8 +17,13 @@ enumeration probe; its evidence (#5392, and #5492 as suspected drift of
 the same seam) is recorded in its own section. Kleene 3-valued
 logic and undef-as-value are deliberate design; these invariants target
 **silence**, not undef. Conservative degradation (Indeterminate, skip,
-refuse) stays correct — but must always leave an observable trace. Other
-invariant families may be appended later; keep slugs stable.
+refuse) stays correct — but must always leave an observable trace.
+
+A second family, the **angle-crossing family** (INV-AD-1..4), was
+appended 2026-08-10 from the angle-dimension-completion chartering
+investigation (PRD `docs/prds/v0_6/angle-dimension-completion.md`,
+decision D6). Other invariant families may be appended later; keep
+slugs stable.
 
 ## INV-SF-1 `undef-has-provenance`
 
@@ -196,6 +201,23 @@ parse-error-at-wrong-line) depending on adjacent tokens. #5492's corpus
 red on main is suspected drift of the same seam. Ratified by Leo
 2026-07-25 (seam review); #5392 is the enforcement vehicle for the
 fn-body seam.
+
+## Angle-crossing family (INV-AD-1..4)
+
+> Angle is primitive; the differential and tensor algebra is
+> quotient-pure; every angle reading of a geometric ratio is an
+> explicit named crossing carrying η = 1 rad.
+> — Leo, ratified 2026-08-10.
+
+The law has two operational halves: **quotient purity** (no operator
+over fields or tensors ever manufactures `rad` from a derivative) and
+**named crossings** (`rad` enters only at a named primitive, channel, or
+helper that asserts an arc measure). It generalizes rulings already
+made in this territory: #6164 (A+ — `ElasticResult.rotation` = curl/2
+is the designated crossing), #6080 (`orient_log` is a genuine
+arc-measure primitive, not a quotient), #6126/#6089 (translation stays
+Length, never swept into angle), #5799 (TORQUE = N·m/rad), and
+#5825→#5844 (moment of inertia carries rad⁻²).
 
 ## Census seam
 
