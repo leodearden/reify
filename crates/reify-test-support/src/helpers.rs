@@ -1964,6 +1964,62 @@ mod tests {
         super::get_let_expr(&module, "anything");
     }
 
+    // ── cross-consistency: get_let_expr(_in) agrees with get_value_cell(_in) ──
+
+    /// get_let_expr_in and get_value_cell_in must resolve to the SAME cell.
+    /// Uses a module where the same cell name ("w") exists in two templates
+    /// with DIFFERENT values, so a wrong-template resolution by either helper
+    /// would be observable here (mismatched content_hash) rather than
+    /// accidentally passing. Compares via `content_hash` — CompiledExpr and
+    /// CompiledExprKind derive no PartialEq, so content_hash equality is the
+    /// established structural-equality mechanism already relied on elsewhere
+    /// in this crate (e.g. builders/topology.rs's content_hash comparisons).
+    /// This is a refactor-safety pin written BEFORE get_let_expr_in is
+    /// re-expressed on top of get_value_cell_in: it passes immediately here
+    /// against the current independent implementations, and is what actually
+    /// guards the upcoming delegation change.
+    #[test]
+    fn test_get_let_expr_in_agrees_with_get_value_cell_in() {
+        let source = r#"
+            structure Alpha { let w = 1.5 }
+            structure Beta  { let w = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        let expr_hash = super::get_let_expr_in(&module, "Beta", "w").content_hash;
+        let cell_expr_hash = super::get_value_cell_in(&module, "Beta", "w")
+            .default_expr
+            .as_ref()
+            .unwrap()
+            .content_hash;
+        assert_eq!(
+            expr_hash, cell_expr_hash,
+            "get_let_expr_in and get_value_cell_in must resolve the same default_expr for Beta.w"
+        );
+    }
+
+    /// get_let_expr and get_value_cell must resolve to the SAME cell (first
+    /// template only) — the matching pair test for the first-template
+    /// convenience wrappers, mirroring
+    /// test_get_let_expr_in_agrees_with_get_value_cell_in above.
+    #[test]
+    fn test_get_let_expr_agrees_with_get_value_cell() {
+        let source = r#"
+            structure Alpha { let w = 1.5 }
+            structure Beta  { let w = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        let expr_hash = super::get_let_expr(&module, "w").content_hash;
+        let cell_expr_hash = super::get_value_cell(&module, "w")
+            .default_expr
+            .as_ref()
+            .unwrap()
+            .content_hash;
+        assert_eq!(
+            expr_hash, cell_expr_hash,
+            "get_let_expr and get_value_cell must resolve the same default_expr for Alpha.w (first template)"
+        );
+    }
+
     // ── assert_no_type_cascade ────────────────────────────────────────────
 
     /// assert_no_type_cascade should not panic when the diagnostics slice
