@@ -120,9 +120,9 @@ static bool is_bin_digit(int32_t c) {
  *  2. lexer->lookahead is NOT a whitespace character.               [invariant B]
  *  3. lexer->lookahead is a valid unit-start character: [A-Za-z_(]  [invariant C]
  *
- * Emit UNIT_MUL_OP ('*') or UNIT_DIV_OP ('/') iff:
+ * Emit UNIT_MUL_OP ('*' or U+00B7) or UNIT_DIV_OP ('/') iff:
  *  1. The parser is requesting the respective token.
- *  2. lexer->lookahead is '*' (for MUL) or '/' (for DIV).
+ *  2. lexer->lookahead is '*' or U+00B7 (for MUL) or '/' (for DIV).
  *  3. The character AFTER the operator is a valid unit-start character.
  *
  * The one-character lookahead in UNIT_MUL_OP / UNIT_DIV_OP prevents the
@@ -241,15 +241,37 @@ bool tree_sitter_reify_external_scanner_scan(void *payload, TSLexer *lexer,
 
   int32_t c = lexer->lookahead;
 
-  /* ── UNIT_MUL_OP: '*' immediately followed by a unit-start character ──────
+  /* ── UNIT_MUL_OP: '*' or U+00B7 immediately followed by a unit-start char ─
    *
-   * Only emit when the character after '*' can start a unit_expr, so that
-   * `5kg * m` (space before '*') and `5kg*1` ('1' is not unit-start) do not
-   * greedily consume the '*' as a unit operator.
+   * Only emit when the character after the operator can start a unit_expr, so
+   * that `5kg * m` (space before the operator) and `5kg*1` ('1' is not
+   * unit-start) do not greedily consume it as a unit operator.
+   *
+   * TWO SPELLINGS, ONE TOKEN (task #5784; PRD
+   * docs/prds/v0_6/angle-units-surface-convergence.md §5 C2 / §3.8 D5,
+   * ratified decision 7a): ASCII '*' and U+00B7 MIDDLE DOT — the SI-conventional
+   * multiply — both emit UNIT_MUL_OP and are gated identically by the
+   * `is_unit_start` post-check below.  `Display for DimensionVector` joins
+   * base-unit parts with U+00B7, so accepting it is what makes `reify eval`
+   * output (`7850 kg·m^-3`) readable back in.
+   *
+   * The test is on the CODEPOINT 0xB7, NOT on the lead byte of its two-byte UTF-8
+   * encoding: `tree_sitter/parser.h` declares `int32_t lookahead`, so tree-sitter
+   * hands an external scanner DECODED codepoints — that lead byte is never
+   * observable here, and one unmodified `lexer->advance()` consumes the whole
+   * two-byte codepoint.  (The PRD's byte-pair formulation is superseded; the
+   * lead-byte branch it specifies was measured dead.  Do not reintroduce it —
+   * this task's capability manifest greps scanner.c to assert it is absent.)
+   *
+   * No `·`-specific rejection logic is needed: the single `is_unit_start`
+   * post-check already rejects `5N·3`, `5N· m`, `5N · m` and a bare `5 · 3`,
+   * measured as such before this widening landed.  `·` is in neither
+   * `is_unit_start` nor `immediate_identifier`, so it can never start or extend
+   * a unit name and there is no general `·` operator in Reify.
    */
-  if (valid_symbols[UNIT_MUL_OP] && c == '*') {
-    lexer->advance(lexer, false); /* consume '*' */
-    lexer->mark_end(lexer);      /* token = '*' */
+  if (valid_symbols[UNIT_MUL_OP] && (c == '*' || c == 0xB7)) {
+    lexer->advance(lexer, false); /* consume '*' or U+00B7 (whole codepoint) */
+    lexer->mark_end(lexer);      /* token = the operator character */
     if (is_unit_start(lexer->lookahead)) {
       lexer->result_symbol = UNIT_MUL_OP;
       return true;
