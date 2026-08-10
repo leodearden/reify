@@ -6,7 +6,7 @@
 //!   step-9/10  — trampoline registration + seam pin (always-run)
 //!   step-17/18 — cantilever step-response decay-envelope e2e (release-gated)
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::ComputeFn;
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
@@ -60,7 +60,7 @@ fn register_compute_fns_installs_transient_trampolines() {
 //
 // Drives examples/modal/transient_step_response.ri end-to-end through the
 // transient pipeline (modal_analysis → transient_response → displacement_at) and
-// checks four observable signals (PRD §1 / §5.2 / §9.1):
+// checks five observable signals (PRD §1 / §5.2 / §9.1):
 //   (a) no Error-severity diagnostics after parse + eval
 //   (b) ComputeNodes with target == "modal::transient_response" AND
 //       "modal::displacement_at" are present in the graph
@@ -70,6 +70,11 @@ fn register_compute_fns_installs_transient_trampolines() {
 //       ζ₁ and ω₁ = 2π·f₁ are read from the result's OWN fundamental mode — a
 //       self-referential check, so absolute frequency accuracy is irrelevant and
 //       the fixture can run at the lighter ElementOrder.P1 (plan design-dec-3/4).
+//   (e) the damping coefficients the solve was actually fed are DIMENSIONED at
+//       the value layer — `opts.damping.alpha` is a Value::Scalar carrying
+//       FREQUENCY and exactly 0.0 SI, `.beta` one carrying TIME and exactly
+//       0.0003 SI (task #6093; see the block's own comment for why this is
+//       destructured rather than read through `read_real`).
 //
 // The decay constant is measured from the sequence of *swings* between
 // consecutive local extrema of the tip series: |u(eₖ) − u(eₖ₊₁)| decays as
@@ -117,6 +122,55 @@ fn read_real_list(v: &Value) -> Vec<f64> {
     match v {
         Value::List(items) => items.iter().map(read_real).collect(),
         _ => Vec::new(),
+    }
+}
+
+/// Assert that `v` is a dimensioned `Value::Scalar` carrying exactly
+/// `expected_si` in SI base units and exactly `expected_dim` (task #6093).
+///
+/// Deliberately NOT routed through `read_real` above. That helper folds
+/// `Value::Real`, `Value::Int` and `Value::Scalar` into one `f64`, so a pin
+/// written on it passes identically before and after a dimensioned-ctor
+/// migration and is blind to the very property under test. This is the
+/// explicit-destructure discipline established by
+/// `crates/reify-eval/tests/harness_engine/dimensioned_ctor_migration_si_values.rs`
+/// (task 5758) — a wrong-dimension misparse must fail as loudly as a wrong
+/// magnitude.
+///
+/// `si_value` is compared for EXACT equality on purpose: these are
+/// literal-derived (a unit literal in a `.ri` ctor arg converted to SI at parse
+/// time), not solver-derived, so there is no float jitter to tolerate. Both `Hz`
+/// and `s` have unit factor exactly 1.0, so an inert migration must reproduce
+/// the previous bare `Real` bit-for-bit.
+fn assert_dimensioned(v: &Value, expected_si: f64, expected_dim: DimensionVector, what: &str) {
+    match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                *dimension, expected_dim,
+                "{what}: wrong dimension — expected {expected_dim:?}, got {dimension:?}. \
+                 The ctor arg parsed as a dimensioned Scalar but carries the wrong unit."
+            );
+            assert_eq!(
+                *si_value, expected_si,
+                "{what}: wrong SI magnitude — expected {expected_si}, got {si_value}. \
+                 These are literal-derived values; a change here means the migrated \
+                 unit literal does not denote the same physical quantity, so the \
+                 damping results are NOT unchanged."
+            );
+        }
+        Value::Real(r) => panic!(
+            "{what}: still a BARE Value::Real({r}) — expected a dimensioned \
+             Value::Scalar {{ si_value: {expected_si}, dimension: {expected_dim:?} }}. \
+             This ctor arg has not been migrated to a unit literal (task #6093 \
+             retyped RayleighDamping.alpha/beta to Frequency/Time)."
+        ),
+        other => panic!(
+            "{what}: expected a dimensioned Value::Scalar {{ si_value: {expected_si}, \
+             dimension: {expected_dim:?} }}, got {other:?}"
+        ),
     }
 }
 
@@ -323,5 +377,53 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
         sigma_measured,
         sigma_theory,
         rel_err * 100.0
+    );
+
+    // (e) task #6093 — the damping coefficients this solve was ACTUALLY fed are
+    //     dimensioned at the value layer, with bit-identical SI magnitudes.
+    //
+    //     `RayleighDamping.alpha` / `.beta` were retyped from the `Real`
+    //     placeholder to their registered named dimensions (`Frequency` = s⁻¹,
+    //     `Time`), so the fixture's ctor args migrate from bare `0.0` / `0.0003`
+    //     to `0.0Hz` / `0.0003s`. Reify structure ctors do not type-check their
+    //     arguments, so compile-cleanliness proves nothing here — reading the
+    //     evaluated cell is the only way to see whether the corpus actually
+    //     carries the dimension.
+    //
+    //     Piggybacks the eval above rather than standing alone: a second FEA
+    //     solve would cost a full extra eigensolve, and a synthetic inline
+    //     snippet would be GREEN before and after (ctor args are stored
+    //     verbatim regardless of the declared type), proving nothing about the
+    //     migration. Reading the real corpus file is what makes this RED while
+    //     `transient_step_response.ri:76` still says `beta: 0.0003`.
+    //
+    //     The exact-equality SI assertions are the numerical-inertness half of
+    //     the claim; the σ_measured check just above is the end-to-end half.
+    let opts_cell = ValueCellId::new("CantileverStepResponse", "opts");
+    let opts_val = eval_result
+        .values
+        .get(&opts_cell)
+        .unwrap_or_else(|| panic!("cell CantileverStepResponse.opts not found in eval result"));
+    let damping_val = struct_field(opts_val, "damping").unwrap_or_else(|| {
+        panic!("ModalOptions.damping field not found on opts value: {opts_val:?}")
+    });
+    let alpha_val = struct_field(damping_val, "alpha").unwrap_or_else(|| {
+        panic!("RayleighDamping.alpha field not found on damping value: {damping_val:?}")
+    });
+    let beta_val = struct_field(damping_val, "beta").unwrap_or_else(|| {
+        panic!("RayleighDamping.beta field not found on damping value: {damping_val:?}")
+    });
+
+    assert_dimensioned(
+        alpha_val,
+        0.0,
+        DimensionVector::FREQUENCY,
+        "RayleighDamping.alpha (transient_step_response.ri)",
+    );
+    assert_dimensioned(
+        beta_val,
+        0.0003,
+        DimensionVector::TIME,
+        "RayleighDamping.beta (transient_step_response.ri)",
     );
 }
