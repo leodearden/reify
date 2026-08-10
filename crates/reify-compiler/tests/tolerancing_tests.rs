@@ -1115,7 +1115,7 @@ structure def TestOutOfEnv {
     param grade : Int = 4
     param nominal_min : Length = 30mm
     param nominal_max : Length = 50mm
-    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
+    let tolerance_value = iso_it_tolerance(nominal_min, nominal_max, grade)
 }
 structure def Probe {
     sub g = TestOutOfEnv()
@@ -1170,11 +1170,11 @@ structure def Probe {
 // ─── β-3: ISOToleranceGrade.tolerance_value derived let ──────────────────────
 
 /// Verifies that `ISOToleranceGrade.tolerance_value` is a derived Let cell (not
-/// Param) and that iso_it_tolerance(7, 30mm, 50mm) produces the published ISO
+/// Param) and that iso_it_tolerance(30mm, 50mm, 7) produces the published ISO
 /// 286-1 value:
 ///
 /// (a) Structural: `tolerance_value` is a `Let` cell in the compiled stdlib template.
-/// (b) Eval: iso_it_tolerance(7, 30mm, 50mm) yields LENGTH Scalar ≈ 24.969µm
+/// (b) Eval: iso_it_tolerance(30mm, 50mm, 7) yields LENGTH Scalar ≈ 24.969µm
 ///     (IT7@Ø30–50 = 25µm per ISO 286-1; α's test pins this to 24.969e-6 m).
 ///
 /// NOTE: Part (b) uses a locally-defined TestISO struct — the eval engine
@@ -1204,7 +1204,7 @@ fn iso_tolerance_grade_tolerance_value_derived_let() {
         tol_cell.kind
     );
 
-    // (b) Eval: tolerance_value = iso_it_tolerance(7, 30mm, 50mm) ≈ 24.969µm ──
+    // (b) Eval: tolerance_value = iso_it_tolerance(30mm, 50mm, 7) ≈ 24.969µm ──
     //
     // NOTE: ISOToleranceGrade is a stdlib structure; the eval engine looks up templates
     // from the user's module only. Define a locally-accessible wrapper that embeds the
@@ -1218,7 +1218,7 @@ structure def TestISO {
     param grade : Int = 7
     param nominal_min : Length = 30mm
     param nominal_max : Length = 50mm
-    let tolerance_value = iso_it_tolerance(grade, nominal_min, nominal_max)
+    let tolerance_value = iso_it_tolerance(nominal_min, nominal_max, grade)
 }
 structure def Probe {
     sub g = TestISO(grade: 7, nominal_min: 30mm, nominal_max: 50mm)
@@ -1259,7 +1259,7 @@ structure def Probe {
                 "Probe.g.tolerance_value should have LENGTH dimension, got {:?}",
                 dimension
             );
-            // iso_it_tolerance(7, 30mm, 50mm) = 24.969µm = 24.969e-6 m
+            // iso_it_tolerance(30mm, 50mm, 7) = 24.969µm = 24.969e-6 m
             // α's test pins this to 24.969e-6; assert within 0.5% (< 0.125µm)
             let expected_si = 24.969e-6_f64;
             assert!(
@@ -2440,7 +2440,7 @@ structure def TestOOE {
     param grade : Int = 25
     param nmin : Length = 30mm
     param nmax : Length = 50mm
-    let tolerance_value = iso_it_tolerance(grade, nmin, nmax)
+    let tolerance_value = iso_it_tolerance(nmin, nmax, grade)
 }
 structure def Probe {
     sub g = TestOOE()

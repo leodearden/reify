@@ -72,22 +72,24 @@ fn it_grade_factor(grade: i64) -> Option<f64> {
     }
 }
 
-/// Parse `iso_it_tolerance` arguments, returning `(grade, min_mm, max_mm)`.
+/// Parse `iso_it_tolerance` arguments, returning `(min_mm, max_mm, grade)`.
 ///
-/// Requires exactly 3 args: `Value::Int(grade)`, two finite LENGTH scalars.
+/// Requires exactly 3 args, subject-first: two finite LENGTH scalars
+/// (`nominal_min`, `nominal_max`) then `Value::Int(grade)`. The tuple mirrors
+/// the public argument order so one convention holds end-to-end.
 /// Returns `None` on wrong arity or wrong types; the size/range validity gate
 /// is applied separately in `iso_it_tolerance` (and reused by `diagnose`).
-fn parse_iso_well_typed(args: &[Value]) -> Option<(i64, f64, f64)> {
+fn parse_iso_well_typed(args: &[Value]) -> Option<(f64, f64, i64)> {
     if args.len() != 3 {
         return None;
     }
-    let grade = match &args[0] {
+    let min_si = validate_dimensioned_scalar(&args[0], DimensionVector::LENGTH)?;
+    let max_si = validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH)?;
+    let grade = match &args[2] {
         Value::Int(n) => *n,
         _ => return None,
     };
-    let min_si = validate_dimensioned_scalar(&args[1], DimensionVector::LENGTH)?;
-    let max_si = validate_dimensioned_scalar(&args[2], DimensionVector::LENGTH)?;
-    Some((grade, min_si * 1e3, max_si * 1e3))
+    Some((min_si * 1e3, max_si * 1e3, grade))
 }
 
 /// Validate that a nominal size range is within the supported ISO 286-1 envelope.
@@ -104,13 +106,16 @@ fn iso_size_in_envelope(min_mm: f64, max_mm: f64) -> bool {
     min_mm > 0.0 && max_mm > 0.0 && min_mm <= max_mm && max_mm <= 500.0
 }
 
-/// Compute ISO 286-1 standard tolerance (IT grade) for a given grade and size range.
+/// Compute ISO 286-1 standard tolerance (IT grade) for a nominal size range and grade.
+///
+/// Subject-first: `iso_it_tolerance(nominal_min, nominal_max, grade)` — the
+/// feature being toleranced leads, the grade qualifying it trails.
 ///
 /// Formula: D = √(min_mm · max_mm), i = 0.45·∛D + 0.001·D, tol = factor·i.
 /// Returns the tolerance as a finite LENGTH scalar in SI metres, or `Value::Undef`
 /// for unsupported grades, wrong arg types, or out-of-envelope sizes.
 fn iso_it_tolerance(args: &[Value]) -> Value {
-    let (grade, min_mm, max_mm) = match parse_iso_well_typed(args) {
+    let (min_mm, max_mm, grade) = match parse_iso_well_typed(args) {
         Some(t) => t,
         None => return Value::Undef,
     };
@@ -197,7 +202,7 @@ fn effective_tolerance_zone(args: &[Value]) -> Value {
 pub fn diagnose(name: &str, args: &[Value]) -> Option<Diagnostic> {
     match name {
         "iso_it_tolerance" => {
-            let (grade, min_mm, max_mm) = parse_iso_well_typed(args)?;
+            let (min_mm, max_mm, grade) = parse_iso_well_typed(args)?;
             let in_env =
                 it_grade_factor(grade).is_some() && iso_size_in_envelope(min_mm, max_mm);
             if in_env {
@@ -376,7 +381,7 @@ mod tests {
         // IT6 @ Ø18–30: D=√(18·30)=23.238, ∛D=2.8537, i=1.3074, ×10=13.074 µm
         let result = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(6), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(6)],
         );
         // Must be a finite LENGTH scalar
         let result_um = um(&result);
@@ -389,7 +394,7 @@ mod tests {
         // IT7 @ Ø30–50: D=√(30·50)=38.730, ∛D=3.3819, i=1.5606, ×16=24.969 µm
         let result = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.030), len(0.050)],
+            &[len(0.030), len(0.050), Value::Int(7)],
         );
         let result_um = um(&result);
         assert_rel_close(result_um, 24.969, 5e-3, "IT7@30-50 µm within 0.5%");
@@ -401,7 +406,7 @@ mod tests {
         // IT8 @ Ø6–10: D=√(6·10)=7.746, ∛D=1.9786, i=0.89814, ×25=22.453 µm
         let result = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(8), len(0.006), len(0.010)],
+            &[len(0.006), len(0.010), Value::Int(8)],
         );
         let result_um = um(&result);
         assert_rel_close(result_um, 22.453, 5e-3, "IT8@6-10 µm within 0.5%");
@@ -421,7 +426,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(4), len(0.018), len(0.030)]
+                &[len(0.018), len(0.030), Value::Int(4)]
             )
             .is_undef(),
             "IT4 should return Undef (below IT5)"
@@ -434,7 +439,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(19), len(0.018), len(0.030)]
+                &[len(0.018), len(0.030), Value::Int(19)]
             )
             .is_undef(),
             "IT19 should return Undef (above IT18)"
@@ -447,7 +452,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), len(0.5), len(0.6)]
+                &[len(0.5), len(0.6), Value::Int(7)]
             )
             .is_undef(),
             "nominal size > 500mm should return Undef"
@@ -460,7 +465,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), len(0.050), len(0.030)]
+                &[len(0.050), len(0.030), Value::Int(7)]
             )
             .is_undef(),
             "inverted range min>max should return Undef"
@@ -473,7 +478,7 @@ mod tests {
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), len(0.0), len(0.010)]
+                &[len(0.0), len(0.010), Value::Int(7)]
             )
             .is_undef(),
             "zero nominal size should return Undef"
@@ -482,20 +487,20 @@ mod tests {
 
     #[test]
     fn iso_it_envelope_invalid_arg_types_are_undef() {
-        // grade as Value::Real → Undef
+        // grade (slot 2) as Value::Real → Undef
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Real(7.0), len(0.018), len(0.030)]
+                &[len(0.018), len(0.030), Value::Real(7.0)]
             )
             .is_undef(),
             "grade as Real should return Undef"
         );
-        // nominal_min as Value::Int → Undef (not a LENGTH scalar)
+        // nominal_min (slot 0) as Value::Int → Undef (not a LENGTH scalar)
         assert!(
             crate::eval_builtin(
                 "iso_it_tolerance",
-                &[Value::Int(7), Value::Int(18), len(0.030)]
+                &[Value::Int(18), len(0.030), Value::Int(7)]
             )
             .is_undef(),
             "nominal_min as Int should return Undef"
@@ -507,7 +512,7 @@ mod tests {
         // IT5 is the lowest supported grade → must return a finite LENGTH scalar
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(5), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(5)],
         );
         assert!(is_finite_length_scalar(&r), "IT5 should return finite LENGTH scalar");
     }
@@ -517,7 +522,7 @@ mod tests {
         // IT18 is the highest supported grade → must return a finite LENGTH scalar
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(18), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(18)],
         );
         assert!(is_finite_length_scalar(&r), "IT18 should return finite LENGTH scalar");
     }
@@ -527,7 +532,7 @@ mod tests {
         // max_mm = 500mm exactly → within envelope, must return a finite LENGTH scalar
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.4), len(0.5)],
+            &[len(0.4), len(0.5), Value::Int(7)],
         );
         assert!(
             is_finite_length_scalar(&r),
@@ -546,7 +551,7 @@ mod tests {
         // IT6 @ Ø1–3 mm: passes the envelope gate; result is extrapolated.
         let r = crate::eval_builtin(
             "iso_it_tolerance",
-            &[Value::Int(6), len(0.001), len(0.003)],
+            &[len(0.001), len(0.003), Value::Int(6)],
         );
         assert!(
             is_finite_length_scalar(&r),
@@ -563,7 +568,7 @@ mod tests {
         use reify_core::Severity;
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(4), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(4)],
         );
         let diag = d.expect("IT4 grade out-of-envelope should return Some(Diagnostic)");
         assert_eq!(
@@ -579,7 +584,7 @@ mod tests {
         use reify_core::Severity;
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.5), len(0.6)],
+            &[len(0.5), len(0.6), Value::Int(7)],
         );
         let diag = d.expect("size > 500mm should return Some(Diagnostic)");
         assert_eq!(
@@ -594,7 +599,7 @@ mod tests {
         // Valid in-envelope call → None
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(6), len(0.018), len(0.030)],
+            &[len(0.018), len(0.030), Value::Int(6)],
         );
         assert!(d.is_none(), "valid in-envelope call should return None");
     }
@@ -687,7 +692,7 @@ mod tests {
         // min=50mm > max=30mm → out-of-envelope (inverted), well-typed → Some(Error)
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.050), len(0.030)],
+            &[len(0.050), len(0.030), Value::Int(7)],
         );
         let diag = d.expect("inverted range should return Some(Diagnostic)");
         assert_eq!(
@@ -704,7 +709,7 @@ mod tests {
         // min=0 → non-positive → out-of-envelope, well-typed → Some(Error)
         let d = super::diagnose(
             "iso_it_tolerance",
-            &[Value::Int(7), len(0.0), len(0.010)],
+            &[len(0.0), len(0.010), Value::Int(7)],
         );
         let diag = d.expect("zero nominal size should return Some(Diagnostic)");
         assert_eq!(
@@ -718,7 +723,7 @@ mod tests {
     #[test]
     fn diagnose_iso_it_wrong_arity_returns_none() {
         // 2 args → parse_iso_well_typed returns None → diagnose returns None (not an error).
-        let d = super::diagnose("iso_it_tolerance", &[Value::Int(7), len(0.018)]);
+        let d = super::diagnose("iso_it_tolerance", &[len(0.018), len(0.030)]);
         assert!(d.is_none(), "wrong arity should return None (not a diagnosable error)");
     }
 

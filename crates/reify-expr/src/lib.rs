@@ -9619,9 +9619,9 @@ mod tests {
         // the matches!(result, Value::Undef) gate — an unconditional emit or
         // mis-gated success path would be caught here).
         let expr = iso_it_tolerance_call_expr(vec![
+            mm_val(30.0), // 30mm nominal_min
+            mm_val(50.0), // 50mm nominal_max
             Value::Int(6),
-            mm_val(30.0),
-            mm_val(50.0),
         ]);
 
         let values = ValueMap::new();
@@ -9634,15 +9634,15 @@ mod tests {
                 assert_eq!(
                     *dimension,
                     DimensionVector::LENGTH,
-                    "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar"
+                    "iso_it_tolerance(30mm,50mm,6) should be a LENGTH scalar"
                 );
                 assert!(
                     *si_value > 0.0,
-                    "iso_it_tolerance(6,30mm,50mm) should be positive, got {si_value}"
+                    "iso_it_tolerance(30mm,50mm,6) should be positive, got {si_value}"
                 );
             }
             other => panic!(
-                "iso_it_tolerance(6,30mm,50mm) should be a LENGTH scalar, got {:?}",
+                "iso_it_tolerance(30mm,50mm,6) should be a LENGTH scalar, got {:?}",
                 other
             ),
         }
@@ -9661,9 +9661,9 @@ mod tests {
         // receives exactly one Severity::Error whose message contains
         // "E_TolerancingOutOfEnvelope". GREEN: wiring is live.
         let expr = iso_it_tolerance_call_expr(vec![
-            Value::Int(25),
-            mm_val(30.0),  // 30mm nominal_min
-            mm_val(50.0),  // 50mm nominal_max
+            mm_val(30.0),   // 30mm nominal_min
+            mm_val(50.0),   // 50mm nominal_max
+            Value::Int(25), // grade 25 — outside IT5–IT18
         ]);
 
         let values = ValueMap::new();
@@ -9700,9 +9700,9 @@ mod tests {
         // the wiring layer, independently of the grade-out-of-range path exercised
         // by iso_it_tolerance_out_of_envelope_emits_tolerancing_error_into_sink.
         let expr = iso_it_tolerance_call_expr(vec![
-            Value::Int(6),
-            mm_val(600.0), // 600mm nominal_min — grade valid, size oversize
+            mm_val(600.0), // 600mm nominal_min — size oversize
             mm_val(700.0), // 700mm nominal_max > 500mm → out-of-size-envelope
+            Value::Int(6), // grade 6 is valid; only the size is out of envelope
         ]);
 
         let values = ValueMap::new();
