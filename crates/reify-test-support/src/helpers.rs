@@ -784,27 +784,20 @@ pub fn get_value_cell<'a>(
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
 /// not be the desired template. `get_let_expr` delegates to this function.
 ///
+/// Delegates to [`get_value_cell_in`] for template and cell resolution.
+///
 /// # Panics
-/// - `"no template named '{template_name}'"` if no template with that name exists.
-/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+/// - `"no template named '{template_name}'"` if no template with that name exists (raised by
+///   [`get_value_cell_in`]).
+/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent
+///   (raised by [`get_value_cell_in`]).
 /// - `"value cell '{cell_name}' in '{template_name}' has no default expr"` if `default_expr` is `None`.
 pub fn get_let_expr_in<'a>(
     module: &'a reify_compiler::CompiledModule,
     template_name: &str,
     cell_name: &str,
 ) -> &'a CompiledExpr {
-    let template = module
-        .templates
-        .iter()
-        .find(|t| t.name == template_name)
-        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        });
+    let cell = get_value_cell_in(module, template_name, cell_name);
     cell.default_expr.as_ref().unwrap_or_else(|| {
         panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
     })
