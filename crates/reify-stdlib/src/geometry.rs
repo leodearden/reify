@@ -5564,7 +5564,7 @@ mod tests {
             translation: Box::new(Value::Vector(vec![Value::length(1.0); 3])),
         };
         assert!(
-            eval_builtin("transform_log", &[t.clone()]).is_undef(),
+            eval_builtin("transform_log", std::slice::from_ref(&t)).is_undef(),
             "precondition: the degenerate quaternion must make eval return Undef"
         );
         assert!(
