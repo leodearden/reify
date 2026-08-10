@@ -266,6 +266,52 @@ is always the codomain/domain quotient, never a named angle unit.
 precedent for quotient purity — the shape every future field/tensor
 operator row copies.
 
+## INV-AD-3 `tensor-single-quantity`
+
+**Rule**: Never propose per-component or per-block tensor dimensions. A
+tensor carries exactly one quantity slot; an angle reading of a tensor
+is extracted by a named helper, never by giving individual components
+their own dimension.
+
+**Checkable design question(s)**: Does this feature want a tensor whose
+components carry differing dimensions, or an in-place angle reading of
+a tensor — and if so, which named extractor delivers it?
+
+**Evidence**: `Type::Tensor { rank, n, quantity: Box<Type> }`
+(`crates/reify-core/src/ty.rs:282-286`) carries one quantity slot, so
+mixed per-component dimensions are UNREPRESENTABLE by construction —
+even though rotation covariance would want exactly that. Authors have
+no in-language tensor component access (`IndexAccess` and member access
+both reject tensors), so a named extractor is structurally forced, not
+merely a style preference.
+
+**House pattern**: `ElasticResult.shear_angles` (chartered, PRD leaf σ)
+beside `.rotation`, both built on the `sampled_curl_field` mechanics
+(`crates/reify-eval/src/compute_targets/mod.rs:166`).
+
+## INV-AD-4 `boundaries-declare-angle-convention`
+
+**Rule**: Any boundary that carries angular values out of or into
+reify — a process boundary, file format, FFI call, or wire protocol —
+names its convention (rad / deg / cycles) in a greppable contract
+comment, schema text, or refusal guard. A silent rad=1 SI erasure is a
+defect even when the number it produces is correct.
+
+**Checkable design question(s)**: Does this feature move an angular
+value across a process, file-format, FFI, or wire boundary — and where
+is the convention declared? If undeclared today, is that named as a gap
+rather than assumed correct by silence?
+
+**Evidence**: rad=1 erasure at `as_f64` / `read_scalar_si` is correct SI
+behaviour; the defect is that no boundary declares it — STEP, OCCT
+`angle_rad`, SolveSpace `angle_deg`, MCP `set_parameter`, and GUI
+channels all carry angular values today with no declared convention
+(chartered as PRD leaves ι/υ).
+
+**House pattern**: the `spring_rate_for_lumped_dof` refusal guard
+(`crates/reify-eval/src/modal_ops.rs:1300`) and
+`eigenvalue_to_frequency_hz` as the declared-bridge precedents.
+
 ## Census seam
 
 Reify's confusion-codebook entries
