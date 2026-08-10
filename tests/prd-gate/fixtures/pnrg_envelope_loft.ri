@@ -1,0 +1,73 @@
+// Fixture: precision-nominal α (task 6166) — LOFT probe.  BLOCKED AT REALIZATION.
+//
+// This fixture is committed as EVIDENCE, not as a working probe.  It carries the
+// spellings tried and the verbatim diagnostics, because re-deriving those is the
+// expensive part for whoever picks this up.  No achieved/requested number exists
+// for the loft class as of this commit.  See
+// docs/notes/precision-refine-envelope-calibration.md.
+//
+// Layout is the pnrg_envelope_sphere.ri anchor layout — READ ITS HEADER FIRST for
+// the OK trap and the validity assertion.
+//
+// ── WHAT IS BLOCKED, MEASURED 2026-08-10 at 5db884e30b ──
+//
+// Loft is unreachable from the source language today, via two MUTUALLY EXCLUSIVE
+// failure modes with no path between them:
+//
+//  (1) Profiles in the SAME plane — the only thing the language can express —
+//      compile fine but never realize.  The engine reports:
+//          INDETERMINATE <checker>#constraint[0]
+//          warning: constraint ... indeterminate: undefined inputs: ...
+//      Reproduced for all of:
+//          loft(circle(500mm), circle(250mm))
+//          loft(rectangle(400mm,400mm), circle(200mm))
+//          loft(circle(500mm), ellipse(250mm, 150mm))
+//          loft(circle(500mm), circle(300mm), circle(150mm))      [3 profiles]
+//          loft(rectangle(400mm,400mm), polygon(0mm,0mm, 200mm,0mm, 100mm,200mm))
+//          loft_guided(circle(500mm), circle(250mm), line_segment(...))
+//          translate(loft(circle(500mm), circle(250mm)), 0mm, 0mm, 10mm)
+//      Coincident profiles bound a degenerate (zero-height) solid, so this is the
+//      expected geometric outcome, not a kernel defect.
+//
+//  (2) Separating the planes with `translate` is rejected at compile time:
+//          error: geometry argument 'profile' must be a 2D Surface profile (Closed, Planar)
+//      i.e. `translate()` does not preserve profile kind.  Check site:
+//      crates/reify-compiler/src/geometry.rs:729 (requirement string), dispatched
+//      through crates/reify-compiler/src/conformance/mod.rs:6158.
+//      Reproduced for both loft(circle, translate(circle)) and
+//      loft(rectangle, translate(rectangle)).
+//
+// ── ROOT CAUSE (structural, not a spelling problem) ──
+//
+// Every profile constructor is FIXED ARITY WITH NO PLANE OR OFFSET ARGUMENT:
+//   circle(r) [1 arg]   rectangle(w,h) [2]   ellipse(a,b) [2]   polygon(coords…)
+//   — crates/reify-compiler/src/geometry.rs:1598-1660.
+// So there is no way to author a profile at a non-zero z, and the one operator
+// that could move it (`translate`) degrades the kind that loft requires.  A
+// spelling search cannot fix this; it needs either a plane-carrying profile
+// overload or kind-preserving `translate`.
+//
+// NOTE: crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri contains
+// `loft(prof, prof2)` and does NOT contradict any of this — that harness asserts
+// arity and registry membership only, explicitly NOT argument type/dimension/order
+// (see its own header).  It is a spelling reference, never evidence of realizability.
+//
+// Filed as follow-up work; this fixture is the evidence attached to it.
+//
+// NOT wired into any probe set or auto-run gate.
+
+module pnrg_envelope_loft
+
+#precision(20mm)
+
+// Subject: the failure-mode-(1) spelling — compiles, never realizes.
+// Swap in `translate(circle(250mm), 0mm, 0mm, 800mm)` as the second argument to
+// reproduce failure mode (2) instead.
+structure PnrgLoft {
+    let g = loft(circle(500mm), circle(250mm))
+}
+
+structure PnrgLoftCheck {
+    param subject : PnrgLoft
+    constraint RepresentationWithin(subject, 0.001mm)
+}
