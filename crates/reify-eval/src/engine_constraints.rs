@@ -419,12 +419,44 @@ impl Engine {
             ) {
                 Some((satisfaction, diag_opt)) => {
                     // Engine-side result from the achieved-repr-tol map.
+                    let mut messages: Vec<Diagnostic> = diag_opt.into_iter().collect();
+
+                    // C-SURFACE (1): say *why* we cannot answer, and point at the
+                    // surface that can (INV-SF-4), with a machine-readable code
+                    // (INV-SF-6).  Severity is Info, not Warning or Error — this
+                    // is the routine outcome of running `reify build` on any
+                    // bounded module, and nothing is wrong with the design.
+                    //
+                    // The `is_empty()` gate is load-bearing: it is exactly the
+                    // condition the old fast-path guard tested, so this is a
+                    // one-for-one swap of a misattributed Warning for an
+                    // attributable Info — no other constraint gains or loses a
+                    // diagnostic.  In particular the C1 case (tessellation ran,
+                    // but this subject's key is unresolvable) keeps its existing
+                    // silent Indeterminate, which is what keeps `reify check`
+                    // output unchanged.
+                    //
+                    // `id` is embedded in the text so `labeled_diagnostics` can
+                    // substitute a user-facing label, exactly as the
+                    // language-level checker's message does.
+                    if matches!(satisfaction, Satisfaction::Indeterminate)
+                        && self.achieved_repr_tol.is_empty()
+                    {
+                        messages.push(
+                            Diagnostic::info(format!(
+                                "constraint {id} indeterminate: this evaluation surface does \
+                                 not measure representation tolerance (no tessellation ran, so \
+                                 no achieved deviation exists for the subject); run \
+                                 `reify check` to evaluate this RepresentationWithin bound"
+                            ))
+                            .with_code(DiagnosticCode::ConstraintIndeterminate),
+                        );
+                    }
+
                     rw_slots[i] = Some(ConstraintResult {
                         id,
                         satisfaction,
-                        diagnostics: ConstraintDiagnostics {
-                            messages: diag_opt.into_iter().collect(),
-                        },
+                        diagnostics: ConstraintDiagnostics { messages },
                     });
                     any_rw = true;
                 }
