@@ -2716,3 +2716,285 @@ fn sub_binding_rhs_is_outside_the_epsilon_binder_seam() {
          before widening. Got: {diags:#?}"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ε step-3 probes: over-arity positional argument (PRD §7 row 12 — E_CTOR_ARITY)
+//
+// The sibling leniency to row 11: a positional argument with no param slot left
+// is appended as `__arg{call_idx}` with no diagnostic. ε emits
+// `DiagnosticCode::CtorArity` there, at the same knob.
+//
+// Multiplicity differs from `CtorUnknownField` on purpose: arity is a CALL-level
+// fact (`W("a","b","c")` against a 1-param def is ONE mistake), so exactly one
+// diagnostic per call site, anchored at the FIRST surplus argument. That matches
+// every existing arity diagnostic in the repo — `arg_check.rs` emits one per
+// call, never one per surplus arg.
+//
+// RED on the pre-step-4 tree for (a)-(e); (f)-(h) are legality guards, green
+// both before and after.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_OVER_ARITY: &str = r#"module test.over_arity
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12("a", "b")
+}
+"#;
+
+/// (a) Row 12: one surplus positional argument must produce exactly one
+/// `CtorArity`, at Warning, naming BOTH arity facts (expected 1, got 2), with
+/// exit-code neutrality preserved at ε.
+#[test]
+fn over_arity_positional_argument_emits_ctor_arity_warning() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "an over-arity ctor call must emit exactly one ctor-conformance diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorArity),
+        "over-arity must carry the CtorArity code, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Warning), got: {:?}",
+        diags[0]
+    );
+    let msg = &diags[0].message;
+    assert!(
+        msg.starts_with("E_CTOR_ARITY: "),
+        "the mnemonic must be a message PREFIX so the ε signal is visible at the CLI, \
+         got: {msg:?}"
+    );
+    assert!(
+        msg.contains("Widget12"),
+        "message must name the constructor, got: {msg:?}"
+    );
+    assert!(
+        msg.contains("at most 1 argument"),
+        "message must name the EXPECTED arity, in arg_check.rs's centralised wording \
+         (singular noun when the count is 1), got: {msg:?}"
+    );
+    assert!(
+        msg.contains("got 2"),
+        "message must name the ACTUAL arity, got: {msg:?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "ε keeps exit code 0, got errors: {:?}",
+        errors_only(&module)
+    );
+}
+
+/// (b) Span anchoring + centralised label text: the label sits at the offending
+/// surplus argument (`"b"`), not at the whole call, and reads exactly
+/// `"wrong number of arguments"` — the wording `arg_check.rs` centralises so
+/// every arg-count diagnostic in the codebase looks identical.
+#[test]
+fn over_arity_label_anchors_at_the_first_surplus_argument() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got: {diags:#?}");
+    assert!(
+        !diags[0].labels.is_empty(),
+        "CtorArity must carry a label span, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].labels[0].message, "wrong number of arguments",
+        "label text is centralised in arg_check.rs so all arg-count diagnostics read \
+         identically, got: {:?}",
+        diags[0].labels[0]
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    assert!(!span.is_empty(), "label span must be NON-empty, got: {span:?}");
+    let sliced = &SRC_OVER_ARITY[span.start as usize..span.end as usize];
+    assert!(
+        !sliced.contains("Widget12("),
+        "label must anchor at the offending argument, not the whole ctor call, got \
+         slice {sliced:?}"
+    );
+    assert!(
+        sliced.contains('b') && !sliced.contains('a'),
+        "label span must cover the SURPLUS second argument `\"b\"`, not the first, got \
+         slice {sliced:?}"
+    );
+}
+
+const SRC_OVER_ARITY_BY_TWO: &str = r#"module test.over_arity_by_two
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12("a", "b", "c")
+}
+"#;
+
+/// (c) Once-per-call: TWO surplus arguments still produce exactly ONE `CtorArity`,
+/// anchored at the FIRST surplus one. Pins that the implementation does not emit
+/// per surplus arg — which would triple β's survey count for a single author
+/// mistake and make δ's Error stage hostile.
+#[test]
+fn two_surplus_positional_arguments_still_emit_exactly_one_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY_BY_TWO);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "arity is a CALL-level fact: two surplus args are still one mistake and must \
+         emit exactly one diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    let msg = &diags[0].message;
+    assert!(
+        msg.contains("at most 1 argument") && msg.contains("got 3"),
+        "message must report expected 1 / got 3, got: {msg:?}"
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    let sliced = &SRC_OVER_ARITY_BY_TWO[span.start as usize..span.end as usize];
+    assert!(
+        sliced.contains('b') && !sliced.contains('c'),
+        "the single diagnostic must anchor at the FIRST surplus argument (`\"b\"`), got \
+         slice {sliced:?}"
+    );
+}
+
+const SRC_ZERO_PARAM_OVER_ARITY: &str = r#"module test.zero_param_over_arity
+structure def W0 { let k = 1 }
+structure def Root {
+    let x = W0("a")
+}
+"#;
+
+/// (d) Zero-param structure: any positional argument is surplus. Pins the
+/// plural-noun branch of the centralised wording (`0 arguments`, not
+/// `0 argument`) and that `nparams == 0` is not special-cased into silence.
+#[test]
+fn positional_argument_to_zero_param_structure_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_ZERO_PARAM_OVER_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a positional arg to a param-less structure must emit exactly one CtorArity, \
+         got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    let msg = &diags[0].message;
+    assert!(
+        msg.contains("at most 0 arguments") && msg.contains("got 1"),
+        "message must report expected 0 / got 1, with the PLURAL noun for a zero \
+         expected count (arg_check.rs keys the noun on the expected count), got: {msg:?}"
+    );
+}
+
+const SRC_MIXED_NAMED_THEN_POSITIONAL: &str = r#"module test.mixed_named_positional
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12(label: "a", "b")
+}
+"#;
+
+/// (e) Mixed named + positional: the named argument consumes the only slot, so
+/// the trailing positional has nowhere to bind and is surplus. Pins that arity is
+/// computed against REMAINING slots (the binder's two-pass named-then-positional
+/// order), not against a naive `args.len() > nparams` on positionals alone.
+#[test]
+fn positional_argument_after_named_fills_the_slot_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_MIXED_NAMED_THEN_POSITIONAL);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "the named arg consumed the only slot, so the positional is surplus — exactly \
+         one CtorArity expected, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert!(
+        diags[0].message.contains("got 2"),
+        "the reported actual count is the whole call's arg count, got: {:?}",
+        diags[0].message
+    );
+}
+
+const SRC_EXACT_ARITY: &str = r#"module test.exact_arity
+structure def Widget12 { param label : String }
+structure def Root {
+    let x = Widget12("a")
+}
+"#;
+
+/// (f) Legality guard: an exact-arity positional call stays silent.
+#[test]
+fn exact_arity_positional_call_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_EXACT_ARITY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "an exact-arity call must stay silent, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_UNDER_ARITY_WITH_DEFAULT: &str = r#"module test.under_arity_default
+structure def W2 {
+    param a : String
+    param b : String = "d"
+}
+structure def Root {
+    let x = W2("x")
+}
+"#;
+
+/// (g) Legality guard, the load-bearing one: UNDER-arity is legal when the
+/// uncovered params carry defaults. ε tightens the surplus direction only; the
+/// binder's `defaults` computation must be untouched. A naive
+/// `args.len() != nparams` check would break every defaulted structure in the
+/// corpus, so this fixture is what stops the tightening from over-reaching.
+#[test]
+fn under_arity_covered_by_defaults_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_UNDER_ARITY_WITH_DEFAULT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "uncovered params with defaults are legal — ε must not diagnose under-arity, \
+         got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_ZERO_ARG_CALL: &str = r#"module test.zero_arg_call
+structure def W0 { let k = 1 }
+structure def Root {
+    let x = W0()
+}
+"#;
+
+/// (h) Legality guard: a zero-arg call to a param-less structure stays silent —
+/// the empty-args edge of the surplus check.
+#[test]
+fn zero_argument_call_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_ZERO_ARG_CALL);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a zero-arg call must stay silent, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
