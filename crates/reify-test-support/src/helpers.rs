@@ -766,7 +766,8 @@ pub fn get_let_expr_in_template<'a>(
 /// defaultless cell (e.g. an `auto` param) panics; see # Panics.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
-/// not be the desired template. `get_let_expr` delegates to this function.
+/// not be the desired template. `get_let_expr` delegates to this function, which resolves
+/// the named template and then delegates to [`get_let_expr_in_template`].
 ///
 /// # Panics
 /// - `"no template named '{template_name}'"` if no template with that name exists.
@@ -782,16 +783,7 @@ pub fn get_let_expr_in<'a>(
         .iter()
         .find(|t| t.name == template_name)
         .unwrap_or_else(|| panic!("no template named '{template_name}'"));
-    let cell = template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == cell_name)
-        .unwrap_or_else(|| {
-            panic!("no value cell named '{cell_name}' in template '{template_name}'")
-        });
-    cell.default_expr.as_ref().unwrap_or_else(|| {
-        panic!("value cell '{cell_name}' in '{template_name}' has no default expr")
-    })
+    get_let_expr_in_template(template, cell_name)
 }
 
 /// Retrieve the compiled `default_expr` of any value cell by name from the first template.
