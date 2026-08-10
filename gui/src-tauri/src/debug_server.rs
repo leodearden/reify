@@ -605,7 +605,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match — with several panes mounted that first match may be a pane other than the one you are about to act on, so scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -613,7 +613,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. OMITTING viewportId with more than one pane mounted resolves against whichever pane matches FIRST in document order and reports no viewportId/matchCount, so an unscoped wait is not proof that the pane you are about to act on is ready — pass viewportId whenever the follow-up action is scoped. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -623,7 +623,7 @@ fn tool_defs() -> Vec<ToolDef> {
                     "text": { "type": "string" },
                     "viewportId": {
                         "type": "string",
-                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. With several panes mounted that document-wide first match may be a pane OTHER than the one you are about to act on, and the green result says nothing about which — so scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -1098,14 +1098,14 @@ fn is_image_tool(name: &str) -> bool {
 /// 2. GATING — the diagnostics block is emitted only when the residual (every
 ///    top-level key except `data`) is a non-empty object with no top-level string
 ///    `error`. Non-empty keeps `screenshot`/`screenshot_window` — which return
-///    `{data}` and nothing else (bridge.ts:689,702) — and every scoped or
-///    single-match `element_screenshot` bit-for-bit unchanged, mirroring the
-///    bridge-side `paneDiagnostics` gate one layer down rather than inventing a
-///    second condition that can drift. The `error` exclusion upholds the
-///    CROSS-LANGUAGE INVARIANT documented at gui/test/visual/rpcEnvelope.mjs:54-58:
-///    `isInBandError` reads any top-level string `error` as a tool FAILURE, so
-///    emitting one beside a successful image would make every driver report a
-///    working screenshot as broken.
+///    `{data}` and nothing else (their handlers in bridge.ts's `buildHandlers`)
+///    — and every scoped or single-match `element_screenshot` bit-for-bit
+///    unchanged, mirroring the bridge-side `paneDiagnostics` gate one layer down
+///    rather than inventing a second condition that can drift. The `error`
+///    exclusion upholds the CROSS-LANGUAGE INVARIANT documented at
+///    gui/test/visual/rpcEnvelope.mjs:54-58: `isInBandError` reads any top-level
+///    string `error` as a tool FAILURE, so emitting one beside a successful image
+///    would make every driver report a working screenshot as broken.
 ///
 /// Anything else — a non-image tool, or an image tool whose result carries no
 /// string `data` (every `element_screenshot` error shape) — falls through to
@@ -2412,7 +2412,8 @@ mod tests {
     // task-4297 step-5 RED → step-6 GREEN: R2 tools get_diagnostics and ui_outline
     // must be registered in tool_defs() with correct schema shape.
     // Note: the ui_outline DOM-approximation / not-an-AX-tree label lives in the
-    // ToolDef source description (see debug_server.rs:402); it is not substring-pinned
+    // ToolDef source description (the `ui_outline` entry in `tool_defs()`); it is
+    // not substring-pinned
     // here to avoid brittle wording-pin failures on harmless rewording (step-9).
     #[test]
     fn tool_defs_registers_r2_inspection_tools() {
@@ -2835,7 +2836,8 @@ mod tests {
 
     // task-4299 step-1 RED → step-2 GREEN: five synthetic-interaction tools must be
     // registered in tool_defs() with the correct schema shapes.
-    // Schema-shape-only — NO description-prose pinning (convention at :1668-1670).
+    // Schema-shape-only — NO description-prose pinning (the step-9 convention
+    // stated on `tool_defs_registers_r2_inspection_tools` above).
     #[test]
     fn tool_defs_registers_synthetic_interaction_tools() {
         let defs = tool_defs();
@@ -3260,7 +3262,8 @@ mod tests {
         // element_screenshot: every SCOPED or single-match call returns `{data}` and
         // nothing else, so its envelope must stay bit-for-bit today's single block.
         // screenshot/screenshot_window: neither ever carries a non-`data` success key
-        // (bridge.ts:689,702), so the new gate must never perturb them — that is what
+        // (their handlers in bridge.ts's `buildHandlers`), so the new gate must never
+        // perturb them — that is what
         // keeps gui/test/visual/rpcEnvelope.test.ts:320-326's image-only stub accurate.
         for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
             let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
