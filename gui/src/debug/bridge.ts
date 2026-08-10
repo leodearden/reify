@@ -190,16 +190,12 @@ function pickFeaChannelSelect(
 
   if (id !== undefined) {
     if (typeof id !== 'string') return { error: SET_FEA_CHANNEL_ERRORS.viewportIdNotString };
-    // Escape before interpolating: an id carrying a quote or backslash would
-    // otherwise build an invalid selector and make querySelector THROW, which
-    // the dispatcher would surface as an opaque CSS-parser message instead of
-    // the intended selectNotFoundForViewport. Same CSS.escape-with-jsdom-
-    // fallback pattern as buildSelectorPredicate above.
-    const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-      ? CSS.escape(id)
-      : id.replace(/["\\]/g, '\\$&');
+    // Escape before interpolating (`escapeAttrValue`): an id carrying a quote or
+    // backslash would otherwise build an invalid selector and make querySelector
+    // THROW, which the dispatcher would surface as an opaque CSS-parser message
+    // instead of the intended selectNotFoundForViewport.
     const scoped = document.querySelector(
-      `${FEA_CHANNEL_SELECT}[data-viewport-id="${escaped}"]`,
+      `${FEA_CHANNEL_SELECT}[data-viewport-id="${escapeAttrValue(id)}"]`,
     ) as HTMLSelectElement | null;
     if (!scoped) return { error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(id) };
     return { select: scoped };
@@ -543,11 +539,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
     const expandedNow = accessor().has(path);
     if (expandedNow !== wantExpanded) {
-      // CSS.escape is not available in jsdom — use the same fallback as buildSelectorPredicate.
-      const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
-        ? CSS.escape(testid)
-        : testid.replace(/["\\]/g, '\\$&');
-      const el = document.querySelector(`[data-testid="${escaped}"]`);
+      const el = document.querySelector(`[data-testid="${escapeAttrValue(testid)}"]`);
       if (!el) return { error: `tree node control not found: ${path}` };
       (el as HTMLElement).click();
     }
