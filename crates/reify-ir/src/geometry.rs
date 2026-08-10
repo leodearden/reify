@@ -2473,9 +2473,17 @@ pub enum ExportWarning {
 }
 
 /// Tessellated mesh for visualization.
+///
+/// **Units:** `vertices` (and `normals`' origin) are in SI METRES — reify model
+/// space. Every kernel tessellation produces metres, and every consumer that
+/// needs another unit converts at its own boundary: [`write_3mf`] scales to
+/// millimetres to match the `unit="millimeter"` it declares, while the STL
+/// writers emit metres verbatim (see their contract comments). Leaving this
+/// unstated is the root ambiguity that produced the 1000× STEP/3MF unit
+/// mislabel, so state it here rather than at each use site.
 #[derive(Debug, Clone)]
 pub struct Mesh {
-    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    /// Vertex positions in SI metres, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
@@ -3157,6 +3165,19 @@ fn triangle_verts(
 
 /// Write a mesh to the STL binary format.
 ///
+/// **Units — deliberately asymmetric with [`write_3mf`].** STL carries no unit
+/// field, so there is no declaration to keep honest and this writer emits the
+/// caller's coordinates VERBATIM — SI metres when fed straight from a reify
+/// kernel, since [`Mesh`] is metres. A consumer expecting the de-facto
+/// millimetre STL convention must scale at the call site, as
+/// `crates/reify-eval/src/compute_targets/fdm_slice.rs` already does (×1000)
+/// before handing a mesh to PrusaSlicer. Scaling here instead would silently
+/// make that existing caller 1,000,000×.
+///
+/// TODO(#6187): unify STL into the millimetre regime — scale here and strip the
+/// caller-side ×1000 in `fdm_slice.rs` in the same change, so the divergence
+/// stays deliberate rather than becoming accidental.
+///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
 /// - `u32`: number of triangles (`indices.len() / 3`)
@@ -3225,6 +3246,13 @@ pub fn write_stl_binary(
 }
 
 /// Write a mesh to the STL ASCII format.
+///
+/// **Units — deliberately asymmetric with [`write_3mf`].** As with
+/// [`write_stl_binary`]: STL carries no unit field, so there is no declaration
+/// to keep honest and this writer emits the caller's coordinates VERBATIM (SI
+/// metres from a reify kernel). Callers needing the de-facto millimetre STL
+/// convention scale at the call site. TODO(#6187): unify STL into the
+/// millimetre regime alongside `write_stl_binary`.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
