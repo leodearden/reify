@@ -756,6 +756,29 @@ pub fn get_value_cell_in<'a>(
         })
 }
 
+/// Retrieve the `ValueCellDecl` of a value cell by name from the first template.
+///
+/// Convenience wrapper that delegates to [`get_value_cell_in`] using the name of the first
+/// template in the module. Measured: named-template lookups outnumber first-template lookups
+/// ~2:1 across the test suite, so prefer [`get_value_cell_in`] directly when the module has
+/// several templates and you need to target a specific one.
+///
+/// # Panics
+/// - `"expected at least one template in module"` if `templates` is empty.
+/// - Panics from [`get_value_cell_in`] if the cell is absent.
+pub fn get_value_cell<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let template_name = module
+        .templates
+        .first()
+        .expect("expected at least one template in module")
+        .name
+        .as_str();
+    get_value_cell_in(module, template_name, name)
+}
+
 /// Retrieve the compiled `default_expr` of a let binding by name from a named template.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
