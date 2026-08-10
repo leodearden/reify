@@ -109,12 +109,12 @@ structure PrinterGantryModes {
     // be spelled out in order so that element_order = ElementOrder.P2 lands in
     // the last slot — a partial call would silently misplace it.
     //
-    // RayleighDamping(alpha: 0.0, beta: 0.0001): structural damping for the
+    // RayleighDamping(alpha: 0.0Hz, beta: 0.0001s): structural damping for the
     // resonance-budget reference (damping does not affect natural frequencies).
     let opts = ModalOptions(
         n_modes: 7,
         boundary_conditions: [mount_left, mount_right],
-        damping: RayleighDamping(alpha: 0.0, beta: 0.0001),
+        damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
         sigma: 0.0,
         tol: 0.000000001,
         max_iters: 200,
