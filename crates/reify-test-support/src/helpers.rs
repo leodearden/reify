@@ -1775,6 +1775,55 @@ mod tests {
         super::get_value_cell_in(&module, "S", "y");
     }
 
+    // ── get_value_cell ────────────────────────────────────────────────────
+
+    /// get_value_cell targets the FIRST template only; a cell in the second
+    /// template is not reachable via get_value_cell. Asserts on wrapper-only
+    /// fields (`id.member`, `cell_type`) that get_let_expr cannot reach.
+    #[test]
+    fn test_get_value_cell_targets_first_template() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        // Alpha is first — cell `a` should be found.
+        let cell = super::get_value_cell(&module, "a");
+        assert_eq!(cell.id.member, "a");
+        assert_eq!(
+            cell.cell_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected cell_type == Type::dimensionless_scalar() for Alpha.a, got {:?}",
+            cell.cell_type
+        );
+    }
+
+    /// get_value_cell with a cell name that only exists in the SECOND template
+    /// should panic with "no value cell named", because the helper only looks
+    /// inside the first template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_value_cell_does_not_search_other_templates() {
+        let source = r#"
+            structure Alpha { let a = 1.5 }
+            structure Beta  { let b = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        // `b` is in Beta (second template), not Alpha (first) — must panic.
+        super::get_value_cell(&module, "b");
+    }
+
+    /// get_value_cell should panic with "expected at least one template" when
+    /// the module has no templates at all (empty module built via builder).
+    #[test]
+    #[should_panic(expected = "expected at least one template")]
+    fn test_get_value_cell_panics_on_empty_templates() {
+        use reify_core::ModulePath;
+        let module =
+            crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
+        super::get_value_cell(&module, "anything");
+    }
+
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
