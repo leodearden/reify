@@ -395,11 +395,11 @@ impl Engine {
         // Reached when `achieved_repr_tol` is non-empty (a tessellation ran),
         // or an optimised impl is registered, or this batch carries a
         // RepresentationWithin shape on a surface that never measured (ζ).
-        // Peel RepresentationWithin
-        // entries off the batch before bucketing so that they never reach the
-        // language-level ConstraintChecker (which has no access to
-        // self.achieved_repr_tol).  Each matched entry is evaluated engine-side;
-        // unmatched entries go to the existing paths.
+        //
+        // Peel RepresentationWithin entries off the batch before bucketing so
+        // that they never reach the language-level ConstraintChecker (which has
+        // no access to self.achieved_repr_tol).  Each matched entry is evaluated
+        // engine-side; unmatched entries go to the existing paths.
         //
         // Two-vector approach avoids a second allocation pass: we collect
         // `rest` in-order so the original (id, expr, target) tuples remain
