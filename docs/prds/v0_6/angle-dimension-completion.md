@@ -299,8 +299,8 @@ E = ½Iω² → J · τ = Iα → N·m/rad · L = Iω → J·s/rad · dL/dt → 
 | `angle-units-surface-convergence` (PRD 3) | adjacent | PRD 3 owns the angle *surface* (bare-angle rejection, `angle_spec`, Torque/Nm, label alphabet) and its docs-truth slots ξ/ο/π/ρ (#5790/#5792/#5793/#5794) | PRD 3 | D9: content-disjoint; no edges; P must not touch `angle_spec`/bare-angle territory |
 | `units-length-gate-completion` D11 (#5747) | ally | strict dimension equality is the enforcement direction P's doctrine cites | PRD 1 | no edge |
 | #5825 (done, decision) | discharges | the `arc = r·θ` carve-out ("needs its own task") — the teaching half lands in β/γ | **P** | prose cite in β |
-| **#6128 (in-progress) / #6131 (pending)** | supersession flag | both predate #6164 and pull generic/FEA curl toward `Vector3<Angle>` — the direction #6164 (A+) explicitly supersedes; the PRD row 6128 targets was amended the other way in `9ca5c6ad9f` | — | **factual flag, P takes no action** (session constraint: read-only on existing tasks). Disposal is Leo's/steward's; see the chartering session hand-back |
-| GUI viewport (`MeshData.scalar_channels`) | produces | per-channel unit tag + signed range (υ) | **P** | consumer = #6164's channel; recommend Leo wire 6164 → υ when convenient (P cannot mutate 6164) |
+| **#6128 (rescoped) / #6131 (cancelled)** | supersession — RESOLVED 2026-08-10 | both predated #6164 and pulled curl toward `Vector3<Angle>`; Stage-2 reconciliation rescoped 6128 to implement #6164's `.rotation` channel (in-progress) and rewrote 6131 as resolved-by-6164; 6131 closed cancelled with Leo's authorization; #6164's text carries the do-not-double-land coordination note | — | resolved |
+| GUI viewport (`MeshData.scalar_channels`) | produces | per-channel unit tag + signed range (υ) | **P** | consumer = #6164's channel; edge **6164 → υ (6185) WIRED** 2026-08-10 with Leo's authorization — the first signed Angle channel lands on the declared wire format |
 
 Checked against the overlay's three known contested pairs: no overlap, no fourth instance.
 
