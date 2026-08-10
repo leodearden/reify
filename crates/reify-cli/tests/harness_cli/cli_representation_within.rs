@@ -120,6 +120,132 @@ fn check_representation_within_violated_under_occt() {
     );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ζ / C-SURFACE 1: surfaces that do not measure (task 6169)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The user-observable half of C-SURFACE 1, at the PRD §3.2 probe shape.
+///
+/// `cmd_build` never calls `set_capture_repr_tol`, so `achieved_repr_tol` stays
+/// empty on the build surface and nothing can measure the subject. The verdict
+/// is therefore `Indeterminate` — but it must say *why*, and point at the
+/// surface that can answer, instead of blaming the operand kinds.
+///
+/// OCCT-INDEPENDENT: the map is empty on the build surface in both kernel
+/// modes, so the behaviour is identical and there is nothing to gate.
+///
+/// `--verbose` is deliberately not passed — plain `reify build` already prints
+/// both the status line and the reason.
+#[test]
+fn build_surface_reports_attributable_indeterminate() {
+    let path = common::fixture_path("representation_within_build_surface.ri");
+    let (status, stdout, stderr) = common::run_subcommand("build", &path);
+
+    assert!(
+        status.success(),
+        "Indeterminate is not a failure — `reify build` must still exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("INDETERMINATE SphereCheck#constraint[0]"),
+        "the build surface cannot measure, so the verdict is Indeterminate \
+         (never a false Violated).\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    assert!(
+        !stderr.contains("operator undefined for these operand kinds"),
+        "C-SURFACE 1: the misattribution must be gone — the operands are fully \
+         defined here (`subject` carries a default); it is the SURFACE that \
+         cannot answer.\nstderr: {stderr}"
+    );
+
+    let attribution = stderr
+        .lines()
+        .find(|l| l.contains("SphereCheck#constraint[0]"))
+        .unwrap_or_else(|| {
+            panic!(
+                "INV-SF-4: exactly the constraint that could not be evaluated must \
+                 be named, with a reason.\nstderr: {stderr}"
+            )
+        });
+    assert!(
+        attribution.contains("does not measure"),
+        "INV-SF-4: the reason must name the surface.\nline: {attribution}"
+    );
+    assert!(
+        attribution.contains("reify check"),
+        "INV-SF-4: the user must be pointed at the surface that does measure.\n\
+         line: {attribution}"
+    );
+    assert!(
+        !attribution.starts_with("error:"),
+        "INV-SF-2 severity-hygiene corollary: `reify build` on a bounded module is \
+         a path a healthy design routinely hits, so this is Info — not an error.\n\
+         line: {attribution}"
+    );
+}
+
+/// The "check must not change" half: `reify check` on the same fixture is
+/// unaffected by the build-surface fix.
+///
+/// Under OCCT the map is non-empty, so the fast-path guard's first conjunct
+/// already fails and neither the added scan nor the added diagnostic can apply
+/// — the assertion is evaluated and `Satisfied` exactly as before.
+///
+/// Under stub mode the map stays empty for a different reason (no kernel, so
+/// tessellation cannot run), and this surface legitimately gains the same
+/// attributable Info in place of the misattributed message that was wrong there
+/// too. Both standing gate invariants — exit 0, no "VIOLATED" — are untouched
+/// by an Indeterminate verdict at Info severity, so those are what is asserted.
+#[test]
+fn check_surface_output_is_unchanged_for_build_surface_fixture() {
+    let path = common::fixture_path("representation_within_build_surface.ri");
+    let (status, stdout, stderr) = common::run_subcommand("check", &path);
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        assert!(
+            status.success(),
+            "stub mode: no kernel → Indeterminate (C1 graceful degradation) → exit 0.\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            !stdout.contains("VIOLATED"),
+            "stub mode: Indeterminate, not Violated.\nstdout: {stdout}"
+        );
+        eprintln!(
+            "skipping the OCCT Satisfied assertions: OCCT unavailable \
+             (cfg(has_occt) not set — stub-mode build). Stub-mode check now carries \
+             the attributable Info in place of the misattributed warning; that is \
+             the intended strict improvement, not a regression."
+        );
+        return;
+    }
+
+    assert!(
+        status.success(),
+        "OCCT mode: the fine sphere clears the 1mm bound → Satisfied → exit 0.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("OK SphereCheck#constraint[0]"),
+        "OCCT mode: tessellation measures the subject below the bound → Satisfied.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("All constraints satisfied"),
+        "OCCT mode: the summary line is unchanged.\nstdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("does not measure"),
+        "the attribution must NOT reach a surface that DID measure — this is the \
+         direct guard on `reify check` output being unchanged.\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("operator undefined for these operand kinds"),
+        "and the misattribution must not reappear here either.\nstderr: {stderr}"
+    );
+}
+
 /// C2 guard: a module with no `RepresentationWithin` constraints must not be
 /// affected by the new routing in `cmd_check`.
 ///
