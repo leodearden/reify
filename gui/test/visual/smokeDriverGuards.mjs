@@ -158,3 +158,85 @@ export function describeRpcFailure(payload, label) {
   }
   return null;
 }
+
+/**
+ * Diagnose an UNSCOPED `dom_query` that is supposed to be AMBIGUOUS: a message
+ * naming why it was not, or `null` when it matched exactly `expectedMatchCount`
+ * elements attributed to a pane.
+ *
+ * THE ANTI-VACUITY PRECONDITION for every viewportId-scoped assertion that
+ * follows it (task 5932, covering #5891). `paneDiagnostics` echoes `{viewportId,
+ * matchCount}` only ABOVE one match (`gui/src/debug/bridge.ts:336-341`), which is
+ * what makes a scoped call's bare `{ok: true}` evidence that the scope narrowed
+ * the resolve. That evidence is worth nothing unless there were several
+ * candidates to narrow: in any future where only ONE pane renders the testid, a
+ * scoped click trivially does not bleed — there is nothing to bleed into — and
+ * the whole no-bleed scenario reports green while testing nothing. Asserting the
+ * ambiguity FIRST is what keeps the rest load-bearing, the same "an empty table
+ * is not a pass" discipline the sibling suites apply.
+ *
+ * Branch table, in order:
+ *   1. unhealthy payload → {@link describeRpcFailure}'s verbatim diagnosis
+ *   2. `exists !== true`             → the testid is not in the DOM at all
+ *   3. `matchCount` not a number     → only one element matched ⇒ VACUOUS
+ *   4. `matchCount !== expected`     → names expected vs observed
+ *   5. `viewportId` not a string     → the first match belongs to no pane
+ *
+ * BRANCH 3 IS THE LOAD-BEARING ONE and its type check is not defensive
+ * dressing: `undefined < 2` and `'2' < 2` are both FALSE, so a magnitude-only
+ * guard reports green on exactly the payloads it exists to catch — the one-sided
+ * hazard `./smoke_multi_pane_e2e.mjs` documents at its design-main meshCount
+ * check. Since `paneDiagnostics` OMITS the field entirely below two matches, an
+ * absent `matchCount` is not missing data: it is a positive report of one match.
+ *
+ * Never throws, whatever the shape of `payload`.
+ *
+ * @param {unknown} payload  The decoded `dom_query` result, unscoped.
+ * @param {object} options
+ * @param {string} options.testId  The `data-testid` the probe asked for; named in
+ *        every message so an operator sees which probe failed.
+ * @param {number} options.expectedMatchCount  How many panes must carry it.
+ * @returns {string | null} The diagnosis, or `null` when the probe is ambiguous
+ *          exactly as required.
+ */
+export function describeUnscopedAmbiguity(payload, { testId, expectedMatchCount }) {
+  const label = `dom_query('${testId}') unscoped`;
+  const failure = describeRpcFailure(payload, label);
+  if (failure) return failure;
+
+  if (payload.exists !== true) {
+    return (
+      `${label} matched no element at all (exists: ${JSON.stringify(payload.exists)}) — ` +
+      `data-testid="${testId}" is nowhere in the DOM, so there is nothing to scope. ` +
+      `Payload: ${JSON.stringify(payload)}`
+    );
+  }
+
+  if (typeof payload.matchCount !== "number") {
+    return (
+      `${label} did not report a numeric matchCount (got ${JSON.stringify(payload.matchCount)}); ` +
+      `paneDiagnostics omits the field entirely below 2 matches, so its absence means exactly ONE ` +
+      `element matched. Expected ${expectedMatchCount} candidates — with only one, the panes are not ` +
+      `ambiguous and every viewportId-scoped assertion below would be vacuous.`
+    );
+  }
+
+  if (payload.matchCount !== expectedMatchCount) {
+    return (
+      `${label} matched ${payload.matchCount} elements, expected ${expectedMatchCount}. ` +
+      `The scoped assertions below are calibrated to that count, so a different one means the ` +
+      `fixture's pane set changed rather than that scoping regressed.`
+    );
+  }
+
+  if (typeof payload.viewportId !== "string") {
+    return (
+      `${label} matched ${payload.matchCount} elements but the first match is attributed to no pane ` +
+      `(viewportId: ${JSON.stringify(payload.viewportId)}) — resolveByTestId reads it off ` +
+      `el.closest('[data-viewport-id]'), so a non-string means the element carries no pane ancestor ` +
+      `and viewportId scoping cannot resolve it.`
+    );
+  }
+
+  return null;
+}
