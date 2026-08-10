@@ -809,3 +809,177 @@ fn lsp_lane_is_panic_isolated_and_survives() {
         "the SAME LSP lane thread must survive the panic"
     );
 }
+
+// ── ASYNC lane submission (task 5772) ────────────────────────────────────────
+//
+// `run_on_worker` parks its caller in `mpsc::recv()`. For the fourteen migrated
+// commands that is free: they are sync `#[tauri::command] fn`s, which Tauri runs
+// as `ExecutionContext::Blocking` on their own thread. `lsp_request` is an
+// `async fn` on the tauri tokio runtime, so the same call would pin a runtime
+// worker for a whole LSP round trip on EVERY keystroke — precisely what an async
+// command must not do.
+//
+// So the LSP lane needs an async submission: box the job the same way, reply
+// over a `tokio::sync::oneshot`, and `.await` it, releasing the tokio worker
+// while the lane thread computes. Not a new pattern — `debug_server::run_on_engine`
+// already bridges async-caller-to-large-stack-thread with exactly
+// `spawn_on_large_stack` + `oneshot`; this amortises it onto a persistent lane.
+//
+// These tests pin the four properties that must survive the shape change: the
+// value comes back, the runtime is NOT blocked, panics stay faithful, and the
+// degraded arm still returns rather than hanging an `.await`.
+
+/// (u) The async submission returns the closure's value, and the closure body
+/// runs on the LSP lane's thread — not on a tokio worker, and not inline.
+#[tokio::test]
+async fn run_on_lsp_worker_returns_value_and_runs_on_the_lane() {
+    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+
+    let caller_id = std::thread::current().id();
+    let data = vec![1u64, 2, 3, 4, 5];
+
+    let (sum, inner_id, inner_name) = run_on_lsp_worker(move || {
+        let s: u64 = data.iter().sum();
+        (
+            s,
+            std::thread::current().id(),
+            std::thread::current().name().map(str::to_owned),
+        )
+    })
+    .await;
+
+    assert_eq!(
+        sum, 15,
+        "the async submission must propagate the closure's value back to the awaiter"
+    );
+    assert_ne!(
+        inner_id, caller_id,
+        "the job must run on the lane, not inline on the awaiting runtime worker"
+    );
+    assert_eq!(
+        inner_name.as_deref(),
+        Some(LSP_WORKER_THREAD_NAME),
+        "the async submission must use the SAME LSP lane as the blocking seam — \
+         one mechanism, not a third"
+    );
+}
+
+/// (v) Awaiting the submission does NOT block the calling runtime — the whole
+/// reason this variant exists.
+///
+/// `#[tokio::test]` builds a CURRENT-THREAD runtime, which makes this sharp: a
+/// `tokio::spawn`ed task only runs when the single thread is free to poll it. So
+/// the assertion is an ORDERING one, not a timing one, and cannot pass by luck.
+///
+/// * A BLOCKING impl (what `run_on_worker` does — park in `mpsc::recv()`) makes
+///   the first poll return `Ready` only after the whole 300 ms job, with the one
+///   thread parked throughout. The spawned task cannot have been polled yet, so
+///   the flag reads `false` the instant the await resolves. RED.
+/// * A NON-BLOCKING impl returns `Pending` immediately, the runtime polls the
+///   spawned task (which completes at once), and 300 ms later the oneshot fires.
+///   The flag therefore reads `true`. GREEN.
+#[tokio::test]
+async fn run_on_lsp_worker_does_not_block_the_calling_runtime() {
+    use crate::large_stack::run_on_lsp_worker;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let concurrent_ran = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&concurrent_ran);
+
+    // Spawned BEFORE the lane submission, and immediately ready — so the only
+    // thing that can keep it from running is the runtime thread being blocked.
+    let concurrent = tokio::spawn(async move {
+        flag.store(true, Ordering::SeqCst);
+        "concurrent task done"
+    });
+
+    // Long enough that "did the runtime get to poll anything else?" is not a
+    // close call either way.
+    let lane_result = run_on_lsp_worker(|| {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        "lane job done"
+    })
+    .await;
+
+    // Read the flag at THIS instant — before awaiting the handle, which would
+    // give a blocked runtime a second chance to run the task and hide the bug.
+    let ran_during_the_job = concurrent_ran.load(Ordering::SeqCst);
+
+    assert_eq!(
+        lane_result, "lane job done",
+        "the lane job must still deliver its value"
+    );
+    assert_eq!(
+        concurrent.await.expect("the concurrent task must not panic"),
+        "concurrent task done",
+        "the concurrent task must complete"
+    );
+    assert!(
+        ran_during_the_job,
+        "a concurrently-spawned task had still not been polled when the lane job \
+         finished — awaiting the lane BLOCKED the runtime thread, which is \
+         exactly the failure this async variant exists to prevent"
+    );
+}
+
+/// (w) Panic fidelity survives the shape change: a panicking job surfaces on the
+/// AWAITING submitter carrying its ORIGINAL payload.
+///
+/// The payload assertion is load-bearing — a lane that merely died, or a oneshot
+/// that merely disconnected, would also produce "something panicked", just with
+/// a substituted message.
+///
+/// `tokio::spawn` is the unwind boundary: it catches a task panic and hands back
+/// the payload through [`tokio::task::JoinError::into_panic`], so no
+/// `futures::FutureExt::catch_unwind` (and no new dependency) is needed.
+#[tokio::test]
+async fn run_on_lsp_worker_propagates_the_original_job_panic() {
+    use crate::large_stack::run_on_lsp_worker;
+
+    let joined = tokio::spawn(async {
+        // Concrete `T = ()` so inference is unambiguous; the closure never
+        // returns normally, but the panic must still cross the lane AND the
+        // oneshot to reach the awaiting task.
+        run_on_lsp_worker::<_, ()>(|| panic!("async boom")).await;
+    })
+    .await;
+
+    let err = joined.expect_err("a panicking job must surface as a panicked task");
+    assert!(
+        err.is_panic(),
+        "the task must have PANICKED, not been cancelled: {err:?}"
+    );
+    let payload = err.into_panic();
+    assert_eq!(
+        panic_message(&*payload),
+        "async boom",
+        "the awaiter must receive the JOB's original payload, not a substitute"
+    );
+}
+
+/// (x) The DEGRADED arm of the async path: with no lane, the closure runs inline
+/// on the caller and the `.await` still RESOLVES.
+///
+/// A refused 256 MiB mapping must never hang an `await`. The blocking seam's
+/// `None` arm is already tested; this pins that the async variant inherits it
+/// rather than reimplementing it, so both degradation arms are exercised by a
+/// test instead of resting on prose.
+#[tokio::test]
+async fn async_dispatch_without_a_lane_runs_inline_and_still_resolves() {
+    use crate::large_stack::dispatch_async;
+
+    let caller_id = std::thread::current().id();
+
+    let (value, ran_on) = dispatch_async(None, || (77u32, std::thread::current().id())).await;
+
+    assert_eq!(
+        value, 77,
+        "the degraded async arm must still return the closure's value — never a \
+         lost result, and never a hung await"
+    );
+    assert_eq!(
+        ran_on, caller_id,
+        "with no lane the closure must run INLINE on the caller's own stack"
+    );
+}
