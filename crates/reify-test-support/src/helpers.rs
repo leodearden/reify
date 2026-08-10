@@ -727,6 +727,35 @@ pub fn run_modify_pipeline(
     (result, ops)
 }
 
+/// Retrieve the `ValueCellDecl` of a value cell by name from a named template.
+///
+/// This is the cell-level primitive: it returns the full declaration (kind,
+/// visibility, is_aux, cell_type, default_expr, ...) rather than just the
+/// compiled default expression. Callers needing only the compiled default
+/// expression should prefer [`get_let_expr_in`], which delegates here.
+///
+/// # Panics
+/// - `"no template named '{template_name}'"` if no template with that name exists.
+/// - `"no value cell named '{cell_name}' in template '{template_name}'"` if the cell is absent.
+pub fn get_value_cell_in<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    template_name: &str,
+    cell_name: &str,
+) -> &'a reify_compiler::ValueCellDecl {
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == template_name)
+        .unwrap_or_else(|| panic!("no template named '{template_name}'"));
+    template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == cell_name)
+        .unwrap_or_else(|| {
+            panic!("no value cell named '{cell_name}' in template '{template_name}'")
+        })
+}
+
 /// Retrieve the compiled `default_expr` of a let binding by name from a named template.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
