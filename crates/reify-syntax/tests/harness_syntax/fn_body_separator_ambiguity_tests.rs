@@ -493,3 +493,89 @@ fn well_formed_fn_bodies_produce_no_diagnostics() {
         );
     }
 }
+
+/// A badly broken file is bounded, and the truncation is announced.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// `diagnose_error_node` emits at most `MAX_DIAGNOSTICS` (8) reports per `ERROR` node so that
+/// a file whose every declaration is broken cannot bury its first real fault under recovery
+/// noise. Truncation is never silent: one final `(further errors suppressed)` diagnostic says
+/// so, and — the point of the whole change — that note is anchored to the first SUPPRESSED
+/// fault rather than to the enclosing node, so it does not smuggle the blob span back in.
+///
+/// No fixture in `MALFORMED_FN_BODY_SOURCES` reaches the cap (each has a single break), so
+/// this is the only test that exercises it.
+///
+/// Fixture size is empirical, not arbitrary. Recovery does not collapse the whole file into
+/// one `ERROR`: it re-syncs periodically, and within a single collapsed run only about every
+/// OTHER declaration contributes a distinct anchoring `let` (measured: 12 broken functions
+/// yield 5 separator diagnostics from the first node). 24 is the smallest round count that
+/// pushes one node past the cap of 8.
+#[test]
+fn a_file_of_broken_functions_is_bounded_and_says_so() {
+    const FNS: usize = 24;
+
+    let mut source = String::new();
+    for n in 0..FNS {
+        // Each function omits the `;` after its own `let`, so each is an independent
+        // absorbing site.
+        source.push_str(&format!(
+            "fn f{n}(i: Int) -> Real {{\n  let a{n} = {n}\n  a{n} + i\n}}\n"
+        ));
+    }
+
+    let m = reify_syntax::parse(&source, ModulePath::single("t"));
+    let all = triples(&m);
+
+    let suppressed: Vec<_> = m
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("further errors suppressed"))
+        .collect();
+    assert_eq!(
+        suppressed.len(),
+        1,
+        "{FNS} independently broken functions must trip the per-ERROR-node diagnostic cap \
+         on at least one node, so the truncation is announced rather than silent; got {}.\n\
+         diagnostics: {all:?}",
+        suppressed.len(),
+    );
+
+    let separator = m
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("';'"))
+        .count();
+    assert!(
+        separator <= 8,
+        "the per-ERROR-node cap is 8, but {separator} separator diagnostics were emitted — a \
+         badly broken file buries its first fault.\ndiagnostics: {all:?}",
+    );
+    assert!(
+        separator >= 2,
+        "the cap must bound the report, not replace it: expected several located separator \
+         diagnostics alongside the suppression note, got {separator}.\ndiagnostics: {all:?}",
+    );
+
+    // The suppression note must be LOCATED, not a whole-file blob. It is anchored at the first
+    // fault it declined to report, so it sits strictly inside the source and is short.
+    let note = suppressed[0];
+    assert!(
+        note.span.start > 0 && (note.span.end as usize) < source.len(),
+        "the suppression note spans the whole collapsed node ({}..{} of {} bytes) — that is \
+         precisely the blob span this class of diagnostic exists to eliminate.",
+        note.span.start,
+        note.span.end,
+        source.len(),
+    );
+    assert!(
+        note.span.end - note.span.start <= 40,
+        "the suppression note should point at a single suppressed fault, but spans {} bytes.",
+        note.span.end - note.span.start,
+    );
+    assert!(
+        !note.message.contains('\n'),
+        "the suppression note echoes source rather than describing the truncation: {:?}",
+        note.message,
+    );
+}

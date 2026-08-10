@@ -166,6 +166,16 @@ fn first_fault_strictly_inside(node: tree_sitter::Node<'_>) -> Option<tree_sitte
 /// at the point of no further descent. Clean subtrees are pruned in O(1) by the same
 /// `has_error()` test, so the cost is proportional to the broken part of the tree.
 ///
+/// Descending through a fault node is speculative, because `has_error()` is true for a fault
+/// node itself and says nothing about its children: recovery routinely produces an `ERROR`
+/// whose children are all well-formed recovered tokens (measured on
+/// `structure S {\n  let a = 1 1\n}`, which yields
+/// `(ERROR [1,12]-[1,13] (number_literal [1,12]-[1,13]))`). "Innermost" must therefore be
+/// decided on the way BACK UP: a fault node below which the walk found nothing broken is
+/// itself the innermost fault and is recorded then. Testing `is_error()` only at the point of
+/// no further descent would skip every such node, and where it was the ONLY fault the caller
+/// would fall back to the whole enclosing node — reinstating the blob span.
+///
 /// Iterative, matching the tree-walk pattern used elsewhere in this file: recursion here would
 /// be bounded only by CST depth.
 ///
@@ -177,13 +187,123 @@ fn faults_strictly_inside(node: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<
     if !cursor.goto_first_child() {
         return out;
     }
+    // Fault nodes the walk has descended INTO, each paired with `out.len()` at that moment.
+    // On the ascent an unchanged length proves nothing broken lies below, making the node
+    // itself innermost. Depth-bounded, and only fault nodes are ever pushed.
+    let mut descended_faults: Vec<(tree_sitter::Node<'_>, usize)> = Vec::new();
     loop {
         let cur = cursor.node();
+        let cur_is_fault = cur.is_error() || cur.is_missing();
         if cur.has_error() && cursor.goto_first_child() {
-            continue; // something is broken deeper down — keep narrowing
+            // Something MAY be broken deeper down — keep narrowing.
+            if cur_is_fault {
+                descended_faults.push((cur, out.len()));
+            }
+            continue;
         }
-        if cur.is_error() || cur.is_missing() {
-            out.push(cur); // innermost: nothing broken strictly below it
+        if cur_is_fault {
+            out.push(cur); // innermost: no children to descend into
+        }
+        loop {
+            if cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return out;
+            }
+            let parent = cursor.node();
+            if let Some(&(fault, mark)) = descended_faults.last() {
+                if fault == parent {
+                    descended_faults.pop();
+                    if out.len() == mark {
+                        // Descended into a fault and found nothing broken below it: this node
+                        // IS the innermost fault. Source order holds — every entry recorded
+                        // after `mark` would have come from inside it, and there are none.
+                        out.push(parent);
+                    }
+                }
+            }
+            if parent == node {
+                return out;
+            }
+        }
+    }
+}
+
+/// One anonymous `let` keyword found inside an `ERROR` subtree, with the two facts a
+/// separator diagnostic needs about it.
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+#[derive(Clone, Copy)]
+struct LetAnchor {
+    /// Byte offset of the `let` keyword — the span start of the diagnostic it anchors.
+    start_byte: usize,
+    /// Row of the `let` keyword. A missing `;` fuses two LINES, so a fault on the same row as
+    /// its `let` is not a separator omission (see [`Lowering::diagnose_error_node`]).
+    row: usize,
+    /// Is this `let` a FUNCTION-BODY binding — the only kind the grammar requires a `;` after?
+    ///
+    /// A structure/module member `let` is newline-separated and takes no `;`, so anchoring
+    /// "missing ';' after `let` binding in function body" to one would advise an edit the
+    /// grammar rejects, about a construct that is not a function body. Recovery flattens both
+    /// kinds to bare tokens under an `ERROR`, so the classification is: parent kind when the
+    /// binding survived intact, otherwise whether an `fn` keyword precedes this `let` within
+    /// the same debris — a `let` in the wreckage of a function header is a fn-body `let`.
+    in_fn_body: bool,
+}
+
+/// Collect every anonymous `let` keyword inside `node`'s subtree, in source order, each
+/// classified by [`LetAnchor::in_fn_body`].
+///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
+/// When a missing `;` makes tree-sitter fuse a `let` RHS with the following statement, the
+/// recovered fault node sits on the ABSORBED line — one row after the line that actually
+/// needs editing. The `let` keyword is the absorbing line's anchor, so it, not the fault, is
+/// what a diagnostic must point at.
+///
+/// Collected ONCE per `ERROR` node rather than re-walked per fault. The subtree cannot be
+/// pruned by `has_error()` here (a `let` keyword usually sits in a perfectly clean part of the
+/// debris), so a per-fault walk costs O(faults × nodes); on a badly broken file that is the
+/// whole point of the bound, and `reify_syntax::parse` runs on the LSP's per-keystroke path
+/// where a transiently malformed large file is the normal state. One pass plus a binary search
+/// per fault (see [`Lowering::diagnose_error_node`]) makes it O(nodes + faults × log n).
+///
+/// The search is confined to `node`'s subtree, so an unrelated well-formed `let` elsewhere in
+/// the file can never be blamed for a fault it does not enclose. Pre-order DFS visits nodes in
+/// source order, so the result is sorted by `start_byte` and binary-searchable.
+fn collect_let_anchors(node: tree_sitter::Node<'_>) -> Vec<LetAnchor> {
+    let mut out: Vec<LetAnchor> = Vec::new();
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return out;
+    }
+    // Set by any `fn` keyword seen so far in source order; the fallback evidence for a `let`
+    // whose own binding node recovery destroyed.
+    let mut seen_fn_keyword = false;
+    loop {
+        let cur = cursor.node();
+        if !cur.is_named() {
+            match cur.kind() {
+                "fn" => seen_fn_keyword = true,
+                "let" => {
+                    let in_fn_body = match cur.parent().map(|p| p.kind()) {
+                        // The binding survived recovery intact: its kind is decisive.
+                        Some("fn_let_binding") => true,
+                        Some("let_declaration") => false,
+                        // Recovery debris — fall back to positional evidence.
+                        _ => seen_fn_keyword,
+                    };
+                    out.push(LetAnchor {
+                        start_byte: cur.start_byte(),
+                        row: cur.start_position().row,
+                        in_fn_body,
+                    });
+                }
+                _ => {}
+            }
+        }
+        if cursor.goto_first_child() {
+            continue;
         }
         loop {
             if cursor.goto_next_sibling() {
@@ -196,44 +316,15 @@ fn faults_strictly_inside(node: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<
     }
 }
 
-/// Find the LAST anonymous `let` token inside `node`'s subtree that starts strictly before
-/// byte offset `before`.
+/// The LAST anchor in `anchors` starting strictly before byte offset `before`, or `None`.
 ///
-/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
-/// When a missing `;` makes tree-sitter fuse a `let` RHS with the following statement, the
-/// recovered fault node sits on the ABSORBED line — one row after the line that actually
-/// needs editing. The `let` keyword is the absorbing line's anchor, so it, not the fault, is
-/// what a diagnostic must point at.
-///
-/// The search is confined to `node`'s subtree, so an unrelated well-formed `let` elsewhere in
-/// the file can never be blamed for a fault it does not enclose. Pre-order DFS visits nodes in
-/// source order, so the last match found is the closest preceding `let`.
-fn last_let_token_before(
-    node: tree_sitter::Node<'_>,
-    before: usize,
-) -> Option<tree_sitter::Node<'_>> {
-    let mut best: Option<tree_sitter::Node<'_>> = None;
-    let mut cursor = node.walk();
-    if !cursor.goto_first_child() {
-        return None;
-    }
-    loop {
-        let cur = cursor.node();
-        if !cur.is_named() && cur.kind() == "let" && cur.start_byte() < before {
-            best = Some(cur);
-        }
-        if cursor.goto_first_child() {
-            continue;
-        }
-        loop {
-            if cursor.goto_next_sibling() {
-                break;
-            }
-            if !cursor.goto_parent() || cursor.node() == node {
-                return best;
-            }
-        }
-    }
+/// `anchors` is in source order (see [`collect_let_anchors`]), so this is a binary search.
+/// Deliberately returns the nearest preceding `let` WHATEVER its classification, leaving the
+/// `in_fn_body` decision to the caller: skipping a non-fn `let` to blame an earlier fn one
+/// would report a fault against a `let` that does not even enclose it.
+fn last_let_anchor_before(anchors: &[LetAnchor], before: usize) -> Option<LetAnchor> {
+    let idx = anchors.partition_point(|a| a.start_byte < before);
+    idx.checked_sub(1).map(|i| anchors[i])
 }
 
 /// Classification of an out-of-range numeric literal parse result.
@@ -361,6 +452,12 @@ impl<'a> Lowering<'a> {
     /// first-fault-only report silently drops every later declaration's break. Deduplicating by
     /// anchoring `let` keeps the recovery debris around a single break from multiplying into
     /// several diagnostics for the same missing separator.
+    ///
+    /// `context` (`"source file"`, `"structure body"`) names only the DISPATCH ARM, not the
+    /// construct the fault is in — the t9 shape reaches this method as a `"source file"` ERROR
+    /// yet the fault is inside a function body — so it is used only in the generic arm's
+    /// message. The separator arm instead earns its "in function body" wording from
+    /// [`LetAnchor::in_fn_body`], which is a property of the anchoring `let` itself.
     fn diagnose_error_node(&self, node: tree_sitter::Node, context: &str) {
         /// Upper bound on diagnostics from a single `ERROR` node, so a badly broken file
         /// cannot bury its first real error under recovery noise. Truncation is always
@@ -373,6 +470,11 @@ impl<'a> Lowering<'a> {
             faults.push(node);
         }
 
+        // Hoisted out of the fault loop: one walk for the whole `ERROR` node, then a binary
+        // search per fault. Re-walking the subtree per fault made a badly broken file cost
+        // O(faults × nodes) on the LSP's per-keystroke path.
+        let let_anchors = collect_let_anchors(node);
+
         // Anchoring `let` start bytes already reported; bounded by MAX_DIAGNOSTICS, so a
         // linear `contains` is cheaper than a set.
         let mut reported_lets: Vec<usize> = Vec::new();
@@ -381,21 +483,29 @@ impl<'a> Lowering<'a> {
         let mut suppressed_at: Option<tree_sitter::Node> = None;
 
         for fault in faults {
-            // A missing `;` is only a plausible cause when the fault sits on a LATER LINE than
-            // the `let` — that fusing of two lines is the whole mechanism (see
-            // `last_let_token_before`). Once recovery has derailed at the first fault, later
-            // debris can land on the same line as an entirely well-formed binding; measured on
+            // Two conditions must BOTH hold before a missing `;` is a supportable diagnosis.
+            //
+            // The fault must sit on a LATER LINE than the `let` — that fusing of two lines is
+            // the whole mechanism (see `collect_let_anchors`). Once recovery has derailed at
+            // the first fault, later debris can land on the same line as an entirely
+            // well-formed binding; measured on
             // `structure T { fn f(..) { let x0 = 1 <NL> x0 * 2 } let v = 1 }`, tree-sitter emits
             // a second `ERROR` at `v`, whose nearest preceding `let` is the well-formed
-            // `let v = 1`. Blaming it would report "missing ';'" against a line that has no
-            // separator problem — the same point-at-an-unrelated-line defect this method exists
-            // to remove. Such a fault falls through to the generic branch instead: honest about
-            // the debris, silent about a cause it cannot support.
-            let anchoring_let = last_let_token_before(node, fault.start_byte())
-                .filter(|let_tok| fault.start_position().row > let_tok.start_position().row);
+            // `let v = 1`.
+            //
+            // And the `let` must be a FUNCTION-BODY binding. Only `fn_let_binding` requires a
+            // `;`; a structure/module member `let` is newline-separated, so telling a user to
+            // add a separator there names a construct that is not a function body and demands
+            // an edit the grammar rejects.
+            //
+            // Either way the failure is the same point-at-an-unrelated-line defect this method
+            // exists to remove, so such a fault falls through to the generic branch instead:
+            // honest about the debris, silent about a cause it cannot support.
+            let anchoring_let = last_let_anchor_before(&let_anchors, fault.start_byte())
+                .filter(|a| a.in_fn_body && fault.start_position().row > a.row);
             match anchoring_let {
                 Some(let_tok) => {
-                    let anchor = let_tok.start_byte();
+                    let anchor = let_tok.start_byte;
                     if reported_lets.contains(&anchor) {
                         continue;
                     }
@@ -2479,8 +2589,17 @@ impl<'a> Lowering<'a> {
             self.push_fault_error(node, "function body has no result expression");
             return None;
         };
-        let Some(result_expr) = self.lower_expr(result_node) else {
-            self.push_fault_error(node, "function body has no result expression");
+        // Distinct from the arm above, and reported only as a backstop. Here the result node
+        // EXISTS and merely failed to lower, so "has no result expression" would be factually
+        // wrong; and `lower_expr` has usually already pushed a more specific, better-located
+        // message, which this must not duplicate. Same growth check as
+        // `lower_function_checked`: speak only when the inner pass stayed silent.
+        let before = self.errors.borrow().len();
+        let lowered = self.lower_expr(result_node);
+        let Some(result_expr) = lowered else {
+            if self.errors.borrow().len() == before {
+                self.push_fault_error(result_node, "invalid result expression in function body");
+            }
             return None;
         };
 
@@ -8470,5 +8589,268 @@ mod tests {
             "a recognised operator must not diagnose, got {:?}",
             lowering.errors.borrow()
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392:
+    // unit coverage for the fault-location primitives behind the fn-body separator
+    // diagnostics. These are private free functions and a private method, so they are pinned
+    // here rather than through `parse` — the properties below (character-boundary safety,
+    // "innermost" fault selection, fn-vs-member `let` classification) are contracts of the
+    // helpers themselves, not of any one malformed fixture.
+    // ---------------------------------------------------------------------------------------
+
+    /// Parse `source` and hand the root node to `f`. Deliberately tolerates a broken parse:
+    /// every caller below feeds malformed source on purpose.
+    fn with_root<R>(source: &str, f: impl FnOnce(tree_sitter::Node) -> R) -> R {
+        let mut ts_parser = tree_sitter::Parser::new();
+        ts_parser
+            .set_language(&tree_sitter_reify::language().into())
+            .expect("Error loading Reify grammar");
+        let tree = ts_parser.parse(source, None).expect("Failed to parse");
+        f(tree.root_node())
+    }
+
+    /// An `ERROR` node whose children are all well-formed is itself the innermost fault.
+    ///
+    /// INV-SF-7, task #5392. Measured shape: `structure S {\n  let a = 1 1\n}` yields
+    /// `(ERROR [1,12]-[1,13] (number_literal [1,12]-[1,13]))` — an `ERROR` whose only child is
+    /// a clean recovered token. `has_error()` is true for the `ERROR` itself and says nothing
+    /// about its children, so a walk that tests for a fault only where it can descend no
+    /// further walks straight past this node and records nothing. With no fault recorded,
+    /// `diagnose_error_node` falls back to the whole enclosing node — the blob span this
+    /// class of diagnostic exists to eliminate.
+    #[test]
+    fn faults_strictly_inside_records_an_error_whose_children_are_clean() {
+        let source = "structure S {\n  let a = 1 1\n}\n";
+        // The stray trailing literal, located by search rather than a hard-coded offset.
+        let stray = source.rfind('1').expect("fixture must contain a stray '1'");
+
+        with_root(source, |root| {
+            let faults = faults_strictly_inside(root);
+            assert_eq!(
+                faults.len(),
+                1,
+                "expected exactly the one ERROR-with-clean-children to be recorded, got {:?}",
+                faults
+                    .iter()
+                    .map(|f| (f.kind(), f.start_byte(), f.end_byte()))
+                    .collect::<Vec<_>>(),
+            );
+            let fault = faults[0];
+            assert!(
+                fault.is_error(),
+                "recorded fault should be the ERROR node, got kind {:?}",
+                fault.kind(),
+            );
+            assert_eq!(
+                (fault.start_byte(), fault.end_byte()),
+                (stray, stray + 1),
+                "recorded fault must be the narrow ERROR around the stray literal, not the \
+                 enclosing declaration",
+            );
+        });
+    }
+
+    /// The same walk still narrows to the DEEPEST fault when one exists, and never records an
+    /// enclosing fault that has a broken descendant.
+    ///
+    /// INV-SF-7, task #5392. The t9 shape collapses the WHOLE file into one top-level `ERROR`.
+    /// Measured inside it: `g`'s break is an `(ERROR (ERROR))` pair at the absorbed token,
+    /// while `h`'s entire declaration becomes a nested `ERROR [51..91]` whose header tokens are
+    /// each wrapped in their own leaf `ERROR` — seven innermost faults in total. Both
+    /// properties asserted here are what make that usable: no recorded fault is the enclosing
+    /// blob, and each broken declaration contributes at least one, so a caller that reported
+    /// only the first would leave `h` entirely undiagnosed.
+    #[test]
+    fn faults_strictly_inside_prefers_the_innermost_fault() {
+        let source = "fn g(i: Int) -> Real {\n  let a = 2\n  a * sgn(i, 0)\n}\nfn h(i: Int) -> Real {\n  let b = 3\n  b + 1\n}\n";
+        let fn_h = source.find("fn h(").expect("fixture must contain 'fn h('");
+
+        with_root(source, |root| {
+            let top: Vec<_> = {
+                let mut cursor = root.walk();
+                root.children(&mut cursor)
+                    .filter(|c| c.is_error())
+                    .collect()
+            };
+            assert_eq!(
+                top.len(),
+                1,
+                "fixture should collapse into ONE top-level ERROR"
+            );
+            let faults = faults_strictly_inside(top[0]);
+            let rendered: Vec<_> = faults
+                .iter()
+                .map(|f| (f.kind(), f.start_byte(), f.end_byte()))
+                .collect();
+
+            for fault in &faults {
+                assert!(
+                    faults_strictly_inside(*fault).is_empty(),
+                    "recorded fault {:?} still has a broken descendant, so it is not innermost",
+                    (fault.kind(), fault.start_byte(), fault.end_byte()),
+                );
+                assert!(
+                    fault.end_byte() - fault.start_byte() < source.len(),
+                    "recorded fault {:?} spans the whole file — the blob span again",
+                    (fault.kind(), fault.start_byte(), fault.end_byte()),
+                );
+            }
+
+            // One collapsed ERROR node is not one fault: BOTH declarations are represented.
+            assert!(
+                faults.iter().any(|f| f.start_byte() < fn_h),
+                "no fault recorded inside `g` (bytes 0..{fn_h}); got {rendered:?}",
+            );
+            assert!(
+                faults.iter().any(|f| f.start_byte() >= fn_h),
+                "no fault recorded inside `h` (bytes {fn_h}..); got {rendered:?}",
+            );
+        });
+    }
+
+    /// A structure-member `let` must NOT be classified as a function-body binding.
+    ///
+    /// INV-SF-7, task #5392. Only `fn_let_binding` requires a `;`; a structure member `let` is
+    /// newline-separated. Anchoring "missing ';' after `let` binding in function body" to a
+    /// member `let` would name a construct that is not a function body and demand an edit the
+    /// grammar rejects.
+    #[test]
+    fn let_anchors_distinguish_fn_bindings_from_member_declarations() {
+        with_root("structure S {\n  let a = 1\n}\n", |root| {
+            let anchors = collect_let_anchors(root);
+            assert_eq!(anchors.len(), 1, "fixture has exactly one `let`");
+            assert!(
+                !anchors[0].in_fn_body,
+                "a structure member `let` is not a function-body binding",
+            );
+        });
+
+        with_root(
+            "fn f(x: Int) -> Int {\n  let y = 2;\n  y + x\n}\n",
+            |root| {
+                let anchors = collect_let_anchors(root);
+                assert_eq!(anchors.len(), 1, "fixture has exactly one `let`");
+                assert!(
+                    anchors[0].in_fn_body,
+                    "a `fn_let_binding`'s `let` IS a function-body binding",
+                );
+            },
+        );
+
+        // Recovery debris: the collapse destroys `fn_let_binding`, so the classification falls
+        // back to "an `fn` keyword precedes this `let` in the same wreckage".
+        with_root(
+            "fn g(i: Int) -> Real {\n  let a = 2\n  a * b\n}\n",
+            |root| {
+                let anchors = collect_let_anchors(root);
+                assert_eq!(anchors.len(), 1, "fixture has exactly one `let`");
+                assert!(
+                    anchors[0].in_fn_body,
+                    "a `let` inside the wreckage of a function header is a function-body binding",
+                );
+            },
+        );
+    }
+
+    /// `last_let_anchor_before` returns the NEAREST preceding anchor, whatever its class.
+    #[test]
+    fn last_let_anchor_before_picks_the_nearest_preceding_anchor() {
+        let anchors = [
+            LetAnchor {
+                start_byte: 10,
+                row: 1,
+                in_fn_body: true,
+            },
+            LetAnchor {
+                start_byte: 30,
+                row: 3,
+                in_fn_body: false,
+            },
+        ];
+        assert!(
+            last_let_anchor_before(&anchors, 10).is_none(),
+            "strictly before"
+        );
+        assert_eq!(
+            last_let_anchor_before(&anchors, 11).map(|a| a.start_byte),
+            Some(10)
+        );
+        assert_eq!(
+            last_let_anchor_before(&anchors, 40).map(|a| a.start_byte),
+            Some(30)
+        );
+        assert!(
+            last_let_anchor_before(&anchors, 40).is_some_and(|a| !a.in_fn_body),
+            "the nearest anchor is returned even when it is a member `let`; skipping it to \
+             blame the earlier fn `let` would report a fault against a binding that does not \
+             enclose it",
+        );
+        assert!(last_let_anchor_before(&[], 5).is_none());
+    }
+
+    /// `snippet` truncates on a CHARACTER boundary, never a byte one.
+    ///
+    /// INV-SF-7, task #5392. The doc on `snippet` calls this out specifically: `&s[..40]` on a
+    /// non-ASCII string panics mid-codepoint, and the source is UTF-8, so a string literal or
+    /// comment full of multi-byte characters would abort the parse instead of describing it.
+    #[test]
+    fn snippet_truncates_long_multibyte_text_on_a_character_boundary() {
+        // 45 two-byte characters — comfortably past the 40-char cap, and every candidate cut
+        // point past index 0 is mid-codepoint under byte slicing.
+        let long = "α".repeat(45);
+        let source = format!("structure S {{\n  let a = \"{long}\"\n}}\n");
+
+        with_root(&source, |root| {
+            let node = find_node_by_kind(root, "string_literal")
+                .expect("fixture must contain a string_literal");
+            let lowering = Lowering::new(&source);
+            let snippet = lowering.snippet(node);
+
+            assert!(
+                snippet.ends_with('…'),
+                "a truncated snippet must announce the truncation, got {snippet:?}",
+            );
+            assert_eq!(
+                snippet.chars().count(),
+                41,
+                "40 characters plus the ellipsis, got {snippet:?}",
+            );
+            assert!(
+                snippet.chars().filter(|c| *c == 'α').count() >= 39,
+                "the truncated prefix should be the node's own text, got {snippet:?}",
+            );
+        });
+    }
+
+    /// The other truncation branch: a first line SHORTER than the cap, followed by more lines,
+    /// is still marked as truncated.
+    #[test]
+    fn snippet_marks_truncation_when_only_later_lines_are_dropped() {
+        let source = "structure S {\n  let a = 1\n}\n";
+        with_root(source, |root| {
+            let node = find_node_by_kind(root, "structure_definition")
+                .expect("fixture must contain a structure_definition");
+            let lowering = Lowering::new(source);
+            let snippet = lowering.snippet(node);
+            assert_eq!(
+                snippet, "structure S {…",
+                "a multi-line node must be cut at its first newline and marked",
+            );
+            assert!(!snippet.contains('\n'), "snippets are always one line");
+        });
+    }
+
+    /// A single-line node shorter than the cap is reproduced verbatim, with no ellipsis.
+    #[test]
+    fn snippet_leaves_short_single_line_text_alone() {
+        let source = "structure S {\n  let a = 1\n}\n";
+        with_root(source, |root| {
+            let node = find_node_by_kind(root, "let_declaration")
+                .expect("fixture must contain a let_declaration");
+            let lowering = Lowering::new(source);
+            assert_eq!(lowering.snippet(node), "let a = 1");
+        });
     }
 }
