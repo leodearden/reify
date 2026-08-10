@@ -441,6 +441,88 @@ async fn the_lsp_lane_runs_its_work_off_the_awaiting_runtime_thread() {
     );
 }
 
+/// (e) END-TO-END deep nesting: a real `.ri` document with deeply-nested
+/// expressions is opened and hovered THROUGH the lane, and both requests
+/// succeed with well-formed responses.
+///
+/// This is the regression case the routing exists for — the keystroke-frequency
+/// compiler-adjacent path (`reify-syntax`'s CST-to-AST walk, which has neither a
+/// `stacker` guard nor a depth cap, then `reify-compiler`'s recursive compile)
+/// driven over genuinely nested source rather than over a synthetic recursion.
+///
+/// The nesting depth is chosen to stay well under `reify-compiler`'s
+/// `MAX_COMPILE_RECURSION_DEPTH` (256) so the request SUCCEEDS rather than being
+/// refused by the depth cap — a refusal would make the test pass without ever
+/// exercising a deep walk. The synthetic ~16 MiB assertion lives in
+/// `large_stack_tests.rs`; this one proves the real path is wired to the same
+/// lane.
+///
+/// EXERCISES THE INLINE ARMS. `didOpen` and `hover` both run inline inside
+/// `handle_request`, so they are genuinely on the lane. `definition`,
+/// `prepareRename`, `rename` and `references` hop to `spawn_blocking` and are
+/// NOT — no assertion here claims otherwise.
+#[tokio::test]
+async fn deeply_nested_source_opens_and_hovers_through_the_lane() {
+    use crate::lsp_bridge::lsp_request_on_worker;
+
+    /// Comfortably under `MAX_COMPILE_RECURSION_DEPTH` (256), and far above the
+    /// 128 of "realistic-nesting headroom" the compiler's guard is sized for.
+    const NESTING: usize = 100;
+
+    let uri = "file:///deeply_nested.ri";
+    let expr = format!("{}1mm{}", "(".repeat(NESTING), ")".repeat(NESTING));
+    let source = format!("structure Deep {{\n    param width: Length = {expr}\n}}");
+
+    let bridge = Arc::new(LspBridge::new());
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialize".to_string(),
+        reify_test_support::MINIMAL_INIT_PARAMS_JSON.to_string(),
+    )
+    .await
+    .expect("initialize through the lane");
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "initialized".to_string(),
+        "{}".to_string(),
+    )
+    .await
+    .expect("initialized through the lane");
+
+    // didOpen drives the full parse + compile of the nested source.
+    lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/didOpen".to_string(),
+        json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "reify",
+                "version": 1,
+                "text": source
+            }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("didOpen of deeply-nested source through the lane");
+
+    // hover on the `width` param — the per-cursor-move request.
+    let hovered = lsp_request_on_worker(
+        Arc::clone(&bridge),
+        "textDocument/hover".to_string(),
+        json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": 10 }
+        })
+        .to_string(),
+    )
+    .await
+    .expect("hover over deeply-nested source through the lane");
+
+    serde_json::from_str::<serde_json::Value>(&hovered)
+        .expect("hover over deeply-nested source must return a well-formed JSON response");
+}
+
 #[tokio::test]
 async fn lsp_request_impl_valid_json_passes_json_parse_step() {
     // Table-driven: each entry is valid JSON that serde_json::from_str accepts.

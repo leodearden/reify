@@ -983,3 +983,33 @@ async fn async_dispatch_without_a_lane_runs_inline_and_still_resolves() {
         "with no lane the closure must run INLINE on the caller's own stack"
     );
 }
+
+/// (y) The ASYNC path onto the LSP lane carries the LARGE STACK too — the whole
+/// point of routing `lsp_request` there.
+///
+/// (u) proved the async submission lands on the lane; this proves the lane it
+/// lands on is the 256 MiB one, through the async entry point specifically. An
+/// impl that built its lane without
+/// [`crate::large_stack::COMPILE_STACK_SIZE`] fails here: ~8 KiB/frame x 2048 is
+/// ~16 MiB, 8x the ~2 MiB default a tokio worker would have given this work.
+///
+/// Per the module's "no violent RED" doctrine the recursion is reached ONLY
+/// through [`deep_recurse_if_on_thread`], so a degraded lane yields a clean
+/// assertion failure instead of overflowing and SIGABRTing the whole binary.
+#[tokio::test]
+async fn run_on_lsp_worker_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
+
+    let result = run_on_lsp_worker(|| {
+        deep_recurse_if_on_thread(LSP_WORKER_THREAD_NAME, DEEP_RECURSION_DEPTH)
+    })
+    .await;
+
+    let depth_reached = result.unwrap_or_else(|why| panic!("{why}"));
+    assert_eq!(
+        depth_reached,
+        u64::from(DEEP_RECURSION_DEPTH) + 1,
+        "deep recursion must run to completion on the LSP lane's large stack, \
+         reached through the ASYNC entry point `lsp_request` uses"
+    );
+}
