@@ -6,7 +6,8 @@
 #   scripts/cargo-test-occt-gated.sh (OCCT concurrency gate, standalone runner)
 #
 # FUNCTIONS (defined when sourced):
-#   slot_acquire LOCK_BASE N WAIT  — shuffle-acquire loop; holds FD 9 in the
+#   slot_acquire LOCK_BASE N WAIT [REASON] [TIMEOUT_REASON]
+#                                  — shuffle-acquire loop; holds FD 9 in the
 #                                    CALLER's shell on success. Returns 0 on
 #                                    success (slot held), 75 (EX_TEMPFAIL) on
 #                                    deadline. Sets output globals:
@@ -14,6 +15,20 @@
 #                                      SLOT_ACQUIRE_ELAPSED — wall seconds waited
 #   slot_emit_event VERB [SLOT]    — opt-in event-log append (complete no-op
 #                                    when REIFY_SLOT_EVENT_LOG is unset).
+#   slot_emit_timeout R L S W      — the slot-timeout sentinel (see below);
+#                                    called from the deadline site only.
+#
+# SLOT-TIMEOUT MARKER:
+#   On the finite-WAIT deadline (the rc=75 path) slot_acquire emits ONE line to
+#   stderr, first token at COLUMN 0:
+#     @@REIFY_SLOT_TIMEOUT@@ reason=<R> lock=<LOCK_BASE> slots=<N> waited=<secs>
+#   dark-factory's SEMAPHORE_TIMEOUT classifier matches it LINE-ANCHORED, so it
+#   must never be appended mid-line to another message; the human-readable
+#   deadline messages the three wrapper callers print are DF's other grounded
+#   anchors and this marker is strictly additive alongside them.
+#   A DISTINCT family from @@REIFY_CLOCK_*@@: unpaired and terminal, and
+#   deliberately outside run_all.sh's `@@REIFY_CLOCK_` sanitizer prefix so it
+#   survives re-emission. Guard: tests/infra/test_slot_timeout_marker.sh.
 #
 # OUTPUT GLOBALS (set by slot_acquire):
 #   SLOT_ACQUIRE_SLOT    — slot number (1..N) acquired; "" on 75 return.
@@ -138,6 +153,19 @@ slot_emit_timeout() {
 #                  When empty (default), no markers are emitted — the existing
 #                  3-arg callers (cargo-test-occt-gated.sh) are byte-for-byte
 #                  unchanged.
+#     TIMEOUT_REASON — OPTIONAL 5th arg.  Reason token carried by the
+#                  @@REIFY_SLOT_TIMEOUT@@ sentinel on the rc=75 path only.
+#                  Defaults to ${REASON:-slot_acquire}, so existing 3-arg and
+#                  4-arg callers keep working and always put a non-empty reason
+#                  on the wire.
+#                  SEPARATE FROM REASON ON PURPOSE: REASON is load-bearing for
+#                  clock-stop accounting, and callers that deliberately pass
+#                  none (cargo-test-occt-gated.sh, lib_lane_x_flock.sh — whose
+#                  waits are not part of any verify's clock-stop budget) would
+#                  have that budget silently changed if naming their timeout
+#                  required supplying one.  Pass "" as REASON alongside a
+#                  TIMEOUT_REASON to say "no clock markers, but name my
+#                  deadline".  Vocabulary: docs/notes/verify-pipeline-knobs.md.
 #
 #   On success  — SLOT_ACQUIRE_SLOT=<N>, SLOT_ACQUIRE_ELAPSED=<secs>,
 #                 FD 9 held open, slot_emit_event ACQUIRE called; returns 0.
