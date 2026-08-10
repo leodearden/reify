@@ -19,6 +19,14 @@
 //! diagnostic codes so unrelated diagnostics never pollute the counts.
 //!
 //! No new diagnostic codes are minted in α; no reify-core change.
+//!
+//! Task 5303 (struct-ctor-conformance ε) mints exactly two: `CtorUnknownField`
+//! and `CtorArity`, for the two lenient `__arg{i}` sites in the
+//! `StructureInstanceCtor` by-name binder (PRD §7 rows 11/12 — an unknown named
+//! argument, and an over-arity positional argument). Both are emitted from
+//! `crates/reify-compiler/src/expr.rs` at the SAME
+//! `CTOR_FIELD_CONFORMANCE_SEVERITY` knob as the α surface, so they are part of
+//! the ctor-conformance code set below and δ flips them with everything else.
 
 mod common;
 
@@ -30,12 +38,15 @@ use reify_core::{
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
-/// field-conformance pass (task 5302 / 4584 / 4598 / 4622 / 4444).
+/// field-conformance surface (task 5302 / 5303 / 4584 / 4598 / 4622 / 4444).
 ///
 /// Filtering to this set keeps the per-fixture "exactly one diagnostic" counts
 /// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
-/// downstream note, etc.). All five codes already exist in `diagnostics.rs`; α
-/// mints none.
+/// downstream note, etc.). The first five codes already existed in
+/// `diagnostics.rs`; α minted none. ε (task 5303) adds the two structural codes
+/// `CtorUnknownField` / `CtorArity` — they belong here because they are emitted
+/// at the same `CTOR_FIELD_CONFORMANCE_SEVERITY` knob and δ flips them together
+/// with the α type codes, so the ε probes' "exactly N" counts must see them.
 fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
     matches!(
         code,
@@ -45,6 +56,8 @@ fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
                 | DiagnosticCode::TypeNotConformingToTrait
                 | DiagnosticCode::TypeNotConformingToStructureRef
                 | DiagnosticCode::TypeNotConformingToVector
+                | DiagnosticCode::CtorUnknownField
+                | DiagnosticCode::CtorArity
         )
     )
 }
