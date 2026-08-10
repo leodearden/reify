@@ -19,6 +19,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   describeRpcFailure,
+  describeScopedToggleNoBleed,
   describeUnscopedAmbiguity,
   openFileWithRetry,
 } from "./smokeDriverGuards.mjs";
@@ -351,6 +352,133 @@ describe("describeUnscopedAmbiguity — the anti-vacuity precondition for #5891 
     );
     expect(diagnosis).toContain("attributed to no pane");
     expect(diagnosis).toContain("null");
+  });
+});
+
+describe("describeScopedToggleNoBleed — the live counterpart of the jsdom #5891 pin", () => {
+  /**
+   * The all-green live reading, written out ONCE so every case below is a spread
+   * override differing in exactly the field it pins.
+   *
+   * Shapes are the real ones: `click_element` answers a bare `{ok: true}` when
+   * the scope narrowed the resolve to one element (paneDiagnostics adds its pair
+   * only ABOVE one match), and `dom_query` reports the FEA body's presence, which
+   * is the only per-pane proxy for `enabled` the wire offers.
+   */
+  const PASSING = {
+    drivenPaneId: "pane-1",
+    otherPaneId: "design-main",
+    bodyTestId: "fea-mode-channel-select",
+    clickResult: { ok: true } as unknown,
+    otherBefore: { exists: false } as unknown,
+    drivenAfter: { exists: true, visible: true, tagName: "select" } as unknown,
+    otherAfter: { exists: false } as unknown,
+  };
+
+  it("returns null for the all-green reading: driven pane opened, other pane untouched", () => {
+    expect(describeScopedToggleNoBleed(PASSING)).toBeNull();
+  });
+
+  it("delegates a null click result to describeRpcFailure", () => {
+    const diagnosis = describeScopedToggleNoBleed({ ...PASSING, clickResult: null });
+    expect(diagnosis).toContain("returned null");
+    expect(diagnosis).toContain("pane-1");
+  });
+
+  it("surfaces the resolver's own not-found error VERBATIM", () => {
+    // RESOLVE_BY_TESTID_ERRORS.notFoundForViewport is what a scoped click gets
+    // when the pane exists but does not carry the testid — the single most likely
+    // live failure, and useless to an operator unless quoted.
+    const notFound =
+      "element with data-testid=\"fea-mode-enable-toggle\" not found for viewport 'pane-1'";
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      clickResult: { error: notFound },
+    });
+    expect(diagnosis).toContain(notFound);
+  });
+
+  it("names a well-formed click that simply did not report ok", () => {
+    const diagnosis = describeScopedToggleNoBleed({ ...PASSING, clickResult: { ok: false } });
+    expect(diagnosis).toContain("did not report ok");
+  });
+
+  it("fails when the SCOPED click still resolved several elements — scoping did nothing", () => {
+    // THE scope-uniqueness branch. paneDiagnostics emits {viewportId, matchCount}
+    // only above one match, so their presence on a SCOPED call says the viewportId
+    // failed to disambiguate — the pane was still guessed. Their ABSENCE on the
+    // passing case is correspondingly the positive evidence that it did not.
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      clickResult: { ok: true, viewportId: "design-main", matchCount: 2 },
+    });
+    expect(diagnosis).toContain("2");
+    expect(diagnosis).toContain("disambiguate");
+  });
+
+  it("refuses to certify no-bleed from a DIRTY baseline", () => {
+    // If the other pane's body was already open before the click, "still open
+    // after" proves nothing and "unchanged" is a meaningless verdict.
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      otherBefore: { exists: true },
+    });
+    expect(diagnosis).toContain("baseline");
+    expect(diagnosis).toContain("design-main");
+  });
+
+  it("names a click that never landed on the driven pane", () => {
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      drivenAfter: { exists: false },
+    });
+    expect(diagnosis).toContain("did not land");
+    expect(diagnosis).toContain("pane-1");
+  });
+
+  it("names BOTH panes when driving one changed the other — the no-bleed branch", () => {
+    // Pre-#5891 the unscoped first-match would have driven design-main, so this
+    // is the branch the whole scenario exists to keep red.
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      otherAfter: { exists: true },
+    });
+    expect(diagnosis).toContain("BLEED");
+    expect(diagnosis).toContain("pane-1");
+    expect(diagnosis).toContain("design-main");
+  });
+
+  it("type-checks `exists` as a boolean on every probe, so a folded payload cannot pass", () => {
+    // describeRpcFailure documents a blind spot: a NON-STRING error (`{error: 500}`)
+    // folds to "healthy". Comparing `exists` without checking its type would then
+    // let `{}` read as "not present" and certify a silent pass.
+    for (const field of ["drivenAfter", "otherAfter"] as const) {
+      const diagnosis = describeScopedToggleNoBleed({ ...PASSING, [field]: {} });
+      expect(diagnosis).toContain("boolean");
+      expect(diagnosis).toContain("exists");
+    }
+  });
+
+  it("returns ONE diagnosis and pins WHICH branch wins when two probes are wrong", () => {
+    // Branch order is a contract, not an accident: a click that never landed
+    // explains the other pane's state too, so reporting the bleed first would send
+    // the operator after the wrong cause.
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      drivenAfter: { exists: false },
+      otherAfter: { exists: true },
+    });
+    expect(typeof diagnosis).toBe("string");
+    expect(diagnosis).toContain("did not land");
+    expect(diagnosis).not.toContain("BLEED");
+  });
+
+  it("health-checks each probe rather than merely field-reading it", () => {
+    const diagnosis = describeScopedToggleNoBleed({
+      ...PASSING,
+      otherAfter: { error: "boom" },
+    });
+    expect(diagnosis).toContain("boom");
   });
 });
 
