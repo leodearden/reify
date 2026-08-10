@@ -10,9 +10,15 @@
 // tessellator has almost no facets to spend across the tube's cross-section.
 // The sweep must walk BOTH — that is the whole point of this fixture.
 //
-// Measured here at torus(1000mm, 100mm) @10 mm: 2.175e-3 m, ratio 0.2175 —
-// nowhere near PRD §2's 0.982 spot value.  A spot value on this class is
-// actively misleading; the note tabulates the supremum over the regime instead.
+// Measured 2026-08-10 at 5db884e30b: torus(1000mm, 100mm) @10 mm -> 5.665e-3 m,
+// ratio 0.567 — deterministic (identical across 3 runs).  Note this contradicts a
+// pre-session probe that recorded 2.175e-3 / 0.2175 for the same construct; the
+// committed spelling measures 5.665e-3.
+//
+// A spot value on this class is actively misleading, so the note tabulates the
+// SUPREMUM over the regime instead: 0.978, at minor/major = 0.02 and d/minor =
+// 0.015, which sits right at PRD §2's 0.982.  The default point above is roughly
+// HALF the supremum — sampling this one point understates the envelope ~2x.
 //
 // NOT wired into any probe set or auto-run gate.
 
