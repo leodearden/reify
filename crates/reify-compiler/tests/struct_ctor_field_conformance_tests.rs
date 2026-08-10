@@ -2998,3 +2998,243 @@ fn zero_argument_call_emits_no_ctor_conformance_diagnostic() {
         errors_only(&module)
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ε step-5 probes: cross-context reach, no-cross-talk, and preservation pins.
+//
+// Steps 2/4 each verified their own emit site in a value-cell context. These pin
+// the INTERACTIONS those steps leave unverified: that the binder is reached from
+// the other expression positions, that ε's two structural checks neither swallow
+// nor double α's type check when all three faults ride one call, that the type
+// anti-cascade carve-out holds, and that ε remains behaviour-preserving.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_UNKNOWN_FIELD_FN_BODY: &str = r#"module test.unknown_field_fn
+structure def Widget11 { param label : String }
+fn make() -> Widget11 { Widget11(labl: "x") }
+"#;
+
+/// (a) Free-fn body reach: the by-name binder is reached from a `fn` body, not
+/// only from a structure member. Without this, step-2 would only prove the
+/// value-cell path.
+#[test]
+fn unknown_named_argument_in_fn_body_emits_ctor_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_FN_BODY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a free-fn body ctor must reach the binder and emit exactly one diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
+    assert_eq!(diags[0].severity, Severity::Warning);
+}
+
+const SRC_UNKNOWN_FIELD_NESTED: &str = r#"module test.unknown_field_nested
+structure def Widget11 { param label : String }
+structure def O { param inner : Widget11 }
+structure def Root {
+    let x = O(inner: Widget11(labl: "x"))
+}
+"#;
+
+/// (b) Nested-ctor-argument reach, and attribution. The INNER call's typo must be
+/// diagnosed exactly once; the OUTER call is well-formed and must contribute
+/// nothing — a nested ctor is a legal argument, so an implementation that walked
+/// the outer call's args as if they were unknown fields would double-report here.
+#[test]
+fn unknown_named_argument_in_nested_ctor_argument_is_attributed_to_the_inner_call() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_NESTED);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "only the INNER call is malformed — the well-formed outer `O(inner: ...)` call \
+         must contribute nothing, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorUnknownField));
+    assert!(
+        diags[0].message.contains("Widget11") && !diags[0].message.contains("'O'"),
+        "the diagnostic must be attributed to the inner `Widget11` call, not the outer \
+         `O` call, got: {:?}",
+        diags[0].message
+    );
+}
+
+const SRC_OVER_ARITY_FN_BODY: &str = r#"module test.over_arity_fn
+structure def Widget12 { param label : String }
+fn make2() -> Widget12 { Widget12("a", "b") }
+"#;
+
+/// (c) Free-fn body reach for the arity site, the sibling of (a).
+#[test]
+fn over_arity_in_fn_body_emits_ctor_arity() {
+    let module = compile_source_with_stdlib(SRC_OVER_ARITY_FN_BODY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a free-fn body over-arity ctor must emit exactly one diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].code, Some(DiagnosticCode::CtorArity));
+    assert_eq!(diags[0].severity, Severity::Warning);
+}
+
+const SRC_ALL_THREE_FAULTS: &str = r#"module test.all_three_faults
+structure def Widget13 { param label : String }
+structure def Root {
+    let x = Widget13(label: 42, labl: "x", "extra")
+}
+"#;
+
+/// (d) NO CROSS-TALK — the central pin of this step. One call carrying all three
+/// faults at once (wrong TYPE on a bound param, an unknown FIELD name, and a
+/// surplus positional) must yield exactly three diagnostics: one each of
+/// `ArgTypeMismatch` (α's type walker), `CtorUnknownField` and `CtorArity`
+/// (ε's structural checks).
+///
+/// This is the C2(ii) at-most-one-per-(arg, fact) pin: no duplicates (ε must not
+/// double-count an argument it already reported), no suppression (ε's structural
+/// checks must not swallow α's type check, nor each other), and all three at the
+/// shared knob severity so δ moves them together. It is also what makes β's
+/// corpus survey able to bucket the three fault classes separately.
+#[test]
+fn all_three_ctor_faults_on_one_call_emit_exactly_one_diagnostic_each() {
+    let module = compile_source_with_stdlib(SRC_ALL_THREE_FAULTS);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        3,
+        "expected exactly three ctor-conformance diagnostics (one per fact), got: {diags:#?}"
+    );
+    let codes: Vec<Option<DiagnosticCode>> = diags.iter().map(|d| d.code).collect();
+    for expected in [
+        DiagnosticCode::ArgTypeMismatch,
+        DiagnosticCode::CtorUnknownField,
+        DiagnosticCode::CtorArity,
+    ] {
+        assert_eq!(
+            codes.iter().filter(|c| **c == Some(expected)).count(),
+            1,
+            "expected exactly one {expected:?}, got codes {codes:#?} from {diags:#?}"
+        );
+    }
+    assert!(
+        diags.iter().all(|d| d.severity == Severity::Warning),
+        "all three must sit at the shared CTOR_FIELD_CONFORMANCE_SEVERITY knob so δ \
+         moves them together, got: {diags:#?}"
+    );
+    let type_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        type_msg.contains("label"),
+        "α's type diagnostic must still name the bound param `label` — ε must not \
+         perturb it, got: {type_msg:?}"
+    );
+    let unknown_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::CtorUnknownField))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        unknown_msg.contains("labl'"),
+        "the unknown-field diagnostic must name `labl`, got: {unknown_msg:?}"
+    );
+    let arity_msg = diags
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::CtorArity))
+        .map(|d| d.message.clone())
+        .unwrap_or_default();
+    assert!(
+        arity_msg.contains("at most 1 argument") && arity_msg.contains("got 3"),
+        "the arity diagnostic must report expected 1 / got 3, got: {arity_msg:?}"
+    );
+}
+
+const SRC_UNKNOWN_FIELD_POISONED_ARG: &str = r#"module test.unknown_field_poisoned
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(labl: no_such_name_anywhere)
+}
+"#;
+
+/// (e) ANTI-CASCADE CARVE-OUT. The unknown-named arg here is itself an erroring
+/// expression (an unresolved name → poison). The `CtorUnknownField` must STILL
+/// fire exactly once.
+///
+/// PRD §6 C2(i)'s type anti-cascade exists so a type walker never stacks a second
+/// TYPE complaint on an upstream type error. An unknown field NAME is not a type
+/// fact — it is decidable with no reference to the argument's type — and
+/// suppressing it here would hide the more actionable diagnostic (the typo)
+/// behind a downstream error the typo often caused. Pinned explicitly so a later
+/// refactor cannot quietly fold these emit sites under the walker's skip rules.
+#[test]
+fn unknown_named_argument_still_fires_when_its_value_is_poisoned() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_POISONED_ARG);
+    // Non-vacuity guard, load-bearing here: if the argument stopped erroring, this
+    // fixture would no longer exercise the anti-cascade path at all and would pass
+    // for the wrong reason. Measured: `error: unresolved name: no_such_name_anywhere`.
+    assert!(
+        !errors_only(&module).is_empty(),
+        "fixture must genuinely poison the argument, else the carve-out is untested"
+    );
+    let unknown: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::CtorUnknownField))
+        .collect();
+    assert_eq!(
+        unknown.len(),
+        1,
+        "an unknown field NAME is type-independent, so a poisoned argument value must \
+         not suppress it (nor duplicate it), got all diagnostics: {:#?}",
+        module.diagnostics
+    );
+    assert_eq!(unknown[0].severity, Severity::Warning);
+}
+
+/// (f) BEHAVIOUR PRESERVATION. ε adds diagnostics only: every ε fixture whose
+/// faults are purely ctor-conformance ones still compiles to a module with NO
+/// errors, i.e. `reify check` keeps exit 0 until δ flips the knob. The poisoned
+/// fixture from (e) is deliberately excluded — its unresolved name is a genuine
+/// pre-existing Error unrelated to ε.
+#[test]
+fn epsilon_fixtures_remain_error_free_and_exit_code_neutral() {
+    let cases: &[(&str, &str)] = &[
+        ("unknown field", SRC_UNKNOWN_FIELD),
+        ("unknown field x2", SRC_UNKNOWN_FIELD_TWICE),
+        ("unknown field in fn body", SRC_UNKNOWN_FIELD_FN_BODY),
+        ("unknown field nested", SRC_UNKNOWN_FIELD_NESTED),
+        ("over-arity", SRC_OVER_ARITY),
+        ("over-arity by two", SRC_OVER_ARITY_BY_TWO),
+        ("over-arity in fn body", SRC_OVER_ARITY_FN_BODY),
+        ("zero-param over-arity", SRC_ZERO_PARAM_OVER_ARITY),
+        ("mixed named + positional", SRC_MIXED_NAMED_THEN_POSITIONAL),
+        ("all three faults", SRC_ALL_THREE_FAULTS),
+    ];
+    let mut offenders: Vec<String> = Vec::new();
+    for &(label, source) in cases {
+        let module = compile_source_with_stdlib(source);
+        let errors = errors_only(&module);
+        if !errors.is_empty() {
+            offenders.push(format!("  [{label}] errors: {errors:#?}"));
+        }
+        // Non-vacuity: each of these fixtures must actually be reaching a ctor
+        // emit site, else "no errors" would pass for the wrong reason.
+        assert!(
+            !ctor_conformance_diags(&module).is_empty(),
+            "[{label}] fixture must still trip a ctor-conformance diagnostic — a silent \
+             fixture would make the error-free assertion vacuous"
+        );
+    }
+    assert!(
+        offenders.is_empty(),
+        "ε is a WARNING stage: these fixtures must still compile error-free (exit 0), \
+         and only δ's one-const flip may turn them into errors:\n{}",
+        offenders.join("\n")
+    );
+}
