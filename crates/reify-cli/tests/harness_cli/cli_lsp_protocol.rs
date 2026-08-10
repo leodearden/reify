@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{self, BufRead, BufReader, Read as _, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::thread;
@@ -46,13 +46,15 @@ fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
 /// and returns its captured text alongside the exit status. `reify lsp`'s
 /// stderr is the only channel it uses to report startup/runtime failures, so
 /// discarding it would make any future failure of this test a black box. On
-/// the timeout path the child is killed and then reaped: kill() only sends
-/// the signal, and reaping is what closes the stderr pipe's write end so the
-/// reader thread's `read_to_end()` returns instead of blocking forever.
+/// the timeout path the child is killed and then reaped: `kill()` only
+/// queues the signal asynchronously, and `wait()` blocks until the process
+/// has actually terminated — which is when the kernel closes its stderr
+/// write end — so joining the reader thread afterward is guaranteed to see
+/// EOF rather than racing the child's actual death.
 fn wait_for_exit(
     child: &mut Child,
     timeout_secs: u64,
-    stderr_reader: thread::JoinHandle<Vec<u8>>,
+    stderr_reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>,
 ) -> (ExitStatus, String) {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
@@ -68,7 +70,8 @@ fn wait_for_exit(
                     let stderr = drain(stderr_reader, "stderr");
                     panic!(
                         "child process did not exit within {timeout_secs}s\n\
-                         --- child stderr ---\n{stderr}\n--- end child stderr ---"
+                         --- child stderr ---\n{}\n--- end child stderr ---",
+                        elide(&stderr)
                     );
                 }
                 thread::sleep(Duration::from_millis(50));
@@ -77,18 +80,78 @@ fn wait_for_exit(
     }
 }
 
+/// Spawn a background thread that reads a child's pipe (stdout/stderr) to
+/// completion, returning the captured bytes and, if the read itself failed
+/// partway through (e.g. EIO/EBADF), the `io::Error` that stopped it.
+///
+/// Must be spawned before any write to the child's stdin and before any
+/// `wait()`/`try_wait()` on the child — see the load-bearing ordering
+/// comment in `lsp_full_interactive_loop_through_binary` for why.
+fn spawn_pipe_reader(
+    mut pipe: impl io::Read + Send + 'static,
+) -> thread::JoinHandle<(Vec<u8>, Option<io::Error>)> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let err = pipe.read_to_end(&mut buf).err();
+        (buf, err)
+    })
+}
+
 /// Join a pipe-reader thread and render its bytes as lossy UTF-8 for a panic
 /// message. Lossy rather than strict: this is diagnostic output, so a child
 /// that emitted a partial multi-byte sequence before dying must still be
-/// readable. Mirrors the same spawn-readers-before-write/wait, drain-lossily
-/// pattern being applied to `mcp_roundtrip` in mcp_integration.rs under
-/// #5389 — not a shared helper (that file has no `drain(reader, label)` of
-/// its own at present; each file reimplements the pattern locally).
-fn drain(reader: thread::JoinHandle<Vec<u8>>, label: &str) -> String {
-    let bytes = reader
+/// readable. Applies the same spawn-readers-before-write/wait, drain-lossily
+/// pattern that #5389 tracks bringing to `mcp_roundtrip` in
+/// mcp_integration.rs — NOT yet applied there as of this writing (that file
+/// still writes every request to stdin before reading anything, with both
+/// stdout and stderr piped but undrained until `wait_with_output()` runs
+/// after its poll loop); this file reimplements the pattern locally rather
+/// than sharing a helper.
+///
+/// Panics if the underlying read itself failed (distinct from the child
+/// simply writing little/nothing): a mid-read EIO/EBADF would otherwise
+/// yield a short buffer, which a caller like the phase-4b non-vacuity guard
+/// below would misreport as "the chatty-stderr trigger has moved" rather
+/// than "the pipe read failed" — exactly the wrong diagnosis.
+fn drain(reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>, label: &str) -> String {
+    let (bytes, err) = reader
         .join()
         .unwrap_or_else(|_| panic!("{label} reader thread panicked"));
+    if let Some(err) = err {
+        panic!("{label} pipe read failed before EOF: {err}");
+    }
     String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Render a possibly-huge diagnostic string for inclusion in a panic/assert
+/// message: the first and last 512 bytes plus the total length, instead of
+/// the whole thing. Phase 4b of `lsp_full_interactive_loop_through_binary`
+/// deliberately captures ~160 KiB of stderr; interpolating it whole into
+/// every failure message would bury genuinely useful signal (e.g. an
+/// unrelated `status.success()` failure) under a repeated 160 KiB dump.
+fn elide(s: &str) -> String {
+    const HEAD_TAIL: usize = 512;
+    if s.len() <= HEAD_TAIL * 2 {
+        return s.to_string();
+    }
+    // Slice on char boundaries so multi-byte UTF-8 (from the lossy decode
+    // in `drain`) is never split mid-codepoint.
+    let mut head_end = HEAD_TAIL.min(s.len());
+    while !s.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = s.len().saturating_sub(HEAD_TAIL);
+    while !s.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    format!(
+        "{} bytes total (showing first {} and last {} bytes):\n{:?}\n...\n{:?}",
+        s.len(),
+        head_end,
+        s.len() - tail_start,
+        &s[..head_end],
+        &s[tail_start..]
+    )
 }
 
 /// Read all JSON-RPC messages from stdout in a background thread.
@@ -327,31 +390,32 @@ fn lsp_full_interactive_loop_through_binary() {
 
     let mut stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
-    let mut stderr_pipe = child.stderr.take().expect("stderr");
+    let stderr_pipe = child.stderr.take().expect("stderr");
 
     // Spawn the stdout AND stderr reader threads immediately after spawn(),
-    // before any stdin writes. This ordering is load-bearing (mirrors the
-    // shared spawn-readers-before-write/wait pattern being applied to
-    // mcp_roundtrip in mcp_integration.rs under #5389), not stylistic: a
-    // child that writes enough stderr to fill its pipe buffer blocks in
-    // write() and never gets around to reading stdin or exiting, so
-    // draining stderr only after the write/wait phase reintroduces the
+    // before any stdin writes. This ordering is load-bearing (applies the
+    // same spawn-readers-before-write/wait pattern that #5389 tracks
+    // bringing to `mcp_roundtrip` in mcp_integration.rs — NOT yet applied
+    // there as of this writing; see the note on `drain` above), not
+    // stylistic: a child that writes enough stderr to fill its pipe buffer
+    // blocks in write() and never gets around to reading stdin or exiting,
+    // so draining stderr only after the write/wait phase reintroduces the
     // same deadlock class on the other pipe. The margin is far thinner
     // than the nominal 64 KiB pipe capacity suggests — once
     // fs.pipe-user-pages-soft (16384 pages) is exceeded the kernel shrinks
     // each NEW pipe to a single page, and a 24-way-parallel workspace
     // nextest run does this routinely (F_GETPIPE_SZ measured at 8192 bytes
-    // mid-run). This ordering claim is enforced by tests, not just
-    // documented: phase 4b below (in this test) pins the drain itself
-    // under real backpressure, and
-    // `wait_for_exit_timeout_branch_drains_and_reports_stderr` pins the
-    // kill-then-reap-then-join ordering on the timeout path.
+    // mid-run). A regression in this ordering surfaces as a hang, not a
+    // failed assertion — the same accepted trade-off documented in the
+    // "Known hazard" note on `wait_for_exit_timeout_branch_drains_and_reports_stderr`
+    // below. Phase 4b of this test pins the drain itself under real
+    // backpressure, and that same timeout test pins the
+    // kill-then-reap-then-join ordering on the timeout path, so a
+    // regression here is at least reachable by two tests, even though the
+    // failure mode either would hit is a hang rather than a clean
+    // assertion failure.
     let rx = spawn_reader(stdout);
-    let stderr_reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        stderr_pipe.read_to_end(&mut buf).ok();
-        buf
-    });
+    let stderr_reader = spawn_pipe_reader(stderr_pipe);
 
     // 1) Initialize
     let init_request = serde_json::json!({
@@ -515,9 +579,15 @@ fn lsp_full_interactive_loop_through_binary() {
     // shutdown-speed assertion: a genuine hang still exceeds this bound
     // and fails, so widening it loses no discrimination.
     let (status, stderr) = wait_for_exit(&mut child, 30, stderr_reader);
+    // Elided once and reused in every message below: phase 4b deliberately
+    // makes `stderr` ~160 KiB, and interpolating that whole blob into each
+    // of the (up to three) assertions below would bury genuinely useful
+    // signal — e.g. if `status.success()` fails for an unrelated reason —
+    // under repeated 160 KiB dumps.
+    let stderr_summary = elide(&stderr);
     assert!(
         status.success(),
-        "reify lsp should exit cleanly after full interactive loop (stderr: {stderr})"
+        "reify lsp should exit cleanly after full interactive loop (stderr: {stderr_summary})"
     );
 
     // Non-vacuity guard: proves phase 4b's huge-URI didChange really did put
@@ -532,7 +602,7 @@ fn lsp_full_interactive_loop_through_binary() {
          (measured 163_895 bytes when this guard was written), got {} bytes. This means \
          the chatty-stderr trigger has moved (reify-lsp's unknown-URI didChange path no \
          longer logs ~160KiB to stderr) and this regression guard needs re-pointing — it \
-         does NOT mean the stderr drain is broken. Captured stderr: {stderr}",
+         does NOT mean the stderr drain is broken. Captured stderr: {stderr_summary}",
         stderr.len()
     );
     // Proves the captured bytes came from the intended production path
@@ -544,7 +614,7 @@ fn lsp_full_interactive_loop_through_binary() {
         "expected captured stderr to contain the unknown-URI diagnostic emitted by \
          reify-lsp's did_change handler (server.rs:226). This means the chatty-stderr \
          trigger has moved and this regression guard needs re-pointing — it does NOT mean \
-         the stderr drain is broken. Captured stderr: {stderr}"
+         the stderr drain is broken. Captured stderr: {stderr_summary}"
     );
 }
 
@@ -586,11 +656,37 @@ fn lsp_full_interactive_loop_through_binary() {
 /// Does not take `acquire_lsp_test_lock()`: this stub is not an LSP
 /// process, needs no tokio runtime, and taking the lock would serialise a
 /// 1s test behind the 30s LSP test for no benefit.
+///
+/// The stub child is wrapped in `KillOnDrop` so that IF the timeout branch
+/// instead regressed to returning normally without ever killing the child
+/// (a different, milder regression than the join-before-kill hazard above:
+/// this one does not hang, it just fails to enforce the timeout), the test
+/// still fails loudly via `#[should_panic]`'s "did not panic" — and the
+/// orphaned `sleep 30` plus its blocked reader thread are still cleaned up
+/// promptly instead of leaking for the rest of the 30s sleep on every run.
+/// `Drop` runs on both the expected-panic unwind and a hypothetical normal
+/// return, and killing/reaping an already-dead child a second time (the
+/// expected case, since `wait_for_exit` itself kills+reaps first) is a
+/// harmless no-op — the OS reports ESRCH/ECHILD, which `.ok()` discards.
 #[cfg(unix)]
 #[test]
 #[should_panic(expected = "REIFY_6161_TIMEOUT_MARKER")]
 fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
-    let mut child = Command::new("/bin/sh")
+    /// Kills and reaps the wrapped child on drop (including mid-unwind, so
+    /// this fires even when the test panics as expected). `std::process::
+    /// Child` itself has no such `Drop` impl — dropping the handle alone
+    /// leaves the OS process running — which is precisely the gap this
+    /// closes for a test whose entire purpose is to exercise "does the
+    /// timeout branch actually kill the child".
+    struct KillOnDrop(Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            self.0.kill().ok();
+            self.0.wait().ok();
+        }
+    }
+
+    let child = Command::new("/bin/sh")
         .args([
             "-c",
             "printf 'REIFY_6161_TIMEOUT_MARKER\n' >&2; exec sleep 30",
@@ -600,13 +696,10 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn /bin/sh stub");
+    let mut guard = KillOnDrop(child);
 
-    let mut stderr_pipe = child.stderr.take().expect("stderr");
-    let stderr_reader = thread::spawn(move || {
-        let mut buf = Vec::new();
-        stderr_pipe.read_to_end(&mut buf).ok();
-        buf
-    });
+    let stderr_pipe = guard.0.stderr.take().expect("stderr");
+    let stderr_reader = spawn_pipe_reader(stderr_pipe);
 
-    wait_for_exit(&mut child, 1, stderr_reader);
+    wait_for_exit(&mut guard.0, 1, stderr_reader);
 }
