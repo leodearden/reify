@@ -685,6 +685,46 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
 
     expect(result).toEqual({ error: 'timeout' });
   });
+
+  // (h) pins the residual silent-wrong-pane path that scoping does NOT close, and
+  // that (f) only half-covers: (f) shows an unscoped multi-match reports no pane
+  // keys; this shows what that costs a caller when the panes are not yet equal.
+  //
+  // CALLER-FACING FAILURE PATH: a harness that waits UNSCOPED and then acts
+  // SCOPED on pane-1 gets a green wait off design-main — pane 0 in document order
+  // — while pane-1 is still mounting, and then a `notFoundForViewport` on the
+  // action a moment later. Because the wait reported no viewportId/matchCount,
+  // nothing in the green result hints that a different pane satisfied it, so the
+  // failure reads as a bridge bug rather than the caller-introduced race it is.
+  // The remedy is to scope the WAIT whenever the follow-up action is scoped.
+  it('(h) UNSCOPED wait is satisfied by the FIRST matching pane, so it cannot gate on a LATER pane being ready', async () => {
+    // design-main holds a visible `scoped-el`; pane-1 holds nothing — i.e. the
+    // exact "pane 1 is still mounting" state.
+    mountPanes(false);
+
+    const unscoped = await dispatchDrained(31, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', timeout_ms: 100,
+    });
+
+    // Green IMMEDIATELY off design-main — it never waited for pane-1 at all.
+    expect(unscoped.result.ok).toBe(true);
+    expect(typeof unscoped.result.waited_ms).toBe('number');
+    expect(unscoped.settledBeforePolling).toBe(true);
+    // And the caller is told NOTHING about which pane satisfied it (same shape
+    // as (f) — the observing tools deliberately echo no pane keys).
+    expect(unscoped.result.viewportId).toBeUndefined();
+    expect(unscoped.result.matchCount).toBeUndefined();
+    expect(Object.keys(unscoped.result).sort()).toEqual(['ok', 'waited_ms']);
+
+    // The round trip that makes the trap concrete: against the SAME DOM the
+    // scoped follow-up says "not there" — so the unscoped green above was never
+    // evidence that pane-1 was ready.
+    const scoped = await dispatchDrained(32, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', viewportId: 'pane-1', timeout_ms: 100,
+    });
+
+    expect(scoped.result).toEqual({ error: 'timeout' });
+  });
 });
 
 // ─── Part B: wait_for ────────────────────────────────────────────────────────
