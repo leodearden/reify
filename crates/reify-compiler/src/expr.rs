@@ -2792,12 +2792,42 @@ fn compile_expr_guarded_with_expected_inner(
                             .push(((*pname).to_string(), compiled_args[call_idx].clone()));
                     }
                 }
-                // Lenient fallback: unknown named args (no matching param)
-                // are appended as __arg{i} to preserve existing IR handling.
+                // Unknown named args (no matching param): diagnose, then keep the
+                // pre-existing lenient __arg{i} fallback so the IR shape is
+                // unchanged (task 5303, ε — PRD §7 row 11).
+                //
+                // ε is a DIAGNOSTICS-ONLY stage: the `__arg{i}` push below is
+                // deliberately preserved byte-for-byte. The warnings feed the β
+                // corpus survey, γ fixes the corpus, and δ flips the severity —
+                // at which point these sites fail compilation and the IR question
+                // is moot. Changing the IR here would make β measure behaviour
+                // drift instead of diagnostics.
+                //
+                // One diagnostic per unknown named arg: a typo'd field name is a
+                // per-argument author error and each needs its own span to be
+                // actionable (PRD §6 C2(ii)). No type anti-cascade guard — an
+                // unknown NAME is decidable without reference to any argument's
+                // type, and suppressing it on a poisoned arg would hide the typo
+                // behind the downstream error the typo itself often caused.
                 for (call_idx, arg_name) in arg_names.iter().enumerate() {
                     if let Some(pname) = arg_name
                         && !params.iter().any(|(n, _)| *n == pname.as_str())
                     {
+                        diagnostics.push(
+                            crate::conformance::diag_at(
+                                crate::conformance::CTOR_FIELD_CONFORMANCE_SEVERITY,
+                                format!(
+                                    "E_CTOR_UNKNOWN_FIELD: unknown named argument '{}' \
+                                     in call to '{}'; '{}' has no parameter with that name",
+                                    pname, name, name
+                                ),
+                            )
+                            .with_code(DiagnosticCode::CtorUnknownField)
+                            .with_label(DiagnosticLabel::new(
+                                args[call_idx].span,
+                                "unknown named argument",
+                            )),
+                        );
                         ordered_args.push((
                             format!("__arg{}", call_idx),
                             compiled_args[call_idx].clone(),
