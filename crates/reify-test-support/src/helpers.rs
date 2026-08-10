@@ -1700,6 +1700,52 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
+    // ── get_value_cell_in ─────────────────────────────────────────────────
+
+    /// get_value_cell_in should return the ValueCellDecl of the named cell in the
+    /// named template, even when the module has multiple templates. Asserts on
+    /// wrapper-only fields (`id.member`, `cell_type`) that get_let_expr_in cannot
+    /// reach, since exposing those fields is the entire motivation for this helper.
+    /// Uses non-integer floats (1.5, 2.7) because whole-number float literals
+    /// (e.g. 1.0, 2.0) are compiled as Type::Int by the Reify compiler when
+    /// they satisfy `*v == (*v as i64) as f64`.
+    #[test]
+    fn test_get_value_cell_in_returns_cell_from_named_template() {
+        let source = r#"
+            structure Alpha { let v = 1.5 }
+            structure Beta  { let w = 2.7 }
+        "#;
+        let module = super::compile_source(source);
+        let cell = super::get_value_cell_in(&module, "Beta", "w");
+        assert_eq!(cell.id.member, "w");
+        assert_eq!(
+            cell.cell_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected cell_type == Type::dimensionless_scalar() for Beta.w, got {:?}",
+            cell.cell_type
+        );
+    }
+
+    /// get_value_cell_in should panic with "no template named" when the template
+    /// name does not match any template in the module.
+    #[test]
+    #[should_panic(expected = "no template named")]
+    fn test_get_value_cell_in_panics_on_missing_template() {
+        let source = r#"structure S { let v = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "DoesNotExist", "v");
+    }
+
+    /// get_value_cell_in should panic with "no value cell named" when the cell
+    /// name does not match any value cell in the named template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_value_cell_in_panics_on_missing_cell() {
+        let source = r#"structure S { let x = 1.0 }"#;
+        let module = super::compile_source(source);
+        super::get_value_cell_in(&module, "S", "y");
+    }
+
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
