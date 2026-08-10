@@ -78,6 +78,68 @@ pub async fn lsp_request_impl(
     serde_json::to_string(&result).map_err(|e| format!("serialize error: {e}"))
 }
 
+/// [`lsp_request_impl`], dispatched on the persistent LARGE-STACK LSP lane
+/// instead of on the awaiting tokio worker (task 5772).
+///
+/// `lsp_request` fires on effectively every keystroke and cursor move, and the
+/// work it reaches is compiler-adjacent: `reify-syntax`'s CST-to-AST walk (which
+/// has neither a `stacker` guard nor a depth cap) and `reify-compiler`'s
+/// recursive compile. A tokio worker gives that the default ~2 MiB stack; the
+/// lane gives it [`crate::large_stack::COMPILE_STACK_SIZE`] (256 MiB), amortised
+/// over one thread for the process lifetime rather than a fresh 256 MiB mapping
+/// per keystroke.
+///
+/// # Why `Handle::block_on` and not a bare executor
+///
+/// The closure runs on a plain `std` thread with no ambient runtime, so the
+/// future needs something to drive it. FOUR of `InProcessLsp::handle_request`'s
+/// arms (`textDocument/definition`, `prepareRename`, `rename`, `references`)
+/// call [`tokio::task::spawn_blocking`], whose first statement is
+/// `Handle::current()` — under a bare executor such as
+/// `futures::executor::block_on` those four would panic with "there is no
+/// reactor running". [`tokio::runtime::Handle::block_on`] installs the runtime
+/// context via `enter_runtime` and is explicitly legal from a NON-runtime thread
+/// (it panics only when called from inside an async context, which a lane thread
+/// never is). The handle is captured on the caller, which IS inside the tauri
+/// runtime. Secondary reason: `futures` is not a declared `reify-gui`
+/// dependency, so using it would mean adding one to get strictly worse behaviour.
+///
+/// # What this does NOT cover
+///
+/// Those same four arms hop to `spawn_blocking`, so their compiler work executes
+/// on tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
+/// under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request` on
+/// a 256 MiB thread gives the big stack only to that thread's OWN frames, so
+/// those four are unaffected by this routing. The arms it does cover are the
+/// other ten — `initialize`, `initialized`, `didOpen`, `didChange`, `didClose`,
+/// `completion`, `hover`, `documentSymbol`, `documentHighlight`, `shutdown` —
+/// which are precisely the keystroke/cursor-frequency ones. Closing the four
+/// needs a change in `crates/reify-lsp/src/server.rs`, which would also regress
+/// the stdio `reify lsp` CLI server (it relies on `spawn_blocking` to keep its
+/// 2-worker runtime responsive); tracked as follow-up rather than overclaimed
+/// here.
+///
+/// # Why this composition lives here, not inline in `main.rs`
+///
+/// `main.rs` is the `--features gui` bin and has no test module, so a wrapper
+/// written there would be untestable. Keeping it in the lib is what lets
+/// `lsp_bridge_tests.rs` prove result parity against a direct
+/// [`lsp_request_impl`] call.
+pub async fn lsp_request_on_worker(
+    bridge: Arc<LspBridge>,
+    method: String,
+    params: String,
+) -> Result<String, String> {
+    // Captured on the CALLER, which is inside the tauri runtime; the lane thread
+    // is not, and cannot obtain one for itself.
+    let handle = tokio::runtime::Handle::current();
+
+    crate::large_stack::run_on_lsp_worker(move || {
+        handle.block_on(lsp_request_impl(&bridge, &method, params))
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
