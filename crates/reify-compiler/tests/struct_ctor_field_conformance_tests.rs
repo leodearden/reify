@@ -2468,3 +2468,251 @@ fn tensor_matching_dimension_at_moi_param_stays_clean() {
          it does not reject dimensioned args. Got: {diags:#?}"
     );
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ε step-1 probes: unknown named argument (PRD §7 row 11 — E_CTOR_UNKNOWN_FIELD)
+//
+// The `StructureInstanceCtor` by-name binder in `crates/reify-compiler/src/expr.rs`
+// appends a named argument whose name matches no `Param` cell as `__arg{i}` and
+// says nothing at all. ε emits `DiagnosticCode::CtorUnknownField` there, at the
+// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning at ε, Error at δ).
+//
+// RED on the pre-step-2 tree for (a)/(b)/(c) — all three fixtures are silent
+// today. (d)/(e)/(f) are legality guards and must be green BOTH before and after.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const SRC_UNKNOWN_FIELD: &str = r#"module test.unknown_field
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(labl: "x")
+}
+"#;
+
+/// (a) Row 11 in a value-cell context: a typo'd field name must produce exactly
+/// one `CtorUnknownField`, at Warning, naming both the offending field and the
+/// constructor — and must NOT affect the exit code at ε (`errors_only` empty;
+/// δ is what flips these to Error).
+#[test]
+fn unknown_named_argument_emits_ctor_unknown_field_warning() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "a single unknown named argument must emit exactly one ctor-conformance \
+         diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::CtorUnknownField),
+        "unknown named argument must carry the CtorUnknownField code, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "ε emits at the CTOR_FIELD_CONFORMANCE_SEVERITY knob (Warning); a hard-coded \
+         severity here would silently survive δ's one-const flip. Got: {:?}",
+        diags[0]
+    );
+    assert!(
+        diags[0].message.starts_with("E_CTOR_UNKNOWN_FIELD: "),
+        "the mnemonic must be a message PREFIX — `reify check` renders \
+         `{{severity}}: {{message}}` and never prints the DiagnosticCode, so without it \
+         the ε signal is invisible at the CLI. Got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("labl"),
+        "message must name the offending field, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        diags[0].message.contains("Widget11"),
+        "message must name the constructor, got: {:?}",
+        diags[0].message
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "ε keeps exit code 0 — the unknown-field tightening is Warning-only until δ. \
+         Got errors: {:?}",
+        errors_only(&module)
+    );
+}
+
+/// (b) Span anchoring (PRD §6 C3): the label must sit at the OFFENDING ARGUMENT's
+/// own span, not at the whole `Widget11(...)` call. α's step-10 moved the
+/// ctor-conformance labels off a representative span onto the real call-site
+/// span; ε goes one level finer because the actionable token is the argument.
+#[test]
+fn unknown_named_argument_label_anchors_at_the_offending_argument() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(diags.len(), 1, "expected one diagnostic, got: {diags:#?}");
+    assert!(
+        !diags[0].labels.is_empty(),
+        "CtorUnknownField must carry a label span, got: {:?}",
+        diags[0]
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    assert!(
+        !span.is_empty(),
+        "label span must be NON-empty (a SourceSpan::empty renders no caret), got: {span:?}"
+    );
+    let sliced = &SRC_UNKNOWN_FIELD[span.start as usize..span.end as usize];
+    assert!(
+        !sliced.contains("Widget11("),
+        "label must anchor at the offending ARGUMENT, not at the whole ctor call \
+         (PRD §6 C3), got slice {sliced:?}"
+    );
+    assert!(
+        sliced.contains("\"x\""),
+        "label span must cover the offending `labl: \"x\"` argument, got slice {sliced:?}"
+    );
+}
+
+const SRC_UNKNOWN_FIELD_TWICE: &str = r#"module test.unknown_field_twice
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(labl: "x", lable2: "y")
+}
+"#;
+
+/// (c) Multiplicity: an unknown field name is a PER-ARGUMENT fact, so two typo'd
+/// names produce two diagnostics — each needs its own span to be actionable.
+/// This is the C2(ii) "at most one diagnostic per (arg, fact)" pin for this code;
+/// contrast with `CtorArity`, which is one-per-CALL.
+#[test]
+fn two_unknown_named_arguments_emit_one_diagnostic_each() {
+    let module = compile_source_with_stdlib(SRC_UNKNOWN_FIELD_TWICE);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "two unknown named arguments must emit exactly two diagnostics (one per \
+         offending arg), got: {diags:#?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .all(|d| d.code == Some(DiagnosticCode::CtorUnknownField)),
+        "both diagnostics must be CtorUnknownField, got: {diags:#?}"
+    );
+    let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("labl'")),
+        "one diagnostic must name `labl`, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("lable2")),
+        "one diagnostic must name `lable2`, got: {messages:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "ε keeps exit code 0, got errors: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_KNOWN_FIELD: &str = r#"module test.known_field
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(label: "x")
+}
+"#;
+
+/// (d) Legality guard: a correctly-spelled named argument stays silent. Green
+/// both before and after step-2 — this is what proves the tightening keys on
+/// "no such parameter" and not merely on "the call uses named arguments".
+#[test]
+fn correct_named_argument_emits_no_ctor_conformance_diagnostic() {
+    let module = compile_source_with_stdlib(SRC_KNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a correctly-named argument must stay silent, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+const SRC_DUPLICATE_KNOWN_FIELD: &str = r#"module test.duplicate_known_field
+structure def Widget11 { param label : String }
+structure def Root {
+    let x = Widget11(label: "a", label: "b")
+}
+"#;
+
+/// (e) The sibling duplicate-named-arg diagnostic — emitted three lines away in
+/// the same binder — must be untouched by ε, and a duplicate of a KNOWN parameter
+/// must NOT be reclassified as an unknown field. That diagnostic is code-less
+/// today (it predates the ctor-conformance code set), so it does not appear in
+/// `ctor_conformance_diags` at all; it is matched by message text here.
+#[test]
+fn duplicate_known_named_argument_is_not_an_unknown_field() {
+    let module = compile_source_with_stdlib(SRC_DUPLICATE_KNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "a duplicate of a KNOWN parameter is not an unknown field — ε must emit no \
+         ctor-conformance diagnostic here, got: {diags:#?}"
+    );
+    let dupes: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("duplicate named argument"))
+        .collect();
+    assert_eq!(
+        dupes.len(),
+        1,
+        "the pre-existing duplicate-named-argument diagnostic must still fire exactly \
+         once, got: {:#?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        dupes[0].severity,
+        Severity::Error,
+        "the duplicate-named-arg precedent is an Error and is outside the ε knob, \
+         got: {:?}",
+        dupes[0]
+    );
+}
+
+const SRC_SUB_UNKNOWN_FIELD: &str = r#"module test.sub_unknown_field
+structure def Widget11 { param label : String }
+structure def Root {
+    sub p = Widget11(labl: "x")
+}
+"#;
+
+/// (f) SCOPE BOUNDARY, pinned deliberately rather than left implicit.
+///
+/// The `sub p = Ctor(...)` binding form does NOT route through the
+/// `StructureInstanceCtor` by-name binder in `expr.rs` — its RHS is handled by
+/// the `PendingBoundCheck` path instead — so neither `__arg{i}` fallback is
+/// reachable from it and ε cannot see this call at all. Measured on the base of
+/// this branch: even the long-standing duplicate-named-arg Error does not fire
+/// through `sub =`, which is the same seam.
+///
+/// ε therefore covers expression-position constructors only. Closing the sub-path
+/// hole means adding an unknown-field check to the `PendingBoundCheck` walker — a
+/// different mechanism in a different file, with its own double-emission risk
+/// (PRD §10 Q4) — so it is a follow-up, not part of this diff. This test exists so
+/// that boundary is a recorded, asserted fact: if a later change DOES make the sub
+/// path reach the binder, this test fails and forces the double-emission question
+/// to be answered rather than silently regressed into.
+#[test]
+fn sub_binding_rhs_is_outside_the_epsilon_binder_seam() {
+    let module = compile_source_with_stdlib(SRC_SUB_UNKNOWN_FIELD);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "the `sub =` RHS does not route through the StructureInstanceCtor binder, so ε \
+         emits nothing here (documented scope boundary, not a silent miss). If this \
+         fires, the seam moved — re-answer the PRD §10 Q4 double-emission question \
+         before widening. Got: {diags:#?}"
+    );
+}
