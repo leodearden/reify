@@ -1708,6 +1708,68 @@ mod tests {
         super::assert_no_diagnostics(&diags, "guard compile");
     }
 
+    // ── get_let_expr_in_template ────────────────────────────────────────────
+
+    /// get_let_expr_in_template should return the default_expr of the named
+    /// cell directly from a template the caller already holds (no module or
+    /// template-name resolution step).
+    /// Uses a non-integer float (1.5) because whole-number float literals
+    /// (e.g. 1.0) are compiled as Type::Int by the Reify compiler when they
+    /// satisfy `*v == (*v as i64) as f64`.
+    #[test]
+    fn test_get_let_expr_in_template_finds_cell() {
+        let (template, _) = super::compile_first_template(r#"structure Alpha { let v = 1.5 }"#);
+        let expr = super::get_let_expr_in_template(&template, "v");
+        assert_eq!(
+            expr.result_type,
+            reify_core::Type::dimensionless_scalar(),
+            "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
+            expr.result_type
+        );
+    }
+
+    /// get_let_expr_in_template should panic with "no value cell named" when
+    /// the cell name does not match any value cell in the template.
+    #[test]
+    #[should_panic(expected = "no value cell named")]
+    fn test_get_let_expr_in_template_panics_on_missing_cell() {
+        let (template, _) = super::compile_first_template(r#"structure S { let x = 1.5 }"#);
+        super::get_let_expr_in_template(&template, "y");
+    }
+
+    /// get_let_expr_in_template should panic with "has no default expr" for a
+    /// value cell whose default_expr is None. Built directly with
+    /// TopologyTemplateBuilder::auto_param (which always produces
+    /// default_expr = None) rather than a compiled source, since a
+    /// source-level `param` always carries a default in well-formed compiled
+    /// output. This test needs NO CompiledModuleBuilder wrapper — dropping
+    /// that wrapper is precisely the ergonomic win of a template-scoped
+    /// helper over get_let_expr_in. The inline `assert!` below makes the
+    /// precondition explicit: if `auto_param` ever changes to synthesize a
+    /// placeholder default, the guard will fire loudly rather than silently
+    /// letting the test pass for the wrong reason.
+    #[test]
+    #[should_panic(expected = "has no default expr")]
+    fn test_get_let_expr_in_template_panics_on_missing_default_expr() {
+        let template = crate::builders::TopologyTemplateBuilder::new("S")
+            .auto_param("S", "x", reify_core::Type::dimensionless_scalar())
+            .build();
+        // Precondition: auto_param must produce default_expr = None; if that
+        // ever changes this guard fires before get_let_expr_in_template,
+        // surfacing the broken assumption clearly instead of silently
+        // exercising the wrong branch.
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id.member == "x")
+            .expect("auto_param should have added cell 'x'");
+        assert!(
+            cell.default_expr.is_none(),
+            "auto_param must produce default_expr = None for this test's intent"
+        );
+        super::get_let_expr_in_template(&template, "x");
+    }
+
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
