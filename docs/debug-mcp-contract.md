@@ -11,6 +11,7 @@
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
+| §2d Image + trailing-text envelope | `debug_server.rs` `mcp_content_blocks_*` tests; `rpcEnvelope.test.ts`; `rpc.test.ts` |
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
@@ -119,7 +120,8 @@ MCP client
                       → invoke('debug_response', { id, result: JSON.stringify(result) })
               → DebugBridge::resolve(id, json) wakes the waiting oneshot
               → returns serde_json::from_str(json) : Value
-  → MCP tool-result content block (text or image)
+  → MCP tool-result content ARRAY: [text] | [image] | [image, text]
+       (the third shape is element_screenshot's pane diagnostics — see §2d)
 ```
 
 The `id` is a monotonically incrementing u64 assigned by `DebugBridge::next_id`
@@ -216,6 +218,46 @@ inside a tool result.
 | Rust Err(String) | `{ content:[…], isError:true }` | ✓ |
 | Unknown JSON-RPC method | `{ error: { code, message } }` | n/a (protocol layer) |
 
+### 2d — Image tool results: image block + optional trailing text
+
+**Source:** `mcp_content_blocks()` in `gui/src-tauri/src/debug_server.rs`.
+
+A tool result is a content **array**, and for image tools it is not always of
+length 1. The two wire shapes a decoder has to handle:
+
+```jsonc
+// screenshot, screenshot_window, and a single-match element_screenshot:
+{ "content": [ {"type": "image", "data": "<base64 PNG>", "mimeType": "image/png"} ] }
+
+// element_screenshot that matched more than one element:
+{ "content": [
+    {"type": "image", "data": "<base64 PNG>", "mimeType": "image/png"},
+    {"type": "text",  "text": "{\n  \"viewportId\": \"design-main\",\n  \"matchCount\": 2\n}"}
+] }
+```
+
+What a decoder author may rely on:
+
+- The image block is **always** at `content[0]` — diagnostics are APPENDED,
+  never prepended. A positional `content[0].type === "image"` test is therefore
+  safe.
+- `content.length` is **not** always 1, and must never be assumed to be. A
+  decoder that reads only `content[0]` silently discards the pane diagnostics.
+- The trailing block carries the pane diagnostics (`{viewportId, matchCount}`)
+  as pretty-printed JSON, and never a top-level string `error` — one there
+  would make every driver read a working screenshot as broken (the
+  cross-language invariant on `isInBandError` in
+  `gui/test/visual/rpcEnvelope.mjs`; §2a above).
+- `screenshot` and `screenshot_window` never emit the trailing block. Only
+  `element_screenshot` does, and only when its result carries a residual beyond
+  `data`.
+
+The GATING RULE — the exact condition under which the trailing block is
+emitted, and why that condition rather than another — lives with the code, in
+the `mcp_content_blocks` doc comment in `gui/src-tauri/src/debug_server.rs`.
+Read it there; a second copy of the gate here would be precisely the drift
+surface §0 warns about.
+
 ### JS-side decoders
 
 `gui/test/visual/rpcEnvelope.mjs` is the single home of the JS-side decode of all
@@ -235,8 +277,19 @@ itself.
 rendering. It shares the §2a discriminator and the text-payload parse with the
 module above, but deliberately keeps its own branch table — it collapses every
 failure into `{ok: false, error}` where `normalizeRpcEnvelope` preserves the
-in-band shape. That divergence is intentional and pinned case-by-case by
-`gui/test/visual/rpc.test.ts`; consult those tests before collapsing the two.
+in-band shape.
+
+The two decoders diverge on §2d's image envelope as well, and again on purpose:
+`normalizeRpcEnvelope` reaches its "no text block" branch by SEARCHING the
+content array, so a multi-match `element_screenshot` falls through it and
+surfaces the pane diagnostics as its payload; `parseRpcResponse` is POSITIONAL
+on `content[0]` and deliberately IGNORES the trailing block, because searching
+would let a text block win its branch 4 ahead of its image branch 3 and feed
+non-PNG bytes into `run.ts`'s `Buffer.from(…, "base64")`.
+
+Both divergences are intentional and pinned case-by-case by
+`gui/test/visual/rpc.test.ts` and `gui/test/visual/rpcEnvelope.test.ts`;
+consult those tests before collapsing the two.
 
 ---
 
