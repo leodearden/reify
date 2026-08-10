@@ -318,6 +318,7 @@ fn collect_let_anchors(node: tree_sitter::Node<'_>) -> Vec<LetAnchor> {
 
 /// The LAST anchor in `anchors` starting strictly before byte offset `before`, or `None`.
 ///
+/// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
 /// `anchors` is in source order (see [`collect_let_anchors`]), so this is a binary search.
 /// Deliberately returns the nearest preceding `let` WHATEVER its classification, leaving the
 /// `in_fn_body` decision to the caller: skipping a non-fn `let` to blame an earlier fn one
