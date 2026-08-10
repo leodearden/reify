@@ -606,16 +606,27 @@ fn mcp_tool_call(
     result
 }
 
+/// Task 5772: dispatched on the persistent large-stack LSP lane rather than on
+/// the awaiting tokio worker, whose ~2 MiB stack this compiler-adjacent work
+/// reaches at keystroke frequency.
+///
+/// Stays `async`. Converting it to a sync command would make Tauri run it as
+/// `ExecutionContext::Blocking` on the IPC thread with NO ambient tokio runtime,
+/// so `Handle::current()` inside `lsp_request_on_worker` would panic — and that
+/// is also precisely the condition under which `handle_request`'s four
+/// `spawn_blocking` arms panic.
+///
+/// The `Arc` is the `'static` price of a persistent lane, and follows the shape
+/// `debug_response` already uses with `tauri::State<'_, Arc<DebugBridge>>`.
 #[tauri::command]
 async fn lsp_request(
-    bridge: tauri::State<'_, LspBridge>,
+    bridge: tauri::State<'_, Arc<LspBridge>>,
     method: String,
     params: String,
 ) -> Result<String, String> {
     // Diagnostics are emitted automatically by TauriNotificationSink
     // during didOpen/didChange/didClose processing — no manual polling needed.
-    let result = reify_gui::lsp_bridge::lsp_request_impl(&bridge, &method, params).await?;
-    Ok(result)
+    reify_gui::lsp_bridge::lsp_request_on_worker(Arc::clone(&bridge), method, params).await
 }
 
 // --- Debug commands ---
@@ -908,7 +919,10 @@ fn main() {
             let sink = Arc::new(TauriNotificationSink {
                 app: app.handle().clone(),
             });
-            let lsp_bridge = LspBridge::with_sink(sink);
+            // Managed as an `Arc` (task 5772): `lsp_request` clones it into the
+            // `'static` closure the persistent LSP lane requires. Same shape the
+            // DebugBridge below already uses.
+            let lsp_bridge = Arc::new(LspBridge::with_sink(sink));
             app.manage(lsp_bridge);
 
             // Install the auto-resolve emitter so the frontend receives lifecycle events
