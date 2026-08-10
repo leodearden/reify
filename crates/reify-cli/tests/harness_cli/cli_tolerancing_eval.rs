@@ -16,8 +16,14 @@ use crate::common;
 ///
 /// Also asserts presence of key cell-name substrings covering each signal family
 /// (ISO grade width, expanded zone, fit max clearance, symmetric upper limit,
-/// surface finish bool).  Anchors on cell NAMES + exact Bool text only —
+/// surface finish bool).  Mostly anchors on cell NAMES + exact Bool text —
 /// NOT fragile float formatting (exact numerics are pinned by α/β/γ unit tests).
+///
+/// Two exceptions where a name-only anchor was shown to be too weak: the
+/// nominal_zone family pins exact printed values (see the rationale at those
+/// asserts), and `it7_width` carries an anti-`undef` assertion, because the eval
+/// printer prints undef cells at exit 0 and a name-only anchor therefore cannot
+/// see a regressed cell at all.
 #[test]
 fn eval_std_tolerancing_surface_example_succeeds() {
     let path = common::example_path("tolerancing/std_tolerancing_surface.ri");
@@ -39,9 +45,27 @@ fn eval_std_tolerancing_surface_example_succeeds() {
     );
 
     // ── ISO tolerance grade (iso_it_tolerance builtin) ────────────────────────
+    // The name anchor alone is NOT sufficient, and this cell is no longer
+    // value-agnostic-only.  The eval printer emits `println!("{} = {}", id, v)`
+    // for undef cells too and `reify eval` still exits 0 (the root-cause `note:`
+    // goes to stderr), so a bare `contains("it7_width")` stays true even when the
+    // cell has regressed to `undef` — exactly the blind spot that let a stale
+    // grade-first call site survive the 6091 subject-first flip with the whole
+    // suite green.  The anti-undef assertion below is what actually sees it.
+    //
+    // The `!contains(… = undef)` form is used rather than an exact printed float
+    // (contrast the soa_zone/runout_zone/prof_zone pins further down): IT7@Ø30–50
+    // is 24.969µm, a cube-root result, so its Display rendering is genuinely
+    // fragile in the way those clean pass-through zone values are not.
     assert!(
         stdout.contains("it7_width"),
         "stdout should contain 'it7_width' (IT7@Ø30–50 ISO grade cell);\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("it7_width = undef"),
+        "it7_width must materialise a real ISO 286-1 tolerance, not undef — an undef \
+         here means the call site's argument order no longer matches the builtin's \
+         decode;\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     // ── Effective tolerance zone cell ─────────────────────────────────────────
