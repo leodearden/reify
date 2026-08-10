@@ -310,6 +310,41 @@ impl Engine {
     /// other.  The fast-path early-return (no registered impls, no
     /// RepresentationWithin) is preserved so non-assertion modules incur zero
     /// overhead (C2).
+    ///
+    /// ## Surfaces that do not measure (task-6169 ζ, C-SURFACE 1)
+    ///
+    /// `achieved_repr_tol` being empty does NOT imply "no RepresentationWithin
+    /// in this batch" — it also covers every surface that never measured at
+    /// all (`reify build`, which never calls `set_capture_repr_tol`; and
+    /// stub-mode `reify check`, where tessellation cannot run).  Gating the
+    /// fast path on the map alone therefore sent live assertions to the
+    /// language-level checker, which has no access to the map and blamed the
+    /// operand kinds for an Indeterminate that is really a property of the
+    /// surface.  The guard now also requires that no entry in the batch is a
+    /// RepresentationWithin *shape*, so such an entry always reaches the peel
+    /// below and is answered engine-side.
+    ///
+    /// The added conjunct is free on both hot paths:
+    /// - `entries.iter().any(..)` allocates nothing, and
+    ///   [`crate::tolerance_combine::match_representation_within_shape`]
+    ///   rejects at Gate 2 on `expr.kind` or on the
+    ///   `function_name != "RepresentationWithin"` compare — strictly before
+    ///   its only allocation (`name.clone()`, reachable solely after the name
+    ///   AND arity gates pass).  A non-assertion module thus pays an O(n) scan
+    ///   of enum discriminants and str compares, strictly cheaper than the
+    ///   `map(..).collect()` that immediately follows inside the body it
+    ///   guards, and then takes the identical path.
+    /// - `&&` short-circuits, so a measuring surface (non-empty map) never
+    ///   evaluates the scan at all.
+    ///
+    /// Reusing the canonical recogniser rather than a local copy of Gate 2 is
+    /// deliberate: the fast-path predicate and the peel's own gates are
+    /// literally the same function, so a future IR variant added to Gate 2
+    /// cannot leave a real RepresentationWithin silently taking the fast path
+    /// again.  Over-approximation is safe by construction — a false positive
+    /// merely costs the (already-existing) peel allocation and yields an
+    /// identical result, since a non-matching entry falls into `rest` and
+    /// reaches the same checker in the same order.
     pub(crate) fn dispatch_constraints<'a>(
         &self,
         entries: Vec<(ConstraintNodeId, &'a CompiledExpr, Option<&'a str>)>,
@@ -322,15 +357,27 @@ impl Engine {
         }
 
         // ── Fast path for non-assertion modules (C2) ──────────────────────────
-        // When `achieved_repr_tol` is empty (no tessellation has run) AND no
-        // optimised impls are registered, we know no entry can be a live
-        // `RepresentationWithin` assertion — skip the pre-pass entirely and use
-        // the original zero-allocation path.  This covers the universal
-        // non-assertion case: every `reify check` call on a module without
-        // `RepresentationWithin` constraints, where `cmd_check` never calls
-        // `set_capture_repr_tol` / `tessellate_realizations` and the map stays
-        // empty.
-        if self.achieved_repr_tol.is_empty() && self.optimization_registry.is_empty() {
+        // Taken only when this batch provably contains no `RepresentationWithin`
+        // assertion and no optimised impl is registered — then the pre-pass can
+        // be skipped entirely for the original zero-allocation path.  This
+        // covers the universal non-assertion case: every `reify check` /
+        // `reify build` call on a module without `RepresentationWithin`
+        // constraints, where the map is empty because nothing ever asked for a
+        // measurement.
+        //
+        // The third conjunct is what makes the first two sound (task-6169 ζ,
+        // C-SURFACE 1): an empty `achieved_repr_tol` also describes a surface
+        // that never measured, so on its own it cannot distinguish "no
+        // assertion here" from "an assertion nobody measured".  Scanning for
+        // the shape settles that directly, and costs nothing on either hot path
+        // — see this method's doc comment for the allocation and
+        // short-circuiting argument.
+        if self.achieved_repr_tol.is_empty()
+            && self.optimization_registry.is_empty()
+            && !entries.iter().any(|(_, expr, _)| {
+                crate::tolerance_combine::match_representation_within_shape(expr).is_some()
+            })
+        {
             let constraints: Vec<(ConstraintNodeId, &CompiledExpr)> = entries
                 .into_iter()
                 .map(|(id, expr, _target)| (id, expr))
@@ -345,8 +392,10 @@ impl Engine {
         }
 
         // ── RepresentationWithin interception ─────────────────────────────────
-        // Reached only when `achieved_repr_tol` is non-empty (a tessellation
-        // ran) or an optimised impl is registered.  Peel RepresentationWithin
+        // Reached when `achieved_repr_tol` is non-empty (a tessellation ran),
+        // or an optimised impl is registered, or this batch carries a
+        // RepresentationWithin shape on a surface that never measured (ζ).
+        // Peel RepresentationWithin
         // entries off the batch before bucketing so that they never reach the
         // language-level ConstraintChecker (which has no access to
         // self.achieved_repr_tol).  Each matched entry is evaluated engine-side;
