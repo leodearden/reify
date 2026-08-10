@@ -177,17 +177,26 @@ export function describeRpcFailure(payload, label) {
  *
  * Branch table, in order:
  *   1. unhealthy payload → {@link describeRpcFailure}'s verbatim diagnosis
- *   2. `exists !== true`             → the testid is not in the DOM at all
- *   3. `matchCount` not a number     → only one element matched ⇒ VACUOUS
- *   4. `matchCount !== expected`     → names expected vs observed
- *   5. `viewportId` not a string     → the first match belongs to no pane
+ *   2. `exists !== true`                  → the testid is not in the DOM at all
+ *   3. `matchCount` ABSENT                → exactly ONE element matched ⇒ VACUOUS
+ *   4. `matchCount` present, not a number → the payload is MALFORMED
+ *   5. `matchCount !== expected`          → names expected vs observed
+ *   6. `viewportId` not a string          → the first match belongs to no pane
  *
- * BRANCH 3 IS THE LOAD-BEARING ONE and its type check is not defensive
- * dressing: `undefined < 2` and `'2' < 2` are both FALSE, so a magnitude-only
- * guard reports green on exactly the payloads it exists to catch — the one-sided
- * hazard `./smoke_multi_pane_e2e.mjs` documents at its design-main meshCount
- * check. Since `paneDiagnostics` OMITS the field entirely below two matches, an
- * absent `matchCount` is not missing data: it is a positive report of one match.
+ * BRANCH 3 IS THE LOAD-BEARING ONE, and branch 4 is deliberately NOT folded into
+ * it as one `typeof` check: the two payloads have different repairs. Since
+ * `paneDiagnostics` OMITS the field entirely below two matches, an ABSENT
+ * `matchCount` is not missing data — it is a positive report of one match, i.e.
+ * the fixture regressed to a single pane and every scoped assertion below it
+ * would be vacuous. A PRESENT non-number cannot come from `paneDiagnostics` at
+ * all and says the wire contract broke. Telling an operator "the field was
+ * absent, so exactly one element matched" of a payload that carried `'2'` would
+ * send them after the wrong one.
+ *
+ * NEITHER may be left to a magnitude-only guard: `undefined < 2` and `'2' < 2`
+ * are both FALSE, so comparing without checking the type reports green on exactly
+ * the payloads these branches exist to catch — the one-sided hazard
+ * `./smoke_multi_pane_e2e.mjs` documents at its design-main meshCount check.
  *
  * Never throws, whatever the shape of `payload`.
  *
@@ -212,12 +221,21 @@ export function describeUnscopedAmbiguity(payload, { testId, expectedMatchCount 
     );
   }
 
+  if (payload.matchCount === undefined) {
+    return (
+      `${label} reported no matchCount at all; paneDiagnostics omits the field entirely below 2 ` +
+      `matches, so its absence means exactly ONE element matched. Expected ${expectedMatchCount} ` +
+      `candidates — with only one, the panes are not ambiguous and every viewportId-scoped ` +
+      `assertion below would be vacuous.`
+    );
+  }
+
   if (typeof payload.matchCount !== "number") {
     return (
-      `${label} did not report a numeric matchCount (got ${JSON.stringify(payload.matchCount)}); ` +
-      `paneDiagnostics omits the field entirely below 2 matches, so its absence means exactly ONE ` +
-      `element matched. Expected ${expectedMatchCount} candidates — with only one, the panes are not ` +
-      `ambiguous and every viewportId-scoped assertion below would be vacuous.`
+      `${label} reported a MALFORMED matchCount (${JSON.stringify(payload.matchCount)}) — ` +
+      `paneDiagnostics either omits the field or sets it to a number above 1, so a present ` +
+      `non-number means the dom_query payload broke its own contract. This is a wire-shape ` +
+      `regression, NOT the fixture dropping to a single pane; do not read it as a count.`
     );
   }
 
@@ -306,9 +324,11 @@ function describeExistsProbe(payload, label, expectedExists, mismatch) {
  *   1. unhealthy `clickResult`          → {@link describeRpcFailure}'s verbatim text
  *   2. `clickResult.ok !== true`        → answered and declined
  *   3. `clickResult.matchCount` present → the scope did not disambiguate
- *   4. `otherBefore.exists !== false`   → dirty baseline; no verdict is possible
- *   5. `drivenAfter.exists !== true`    → the click never landed
- *   6. `otherAfter.exists !== false`    → CROSS-PANE BLEED
+ *   4. `otherToggle.exists !== true`    → `otherPaneId` is not ADDRESSABLE at all
+ *   5. `otherBefore.exists !== false`   → dirty baseline; no verdict is possible
+ *   6. `drivenBefore.exists !== false`  → the click toggled the driven pane OFF
+ *   7. `drivenAfter.exists !== true`    → the click never landed
+ *   8. `otherAfter.exists !== false`    → CROSS-PANE BLEED
  *
  * BRANCH 3 IS WHY A BARE `{ok: true}` IS EVIDENCE, not just an absence: since
  * `paneDiagnostics` emits `{viewportId, matchCount}` only ABOVE one match, a click
@@ -317,29 +337,60 @@ function describeExistsProbe(payload, label, expectedExists, mismatch) {
  * bare `{ok: true}` ONLY if `viewportId` narrowed the resolve to exactly one. The
  * pair's presence says the pane was still guessed, one level down.
  *
- * BRANCH 5 PRECEDES BRANCH 6 deliberately: a click that never landed also explains
+ * BRANCH 4 IS THE SECOND ANTI-VACUITY PRECONDITION, and it closes a hole
+ * `describeUnscopedAmbiguity` cannot reach. `dom_query` collapses BOTH resolver
+ * absences — `notFound` and `notFoundForViewport` — to `{exists: false}`, so a
+ * `viewportId` naming a pane that does not exist answers `exists: false` both
+ * before and after the click, and branches 5-8 would certify "untouched" having
+ * observed literally nothing. The unscoped probe establishes only the COUNT (two
+ * elements carry the testid SOMEWHERE); it says nothing about WHICH panes, and the
+ * driver deliberately does not assert the pane it names, since DOM order is not a
+ * contract. So `otherPaneId` must be shown addressable POSITIVELY, by resolving
+ * its own `toggleTestId`. The DRIVEN pane needs no such probe: if it were
+ * unaddressable the scoped click itself would fail with the resolver's
+ * `notFoundForViewport`, which branch 1 already quotes verbatim.
+ *
+ * BRANCH 6 EXISTS BECAUSE THE CLICK IS A TOGGLE, NOT A SET. If the driven pane's
+ * body is ALREADY open when the scenario runs — a re-run against a GUI that a
+ * previous failed run left dirty, persisted view state, a reordered scenario —
+ * then the click CLOSES it, `drivenAfter.exists` is false, and branch 7 would
+ * report "the click never landed" of a click that landed and worked perfectly.
+ * Accurate attribution is this module's whole job, so the driven pane gets the
+ * same baseline probe the other pane does rather than having its start state
+ * assumed.
+ *
+ * BRANCH 7 PRECEDES BRANCH 8 deliberately: a click that never landed also explains
  * the other pane's state, so reporting the bleed first would send the operator
  * after the wrong cause.
  *
- * Never throws, whatever the shape of the four payloads.
+ * Never throws, whatever the shape of the five payloads.
  *
  * @param {object} options
  * @param {string} options.drivenPaneId  The `viewportId` the click was scoped to.
  * @param {string} options.otherPaneId   The pane that must be untouched.
+ * @param {string} options.toggleTestId  The testid that was clicked; also the probe
+ *        that proves `otherPaneId` is addressable.
  * @param {string} options.bodyTestId    The testid whose presence proxies `enabled`.
  * @param {any} options.clickResult      Decoded scoped `click_element` result.
- * @param {any} options.drivenAfter      `dom_query(bodyTestId, drivenPaneId)` AFTER.
+ * @param {any} options.otherToggle      `dom_query(toggleTestId, otherPaneId)` — the
+ *        addressability probe; valid at any time, since the toggle sits in the
+ *        toolbar HEADER, outside the body the `<Show>` gate opens and closes.
  * @param {any} options.otherBefore      `dom_query(bodyTestId, otherPaneId)` BEFORE.
+ * @param {any} options.drivenBefore     `dom_query(bodyTestId, drivenPaneId)` BEFORE.
+ * @param {any} options.drivenAfter      `dom_query(bodyTestId, drivenPaneId)` AFTER.
  * @param {any} options.otherAfter       `dom_query(bodyTestId, otherPaneId)` AFTER.
  * @returns {string | null} The diagnosis, or `null` when the property holds.
  */
 export function describeScopedToggleNoBleed({
   drivenPaneId,
   otherPaneId,
+  toggleTestId,
   bodyTestId,
   clickResult,
-  drivenAfter,
+  otherToggle,
   otherBefore,
+  drivenBefore,
+  drivenAfter,
   otherAfter,
 }) {
   const clickLabel = `click_element(viewportId: '${drivenPaneId}')`;
@@ -359,6 +410,18 @@ export function describeScopedToggleNoBleed({
     );
   }
 
+  const notAddressable = describeExistsProbe(
+    otherToggle,
+    `dom_query('${toggleTestId}', viewportId: '${otherPaneId}')`,
+    true,
+    `${otherPaneId} is not ADDRESSABLE: its own ${toggleTestId} does not resolve, so that pane was ` +
+      `renamed, is absent, or renders no FEA toolbar at all. dom_query collapses BOTH resolver ` +
+      `absences (notFound and notFoundForViewport) to exists:false, so every ${bodyTestId} probe ` +
+      `below would answer "closed" for a pane that is not there and no-bleed would be certified ` +
+      `having observed nothing.`,
+  );
+  if (notAddressable) return notAddressable;
+
   const dirtyBaseline = describeExistsProbe(
     otherBefore,
     `dom_query('${bodyTestId}', viewportId: '${otherPaneId}') pre-click`,
@@ -368,6 +431,18 @@ export function describeScopedToggleNoBleed({
       `unchanged verdict would be meaningless. Re-run against a freshly launched GUI.`,
   );
   if (dirtyBaseline) return dirtyBaseline;
+
+  const drivenAlreadyOpen = describeExistsProbe(
+    drivenBefore,
+    `dom_query('${bodyTestId}', viewportId: '${drivenPaneId}') pre-click`,
+    false,
+    `${drivenPaneId}'s ${bodyTestId} was ALREADY present before the click, so this click toggled it ` +
+      `OFF rather than on — click_element calls el.click(), a TOGGLE and not an idempotent set. Any ` +
+      `"the click never landed" verdict below would be a misattribution: the click landed and did ` +
+      `exactly what it was asked. Re-run against a freshly launched GUI; a previous failed run may ` +
+      `have exited before restoring this pane.`,
+  );
+  if (drivenAlreadyOpen) return drivenAlreadyOpen;
 
   const notLanded = describeExistsProbe(
     drivenAfter,

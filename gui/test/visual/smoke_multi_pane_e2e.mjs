@@ -35,8 +35,13 @@
  *                 Per-pane FEA state is read via `fea-mode-channel-select` PRESENCE,
  *                 not via store_state: the wire exposes no FEA state at all
  *                 (viewports[id] is {meshCount} alone) and dom_query cannot read
- *                 `checked`. Led by an UNSCOPED probe that must report matchCount==2,
- *                 without which the scoped assertions would pass vacuously.
+ *                 `checked`. Three preconditions keep that reading honest, since
+ *                 dom_query answers exists:false for an unresolvable pane exactly as
+ *                 it does for a closed body: an UNSCOPED probe must match one toggle
+ *                 per registered viewport (else there is nothing to disambiguate),
+ *                 design-main's OWN toggle must resolve (else the pane is not there
+ *                 to be left untouched), and BOTH panes' bodies must start closed
+ *                 (the click is a toggle, so a pre-opened pane would be closed by it).
  *
  * NOTE: entity_path string values are matched by presence-in-meshKeys rather than
  * hard-equality to stay robust to realization-index formatting.
@@ -175,6 +180,15 @@ async function main() {
     fail(`Expected ≥2 viewports in store_state; got ${viewportIds.length}: ${JSON.stringify(viewportIds)} (store_state keys: ${JSON.stringify(Object.keys(storeState))})`);
   }
   console.log('  OK: ≥2 viewports registered');
+
+  // THE OBSERVED pane count, reused by scenario 5's anti-vacuity probe rather than
+  // restated there as a literal. Every pane renders an FEA toolbar — App's
+  // feaModeStoreRegistry.get() is get-or-create and MultiViewport forwards the store
+  // unconditionally — so this is exactly how many 'fea-mode-enable-toggle' elements
+  // an unscoped dom_query must match. Deriving it means a fixture that grew a third
+  // pane surfaces once, at the check above that enumerates panes, instead of again
+  // as a downstream "the fixture's pane set changed" three scenarios later.
+  const PANE_COUNT = viewportIds.length;
 
   // Row 2: pane-1 must be present with meshCount>=1
   if (!('pane-1' in viewports)) {
@@ -357,21 +371,39 @@ async function main() {
   console.log('  unscoped dom_query(fea-mode-enable-toggle):', JSON.stringify(ambiguity));
   const ambiguityFailure = describeUnscopedAmbiguity(ambiguity, {
     testId: 'fea-mode-enable-toggle',
-    expectedMatchCount: 2,
+    // Derived from the map scenario 1 enumerated, NOT a literal 2: one toolbar per
+    // registered pane, so the two checks cannot disagree about the fixture.
+    expectedMatchCount: PANE_COUNT,
   });
   if (ambiguityFailure) fail(ambiguityFailure);
-  console.log('  OK: fea-mode-enable-toggle is ambiguous across 2 panes (scoping has real work)');
+  console.log(`  OK: fea-mode-enable-toggle is ambiguous across ${PANE_COUNT} panes (scoping has real work)`);
   // INFORMATIONAL ONLY — never asserted. This names the pane a pre-#5891 unscoped
   // click would have driven, which is useful context, but pane DOM order is
   // emergent from MultiViewport's <For each={props.panes}> and is not a contract.
   console.log(`  (an unscoped click would have driven '${ambiguity.viewportId}')`);
 
-  // CLEAN-BASELINE probe: design-main's FEA body must be CLOSED before the click.
-  const feaBefore = await rpc('dom_query', { testId: 'fea-mode-channel-select', viewportId: 'design-main' });
-  console.log('  design-main FEA body before click:', JSON.stringify(feaBefore));
+  // ADDRESSABILITY probe — the precondition the unscoped count CANNOT supply. It
+  // proves one toggle per registered pane exists SOMEWHERE, not that design-main is
+  // one of the panes carrying them, and the line above is explicitly not an
+  // assertion (the pane it names is emergent DOM order). Since dom_query
+  // collapses an unresolvable viewportId to the same {exists:false} a closed body
+  // gives, without this a renamed design-main would answer "closed" to every probe
+  // below and the no-bleed verdict would be certified against a pane that is not there.
+  const otherToggle = await rpc('dom_query', { testId: 'fea-mode-enable-toggle', viewportId: 'design-main' });
+  console.log('  design-main own toggle (addressability):', JSON.stringify(otherToggle));
 
-  // THE SCOPED CLICK. A bare {ok:true} while TWO candidates exist in the DOM is
-  // itself the evidence that viewportId narrowed the resolve to exactly one.
+  // CLEAN-BASELINE probes: BOTH panes' FEA bodies must be closed before the click.
+  // The driven pane needs one too — the click is a TOGGLE, so a pane that starts
+  // open is CLOSED by it, which would otherwise be misreported as "the click never
+  // landed" rather than as the dirty start state it is.
+  const otherBefore = await rpc('dom_query', { testId: 'fea-mode-channel-select', viewportId: 'design-main' });
+  const drivenBefore = await rpc('dom_query', { testId: 'fea-mode-channel-select', viewportId: 'pane-1' });
+  console.log('  design-main FEA body before click:', JSON.stringify(otherBefore));
+  console.log('  pane-1 FEA body before click:', JSON.stringify(drivenBefore));
+
+  // THE SCOPED CLICK. A bare {ok:true} while the several candidates counted above
+  // exist in the DOM is itself the evidence that viewportId narrowed the resolve to
+  // exactly one — paneDiagnostics would have echoed the pair otherwise.
   const feaClick = await rpc('click_element', { testId: 'fea-mode-enable-toggle', viewportId: 'pane-1' });
   console.log('  click_element(fea-mode-enable-toggle, pane-1):', JSON.stringify(feaClick));
 
@@ -386,10 +418,13 @@ async function main() {
   const noBleedFailure = describeScopedToggleNoBleed({
     drivenPaneId: 'pane-1',
     otherPaneId: 'design-main',
+    toggleTestId: 'fea-mode-enable-toggle',
     bodyTestId: 'fea-mode-channel-select',
     clickResult: feaClick,
+    otherToggle,
+    otherBefore,
+    drivenBefore,
     drivenAfter,
-    otherBefore: feaBefore,
     otherAfter,
   });
   if (noBleedFailure) fail(noBleedFailure);
