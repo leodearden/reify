@@ -277,4 +277,80 @@ assert "B3b: OCCT human deadline message is unchanged, ERROR: prefix intact (DF'
 assert "B4b: the OCCT sentinel is a SEPARATE line, not appended to that message" \
     _lacks_text "$B2_MSGS" "$SENTINEL"
 
+echo ""
+echo "=== C: run_all.sh's pool wait reaches the PARENT's stderr, unsanitized ==="
+
+# THE HIGHEST-VALUE CASE. run_all.sh's pool wait is the one finite-WAIT path
+# absent from dark-factory's three-basename grounded allowlist
+# (lib_test_semaphore | cargo-test-occt-gated | lib_lane_x_flock), so the
+# sentinel is the ONLY route by which a starved pool wait can ever be
+# classified. Everything else in this suite hardens a path DF could already
+# see; this section covers the one it could not.
+#
+# Two invisible facts make it work, so both are pinned here behaviourally
+# (A6 pins the first synthetically as well):
+#   1. _RA_CLOCK_SANITIZE is prefix-scoped to `@@REIFY_CLOCK_`, so it cannot
+#      rewrite this family; and
+#   2. the pool worker's slot_acquire writes to the INHERITED parent fd 2 --
+#      the `> .out 2>&1` redirect is scoped to the member `bash` command only --
+#      so the marker never enters the sanitized re-emission path at all.
+#
+# RECURSION NOTE: run_all.sh is driven against a TEMP fixture dir only, never
+# the real tests/infra/ (this file is itself auto-discovered by the outer
+# run_all).
+
+if [ ! -f "$RUN_ALL" ]; then
+    assert "run_all.sh present (skipped - pool substrate missing)" false
+    test_summary
+    exit 0
+fi
+
+TMPC="$(mktemp -d)"; _TMPDIRS+=("$TMPC")
+
+# One trivial passing fixture + a PRIVATE classification manifest, so discovery
+# sees exactly this member and nothing from the real suite.
+cat > "$TMPC/test_marker_member.sh" <<'MEMBEREOF'
+#!/usr/bin/env bash
+echo "marker member fixture ran"
+exit 0
+MEMBEREOF
+chmod +x "$TMPC/test_marker_member.sh"
+cat > "$TMPC/classification.manifest" <<'EOF'
+test_marker_member.sh pool
+EOF
+
+C_POOL_LOCK="$TMPC/pool.lock"
+RA_OUT="$TMPC/ra_out.txt"
+
+_hold_slot "$C_POOL_LOCK" 1
+
+# POOL_WAIT=1 makes the worker's slot_acquire deadline in ~1s. The pool is a
+# SOFT admission, so the member still runs unslotted and run_all still exits 0 --
+# the sentinel is the ONLY observable, which is exactly the point.
+RUN_ALL_CLASSIFICATION_MANIFEST="$TMPC/classification.manifest" \
+    REIFY_RUN_ALL_POOL_LOCK="$C_POOL_LOCK" \
+    REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
+    REIFY_RUN_ALL_POOL_WAIT=1 \
+    REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+    timeout 300 bash "$RUN_ALL" "$TMPC" > "$RA_OUT" 2>&1 || true
+
+_reap_slot "$C_POOL_LOCK" 1
+
+# $RA_OUT deliberately HOLDS a live column-0 sentinel -- it is the assertion
+# target. It must stay in this temp file: never cat it, never let it reach this
+# test's own stdout, or the outer run_all re-emits it into the merge-gate verify
+# log and dark-factory misclassifies the whole verify. Quiet checkers only.
+
+# C3 FIRST: without these, C1/C2 could pass vacuously via the legacy serial
+# fallback (which has no pool wait at all, hence no sentinel to find or rewrite).
+assert "C3a: the pool path was actually taken (INFO: run_all.sh pool: N= present)" \
+    _has_text "$RA_OUT" "INFO: run_all.sh pool: N="
+assert "C3b: the fixture member actually ran" \
+    _has_text "$RA_OUT" "--- Running: test_marker_member.sh ---"
+
+assert "C1: pool deadline sentinel reaches run_all's own output with reason=run_all_pool_starvation, at column 0" \
+    _has_line "$RA_OUT" "^${SP}TIMEOUT@@ reason=run_all_pool_starvation lock=[^ ]+ slots=1 waited=[0-9]+$"
+assert "C2: that sentinel is never rewritten to the QUOTED form (it rode the inherited parent fd 2)" \
+    _lacks_text "$RA_OUT" "@@REIFY_QUOTED_SLOT_"
+
 test_summary
