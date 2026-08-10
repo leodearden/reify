@@ -1181,3 +1181,154 @@ fn solve_elastic_static_body_e2e_skipped_without_gmsh() {
          (stub-mode build)"
     );
 }
+
+/// Task #6154 — RECONCILE the realized box's out-of-solid grid points against
+/// what the geometry actually predicts.
+///
+/// `elastic_static.rs`'s field-population contract claims of `displacement`:
+/// "Every grid point lies inside the solid (prismatic box), so all samples are
+/// finite (no NaN sentinels for the cantilever geometry)". Measured on this
+/// fixture, the realized path produces 1055 out-of-solid nodes of 2989 (35%),
+/// so the claim is false as written. A raw NaN *count* diagnoses nothing
+/// though — the sentinel is normative (PRD `v0_4/fea-result-model.md` §3), and
+/// both a coverage defect and boundary round-off write the same `NaN`.
+///
+/// So this test reports the *split* via `classify_grid_misses` and asserts the
+/// one prediction the doc genuinely makes for a PRISMATIC body, where the AABB
+/// IS the solid: no strictly-index-interior grid point may be out-of-solid.
+///
+/// Deliberately NOT asserted here:
+///   - any all-finite property — the sentinel is normative and must survive;
+///   - the total miss COUNT — that count is the thing under investigation, and
+///     pinning 1055 before the mechanism is understood would cement a bug as a
+///     contract.
+#[cfg(has_gmsh)]
+#[test]
+fn realized_box_grid_miss_report_reconciles_with_geometry() {
+    use reify_ir::{ExportFormat, Value};
+    use reify_solver_elastic::classify_grid_misses;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping realized_box_grid_miss_report_reconciles_with_geometry: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(MULTI_CASE_BODY_SOURCE);
+
+    // Same harness as `multi_case_body_solve_shares_one_realization_across_cases`
+    // above — see its comment for why the trampolines are registered manually.
+    let mut engine = make_occt_engine();
+    engine.register_compute_fn(
+        "solver::multi_case",
+        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::multi_case");
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let build_result = engine.build(&compiled, ExportFormat::Step);
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the multi-case body build, got: {errors:?}"
+    );
+
+    let result_cell = reify_core::ValueCellId::new("FeaBodyMultiCase", "result");
+    let result_val = build_result
+        .values
+        .get(&result_cell)
+        .unwrap_or_else(|| panic!("cell FeaBodyMultiCase.result not found in build values"));
+    let cases_map = match result_val {
+        Value::Map(outer) => match outer.get(&Value::String("cases".to_string())) {
+            Some(Value::Map(inner)) => inner.clone(),
+            other => panic!("result[\"cases\"] must be Value::Map, got: {other:?}"),
+        },
+        other => panic!("solve_load_cases result must be a Value::Map, got: {other:?}"),
+    };
+    let case_val = cases_map
+        .get(&Value::String("operating".to_string()))
+        .unwrap_or_else(|| panic!("cases map must contain \"operating\""));
+
+    let disp = sampled_field(case_val, "displacement");
+    let report = classify_grid_misses(&disp, 3);
+
+    // ── The measurement artefact (#6154's headline deliverable) ──────────────
+    let axes: Vec<usize> = disp.axis_grids.iter().map(|a| a.len()).collect();
+    let mut hist: Vec<Vec<usize>> = axes.iter().map(|&n| vec![0usize; n]).collect();
+    for idx in &report.missed_indices {
+        for a in 0..3 {
+            hist[a][idx[a]] += 1;
+        }
+    }
+    eprintln!(
+        "#6154 realized box §7a grid-miss report: axes={axes:?} n_grid={} n_missed={} \
+         ({:.1}%) | interior={} face={} edge={} corner={}",
+        report.n_grid,
+        report.n_missed,
+        100.0 * report.n_missed as f64 / report.n_grid as f64,
+        report.missed_interior,
+        report.missed_face,
+        report.missed_edge,
+        report.missed_corner,
+    );
+    for (a, name) in ["x", "y", "z"].iter().enumerate() {
+        eprintln!("#6154   misses per {name}-index: {:?}", hist[a]);
+    }
+
+    // ── (i) reconciliation identity ─────────────────────────────────────────
+    assert_eq!(
+        report.missed_interior + report.missed_face + report.missed_edge + report.missed_corner,
+        report.n_missed,
+        "every miss must fall in exactly one bucket"
+    );
+
+    // ── (ii) the grid is the realized one (61×7×7), not the synthetic 854 ────
+    assert_eq!(
+        report.n_grid,
+        REALIZED_GRID_NODES_6154,
+        "§7a grid node count must equal the realized-AABB heuristic (61×7×7 for the \
+         1 m × 100 mm × 100 mm box); got {}",
+        report.n_grid,
+    );
+
+    // ── (iii) the geometric prediction for a PRISMATIC body ─────────────────
+    assert_eq!(
+        report.missed_interior, 0,
+        "BOX-SPECIFIC prediction: for a prismatic body the mesh AABB IS the solid, \
+         so every strictly-index-interior grid point must lie inside some tet. A \
+         non-zero interior count means the realized mesh handed to §7a does not tile \
+         its own AABB — that is a COVERAGE defect, not a tolerance one, and widening \
+         `tol` would not legitimately fix it. Measured: interior={} of n_missed={} \
+         (face={}, edge={}, corner={}). Per-axis miss histograms: x={:?} y={:?} z={:?}",
+        report.missed_interior,
+        report.n_missed,
+        report.missed_face,
+        report.missed_edge,
+        report.missed_corner,
+        hist[0],
+        hist[1],
+        hist[2],
+    );
+}
+
+/// Realized-path §7a grid nodes for `MULTI_CASE_BODY_SOURCE`'s
+/// `box(1000mm, 100mm, 100mm)`: AABB [1.0, 0.1, 0.1] m ⇒ nx=60, ny=6, nz=6 ⇒
+/// (60+1)(6+1)(6+1) = 61×7×7. Mirrors the `REALIZED_GRID_NODES` constant local
+/// to `multi_case_body_solve_shares_one_realization_across_cases`.
+#[cfg(has_gmsh)]
+const REALIZED_GRID_NODES_6154: usize = 61 * 7 * 7; // 2989
