@@ -143,7 +143,11 @@ those must NOT be dimensioned. Only the control-point coordinates in the middle 
 
 ## Interference & Clearance Queries
 
-<!-- SYNC: names verified by crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs -->
+<!-- SYNC: the five query NAMES here, and the compile-acceptance of the ```reify fences below, are
+     verified by crates/reify-compiler/tests/harness_doc_chunks/geometry_chunk_smoke.rs. That guard
+     covers names + parse/compile only. The RUNTIME claims in "Clearance-query traps" are pinned
+     (where they are pinned at all) by the eval/CLI tests mapped in the SYNC block at that
+     subsection — read it before relying on a trap, and before changing one of those behaviours. -->
 
 Reify **does** have a static interference/clearance oracle. Never hand-roll a bounding-box overlap
 test or hand-compute a gap from parameters — ask the kernel. Two forms; prefer FORM B unless you
@@ -210,6 +214,43 @@ The swept form `flat_map(snaps, |s| [min_clearance(s, a, b)])` is supported (see
 a swept unary `interferes` is not.
 
 ### Clearance-query traps
+
+<!--
+SYNC: which trap below is pinned by an executable test, and where. The chunk guard
+(geometry_chunk_smoke.rs) establishes only name existence + fence compile-acceptance, so
+these runtime claims would otherwise rot silently. Named here so a behaviour change lands in
+a file whose grep leads back to this doc — and so the UNPINNED ones are visibly unpinned
+rather than looking equally guarded.
+
+  trap 1 (build/eval catches it)  crates/reify-cli/tests/harness_cli/cli_vc_clearance.rs
+                                  :: build_vc_bolt_pattern_clearance_satisfied
+                                  :: build_vc_bolt_pattern_interference_violated
+  trap 1 (check exits 0)          UNPINNED — prose only.
+  trap 2 (inline arg -> undef)    crates/reify-eval/tests/harness_kernel_realization/
+                                  kernel_queries_intersects_smoke.rs, which asserts the
+                                  IntersectsSmoke.undef_inline cell is None or Undef.
+  trap 3 (FORM A trio on plain    UNPINNED — prose only. Verified by hand while probing;
+          geometry -> undef)      re-verify before trusting it.
+  trap 4 (sub `at` pose not       UNPINNED — prose only. Substrate fix is owned by the
+          carried into snapshot)  constraint-driven-placement PRD track.
+  trap 5 (clamp to 0 on overlap;  crates/reify-eval/tests/harness_mechanism/
+          positive when disjoint; mechanism_interference_smoke.rs
+          self-pair -> undef)     :: overlapping_cubes_one_pair_and_zero_clearance
+                                  :: disjoint_cubes_no_pairs_and_positive_clearance
+                                  :: single_body_self_pair_excluded
+  trap 5 (fully NESTED solid      UNPINNED — prose only. This is the rider that defeats the
+          reports POSITIVE dist)  obvious "overlap => 0" reading, so treat it as the
+                                  highest-value gap here.
+  trap 6 (`d <= 0.0`)             kernel_queries_intersects_smoke.rs
+                                  :: intersects_smoke_evals_expected_booleans. Source of
+                                  truth is reify-eval/src/geometry_ops.rs's Bool(d <= 0.0).
+                                  The face-TOUCHING edge case specifically is UNPINNED; the
+                                  test covers overlapping and well-apart.
+
+FORM A's posed and swept forms are pinned by mechanism_interference_smoke.rs
+:: fk_posed_cubes_no_interference_and_correct_clearance and
+:: swept_min_clearance_monotonic_to_interference.
+-->
 
 Every one of these is a **silent wrong answer**, not an error — read them before writing a clearance
 gate.
