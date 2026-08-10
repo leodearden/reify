@@ -36,7 +36,9 @@
 # see scripts/check-harness-baseline-registration.sh's _hint() for the exact
 # remediation wording (single source of truth — do not restate it here).
 #
-# REGENERATE (from repo root; verify the count is unchanged before committing):
+# REGENERATE (from repo root) — regenerate-and-DIFF, never regenerate-and-
+# replace, and NEVER "check the count is unchanged": a ratchet only shrinks, so
+# an unchanged count across a consolidation leaf is the bug, not the check.
 #   git ls-files -- 'crates/reify-cli/tests/*.rs' 'crates/reify-syntax/tests/*.rs' \
 #       'crates/reify-kernel-occt/tests/*.rs' 'crates/reify-eval/tests/*.rs' \
 #       'crates/reify-compiler/tests/*.rs' \
@@ -44,9 +46,24 @@
 #     | grep -vE '/tests/(tensegrity_t0a|representation_within_assertion|harness_[^/]+)\.rs$' \
 #     | sort
 #
-# Baseline snapshot generated on base commit e6595a38 — expected per-crate:
-#   reify-cli 73, reify-syntax 61, reify-kernel-occt 48, reify-eval 395,
-#   reify-compiler 290 = 867 total.
+# `diff` that output against this file's data rows. In steady state they match
+# EXACTLY, because the guard pins BOTH directions: a live standalone with no row
+# fails rule (b), and a row with no live file fails the orphan-row scan in
+# tests/infra/test_harness_kloc_cap.sh. A mismatch is therefore actionable — it
+# is never a prompt to re-baseline this file wholesale:
+#   listed here, absent from the output -> ORPHAN row: the file was consolidated
+#     and its row was not removed. Delete the row (the consolidating leaf owed
+#     it in the same diff).
+#   in the output, absent here -> a NEW un-grandfathered standalone. Consolidate
+#     it per C1; do NOT add a row — growing this baseline is superseded, above.
+#
+# HISTORICAL, NOT MAINTAINED — the first snapshot, kept only to date this
+# baseline's origin: on base commit e6595a38 it was reify-cli 73, reify-syntax
+# 61, reify-kernel-occt 48, reify-eval 395, reify-compiler 290 = 867 total.
+# Landed consolidation leaves have shrunk it far below that (and three of those
+# five crates to zero rows). The LIVE count is whatever the recipe above prints,
+# and the guard's row scans already report it (`rows=N`) — deliberately not
+# restated here, so it cannot go stale again.
 crates/reify-compiler/tests/add_sub_operand_guard_tests.rs
 crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs
 crates/reify-compiler/tests/alias_dfs_diagnostic_tests.rs
