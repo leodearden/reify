@@ -133,8 +133,22 @@
 //!   codomain:vec3<Length>}` backed by a `SampledField{kind:Regular3D}`.
 //!   `data.len() == grid_count × 3`; layout is row-major x-outer/z-inner, with
 //!   the 3 displacement components (dx, dy, dz) stored contiguously per grid point.
-//!   Every grid point lies inside the solid (prismatic box), so all samples are finite
-//!   (no NaN sentinels for the cantilever geometry).
+//!   Out-of-solid grid points carry `f64::NAN` for all 3 components — the SAME
+//!   PRD §3 sentinel the `stress` bullet below documents. The two fields'
+//!   sentinel contracts are identical; neither is exempt.
+//!
+//!   This bullet used to claim "every grid point lies inside the solid (prismatic
+//!   box), so all samples are finite". That is false on the REALIZED path (#6154).
+//!   All-finite requires the solve mesh to TILE the AABB the grid spans — a
+//!   property of the MESH, not of the geometry being prismatic. §7a spans the grid
+//!   over `aabb(&fea.coords)`, i.e. the realized tet mesh's own AABB, so a mesh
+//!   that under-fills its AABB emits sentinels even for a box. Measured for
+//!   `box(1000mm, 100mm, 100mm)` by
+//!   `solve_elastic_static_body_e2e::realized_box_grid_miss_report_reconciles_with_geometry`:
+//!   1055 of 2989 grid nodes out-of-solid (35.3%) — interior=36, face=749,
+//!   edge=266, corner=4 — because the realized tets sum to 8.4291e-3 m³ against
+//!   the 1.0000e-2 m³ AABB they span (84.3% fill). The sentinel is behaving
+//!   correctly; the mesh under-coverage upstream of §7a is tracked as #6200.
 //!
 //! - **`stress`** — `Value::Field{source:Sampled, domain:point3<Length>,
 //!   codomain:tensor(2,3,Pressure)}` backed by a `SampledField{kind:Regular3D}`.
