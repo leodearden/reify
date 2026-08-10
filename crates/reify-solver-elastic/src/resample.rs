@@ -16,6 +16,17 @@
 //! - Out-of-solid grid points carry `f64::NAN` for all stride components.
 //! - Data ordering: row-major axis-0(x) outermost → axis-2(z) innermost,
 //!   with stride components contiguous per grid point.
+//! - [`classify_grid_misses`] / [`nearest_miss_margin`] are the **grid-miss
+//!   instrument** (task #6154): a diagnostic sibling of the production path in
+//!   the same spirit as [`ResampleStats`]. A raw NaN count cannot distinguish a
+//!   mesh that fails to tile its own AABB (a *coverage* defect) from grid points
+//!   that sit a round-off outside a face it does tile (a *tolerance* effect) —
+//!   both write the same sentinel. The classifier buckets misses by grid INDEX
+//!   extremity (never by a second geometric epsilon, so it cannot itself be a
+//!   source of the near-boundary error it measures), and `nearest_miss_margin`
+//!   reports *how far* outside in the same absolute-barycentric units that
+//!   `point_in_tet_p1`'s `tol` is expressed in — making the measured margin
+//!   directly comparable to the `tol` a caller passed.
 
 use std::sync::atomic::AtomicBool;
 
@@ -327,6 +338,163 @@ pub fn resample_multi_nodal_to_grid_instrumented(
 
     let stats = ResampleStats { point_in_tet_tests: total_tests };
     (sampled_fields, stats)
+}
+
+/// Where a resampled field's out-of-solid (`NaN`) grid points landed, bucketed
+/// by how many grid axes the point is **extreme** on (task #6154).
+///
+/// The out-of-solid sentinel is normative (PRD `v0_4/fea-result-model.md` §3),
+/// so misses are expected in general — a *count* of them therefore diagnoses
+/// nothing. What discriminates the two mechanisms is *where* they land:
+///
+/// - misses confined to `missed_face`/`missed_edge`/`missed_corner` mean the
+///   grid's outermost shell sits marginally outside a surface the mesh does
+///   tile — a **tolerance** effect, sized by [`nearest_miss_margin`];
+/// - any `missed_interior` means the mesh does **not** tile its own AABB — a
+///   **coverage** defect, which no tolerance change can legitimately paper over.
+///
+/// `missed_interior == 0` is only a *geometric prediction* where the AABB IS the
+/// solid, i.e. for a prismatic body. For a cylinder (or any non-convex or curved
+/// solid) index-interior grid points are legitimately outside the material, and a
+/// non-zero `missed_interior` is the CORRECT answer — do not promote it to a
+/// global invariant.
+// No `Eq`: `missed_points` carries `f64` coordinates.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct GridMissReport {
+    /// Total grid points examined (`∏ axis_grids[a].len()`).
+    pub n_grid: usize,
+    /// Grid points whose every stride component is `NaN`.
+    pub n_missed: usize,
+    /// Misses extreme on NO axis (strictly inside the grid's index box).
+    pub missed_interior: usize,
+    /// Misses extreme on exactly 1 axis (an AABB face).
+    pub missed_face: usize,
+    /// Misses extreme on exactly 2 axes (an AABB edge).
+    pub missed_edge: usize,
+    /// Misses extreme on all 3 axes (an AABB corner).
+    pub missed_corner: usize,
+    /// Physical coordinates of each miss, in visit order.
+    pub missed_points: Vec<[f64; 3]>,
+    /// Per-axis grid indices of each miss, parallel to `missed_points`.
+    pub missed_indices: Vec<[usize; 3]>,
+}
+
+/// Classify the out-of-solid grid points of a `Regular3D` [`SampledField`].
+///
+/// Walks the grid in the SAME row-major x-outer/z-inner order the sampler
+/// writes — flat index `(ix·ny1 + iy)·nz1 + iz` — derived from `sf.axis_grids`
+/// so the classifier cannot drift from the producer's layout.
+///
+/// A grid point counts as missed iff **all** `stride` components are `NaN`,
+/// matching the sentinel's all-or-nothing write. A *partially* `NaN` point is a
+/// different defect (a non-finite solution value, not an out-of-solid marker),
+/// so it is caught by a `debug_assert!` rather than silently bucketed.
+///
+/// Bucketing is purely INDEX-based — an axis is *extreme* when
+/// `index == 0 || index == axis_grids[a].len() - 1`. Because the §7a grid spans
+/// exactly the mesh AABB by construction, index-extremity **is** AABB-boundary,
+/// so no coordinate comparison (and no second tolerance to tune) is needed. That
+/// matters: a geometric classifier would depend on the same near-boundary float
+/// comparison under investigation, and so could not be trusted to judge it.
+///
+/// # Panics
+///
+/// Panics if `stride == 0`, if `sf` is not 3-axis, or if `sf.data.len()` is not
+/// `n_grid · stride` — all of which indicate the field was not produced by the
+/// `resample_*` entry points this instrument is a sibling of.
+pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport {
+    assert!(stride > 0, "classify_grid_misses: stride must be > 0");
+    assert_eq!(
+        sf.axis_grids.len(),
+        3,
+        "classify_grid_misses: expected a Regular3D field (3 axis grids), got {}",
+        sf.axis_grids.len(),
+    );
+    let nx1 = sf.axis_grids[0].len();
+    let ny1 = sf.axis_grids[1].len();
+    let nz1 = sf.axis_grids[2].len();
+    let n_grid = nx1 * ny1 * nz1;
+    assert_eq!(
+        sf.data.len(),
+        n_grid * stride,
+        "classify_grid_misses: data len {} != n_grid {} × stride {}",
+        sf.data.len(),
+        n_grid,
+        stride,
+    );
+
+    let mut report = GridMissReport { n_grid, ..Default::default() };
+    let last = [nx1 - 1, ny1 - 1, nz1 - 1];
+
+    for ix in 0..nx1 {
+        for iy in 0..ny1 {
+            for iz in 0..nz1 {
+                let flat = (ix * ny1 + iy) * nz1 + iz;
+                let comps = &sf.data[flat * stride..flat * stride + stride];
+                let n_nan = comps.iter().filter(|v| v.is_nan()).count();
+                debug_assert!(
+                    n_nan == 0 || n_nan == stride,
+                    "classify_grid_misses: grid point ({ix},{iy},{iz}) is PARTIALLY NaN \
+                     ({n_nan}/{stride} components). The out-of-solid sentinel is written \
+                     all-or-nothing, so this is a non-finite solution value, not an \
+                     out-of-solid marker — a different defect.",
+                );
+                if n_nan != stride {
+                    continue;
+                }
+
+                let idx = [ix, iy, iz];
+                let n_extreme = (0..3).filter(|&a| idx[a] == 0 || idx[a] == last[a]).count();
+                match n_extreme {
+                    0 => report.missed_interior += 1,
+                    1 => report.missed_face += 1,
+                    2 => report.missed_edge += 1,
+                    _ => report.missed_corner += 1,
+                }
+                report.n_missed += 1;
+                report.missed_points.push([
+                    sf.axis_grids[0][ix],
+                    sf.axis_grids[1][iy],
+                    sf.axis_grids[2][iz],
+                ]);
+                report.missed_indices.push(idx);
+            }
+        }
+    }
+
+    report
+}
+
+/// How far outside the mesh a point is, in the units [`point_in_tet_p1`]'s
+/// `tol` is expressed in (task #6154).
+///
+/// Returns `max_e min_i barycentric_p1(elems[e], p)[i]`: the best (least
+/// negative) minimum barycentric coordinate over all elements.
+///
+/// - `>= 0` — `p` is inside some element;
+/// - `< 0`  — `p` misses every element, and `|margin|` is the shortfall in
+///   *absolute barycentric slack*, i.e. exactly the quantity a caller's `tol`
+///   is compared against. A point that misses at `tol` would be accepted by any
+///   `tol > |margin|`.
+///
+/// Because the coordinates are barycentric they are scale-invariant, so the
+/// magnitude is directly readable as a fraction of tet extent: `~1e-7` is
+/// round-off against a face the mesh tiles, `~0.5` is a hole where an element
+/// should have been. That separation is the whole diagnostic value.
+///
+/// Returns [`f64::NEG_INFINITY`] for an empty mesh.
+pub fn nearest_miss_margin(nodes: &[[f64; 3]], elems: &[[usize; 4]], p: [f64; 3]) -> f64 {
+    let mut best = f64::NEG_INFINITY;
+    for conn in elems {
+        let phys4: [[f64; 3]; 4] =
+            [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]];
+        let bary = barycentric_p1(&phys4, p);
+        let min_i = bary.iter().copied().fold(f64::INFINITY, f64::min);
+        if min_i > best {
+            best = min_i;
+        }
+    }
+    best
 }
 
 #[cfg(test)]

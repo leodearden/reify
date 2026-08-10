@@ -628,9 +628,9 @@ pub use progressive::{
 // resample_* fns are now thin wrappers over the instrumented cores (which
 // return ResampleStats for deterministic complexity assertions in tests).
 pub use resample::{
-    GridSpec, ResampleStats, resample_multi_nodal_to_grid,
-    resample_multi_nodal_to_grid_instrumented, resample_nodal_to_grid,
-    resample_nodal_to_grid_instrumented,
+    GridMissReport, GridSpec, ResampleStats, classify_grid_misses, nearest_miss_margin,
+    resample_multi_nodal_to_grid, resample_multi_nodal_to_grid_instrumented,
+    resample_nodal_to_grid, resample_nodal_to_grid_instrumented,
 };
 pub use result::{
     GradientElement, ScalarElement, StressElement, curl_from_gradient, element_gradient_p1,
