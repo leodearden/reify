@@ -773,4 +773,76 @@ mod tests {
             "nominal() with 2 args should return Undef"
         );
     }
+
+    // ─── 6091 step-1: RED tests for the subject-first argument order ──────────
+    //
+    // The 2026-08-07 ruling flips `iso_it_tolerance` from grade-first
+    // `(grade, nominal_min, nominal_max)` to subject-first
+    // `(nominal_min, nominal_max, grade)` — the subject of the call is the
+    // feature being toleranced, not the grade that qualifies it.
+
+    /// The ruling's literal signal: `iso_it_tolerance(6mm, 10mm, 7)`.
+    ///
+    /// Expected value is derived from the implemented ISO 286-1 formula
+    /// (`iso_it_tolerance` above), not guessed: D = √(6·10) = 7.745967 mm,
+    /// ∛D = 1.978588, i = 0.45·1.978588 + 0.001·7.745967 = 0.898111 µm,
+    /// tol = 16·i = 14.3698 µm — matching the ruling's recorded probe of
+    /// 0.0000143 m for IT7.
+    ///
+    /// Deliberately NO `.round() == published-cell` assertion: the published
+    /// ISO 286-1 IT7 @ Ø6–10 cell is 15 µm while the formula yields 14.37
+    /// (rounds to 14). The three published-cell round-checks above only cover
+    /// cells where formula and table agree; this one does not, and that
+    /// table-vs-formula divergence is already documented by
+    /// `iso_it_tolerance_sub_3mm_accepted_but_unvalidated`.
+    #[test]
+    fn iso_it_tolerance_subject_first_it7_6_10mm() {
+        let r = crate::eval_builtin(
+            "iso_it_tolerance",
+            &[len(0.006), len(0.010), Value::Int(7)],
+        );
+        assert!(
+            is_finite_length_scalar(&r),
+            "subject-first (nominal_min, nominal_max, grade) must evaluate to a \
+             finite LENGTH scalar, got {:?}",
+            r
+        );
+        assert_rel_close(um(&r), 14.3698, 5e-3, "IT7@6-10 subject-first µm within 0.5%");
+    }
+
+    /// The anti-regression half of the ruling: the old grade-first spelling must
+    /// no longer silently work. Arg-0 is a bare `Value::Int`, not a LENGTH
+    /// scalar, so `validate_dimensioned_scalar` rejects it and
+    /// `parse_iso_well_typed` returns `None` → `Value::Undef`.
+    #[test]
+    fn iso_it_tolerance_grade_first_spelling_is_undef() {
+        assert!(
+            crate::eval_builtin(
+                "iso_it_tolerance",
+                &[Value::Int(7), len(0.030), len(0.050)]
+            )
+            .is_undef(),
+            "the legacy grade-first spelling must return Undef, not silently work"
+        );
+    }
+
+    /// `diagnose` shares the one decode point, so it must keep classifying
+    /// out-of-envelope calls under the new order: IT4 is well-typed but below
+    /// IT5 → `Some(Diagnostic)` with `Severity::Error`.
+    #[test]
+    fn diagnose_iso_it_subject_first_out_of_envelope_returns_error() {
+        use reify_core::Severity;
+        let d = super::diagnose(
+            "iso_it_tolerance",
+            &[len(0.018), len(0.030), Value::Int(4)],
+        );
+        let diag = d.expect(
+            "subject-first IT4 (out of envelope, well-typed) should return Some(Diagnostic)",
+        );
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "out-of-envelope diagnostic should be Error severity under subject-first order"
+        );
+    }
 }
