@@ -31,6 +31,10 @@
 //! - `linear_pattern` (arity 6) arg5 `spacing` → LENGTH ("Length") (task 5652)
 //! - `linear_pattern_2d` (arity 11) arg5 `spacing1` and arg10 `spacing2` →
 //!   LENGTH ("Length") (task 5652)
+//! - `orient_euler` (arity 4) arg0 `convention` and `orient_to_euler` (arity 2)
+//!   arg1 `convention` → `Type::Enum("EulerConvention")` (task #6082; the lone
+//!   `ExpectedArg::Enum` slots — the convention index differs because the
+//!   constructor is convention-first and the decomposer is subject-first)
 //!
 //! UNCHECKED (would false-positive on valid call sites or is out-of-scope):
 //! - arg0 (geometry handle) — ε=4358's territory
@@ -40,6 +44,10 @@
 //! - Pattern DIRECTION components and COUNTS (`linear_pattern` args1-4;
 //!   `linear_pattern_2d` args1-4 and 6-9) — why each is exempt is on the
 //!   `linear_pattern` arm of [`builtin_arg_slots`].
+//! - `orient_euler` args1-3 (the three angles) and `orient_to_euler` arg0 (the
+//!   Orientation subject) — the angles are semantically ANGLE but a live call
+//!   site passes bare Reals; the rationale is on that arm of
+//!   [`builtin_arg_slots`].
 //! - `mirror` (arity 7) / `circular_pattern` (arity 9) origin triples
 //!   `ox`/`oy`/`oz` — length-semantic and eligible, but deliberately DEFERRED by
 //!   task 5652: LENGTH slots there turn at least six existing valid-today call
@@ -105,6 +113,23 @@ pub(crate) enum ExpectedArg {
     /// rejected while `generate(3, …)` passes.
     Int {
         /// Human-readable type name for diagnostic messages (always `"Int"`).
+        type_name: &'static str,
+    },
+    /// A specific declared enum type, matched by name against `Type::Enum(_)`
+    /// (e.g. the Euler builtins' `convention` slot, task #6082).
+    ///
+    /// No `enum_defs` plumbing is needed to make this sound: `expr.rs`'s
+    /// `EnumAccess` arm validates the variant against
+    /// `reify_ir::EnumDef::contains_variant` before it ever produces a
+    /// `Type::Enum(_)`, so a value of this type is already guaranteed to name a
+    /// DECLARED enum with an EXISTING variant. This slot only has to pin WHICH
+    /// enum — an `OutputFormat` value in a convention slot is the mismatch it
+    /// exists to catch, alongside the `String` that motivated it.
+    Enum {
+        /// The required enum type name (e.g. `"EulerConvention"`).
+        enum_name: &'static str,
+        /// Human-readable type name for diagnostic messages (normally the same
+        /// as `enum_name`).
         type_name: &'static str,
     },
 }
@@ -291,6 +316,54 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> Vec<CheckableAr
             },
         ],
 
+        // ── Euler builtins: the convention is an enum, not a String (#6082) ──
+        // orient_euler(convention, a, b, c) — a CONSTRUCTOR, so the convention
+        // comes FIRST and selects the meaning of the three angles that follow
+        // (R_xyz(a, b, c) notation). NOT a geometry selector; hosted here for
+        // the same reason as `generate` — the mechanism is name-keyed and
+        // generic, so a parallel checker would buy nothing.
+        //
+        // arg0: convention → EulerConvention.
+        // args1-3: the three angles — deliberately UNCHECKED. They are
+        //   length-of-argument-list-stable and semantically ANGLE, but an
+        //   ANGLE slot would break a live call site today:
+        //   `kinematic_stdlib_smoke.rs` passes bare Reals (0.1, 0.2, 0.3), not
+        //   rad-suffixed literals, so the slot would turn a valid call into a
+        //   hard compile error and drag a separable dimensioned-literal
+        //   migration into #6082. Same gradualism as the module docs' UNCHECKED
+        //   list; adding the ANGLE slots means migrating those call sites first.
+        //
+        // The arity guard is forward-compat, matching `linear_pattern`'s: 4 is
+        // the only accepted arity today (the eval arm returns Undef otherwise),
+        // so without it a future overload would silently inherit a slot at an
+        // index that denotes a different parameter.
+        "orient_euler" if arg_count == 4 => vec![CheckableArg {
+            index: 0,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
+        // orient_to_euler(q, convention) — a DECOMPOSER, so it is SUBJECT-first
+        // like its siblings orient_log(q) / orient_to_axis_angle(q) /
+        // orient_inverse(q), which puts the convention at arg 1. The asymmetry
+        // with the constructor above is deliberate; see #6082 and the comment
+        // on the `EulerConvention` declaration in `stdlib/geometry_traits.ri`.
+        //
+        // arg0: q — the Orientation subject, UNCHECKED (arg0 handles are
+        //   ε=4358's territory, per the module docs).
+        // arg1: convention → EulerConvention.
+        "orient_to_euler" if arg_count == 2 => vec![CheckableArg {
+            index: 1,
+            name: "convention",
+            expected: ExpectedArg::Enum {
+                enum_name: "EulerConvention",
+                type_name: "EulerConvention",
+            },
+        }],
+
         // All other names: empty (no dimensioned-scalar arg to check).
         _ => vec![],
     }
@@ -358,6 +431,25 @@ pub(crate) fn check_builtin_arg_types(
 
                 // Any other concrete type (Bool, Geometry, Vector, …): definite
                 // kind mismatch where a dimensioned scalar is required.
+                other => {
+                    emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
+                }
+            },
+
+            ExpectedArg::Enum {
+                enum_name,
+                type_name,
+            } => match &arg.result_type {
+                // Gradualism: poison + unresolved pass silently.
+                Type::Error | Type::TypeParam(_) => continue,
+
+                // Correct — a value of the required enum type. The variant is
+                // already validated upstream (see `ExpectedArg::Enum`).
+                Type::Enum(actual) if actual == enum_name => continue,
+
+                // Any other concrete type — a `String` (the form task #6082
+                // removed), or an enum of the wrong type — is a definite
+                // mismatch.
                 other => {
                     emit_mismatch(name, slot.name, type_name, other, call_span, diagnostics);
                 }
@@ -471,8 +563,18 @@ mod tests {
     ///   `GEOMETRY_FUNCTION_NAMES` or `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, so
     ///   assertion (b) of [`arg_slot_keys_are_registered_builtin_names`] is what
     ///   holds this line.
-    pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] =
-        &["generate", "linear_pattern", "linear_pattern_2d"];
+    ///
+    /// * `orient_euler` / `orient_to_euler` (task #6082) — SO(3) builtins, not
+    ///   topology selectors, and members of no units.rs family slice at all, so
+    ///   like `generate` they are reachable only via `non_family_keys` below.
+    ///   Their `convention` slot is the table's first `ExpectedArg::Enum`.
+    pub(crate) const NON_SELECTOR_ARG_SLOT_KEYS: &[&str] = &[
+        "generate",
+        "linear_pattern",
+        "linear_pattern_2d",
+        "orient_euler",
+        "orient_to_euler",
+    ];
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
 
@@ -732,7 +834,11 @@ mod tests {
         // here is what actually closes that hole (removing it from
         // NON_SELECTOR_ARG_SLOT_KEYS now fails the assertion below, whereas
         // before it would have gone unnoticed).
-        let non_family_keys: &[&str] = &["generate"];
+        // Task #6082 added the two Euler builtins for the same structural
+        // reason: `orient_*` belongs to no units.rs family slice either, so
+        // without these two entries the assertion below would stay silently
+        // vacuous for their `convention` slots.
+        let non_family_keys: &[&str] = &["generate", "orient_euler", "orient_to_euler"];
 
         // Extra non-selector names that must never map to non-empty slots.
         let extra_non_selector: &[&str] = &[
