@@ -2426,7 +2426,7 @@ structure def Root {
 /// Also the empirical proof that `MomentOfInertia` in a `Matrix<3,3,…>` slot
 /// resolves through `resolve_type_expr_with_aliases` all the way to
 /// `Type::Scalar { dimension }` and not to an alias or `Applied` form — if it
-/// did not, [`quantity_slot_dimension`] would need an alias-resolution step and
+/// did not, [`param_quantity_slot_dimension`] would need an alias-resolution step and
 /// this fixture would be silent.
 ///
 /// Note the arg is a `Type::Tensor` and the param a `Type::Matrix`: Rule 3

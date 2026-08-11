@@ -1347,24 +1347,51 @@ fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> b
     matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
 }
 
-/// The CONCRETE dimension named by a quantity slot, or `None` when that slot
-/// declines to name one — a dimensionless `Scalar`, `Type::Int`, a
+/// ARG-side predicate: the dimension an ARG's quantity slot names, or `None`
+/// when it declines to name one — a dimensionless `Scalar`, `Type::Int`, a
 /// `Type::ScalarParam(_)`, or anything else (task 5766).
 ///
-/// The NORMATIVE statement of the rule this implements — why it is
-/// dimensionless-tolerant rather than strict, why `Type::Field` is held loose,
-/// and which residuals it knowingly leaves — is the "Point / Vector
-/// quantity-slot convention" section of `crates/reify-core/src/ty.rs`. This is
-/// its implementation, not a second source of truth.
-fn quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
+/// TOLERANT of a dimensionless `Scalar` by decision, because the arg side is
+/// systematically ERASED at these arms and a dimensionless slot there is
+/// indistinguishable from an inferred/placeholder one. Contrast
+/// [`param_quantity_slot_dimension`].
+///
+/// The NORMATIVE statement of the rule this implements — the two sides'
+/// asymmetry and its basis, why `Type::Field` is held loose, and which residuals
+/// it knowingly leaves — is the "Point / Vector quantity-slot convention"
+/// section of `crates/reify-core/src/ty.rs`. This is its implementation, not a
+/// second source of truth.
+fn arg_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
     match quantity {
         Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
         _ => None,
     }
 }
 
-/// Whether a param's and an arg's quantity slots CONFLICT: true only when both
-/// name a concrete dimension and those dimensions differ (task 5766).
+/// PARAM-side predicate: STRICT sibling of [`arg_quantity_slot_dimension`] —
+/// a dimensionless `Scalar` DOES name a dimension here (task 6159).
+///
+/// A param's quantity slot is a WRITTEN DECLARATION, never `infer_type()`
+/// output: `.ri` requires the quantity type-arg (`type_resolution.rs`'s
+/// `Vector3`/`Matrix`/`Tensor` arities), so there is no absent spelling that
+/// could silently default to dimensionless. `Type::Int` and
+/// `Type::ScalarParam(_)` still yield `None` — those genuinely name nothing.
+/// Ruling and basis: `crates/reify-core/src/ty.rs`.
+fn param_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
+    match quantity {
+        Type::Scalar { dimension } => Some(*dimension),
+        _ => None,
+    }
+}
+
+/// Whether a param's and an arg's quantity slots CONFLICT: true only when each
+/// SIDE'S OWN predicate names a dimension and those dimensions differ (tasks
+/// 5766, 6159).
+///
+/// The two predicates differ only on a dimensionless `Scalar` — strict on the
+/// param side, tolerant on the arg side — so this subsumes 5766's
+/// concrete×concrete rule unchanged and adds exactly the
+/// Dimensionless-param × concrete-arg cell.
 ///
 /// The comparison is the derived `PartialEq` on [`DimensionVector`], i.e. the
 /// same strict-equality primitive the bare-`Scalar` leaf rule uses — so the two
@@ -1380,8 +1407,8 @@ fn quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
 fn quantity_slots_conflict(param_quantity: &Type, arg_quantity: &Type) -> bool {
     matches!(
         (
-            quantity_slot_dimension(param_quantity),
-            quantity_slot_dimension(arg_quantity),
+            param_quantity_slot_dimension(param_quantity),
+            arg_quantity_slot_dimension(arg_quantity),
         ),
         (Some(param_dim), Some(arg_dim)) if param_dim != arg_dim
     )
@@ -1651,8 +1678,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
         // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
         // Task 5766's quantity check does NOT reintroduce that hazard:
-        // [`quantity_slot_dimension`] returns `None` for exactly the dimensionless arg
-        // such a gate would have false-rejected, so the rule cannot fire on it.
+        // [`arg_quantity_slot_dimension`] returns `None` for exactly the dimensionless
+        // ARG such a gate would have false-rejected, so the rule cannot fire on it.
+        // Task 6159's param-side tightening does not reach this case either — it
+        // fires only when the PARAM slot is the dimensionless one.
         (Type::Vector {
             quantity: param_quantity,
             ..
@@ -7829,8 +7858,10 @@ mod tests {
             },
             "axis",
             "a Vector3<Length> arg at a dimension-GENERIC Vector3<Scalar<Q>> param must stay \
-             CLEAN — a ScalarParam slot names no concrete dimension, so quantity_slot_dimension \
-             yields None and there is nothing to conflict with (task 5766).",
+             CLEAN — a ScalarParam slot names no concrete dimension, so \
+             param_quantity_slot_dimension yields None and there is nothing to conflict with \
+             (task 5766; task 6159's param-side tightening covers a dimensionless Scalar only, \
+             not a ScalarParam).",
         );
     }
 
@@ -7985,7 +8016,7 @@ mod tests {
     ///
     /// `matrix_param_accepts_matrix_arg_without_arity_check` below builds a
     /// DIMENSIONLESS `Matrix` arg, so it exercises only
-    /// [`quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
+    /// [`arg_quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
     /// tightening fixture routes through a `Type::Tensor` arg. This is the
     /// `Type::Matrix`-arg reject leg.
     ///

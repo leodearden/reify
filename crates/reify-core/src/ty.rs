@@ -28,21 +28,64 @@
 //! established surface-syntax contract, and the ruling below does not revisit it
 //! (populating the slot and checking it are separate questions).
 //!
-//! ### NORMATIVE: how the slot is CHECKED (task 5766)
+//! ### NORMATIVE: how the slot is CHECKED (task 5766; param side ruled task 6159)
 //!
 //! This section is the single normative home of the quantity-slot conformance
 //! rule.  `crates/reify-compiler/src/conformance/mod.rs` implements it as
-//! `quantity_slot_dimension` / `quantity_slots_conflict`; PRD
+//! `param_quantity_slot_dimension` / `arg_quantity_slot_dimension` /
+//! `quantity_slots_conflict`; PRD
 //! `docs/prds/v0_6/dimensioned-construction-strictness.md` §12 points here rather
 //! than restating it.
 //!
-//! **The rule — dimensionless-tolerant strict equality.**  For `Type::Vector`,
-//! `Type::Point`, `Type::Matrix` and `Type::Tensor`, an argument's quantity slot
-//! CONFLICTS with a param's — and is rejected as `ArgTypeMismatch` — **iff both
-//! sides name a concrete dimension and those [`DimensionVector`]s differ** (strict
-//! derived `PartialEq`, the same primitive the bare-`Scalar` leaf rule uses).  The
-//! check is TOLERANT — silent — whenever *either* side declines to name one, i.e.
-//! is a dimensionless `Scalar`, a `Type::Int`, or a `Type::ScalarParam`.
+//! **The rule — STRICT param side, dimensionless-TOLERANT arg side.**  For
+//! `Type::Vector`, `Type::Point`, `Type::Matrix` and `Type::Tensor`, an
+//! argument's quantity slot CONFLICTS with a param's — and is rejected as
+//! `ArgTypeMismatch` — **iff each side's own predicate names a
+//! [`DimensionVector`] and those two differ** (strict derived `PartialEq`, the
+//! same primitive the bare-`Scalar` leaf rule uses).  The two predicates differ
+//! on exactly one input, a dimensionless `Scalar`:
+//!
+//! * **ARG side** — names a dimension only for a NON-dimensionless `Scalar`.  A
+//!   dimensionless `Scalar`, a `Type::Int` and a `Type::ScalarParam` all name
+//!   nothing, so the check stays silent.
+//! * **PARAM side** — names a dimension for ANY `Type::Scalar`, dimensionless
+//!   included.  `Type::Int` and `Type::ScalarParam` still name nothing.
+//!
+//! So the check is silent whenever either side declines, and the one cell the
+//! two predicates disagree about — a `Dimensionless` PARAM slot fed a concretely
+//! dimensioned ARG — is REJECTED.  This SUPERSEDES task 5766's symmetric ruling
+//! **on the param side only**; the concrete×concrete cell and the whole arg side
+//! are unchanged.
+//!
+//! **Why the param side is strict (task 6159).**  A param's quantity slot is a
+//! WRITTEN DECLARATION, never `infer_type()` output, and `.ri` surface syntax
+//! REQUIRES the quantity type-arg — `resolve_parameterized_builtin_type`
+//! (`crates/reify-compiler/src/type_resolution.rs`) matches `Vector3` at arity 1
+//! and `Matrix` / `Tensor` at arity 3, so there is no absent or omitted spelling
+//! that could silently default to dimensionless.  On this side an explicit
+//! `Dimensionless` therefore cannot be confused with an inferred or erased one:
+//! it is an authorial choice.  The enabling premise is task 5848's LANDED ruling
+//! (merged `a2a451675a`) that direction/axis fields are typed
+//! `Vec3<Dimensionless>` / `Vector3<Dimensionless>`, which retired
+//! `constitutive.ri`'s "the grammar has no dimensionless 3-tuple" excuse as
+//! expired and migrated stdlib plus the corpus.  Post-5848 that spelling asserts
+//! unit-lessness rather than working around the grammar, so a `Vector3<Length>`
+//! arg at a `Vector3<Dimensionless>` param is a real error, not a spelling
+//! artefact.  Pinned at BOTH severities:
+//! `dimensionless_quantity_param_rejects_dimensioned_vector_arg`
+//! (`conformance/mod.rs`, fn-call path, `Severity::Error`) and
+//! `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
+//! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, ctor
+//! path, `Severity::Warning`).
+//!
+//! **The asymmetry is a RULING, not an inconsistency — do not "fix" it by
+//! symmetry.**  It tracks a real difference in what the two sides know: erasure
+//! is an ARG-side phenomenon and only an arg-side one (see "Why the arg side is
+//! tolerant" below).  Making the arg side strict would compare a declaration
+//! against a hole and would false-reject `vec3(0, 1, 0)` at
+//! `Revolute.axis : Vec3<Length>`; making the param side tolerant discards real
+//! signal for no gain.  This is the same failure mode the `Type::Field` HOLD
+//! paragraph below was written to prevent.
 //!
 //! **SEVERITY is inherited from the entry point, not fixed by this rule.**  The
 //! check lives in the walker both conformance entry points share, so it fires at
@@ -71,24 +114,31 @@
 //! false-warning count that motivated the arm is recorded once, in the
 //! `Type::Field` arm's own comment in `conformance/mod.rs`.
 //!
-//! **Why tolerant rather than strict.**  The ARG side of these arms is
-//! systematically erased, so strict equality would compare a declaration against a
-//! hole: `point3(…)` is an eval-builtin with no `.ri` return type, so its calls
-//! arrive as `Scalar[m]` / `Int` placeholders; `Matrix<3,3,MomentOfInertia>` is
-//! spelled `List<List<Real>>` at every corpus site; a `Field`'s slots always erase
-//! to `Field<Real, Real>`, which is what produced the false warnings that arm's
-//! comment records.
+//! **Why the ARG side is tolerant rather than strict.**  This rationale is
+//! ARG-SIDE ONLY — it is what the param-side ruling above does *not* inherit.
+//! The arg side of these arms is systematically erased, so strict equality would
+//! compare a declaration against a hole: `point3(…)` is an eval-builtin with no
+//! `.ri` return type, so its calls arrive as `Scalar[m]` / `Int` placeholders;
+//! `Matrix<3,3,MomentOfInertia>` is spelled `List<List<Real>>` at every corpus
+//! site; a `Field`'s slots always erase to `Field<Real, Real>`, which is what
+//! produced the false warnings that arm's comment records.  None of those three
+//! erasure routes exists on the param side, where the slot is always written out.
 //!
-//! **The residual this knowingly leaves.**  A `Vector3<Length>` fed a
-//! *dimensionless* vector stays silent, which is how `vec3(0, 1, 0)` at
-//! `Revolute.axis : Vec3<Length>` (`examples/dynamics/pendulum_idyn.ri`) keeps
-//! compiling.  That is the same bounded-cost class as the `Point` arm's tolerance
-//! of a bare numeric literal, and it is accepted for the same reason: the corpus's
-//! idiomatic spelling for a *direction* is dimensionless even where the stdlib
-//! declares a `Length`.  Several stdlib direction fields are themselves mis-typed
-//! that way (`kinematic.ri`'s `axis`, `ports.ri`'s `Frame3.x_axis/y_axis/z_axis`);
-//! retyping them is a stdlib type-vocabulary ruling of its own, tracked by task
-//! 5848, and is deliberately not folded in here.
+//! **The residual this knowingly leaves — an ARG-side one, deliberately kept.**
+//! A `Vector3<Length>` param fed a *dimensionless* vector stays silent: the
+//! corpus's idiomatic spelling for a *direction* is dimensionless even where a
+//! declaration says `Length`, so rejecting it would false-reject `vec3(0, 1, 0)`.
+//! That is the same bounded-cost class as the `Point` arm's tolerance of a bare
+//! numeric literal, and it is accepted for the same reason.  Task 5848 has since
+//! LANDED and retyped the direction fields this paragraph used to name —
+//! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
+//! `Vec3<Dimensionless>` today — but the residual is structural, not a property
+//! of those sites, and `ports_mechanical.ri:139/152`'s `axis : Vector3<Length>`
+//! is a surviving instance.  Retyping what remains is a stdlib type-vocabulary
+//! ruling of its own and is deliberately not folded in here.  Pinned by
+//! `vector_param_accepts_dimensionless_vector_arg` (`conformance/mod.rs`) and
+//! `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
+//! (`struct_ctor_field_conformance_tests.rs`).
 //!
 //! A SECOND residual is specific to the `Matrix`/`Tensor` leg: a `matrix([[…]])`
 //! arg's quantity comes from `matrix_shape` (`math_signatures.rs`), which derives
