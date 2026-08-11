@@ -182,12 +182,21 @@ async function main() {
   console.log('  OK: ≥2 viewports registered');
 
   // THE OBSERVED pane count, reused by scenario 5's anti-vacuity probe rather than
-  // restated there as a literal. Every pane renders an FEA toolbar — App's
-  // feaModeStoreRegistry.get() is get-or-create and MultiViewport forwards the store
-  // unconditionally — so this is exactly how many 'fea-mode-enable-toggle' elements
-  // an unscoped dom_query must match. Deriving it means a fixture that grew a third
-  // pane surfaces once, at the check above that enumerates panes, instead of again
-  // as a downstream "the fixture's pane set changed" three scenarios later.
+  // restated there as a literal. Deriving it means a fixture that grew a third pane
+  // surfaces once, at the check above that enumerates panes, instead of again as a
+  // downstream count mismatch three scenarios later.
+  //
+  // THE COUPLING THIS RELIES ON, stated because it is a property of ONE rendering
+  // branch and not of the app: "registered viewports" equals "elements carrying
+  // fea-mode-enable-toggle" only because App's feaModeStoreRegistry.get() is
+  // get-or-create and MultiViewport forwards `feaModeStore` to every pane
+  // unconditionally, while Viewport gates the whole toolbar on
+  // `<Show when={props.feaModeStore}>`. A viewport that registers itself into
+  // __REIFY_DEBUG__.viewports WITHOUT a feaModeStore renders no toolbar and breaks
+  // the equality — DualViewport's `def-preview` pane in the single-pane fallback is
+  // exactly that shape. It is not mounted in the MultiViewport branch this fixture
+  // takes, so the two counts agree today; if that ever changes, the guard below will
+  // report a changed element set when what actually changed is the rendering branch.
   const PANE_COUNT = viewportIds.length;
 
   // Row 2: pane-1 must be present with meshCount>=1
@@ -371,11 +380,15 @@ async function main() {
   console.log('  unscoped dom_query(fea-mode-enable-toggle):', JSON.stringify(ambiguity));
   const ambiguityFailure = describeUnscopedAmbiguity(ambiguity, {
     testId: 'fea-mode-enable-toggle',
-    // Derived from the map scenario 1 enumerated, NOT a literal 2: one toolbar per
-    // registered pane, so the two checks cannot disagree about the fixture.
+    // Derived from the map scenario 1 enumerated, NOT a literal 2, so the two checks
+    // cannot disagree about the fixture. See PANE_COUNT for the one-toolbar-per-
+    // registered-pane coupling that equality rests on.
     expectedMatchCount: PANE_COUNT,
   });
-  if (ambiguityFailure) fail(ambiguityFailure);
+  // Both guards in this scenario answer `{code, message} | null` — `code` is the
+  // stable branch identity the vitest suite asserts on, `message` is the
+  // operator-visible prose, and only the latter belongs in a failure report.
+  if (ambiguityFailure) fail(ambiguityFailure.message);
   console.log(`  OK: fea-mode-enable-toggle is ambiguous across ${PANE_COUNT} panes (scoping has real work)`);
   // INFORMATIONAL ONLY — never asserted. This names the pane a pre-#5891 unscoped
   // click would have driven, which is useful context, but pane DOM order is
@@ -427,7 +440,7 @@ async function main() {
     drivenAfter,
     otherAfter,
   });
-  if (noBleedFailure) fail(noBleedFailure);
+  if (noBleedFailure) fail(noBleedFailure.message);
   console.log('  OK: scoped click opened ONLY pane-1 FEA body; design-main unchanged (#5891 no bleed)');
 
   // RESTORE the baseline. click_element calls el.click(), which is a TOGGLE and
