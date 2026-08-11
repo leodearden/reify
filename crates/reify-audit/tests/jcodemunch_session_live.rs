@@ -34,6 +34,16 @@
 //! cargo test -p reify-audit --test jcodemunch_session_live -- --ignored --nocapture
 //! ```
 //!
+//! ## Not every test here is live
+//!
+//! The [`Serve`] harness itself carries GATE-RESIDENT self-tests — process
+//! group signalling and the teardown outcome decision — which need no
+//! network, no `uvx` and no jcodemunch. They are deliberately not behind the
+//! `#[ignore]` above: the only test that consumes the harness is opt-in, so
+//! leaving its teardown untested would reproduce the exact failure mode this
+//! file exists to close, one layer down. A leaked serve keeps indexing, and a
+//! run that leaks one must be loud rather than PASS-shaped.
+//!
 //! ## The sibling live test still skips — deliberately not fixed here
 //!
 //! `tests/jcodemunch_live.rs` does the opposite of the paragraph above: it
@@ -264,26 +274,49 @@ impl Serve {
 /// `--port 8917` also matches a `--port 89170` serve, and the blast radius is
 /// somebody else's long-lived watcher.
 ///
+/// **The `--` is load-bearing — do not tidy it away.** `Command` uses execvp,
+/// so `kill` resolves to the procps-ng binary on PATH, never the shell builtin
+/// whose negative-pid handling this code was implicitly assuming. Measured
+/// here: `kill -TERM -<pgid>` exits 0 and leaves the group ALIVE (the negated
+/// pgid is swallowed as an unknown option cluster and never delivered), while
+/// `kill -TERM -- -<pgid>` kills it. `--` ends option parsing so the group is
+/// read as a target.
+///
 /// The status is RETURNED rather than swallowed so a failing teardown can name
-/// it, but it is deliberately not a gate: see
-/// `teardown_signal_reaches_the_whole_process_group` for the property that
-/// actually matters.
+/// it, but it is deliberately not a gate. Exit 1 / `No such process` is the
+/// *correct* outcome of the `-KILL` escalation whenever `-TERM` already
+/// worked — i.e. on the healthy path — and the buggy bare form returned 0 even
+/// for a group that does not exist, so an exit-status gate is both flaky and
+/// blind to the very defect it would be guarding. The property that matters is
+/// pinned behaviourally by
+/// `teardown_signal_reaches_the_whole_process_group`.
 fn signal_process_group(pid: u32, sig: &str) -> std::io::Result<ExitStatus> {
     let group = format!("-{pid}");
     Command::new("kill")
-        .args([sig, &group])
+        .args([sig, "--", &group])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
 }
 
+/// Render a `signal_process_group` outcome for a failure message.
+fn render_signal_outcome(sig: &str, outcome: Option<&std::io::Result<ExitStatus>>) -> String {
+    match outcome {
+        None => format!("{sig}: not sent"),
+        Some(Ok(status)) => format!("{sig}: {status}"),
+        Some(Err(e)) => format!("{sig}: could not run kill: {e}"),
+    }
+}
+
 impl Drop for Serve {
     fn drop(&mut self) {
+        // Signal the whole GROUP, not just the child — see
+        // `signal_process_group`, whose `--` separator is what actually makes
+        // the signal land. The outcomes are kept only as diagnostic detail for
+        // the failure report below; the pass/fail decision rests on whether
+        // the port was released.
         let pgid = self.child.id();
-        let signal_group = |sig: &str| {
-            let _ = signal_process_group(pgid, sig);
-        };
-        signal_group("-TERM");
+        let term = signal_process_group(pgid, "-TERM");
 
         // Bounded wait for the port to actually stop accepting, so a
         // following test cannot be handed a half-dead listener; a group still
@@ -293,7 +326,7 @@ impl Drop for Serve {
         // long as we are signalling it.
         let deadline = Instant::now() + Duration::from_secs(10);
         let escalate_at = Instant::now() + Duration::from_secs(5);
-        let mut escalated = false;
+        let mut kill = None;
         let mut freed = false;
         while Instant::now() < deadline {
             let addr = format!("127.0.0.1:{}", self.port);
@@ -302,9 +335,8 @@ impl Drop for Serve {
                 Duration::from_millis(100),
             ) {
                 Ok(_) => {
-                    if !escalated && Instant::now() >= escalate_at {
-                        signal_group("-KILL");
-                        escalated = true;
+                    if kill.is_none() && Instant::now() >= escalate_at {
+                        kill = Some(signal_process_group(pgid, "-KILL"));
                     }
                     std::thread::sleep(Duration::from_millis(100));
                 }
@@ -320,8 +352,11 @@ impl Drop for Serve {
 
         if !freed {
             eprintln!(
-                "warning: port {} still accepting connections after teardown",
+                "warning: port {} still accepting connections after teardown \
+                 (pgid {pgid}; {}; {})",
                 self.port,
+                render_signal_outcome("-TERM", Some(&term)),
+                render_signal_outcome("-KILL", kill.as_ref()),
             );
         }
     }
