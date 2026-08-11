@@ -114,6 +114,52 @@ _ratchet_check_subset() {
 }
 
 # -----------------------------------------------------------------------
+# Vacuity floor (task #6127, esc-6087-3).  _ratchet_check_subset above can
+# only ever report "no NEW fingerprints"; it says nothing about whether the
+# generator produced ANY.  A zero-fingerprint run therefore passes it
+# trivially — the empty set is a subset of everything — and scenario (a)
+# reports green having asserted nothing.  This is the precondition check
+# that makes that subset assertion meaningful: the live set ($1) must be
+# non-empty.  Silent + rc0 on the passing path so an all-green suite stays
+# byte-for-byte unchanged (test_helpers.sh:48-51); a multi-line diagnostic
+# to stderr + rc1 otherwise, landing in assert()'s on-FAIL captured-output
+# dump.
+#
+# The committed-baseline content ($2) is used only to size the diagnostic.
+# No fingerprints are re-derived here — counting lines of an already-produced
+# set is not derivation, so the PRD 6.6 invariant in this file's header
+# (derivation lives ONLY in ptodo-baseline-gen) is preserved.
+# -----------------------------------------------------------------------
+_ratchet_check_nonempty() {
+    local _live="$1"
+    local _baseline="${2:-}"
+    local _live_n _baseline_n
+    _live_n="$(printf '%s\n' "$_live" | grep -c . || true)"
+    _baseline_n="$(printf '%s\n' "$_baseline" | grep -c . || true)"
+
+    if [ "$_live_n" -ge 1 ]; then
+        return 0
+    fi
+
+    {
+        printf 'RATCHET VACUITY — ptodo-baseline-gen emitted 0 fingerprints (committed baseline entries: %s).\n' \
+            "$_baseline_n"
+        printf '  This is NOT a pass.  The ratchet oracle is `comm -23 <live> <baseline>`\n'
+        printf '  (subset-of), and the empty set is a subset of everything — so the\n'
+        printf '  subset assertion just observed nothing.  Reporting green here would\n'
+        printf '  claim "the detector found no violations" when the detector in fact\n'
+        printf '  reported nothing at all.\n'
+        printf '  Leading hypothesis: target/release/ptodo-baseline-gen is STALE or\n'
+        printf '  reverted.  mtime is a weak oracle for staleness — see the SCOPE LIMITATION\n'
+        printf '  block in scripts/reify-audit-freshness.sh:28-36: the freshness epoch\n'
+        printf '  only tracks commits under crates/reify-audit/, so a binary can read\n'
+        printf '  "fresh" while predating a behavioural change made anywhere else.\n'
+        printf '  NEXT: run `cargo build --release -p reify-audit`, then re-run.\n'
+    } >&2
+    return 1
+}
+
+# -----------------------------------------------------------------------
 # ITEM 3 meta-test (task 5260): _ratchet_check_subset must NAME the offending
 # live fingerprints on stderr so a ratchet regression lands actionable output in
 # assert()'s on-FAIL captured-output dump (the 4636 failure produced zero
