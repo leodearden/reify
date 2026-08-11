@@ -1347,20 +1347,12 @@ fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> b
     matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
 }
 
-/// ARG-side predicate: the dimension an ARG's quantity slot names, or `None`
-/// when it declines to name one — a dimensionless `Scalar`, `Type::Int`, a
-/// `Type::ScalarParam(_)`, or anything else (task 5766).
+/// ARG-side predicate: the dimension an ARG's quantity slot names — TOLERANT, so
+/// a dimensionless `Scalar` (like `Type::Int` / `Type::ScalarParam`) names none.
 ///
-/// TOLERANT of a dimensionless `Scalar` by decision, because the arg side is
-/// systematically ERASED at these arms and a dimensionless slot there is
-/// indistinguishable from an inferred/placeholder one. Contrast
-/// [`param_quantity_slot_dimension`].
-///
-/// The NORMATIVE statement of the rule this implements — the two sides'
-/// asymmetry and its basis, why `Type::Field` is held loose, and which residuals
-/// it knowingly leaves — is the "Point / Vector quantity-slot convention"
-/// section of `crates/reify-core/src/ty.rs`. This is its implementation, not a
-/// second source of truth.
+/// Normative rule, and why this side is the tolerant one: the "Point / Vector
+/// quantity-slot convention" section of `crates/reify-core/src/ty.rs` (tasks
+/// 5766, 6159). This is its implementation, not a second source of truth.
 fn arg_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
     match quantity {
         Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
@@ -1368,15 +1360,11 @@ fn arg_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
     }
 }
 
-/// PARAM-side predicate: STRICT sibling of [`arg_quantity_slot_dimension`] —
-/// a dimensionless `Scalar` DOES name a dimension here (task 6159).
+/// PARAM-side predicate: STRICT sibling of [`arg_quantity_slot_dimension`] — a
+/// dimensionless `Scalar` DOES name a dimension here; `Type::Int` /
+/// `Type::ScalarParam` still name none.
 ///
-/// A param's quantity slot is a WRITTEN DECLARATION, never `infer_type()`
-/// output: `.ri` requires the quantity type-arg (`type_resolution.rs`'s
-/// `Vector3`/`Matrix`/`Tensor` arities), so there is no absent spelling that
-/// could silently default to dimensionless. `Type::Int` and
-/// `Type::ScalarParam(_)` still yield `None` — those genuinely name nothing.
-/// Ruling and basis: `crates/reify-core/src/ty.rs`.
+/// Ruling and basis: `crates/reify-core/src/ty.rs` (task 6159).
 fn param_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
     match quantity {
         Type::Scalar { dimension } => Some(*dimension),
@@ -1384,26 +1372,11 @@ fn param_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
     }
 }
 
-/// Whether a param's and an arg's quantity slots CONFLICT: true only when each
-/// SIDE'S OWN predicate names a dimension and those dimensions differ (tasks
-/// 5766, 6159).
-///
-/// The two predicates differ only on a dimensionless `Scalar` — strict on the
-/// param side, tolerant on the arg side — so this subsumes 5766's
-/// concrete×concrete rule unchanged and adds exactly the
-/// Dimensionless-param × concrete-arg cell.
-///
-/// The comparison is the derived `PartialEq` on [`DimensionVector`], i.e. the
-/// same strict-equality primitive the bare-`Scalar` leaf rule uses — so the two
-/// rules provably agree on what "the same dimension" means.
-///
-/// The [`is_numeric_placeholder_leaf`] unknown-ness fence (PRD 4's D4-5) is
-/// preserved BY CONSTRUCTION, not by care: every caller applies this only AFTER
-/// its arm's family/arity check has passed and only to the args
-/// [`quantity_slot`] yields a slot for, so a placeholder scalar never
-/// reaches the comparison and a `String` is rejected before it.
-/// [`arg_type_is_unverifiable`] is deliberately NOT widened to carry this rule.
-/// Rationale: `crates/reify-core/src/ty.rs`.
+/// Whether two quantity slots CONFLICT: each SIDE'S OWN predicate names a
+/// dimension and those differ, under the derived `PartialEq` on
+/// [`DimensionVector`] — the same primitive the bare-`Scalar` leaf rule uses, so
+/// the two rules provably agree on "the same dimension". Rule:
+/// `crates/reify-core/src/ty.rs`.
 fn quantity_slots_conflict(param_quantity: &Type, arg_quantity: &Type) -> bool {
     matches!(
         (
@@ -1419,12 +1392,9 @@ fn quantity_slots_conflict(param_quantity: &Type, arg_quantity: &Type) -> bool {
 /// spelling — an [`is_numeric_placeholder_leaf`] scalar, …).
 ///
 /// FAMILY-based, never side-based, so BOTH sides of the comparison are extracted
-/// by this one function and cannot drift apart.
-///
-/// Returning `Some` for a family a given arm does not accept is harmless and
-/// deliberate: every caller runs this only AFTER its own family/arity check has
-/// already rejected the shapes it does not want, so no arm can be reached by a
-/// slot it would not have compared inline.
+/// by this one function and cannot drift apart. Returning `Some` for a family a
+/// given arm does not accept is harmless: every caller runs this only AFTER its
+/// own family/arity check.
 fn quantity_slot(ty: &Type) -> Option<&Type> {
     match ty {
         Type::Vector { quantity, .. }
@@ -1469,35 +1439,16 @@ fn emit_quantity_slot_mismatch(
     );
 }
 
-/// Apply the task 5766 quantity-slot rule at one shape arm: emit
-/// `ArgTypeMismatch` iff `arg_ty` carries a quantity slot that CONFLICTS with the
-/// param's.
+/// Apply the quantity-slot rule at one shape arm. Rule:
+/// `crates/reify-core/src/ty.rs`.
 ///
-/// Callers MUST invoke this only AFTER their own family/arity check has passed —
-/// that ordering is what keeps a `String` rejected by the family check before it
-/// can be compared. Normative rule: `crates/reify-core/src/ty.rs`.
-///
-/// # Why the guard-and-emit is shared, not repeated per arm
-///
-/// The `Vector`, `Point` and `Matrix`/`Tensor` arms each spelled this identical
-/// gate-then-emit inline, all three routing to the SAME emitter, so nothing
-/// distinguished the copies (reviewer_comprehensive, code-duplication). Routing
-/// them through one function makes two claims the design depends on structurally
-/// true rather than comment-enforced:
-///
-/// * the [`quantity_slot`] gate on the ARG cannot be dropped, so a placeholder
-///   scalar / `ScalarParam` arg keeps reaching its arm's
-///   [`is_numeric_placeholder_leaf`] accept unchallenged — this is how PRD 4's
-///   D4-5 unknown-ness fence survives at these arms;
-/// * the diagnostic is [`DiagnosticCode::ArgTypeMismatch`] at every arm, which is
-///   what leaves the `Vector` arm's bespoke `TypeNotConformingToVector` owning
-///   ARITY/FAMILY failures only. A future arm added by copy/paste cannot pick a
-///   different emitter — or a different rule — by accident.
-///
-/// Both slots are derived HERE, from the two types, rather than passed in: a
-/// `param_quantity` argument carried a "must be the quantity slot of
-/// `param_type`" contract that nothing enforced. The side-awareness lives in
-/// [`quantity_slots_conflict`], which asks each side its own predicate.
+/// Callers MUST invoke this only AFTER their own family/arity check has passed.
+/// That ordering plus the [`quantity_slot`] gate is how PRD 4's D4-5
+/// unknown-ness fence survives at these arms: a placeholder scalar carries no
+/// slot and so never reaches the comparison, and a `String` is rejected before
+/// it. Routing all three arms here also keeps the diagnostic
+/// [`DiagnosticCode::ArgTypeMismatch`] at every one, leaving the `Vector` arm's
+/// bespoke `TypeNotConformingToVector` owning ARITY/FAMILY failures only.
 fn emit_if_quantity_conflict(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
     if let (Some(param_quantity), Some(arg_quantity)) =
         (quantity_slot(param_type), quantity_slot(arg_ty))
@@ -1520,7 +1471,7 @@ fn emit_if_quantity_conflict(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx
 /// `Matrix`-typed param never pairs with the literal walker's
 /// `(Type::List(param), ListLiteral)` arm and so arrives here as a bare type.
 /// That left the just-promoted family with a hole on exactly the shape the
-/// accept was written for (reviewer_comprehensive, correctness-coverage-gap).
+/// accept was written for.
 ///
 /// Peeling `List` recursively (rather than checking one level) keeps the rule
 /// rank-agnostic: `List<Real>` for a rank-1 tensor, `List<List<Real>>` for a
@@ -1692,9 +1643,8 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             if !is_conforming {
                 emit_vector_mismatch(param_type, arg_ty, ctx);
             } else {
-                // QUANTITY SLOT (task 5766), applied only AFTER the family/arity
-                // check above has passed. Rule and emitter choice:
-                // [`emit_if_quantity_conflict`].
+                // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
+                // `crates/reify-core/src/ty.rs`; applied after the family/arity check.
                 emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
@@ -1752,10 +1702,10 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             } else {
-                // QUANTITY SLOT (task 5766; rule in [`emit_if_quantity_conflict`]),
-                // applied only AFTER the arity match above has succeeded. The
-                // `is_numeric_placeholder_leaf` branch carries no slot, so it stays
-                // dimension-blind — and that is the branch every real corpus
+                // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
+                // `crates/reify-core/src/ty.rs`; applied after the arity check. The
+                // `is_numeric_placeholder_leaf` branch carries no slot and so stays
+                // dimension-blind, which is the branch every real corpus
                 // `point3(…)` arg takes.
                 emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
@@ -1816,8 +1766,8 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
             if !is_conforming {
                 emit_arg_type_mismatch(param_type, arg_ty, ctx);
             } else {
-                // QUANTITY SLOT (task 5766; rule in [`emit_if_quantity_conflict`]),
-                // applied only AFTER the family check above has passed. The
+                // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
+                // `crates/reify-core/src/ty.rs`; applied after the family check. The
                 // `Type::List` and `is_numeric_placeholder_leaf` branches carry no
                 // slot and are left EXACTLY as they were.
                 emit_if_quantity_conflict(param_type, arg_ty, ctx);
@@ -7688,32 +7638,15 @@ mod tests {
     }
 
     /// Rejecting sibling of [`assert_quantity_slot_clean`]: assert that `arg_ty`
-    /// at `param_type` produces exactly one `ArgTypeMismatch` — AT
-    /// `Severity::Error`.
+    /// at `param_type` produces exactly one `ArgTypeMismatch`, at
+    /// `Severity::Error`, phrased around the QUANTITY slots.
     ///
-    /// # This is where the task 5766 SEVERITY SPLIT is pinned
-    ///
-    /// `walk_param_against_arg_type` is shared by two entry points with
-    /// different severities: [`check_trait_arg_conformance`] (the ctor path) sets
-    /// [`CTOR_FIELD_CONFORMANCE_SEVERITY`] — Warning at α — while
-    /// [`check_fn_arg_conformance`] (the fn-call path, which this scaffold
-    /// drives) sets `Severity::Error`. The quantity rule therefore inherits BOTH
-    /// severities depending on how the walker was entered, and this assertion is
-    /// the one place that fact is mechanically pinned. The `.ri`-level fixtures
-    /// in `struct_ctor_field_conformance_tests.rs` all take the ctor path and so
-    /// assert `Severity::Warning`; both halves are recorded in the normative
-    /// block in `crates/reify-core/src/ty.rs`.
-    ///
-    /// Note that in PRODUCTION the fn-call path reaches these four arms only when
-    /// the param type ALSO carries a trait object somewhere (e.g.
-    /// `Map<Vector3<Length>, SomeTrait>`): `check_expr_fn_calls`
-    /// (`compile_builder/entities_phase.rs`) skips any param for which
-    /// `type_carries_trait_object` is false, and that predicate
-    /// (`type_compat.rs`) does NOT recurse into `Vector`/`Point`/`Matrix`/
-    /// `Tensor` quantity slots. A bare `fn f(axis: Vector3<Length>)` is thus not
-    /// reached at all today — which is why this is pinned at the entry point
-    /// directly rather than through a `.ri` fixture that would be silent for a
-    /// reason unrelated to the rule.
+    /// This is where the Error half of the rule's severity split is pinned — the
+    /// fn-call entry point this scaffold drives sets `Severity::Error` while the
+    /// ctor entry sets [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α), which
+    /// the `.ri` fixtures in `struct_ctor_field_conformance_tests.rs` assert.
+    /// Both halves, and why the fn-call half is not reachable from a `.ri`
+    /// fixture today, are recorded in `crates/reify-core/src/ty.rs`.
     fn assert_quantity_slot_conflict(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
         let diagnostics = quantity_slot_diags(param_type, arg_ty, arg_name);
         assert_eq!(
