@@ -198,7 +198,7 @@ use reify_ir::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation,
     RegionRef, ResultRef, SOURCE_SPAN_KEY, SampledField, SampledGridKind, Satisfaction, StructureInstanceData,
-    Value, ValueMap, quaternion_is_finite,
+    Value, ValueMap, dimension_unit_label, quaternion_is_finite,
 };
 
 // ── value (module-path form) ─────────────────────────────────────────────────
@@ -212,6 +212,7 @@ use reify_ir::value::{
     ResultRef as ResultRefMod, SOURCE_SPAN_KEY as SOURCE_SPAN_KEY_MOD, SampledField as SampledFieldMod,
     SampledGridKind as SampledGridKindMod, Satisfaction as SatisfactionMod,
     StructureInstanceData as StructureInstanceDataMod, Value as ValueMod, ValueMap as ValueMapMod,
+    dimension_unit_label as dimension_unit_label_mod,
     quaternion_is_finite as quaternion_is_finite_mod,
 };
 
@@ -243,7 +244,7 @@ use reify_ir::ranked::{
 
 // ── cross-crate deps ─────────────────────────────────────────────────────────
 use reify_ast::{Expr, ExprKind};
-use reify_core::SourceSpan;
+use reify_core::{DimensionVector, SourceSpan};
 
 // =============================================================================
 // Surface assertions
@@ -665,6 +666,37 @@ fn value_types_in_scope() {
     // function.
     assert!(quaternion_is_finite(1.0, 0.0, 0.0, 0.0));
     assert!(quaternion_is_finite_mod(1.0, 0.0, 0.0, 0.0));
+}
+
+/// Task λ (#5788) §11 Q2: `dimension_unit_label` is reachable CROSS-CRATE, in
+/// both spellings, and returns contract C2's ASCII exponent alphabet.
+///
+/// WHY the pin has to live in an integration test. This is a *visibility*
+/// assertion, and visibility is only observable from OUTSIDE the crate — an
+/// in-crate `#[cfg(test)] mod tests` can call a private `fn` and would pass
+/// vacuously no matter what the item's visibility said. `tests/` compiles as a
+/// separate crate, so the two `use` lines above are the assertion: while
+/// `dimension_unit_label` was a private top-level `fn` in `value.rs`, neither
+/// resolved and this file failed to BUILD with E0603. That build failure was
+/// the RED.
+///
+/// Both spellings are pinned because this file's stated invariant is that
+/// lib.rs exports each module as `pub mod` AND re-exports its symbols at the
+/// crate root — pinning only one would let the other rot silently.
+///
+/// Task μ consumes this seam: its round-trip property test needs to observe S3
+/// directly, and without cross-crate reachability its assertion would degrade
+/// to a structural proxy.
+#[test]
+fn dimension_unit_label_reachable_cross_crate_with_ascii_labels() {
+    assert_eq!(dimension_unit_label(&DimensionVector::AREA), "m^2");
+    assert_eq!(dimension_unit_label(&DimensionVector::VOLUME), "m^3");
+
+    // Both spellings name the same function.
+    assert_eq!(
+        dimension_unit_label(&DimensionVector::AREA),
+        dimension_unit_label_mod(&DimensionVector::AREA)
+    );
 }
 
 #[test]
