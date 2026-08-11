@@ -497,6 +497,22 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     root.querySelectorAll('[data-testid="scoped-el"]').forEach(makeVisible);
   }
 
+  /**
+   * BOTH panes hold a `scoped-el`, but only pane-1's is visible: design-main's
+   * keeps jsdom's default all-zero rect, which isElementVisible() reads as
+   * hidden. Document order therefore puts the HIDDEN one first — the fixture for
+   * case (i), the false-negative half of the unscoped trap.
+   */
+  function mountPanesFirstHidden() {
+    root = document.createElement('div');
+    root.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="scoped-el"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="scoped-el"></div></div>
+    `;
+    document.body.appendChild(root);
+    makeVisible(root.querySelector('[data-viewport-id="pane-1"] [data-testid="scoped-el"]')!);
+  }
+
   /** Settle pending microtasks WITHOUT advancing any fake timer. */
   async function flushMicrotasks() {
     for (let i = 0; i < 8; i += 1) await Promise.resolve();
@@ -686,17 +702,29 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     expect(result).toEqual({ error: 'timeout' });
   });
 
-  // (h) pins the residual silent-wrong-pane path that scoping does NOT close, and
-  // that (f) only half-covers: (f) shows an unscoped multi-match reports no pane
-  // keys; this shows what that costs a caller when the panes are not yet equal.
+  // (h)/(i) pin the residual silent-wrong-pane path that scoping does NOT close,
+  // and that (f) only half-covers: (f) shows an unscoped multi-match reports no
+  // pane keys; these show what that costs a caller when the panes are not equal.
   //
-  // CALLER-FACING FAILURE PATH: a harness that waits UNSCOPED and then acts
-  // SCOPED on pane-1 gets a green wait off design-main — pane 0 in document order
-  // — while pane-1 is still mounting, and then a `notFoundForViewport` on the
-  // action a moment later. Because the wait reported no viewportId/matchCount,
+  // THE MECHANISM, stated once for both: resolveByTestId commits to
+  // `matches[0]` — the first element in DOCUMENT ORDER — and only THEN does
+  // buildSelectorPredicate evaluate isElementVisible() on that one element. The
+  // selection happens BEFORE visibility is consulted, not "the first element
+  // that satisfies the predicate", so the trap has two opposite faces:
+  //
+  //   (h) FALSE POSITIVE — the first pane satisfies, a later pane is not ready.
+  //   (i) FALSE NEGATIVE — the first pane's copy is hidden, so the wait times out
+  //       even though a VISIBLE match exists in a later pane.
+  //
+  // CALLER-FACING FAILURE PATH for (h): a harness that waits UNSCOPED and then
+  // acts SCOPED on pane-1 gets a green wait off design-main — pane 0 in document
+  // order — while pane-1 is still mounting, and then a `notFoundForViewport` on
+  // the action a moment later. Because the wait reported no viewportId/matchCount,
   // nothing in the green result hints that a different pane satisfied it, so the
   // failure reads as a bridge bug rather than the caller-introduced race it is.
-  // The remedy is to scope the WAIT whenever the follow-up action is scoped.
+  // (i) misreads the other way: "the element never appeared", when it appeared in
+  // a pane the wait never looked at. One remedy covers both — scope the WAIT
+  // whenever the follow-up action is scoped.
   it('(h) UNSCOPED wait is satisfied by the FIRST matching pane, so it cannot gate on a LATER pane being ready', async () => {
     // design-main holds a visible `scoped-el`; pane-1 holds nothing — i.e. the
     // exact "pane 1 is still mounting" state.
@@ -724,6 +752,27 @@ describe('wait_for_selector / wait_for: viewport scoping (#5891)', () => {
     });
 
     expect(scoped.result).toEqual({ error: 'timeout' });
+  });
+
+  it('(i) UNSCOPED state:"visible" TIMES OUT when the document-order-first match is hidden — even though a visible one exists in a later pane', async () => {
+    // design-main's `scoped-el` keeps jsdom's zero rect (hidden); pane-1's is
+    // visible. matches[0] is design-main's, so the predicate re-resolves to the
+    // hidden element on every tick and never consults pane-1's.
+    mountPanesFirstHidden();
+
+    const unscoped = await dispatchDrained(33, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', timeout_ms: 100,
+    });
+
+    expect(unscoped.result).toEqual({ error: 'timeout' });
+
+    // Proof the visible copy really is reachable, and that the timeout above is
+    // the selection rule rather than an absent element: naming the pane finds it.
+    const scoped = await dispatchDrained(34, 'wait_for_selector', {
+      testId: 'scoped-el', state: 'visible', viewportId: 'pane-1', timeout_ms: 100,
+    });
+
+    expect(scoped.result.ok).toBe(true);
   });
 });
 

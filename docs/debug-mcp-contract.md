@@ -11,7 +11,7 @@
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
-| §2d Image + trailing-text envelope | `debug_server.rs` `mcp_content_blocks_*` tests; `rpcEnvelope.test.ts`; `rpc.test.ts` |
+| §2d Image + trailing-text envelope | `debug_server.rs` `mcp_content_blocks_*` tests — EMISSION side only; the JS decoders' handling of the two-block success envelope is not yet pinned (see §2d) |
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
@@ -236,27 +236,25 @@ length 1. The two wire shapes a decoder has to handle:
 ] }
 ```
 
-What a decoder author may rely on:
+Decoder-author checklist:
 
 - The image block is **always** at `content[0]` — diagnostics are APPENDED,
   never prepended. A positional `content[0].type === "image"` test is therefore
   safe.
 - `content.length` is **not** always 1, and must never be assumed to be. A
   decoder that reads only `content[0]` silently discards the pane diagnostics.
-- The trailing block carries the pane diagnostics (`{viewportId, matchCount}`)
-  as pretty-printed JSON, and never a top-level string `error` — one there
-  would make every driver read a working screenshot as broken (the
-  cross-language invariant on `isInBandError` in
-  `gui/test/visual/rpcEnvelope.mjs`; §2a above).
 - `screenshot` and `screenshot_window` never emit the trailing block. Only
-  `element_screenshot` does, and only when its result carries a residual beyond
-  `data`.
+  `element_screenshot` does.
 
-The GATING RULE — the exact condition under which the trailing block is
-emitted, and why that condition rather than another — lives with the code, in
-the `mcp_content_blocks` doc comment in `gui/src-tauri/src/debug_server.rs`.
-Read it there; a second copy of the gate here would be precisely the drift
-surface §0 warns about.
+Everything else about this envelope is deliberately NOT restated here — the
+GATING RULE (the exact condition under which the trailing block is emitted, and
+why that condition rather than another), the invariant that the trailing block
+never carries a top-level string `error`, and the positional-vs-search split
+between the two JS decoders. Each lives with the code it constrains, and a
+second synchronized copy here would be precisely the drift surface §0 warns
+about. Read them there: `mcp_content_blocks` in
+`gui/src-tauri/src/debug_server.rs`, branch 3 of `gui/test/visual/rpc.ts`, and
+branch 3 of `gui/test/visual/rpcEnvelope.mjs`.
 
 ### JS-side decoders
 
@@ -280,16 +278,23 @@ failure into `{ok: false, error}` where `normalizeRpcEnvelope` preserves the
 in-band shape.
 
 The two decoders diverge on §2d's image envelope as well, and again on purpose:
-`normalizeRpcEnvelope` reaches its "no text block" branch by SEARCHING the
-content array, so a multi-match `element_screenshot` falls through it and
-surfaces the pane diagnostics as its payload; `parseRpcResponse` is POSITIONAL
-on `content[0]` and deliberately IGNORES the trailing block, because searching
-would let a text block win its branch 4 ahead of its image branch 3 and feed
-non-PNG bytes into `run.ts`'s `Buffer.from(…, "base64")`.
+`normalizeRpcEnvelope` SEARCHES the content array, `parseRpcResponse` stays
+POSITIONAL on `content[0]`. The rationale for each lives with the branch that
+enforces it — branch 3 of `gui/test/visual/rpc.ts` and branch 3 of
+`gui/test/visual/rpcEnvelope.mjs`.
 
-Both divergences are intentional and pinned case-by-case by
-`gui/test/visual/rpc.test.ts` and `gui/test/visual/rpcEnvelope.test.ts`;
-consult those tests before collapsing the two.
+Coverage, stated exactly, because the two halves are not equally guarded: the
+error-envelope divergences are pinned case-by-case by
+`gui/test/visual/rpc.test.ts` ("the documented divergence" suite) and
+`gui/test/visual/rpcEnvelope.test.ts`. The §2d image envelope is pinned on the
+EMISSION side only, by `debug_server.rs`'s `mcp_content_blocks_*` tests — no JS
+case yet feeds a *success* two-block envelope through the two decoders (every
+existing two-block case sets `isError: true`, exercising the §2b branch
+instead). Until one does, collapsing `parseRpcResponse`'s positional image
+branch into a `.find` would pass the entire JS suite and surface only as corrupt
+PNG bytes in `run.ts`'s `Buffer.from(…, "base64")`. Closing that gap is filed as
+follow-up work against `gui/test/visual/rpc.test.ts`. Consult these tests before
+collapsing the two decoders.
 
 ---
 
