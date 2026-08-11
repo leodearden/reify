@@ -7622,46 +7622,19 @@ mod tests {
     /// and they differ ⇒ reject).
     #[test]
     fn point_param_rejects_cross_dimension_point_arg() {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "p"),
+        assert_quantity_slot_conflict(
+            Type::point3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
             Type::Point {
                 n: 3,
                 quantity: Box::new(Type::Scalar {
                     dimension: DimensionVector::MASS,
                 }),
             },
-        );
-        let param_type = Type::point3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        });
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_fn_arg_conformance(
-            &param_type,
             "origin",
-            &compiled_arg,
-            SourceSpan::empty(0),
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "a Point3<Mass> arg at a Point3<Length> param must be rejected — both sides \
-             name a concrete dimension and they disagree (task 5766), got {}: {:?}",
-            diagnostics.len(),
-            diagnostics,
-        );
-        assert_eq!(
-            diagnostics[0].code,
-            Some(DiagnosticCode::ArgTypeMismatch),
-            "expected ArgTypeMismatch, got {:?}",
-            diagnostics[0].code,
+            "a Point3<Mass> arg at a Point3<Length> param must be REJECTED — both sides name a \
+             concrete dimension and they disagree (task 5766).",
         );
     }
 
@@ -7681,57 +7654,30 @@ mod tests {
     /// (`vector_param_rejects_wrong_arity_vector_arg` pins that side).
     #[test]
     fn vector_param_rejects_cross_dimension_vector_arg() {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "v"),
+        assert_quantity_slot_conflict(
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
             Type::Vector {
                 n: 3,
                 quantity: Box::new(Type::Scalar {
                     dimension: DimensionVector::MASS,
                 }),
             },
-        );
-        let param_type = Type::vec3(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        });
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_fn_arg_conformance(
-            &param_type,
             "axis",
-            &compiled_arg,
-            SourceSpan::empty(0),
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "a Vector3<Mass> arg at a Vector3<Length> param must be rejected — both sides \
-             name a concrete dimension and they disagree (task 5766), got {}: {:?}",
-            diagnostics.len(),
-            diagnostics,
-        );
-        assert_eq!(
-            diagnostics[0].code,
-            Some(DiagnosticCode::ArgTypeMismatch),
-            "a QUANTITY conflict must route to ArgTypeMismatch, leaving \
-             TypeNotConformingToVector owning ARITY/FAMILY only, got {:?}",
-            diagnostics[0].code,
+            "a Vector3<Mass> arg at a Vector3<Length> param must be REJECTED — both sides name a \
+             concrete dimension and they disagree (task 5766) — and the QUANTITY conflict must \
+             route to ArgTypeMismatch, leaving TypeNotConformingToVector owning ARITY/FAMILY only.",
         );
     }
 
-    /// Shared scaffold for the task 5766 boundary fences below: assert that
-    /// `arg_ty` at `param_type` produces NO diagnostic.
+    /// The ONE scaffold every task 5766 / 6159 quantity-slot probe drives the
+    /// walker through: run `arg_ty` against `param_type` on the empty-registry
+    /// `check_fn_arg_conformance` entry point and return whatever it emitted.
     ///
-    /// Same empty-registry `check_fn_arg_conformance` scaffold as the probes
-    /// above; factored out only because the three fences differ solely in their
-    /// two `Type`s and their reason.
-    fn assert_quantity_slot_clean(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
+    /// Both assertions below and every probe that calls them share this, so a
+    /// future change to how these probes reach the walker is made in one place.
+    fn quantity_slot_diags(param_type: Type, arg_ty: Type, arg_name: &str) -> Vec<Diagnostic> {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         let compiled_arg = CompiledExpr::value_ref(ValueCellId::new("Test", "a"), arg_ty);
@@ -7748,6 +7694,13 @@ mod tests {
             },
             &mut diagnostics,
         );
+        diagnostics
+    }
+
+    /// Assert that `arg_ty` at `param_type` produces NO diagnostic — the
+    /// accepting half of the task 5766 boundary fences.
+    fn assert_quantity_slot_clean(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
+        let diagnostics = quantity_slot_diags(param_type, arg_ty, arg_name);
         assert_eq!(
             diagnostics.len(),
             0,
@@ -7785,22 +7738,7 @@ mod tests {
     /// directly rather than through a `.ri` fixture that would be silent for a
     /// reason unrelated to the rule.
     fn assert_quantity_slot_conflict(param_type: Type, arg_ty: Type, arg_name: &str, why: &str) {
-        let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
-        let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let compiled_arg = CompiledExpr::value_ref(ValueCellId::new("Test", "a"), arg_ty);
-        let mut diagnostics: Vec<Diagnostic> = vec![];
-        check_fn_arg_conformance(
-            &param_type,
-            arg_name,
-            &compiled_arg,
-            SourceSpan::empty(0),
-            ConformanceRegistries {
-                templates: &template_registry,
-                traits: &trait_registry,
-                enum_defs: &[],
-            },
-            &mut diagnostics,
-        );
+        let diagnostics = quantity_slot_diags(param_type, arg_ty, arg_name);
         assert_eq!(
             diagnostics.len(),
             1,
