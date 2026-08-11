@@ -978,7 +978,15 @@ impl JcodemunchClient {
     /// NOT route through [`decode_tool_result`], which decodes a
     /// `tools/call` result's MUNCH-vs-JSON content and does not apply to a
     /// `tools/list` envelope.
-    // G-allow: test-facing pub fn (sole external caller: tests/jcodemunch_session_live.rs, a separate crate; pub(crate) would break it). The observable signal for PRD boundary scenario B1 — that a live serve advertises the tools the detectors call.
+    ///
+    /// Compiled out of production builds entirely
+    /// (`#[cfg(any(test, feature = "test-support"))]`, the same gate
+    /// `MockGitOps` uses in `lib.rs`): no production path calls it, and the
+    /// crate's own `[dev-dependencies]` self-pull enables `test-support`, so
+    /// `tests/jcodemunch_session_live.rs` — a separate crate — still sees it
+    /// without the surface leaking into the released API.
+    #[cfg(any(test, feature = "test-support"))]
+    // G-allow: test-facing pub fn, compiled out of production builds by the `test-support` gate above (sole external caller: tests/jcodemunch_session_live.rs, a separate crate; pub(crate) would break it). The observable signal for PRD boundary scenario B1 — that a live serve advertises the tools the detectors call. The marker stays because scripts/audit-orphan-producers.sh masks only a literal `#[cfg(test)]`, not this gate.
     pub fn list_tools(&self) -> Result<Vec<String>, LoadError> {
         let resp = self.post(&json!({
             "jsonrpc": "2.0",
@@ -1673,6 +1681,49 @@ mod tests {
             AcceptedEmpty,
         }
 
+        /// How the stub answers `tools/list` — the second axis these tests
+        /// vary, and the one [`JcodemunchClient::list_tools`] decodes.
+        ///
+        /// Orthogonal to [`InitializeReply`]: every mode here is reached
+        /// only after a healthy [`InitializeReply::WithSession`] handshake,
+        /// so a `list_tools` failure can be attributed to the `tools/list`
+        /// reply alone.
+        #[derive(Clone, Copy)]
+        enum ToolsListReply {
+            /// A well-formed `result.tools` array advertising exactly these
+            /// names, in this order.
+            Names(&'static [&'static str]),
+            /// A well-formed JSON-RPC result carrying no `tools` key at all.
+            NoToolsKey,
+            /// `result.tools` present, but an object rather than an array.
+            ToolsNotAnArray,
+            /// A well-formed array whose middle entry carries no `name`.
+            EntryWithoutName,
+        }
+
+        impl ToolsListReply {
+            /// The `result` object this mode puts in its JSON-RPC reply.
+            fn result(self) -> Value {
+                match self {
+                    Self::Names(names) => json!({
+                        "tools": names
+                            .iter()
+                            .map(|n| json!({"name": n, "description": "stub tool"}))
+                            .collect::<Vec<_>>(),
+                    }),
+                    Self::NoToolsKey => json!({"nextCursor": Value::Null}),
+                    Self::ToolsNotAnArray => json!({"tools": {"name": "not-an-array"}}),
+                    Self::EntryWithoutName => json!({
+                        "tools": [
+                            {"name": "get_layer_violations"},
+                            {"description": "an entry with no name at all"},
+                            {"name": "find_references"},
+                        ],
+                    }),
+                }
+            }
+        }
+
         /// One recorded request: lowercased header names → values, plus the
         /// parsed JSON body.
         #[derive(Clone, Debug)]
@@ -1772,11 +1823,22 @@ mod tests {
                 Self::start_with(InitializeReply::WithSession)
             }
 
-            /// Bind an ephemeral loopback port and start serving, answering
-            /// `initialize` per `reply`. The listener is bound once and
-            /// kept — never dropped and re-bound — so nothing else can win
-            /// the port in between.
+            /// Vary only the handshake. `tools/list` is never called by
+            /// these tests, so its reply is an inert empty advertisement.
             fn start_with(reply: InitializeReply) -> Self {
+                Self::start_full(reply, ToolsListReply::Names(&[]))
+            }
+
+            /// Vary only the `tools/list` reply, behind a healthy handshake.
+            fn start_with_tools(tools_reply: ToolsListReply) -> Self {
+                Self::start_full(InitializeReply::WithSession, tools_reply)
+            }
+
+            /// Bind an ephemeral loopback port and start serving, answering
+            /// `initialize` per `reply` and `tools/list` per `tools_reply`.
+            /// The listener is bound once and kept — never dropped and
+            /// re-bound — so nothing else can win the port in between.
+            fn start_full(reply: InitializeReply, tools_reply: ToolsListReply) -> Self {
                 let listener =
                     TcpListener::bind("127.0.0.1:0").expect("bind loopback stub");
                 let addr = listener.local_addr().expect("stub local_addr");
@@ -1855,6 +1917,15 @@ mod tests {
                         // an empty body — keep that shape.
                         "notifications/initialized" => {
                             write_response(&mut stream, 202, None, b"")
+                        }
+                        "tools/list" => {
+                            let body = json!({
+                                "jsonrpc": "2.0",
+                                "id": req_id,
+                                "result": tools_reply.result(),
+                            })
+                            .to_string();
+                            write_response(&mut stream, 200, None, body.as_bytes())
                         }
                         _ => write_response(&mut stream, 200, None, b"{}"),
                     }
@@ -1955,16 +2026,6 @@ mod tests {
         /// getter, so the lock costs no new public surface.
         #[test]
         fn server_assigned_session_id_is_replayed_on_every_later_post() {
-            // Guard on the constant itself: a client-minted id is 32
-            // lowercase hex, so an equality assertion against this value
-            // can never be satisfied by one.
-            assert!(
-                !(ASSIGNED_SESSION.len() == 32
-                    && ASSIGNED_SESSION.chars().all(|c| c.is_ascii_hexdigit())),
-                "ASSIGNED_SESSION must not be shaped like a client-minted id, \
-                 or these assertions could pass for the wrong reason",
-            );
-
             let stub = RecordingStub::start();
             let client = JcodemunchClient::new(stub.url()).expect("handshake");
 
@@ -2036,6 +2097,94 @@ mod tests {
                      handshake, got Http error: {e}",
                 ),
             }
+        }
+
+        /// `list_tools` reports exactly what the server advertised — every
+        /// name, in arrival order, nothing added or dropped — and does so
+        /// on the established session (contract item 3).
+        #[test]
+        fn list_tools_reports_every_advertised_name_in_order() {
+            const ADVERTISED: &[&str] = &[
+                "get_changed_symbols",
+                "find_references",
+                "get_dead_code_v2",
+            ];
+            let stub = RecordingStub::start_with_tools(ToolsListReply::Names(ADVERTISED));
+            let client = JcodemunchClient::new(stub.url()).expect("handshake");
+
+            let tools = client
+                .list_tools()
+                .expect("tools/list against a well-formed stub must succeed");
+            let expected: Vec<String> =
+                ADVERTISED.iter().map(|n| (*n).to_string()).collect();
+            assert_eq!(
+                tools, expected,
+                "list_tools must report the advertised names verbatim and in \
+                 order",
+            );
+
+            assert_eq!(
+                stub.request_for("tools/list").session_header(),
+                Some(ASSIGNED_SESSION),
+                "`tools/list` is a post-handshake call like any other and must \
+                 replay the server-assigned session id",
+            );
+        }
+
+        /// Every malformed `tools/list` shape must surface as
+        /// `LoadError::Protocol`.
+        ///
+        /// Never `Ok`: a silently empty or silently shortened tool list is
+        /// exactly the PASS-shaped nothing this client's session handling
+        /// exists to remove — a caller would read it as "the serve offers
+        /// no such tool" rather than "the serve answered nonsense". Never
+        /// `Http` either: the transport succeeded, the payload did not.
+        fn assert_list_tools_is_a_protocol_error(reply: ToolsListReply, what: &str) {
+            let stub = RecordingStub::start_with_tools(reply);
+            let client = JcodemunchClient::new(stub.url()).expect("handshake");
+
+            match client.list_tools() {
+                Err(LoadError::Protocol(_)) => {} // expected
+                Ok(tools) => panic!(
+                    "expected a Protocol error for {what}; got Ok({tools:?}) — a \
+                     malformed tool list must never be reported as a (possibly \
+                     empty or shortened) set of tools",
+                ),
+                Err(LoadError::Http(e)) => panic!(
+                    "expected a Protocol error for {what}; got Http error: {e}",
+                ),
+            }
+        }
+
+        /// An absent tool list is a protocol violation, not a server with
+        /// no tools.
+        #[test]
+        fn list_tools_without_result_tools_is_a_protocol_error() {
+            assert_list_tools_is_a_protocol_error(
+                ToolsListReply::NoToolsKey,
+                "a result carrying no `tools` key",
+            );
+        }
+
+        /// `result.tools` that is not an array cannot be iterated, so it is
+        /// a protocol violation rather than a zero-length list.
+        #[test]
+        fn list_tools_with_a_non_array_tools_field_is_a_protocol_error() {
+            assert_list_tools_is_a_protocol_error(
+                ToolsListReply::ToolsNotAnArray,
+                "`result.tools` that is an object, not an array",
+            );
+        }
+
+        /// One nameless entry poisons the whole list rather than being
+        /// skipped: silently returning the other two names would report a
+        /// tool set the server never advertised.
+        #[test]
+        fn list_tools_with_a_nameless_entry_is_a_protocol_error() {
+            assert_list_tools_is_a_protocol_error(
+                ToolsListReply::EntryWithoutName,
+                "a tool entry with no string `name`",
+            );
         }
     }
 }

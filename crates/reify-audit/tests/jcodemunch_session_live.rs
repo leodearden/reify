@@ -33,9 +33,24 @@
 //! ```sh
 //! cargo test -p reify-audit --test jcodemunch_session_live -- --ignored --nocapture
 //! ```
+//!
+//! ## The sibling live test still skips — deliberately not fixed here
+//!
+//! `tests/jcodemunch_live.rs` does the opposite of the paragraph above: it
+//! requires an externally-running serve and graceful-skips when
+//! `jcodemunch_serve_reachable` is false. Two contradictory policies for
+//! live-serve tests against the same seam is a real inconsistency, and it is
+//! knowingly left standing: that file belongs to task #6110 (the non-vacuous
+//! live capstone), whose whole subject is replacing that skip, and it is
+//! outside this task's locked module set. The [`Serve`] harness below —
+//! spawn, `await_ready`, teardown — is the reusable half; #6110 should lift
+//! it into `tests/common/` and drive `jcodemunch_live.rs` from it rather than
+//! growing a second copy, keeping `JCODEMUNCH_URL` as an opt-in override for
+//! an already-running serve.
 
 use std::io::Read;
 use std::net::TcpListener;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -149,6 +164,12 @@ impl Serve {
             .stdin(Stdio::null())
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err))
+            // Put the serve in a process group of its own (pgid == this
+            // child's pid), so teardown can signal `uvx` *and* the python it
+            // fronts by group id alone. Without it the only handle on the
+            // grandchild is a command-line pattern match across every process
+            // on the host — see `Drop`.
+            .process_group(0)
             .spawn()
             .unwrap_or_else(|e| panic!("spawn {} serve on port {port}: {e}", uvx.display()));
 
@@ -235,34 +256,62 @@ impl Serve {
 
 impl Drop for Serve {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-
-        // `uvx` fronts a child python that a bare kill can orphan. The port
-        // is unique to this invocation, so it is a safe discriminator.
-        let _ = Command::new("pkill")
-            .args(["-f", &format!("jcodemunch-mcp.*--port {}", self.port)])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        // `uvx` fronts a child python that a bare `child.kill()` would orphan,
+        // so signal the whole process GROUP: `spawn` put the serve in a fresh
+        // group whose id is this child's pid, so the negated pid below names
+        // that group and nothing else. A `pkill -f` pattern would not — it is
+        // an unanchored substring match against every command line on the
+        // host, so `--port 8917` also matches a `--port 89170` serve, and the
+        // blast radius is somebody else's long-lived watcher.
+        let group = format!("-{}", self.child.id());
+        let signal_group = |sig: &str| {
+            let _ = Command::new("kill")
+                .args([sig, &group])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        };
+        signal_group("-TERM");
 
         // Bounded wait for the port to actually stop accepting, so a
-        // following test cannot be handed a half-dead listener.
+        // following test cannot be handed a half-dead listener; a group still
+        // listening half-way through gets one KILL escalation. The child is
+        // deliberately left unreaped until after this loop: an unreaped pid
+        // cannot be recycled, so the group id stays unambiguously ours for as
+        // long as we are signalling it.
         let deadline = Instant::now() + Duration::from_secs(10);
+        let escalate_at = Instant::now() + Duration::from_secs(5);
+        let mut escalated = false;
+        let mut freed = false;
         while Instant::now() < deadline {
             let addr = format!("127.0.0.1:{}", self.port);
             match std::net::TcpStream::connect_timeout(
                 &addr.parse().expect("loopback addr"),
                 Duration::from_millis(100),
             ) {
-                Ok(_) => std::thread::sleep(Duration::from_millis(100)),
-                Err(_) => return,
+                Ok(_) => {
+                    if !escalated && Instant::now() >= escalate_at {
+                        signal_group("-KILL");
+                        escalated = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => {
+                    freed = true;
+                    break;
+                }
             }
         }
-        eprintln!(
-            "warning: port {} still accepting connections after teardown",
-            self.port,
-        );
+
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+
+        if !freed {
+            eprintln!(
+                "warning: port {} still accepting connections after teardown",
+                self.port,
+            );
+        }
     }
 }
 
@@ -286,6 +335,19 @@ fn initialize_payload() -> Value {
 /// A live serve answers `initialize` with `content-type: text/event-stream`,
 /// so the JSON-RPC envelope arrives on a `data:` line rather than as the whole
 /// body.
+///
+/// **This is the third copy of this decode.** The canonical one is
+/// `JcodemunchClient::post_raw` in `src/jcodemunch_client.rs`; a second lives
+/// in `src/fused_memory_client.rs`. They have already drifted — both
+/// production copies return `LoadError::Protocol` where this one panics,
+/// which is right for a test harness (a body we cannot decode is a harness
+/// fault, not a claim under test) but means a protocol fix (multi-line SSE
+/// `data:`, `event:` filtering, chunked framing) has to be applied in three
+/// places. Deduplicating it needs a shared module that both clients use, and
+/// `fused_memory_client.rs` is explicitly out of this task's scope (PRD §9),
+/// so the copy stands and the drift is at least written down. Filed as
+/// follow-up work; check `tools/list`-adjacent MCP envelope handling in all
+/// three before changing any one of them.
 fn parse_mcp_body(ctype: &str, body: &str) -> Value {
     if ctype.contains("text/event-stream") {
         for line in body.lines() {
