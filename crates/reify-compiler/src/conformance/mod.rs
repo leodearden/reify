@@ -1413,6 +1413,40 @@ fn arg_quantity_slot(arg_ty: &Type) -> Option<&Type> {
     }
 }
 
+/// Emit the quantity-slot conflict diagnostic: [`DiagnosticCode::ArgTypeMismatch`]
+/// at `ctx.severity`, phrased around the QUANTITY slots rather than the whole
+/// types.
+///
+/// Separate from [`emit_arg_type_mismatch`] because the whole-type rendering
+/// misleads here: at the `Matrix`/`Tensor` arm a `Tensor2x3` arg at a `Matrix3x3`
+/// param is ACCEPTED (Rule 3, and no arity check), so a message naming those two
+/// types points at the one difference that is fine and never names the dimension
+/// that caused the rejection. The code stays `ArgTypeMismatch` — that contract is
+/// pinned by the fixtures and stated in `crates/reify-core/src/ty.rs`.
+fn emit_quantity_slot_mismatch(
+    param_type: &Type,
+    param_quantity: &Type,
+    arg_ty: &Type,
+    arg_quantity: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    ctx.diagnostics.push(
+        diag_at(
+            ctx.severity,
+            format!(
+                "argument '{}' has quantity '{}' but param '{}' requires quantity '{}' \
+                 (the arg type '{}' conforms in shape to '{}'; only the quantity slot disagrees)",
+                ctx.arg_name, arg_quantity, ctx.arg_name, param_quantity, arg_ty, param_type,
+            ),
+        )
+        .with_code(DiagnosticCode::ArgTypeMismatch)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("quantity mismatch: expected '{param_quantity}', got '{arg_quantity}'"),
+        )),
+    );
+}
+
 /// Apply the task 5766 quantity-slot rule at one shape arm: emit
 /// `ArgTypeMismatch` iff `arg_ty` carries a quantity slot that CONFLICTS with the
 /// param's.
@@ -1443,10 +1477,10 @@ fn emit_if_quantity_conflict(
     arg_ty: &Type,
     ctx: &mut WalkCtx<'_>,
 ) {
-    if arg_quantity_slot(arg_ty)
-        .is_some_and(|arg_quantity| quantity_slots_conflict(param_quantity, arg_quantity))
+    if let Some(arg_quantity) = arg_quantity_slot(arg_ty)
+        && quantity_slots_conflict(param_quantity, arg_quantity)
     {
-        emit_arg_type_mismatch(param_type, arg_ty, ctx);
+        emit_quantity_slot_mismatch(param_type, param_quantity, arg_ty, arg_quantity, ctx);
     }
 }
 
