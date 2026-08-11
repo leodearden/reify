@@ -31,17 +31,56 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
 
 echo "=== check-compute-trampoline-registration.sh wiring tests ==="
 
 GATE="$REPO_ROOT/scripts/check-compute-trampoline-registration.sh"
 
+# _plan_segs <full-plan> — the COMMAND lines of a captured plan (comments out).
+# Kept separate from the capture so completeness is asserted on the FULL text:
+# plan_capture_complete keys on two structural COMMENT markers, which a
+# pre-stripped capture no longer carries.
+_plan_segs() { printf '%s\n' "$1" | grep -v '^#' || true; }
+
 # The orchestrator runs scripts/verify.sh, so wiring is asserted against the
 # verify.sh plans. --include-infra so the lint-side infra leaf appears;
-# --scope all for the full plan; env/comment lines stripped via `grep -v '^#'`.
-LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan | grep -v '^#')"
-TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan | grep -v '^#')"
-export LINT_PLAN_SEGS TEST_PLAN_SEGS
+# --scope all for the full plan; env/comment lines stripped via `_plan_segs`.
+#
+# Captured through capture_print_plan rather than a bare `$(… | grep -v '^#')`.
+# `set -o pipefail` catches a verify.sh that EXITS non-zero, but not the failure
+# class plan_capture_lib.sh documents explicitly: a capture TRUNCATED under load
+# while still exiting 0. Every NEGATIVE assertion below — (c)'s WARNING check,
+# (f), (b8)'s "no -E filterset", (b9)'s lint/offline checks — is a `! grep`, so
+# a short capture would satisfy it silently. The completeness assertions in (a0)
+# are what convert that into a visible RED.
+LINT_PLAN_FULL=""
+TEST_PLAN_FULL=""
+capture_print_plan LINT_PLAN_FULL "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan || true
+capture_print_plan TEST_PLAN_FULL "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan || true
+LINT_PLAN_SEGS="$(_plan_segs "$LINT_PLAN_FULL")"
+TEST_PLAN_SEGS="$(_plan_segs "$TEST_PLAN_FULL")"
+export LINT_PLAN_SEGS TEST_PLAN_SEGS LINT_PLAN_FULL TEST_PLAN_FULL
+
+# -- (a0): the canonical captures are COMPLETE ----------------------------------
+# Asserted BEFORE anything consumes them, so a truncated capture fails HERE with
+# a name that says so rather than as a confusing cascade of negative assertions
+# that all "passed".
+echo ""
+echo "--- (a0): the canonical verify.sh plan captures are complete ---"
+assert "a0: lint plan capture is complete (structural markers present)" \
+    plan_capture_complete "$LINT_PLAN_FULL"
+assert "a0: test plan capture is complete (structural markers present)" \
+    plan_capture_complete "$TEST_PLAN_FULL"
+# Positive controls: a complete-but-empty plan would still satisfy every `! grep`
+# below, so pin that each capture actually carries command lines.
+assert "a0: lint plan carries at least one command line" \
+    bash -c '[ -n "$LINT_PLAN_SEGS" ]'
+assert "a0: test plan carries at least one 'cargo (test|nextest run)' line" \
+    bash -c 'printf "%s\n" "$TEST_PLAN_SEGS" | grep -qE "cargo (test|nextest run)"'
 
 # _exits_with <want> <cmd...> — assert an EXACT exit code, not merely non-zero.
 # The gate's contract distinguishes 1 (violation found) from 2 (usage / not a
@@ -413,10 +452,17 @@ assert "h8b: gate FLAGS a hand-rolled bundle in gui/src-tauri/build.rs" \
 # h6 — usage / not-a-work-tree errors are exit 2, distinct from exit 1.
 NONGIT="$DET_TMP/nongit"
 mkdir -p "$NONGIT"
+# Both assertions are paired with a stderr grep: exit 2 is the shared code for
+# usage errors, a non-work-tree, an empty scan set and an awk failure, so the
+# code alone cannot tell which cause fired.
 assert "h6: an unknown flag exits 2" \
     _exits_with 2 bash "$GATE" --bogus-flag
+assert "h6: stderr names the unknown argument (not some other exit-2 cause)" \
+    bash -c "bash '$GATE' --bogus-flag 2>&1 >/dev/null | grep -q 'unknown argument'"
 assert "h6: --repo-root pointing at a non-git dir exits 2" \
     _exits_with 2 bash "$GATE" --repo-root "$NONGIT"
+assert "h6: stderr names the non-work-tree (not some other exit-2 cause)" \
+    bash -c "bash '$GATE' --repo-root '$NONGIT' 2>&1 >/dev/null | grep -q 'not a git work tree'"
 
 # ===========================================================================
 # hD — BRACE-DEPTH DRIFT in the shared production-code view.
@@ -481,6 +527,8 @@ RS
 stage
 assert "hD1: a '}' inside a test-assertion STRING does not release the cfg(test) skipper (variant pin stays live)" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD1: stderr names the engine.rs VARIANT-PIN violation (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'gui/src-tauri/src/engine.rs: does not pass the required'"
 
 # hD2 — FOURTH-BUNDLER DETECTION GOES BLIND via a stray `{` in a test string.
 # Same body as h3 (which the gate flags), with a #[cfg(test)] module ABOVE it
@@ -506,6 +554,8 @@ RS
 stage
 assert "hD2: a '{' inside a test-assertion STRING does not hide the production fourth bundler below it" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD2: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # hD3a — CHAR LITERAL, positive drift.  String blanking does not cover char
 # literals, so `'{'` inflates depth exactly like the string brace in hD2.
@@ -532,6 +582,8 @@ RS
 stage
 assert "hD3a: a '{' CHAR LITERAL does not hide the production fourth bundler below the test module" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD3a: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # hD3b — CHAR LITERAL, negative drift, in the shape the live scan set already
 # carries (`rest.find([',', '}'])`).  Asserted through the POSITIVE pass because
@@ -562,6 +614,8 @@ RS
 stage
 assert "hD3b: a '}' CHAR LITERAL does not release the cfg(test) skipper (variant pin stays live)" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD3b: stderr names the engine.rs VARIANT-PIN violation (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'gui/src-tauri/src/engine.rs: does not pass the required'"
 
 # hD4 — MULTI-LINE RAW STRING.  `r#"…"#` spans lines and honours no escapes, so
 # its body must be blanked with cross-line state; an unbalanced `{` inside one
@@ -590,6 +644,8 @@ RS
 stage
 assert "hD4: a '{' inside a multi-line RAW STRING does not hide the production fourth bundler" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD4: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # hD5a — BLOCK COMMENT, positive drift (`/* { */`).
 write_baseline
@@ -614,6 +670,8 @@ RS
 stage
 assert "hD5a: a '{' inside a /* */ BLOCK COMMENT does not hide the production fourth bundler" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD5a: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # hD5b — BLOCK COMMENT, negative drift (`/* } */`), asserted through the
 # positive pass for the same reason as hD3b.
@@ -641,6 +699,8 @@ RS
 stage
 assert "hD5b: a '}' inside a /* */ BLOCK COMMENT does not release the cfg(test) skipper" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD5b: stderr names the engine.rs VARIANT-PIN violation (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'gui/src-tauri/src/engine.rs: does not pass the required'"
 
 # hD6 — MUST STAY GREEN: no new drift in the FALSE-RED direction.  This is the
 # case that forbids "just strip comments first, then count": a `//` inside a
@@ -707,6 +767,8 @@ RS
 stage
 assert "hD7: a '#[cfg(test)] mod … {' inside a STRING does not arm the test-module skipper" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD7: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # hD8 — POSITIVE CONTROL for the whole hD block, so it cannot be satisfied by
 # the gate simply becoming unconditionally RED: every hostile shape above, in
@@ -783,6 +845,8 @@ RS
 stage
 assert "hD9: a cfg(test) module with the brace on the NEXT line does not satisfy the production variant pin" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD9: stderr names the engine.rs VARIANT-PIN violation (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qF 'gui/src-tauri/src/engine.rs: does not pass the required'"
 
 # hD10 — the FALSE-RED direction (measured: exit 1, want 0).  The h4 body — the
 # shape of all five real in-src callers — with the brace on the next line.  The
@@ -831,6 +895,8 @@ RS
 stage
 assert "hD10b: a self-terminating '#[cfg(test)] mod tests;' does not arm the skipper for a later unrelated brace" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hD10b: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
 
 # ===========================================================================
 # hE — THE INLINE ESCAPE IS A *COMMENT* CONCEPT.
@@ -904,6 +970,117 @@ RS
 stage
 assert "hE3: an escaped line does not suppress the UNescaped half-call on the following line" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hE3: stderr names the fourth-bundler hit as file:line (not some other exit-1 cause)" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-foo/src/lib\.rs:[0-9]+'"
+
+# ===========================================================================
+# hG — THE DEFINITION-FILE BUNDLER SKIPPER MUST ARM ON A *DEFINITION*, NOT ON A
+# DECLARATION.
+#
+# Inside EXEMPT_DEFINITION_FILES the body of `fn register_production_compute_fns`
+# is legitimately exempt (that body IS the bundler), tracked by `pending_bundler`
+# -> `in_bundler`. `pending_bundler` armed on ANY line matching the fn name,
+# including one that opens no body — a trait-method declaration, an extern entry,
+# a signature whose `{` is several lines down. It then stayed armed until the
+# NEXT brace-opening line, and `next`ed that unrelated block out of the negative
+# pass wholesale.
+#
+# That is a SILENT UNDER-FLAG — it fails toward GREEN — inside exactly the two
+# files the gate header calls "the single most likely place for someone to add"
+# a fourth hand-rolled bundle. Measured on the fixture below: the pre-fix gate
+# exits 0, the fixed gate exits 1 naming mod.rs:14/:15.
+# ===========================================================================
+echo ""
+echo "--- (hG): the bundler-body exemption arms on a definition, not a declaration ---"
+
+# hG1 — a trait-method DECLARATION of the bundler, followed by an unrelated
+# `impl` block that hand-rolls the bundle. The declaration must not exempt the
+# impl block.
+write_baseline
+cat > "$FIX/crates/reify-eval/src/compute_targets/mod.rs" <<'RS'
+pub fn register_compute_fns(engine: &mut crate::Engine) {
+    engine.register_compute_fn("solver::elastic_static", elastic_static as crate::ComputeFn);
+}
+
+pub trait ComputeRegistrar {
+    fn register_production_compute_fns(&mut self, morph: MorphRegistration);
+}
+
+impl crate::Engine {
+    pub fn register_production_compute_fns(&mut self, morph: MorphRegistration) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+    }
+
+    pub fn register_legacy_compute_fns(&mut self) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+    }
+}
+RS
+stage
+assert "hG1: a bundler DECLARATION does not exempt the next unrelated brace-opening block" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hG1: stderr names the hand-rolled sibling in the definition file as file:line" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-eval/src/compute_targets/mod\.rs:[0-9]+'"
+
+# hG2 — the OPPOSITE-direction pin. The real bundler DEFINITION, with a
+# MULTI-LINE signature whose `{` lands several lines below the fn name, must
+# still arm the skipper — otherwise the arming guard would have turned a real
+# exemption into a FALSE RED on the two half-calls the bundler body makes.
+write_baseline
+cat > "$FIX/crates/reify-eval/src/compute_targets/mod.rs" <<'RS'
+pub fn register_compute_fns(engine: &mut crate::Engine) {
+    engine.register_compute_fn("solver::elastic_static", elastic_static as crate::ComputeFn);
+}
+
+impl crate::Engine {
+    pub fn register_production_compute_fns(
+        &mut self,
+        morph: MorphRegistration,
+    ) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+    }
+}
+RS
+stage
+assert "hG2: a bundler DEFINITION with a multi-line signature still exempts its body" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hG3 — the multi-line DECLARATION spelling: the `;` lands on its own line.
+# Pins the disarm half of the guard (arming survives signature-continuation
+# lines, which carry no `;`, but not the terminating `;`).
+write_baseline
+cat > "$FIX/crates/reify-eval/src/compute_targets/mod.rs" <<'RS'
+pub fn register_compute_fns(engine: &mut crate::Engine) {
+    engine.register_compute_fn("solver::elastic_static", elastic_static as crate::ComputeFn);
+}
+
+pub trait ComputeRegistrar {
+    fn register_production_compute_fns(
+        &mut self,
+        morph: MorphRegistration,
+    );
+}
+
+impl crate::Engine {
+    pub fn register_production_compute_fns(&mut self, morph: MorphRegistration) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+    }
+
+    pub fn register_legacy_compute_fns(&mut self) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+    }
+}
+RS
+stage
+assert "hG3: a MULTI-LINE bundler declaration disarms on its ';' and exempts nothing" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+assert "hG3: stderr names the hand-rolled sibling as file:line" \
+    bash -c "bash '$GATE' --repo-root '$FIX' 2>&1 >/dev/null | grep -qE 'crates/reify-eval/src/compute_targets/mod\.rs:[0-9]+'"
 
 # ===========================================================================
 # hF — THE GATE MUST NOT FAIL SILENTLY TOWARD GREEN.
@@ -960,6 +1137,13 @@ printf 'pub fn helper() {}\n' > "$SCOPE_FIX2/crates/reify-foo/src/tests/helper.r
 git -C "$SCOPE_FIX2" add -A
 assert "hF1b: a scan set emptied by the */tests/* filter exits 2 (guard sits AFTER the filter)" \
     _exits_with 2 bash "$GATE" --repo-root "$SCOPE_FIX2"
+# Exit 2 is the SHARED code for four distinct causes (usage error, not-a-git-
+# work-tree, empty scan set, awk failure), so the code alone does not pin the
+# behaviour this case names. The stderr grep — the idiom hF1a already uses — is
+# what distinguishes "the empty-scan guard sits after the */tests/* filter"
+# from any unrelated regression that trips one of the other three.
+assert "hF1b: stderr says the scope matched nothing (discriminates the four exit-2 causes)" \
+    bash -c "bash '$GATE' --repo-root '$SCOPE_FIX2' 2>&1 >/dev/null | grep -qi 'SCOPE_PATHSPECS'"
 
 # hF2 — AWK FAILURE must be exit 2, never laundered into 1.  PATH-shadow awk
 # with a stub that always exits 1 and run against the CLEAN baseline: today the
@@ -1066,11 +1250,26 @@ assert "hF4: the REAL tree produces no 'lexer state unbalanced' warning either" 
 echo ""
 echo "=== Part B: the gui-feature suite is EXECUTED by verify.sh's test plan ==="
 
-# Un-stripped capture: (b7) needs the semaphore ACQUIRE/RELEASE marker lines,
-# which are comments and are removed by TEST_PLAN_SEGS's `grep -v '^#'`.
-TEST_PLAN_FULL="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan)"
-OFFLINE_PLAN_SEGS="$(DF_VERIFY_ROLE=offline bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan | grep -v '^#')"
-export TEST_PLAN_FULL OFFLINE_PLAN_SEGS
+# TEST_PLAN_FULL is the un-stripped capture taken at the top of this file — (b7)
+# needs the semaphore ACQUIRE/RELEASE marker lines, which are comments and are
+# removed by TEST_PLAN_SEGS's `_plan_segs`. Its completeness is asserted in (a0).
+#
+# The offline-role plan is captured the same guarded way, because (b9) negates
+# it: a truncated capture would satisfy `! grep` silently.
+OFFLINE_PLAN_FULL=""
+capture_print_plan OFFLINE_PLAN_FULL "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    env DF_VERIFY_ROLE=offline bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan || true
+OFFLINE_PLAN_SEGS="$(_plan_segs "$OFFLINE_PLAN_FULL")"
+export OFFLINE_PLAN_FULL OFFLINE_PLAN_SEGS
+
+assert "b0: offline-role plan capture is complete (structural markers present)" \
+    plan_capture_complete "$OFFLINE_PLAN_FULL"
+# POSITIVE CONTROL for (b9)'s negation. Without it, an offline plan that was
+# empty for ANY reason — a verify.sh regression, a role-parsing change — would
+# satisfy "has no gui-feature pass" while proving nothing. The offline lane runs
+# the heavy #[ignore] partition, so it must still carry a real test invocation.
+assert "b0: the offline-role plan still carries a 'cargo (test|nextest run)' line" \
+    bash -c 'printf "%s\n" "$OFFLINE_PLAN_SEGS" | grep -qE "cargo (test|nextest run)"'
 
 # _gui_feature_pass_lines <plan> — the gui-feature TEST-EXECUTION lines of
 # <plan>: a `cargo test` / `cargo nextest run` line carrying BOTH `-p reify-gui`
@@ -1092,8 +1291,14 @@ echo ""
 echo "--- (b1): the test plan runs the gui-feature suite (not merely compile-checks it) ---"
 assert "test plan has a 'cargo (test|nextest run)' line with BOTH -p reify-gui and --features gui" \
     bash -c '[ -n "$GUI_PASS" ]'
+# Every `! grep` on $GUI_PASS below is paired with `[ -n "$GUI_PASS" ]`.
+# _gui_feature_pass_lines ends in `|| true`, so GUI_PASS is the empty string
+# when the pass is not emitted AT ALL — and a negation over the empty string is
+# vacuously true. `assert` does not abort the suite, so without the pairing a
+# single failing (b1) would be followed by three GREEN false negatives claiming
+# properties of a pass that does not exist.
 assert "the matched gui-feature pass is NOT a 'cargo check' compile-check" \
-    bash -c '! printf "%s\n" "$GUI_PASS" | grep -q "cargo check"'
+    bash -c '[ -n "$GUI_PASS" ] && ! printf "%s\n" "$GUI_PASS" | grep -q "cargo check"'
 
 # -- (b6): emitted EXACTLY ONCE under --profile both ---------------------------
 # Emitting from inside the per-profile loop would yield two passes for the same
@@ -1187,10 +1392,17 @@ echo ""
 echo "--- (b7): the gui-feature pass falls BETWEEN the ACQUIRE and RELEASE markers ---"
 assert "gui-feature pass index is between the semaphore ACQUIRE and RELEASE markers" \
     bash -c '
+        set -e
         ACQ_IDX=$(printf "%s\n" "$TEST_PLAN_FULL" | grep -n "^#.*test-run semaphore.*ACQUIRE" | head -1 | cut -d: -f1)
         REL_IDX=$(printf "%s\n" "$TEST_PLAN_FULL" | grep -n "^#.*test-run semaphore.*RELEASE" | head -1 | cut -d: -f1)
         GUI_IDX=$(printf "%s\n" "$TEST_PLAN_FULL" | grep -nE "cargo (test|nextest run)" | grep -F -- "-p reify-gui" | grep -F -- "--features gui" | head -1 | cut -d: -f1)
-        [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$GUI_IDX" ]
+        # LOAD-BEARING. `bash -c` does NOT inherit set -e from the caller, so
+        # without the explicit `|| exit 1` this line was dead code: an empty
+        # index fell through to the comparison below and only failed because
+        # `[ "" -gt "5" ]` raises an integer-expression error. That made the RED
+        # path accidental — a future edit defaulting GUI_IDX to a number would
+        # have turned it silently GREEN.
+        [ -n "$ACQ_IDX" ] && [ -n "$REL_IDX" ] && [ -n "$GUI_IDX" ] || exit 1
         [ "$GUI_IDX" -gt "$ACQ_IDX" ] && [ "$GUI_IDX" -lt "$REL_IDX" ]
     '
 
@@ -1203,7 +1415,7 @@ assert "gui-feature pass index is between the semaphore ACQUIRE and RELEASE mark
 echo ""
 echo "--- (b8): the gui-feature pass carries no -E filterset ---"
 assert "gui-feature pass carries no ' -E ' filterset" \
-    bash -c '! printf "%s\n" "$GUI_PASS" | grep -qF -- " -E "'
+    bash -c '[ -n "$GUI_PASS" ] && ! printf "%s\n" "$GUI_PASS" | grep -qF -- " -E "'
 
 # -- (b9): placement — test-side only, and never on the offline lane -----------
 # DF_VERIFY_ROLE=offline runs the heavy #[ignore] partition only.
@@ -1223,8 +1435,8 @@ assert "DF_VERIFY_ROLE=offline plan has no gui-feature TEST-EXECUTION pass" \
 echo ""
 echo "--- (b10): still emitted for --scope branch when the change is under gui/src-tauri/ ---"
 
-[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
-source "$SCRIPT_DIR/plan_capture_lib.sh"
+# plan_capture_lib.sh is sourced at the top of this file (the canonical captures
+# in (a0) already depend on it); only the copy-list preflight is local to b10.
 [ -f "$SCRIPT_DIR/copy_list_preflight_lib.sh" ] || { echo "ERROR: copy_list_preflight_lib.sh not found at $SCRIPT_DIR/copy_list_preflight_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/copy_list_preflight_lib.sh"
 
@@ -1280,21 +1492,54 @@ assert "b10: gui/src-tauri branch-scope plan STILL emits the gui-feature test pa
 echo ""
 echo "--- (b11): emitted iff the affected-crate closure reaches reify-gui ---"
 
-# _narrowed_gui_pass_count <override> — gui-feature passes in a branch-scope
-# plan whose AFFECTED is exactly <override>.
-_narrowed_gui_pass_count() {
-    ( cd "$BR_FIX" && REIFY_AFFECTED_CRATES_OVERRIDE="$1" \
-        bash scripts/verify.sh test --profile debug --scope branch --include-infra --print-plan 2>/dev/null ) \
+# _narrowed_gui_plan <out_var> <override> — capture a branch-scope plan whose
+# AFFECTED is exactly <override>, retried until structurally complete.
+#
+# The capture is asserted complete SEPARATELY from the count, because the
+# headline assertion here is `N_DOC -eq 0` — a NEGATIVE. The former shape piped
+# verify.sh straight into `grep -cF … || true` with stderr discarded, which
+# returned 0 both when the pass was correctly narrowed away AND when verify.sh
+# failed outright, printed nothing, or changed its plan format. That made the
+# exact behaviour this assertion exists to pin vacuously satisfiable by a broken
+# fixture. Now the plan text is proven to exist first, and the count is derived
+# from that proven text.
+_narrowed_gui_plan() {
+    capture_print_plan "$1" "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && REIFY_AFFECTED_CRATES_OVERRIDE="$2" exec bash scripts/verify.sh test --profile debug --scope branch --include-infra --print-plan' \
+        _ "$BR_FIX" "$2" || true
+}
+
+# _gui_pass_count <plan-text> — gui-feature passes in a captured plan.
+_gui_pass_count() {
+    printf '%s\n' "$1" \
         | grep -E 'cargo (test|nextest run)' \
         | grep -F -- '-p reify-gui' \
         | grep -cF -- '--features gui' || true
 }
 
-N_DOC="$(_narrowed_gui_pass_count "reify-doc")"
-N_GUI="$(_narrowed_gui_pass_count "reify-gui")"
-N_MIXED="$(_narrowed_gui_pass_count "reify-doc reify-gui")"
-N_MANY="$(_narrowed_gui_pass_count "reify-gui reify-eval reify-mesh-morph")"
+P_DOC=""; P_GUI=""; P_MIXED=""; P_MANY=""
+_narrowed_gui_plan P_DOC   "reify-doc"
+_narrowed_gui_plan P_GUI   "reify-gui"
+_narrowed_gui_plan P_MIXED "reify-doc reify-gui"
+_narrowed_gui_plan P_MANY  "reify-gui reify-eval reify-mesh-morph"
 
+for _pair in "P_DOC:reify-doc" "P_GUI:reify-gui" "P_MIXED:reify-doc reify-gui" "P_MANY:reify-gui reify-eval reify-mesh-morph"; do
+    _var="${_pair%%:*}"
+    assert "b11: narrowed plan capture for AFFECTED='${_pair#*:}' is complete" \
+        plan_capture_complete "${!_var}"
+done
+
+N_DOC="$(_gui_pass_count "$P_DOC")"
+N_GUI="$(_gui_pass_count "$P_GUI")"
+N_MIXED="$(_gui_pass_count "$P_MIXED")"
+N_MANY="$(_gui_pass_count "$P_MANY")"
+
+# Discriminating positive control for the N_DOC==0 negation: the reify-doc plan
+# must still be a REAL narrowed test plan carrying `-p reify-doc`, so "0
+# gui-feature passes" cannot be satisfied by an override-parsing regression that
+# empties every narrowed plan.
+assert "b11: the reify-doc-narrowed plan is a real narrowed plan (carries -p reify-doc)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "-p reify-doc"' _ "$P_DOC"
 assert "b11: a branch plan narrowed to reify-doc does NOT emit the gui-feature pass (got $N_DOC)" \
     test "$N_DOC" -eq 0
 assert "b11: a branch plan whose affected set contains reify-gui DOES emit it (got $N_GUI)" \
@@ -1323,7 +1568,7 @@ assert "gui-feature pass carries --test-threads=3 when verify.sh is given --test
 # skip-OUTSIDE-assert form (test_occt_gated_scope.sh:246-254).
 if [ "$PLAN_HAS_NEXTEST" -gt 0 ]; then
     assert "gui-feature nextest pass carries NO --test-threads fragment when the flag is unset" \
-        bash -c '! printf "%s\n" "$GUI_PASS" | grep -qF -- "--test-threads"'
+        bash -c '[ -n "$GUI_PASS" ] && ! printf "%s\n" "$GUI_PASS" | grep -qF -- "--test-threads"'
 else
     echo "  SKIP: (b12) default-shape — the cargo-test fallback arm always carries"
     echo "        '-- --test-threads=1' (its OCCT serialization guard), so 'no"
