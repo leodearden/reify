@@ -1400,7 +1400,7 @@ fn param_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
 /// The [`is_numeric_placeholder_leaf`] unknown-ness fence (PRD 4's D4-5) is
 /// preserved BY CONSTRUCTION, not by care: every caller applies this only AFTER
 /// its arm's family/arity check has passed and only to the args
-/// [`arg_quantity_slot`] yields a slot for, so a placeholder scalar never
+/// [`quantity_slot`] yields a slot for, so a placeholder scalar never
 /// reaches the comparison and a `String` is rejected before it.
 /// [`arg_type_is_unverifiable`] is deliberately NOT widened to carry this rule.
 /// Rationale: `crates/reify-core/src/ty.rs`.
@@ -1414,24 +1414,19 @@ fn quantity_slots_conflict(param_quantity: &Type, arg_quantity: &Type) -> bool {
     )
 }
 
-/// The quantity slot carried by an ARG type, or `None` for every arg shape that
-/// carries none — `Type::List` (the nested-list-literal matrix spelling), an
-/// [`is_numeric_placeholder_leaf`] scalar, and everything else (task 5766).
+/// The quantity slot carried by a `Vector`/`Point`/`Matrix`/`Tensor` type, or
+/// `None` for every other shape (`Type::List` — the nested-list-literal matrix
+/// spelling — an [`is_numeric_placeholder_leaf`] scalar, …).
 ///
-/// # Why a named helper rather than a repeated `match`
-///
-/// The same reason [`arg_type_is_unverifiable`] exists: the `Vector`, `Point`
-/// and `Matrix`/`Tensor` arms each need exactly this extraction, and spelling it
-/// out three times makes "the three copies agree" a claim enforced only by
-/// comment. Routing every caller through one function makes it structurally
-/// true.
+/// FAMILY-based, never side-based, so BOTH sides of the comparison are extracted
+/// by this one function and cannot drift apart.
 ///
 /// Returning `Some` for a family a given arm does not accept is harmless and
 /// deliberate: every caller runs this only AFTER its own family/arity check has
 /// already rejected the shapes it does not want, so no arm can be reached by a
 /// slot it would not have compared inline.
-fn arg_quantity_slot(arg_ty: &Type) -> Option<&Type> {
-    match arg_ty {
+fn quantity_slot(ty: &Type) -> Option<&Type> {
+    match ty {
         Type::Vector { quantity, .. }
         | Type::Point { quantity, .. }
         | Type::Matrix { quantity, .. }
@@ -1490,21 +1485,22 @@ fn emit_quantity_slot_mismatch(
 /// them through one function makes two claims the design depends on structurally
 /// true rather than comment-enforced:
 ///
-/// * the [`arg_quantity_slot`] gate cannot be dropped, so a placeholder scalar /
-///   `ScalarParam` arg keeps reaching its arm's [`is_numeric_placeholder_leaf`]
-///   accept unchallenged — this is how PRD 4's D4-5 unknown-ness fence survives
-///   at these arms;
+/// * the [`quantity_slot`] gate on the ARG cannot be dropped, so a placeholder
+///   scalar / `ScalarParam` arg keeps reaching its arm's
+///   [`is_numeric_placeholder_leaf`] accept unchallenged — this is how PRD 4's
+///   D4-5 unknown-ness fence survives at these arms;
 /// * the diagnostic is [`DiagnosticCode::ArgTypeMismatch`] at every arm, which is
 ///   what leaves the `Vector` arm's bespoke `TypeNotConformingToVector` owning
 ///   ARITY/FAMILY failures only. A future arm added by copy/paste cannot pick a
 ///   different emitter — or a different rule — by accident.
-fn emit_if_quantity_conflict(
-    param_type: &Type,
-    param_quantity: &Type,
-    arg_ty: &Type,
-    ctx: &mut WalkCtx<'_>,
-) {
-    if let Some(arg_quantity) = arg_quantity_slot(arg_ty)
+///
+/// Both slots are derived HERE, from the two types, rather than passed in: a
+/// `param_quantity` argument carried a "must be the quantity slot of
+/// `param_type`" contract that nothing enforced. The side-awareness lives in
+/// [`quantity_slots_conflict`], which asks each side its own predicate.
+fn emit_if_quantity_conflict(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    if let (Some(param_quantity), Some(arg_quantity)) =
+        (quantity_slot(param_type), quantity_slot(arg_ty))
         && quantity_slots_conflict(param_quantity, arg_quantity)
     {
         emit_quantity_slot_mismatch(param_type, param_quantity, arg_ty, arg_quantity, ctx);
@@ -1682,12 +1678,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // ARG such a gate would have false-rejected, so the rule cannot fire on it.
         // Task 6159's param-side tightening does not reach this case either — it
         // fires only when the PARAM slot is the dimensionless one.
-        (Type::Vector {
-            quantity: param_quantity,
-            ..
-        }, arg_ty)
-            if !arg_type_is_unverifiable(arg_ty) =>
-        {
+        (Type::Vector { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
             // Accept vector-shaped args; for Type::Vector args, also require matching
             // arity (n). A Tensor{rank:1} is accepted regardless of its element count.
             let is_conforming = match arg_ty {
@@ -1704,7 +1695,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 // QUANTITY SLOT (task 5766), applied only AFTER the family/arity
                 // check above has passed. Rule and emitter choice:
                 // [`emit_if_quantity_conflict`].
-                emit_if_quantity_conflict(param_type, param_quantity, arg_ty, ctx);
+                emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Point (task 5465, family 1). SHAPE-BASED with an
@@ -1749,13 +1740,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         //
         // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
         // `else` branch below for why.
-        (
-            Type::Point {
-                quantity: param_quantity,
-                ..
-            },
-            arg_ty,
-        ) if !arg_type_is_unverifiable(arg_ty) => {
+        (Type::Point { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
             let is_conforming = match arg_ty {
                 Type::Point { n: arg_n, .. } => match param_type {
                     Type::Point { n: param_n, .. } => param_n == arg_n,
@@ -1772,7 +1757,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 // `is_numeric_placeholder_leaf` branch carries no slot, so it stays
                 // dimension-blind — and that is the branch every real corpus
                 // `point3(…)` arg takes.
-                emit_if_quantity_conflict(param_type, param_quantity, arg_ty, ctx);
+                emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
@@ -1820,17 +1805,9 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
         // happens to arrive in one of the three nominal families instead. The
         // tolerance rationale and this leg's own residuals are stated normatively
         // in `crates/reify-core/src/ty.rs`, not restated here.
-        (
-            Type::Matrix {
-                quantity: param_quantity,
-                ..
-            }
-            | Type::Tensor {
-                quantity: param_quantity,
-                ..
-            },
-            arg_ty,
-        ) if !arg_type_is_unverifiable(arg_ty) => {
+        (Type::Matrix { .. } | Type::Tensor { .. }, arg_ty)
+            if !arg_type_is_unverifiable(arg_ty) =>
+        {
             let is_conforming = match arg_ty {
                 Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
                 Type::List(_) => list_bottoms_out_numeric(arg_ty),
@@ -1843,7 +1820,7 @@ fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut Wal
                 // applied only AFTER the family check above has passed. The
                 // `Type::List` and `is_numeric_placeholder_leaf` branches carry no
                 // slot and are left EXACTLY as they were.
-                emit_if_quantity_conflict(param_type, param_quantity, arg_ty, ctx);
+                emit_if_quantity_conflict(param_type, arg_ty, ctx);
             }
         }
         // Leaf: param type is a Selector or AnySelector (task-4598).
