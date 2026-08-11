@@ -216,18 +216,31 @@ Scripting overhead only — plan is printed but no steps execute.
 
 ## Delta as Evidence
 
-- **docs-only branch:** saves all 18 steps. Verify exits in < 0.3 s.
-- **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
-  nextest to `-p reify-doc`.  18 vs 18 plan steps (same count; savings are
-  wall-clock from skipping unaffected crate compilation).
-- **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
-  to `-p reify-eval` (task 4451: gated pass folded into the nextest pool).
-  18 vs 18 plan steps.
-- **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
-  3 vs 18 plan steps.
+Counts are deliberately NOT restated here.  The Plan-Step Counts table and its
+THROUGHPUT-COUNTS sentinel above are the single authoritative copy, and only
+the sentinel is checked by `tests/infra/test_verify_throughput.sh`'s drift
+guard — so a third hand-maintained copy in this narrative can (and did, between
+the 2026-08-03 and 2026-08-05 amendments) fall out of lockstep with both while
+every gate stays green.  Read the counts off the table; this section states
+only WHAT each shape drops, which is the qualitative half of the evidence.
 
-No numeric improvement threshold is asserted here.  The step counts and the
-absent/narrowed heavy-work markers are the evidence.
+- **docs-only branch:** saves every step — the plan is empty.  Verify exits in
+  < 0.3 s.
+- **non-OCCT crate branch (reify-doc):** narrows `--workspace` clippy and
+  nextest to `-p reify-doc`, and — since 2026-08-05 (task 5076) — drops the
+  `--features gui` test-execution pass, whose affected-crate closure does not
+  reach `reify-gui`.  The remaining savings are wall-clock, from skipping
+  unaffected crate compilation.
+- **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
+  to `-p reify-eval` (task 4451: gated pass folded into the nextest pool), and
+  the `--features gui` pass likewise dropped — the fixture drives `AFFECTED`
+  through `REIFY_AFFECTED_CRATES_OVERRIDE` with the literal single-crate list
+  `reify-eval`, so its closure lacks `reify-gui` even though a real reify-eval
+  change would pull it in.
+- **gui-only branch:** skips all Rust steps; runs only the GUI npm steps.
+
+No numeric improvement threshold is asserted here.  The step counts (per the
+table) and the absent/narrowed heavy-work markers are the evidence.
 
 ## Orchestrator Context
 
