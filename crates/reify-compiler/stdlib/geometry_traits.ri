@@ -145,6 +145,10 @@ trait Watertight : Closed + Manifold {}
 
 // ── Enumerations ────────────────────────────────────────────────────────────
 
-// The six Tait-Bryan rotation-sequence conventions accepted by orient_euler /
-// orient_to_euler. Use as: orient_euler(EulerConvention.XYZ, a, b, c).
-enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
+// The twelve rotation-sequence conventions accepted by orient_euler /
+// orient_to_euler: six Tait-Bryan (three distinct axes, e.g. XYZ) followed by
+// six proper/classic Euler (first axis repeated as the third, e.g. ZXZ).
+// Both eval dispatch tables in `crates/reify-stdlib/src/orientation.rs`
+// implement all twelve; this declaration is what makes them reachable.
+// Use as: orient_euler(EulerConvention.XYZ, a, b, c).
+enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX, XYX, XZX, YXY, YZY, ZXZ, ZYZ }
