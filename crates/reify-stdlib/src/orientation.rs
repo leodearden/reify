@@ -47,15 +47,18 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 4 {
                 return Some(Value::Undef);
             }
-            // Accept either a lowercase string or a qualified EulerConvention enum value.
-            // The string path is case-sensitive (String "XYZ" → Undef).
-            // Enum variants are uppercased in source; we lowercase them to feed the dispatch table.
-            let convention_owned: String;
-            let convention: &str = match &args[0] {
-                Value::String(s) => s.as_str(),
+            // A qualified `EulerConvention` enum value is the SOLE accepted
+            // convention form (task #6082, item-4 ruling). The raw lowercase
+            // string path was removed outright, taking its case-sensitivity
+            // trap ("xyz" worked, "XYZ" silently gave Undef) with it; a String
+            // convention is now rejected here and, before eval is ever reached,
+            // diagnosed statically as an ArgTypeMismatch.
+            //
+            // Enum variants are uppercase in source; we lowercase them to feed
+            // the twelve-entry dispatch table below, which is keyed lowercase.
+            let convention = match &args[0] {
                 Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
-                    convention_owned = variant.to_lowercase();
-                    &convention_owned
+                    variant.to_lowercase()
                 }
                 _ => return Some(Value::Undef),
             };
@@ -71,7 +74,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            let axes: [usize; 3] = match convention {
+            let axes: [usize; 3] = match convention.as_str() {
                 "xyz" => [0, 1, 2],
                 "xzy" => [0, 2, 1],
                 "yxz" => [1, 0, 2],
@@ -276,15 +279,14 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
                 Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Some(Value::Undef),
             };
-            // Accept either a lowercase string or a qualified EulerConvention enum value.
-            // The string path is case-sensitive (String "XYZ" → Undef).
-            // Enum variants are uppercased in source; we lowercase them to feed the dispatch table.
-            let convention_owned: String;
-            let convention: &str = match &args[1] {
-                Value::String(s) => s.as_str(),
+            // A qualified `EulerConvention` enum value is the SOLE accepted
+            // convention form (task #6082, item-4 ruling) — see the matching
+            // note on `orient_euler` above. Enum variants are uppercase in
+            // source; we lowercase them to feed the twelve-entry arm table
+            // below, which is keyed lowercase.
+            let convention = match &args[1] {
                 Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
-                    convention_owned = variant.to_lowercase();
-                    &convention_owned
+                    variant.to_lowercase()
                 }
                 _ => return Some(Value::Undef),
             };
@@ -306,7 +308,7 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             // if the clamped value is within EPS_SING of ±1.
             const EPS_SING: f64 = 1.0e-7;
             let clamp = |v: f64| v.clamp(-1.0, 1.0);
-            let (a, b, c) = match convention {
+            let (a, b, c) = match convention.as_str() {
                 // ── Tait-Bryan ───────────────────────────────────────────────
                 "xyz" => {
                     let s = clamp(r02);
@@ -694,10 +696,28 @@ fn normalize_vec3_arr(v: [f64; 3]) -> Option<[f64; 3]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{elementary_rotation_quat, normalize_quaternion};
+    use super::{elementary_rotation_quat, normalize_quaternion, quat_mul};
     use crate::eval_builtin;
     use reify_core::DimensionVector;
     use reify_ir::Value;
+
+    /// Build a qualified `EulerConvention` enum value, exactly as the compiler
+    /// lowers `EulerConvention.<VARIANT>` (`Value::enum_unit`, uppercase
+    /// variant). Since task #6082 this is the SOLE convention form the two
+    /// Euler builtins accept — the raw lowercase-string path was removed.
+    fn conv(variant: &str) -> Value {
+        Value::Enum {
+            type_name: "EulerConvention".to_string(),
+            variant: variant.to_string(),
+            payload: vec![],
+        }
+    }
+
+    /// The twelve declared conventions: six Tait-Bryan (three distinct axes)
+    /// followed by six proper/classic Euler (first axis repeated as third).
+    const ALL_CONVENTIONS: [&str; 12] = [
+        "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX", "XYX", "XZX", "YXY", "YZY", "ZXZ", "ZYZ",
+    ];
 
     // ── assert_orientation_approx diagnostic tests ──────────────────────────
 
@@ -1196,7 +1216,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1219,7 +1239,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("zyx".into()),
+                    conv("ZYX"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1238,7 +1258,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(0.0),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1257,7 +1277,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("abc".into()),
+                    conv("ABC"),
                     Value::Real(0.0),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1267,8 +1287,10 @@ mod tests {
         );
     }
 
+    /// A convention that is neither an `EulerConvention` enum value nor
+    /// anything else the arm accepts (there is nothing else) falls to Undef.
     #[test]
-    fn orient_euler_non_string_convention_returns_undef() {
+    fn orient_euler_non_enum_convention_returns_undef() {
         assert!(
             eval_builtin(
                 "orient_euler",
@@ -1292,7 +1314,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Scalar {
                         si_value: std::f64::consts::FRAC_PI_2,
                         dimension: DimensionVector::ANGLE,
@@ -1314,7 +1336,7 @@ mod tests {
         assert!(
             eval_builtin(
                 "orient_euler",
-                &[Value::String("xyz".into()), Value::Real(0.0),]
+                &[conv("XYZ"), Value::Real(0.0),]
             )
             .is_undef()
         );
@@ -1324,14 +1346,14 @@ mod tests {
 
     #[test]
     fn orient_euler_xyz_two_nonzero_angles() {
-        // orient_euler('xyz', π/2, π/2, 0): q_x(π/2) * q_y(π/2) * q_z(0)
+        // orient_euler(EulerConvention.XYZ, π/2, π/2, 0): q_x(π/2) * q_y(π/2) * q_z(0)
         // Two non-zero angles exercise quat_mul with non-identity operands.
         // Expected: (0.5, 0.5, 0.5, 0.5)
         assert_orientation_approx!(
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
@@ -1346,14 +1368,14 @@ mod tests {
 
     #[test]
     fn orient_euler_zyx_three_nonzero_angles() {
-        // orient_euler('zyx', π/3, π/4, π/6): q_z(π/3) * q_y(π/4) * q_x(π/6)
+        // orient_euler(EulerConvention.ZYX, π/3, π/4, π/6): q_z(π/3) * q_y(π/4) * q_x(π/6)
         // Three non-zero angles exercise full three-way quat_mul composition.
         // Analytically computed via Hamilton product of elementary rotations.
         assert_orientation_approx!(
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("zyx".into()),
+                    conv("ZYX"),
                     Value::Real(std::f64::consts::FRAC_PI_3),
                     Value::Real(std::f64::consts::FRAC_PI_4),
                     Value::Real(std::f64::consts::FRAC_PI_6),
@@ -1368,14 +1390,14 @@ mod tests {
 
     #[test]
     fn orient_euler_xzx_proper_euler_compound() {
-        // orient_euler('xzx', π/2, π/2, 0): q_x(π/2) * q_z(π/2) * q_x(0)
+        // orient_euler(EulerConvention.XZX, π/2, π/2, 0): q_x(π/2) * q_z(π/2) * q_x(0)
         // Proper Euler convention with compound rotation.
         // Expected: (0.5, 0.5, -0.5, 0.5)
         assert_orientation_approx!(
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xzx".into()),
+                    conv("XZX"),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(std::f64::consts::FRAC_PI_2),
                     Value::Real(0.0),
@@ -1502,23 +1524,11 @@ mod tests {
 
     // ── orient NaN/Inf/edge-case tests (task-359) ─────────────────────────
 
-    #[test]
-    fn orient_euler_uppercase_convention_returns_undef() {
-        // Convention matching is case-sensitive: 'XYZ' is not recognized, only 'xyz'.
-        assert!(
-            eval_builtin(
-                "orient_euler",
-                &[
-                    Value::String("XYZ".into()),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                    Value::Real(0.0),
-                ]
-            )
-            .is_undef(),
-            "uppercase convention 'XYZ' should be rejected"
-        );
-    }
+    // (`orient_euler_uppercase_convention_returns_undef` lived here. It pinned
+    // the removed String path's case-sensitivity — 'XYZ' rejected, 'xyz'
+    // accepted. Task #6082 removed that path outright, so the guard is now
+    // `no_string_convention_is_accepted_on_either_builtin`, which subsumes it:
+    // BOTH spellings are rejected, on both builtins, for all twelve.)
 
     #[test]
     fn orient_basis_nan_component_returns_undef() {
@@ -1565,7 +1575,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(f64::NAN),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -1682,7 +1692,7 @@ mod tests {
             eval_builtin(
                 "orient_euler",
                 &[
-                    Value::String("xyz".into()),
+                    conv("XYZ"),
                     Value::Real(f64::INFINITY),
                     Value::Real(0.0),
                     Value::Real(0.0),
@@ -2644,7 +2654,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        let result = eval_builtin("orient_to_euler", &[id, Value::String("xyz".to_string())]);
+        let result = eval_builtin("orient_to_euler", &[id, conv("XYZ")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(angles[0].abs() < 1e-12);
@@ -2660,13 +2670,13 @@ mod tests {
         let q = eval_builtin(
             "orient_euler",
             &[
-                Value::String("xyz".to_string()),
+                conv("XYZ"),
                 Value::Real(a),
                 Value::Real(b),
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin("orient_to_euler", &[q, Value::String("xyz".to_string())]);
+        let result = eval_builtin("orient_to_euler", &[q, conv("XYZ")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(
@@ -2697,13 +2707,13 @@ mod tests {
         let q = eval_builtin(
             "orient_euler",
             &[
-                Value::String("zyx".to_string()),
+                conv("ZYX"),
                 Value::Real(a),
                 Value::Real(b),
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin("orient_to_euler", &[q, Value::String("zyx".to_string())]);
+        let result = eval_builtin("orient_to_euler", &[q, conv("ZYX")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!((angles[0] - a).abs() < 1e-10);
@@ -2719,7 +2729,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(eval_builtin("orient_to_euler", &[q, Value::String("abc".to_string())]).is_undef());
+        assert!(eval_builtin("orient_to_euler", &[q, conv("ABC")]).is_undef());
     }
 
     #[test]
@@ -2736,16 +2746,16 @@ mod tests {
         assert!(
             eval_builtin(
                 "orient_to_euler",
-                &[q.clone(), Value::String("xyz".to_string()), q]
+                &[q.clone(), conv("XYZ"), q]
             )
             .is_undef()
         );
     }
 
     /// Arg-order-sensitive negative: the convention now lives at arg 1, so a
-    /// non-string/non-enum THERE is what must fall through to Undef.
+    /// non-`EulerConvention` value THERE is what must fall through to Undef.
     #[test]
-    fn orient_to_euler_non_string_convention_returns_undef() {
+    fn orient_to_euler_non_enum_convention_returns_undef() {
         let q = Value::Orientation {
             w: 1.0,
             x: 0.0,
@@ -2765,10 +2775,10 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]).is_undef());
+        assert!(eval_builtin("orient_to_euler", &[conv("XYZ"), q]).is_undef());
     }
 
-    /// Gimbal-lock case for "xyz" Tait-Bryan: middle angle b = π/2.
+    /// Gimbal-lock case for XYZ Tait-Bryan: middle angle b = π/2.
     /// At this singularity the decomposition is non-unique; the implementation
     /// must return a deterministic triple whose recomposition equals the
     /// original quaternion (sign-insensitive).
@@ -2778,7 +2788,7 @@ mod tests {
         let q = eval_builtin(
             "orient_euler",
             &[
-                Value::String("xyz".to_string()),
+                conv("XYZ"),
                 Value::Real(0.3),
                 Value::Real(pi_2),
                 Value::Real(0.7),
@@ -2789,14 +2799,14 @@ mod tests {
             Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("expected Orientation, got {:?}", other),
         };
-        let result = eval_builtin("orient_to_euler", &[q, Value::String("xyz".to_string())]);
+        let result = eval_builtin("orient_to_euler", &[q, conv("XYZ")]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         // Recompose and verify equivalence to the original quaternion.
         let q_back = eval_builtin(
             "orient_euler",
             &[
-                Value::String("xyz".to_string()),
+                conv("XYZ"),
                 Value::Real(angles[0]),
                 Value::Real(angles[1]),
                 Value::Real(angles[2]),
@@ -3012,97 +3022,103 @@ mod tests {
         );
     }
 
-    // ── orient_euler EulerConvention enum-value tests (step-3 RED) ──────────
+    // ── EulerConvention enum-value tests ────────────────────────────────────
+    //
+    // These formerly asserted enum-vs-lowercase-string parity, one test per
+    // Tait-Bryan variant. Task #6082 removed the string path, which would make
+    // that comparison vacuous, so each now pins the enum result against an
+    // INDEPENDENTLY derived expectation: the axis triple is parsed out of the
+    // variant NAME (X→0, Y→1, Z→2) rather than read from the impl's dispatch
+    // table, so a mis-routed variant still fails. Coverage also widens from the
+    // six Tait-Bryan variants to all twelve — the six proper-Euler variants had
+    // no enum test before the declaration was widened to match eval.
 
-    /// For each Tait-Bryan variant, assert enum path matches lowercase-string path.
-    #[test]
-    fn orient_euler_enum_xyz_matches_string_xyz() {
-        let a = 0.1_f64;
-        let b = 0.2_f64;
-        let c = 0.3_f64;
-        let by_enum = eval_builtin(
-            "orient_euler",
-            &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
-                Value::Real(a), Value::Real(b), Value::Real(c),
-            ],
-        );
-        let by_str = eval_builtin(
-            "orient_euler",
-            &[Value::String("xyz".to_string()), Value::Real(a), Value::Real(b), Value::Real(c)],
-        );
-        assert!(!by_enum.is_undef(), "EulerConvention.XYZ should not return Undef");
-        assert_eq!(by_enum, by_str, "EulerConvention.XYZ should equal string 'xyz'");
+    /// Axis indices for a convention, derived from its NAME — deliberately not
+    /// from the impl's dispatch table, so the two can disagree and be caught.
+    fn axes_of(variant: &str) -> [usize; 3] {
+        let mut out = [0usize; 3];
+        assert_eq!(variant.len(), 3, "a convention names exactly three axes");
+        for (i, ch) in variant.chars().enumerate() {
+            out[i] = match ch {
+                'X' => 0,
+                'Y' => 1,
+                'Z' => 2,
+                other => panic!("bad axis letter {other:?} in convention {variant:?}"),
+            };
+        }
+        out
     }
 
-    #[test]
-    fn orient_euler_enum_xzy_matches_string_xzy() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "XZY".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("xzy".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.XZY should not return Undef");
-        assert_eq!(by_enum, by_str);
+    /// The quaternion `variant` at angles (a, b, c) must produce: the intrinsic
+    /// composition q = q_a · q_b · q_c about the axes the name spells.
+    fn expected_euler_quat(variant: &str, a: f64, b: f64, c: f64) -> (f64, f64, f64, f64) {
+        let axes = axes_of(variant);
+        let q1 = elementary_rotation_quat(axes[0], a);
+        let q2 = elementary_rotation_quat(axes[1], b);
+        let q3 = elementary_rotation_quat(axes[2], c);
+        quat_mul(quat_mul(q1, q2), q3)
     }
 
+    /// All twelve conventions must route to the axes their name spells.
     #[test]
-    fn orient_euler_enum_yxz_matches_string_yxz() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YXZ".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("yxz".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.YXZ should not return Undef");
-        assert_eq!(by_enum, by_str);
+    fn orient_euler_enum_routes_every_convention_to_its_named_axes() {
+        let (a, b, c) = (0.1_f64, 0.2_f64, 0.3_f64);
+        for variant in ALL_CONVENTIONS {
+            let got = eval_builtin(
+                "orient_euler",
+                &[conv(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
+            );
+            assert!(
+                !got.is_undef(),
+                "EulerConvention.{variant} should not return Undef"
+            );
+            let (ew, ex, ey, ez) = expected_euler_quat(variant, a, b, c);
+            let want = normalize_quaternion(ew, ex, ey, ez)
+                .unwrap_or_else(|| panic!("expected quaternion for {variant} should normalize"));
+            match (&got, &want) {
+                (
+                    Value::Orientation { w: gw, x: gx, y: gy, z: gz },
+                    Value::Orientation { w: ww, x: wx, y: wy, z: wz },
+                ) => assert!(
+                    (gw - ww).abs() < 1e-12
+                        && (gx - wx).abs() < 1e-12
+                        && (gy - wy).abs() < 1e-12
+                        && (gz - wz).abs() < 1e-12,
+                    "EulerConvention.{variant} routed to the wrong axes: expected \
+                     ({ww}, {wx}, {wy}, {wz}), got ({gw}, {gx}, {gy}, {gz})"
+                ),
+                _ => panic!("EulerConvention.{variant}: expected an Orientation, got {got:?}"),
+            }
+        }
     }
 
+    /// No two conventions may collapse onto the same rotation at these angles —
+    /// the guard that keeps the routing test above from passing on a table that
+    /// maps several variants to one axis triple.
     #[test]
-    fn orient_euler_enum_yzx_matches_string_yzx() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "YZX".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("yzx".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.YZX should not return Undef");
-        assert_eq!(by_enum, by_str);
-    }
-
-    #[test]
-    fn orient_euler_enum_zxy_matches_string_zxy() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZXY".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("zxy".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.ZXY should not return Undef");
-        assert_eq!(by_enum, by_str);
-    }
-
-    #[test]
-    fn orient_euler_enum_zyx_matches_string_zyx() {
-        let a = 0.1_f64; let b = 0.2_f64; let c = 0.3_f64;
-        let by_enum = eval_builtin("orient_euler", &[
-            Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
-            Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        let by_str = eval_builtin("orient_euler", &[
-            Value::String("zyx".to_string()), Value::Real(a), Value::Real(b), Value::Real(c),
-        ]);
-        assert!(!by_enum.is_undef(), "EulerConvention.ZYX should not return Undef");
-        assert_eq!(by_enum, by_str);
+    fn orient_euler_enum_twelve_conventions_are_pairwise_distinct() {
+        let (a, b, c) = (0.1_f64, 0.2_f64, 0.3_f64);
+        let built: Vec<(&str, Value)> = ALL_CONVENTIONS
+            .iter()
+            .map(|v| {
+                (
+                    *v,
+                    eval_builtin(
+                        "orient_euler",
+                        &[conv(v), Value::Real(a), Value::Real(b), Value::Real(c)],
+                    ),
+                )
+            })
+            .collect();
+        for (i, (vi, qi)) in built.iter().enumerate() {
+            for (vj, qj) in built.iter().skip(i + 1) {
+                assert_ne!(
+                    qi, qj,
+                    "EulerConvention.{vi} and EulerConvention.{vj} produced the same \
+                     quaternion — one of them is mis-routed"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3117,88 +3133,71 @@ mod tests {
         );
     }
 
+    /// No String is a convention any more, on either builtin, in either case
+    /// spelling. Formerly two tests pinning the removed path's case-sensitivity
+    /// ("xyz" worked, "XYZ" did not); the whole path is gone, so the guard is
+    /// now that BOTH spellings are rejected — which also closes that trap.
     #[test]
-    fn orient_euler_enum_unknown_variant_returns_undef() {
-        // Unknown variant should fall through to Undef.
-        assert!(
-            eval_builtin("orient_euler", &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
-                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
-            ]).is_undef(),
-            "Unknown EulerConvention variant should return Undef"
-        );
+    fn no_string_convention_is_accepted_on_either_builtin() {
+        let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
+        for variant in ALL_CONVENTIONS {
+            for spelling in [variant.to_lowercase(), variant.to_string()] {
+                assert!(
+                    eval_builtin(
+                        "orient_euler",
+                        &[
+                            Value::String(spelling.clone()),
+                            Value::Real(0.1),
+                            Value::Real(0.2),
+                            Value::Real(0.3),
+                        ]
+                    )
+                    .is_undef(),
+                    "orient_euler(String {spelling:?}, …) must return Undef — the String \
+                     convention path is removed"
+                );
+                assert!(
+                    eval_builtin(
+                        "orient_to_euler",
+                        &[q.clone(), Value::String(spelling.clone())]
+                    )
+                    .is_undef(),
+                    "orient_to_euler(q, String {spelling:?}) must return Undef — the String \
+                     convention path is removed"
+                );
+            }
+        }
     }
 
-    #[test]
-    fn orient_euler_uppercase_string_still_returns_undef() {
-        // Regression: String "XYZ" (not enum) must still be rejected (case-sensitive).
-        // This test mirrors orient_euler_uppercase_convention_returns_undef at line 1426.
-        assert!(
-            eval_builtin("orient_euler", &[
-                Value::String("XYZ".to_string()),
-                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
-            ]).is_undef(),
-            "Uppercase String 'XYZ' must still return Undef (enum path only case-folds)"
-        );
-    }
+    // ── orient_to_euler EulerConvention enum-value tests ─────────────────────
 
-    // ── orient_to_euler EulerConvention enum-value tests (step-5 RED) ────────
-
+    /// Every convention decomposes back to the angles it was built from, via
+    /// the subject-first enum-only surface. Formerly two enum-vs-string parity
+    /// tests (ZYX and XYZ); now an enum-vs-expected-angles round trip over all
+    /// twelve. Middle angle 0.2 rad clears BOTH singular loci — Tait-Bryan's at
+    /// ±90°, and proper Euler's at 0 and π.
     #[test]
-    fn orient_to_euler_enum_zyx_matches_string_zyx() {
-        // Build a known quaternion with ZYX convention, then decode with enum and string paths.
-        let q = eval_builtin(
-            "orient_euler",
-            &[
-                Value::String("zyx".to_string()),
-                Value::Real(0.3), Value::Real(0.5), Value::Real(-0.7),
-            ],
-        );
-        let by_enum = eval_builtin(
-            "orient_to_euler",
-            &[
-                q.clone(),
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
-            ],
-        );
-        let by_str = eval_builtin(
-            "orient_to_euler",
-            &[q.clone(), Value::String("zyx".to_string())],
-        );
-        assert!(
-            euler_extract(&by_enum).is_some(),
-            "EulerConvention.ZYX orient_to_euler should return a 3-element Angle list, got {:?}",
-            by_enum
-        );
-        assert_eq!(by_enum, by_str, "EulerConvention.ZYX should equal string 'zyx'");
-    }
-
-    #[test]
-    fn orient_to_euler_enum_xyz_matches_string_xyz() {
-        let q = eval_builtin(
-            "orient_euler",
-            &[
-                Value::String("xyz".to_string()),
-                Value::Real(0.1), Value::Real(0.2), Value::Real(0.3),
-            ],
-        );
-        let by_enum = eval_builtin(
-            "orient_to_euler",
-            &[
-                q.clone(),
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
-            ],
-        );
-        let by_str = eval_builtin(
-            "orient_to_euler",
-            &[q.clone(), Value::String("xyz".to_string())],
-        );
-        assert!(
-            euler_extract(&by_enum).is_some(),
-            "EulerConvention.XYZ orient_to_euler should return a 3-element Angle list, got {:?}",
-            by_enum
-        );
-        assert_eq!(by_enum, by_str, "EulerConvention.XYZ should equal string 'xyz'");
+    fn orient_to_euler_enum_roundtrips_every_convention() {
+        let (a, b, c) = (0.1_f64, 0.2_f64, 0.3_f64);
+        for variant in ALL_CONVENTIONS {
+            let q = eval_builtin(
+                "orient_euler",
+                &[conv(variant), Value::Real(a), Value::Real(b), Value::Real(c)],
+            );
+            let back = eval_builtin("orient_to_euler", &[q, conv(variant)]);
+            let angles = euler_extract(&back).unwrap_or_else(|| {
+                panic!(
+                    "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
+                     Angle list, got {back:?}"
+                )
+            });
+            for (i, (got, want)) in angles.iter().zip([a, b, c].iter()).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-12,
+                    "EulerConvention.{variant} round-trip angle[{i}]: expected {want}, got {got}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3210,18 +3209,6 @@ mod tests {
                 Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
             ]).is_undef(),
             "Enum with wrong type_name should return Undef"
-        );
-    }
-
-    #[test]
-    fn orient_to_euler_enum_unknown_variant_returns_undef() {
-        let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
-        assert!(
-            eval_builtin("orient_to_euler", &[
-                q,
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
-            ]).is_undef(),
-            "Unknown EulerConvention variant should return Undef"
         );
     }
 }

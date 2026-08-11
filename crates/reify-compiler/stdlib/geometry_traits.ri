@@ -152,6 +152,9 @@ trait Watertight : Closed + Manifold {}
 // implement all twelve; this declaration is what makes them reachable.
 // Use as: orient_euler(EulerConvention.XYZ, a, b, c)      — constructor
 //         orient_to_euler(q, EulerConvention.XYZ)         — decomposer
+// A qualified enum value is the ONLY accepted convention form; the raw
+// lowercase-string form ("xyz") was removed in #6082 along with its
+// case-sensitivity trap.
 // The argument-order asymmetry is deliberate: the constructor's convention
 // selects the meaning of the three angles that follow (R_xyz(a, b, c)
 // notation), while the decomposer is subject-first like its siblings

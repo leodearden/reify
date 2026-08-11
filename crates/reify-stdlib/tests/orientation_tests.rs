@@ -88,76 +88,69 @@ fn integration_orient_look_at_parallel_forward_up_returns_undef() {
 }
 
 // ── orient_euler EulerConvention enum G2 signals ──────────────────────────────
+//
+// These formerly asserted enum-vs-lowercase-string parity. Task #6082 removed
+// the string path, which would leave nothing to compare against, so each now
+// pins the enum result against a CLOSED-FORM expectation instead — a stronger
+// signal than parity ever was, since a table that mis-routed both paths
+// identically used to pass.
 
+/// `EulerConvention.XYZ` must rotate about X first and Z last. Driving one
+/// angle at a time isolates each letter against its closed-form quaternion.
 #[test]
-fn integration_orient_euler_enum_xyz_matches_string_xyz() {
-    let angles = [Value::Real(0.2_f64), Value::Real(0.3_f64), Value::Real(-0.1_f64)];
-    let by_enum = eval_builtin(
+fn integration_orient_euler_enum_xyz_matches_closed_form() {
+    let cos_pi_4 = std::f64::consts::FRAC_PI_4.cos();
+    let sin_pi_4 = std::f64::consts::FRAC_PI_4.sin();
+    let quarter = Value::Real(std::f64::consts::FRAC_PI_2);
+    let zero = Value::Real(0.0);
+
+    // First letter X: a lone first angle is a rotation about X.
+    let first = eval_builtin(
         "orient_euler",
-        &[
-            Value::Enum {
-                type_name: "EulerConvention".to_string(),
-                variant: "XYZ".to_string(),
-                payload: vec![],
-            },
-            angles[0].clone(),
-            angles[1].clone(),
-            angles[2].clone(),
-        ],
+        &[convention("XYZ"), quarter.clone(), zero.clone(), zero.clone()],
     );
-    let by_str = eval_builtin(
+    assert_orientation_approx(&first, cos_pi_4, sin_pi_4, 0.0, 0.0);
+
+    // Middle letter Y.
+    let middle = eval_builtin(
         "orient_euler",
-        &[
-            Value::String("xyz".to_string()),
-            angles[0].clone(),
-            angles[1].clone(),
-            angles[2].clone(),
-        ],
+        &[convention("XYZ"), zero.clone(), quarter.clone(), zero.clone()],
     );
-    assert!(!by_enum.is_undef(), "EulerConvention.XYZ orient_euler should not return Undef");
-    assert_eq!(
-        by_enum, by_str,
-        "EulerConvention.XYZ orient_euler should equal string 'xyz'"
-    );
+    assert_orientation_approx(&middle, cos_pi_4, 0.0, sin_pi_4, 0.0);
+
+    // Last letter Z — the one a reversed table would get wrong.
+    let last = eval_builtin("orient_euler", &[convention("XYZ"), zero.clone(), zero, quarter]);
+    assert_orientation_approx(&last, cos_pi_4, 0.0, 0.0, sin_pi_4);
 }
 
 // ── orient_to_euler EulerConvention enum G2 signals ───────────────────────────
 
+/// A pure Z rotation of π/4 decomposes under `EulerConvention.ZYX` to
+/// (π/4, 0, 0): all of it lands in the FIRST angle, because Z is ZYX's first
+/// letter. Closed form, so it is independent of the composer under test.
 #[test]
-fn integration_orient_to_euler_enum_zyx_matches_string_zyx() {
-    // Build a known quaternion, then decode with enum and string paths.
-    let q = eval_builtin(
-        "orient_euler",
-        &[
-            Value::String("zyx".to_string()),
-            Value::Real(0.3_f64),
-            Value::Real(0.5_f64),
-            Value::Real(-0.7_f64),
-        ],
-    );
-    let by_enum = eval_builtin(
-        "orient_to_euler",
-        &[
-            q.clone(),
-            Value::Enum {
-                type_name: "EulerConvention".to_string(),
-                variant: "ZYX".to_string(),
-                payload: vec![],
-            },
-        ],
-    );
-    let by_str = eval_builtin(
-        "orient_to_euler",
-        &[q.clone(), Value::String("zyx".to_string())],
-    );
-    assert!(
-        euler_extract(&by_enum).is_some(),
-        "EulerConvention.ZYX orient_to_euler should return a 3-element Angle list, got {by_enum:?}"
-    );
-    assert_eq!(
-        by_enum, by_str,
-        "EulerConvention.ZYX orient_to_euler should equal string 'zyx'"
-    );
+fn integration_orient_to_euler_enum_zyx_matches_closed_form() {
+    let eighth = std::f64::consts::FRAC_PI_8;
+    let q = Value::Orientation {
+        w: eighth.cos(),
+        x: 0.0,
+        y: 0.0,
+        z: eighth.sin(),
+    };
+    let decomposed = eval_builtin("orient_to_euler", &[q, convention("ZYX")]);
+    let angles = euler_extract(&decomposed).unwrap_or_else(|| {
+        panic!(
+            "orient_to_euler(q, EulerConvention.ZYX) should return a 3-element Angle list, \
+             got {decomposed:?}"
+        )
+    });
+    let expected = [std::f64::consts::FRAC_PI_4, 0.0, 0.0];
+    for (i, (got, want)) in angles.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < TOLERANCE,
+            "a π/4 rotation about Z, decomposed under ZYX: angle[{i}] expected {want}, got {got}"
+        );
+    }
 }
 
 // ── orient_to_euler subject-first signals (task #6082, F3) ────────────────────
