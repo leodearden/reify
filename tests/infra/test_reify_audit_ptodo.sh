@@ -137,6 +137,26 @@ _ratchet_check_nonempty() {
     _live_n="$(printf '%s\n' "$_live" | grep -c . || true)"
     _baseline_n="$(printf '%s\n' "$_baseline" | grep -c . || true)"
 
+    # AUTO-DISARM on a drained baseline.  The ratchet is shrink-only (PRD 6.6,
+    # "After δ the baseline should be ≈ empty"), so once the last grandfathered
+    # entry is burned down a 0-fingerprint live set is the CORRECT end state and
+    # this floor must retire itself rather than false-RED forever.
+    #
+    # REVISIT — the one partition this gate does NOT cover: if burn-down ever
+    # leaves a baseline holding ONLY liveness-derived entries (kinds like
+    # `orphaned`, which PRD 6.7 says drop in the degraded no-task-DB mode
+    # scenario (a) runs under), the live set can legitimately be 0 while the
+    # baseline is non-empty, and the floor would false-RED.  That partition is
+    # deliberately NOT computed here: classifying fingerprint kinds in bash
+    # would duplicate detector knowledge that PRD 6.6 and this file's header
+    # require to live only in ptodo-baseline-gen.  It is instead named as the
+    # SECOND hypothesis in the diagnostic below, so whoever hits it is not sent
+    # chasing a stale binary.  The condition is distant today: 4 structural live
+    # fingerprints against 5 baseline entries as of task #6127.
+    if [ "$_baseline_n" -eq 0 ]; then
+        return 0
+    fi
+
     if [ "$_live_n" -ge 1 ]; then
         return 0
     fi
@@ -149,12 +169,19 @@ _ratchet_check_nonempty() {
         printf '  subset assertion just observed nothing.  Reporting green here would\n'
         printf '  claim "the detector found no violations" when the detector in fact\n'
         printf '  reported nothing at all.\n'
-        printf '  Leading hypothesis: target/release/ptodo-baseline-gen is STALE or\n'
-        printf '  reverted.  mtime is a weak oracle for staleness — see the SCOPE LIMITATION\n'
-        printf '  block in scripts/reify-audit-freshness.sh:28-36: the freshness epoch\n'
-        printf '  only tracks commits under crates/reify-audit/, so a binary can read\n'
+        printf '  Hypothesis (1), the likely one: target/release/ptodo-baseline-gen is\n'
+        printf '  STALE or reverted.  mtime is a weak oracle for staleness — see the SCOPE\n'
+        printf '  LIMITATION block in scripts/reify-audit-freshness.sh:28-36: the freshness\n'
+        printf '  epoch only tracks commits under crates/reify-audit/, so a binary can read\n'
         printf '  "fresh" while predating a behavioural change made anywhere else.\n'
-        printf '  NEXT: run `cargo build --release -p reify-audit`, then re-run.\n'
+        printf '  Hypothesis (2): the baseline has been burned down to liveness-derived\n'
+        printf '  entries only (kinds like `orphaned`, which PRD 6.7 drops in the degraded\n'
+        printf '  no-task-DB mode this assertion runs under).  Then a 0-fingerprint live set\n'
+        printf '  is legitimate and this floor should be REMOVED with the last structural\n'
+        printf '  baseline entry — it self-disarms only on a fully drained baseline.\n'
+        printf '  NEXT: run `cargo build --release -p reify-audit`, then re-run.  If the\n'
+        printf '  count is still 0, check which kinds remain in the baseline before\n'
+        printf '  assuming a stale binary.\n'
     } >&2
     return 1
 }
