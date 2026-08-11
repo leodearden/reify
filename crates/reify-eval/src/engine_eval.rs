@@ -1631,6 +1631,16 @@ struct CellReadIndex<'t> {
     /// [`build_dependent_cells`]'s closure stage) must not pay for a reverse
     /// graph they never read.
     reverse: std::cell::OnceCell<HashMap<ValueCellId, Vec<ValueCellId>>>,
+    /// The templates this index was built over, and the budgets it was built
+    /// at, retained so a consumer that needs a SECOND walk of the same shape —
+    /// [`build_dependent_cells`]' stage-(g) [`build_single_instance_alias_paths`]
+    /// — cannot be handed a different slice or a different budget than the one
+    /// the rest of its own answer was derived from. Retaining them also keeps
+    /// that consumer under clippy's `too_many_arguments` ceiling without an
+    /// `allow`.
+    templates: &'t [TopologyTemplate],
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
 }
 
 impl<'t> CellReadIndex<'t> {
@@ -1659,6 +1669,9 @@ impl<'t> CellReadIndex<'t> {
             cell_map,
             path_map,
             reverse: std::cell::OnceCell::new(),
+            templates: all_templates,
+            max_unfold_depth,
+            max_unfold_nodes,
         }
     }
 
@@ -1767,17 +1780,16 @@ impl<'t> CellReadIndex<'t> {
 ///
 /// * `seed_exprs` — the ALREADY-EXPANDED objective term exprs + constraint exprs
 ///   (so `cost(self.descendants)` is already `[ValueRef(line_cost) ...].sum`).
-/// * `all_templates` — supplies the instance-path ALIAS walk of stage (g)
-///   ([`build_single_instance_alias_paths`]). The cross-scope `default_expr`
-///   lookup comes from `index`, not from here.
-/// * `index` — the CALLER'S already-built [`CellReadIndex`] over those same
-///   templates at those same budgets. Passed IN rather than built here (task
-///   #5467 amendment) because both callers — [`build_solver_problem`] and
-///   [`build_merged_solver_problem`] — already build one for LAYER 1's
-///   `cells_reaching`, and building a second doubles the per-scope cost of the
-///   `value_cells` sweep AND the budgeted
+/// * `index` — the CALLER'S already-built [`CellReadIndex`]. Passed IN rather
+///   than built here (task #5467 amendment) because both callers —
+///   [`build_solver_problem`] and [`build_merged_solver_problem`] — already
+///   build one for LAYER 1's `cells_reaching`, and building a second doubles the
+///   per-scope cost of the `value_cells` sweep AND the budgeted
 ///   [`crate::resolve_order::build_instance_path_structure_map`] unfold on a
-///   path that runs per scope per eval, `eval_cached` included.
+///   path that runs per scope per eval, `eval_cached` included. It also supplies
+///   the templates and unfold budgets for stage (g)'s alias walk, so that walk
+///   provably sees the same slice at the same budgets as the closure it
+///   annotates.
 /// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
 ///   the single-scope builder; the cluster-wide union for the merged builder);
 ///   the reachability target for membership rule (b).
@@ -1859,12 +1871,9 @@ impl<'t> CellReadIndex<'t> {
 /// non-collection instance path (see [`build_single_instance_alias_paths`]).
 fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
-    all_templates: &[TopologyTemplate],
     index: &CellReadIndex<'_>,
     auto_ids: &HashSet<ValueCellId>,
     functions: &[CompiledFunction],
-    max_unfold_depth: usize,
-    max_unfold_nodes: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
     // (a)/(a′) Cross-template `cell_map` + δ's instance-path bridge, supplied by
@@ -2020,8 +2029,11 @@ fn build_dependent_cells(
     //
     //     The alias is pushed AFTER its source so a downstream cell reading
     //     either spelling sees a fresh value first.
-    let alias_paths =
-        build_single_instance_alias_paths(all_templates, max_unfold_depth, max_unfold_nodes);
+    let alias_paths = build_single_instance_alias_paths(
+        index.templates,
+        index.max_unfold_depth,
+        index.max_unfold_nodes,
+    );
     let mut out: Vec<(ValueCellId, CompiledExpr)> = Vec::with_capacity(sorted.len());
     for node in sorted {
         let NodeId::Value(id) = node else {
@@ -2382,12 +2394,9 @@ fn build_solver_problem(
         }
         build_dependent_cells(
             &seed_exprs,
-            all_templates,
             &read_index,
             &owned_auto_ids,
             &functions,
-            max_unfold_depth,
-            max_unfold_nodes,
             diagnostics,
         )
     };
@@ -2743,12 +2752,9 @@ fn build_merged_solver_problem(
         }
         build_dependent_cells(
             &seed_exprs,
-            templates,
             &read_index,
             &owned_auto_ids,
             &functions,
-            max_unfold_depth,
-            max_unfold_nodes,
             diagnostics,
         )
     };
@@ -11860,12 +11866,9 @@ mod dependent_cells_admissibility_tests {
             CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
         let cells = build_dependent_cells(
             &seed_exprs,
-            &templates,
             &index,
             &auto_ids,
             &no_fns,
-            TEST_MAX_UNFOLD_DEPTH,
-            TEST_MAX_UNFOLD_NODES,
             &mut diagnostics,
         );
         let got = ids(&cells);
@@ -11968,12 +11971,9 @@ mod dependent_cells_admissibility_tests {
             CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
         let cells = build_dependent_cells(
             &seed_exprs,
-            &templates,
             &index,
             &auto_ids,
             &no_fns,
-            TEST_MAX_UNFOLD_DEPTH,
-            TEST_MAX_UNFOLD_NODES,
             &mut diagnostics,
         );
         let got = ids(&cells);
@@ -12076,12 +12076,9 @@ mod dependent_cells_admissibility_tests {
             CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
         let cells = build_dependent_cells(
             &seed_exprs,
-            &templates,
             &index,
             &auto_ids,
             &no_fns,
-            TEST_MAX_UNFOLD_DEPTH,
-            TEST_MAX_UNFOLD_NODES,
             &mut diagnostics,
         );
 
