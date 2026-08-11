@@ -10827,6 +10827,110 @@ mod tests {
         assert_eq!(dimension_unit_label(&DimensionVector::DIMENSIONLESS), "");
     }
 
+    /// S3's curated alphabet, per task λ (#5788) contract C2: the two raw-SI
+    /// arms that carry an exponent spell it ASCII (`m^2`/`m^3`), not with the
+    /// Latin-1 superscripts U+00B2/U+00B3.
+    ///
+    /// This closes a real coverage gap rather than restating an existing pin.
+    /// Every SIBLING arm of `dimension_unit_label` is already pinned — LENGTH
+    /// and ANGLE by `..._scaled_default_rung_dims_stay_on_raw_si_label`, MONEY
+    /// by `..._money_returns_usd`, MASS/dimensionless by
+    /// `..._unaffected_arms_unchanged` — but AREA and VOLUME, the two arms C2
+    /// actually moves, are covered by NO test today. Flipping them without
+    /// this would be an untested production change.
+    ///
+    /// The unchanged neighbours are asserted alongside deliberately: the arms
+    /// are an if-else chain over `DimensionVector` equality, so a future
+    /// reordering could silently reroute a dimension into the composed
+    /// `Display` fallback (`"kg·m^-3"`-style) while the AREA/VOLUME pins alone
+    /// still passed.
+    ///
+    /// The negative sweep is what makes the pin unfalsifiable by relabelling:
+    /// on its own the positive `assert_eq!`s would also be satisfied by some
+    /// third spelling, and on its own the sweep would be satisfied by the arms
+    /// returning `""`. Superscripts are written as `\u{00B2}`/`\u{00B3}`
+    /// escapes (addendum L2) so this test survives a glyph-normalizing tool —
+    /// which would otherwise rewrite the very characters it exists to reject.
+    #[test]
+    fn dimension_unit_label_uses_ascii_exponent_labels() {
+        // The two arms C2 moves.
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::AREA),
+            "m^2",
+            "AREA's raw-SI arm must spell its exponent ASCII"
+        );
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::VOLUME),
+            "m^3",
+            "VOLUME's raw-SI arm must spell its exponent ASCII"
+        );
+
+        // Unchanged neighbours: a reordered if-else chain must not reroute
+        // these into the composed fallback.
+        assert_eq!(dimension_unit_label(&DimensionVector::LENGTH), "m");
+        assert_eq!(dimension_unit_label(&DimensionVector::ANGLE), "rad");
+        assert_eq!(dimension_unit_label(&DimensionVector::MONEY), "USD");
+        assert_eq!(dimension_unit_label(&DimensionVector::MASS), "kg");
+
+        // Negative sweep: no superscript exponent glyph in any curated arm.
+        for dim in [
+            DimensionVector::AREA,
+            DimensionVector::VOLUME,
+            DimensionVector::MASS_DENSITY,
+        ] {
+            let label = dimension_unit_label(&dim);
+            for bad in ['\u{00B2}', '\u{00B3}'] {
+                assert!(
+                    !label.contains(bad),
+                    "dimension_unit_label({dim:?}) returned {label:?}, which contains {bad:?}"
+                );
+            }
+        }
+    }
+
+    /// THE PRD-§10 FENCE, the value.rs twin of dimension.rs's
+    /// `s1_composed_labels_keep_middot_separator`. Green before task λ (#5788)
+    /// and required to STAY green after it: the ENGINEERING-NOTATION formatter
+    /// keeps its superscript digits, and λ must not "finish the job" by
+    /// normalizing them too.
+    ///
+    /// WHY the split is not arbitrary. `×10ⁿ` formats the NUMBER, not the
+    /// unit. C2 normalizes the finite curated LABEL tables because a label is
+    /// something a user types into `@display(...)` and a grammar must accept —
+    /// but `1.27×10³ kg/m^3` is not a literal form in any grammar, so there is
+    /// nothing to accept and nothing to normalize. PRD §10 puts the magnitude
+    /// formatter explicitly out of scope.
+    ///
+    /// WHY this is a test and not a comment: value.rs carries 27 glyph-bearing
+    /// lines, and in three places (`resolve_display_none_renders_engineering_
+    /// notation_when_no_rung_fits`) a `×10ⁿ` MAGNITUDE and a curated LABEL sit
+    /// on ADJACENT LINES — so the site a sweep must skip is one line from the
+    /// site it must hit. A comment saying "do not sweep" is invisible to the
+    /// next agent running a regex over this file; a failing assertion is not.
+    #[test]
+    fn engineering_notation_keeps_its_superscript_digits() {
+        assert_eq!(
+            superscript_exponent(3),
+            "\u{00B3}",
+            "the exponent half of §5c's ×10ⁿ form stays Unicode"
+        );
+
+        let rendered = format_engineering(1.27, 3);
+        assert!(
+            rendered.contains('\u{00D7}'),
+            "engineering notation must keep U+00D7 (×), got {rendered:?}"
+        );
+        assert!(
+            rendered.contains('\u{00B3}'),
+            "engineering notation must keep its superscript digits, got {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("10^3"),
+            "the magnitude formatter must NOT be ASCII-normalized like the \
+             curated labels were — PRD §10 puts it out of scope; got {rendered:?}"
+        );
+    }
+
     // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
     // format_display_pair's Complex arm scales `im` via
     // `DimensionVector::display_scale` instead of a second `to_display_units`
