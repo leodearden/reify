@@ -58,7 +58,7 @@ use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_w
 ///   `sj_jac`         = `joint_jacobian(sj)` → 3-element List of analytic body-basis angular columns
 ///   `q_euler_in`     = `orient_euler("xyz", 0.1, 0.2, 0.3)` → unit quaternion
 ///   `sj_xform_euler` = `transform_at(sj, q_euler_in)` → Transform { rotation=q_euler_in, translation=0 }
-///   `sj_euler_back`  = `orient_to_euler("xyz", q_euler_in)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
+///   `sj_euler_back`  = `orient_to_euler(q_euler_in, EulerConvention.XYZ)` → List of 3 angle scalars (round-trips to 0.1, 0.2, 0.3)
 ///   `sj_aa_back`     = `orient_to_axis_angle(q_euler_in)` → Map { angle, axis } (axis-angle facade)
 ///   `cyl`            = `cylindrical(vec3(0,0,1), 0mm..1mm, 0rad..pi rad)`
 ///                     → Map { kind="cylindrical", axis, translation_range, rotation_range } (4 keys)
@@ -113,7 +113,7 @@ structure def Kinematic {
     let sj_jac         = joint_jacobian(sj)
     let q_euler_in     = orient_euler("xyz", 0.1, 0.2, 0.3)
     let sj_xform_euler = transform_at(sj, q_euler_in)
-    let sj_euler_back  = orient_to_euler("xyz", q_euler_in)
+    let sj_euler_back  = orient_to_euler(q_euler_in, EulerConvention.XYZ)
     let sj_aa_back     = orient_to_axis_angle(q_euler_in)
 
     let cyl       = cylindrical(vec3(0, 0, 1), 0mm .. 1mm, 0rad .. 3.141592653589793rad)
@@ -700,6 +700,10 @@ fn kinematic_stdlib_smoke_e2e() {
     // resolved design decision: the user constructs the quaternion via
     // existing builtins; spherical's transform_at consumes it as-is; the
     // human-readable forms are recovered by the same builtins on output.
+    // Note the deliberate argument-order asymmetry: the CONSTRUCTOR
+    // orient_euler is convention-first (the convention selects the meaning of
+    // the angles that follow), while the DECOMPOSER orient_to_euler is
+    // subject-first, matching orient_to_axis_angle(q) and orient_log(q).
 
     // q_euler_in = orient_euler("xyz", 0.1, 0.2, 0.3) — unit quaternion built
     // from intrinsic xyz Euler angles. Sanity-check that it is a finite
@@ -744,7 +748,7 @@ fn kinematic_stdlib_smoke_e2e() {
         "sj_xform_euler translation dim",
     );
 
-    // sj_euler_back = orient_to_euler("xyz", q_euler_in) → List of 3 angle
+    // sj_euler_back = orient_to_euler(q_euler_in, EulerConvention.XYZ) → List of 3 angle
     // scalars round-tripping the input (0.1, 0.2, 0.3) within 1e-12. Note
     // the input angles are away from gimbal-lock singularities (asin(r02)
     // domain interior), so the round-trip is bit-stable.

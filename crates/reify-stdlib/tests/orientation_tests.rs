@@ -138,17 +138,17 @@ fn integration_orient_to_euler_enum_zyx_matches_string_zyx() {
     let by_enum = eval_builtin(
         "orient_to_euler",
         &[
+            q.clone(),
             Value::Enum {
                 type_name: "EulerConvention".to_string(),
                 variant: "ZYX".to_string(),
                 payload: vec![],
             },
-            q.clone(),
         ],
     );
     let by_str = eval_builtin(
         "orient_to_euler",
-        &[Value::String("zyx".to_string()), q.clone()],
+        &[q.clone(), Value::String("zyx".to_string())],
     );
     assert!(
         euler_extract(&by_enum).is_some(),

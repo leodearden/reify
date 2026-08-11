@@ -150,5 +150,10 @@ trait Watertight : Closed + Manifold {}
 // six proper/classic Euler (first axis repeated as the third, e.g. ZXZ).
 // Both eval dispatch tables in `crates/reify-stdlib/src/orientation.rs`
 // implement all twelve; this declaration is what makes them reachable.
-// Use as: orient_euler(EulerConvention.XYZ, a, b, c).
+// Use as: orient_euler(EulerConvention.XYZ, a, b, c)      — constructor
+//         orient_to_euler(q, EulerConvention.XYZ)         — decomposer
+// The argument-order asymmetry is deliberate: the constructor's convention
+// selects the meaning of the three angles that follow (R_xyz(a, b, c)
+// notation), while the decomposer is subject-first like its siblings
+// orient_log(q) / orient_to_axis_angle(q) / orient_inverse(q).
 enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX, XYX, XZX, YXY, YZY, ZXZ, ZYZ }

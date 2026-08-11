@@ -265,20 +265,27 @@ pub(crate) fn eval_orientation(name: &str, args: &[Value]) -> Option<Value> {
             if args.len() != 2 {
                 return Some(Value::Undef);
             }
+            // SUBJECT-FIRST (task #6082, F3): args are (q, convention).
+            // This decomposer matches its siblings orient_log(q) /
+            // orient_to_axis_angle(q) / orient_inverse(q) / transform_log(t),
+            // all of which take the subject at argument 0. The sibling
+            // CONSTRUCTOR `orient_euler` stays convention-FIRST on purpose: its
+            // convention selects the meaning of the three angle arguments that
+            // follow, matching R_xyz(a, b, c) notation.
+            let (w, x, y, z) = match &args[0] {
+                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
+                _ => return Some(Value::Undef),
+            };
             // Accept either a lowercase string or a qualified EulerConvention enum value.
             // The string path is case-sensitive (String "XYZ" → Undef).
             // Enum variants are uppercased in source; we lowercase them to feed the dispatch table.
             let convention_owned: String;
-            let convention: &str = match &args[0] {
+            let convention: &str = match &args[1] {
                 Value::String(s) => s.as_str(),
                 Value::Enum { type_name, variant, .. } if type_name == "EulerConvention" => {
                     convention_owned = variant.to_lowercase();
                     &convention_owned
                 }
-                _ => return Some(Value::Undef),
-            };
-            let (w, x, y, z) = match &args[1] {
-                Value::Orientation { w, x, y, z } => (*w, *x, *y, *z),
                 _ => return Some(Value::Undef),
             };
             if !quaternion_is_finite(w, x, y, z) {
@@ -2637,7 +2644,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), id]);
+        let result = eval_builtin("orient_to_euler", &[id, Value::String("xyz".to_string())]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(angles[0].abs() < 1e-12);
@@ -2659,7 +2666,7 @@ mod tests {
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]);
+        let result = eval_builtin("orient_to_euler", &[q, Value::String("xyz".to_string())]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!(
@@ -2696,7 +2703,7 @@ mod tests {
                 Value::Real(c),
             ],
         );
-        let result = eval_builtin("orient_to_euler", &[Value::String("zyx".to_string()), q]);
+        let result = eval_builtin("orient_to_euler", &[q, Value::String("zyx".to_string())]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         assert!((angles[0] - a).abs() < 1e-10);
@@ -2712,7 +2719,7 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(eval_builtin("orient_to_euler", &[Value::String("abc".to_string()), q]).is_undef());
+        assert!(eval_builtin("orient_to_euler", &[q, Value::String("abc".to_string())]).is_undef());
     }
 
     #[test]
@@ -2724,16 +2731,19 @@ mod tests {
             z: 0.0,
         };
         assert!(eval_builtin("orient_to_euler", &[]).is_undef());
-        assert!(eval_builtin("orient_to_euler", &[Value::String("xyz".to_string())]).is_undef());
+        // Subject only, convention missing.
+        assert!(eval_builtin("orient_to_euler", &[q.clone()]).is_undef());
         assert!(
             eval_builtin(
                 "orient_to_euler",
-                &[Value::String("xyz".to_string()), q.clone(), q]
+                &[q.clone(), Value::String("xyz".to_string()), q]
             )
             .is_undef()
         );
     }
 
+    /// Arg-order-sensitive negative: the convention now lives at arg 1, so a
+    /// non-string/non-enum THERE is what must fall through to Undef.
     #[test]
     fn orient_to_euler_non_string_convention_returns_undef() {
         let q = Value::Orientation {
@@ -2742,7 +2752,20 @@ mod tests {
             y: 0.0,
             z: 0.0,
         };
-        assert!(eval_builtin("orient_to_euler", &[Value::Real(1.0), q]).is_undef());
+        assert!(eval_builtin("orient_to_euler", &[q, Value::Real(1.0)]).is_undef());
+    }
+
+    /// The mirror of the above, and the direct regression guard for the F3
+    /// flip: the OLD (convention, q) order must no longer be accepted.
+    #[test]
+    fn orient_to_euler_legacy_convention_first_order_returns_undef() {
+        let q = Value::Orientation {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert!(eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]).is_undef());
     }
 
     /// Gimbal-lock case for "xyz" Tait-Bryan: middle angle b = π/2.
@@ -2766,7 +2789,7 @@ mod tests {
             Value::Orientation { w, x, y, z } => (w, x, y, z),
             other => panic!("expected Orientation, got {:?}", other),
         };
-        let result = eval_builtin("orient_to_euler", &[Value::String("xyz".to_string()), q]);
+        let result = eval_builtin("orient_to_euler", &[q, Value::String("xyz".to_string())]);
         let angles = euler_extract(&result)
             .unwrap_or_else(|| panic!("expected List<Angle> of 3, got {:?}", result));
         // Recompose and verify equivalence to the original quaternion.
@@ -3134,13 +3157,13 @@ mod tests {
         let by_enum = eval_builtin(
             "orient_to_euler",
             &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
                 q.clone(),
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ZYX".to_string(), payload: vec![] },
             ],
         );
         let by_str = eval_builtin(
             "orient_to_euler",
-            &[Value::String("zyx".to_string()), q.clone()],
+            &[q.clone(), Value::String("zyx".to_string())],
         );
         assert!(
             euler_extract(&by_enum).is_some(),
@@ -3162,13 +3185,13 @@ mod tests {
         let by_enum = eval_builtin(
             "orient_to_euler",
             &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
                 q.clone(),
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "XYZ".to_string(), payload: vec![] },
             ],
         );
         let by_str = eval_builtin(
             "orient_to_euler",
-            &[Value::String("xyz".to_string()), q.clone()],
+            &[q.clone(), Value::String("xyz".to_string())],
         );
         assert!(
             euler_extract(&by_enum).is_some(),
@@ -3183,8 +3206,8 @@ mod tests {
         let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         assert!(
             eval_builtin("orient_to_euler", &[
-                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
                 q,
+                Value::Enum { type_name: "OutputFormat".to_string(), variant: "STEP".to_string(), payload: vec![] },
             ]).is_undef(),
             "Enum with wrong type_name should return Undef"
         );
@@ -3195,8 +3218,8 @@ mod tests {
         let q = Value::Orientation { w: 1.0, x: 0.0, y: 0.0, z: 0.0 };
         assert!(
             eval_builtin("orient_to_euler", &[
-                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
                 q,
+                Value::Enum { type_name: "EulerConvention".to_string(), variant: "ABC".to_string(), payload: vec![] },
             ]).is_undef(),
             "Unknown EulerConvention variant should return Undef"
         );
