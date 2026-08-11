@@ -113,7 +113,22 @@
 #   - test code: `tests/` dirs (by path) and `#[cfg(test)] mod` bodies
 #     (brace-depth tracked, best-effort). Five real in-src callers live in
 #     `#[cfg(test)]` modules and are legitimate: compute_persist.rs:529,672;
-#     compute_targets/as_printed_material.rs:542; compute_targets/mod.rs:541,583;
+#     compute_targets/as_printed_material.rs:542; compute_targets/mod.rs:541,583.
+#     KNOWN LIMITATION — the skipper arms on the LITERAL `#[cfg(test)]` only.
+#     COMPOUND test gates (`#[cfg(any(test, feature = "test-support"))]`,
+#     `#[cfg(all(test, …))]`) do NOT arm it, so those module bodies are read as
+#     PRODUCTION by both passes. Real shapes, not hypothetical:
+#     crates/reify-audit/src/lib.rs:860,875,956,1184,1197,1241 and
+#     crates/reify-compiler/src/lib.rs:152,173. Today none of them contains a
+#     half-call, so the gate is green tree-wide — but that green is NOT proof of
+#     coverage: the first test-only `register_compute_fns(` to land under a
+#     compound gate is a FALSE RED whose only escape is the inline allow comment
+#     below. Broadening the arming regex is deliberately NOT done here: the
+#     regex lives in the lexer body that is HAND-SYNCED FROM
+#     check-nan-safe-ordering.sh (see PRODUCTION-CODE VIEW), where main's copy
+#     is the source of truth and edits from this side are what the protocol
+#     forbids. It belongs in the shared lib that task #6034 extracts, applied to
+#     both guards at once;
 #   - inside the DEFINITION files (EXEMPT_DEFINITION_FILES) — and ONLY there —
 #     the two `fn register_*_compute_fns(` definition lines and the body of
 #     `fn register_production_compute_fns(` (that body IS the bundler). The
@@ -539,7 +554,29 @@ for f in "${_files[@]}"; do
                     else next
                 }
                 if (!in_bundler) {
-                    if (code ~ /fn[ \t]+register_production_compute_fns[(]/) pending_bundler = 1
+                    # A DECLARATION rather than a definition — `fn
+                    # register_production_compute_fns(…);` as a trait-method
+                    # signature or an extern entry — opens no body. Arming on it
+                    # would leave `pending_bundler` set until some unrelated
+                    # LATER brace-opening line, whose whole block is then
+                    # `next`ed out of this pass: a silent under-flag (fails
+                    # toward GREEN) inside exactly the two files the header
+                    # calls the single most likely place for someone to add a
+                    # fourth hand-rolled bundle. Mirrors the `pending_mod` guard
+                    # in the prologue (`n_open == 0 && t !~ /;/`); the
+                    # `n_open > 0 ||` arm keeps the ordinary same-line `) {`
+                    # spelling armed.
+                    # NOTE: this block is single-quoted bash — no apostrophes.
+                    if (code ~ /fn[ \t]+register_production_compute_fns[(]/) {
+                        if (n_open > 0 || code !~ /;/) pending_bundler = 1
+                    } else if (pending_bundler && n_open == 0 && code ~ /;/) {
+                        # The multi-line spelling of that same declaration: a
+                        # `;` reached with no body opened ends the item.
+                        # Signature continuation lines (params, `->`, a
+                        # where-clause) carry no `;`, so a genuine multi-line
+                        # DEFINITION stays armed until its `{`.
+                        pending_bundler = 0
+                    }
                     if (pending_bundler && n_open > 0) {
                         in_bundler = 1
                         bundler_base = depth - (n_open - n_close)
