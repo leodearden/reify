@@ -177,28 +177,41 @@ fn build_surface_reports_attributable_indeterminate() {
         "INV-SF-4: the user must be pointed at the surface that does measure.\n\
          line: {attribution}"
     );
+    // `report_eval_output` prints every diagnostic as "{severity}: {message}",
+    // so the severity that actually reached the user is readable off the line.
+    // Asserted POSITIVELY: a mere "not an error" check would sail past a
+    // regression that re-emitted this at Warning severity.
     assert!(
-        !attribution.starts_with("error:"),
+        attribution.starts_with("info:"),
         "INV-SF-2 severity-hygiene corollary: `reify build` on a bounded module is \
-         a path a healthy design routinely hits, so this is Info — not an error.\n\
-         line: {attribution}"
+         a path a healthy design routinely hits, so this is Info — not a warning \
+         and not an error.\nline: {attribution}"
     );
 }
 
-/// The "check must not change" half: `reify check` on the same fixture is
-/// unaffected by the build-surface fix.
+/// The "check must not change" half: the `reify check` VERDICT and exit
+/// contract on the same fixture are unaffected by the build-surface fix.
+///
+/// Named for the verdict, not the bytes: under OCCT the stderr really is
+/// unchanged, but in stub mode it deliberately is not (see below), so pinning
+/// byte-for-byte output here would be a false claim.
 ///
 /// Under OCCT the map is non-empty, so the fast-path guard's first conjunct
 /// already fails and neither the added scan nor the added diagnostic can apply
 /// — the assertion is evaluated and `Satisfied` exactly as before.
 ///
 /// Under stub mode the map stays empty for a different reason (no kernel, so
-/// tessellation cannot run), and this surface legitimately gains the same
-/// attributable Info in place of the misattributed message that was wrong there
-/// too. Both standing gate invariants — exit 0, no "VIOLATED" — are untouched
-/// by an Indeterminate verdict at Info severity, so those are what is asserted.
+/// tessellation cannot run), and this surface legitimately gains an attributable
+/// Info in place of the misattributed message that was wrong there too. That
+/// swap is the change under review on this surface, so both of its halves are
+/// asserted rather than merely described: exit 0 and "no VIOLATED" held before
+/// the change too and cannot fail for any regression in it.
+///
+/// The stub-mode remedy names the geometry kernel, not `reify check` — pointing
+/// a `reify check` run back at `reify check` would be a dead end — so the
+/// assertion is on "does not measure", the token stable across both remedies.
 #[test]
-fn check_surface_output_is_unchanged_for_build_surface_fixture() {
+fn check_surface_verdict_is_unchanged_for_build_surface_fixture() {
     let path = common::fixture_path("representation_within_build_surface.ri");
     let (status, stdout, stderr) = common::run_subcommand("check", &path);
 
@@ -212,11 +225,24 @@ fn check_surface_output_is_unchanged_for_build_surface_fixture() {
             !stdout.contains("VIOLATED"),
             "stub mode: Indeterminate, not Violated.\nstdout: {stdout}"
         );
+        assert!(
+            !stderr.contains("operator undefined for these operand kinds"),
+            "stub mode: the misattribution was wrong here too and must be gone — \
+             the operands are fully defined (`subject` carries a default); it is \
+             the missing measurement that blocks the verdict.\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("does not measure"),
+            "stub mode: removing the misattribution must not leave a bare, \
+             unexplained INDETERMINATE (INV-SF-4) — the surface must say why.\n\
+             stderr: {stderr}"
+        );
         eprintln!(
             "skipping the OCCT Satisfied assertions: OCCT unavailable \
-             (cfg(has_occt) not set — stub-mode build). Stub-mode check now carries \
-             the attributable Info in place of the misattributed warning; that is \
-             the intended strict improvement, not a regression."
+             (cfg(has_occt) not set — stub-mode build). Stub-mode check carries the \
+             attributable Info in place of the misattributed warning; that is the \
+             intended strict improvement, not a regression, and both halves are \
+             asserted above."
         );
         return;
     }
