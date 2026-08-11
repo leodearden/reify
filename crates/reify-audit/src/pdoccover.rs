@@ -3104,6 +3104,45 @@ See the section on booleans (union, difference) below.
         );
     }
 
+    /// `@name(` designates an ad-hoc port on a value, exactly as `.name(`
+    /// designates a member — the fabrication lane has no oracle for either, so
+    /// `@` marks a selector on a value rather than a free-function claim. The
+    /// real `connect.md:48-49` shapes (`docs/reify-language-spec.md:1488`,
+    /// §D5: `@face(...)`/`@region(...)` are selector forms, not builtin
+    /// calls) must yield nothing.
+    #[test]
+    fn mentions_ignore_ad_hoc_port_designator_form() {
+        let content = "\
+connect bracket@face(top_surface) -> plate@face(bottom_surface) : Adhesive
+connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
+";
+        let hits = chunk_call_mentions(content);
+        assert!(
+            hits.is_empty(),
+            "a leading `@` marks an ad-hoc port designator, not a builtin; got {hits:?}"
+        );
+
+        // Pin the boundary: a BARE `face(...)` with no `@` is still a claim —
+        // spec §D5 tells authors to replace the deprecated `@face("top")`
+        // string form with function-call selectors, so the un-prefixed form
+        // must stay visible to the lane.
+        let bare = chunk_call_mentions("Use `face(top_surface)` to select it.\n");
+        assert_eq!(
+            bare,
+            vec![("face".to_string(), 1)],
+            "an un-prefixed call is still a claim; got {bare:?}"
+        );
+
+        // A line mixing both forms: the outer call is a real claim, the
+        // `@region(...)` designator on its argument is not.
+        let mixed = chunk_call_mentions("let x = translate(pipe@region(outer), 1mm)\n");
+        assert_eq!(
+            mixed,
+            vec![("translate".to_string(), 1)],
+            "only the real call survives; got {mixed:?}"
+        );
+    }
+
     /// A declaration KEYWORD is never a builtin. `Trait::fn(args)` is the real
     /// `traits.md` shape for explaining static dispatch, and read naively it is
     /// a call to `fn` — which the lane then accused the compiler of not
