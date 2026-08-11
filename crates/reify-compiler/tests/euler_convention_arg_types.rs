@@ -9,6 +9,13 @@
 //! quietly evaluated to `Undef`. This file pins the compile-time half —
 //! a String convention must raise `DiagnosticCode::ArgTypeMismatch`.
 //!
+//! It also pins the other half of the same static contract: the declared
+//! RETURN types. Both names were absent from every compiler signature module,
+//! so both rode expr.rs's terminal first-arg fallback
+//! (`compiled_args[0].result_type.clone()`) — a rule that has nothing to do
+//! with what either builtin evaluates to, and which #6082's argument flip
+//! would otherwise have merely re-aimed at a different wrong type.
+//!
 //! RED before the slots are registered: `builtin_arg_slots` falls to its empty
 //! `_ =>` arm for both names, so no diagnostic is emitted at all.
 //!
@@ -22,8 +29,8 @@
 //!     (the latter asserts `errors.is_empty()` itself and would panic on the
 //!     reject fixture before any assertion here could report what it saw).
 
-use reify_core::DiagnosticCode;
-use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
+use reify_core::{DiagnosticCode, Type};
+use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -144,4 +151,80 @@ fn every_convention_variant_passes_the_slot() {
             "EulerConvention.{variant} must pass the convention slot, got {errors:?}"
         );
     }
+}
+
+// ── RETURN types: the declared type, not arg 0's ──────────────────────────────
+
+/// The decomposer returns the three decomposed angles: `List<Angle>`.
+///
+/// RED before the result-type family is wired: with no ladder arm, the call
+/// falls to expr.rs's terminal first-arg fallback and takes the type of `q` —
+/// which post-flip is arg 0, the Orientation. The value `orient_to_euler`
+/// actually evaluates to is a 3-element `Value::List` of ANGLE-dimensioned
+/// scalars (`reify_stdlib::orientation`), so the fallback's answer is simply
+/// unrelated to the builtin's behaviour.
+#[test]
+fn orient_to_euler_result_type_is_list_of_angle() {
+    let module = compile_source_with_stdlib(EULER_ARG_OK);
+    let angles = get_let_expr_in(&module, "EulerArgOk", "angles");
+    assert_eq!(
+        angles.result_type,
+        Type::List(Box::new(Type::angle())),
+        "orient_to_euler must be statically typed List<Angle> (the three \
+         decomposed angles), got {:?}",
+        angles.result_type
+    );
+}
+
+/// The constructor returns the composed rotation: `Orientation<3>`.
+///
+/// RED before the result-type family is wired, and for the mirror-image reason:
+/// arg 0 of `orient_euler` is the CONVENTION, so the first-arg fallback types
+/// the constructed rotation as `Enum("EulerConvention")` — the selector's own
+/// type. This assertion is what keeps the constructor from being forgotten:
+/// #6082 flips only the decomposer, but both names ride the same broken
+/// fallback and both are fixed by the same ladder arm.
+#[test]
+fn orient_euler_result_type_is_orientation3() {
+    let module = compile_source_with_stdlib(EULER_ARG_OK);
+    let q = get_let_expr_in(&module, "EulerArgOk", "q");
+    assert_eq!(
+        q.result_type,
+        Type::Orientation(3),
+        "orient_euler must be statically typed Orientation<3> (the composed \
+         rotation), got {:?}",
+        q.result_type
+    );
+}
+
+/// The user-observable signal, end to end: the decomposed angles must be
+/// accepted by a parameter declared `List<Angle>`.
+///
+/// This is the assertion a Reify author would actually hit. The two above pin
+/// the internal `result_type`; this one pins the consequence — that
+/// `angle_count(angles)` in the `_ok` fixture resolves rather than reporting a
+/// type mismatch. Zero Warnings as well as zero Errors: a return type inferred
+/// from the wrong place can also surface as an inference warning rather than a
+/// hard error, and neither is acceptable on a fixture that is correct Reify.
+#[test]
+fn decomposed_angles_are_accepted_by_a_list_of_angle_parameter() {
+    let module = compile_source_with_stdlib(EULER_ARG_OK);
+
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "passing orient_to_euler's result to fn angle_count(xs: List<Angle>) \
+         must compile without Errors, got {}: {:?}",
+        errors.len(),
+        errors
+    );
+
+    let warnings = warnings_only(&module);
+    assert!(
+        warnings.is_empty(),
+        "passing orient_to_euler's result to fn angle_count(xs: List<Angle>) \
+         must compile without Warnings, got {}: {:?}",
+        warnings.len(),
+        warnings
+    );
 }

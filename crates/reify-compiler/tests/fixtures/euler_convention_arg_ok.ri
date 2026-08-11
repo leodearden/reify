@@ -10,8 +10,21 @@
 // three angles that follow (R_xyz(a, b, c) notation). `orient_to_euler` is a
 // DECOMPOSER, so it is SUBJECT-first like its siblings orient_log(q) /
 // orient_to_axis_angle(q) / orient_inverse(q).
+//
+// `angle_count` is the USER-OBSERVABLE signal for the declared RETURN types.
+// It accepts only `List<Angle>`, so `let n` type-checks only when
+// `orient_to_euler` is statically typed as `List<Angle>` — and that in turn
+// requires `let q` to be typed `Orientation<3>`, since a decomposer applied to
+// anything else would not resolve. Before task #6082 declared these return
+// types, BOTH calls rode expr.rs's terminal first-arg fallback
+// (`compiled_args[0].result_type.clone()`), so `q` took its convention
+// argument's `EulerConvention` type and `angles` inherited it in turn —
+// neither call's static type had anything to do with what it evaluates to.
+
+fn angle_count(xs: List<Angle>) -> Int { xs.count }
 
 structure def EulerArgOk {
     let q      = orient_euler(EulerConvention.XYZ, 0.1, 0.2, 0.3)
     let angles = orient_to_euler(q, EulerConvention.XYZ)
+    let n      = angle_count(angles)
 }
