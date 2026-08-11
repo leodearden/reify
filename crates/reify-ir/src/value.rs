@@ -2713,7 +2713,7 @@ impl Value {
     /// Format this value for GUI display, returning `(formatted_value, unit_string)`.
     ///
     /// Unlike [`format_hover`](Value::format_hover) which shows raw SI values,
-    /// this method converts to standard engineering display units (mm, deg, mm², mm³)
+    /// this method converts to standard engineering display units (mm, deg, mm^2, mm^3)
     /// via [`DimensionVector::to_display_units`].
     pub fn format_display_pair(&self) -> (String, String) {
         match self {
@@ -3022,8 +3022,16 @@ fn superscript_exponent(exponent: i32) -> String {
 /// sig-fig/trailing-zero convention as a plain one.
 ///
 /// ASCII `4.2e-3` was considered and declined: §5c's worked example shows the
-/// `×10ⁿ` form, and this crate already emits Unicode in display strings
-/// (`mm²`, `mm³`, `kg/m³`, `kg·m^-3`).
+/// `×10ⁿ` form, and this crate still emits Unicode in display strings — the
+/// composed `Display` fallback keeps its U+00B7 separator (`kg·m^-3`), which
+/// contract C2 accepts because an arbitrary `DimensionVector` has no finite
+/// enumeration to curate.
+///
+/// Task λ (#5788) ASCII-normalized the finite curated LABEL tables (`mm²`,
+/// `mm³`, `kg/m³` are now `mm^2`, `mm^3`, `kg/m^3`) but deliberately left this
+/// formatter alone, per PRD §10: it formats the NUMBER, not the unit, so there
+/// is no `@display(...)` literal for a grammar to accept. See the fence test
+/// `engineering_notation_keeps_its_superscript_digits`.
 ///
 /// An `exponent` of zero short-circuits to the bare mantissa. That is
 /// unreachable from
@@ -3046,9 +3054,9 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// here when it is valid *at that raw magnitude*.
 ///
 /// `LENGTH`/`AREA`/`VOLUME`/`ANGLE` keep their own hardcoded raw-SI arms
-/// (`"m"`/`"m²"`/`"m³"`/`"rad"`) rather than the unit-ladder registry's
+/// (`"m"`/`"m^2"`/`"m^3"`/`"rad"`) rather than the unit-ladder registry's
 /// curated name, because their registry default rung is *scaled*
-/// (mm/mm²/mm³/deg) — adopting it here would misrender the raw magnitude
+/// (mm/mm^2/mm^3/deg) — adopting it here would misrender the raw magnitude
 /// (e.g. a raw `0.08` m would read `"0.08 mm"`). `MONEY` and dimensionless
 /// keep their own arms too: Money is not a registry ladder dimension, and
 /// dimensionless has no unit at all.
@@ -3069,9 +3077,9 @@ fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
         Cow::Borrowed("m")
     } else if *dim == DimensionVector::AREA {
-        Cow::Borrowed("m\u{00B2}")
+        Cow::Borrowed("m^2")
     } else if *dim == DimensionVector::VOLUME {
-        Cow::Borrowed("m\u{00B3}")
+        Cow::Borrowed("m^3")
     } else if *dim == DimensionVector::ANGLE {
         Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
