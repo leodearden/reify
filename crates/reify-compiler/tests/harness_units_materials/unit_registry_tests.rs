@@ -3,7 +3,7 @@
 //! Validates UnitEntry, UnitRegistry, resolve_dimension_type,
 //! evaluate_const_expr, compile_unit, and the full unit pre-pass in compile().
 
-mod common;
+use crate::common;
 
 use reify_compiler::{
     AutoTypeSubstitution, UnitEntry, UnitRegistry, compile, compile_with_prelude,

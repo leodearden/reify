@@ -9,9 +9,7 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production (not a standalone `.ri` file re-read).
 
-mod common;
-
-use common::assert_trait_constraint_binop;
+use crate::common::assert_trait_constraint_binop;
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::Satisfaction;

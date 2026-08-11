@@ -9,8 +9,6 @@ use reify_core::*;
 use reify_ir::*;
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-mod common;
-
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /// Return the `std/structural/physical` CompiledModule from the production
@@ -26,7 +24,7 @@ fn load_stdlib_module() -> &'static CompiledModule {
 /// Parse and compile `source` against the full stdlib prelude, asserting no
 /// parse or compile errors. Returns the `CompiledModule` for further inspection.
 fn compile_structure(source: &str) -> CompiledModule {
-    let compiled = common::compile_with_stdlib_helper(source);
+    let compiled = compile_source_with_stdlib(source);
     let errors = errors_only(&compiled);
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
     compiled
@@ -69,7 +67,10 @@ fn assert_constraint_op(template: &TopologyTemplate, member: &str, expected: Bin
                 if matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member))
         })
         .unwrap_or_else(|| panic!("expected a constraint referencing {member}"));
-    let (op, _, _) = common::expect_binop(&cc.expr);
+    let op = match &cc.expr.kind {
+        CompiledExprKind::BinOp { op, .. } => op,
+        other => panic!("expected CompiledExprKind::BinOp {{ .. }}, got {other:?}"),
+    };
     assert_eq!(
         *op, expected,
         "{member} constraint expected BinOp::{expected:?}, got BinOp::{op:?}"
