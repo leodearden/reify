@@ -48,11 +48,11 @@
 //! growing a second copy, keeping `JCODEMUNCH_URL` as an opt-in override for
 //! an already-running serve.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::net::TcpListener;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use reify_audit::jcodemunch_client::JcodemunchClient;
@@ -254,22 +254,34 @@ impl Serve {
     }
 }
 
+/// Send `sig` to the whole process group whose id is `pid`.
+///
+/// `uvx` fronts a child python that a bare `child.kill()` would orphan, so
+/// teardown signals the GROUP: [`Serve::spawn`] puts the serve in a fresh
+/// group whose id is the child's pid, so the negated pid below names that
+/// group and nothing else. A `pkill -f` pattern would not — it is an
+/// unanchored substring match against every command line on the host, so
+/// `--port 8917` also matches a `--port 89170` serve, and the blast radius is
+/// somebody else's long-lived watcher.
+///
+/// The status is RETURNED rather than swallowed so a failing teardown can name
+/// it, but it is deliberately not a gate: see
+/// `teardown_signal_reaches_the_whole_process_group` for the property that
+/// actually matters.
+fn signal_process_group(pid: u32, sig: &str) -> std::io::Result<ExitStatus> {
+    let group = format!("-{pid}");
+    Command::new("kill")
+        .args([sig, &group])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+}
+
 impl Drop for Serve {
     fn drop(&mut self) {
-        // `uvx` fronts a child python that a bare `child.kill()` would orphan,
-        // so signal the whole process GROUP: `spawn` put the serve in a fresh
-        // group whose id is this child's pid, so the negated pid below names
-        // that group and nothing else. A `pkill -f` pattern would not — it is
-        // an unanchored substring match against every command line on the
-        // host, so `--port 8917` also matches a `--port 89170` serve, and the
-        // blast radius is somebody else's long-lived watcher.
-        let group = format!("-{}", self.child.id());
+        let pgid = self.child.id();
         let signal_group = |sig: &str| {
-            let _ = Command::new("kill")
-                .args([sig, &group])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let _ = signal_process_group(pgid, sig);
         };
         signal_group("-TERM");
 
@@ -400,6 +412,146 @@ fn post_initialize(
         .read_to_string(&mut body)
         .unwrap_or_else(|e| panic!("read initialize response body from {url}: {e}"));
     Ok((status, assigned, parse_mcp_body(&ctype, &body)))
+}
+
+// -----------------------------------------------------------------------
+// Gate-resident teardown self-tests
+// -----------------------------------------------------------------------
+//
+// These need no network, no `uvx` and no jcodemunch — they exercise the
+// teardown harness itself, which is exactly why they are NOT `#[ignore]`d.
+// The only test that consumes that harness is live-only and opt-in, so a
+// regression here would otherwise be invisible until it had leaked
+// long-lived indexing serves for weeks: the same PASS-shaped vacuity this
+// task exists to remove, reappearing in the teardown.
+
+/// Is there still a process with this pid?
+///
+/// A grandchild orphaned by its parent's death is reparented to init and
+/// reaped promptly, so `/proc/<pid>` disappearing is a sound liveness probe
+/// here — there is no lingering zombie to confuse it once the whole group is
+/// gone.
+fn proc_exists(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// A stand-in for the serve: a direct child that itself has a live child, in
+/// one process group — the `uvx`-fronts-python shape whose grandchild the
+/// teardown must not orphan.
+///
+/// Cleanup on drop is unconditional and deliberately does NOT route through
+/// [`signal_process_group`]: that is the function under test, and on a RED run
+/// it is a silent no-op, so a guard built on it would leak the 300-second
+/// `sleep` it was meant to reclaim. The `--` form hard-coded below is the one
+/// measured to actually deliver a signal to a group.
+struct ProcessGroupGuard {
+    child: Child,
+    grandchild: u32,
+}
+
+impl ProcessGroupGuard {
+    fn spawn() -> Self {
+        // `sh` is the direct child and, thanks to `process_group(0)`, is its
+        // own group leader (pgid == pid). `sleep` is backgrounded into that
+        // same group — a non-interactive shell has job control off, so it does
+        // not get a group of its own. `echo $!` publishes the grandchild pid
+        // and `wait` keeps `sh` alive, so a group signal has two live targets.
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 300 & echo $!; wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn the process-group stand-in");
+
+        let stdout = child.stdout.take().expect("piped stdout");
+        let mut line = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("read the grandchild pid line");
+        let grandchild: u32 = line
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("parse grandchild pid from {line:?}: {e}"));
+
+        Self { child, grandchild }
+    }
+
+    /// The group id, which is the direct child's pid.
+    fn pgid(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        // Signal the group BEFORE reaping the child: an unreaped pid cannot be
+        // recycled, so the group id stays unambiguously ours while we use it.
+        let _ = Command::new("/usr/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", self.child.id())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The teardown's group signal must actually reach the whole group.
+///
+/// Measured on this host (procps-ng 4.0.4, which is what `Command::new("kill")`
+/// resolves to via execvp — never the shell builtin):
+///
+/// | invocation | exit | target |
+/// |---|---|---|
+/// | `kill -TERM -<pgid>` | 0 | **still alive** |
+/// | `kill -TERM -- -<pgid>` | 0 | dead |
+/// | `kill -TERM -999999` | **0** | — |
+/// | `kill -TERM -- -999999` | 1 (`No such process`) | — |
+///
+/// Row 3 is why no `status.success()` check could ever have caught this: the
+/// bare form reports success even for a group that does not exist. The
+/// assertion therefore targets the observed outcome, and specifically the
+/// GRANDCHILD — the direct child is killed either way, so a check that only
+/// watched it would pass against the broken form.
+#[test]
+fn teardown_signal_reaches_the_whole_process_group() {
+    let mut guard = ProcessGroupGuard::spawn();
+    let pgid = guard.pgid();
+    let grandchild = guard.grandchild;
+    assert!(
+        proc_exists(grandchild),
+        "the stand-in grandchild {grandchild} must be alive before we signal it, \
+         otherwise this test proves nothing",
+    );
+
+    signal_process_group(pgid, "-TERM").expect("run kill against the process group");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut child_exited = false;
+    while Instant::now() < deadline {
+        if !child_exited {
+            child_exited = guard
+                .child
+                .try_wait()
+                .expect("try_wait on the stand-in child")
+                .is_some();
+        }
+        if child_exited && !proc_exists(grandchild) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    panic!(
+        "`signal_process_group({pgid}, \"-TERM\")` did not tear the group down: \
+         direct child exited = {child_exited}, grandchild {grandchild} still \
+         present = {}. A bare negated pgid is swallowed as an unknown option \
+         cluster and exits 0 without delivering anything — the `--` separator \
+         before the group is load-bearing.",
+        proc_exists(grandchild),
+    );
 }
 
 // -----------------------------------------------------------------------
