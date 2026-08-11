@@ -2015,4 +2015,182 @@ mod tests {
             result_none
         );
     }
+
+    // ─── missing_paths_under contract ─────────────────────────────────────
+
+    /// Prefix for every temp dir these `missing_paths_under` tests create, so
+    /// SIGKILL debris under `/tmp` stays attributable to this suite (see
+    /// `temp_dirs::prefixed_tempdir`'s "Names stay attributable" section).
+    const MISSING_PATHS_TEMPDIR_PREFIX: &str = "reify-missing-paths-under-";
+
+    /// Materialise a "present" fixture at `dir.join(rel)`, creating any parent
+    /// directories the forward-slash-separated `rel` implies. Shared by the
+    /// `missing_paths_under` tests so each one states only the entries it
+    /// cares about.
+    fn touch_under(dir: &std::path::Path, rel: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .unwrap_or_else(|e| panic!("create parent dirs for fixture {rel:?}: {e}"));
+        }
+        std::fs::write(&path, "// present fixture\n")
+            .unwrap_or_else(|e| panic!("write fixture {rel:?}: {e}"));
+    }
+
+    /// missing_paths_under: a relative path with no file on disk under `dir` is
+    /// returned, and one that does exist is not. The core dead-key signal both
+    /// SKIP_SET guards depend on.
+    #[test]
+    fn test_missing_paths_under_flags_missing_and_keeps_present() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "present.ri");
+
+        let missing = super::missing_paths_under(dir, ["present.ri", "never_existed.ri"]);
+
+        assert_eq!(
+            missing,
+            vec!["never_existed.ri"],
+            "expected only the path with no file on disk to be flagged as missing, and the \
+             materialised 'present.ri' to be omitted; got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: nested, forward-slash-separated relative paths — the
+    /// real SKIP_SET key shape (e.g. "topology_selectors/fillet_top_edges.ri") —
+    /// resolve against `dir` correctly in both the present and the missing case.
+    #[test]
+    fn test_missing_paths_under_resolves_nested_relative_paths() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "topology_selectors/fillet_top_edges.ri");
+
+        let missing = super::missing_paths_under(
+            dir,
+            [
+                "topology_selectors/fillet_top_edges.ri",
+                "topology_selectors/deleted_by_a_rename.ri",
+                "auto/never_existed.ri",
+            ],
+        );
+
+        assert_eq!(
+            missing,
+            vec![
+                "topology_selectors/deleted_by_a_rename.ri",
+                "auto/never_existed.ri"
+            ],
+            "expected nested relative paths to resolve against the temp dir: the materialised \
+             'topology_selectors/fillet_top_edges.ri' must not be flagged, while a missing \
+             sibling and a path under an entirely absent subdirectory must both be; \
+             got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: the FULL offending set is returned, never just the
+    /// first miss. Entries are ordered missing, present, missing, present so
+    /// neither a short-circuit bug nor an off-by-one can pass by accident.
+    ///
+    /// This is the property `examples_smoke.rs`'s guard relies on to report every
+    /// stale SKIP_SET key in one panic rather than failing fast on the first.
+    #[test]
+    fn test_missing_paths_under_returns_full_offending_set() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "second_present.ri");
+        touch_under(dir, "fourth_present.ri");
+
+        let missing = super::missing_paths_under(
+            dir,
+            [
+                "first_missing.ri",
+                "second_present.ri",
+                "third_missing.ri",
+                "fourth_present.ri",
+            ],
+        );
+
+        assert_eq!(
+            missing,
+            vec!["first_missing.ri", "third_missing.ri"],
+            "expected BOTH missing entries to be reported from a missing/present/missing/present \
+             sequence — a helper that short-circuited on the first miss would yield just \
+             [\"first_missing.ri\"]; got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: an empty input iterator yields an empty `Vec` — no
+    /// panic and no filesystem access, even for a `dir` that need not be read.
+    #[test]
+    fn test_missing_paths_under_empty_input_yields_empty_vec() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+
+        let empty: [&str; 0] = [];
+        let missing = super::missing_paths_under(dir, empty);
+
+        assert!(
+            missing.is_empty(),
+            "expected an empty input iterator to yield an empty Vec; got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: output preserves input order, so callers need not
+    /// sort to get a stable failure message.
+    ///
+    /// Compared WITHOUT sorting on purpose — sorting here would make the
+    /// assertion pass under an order-scrambling implementation and silently
+    /// void the documented guarantee.
+    #[test]
+    fn test_missing_paths_under_preserves_input_order() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "a_present");
+
+        let missing = super::missing_paths_under(dir, ["b_missing", "a_present", "c_missing"]);
+
+        assert_eq!(
+            missing,
+            vec!["b_missing", "c_missing"],
+            "expected the two missing entries in INPUT order (b before c), compared without \
+             sorting; got {missing:?}"
+        );
+    }
+
+    /// missing_paths_under: arity is the caller's problem — the whole point of
+    /// the hoist. A two-tuple skip list (`examples_smoke.rs`'s shape) and a
+    /// three-tuple one (`auto_type_param_determinism_tests.rs`'s shape) both
+    /// project their own path column away at the call boundary and agree.
+    #[test]
+    fn test_missing_paths_under_is_arity_agnostic_across_tuple_shapes() {
+        let guard = crate::temp_dirs::prefixed_tempdir(MISSING_PATHS_TEMPDIR_PREFIX);
+        let dir = guard.path();
+        touch_under(dir, "auto/present.ri");
+
+        // `examples_smoke.rs`'s shape: (relative_path, reason).
+        let two_tuple: &[(&str, &str)] = &[
+            ("auto/present.ri", "present fixture"),
+            ("auto/never_existed.ri", "stale key"),
+        ];
+        let from_two = super::missing_paths_under(dir, two_tuple.iter().map(|(p, _)| *p));
+
+        // `auto_type_param_determinism_tests.rs`'s shape: (relative_path, kind,
+        // reason) — `u8` stands in for `SkipKind`, which this crate cannot see.
+        let three_tuple: &[(&str, u8, &str)] = &[
+            ("auto/present.ri", 0, "present fixture"),
+            ("auto/never_existed.ri", 1, "stale key"),
+        ];
+        let from_three = super::missing_paths_under(dir, three_tuple.iter().map(|(p, _, _)| *p));
+
+        assert_eq!(
+            from_two,
+            vec!["auto/never_existed.ri"],
+            "expected the two-tuple projection to flag exactly the stale key; got {from_two:?}"
+        );
+        assert_eq!(
+            from_two, from_three,
+            "expected the two-tuple and three-tuple projections to agree — the helper must be \
+             blind to the columns the caller discards; got {from_two:?} vs {from_three:?}"
+        );
+    }
 }
