@@ -25,7 +25,11 @@
 //! `parse_and_compile_with_stdlib`, which asserts `errors.is_empty()` itself
 //! and would panic before the assertion could report which variants failed).
 
-use reify_test_support::{compile_source_with_stdlib, errors_only};
+use reify_core::{DimensionVector, ValueCellId};
+use reify_ir::Value;
+use reify_test_support::{
+    compile_source_with_stdlib, errors_only, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 /// The twelve rotation-sequence conventions implemented by eval: six Tait-Bryan
 /// (three distinct axes) followed by six proper/classic Euler (first axis
@@ -81,5 +85,75 @@ fn each_euler_convention_variant_resolves_individually() {
             errors.is_empty(),
             "EulerConvention.{variant} failed to resolve: {errors:?}"
         );
+    }
+}
+
+// ── F3: orient_to_euler is subject-first, end to end ──────────────────────────
+
+/// Full `.ri` → compile → eval path for the flipped decomposer.
+///
+/// `orient_to_euler(q, EulerConvention.ZXZ)` must evaluate to a 3-element list
+/// of ANGLE-dimensioned scalars that round-trips the angles fed to
+/// `orient_euler`. ZXZ is a proper/classic Euler convention, so this also pins
+/// that the six variants added to the declaration are live all the way through
+/// eval — not merely accepted by the type checker.
+///
+/// RED before the flip: with args `(convention, q)` the subject-first call
+/// matches neither arm and evaluates to `Undef`.
+#[test]
+fn orient_to_euler_is_subject_first_end_to_end() {
+    // ZXZ is singular at middle angle 0 or π; 0.7 is safely away from both.
+    let source = r#"
+structure def EulerDecompose {
+    let q      = orient_euler(EulerConvention.ZXZ, 0.3, 0.7, -0.2)
+    let angles = orient_to_euler(q, EulerConvention.ZXZ)
+}
+"#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(eval_errors.is_empty(), "unexpected eval errors: {eval_errors:?}");
+
+    let angles_id = ValueCellId::new("EulerDecompose", "angles");
+    let angles = result.values.get(&angles_id).unwrap_or_else(|| {
+        panic!(
+            "EulerDecompose.angles cell not found; available: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+
+    let items = match angles {
+        Value::List(items) => items,
+        other => panic!(
+            "orient_to_euler(q, EulerConvention.ZXZ) should evaluate to a 3-element \
+             List<Angle>, got {other:?}"
+        ),
+    };
+    assert_eq!(items.len(), 3, "expected exactly 3 angles, got {}", items.len());
+
+    // Round-trip: the decomposed angles must be the ones composed above.
+    let expected = [0.3_f64, 0.7, -0.2];
+    for (i, (item, want)) in items.iter().zip(expected.iter()).enumerate() {
+        match item {
+            Value::Scalar { si_value, dimension } => {
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::ANGLE,
+                    "angle[{i}] should carry the ANGLE dimension"
+                );
+                assert!(
+                    (si_value - want).abs() < 1e-12,
+                    "angle[{i}]: expected {want}, got {si_value}"
+                );
+            }
+            other => panic!("angle[{i}] should be a dimensioned Scalar, got {other:?}"),
+        }
     }
 }
