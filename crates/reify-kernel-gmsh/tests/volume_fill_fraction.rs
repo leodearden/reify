@@ -218,13 +218,23 @@ fn assert_complete_prismatic_fill(report: &TetFillReport, surface: &Mesh, label:
 /// Deliberately does NOT acquire `init::GMSH_LOCK`: `mesh_to_volume` acquires
 /// it internally, so holding it here would self-deadlock (see the warning at
 /// `mesh_plane_2d_tests.rs:22-23`).
-fn fill_report_for(surface: &Mesh, label: &str) -> TetFillReport {
+fn fill_report_at(surface: &Mesh, mesh_size: Option<f64>, label: &str) -> TetFillReport {
+    let options = MeshingOptions {
+        mesh_size,
+        ..MeshingOptions::default()
+    };
     let kernel = GmshKernel::new();
     let volume = kernel
-        .mesh_to_volume(surface, &MeshingOptions::default(), ElementOrderTag::P1)
+        .mesh_to_volume(surface, &options, ElementOrderTag::P1)
         .unwrap_or_else(|e| panic!("{label}: mesh_to_volume failed: {e:?}"));
     tet_fill_report(&volume)
         .unwrap_or_else(|| panic!("{label}: produced mesh is not measurable as tets"))
+}
+
+/// As [`fill_report_at`], at the auto-derived mesh size (the minimum triangle
+/// edge, per `auto_size.rs`).
+fn fill_report_for(surface: &Mesh, label: &str) -> TetFillReport {
+    fill_report_at(surface, None, label)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,29 +319,70 @@ fn production_composition_unwelded_plus_repair_is_completely_tetrahedralized() {
 }
 
 // ---------------------------------------------------------------------------
-// Interior nodes — a separate, independently-diagnostic property
+// Interior nodes — resolution-driven, NOT a completeness signal
 // ---------------------------------------------------------------------------
 
-/// A 10:1 prismatic body meshed at its own cross-section resolution should
-/// acquire interior nodes. Zero of them is itself diagnostic of the degenerate
-/// decomposition: #6154 measured 0 interior nodes of 80 downstream, and probe
-/// measurements on this fixture found 0 of 220 before the fix.
+/// Interior nodes appear as a function of RESOLUTION vs cross-section, and are
+/// independent of whether the decomposition is complete.
 ///
-/// Deliberately a SEPARATE test from the volume assertions above so that the
-/// core completeness guard stands on its own — interior-node count is a
-/// weaker, mesher-discretionary property, while `Σ|V_tet| == V_body` is an
-/// exact geometric identity.
+/// This test began life asserting `strictly_interior_nodes > 0` at the auto
+/// mesh size, on the premise that a complete B-rep decomposition produces
+/// interior nodes and that #6154's "0 interior nodes of 80" was therefore
+/// diagnostic of #6200. **Measurement refutes that premise.** Sweeping mesh
+/// size with the fix in place, fill fraction is 1.000000 in every row:
+///
+/// | body          | mesh size | nodes | tets | fill     | interior |
+/// |---------------|-----------|-------|------|----------|----------|
+/// | 1.0x0.1x0.1   | auto (0.1)|   440 |  258 | 1.000000 |        0 |
+/// | 1.0x0.1x0.1   | 0.05      |   819 |  651 | 1.000000 |       11 |
+/// | 1.0x0.1x0.1   | 0.025     |  2515 | 3505 | 1.000000 |      187 |
+/// | 1x1x1         | auto (1.0)|   272 |  186 | 1.000000 |        0 |
+/// | 1x1x1         | 0.5       |   273 |  194 | 1.000000 |        1 |
+/// | 1x1x1         | 0.25      |   424 |  392 | 1.000000 |       12 |
+///
+/// A complete mesh can legitimately have ZERO interior nodes: the auto mesh
+/// size is the minimum triangle edge (0.1 here), which makes the box's
+/// cross-section exactly one element wide, so every node necessarily lands on
+/// a face. Interior-node count therefore never discriminated #6200 — the fill
+/// fraction did. (Consistently, the pre-fix sweep also showed 0 interior nodes
+/// at h=0.1 and 4 at h=0.05, i.e. the same resolution dependence under the
+/// bug.)
+///
+/// What IS worth pinning, and what this test now pins, is the conjunction: at a
+/// resolution finer than the cross-section a complete mesh acquires interior
+/// nodes, AND stays exactly full at every resolution. The second half is a
+/// strictly stronger completeness guard than the original single-resolution
+/// check, since a decomposition that bounded a smaller region would under-fill
+/// at all three.
 #[test]
-fn complete_decomposition_of_a_slender_box_has_interior_nodes() {
+fn interior_nodes_appear_once_resolution_is_finer_than_the_cross_section() {
     let surface = prismatic_box_mesh(1.0, 0.1, 0.1);
-    let report = fill_report_for(&surface, "box 1.0x0.1x0.1 m");
-    assert!(
-        report.strictly_interior_nodes > 0,
-        "box 1.0x0.1x0.1 m: {} of {} nodes are strictly interior (expected > 0). \
-         Zero interior nodes on a 10:1 prismatic body meshed at its own \
-         cross-section resolution indicates gmsh meshed only the boundary shell \
-         of a degenerate B-rep decomposition (#6200).",
-        report.strictly_interior_nodes,
-        report.n_nodes
-    );
+
+    // Coarse: cross-section exactly one element wide — zero interior nodes is
+    // the CORRECT answer here, and the mesh is nonetheless complete.
+    let coarse = fill_report_for(&surface, "box 1.0x0.1x0.1 m @ auto");
+    assert_complete_prismatic_fill(&coarse, &surface, "box 1.0x0.1x0.1 m @ auto");
+
+    // Finer than the cross-section: interior nodes must now exist, and the
+    // mesh must STILL be exactly full.
+    for size in [0.05f64, 0.025] {
+        let report = fill_report_at(&surface, Some(size), &format!("box 1.0x0.1x0.1 m @ {size}"));
+        assert_complete_prismatic_fill(&report, &surface, &format!("box 1.0x0.1x0.1 m @ {size}"));
+        assert!(
+            report.strictly_interior_nodes > 0,
+            "box 1.0x0.1x0.1 m @ mesh size {size}: {} of {} nodes are strictly \
+             interior (expected > 0). At a resolution finer than the 0.1 \
+             cross-section a complete tet mesh must carry interior nodes; zero \
+             would mean gmsh meshed only a boundary shell.",
+            report.strictly_interior_nodes,
+            report.n_nodes
+        );
+        assert!(
+            report.strictly_interior_nodes > coarse.strictly_interior_nodes,
+            "box 1.0x0.1x0.1 m: refining to {size} did not increase the interior-node \
+             count ({} at auto size vs {} at {size})",
+            coarse.strictly_interior_nodes,
+            report.strictly_interior_nodes
+        );
+    }
 }
