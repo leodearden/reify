@@ -1319,13 +1319,24 @@ fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
 /// non-increasing — a smooth solution refines "downhill", unlike the
 /// L-shaped re-entrant-corner case (later steps).
 ///
-/// `target_accuracy = 0.53` sits strictly between [`cantilever_gmsh_problem`]'s
-/// measured coarse-mesh indicator (iter 0 ≈ 0.552) and its once-refined
-/// indicator (iter 1 ≈ 0.503) — chosen ABOVE the refined value per this
+/// `target_accuracy = 0.33` sits strictly between [`cantilever_gmsh_problem`]'s
+/// measured coarse-mesh indicator (iter 0 ≈ 0.35479) and its once-refined
+/// indicator (iter 1 ≈ 0.30297) — chosen ABOVE the refined value per this
 /// suite's calibration convention (measured during impl), so the loop
 /// converges right after its first Dörfler refine rather than on the first
 /// (unrefined) solve, giving a real (if short) monotone trajectory rather
 /// than a vacuous one-point history.
+///
+/// The constant moved from 0.53 in task #6211. This test's problem never calls
+/// `mesh_to_volume`, so it never inherited the leaked `Mesh.MeshSizeMax` clamp
+/// and always seeded at gmsh's 1e22 default; capping `MeshSizeMax` at the
+/// coarsest requested hint makes `seed_volume_from_surface` genuinely honour
+/// the requested size, so the whole trajectory shifts down to a measured
+/// `[0.35479, 0.30297, 0.25021, 0.19753]` — still strictly monotone, but with
+/// iter 0 already below the old 0.53. 0.33 is a re-derivation by the procedure
+/// documented above against the corrected mesh (~4.5% below iter 0, ~8.9% above
+/// iter 1 — margins at least as wide as 0.53's 4.0% / 5.4%), not a weakened
+/// threshold: every assertion below is unchanged.
 #[test]
 fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
@@ -1334,7 +1345,7 @@ fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop(
     }
     let mut problem = RecordingProblem::new(cantilever_gmsh_problem());
     let budget = RefinementBudget {
-        target_accuracy: 0.53,
+        target_accuracy: 0.33,
         max_refinement_iterations: 5,
         max_dofs: 1_000_000,
     };

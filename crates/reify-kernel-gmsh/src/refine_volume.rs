@@ -13,6 +13,15 @@
 //! keyed on all inputs — diverge automatically. No new cache-key field is
 //! needed; the existing `volume_mesh_cache_key` derivation already covers this.
 //!
+//! # Hermetic with respect to the global mesh-size clamp
+//!
+//! Gmsh's option table is process-global and survives `gmshClear()`. Since
+//! task #6211 this function sets `Mesh.MeshSizeMin`/`Mesh.MeshSizeMax` itself
+//! on every call rather than inheriting whatever a sibling entry point last
+//! left behind, so its output is a function of its own arguments alone and not
+//! of call order within the process. See the inline rationale at the option
+//! writes below.
+//!
 //! # Cost basis: full remesh from surface
 //!
 //! `gmshModelMeshRefine()` refines uniformly across the entire existing mesh,
@@ -200,6 +209,47 @@ pub fn refine_volume_with_size_field(
     ffi::option_set_number("Mesh.MeshSizeFromPoints", 1.0)?;
     ffi::option_set_number("Mesh.MeshSizeFromCurvature", 0.0)?;
     ffi::option_set_number("Mesh.MeshSizeExtendFromBoundary", 0.0)?;
+
+    // --- Mesh-size clamp: set explicitly, never inherited (task #6211) ---
+    //
+    // Gmsh's option table is process-global and is NOT reset by `gmshClear()`.
+    // `kernel_real.rs:178-179` (`mesh_to_volume`), `mesh_profile_2d.rs:93-94`
+    // and `mesh_boundary.rs:614-615` each set `Mesh.MeshSizeMin`/`MeshSizeMax`
+    // and never restore them, so without these two lines an earlier call in the
+    // same process pins every element of THIS remesh to ITS size and
+    // `vertex_sizes` becomes inert — measured as identical 181-tet output for
+    // hints 0.5 / 0.25 / 0.125. Both writes are load-bearing: with a leaked
+    // Min == Max == 0.5, lowering only Max leaves Min > Max (gmsh still floors
+    // at 0.5) and lowering only Min leaves the old Max capping everything.
+    //
+    // Min = 0.0 is gmsh's default: no floor, so the finest hint is honoured.
+    // Deliberately not `min(vertex_sizes)`, which would forbid gmsh from going
+    // finer than the finest hint anywhere in the domain — a new, untested
+    // constraint on the localized-refinement path for no measured benefit.
+    //
+    // Max = the COARSEST requested hint, because with
+    // `Mesh.MeshSizeExtendFromBoundary = 0` (set above) the 3D mesher is
+    // otherwise free to grow interior elements arbitrarily coarser than
+    // anything the caller asked for. Deliberately not `options.mesh_size`:
+    // that is the baseline target the per-vertex field exists to supersede, and
+    // feeding it back in would re-create the very clamp this defends against.
+    //
+    // The `is_finite` fallback is gmsh's documented `Mesh.MeshSizeMax` default,
+    // so degenerate input degrades to "no cap" rather than propagating a
+    // nonsense clamp. Validating `vertex_sizes` is the caller's job and is
+    // already done at `reify_solver_elastic::volume_refine`'s entry point.
+    //
+    // Net effect: this function is now hermetic with respect to the global
+    // mesh-size clamp — its output depends only on its own arguments, not on
+    // what ran before it in the process.
+    let max_hint = vertex_sizes
+        .iter()
+        .copied()
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let max_hint = if max_hint.is_finite() { max_hint } else { 1.0e22 };
+    ffi::option_set_number("Mesh.MeshSizeMin", 0.0)?;
+    ffi::option_set_number("Mesh.MeshSizeMax", max_hint)?;
 
     // For each 0D corner entity created by classify_surfaces + create_geometry,
     // map the corner back to its original input surface vertex by **coordinate
