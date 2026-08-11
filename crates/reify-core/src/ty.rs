@@ -150,11 +150,17 @@
 //! whose `[0][0]` happens to agree sails through.  That inference weakness
 //! pre-dates this rule and was cosmetic while the quantity was never compared;
 //! this ruling makes it load-bearing for a diagnostic.  No corpus site trips it
-//! today (`no_example_emits_ctor_field_conformance_diagnostics` is green).  The
-//! fix — widen `matrix_shape` to detect heterogeneous cells and degrade to
-//! `Type::dimensionless_scalar()`, which would make the slot yield no dimension
-//! and the rule fall silent — is out of this ruling's scope (`math_signatures.rs`
-//! is outside its locks) and is tracked by task 5889.
+//! today (`no_example_emits_ctor_field_conformance_diagnostics` is green).
+//!
+//! Task 6159's param-side tightening ADDS AN INSTANCE of that same failure
+//! shape: a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param
+//! can now be rejected on cell `[0][0]` alone, where before only a dimensioned
+//! param slot could trip it.  The sibling `list_shape` (`vec` / `diag`) has the
+//! same first-ELEMENT weakness one rank down.  The fix — widen both to detect
+//! heterogeneous cells/elements and degrade to `Type::dimensionless_scalar()`,
+//! which would make the slot yield no dimension and the rule fall silent — is
+//! out of both rulings' scope and is tracked by task 5889, which owns it;
+//! `math_signatures.rs` carries the matching note at each function.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
 //! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and

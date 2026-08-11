@@ -523,6 +523,16 @@ fn scalar_or_real(dim: DimensionVector) -> Type {
 /// - otherwise → `(0, <innermost List element>)` — the DEGRADE path (D7):
 ///   length unknown, quantity recovered from the arg's `Type::List` where
 ///   possible, defaulting to `Type::dimensionless_scalar()`.
+///
+/// The FIRST-ELEMENT quantity inference is no longer cosmetic. Since task 5766
+/// it is the ARG-side input to the quantity-slot conformance rule
+/// (`crates/reify-compiler/src/conformance/mod.rs`, normative in
+/// `crates/reify-core/src/ty.rs`), so it is load-bearing for a REJECTION
+/// diagnostic on dimension-HETEROGENEOUS literals. Task 5889 owns the widening
+/// (detect heterogeneous elements and degrade to `Type::dimensionless_scalar()`,
+/// which makes the rule fall silent by construction); it is deliberately not
+/// done here. Same weakness as [`matrix_shape`] one rank down — this one feeds
+/// `vec` / `diag`.
 fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(elems) = &arg.kind {
         let quantity = elems
@@ -541,6 +551,28 @@ fn list_shape(arg: &CompiledExpr) -> (usize, Type) {
 ///   `(cells.len(), cells[0].result_type)` — exact column count (an M×N matrix
 ///   projects to `n = N`, per design decision D5).
 /// - otherwise → `(0, <innermost List element>)` — DEGRADE (D7).
+///
+/// The FIRST-CELL quantity inference — cell `[0][0]` decides the WHOLE matrix's
+/// quantity — is no longer cosmetic. Since task 5766 it is the ARG-side input to
+/// the quantity-slot conformance rule
+/// (`crates/reify-compiler/src/conformance/mod.rs`, normative in
+/// `crates/reify-core/src/ty.rs`), so it is load-bearing for a REJECTION
+/// diagnostic. It is therefore sound only for dimension-HOMOGENEOUS literals: a
+/// heterogeneous one — routine in this domain, e.g. a 6x6 stiffness/compliance
+/// matrix or a spatial screw-theory Jacobian mixing translational and rotational
+/// blocks — can be false-rejected when `[0][0]` disagrees with the declaration,
+/// and dually a genuinely wrong matrix whose `[0][0]` happens to agree sails
+/// through.
+///
+/// Task 6159's param-side tightening adds a NEW instance of the same failure
+/// shape: a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param,
+/// where previously only a dimensioned param slot could trip it.
+///
+/// Task 5889 OWNS the widening (detect heterogeneous cells and degrade to
+/// `Type::dimensionless_scalar()`, which makes the rule fall silent by
+/// construction). It is deliberately not done here — 6159 is a conformance-rule
+/// task and this is a doc-only cross-reference. No corpus site trips it today
+/// (`no_example_emits_ctor_field_conformance_diagnostics` is green).
 fn matrix_shape(arg: &CompiledExpr) -> (usize, Type) {
     if let CompiledExprKind::ListLiteral(rows) = &arg.kind
         && let Some(CompiledExprKind::ListLiteral(cells)) = rows.first().map(|r| &r.kind)
