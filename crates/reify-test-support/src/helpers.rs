@@ -1,5 +1,7 @@
 //! Pipeline helpers for parsing, compiling, and evaluating Reify source in tests.
 
+use std::path::Path;
+
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticLabel, ModulePath, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind};
@@ -31,6 +33,53 @@ pub fn collect_value_ref_members(expr: &CompiledExpr) -> Vec<String> {
         }
     });
     members
+}
+
+/// Return the subset of `rel_paths` that have no filesystem entry at
+/// `dir.join(rel)`.
+///
+/// This is the single source of truth for the SKIP_SET dead-key check — the
+/// guard that catches a skip-list entry naming a file that has since been
+/// renamed or deleted, which would otherwise silently disable coverage
+/// forever. It is the canonical replacement for the per-file copies of this
+/// `Path::exists` filter that existed in
+/// `crates/reify-compiler/tests/examples_smoke.rs` (over a `(path, reason)`
+/// two-tuple `SKIP_SET`) and
+/// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs` (over a
+/// `(path, SkipKind, reason)` three-tuple `SKIP_SET`); both now route their
+/// guard through this function.
+///
+/// # Contracts callers may rely on
+///
+/// - **The full offending set is returned.** This never short-circuits on the
+///   first miss, so a caller can report every stale key in one panic instead
+///   of forcing an operator to fix them one run at a time.
+/// - **Input order is preserved** (`filter` is order-preserving), so callers
+///   need not sort to get a stable, reviewable failure message.
+///
+/// # Arity is the caller's problem
+///
+/// Skip lists carry per-file metadata of differing shape, so this takes a
+/// plain iterator of relative paths and callers project their own tuple away
+/// at the call boundary — `SKIP_SET.iter().map(|(rel, _)| *rel)` for a
+/// two-tuple, `.map(|(rel, _, _)| *rel)` for a three-tuple. That is what lets
+/// both `SKIP_SET` consts share one implementation while staying private to
+/// their own crate: no cross-crate coupling of the skip lists is created or
+/// implied.
+///
+/// # Filesystem semantics
+///
+/// Existence is [`Path::exists`], which follows symlinks and does not
+/// distinguish a file from a directory. A broken symlink, or a path whose
+/// parent cannot be read, therefore reports as *missing*.
+pub fn missing_paths_under<'a>(
+    dir: &Path,
+    rel_paths: impl IntoIterator<Item = &'a str>,
+) -> Vec<&'a str> {
+    rel_paths
+        .into_iter()
+        .filter(|rel| !dir.join(rel).exists())
+        .collect()
 }
 
 /// Create a new `Engine` backed by a fresh `MockConstraintChecker` and no
