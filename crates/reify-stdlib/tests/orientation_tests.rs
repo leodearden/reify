@@ -262,3 +262,108 @@ fn integration_orient_to_euler_subject_first_returns_angle_dimensioned_list() {
         }
     }
 }
+
+// ── The raw String convention path is REMOVED (task #6082, item-4 ruling) ─────
+//
+// The qualified `EulerConvention` enum value is now the ONLY accepted form on
+// both builtins. A sweep of all tracked `.ri` files found ZERO call sites of
+// either builtin, so the usual warn-mode phase would have warned nobody; the
+// path is removed outright instead. Removing it also closes the
+// case-sensitivity trap, which lived entirely in the String arm ("XYZ" → Undef
+// while "xyz" worked).
+
+/// The twelve conventions, uppercase as the enum declares them. The removed
+/// path accepted their lowercase spellings.
+const ALL_CONVENTIONS: [&str; 12] = [
+    "XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX", "XYX", "XZX", "YXY", "YZY", "ZXZ", "ZYZ",
+];
+
+/// Build a reference quaternion via the enum path, for feeding the decomposer.
+fn reference_quat(variant: &str) -> Value {
+    eval_builtin(
+        "orient_euler",
+        &[convention(variant), Value::Real(0.3), Value::Real(0.5), Value::Real(-0.2)],
+    )
+}
+
+/// The exact call named by the ruling: a lowercase string convention on the
+/// decomposer must no longer decompose.
+#[test]
+fn integration_orient_to_euler_string_convention_returns_undef() {
+    let q = reference_quat("ZYX");
+    let result = eval_builtin("orient_to_euler", &[q, Value::String("zyx".to_string())]);
+    assert!(
+        result.is_undef(),
+        "orient_to_euler(q, String \"zyx\") should return Undef — the String convention \
+         path is removed; got {result:?}"
+    );
+}
+
+/// The mirror call on the constructor.
+#[test]
+fn integration_orient_euler_string_convention_returns_undef() {
+    let result = eval_builtin(
+        "orient_euler",
+        &[
+            Value::String("xyz".to_string()),
+            Value::Real(0.2),
+            Value::Real(0.3),
+            Value::Real(-0.1),
+        ],
+    );
+    assert!(
+        result.is_undef(),
+        "orient_euler(String \"xyz\", …) should return Undef — the String convention \
+         path is removed; got {result:?}"
+    );
+}
+
+/// No convention survives as a String, in either case spelling, on either
+/// builtin. The uppercase spellings always returned Undef (the removed arm was
+/// case-sensitive); the lowercase ones are what this step closes.
+#[test]
+fn integration_no_string_convention_is_accepted_on_either_builtin() {
+    for variant in ALL_CONVENTIONS {
+        for spelling in [variant.to_lowercase(), variant.to_string()] {
+            let built = eval_builtin(
+                "orient_euler",
+                &[
+                    Value::String(spelling.clone()),
+                    Value::Real(0.2),
+                    Value::Real(0.3),
+                    Value::Real(-0.1),
+                ],
+            );
+            assert!(
+                built.is_undef(),
+                "orient_euler(String {spelling:?}, …) should return Undef, got {built:?}"
+            );
+
+            let q = reference_quat(variant);
+            let back = eval_builtin("orient_to_euler", &[q, Value::String(spelling.clone())]);
+            assert!(
+                back.is_undef(),
+                "orient_to_euler(q, String {spelling:?}) should return Undef, got {back:?}"
+            );
+        }
+    }
+}
+
+/// Control: removing the String arm must not disturb the enum arm. Every one of
+/// the twelve conventions still round-trips through the qualified enum value.
+#[test]
+fn integration_all_twelve_conventions_still_work_via_the_enum() {
+    for variant in ALL_CONVENTIONS {
+        let q = reference_quat(variant);
+        assert!(
+            matches!(q, Value::Orientation { .. }),
+            "orient_euler(EulerConvention.{variant}, …) should build an Orientation, got {q:?}"
+        );
+        let back = eval_builtin("orient_to_euler", &[q, convention(variant)]);
+        assert!(
+            euler_extract(&back).is_some(),
+            "orient_to_euler(q, EulerConvention.{variant}) should return a 3-element \
+             Angle list, got {back:?}"
+        );
+    }
+}
