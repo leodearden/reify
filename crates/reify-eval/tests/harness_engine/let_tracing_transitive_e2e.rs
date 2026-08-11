@@ -68,11 +68,18 @@ const ALPHA_FIXTURE_PATH: &str = "docs/prds/v0_6/fixtures/discrete_let_cont.ri";
 ///
 /// Closing that properly means either relocating the fixture under
 /// `crates/reify-eval/tests/fixtures/` (and having the PRD reference it) or
-/// adding it to `scripts/verify-pipeline-paths.txt` — both outside this task's
-/// lock set, so both are filed as follow-up rather than done here. What IS done
-/// here is making the failure self-describing: the panic names the missing
-/// path, the two sanctioned repairs, and the fact that a docs-only commit is
-/// the likely cause, so whoever hits it does not have to re-derive any of that.
+/// adding it to `scripts/verify-pipeline-paths.txt`. Re-raised by review and
+/// re-deferred deliberately: BOTH repairs edit files outside this task's lock
+/// set — the first needs `docs/prds/v0_6/discrete-cost-minimisation.md` and the
+/// deletion of the `docs/` original, the second a verify-pipeline manifest —
+/// and a half-done relocation that leaves a copy behind is strictly WORSE than
+/// today, because it reintroduces exactly the stale-paraphrase failure the
+/// disk read exists to prevent. Carried as its own low-priority backlog item.
+///
+/// What IS done here is making the failure self-describing: the panic names the
+/// missing path, the two sanctioned repairs, and the fact that a docs-only
+/// commit is the likely cause, so whoever hits it does not have to re-derive
+/// any of that.
 fn alpha_fixture_source() -> String {
     let path = workspace_root().join(ALPHA_FIXTURE_PATH);
     std::fs::read_to_string(&path).unwrap_or_else(|e| {
