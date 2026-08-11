@@ -10745,8 +10745,8 @@ mod tests {
     fn dimension_unit_label_mass_density_uses_curated_registry_name() {
         assert_eq!(
             dimension_unit_label(&DimensionVector::MASS_DENSITY),
-            "kg/m\u{00B3}",
-            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m³\", not compose \"kg·m^-3\""
+            "kg/m^3",
+            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m^3\", not compose \"kg·m^-3\""
         );
     }
 
@@ -10760,8 +10760,8 @@ mod tests {
         };
         assert_eq!(
             v.format_hover(),
-            "1270 kg/m\u{00B3}",
-            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m³\""
+            "1270 kg/m^3",
+            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m^3\""
         );
     }
 
@@ -10886,7 +10886,7 @@ mod tests {
         );
         assert_eq!(
             resolve_display(1270.0, &DimensionVector::MASS_DENSITY, None),
-            ("1270".to_string(), "kg/m\u{00B3}".to_string())
+            ("1270".to_string(), "kg/m^3".to_string())
         );
         assert_eq!(
             resolve_display(250.0, &DimensionVector::FORCE, None),
@@ -10929,7 +10929,7 @@ mod tests {
         );
         assert_eq!(
             resolve_display(0.0045, &DimensionVector::AREA, None),
-            ("45".to_string(), "cm\u{00B2}".to_string())
+            ("45".to_string(), "cm^2".to_string())
         );
         assert_eq!(
             resolve_display(0.007, &DimensionVector::VOLUME, None),
@@ -11001,7 +11001,7 @@ mod tests {
                 DimensionVector::MASS_DENSITY,
                 7850.0,
                 "7850",
-                "kg/m\u{00B3}",
+                "kg/m^3",
             ),
             // Structurally excluded (`auto_scale: None`).
             (DimensionVector::ANGLE, std::f64::consts::PI, "180", "deg"),
@@ -11077,7 +11077,7 @@ mod tests {
             resolve_display(0.5, &DimensionVector::AREA, None),
             (
                 "500\u{00D7}10\u{00B3}".to_string(),
-                "mm\u{00B2}".to_string()
+                "mm^2".to_string()
             ),
             "no Area rung lands in band at 0.5 m²"
         );
@@ -11092,7 +11092,7 @@ mod tests {
             resolve_display(5000.0, &DimensionVector::VOLUME, None),
             (
                 "5\u{00D7}10\u{00B9}\u{00B2}".to_string(),
-                "mm\u{00B3}".to_string()
+                "mm^3".to_string()
             )
         );
 
@@ -11112,7 +11112,7 @@ mod tests {
             resolve_display(0.5678, &DimensionVector::AREA, None),
             (
                 "567.8\u{00D7}10\u{00B3}".to_string(),
-                "mm\u{00B2}".to_string()
+                "mm^2".to_string()
             )
         );
     }
@@ -11312,7 +11312,7 @@ mod tests {
         assert_eq!(
             resolve_display(0.007, &DimensionVector::VOLUME, Some(&liters)),
             ("7".to_string(), "L".to_string()),
-            "explicit preference overrides the registry default rung (mm\u{00B3})"
+            "explicit preference overrides the registry default rung (mm^3)"
         );
 
         let cm = DisplayPreference::new("cm", 1e-2);
