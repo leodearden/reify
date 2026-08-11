@@ -86,8 +86,8 @@ PRD §4.10/§5. Run manually or from a /verify session with a real reify-gui.
 |------|------|---------|
 | `open_menu` | `{name}` | `{ok, open}` — clicks `[data-testid=menu-trigger-<name>]` |
 | `click_element` | `{testId, viewportId?}` | `{ok}` — `viewportId` picks which pane's control to click |
-| `expand_tree_node` | `{testId}` | `{ok}` |
-| `collapse_tree_node` | `{testId}` | `{ok}` |
+| `expand_tree_node` | `{path, panel?}` | `{ok, path, expanded}` — `panel` selects `'design'` (default) or `'constraint'`; idempotent, no click dispatched if already expanded |
+| `collapse_tree_node` | `{path, panel?}` | `{ok, path, expanded}` — `panel` selects `'design'` (default) or `'constraint'`; idempotent, no click dispatched if already collapsed. In the constraint panel, clicking a non-expandable row changes selection but not expansion, so `expanded` can come back equal to the pre-call state |
 
 ### C2 — Layout
 
