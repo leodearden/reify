@@ -2328,6 +2328,47 @@ fn vec3_matching_dimension_at_dimensioned_vector_param_stays_clean() {
     );
 }
 
+const SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS: &str = r#"module test.vec3_dimensioned_at_dimensionless
+structure def Frame { param dir : Vector3<Dimensionless> }
+structure def Root {
+    let f = Frame(dir: vec3(1m, 0m, 0m))
+}
+"#;
+
+/// THE PARAM-SIDE RULING (task 6159), `.ri`/ctor seam: a concretely-dimensioned
+/// `vec3` at a `Vector3<Dimensionless>` param is REJECTED.
+///
+/// The ctor-path (Warning) twin of `conformance/mod.rs`'s
+/// `dimensionless_quantity_param_rejects_dimensioned_vector_arg` (fn-call path,
+/// Error). Routing through `assert_single_arg_type_mismatch_warning` pins code +
+/// Warning severity + param name for this cell from birth, so the rule's
+/// severity split cannot drift silently at the new leg.
+///
+/// This INVERTS task 5766's symmetric tolerance on the param side only. Its
+/// enabling premise is task 5848's landed ruling that direction/axis fields are
+/// `Vec3<Dimensionless>` — `stdlib/constitutive.ri`'s `x_axis`/`y_axis`/`z_axis`,
+/// `stdlib/kinematic.ri`'s `axis`, `stdlib/fea_multi_case.ri`'s `direction` —
+/// which makes that spelling an assertion of unit-lessness rather than the
+/// grammar workaround `constitutive.ri` once called it. Basis and asymmetry:
+/// `crates/reify-core/src/ty.rs`.
+#[test]
+fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
+    // Non-vacuity guard — see `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`.
+    // Without it a fixture that failed to resolve `Vector3<Dimensionless>` would
+    // emit zero ctor-conformance diagnostics and read as a RULE failure.
+    let module = compile_source_with_stdlib(SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS);
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must compile cleanly, got: {:?}",
+        errors_only(&module)
+    );
+    assert_single_arg_type_mismatch_warning(
+        SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS,
+        "dir",
+        "Vector3<Dimensionless> ← Vector3<Length>",
+    );
+}
+
 const SRC_VECTOR_GIVEN_STRING: &str = r#"module test.vector_string
 structure def Joint { param axis : Vector3<Length> }
 structure def Root {

@@ -7859,6 +7859,44 @@ mod tests {
         );
     }
 
+    /// THE PARAM-SIDE RULING (task 6159): a DIMENSIONLESS param slot REJECTS a
+    /// concretely-dimensioned arg.
+    ///
+    /// This is where the ruling's asymmetry is pinned from the strict side.
+    /// (a-i)/(a-ii) hold the rule tolerant when either side declines to name a
+    /// dimension via `ScalarParam`, and
+    /// `vector_param_accepts_dimensionless_vector_arg` holds the ARG side
+    /// tolerant when it is a dimensionless `Scalar`. The PARAM side is not the
+    /// same kind of thing: `.ri` REQUIRES the quantity type-arg
+    /// (`type_resolution.rs`'s `Vector3`/`Matrix`/`Tensor` arities), so a param's
+    /// slot is always a WRITTEN DECLARATION and never `infer_type()` output —
+    /// there is no absent spelling that could silently default to dimensionless.
+    /// Post task 5848 (merged), `Vector3<Dimensionless>` on a direction field is
+    /// a deliberate assertion of unit-lessness rather than a grammar workaround,
+    /// so a `Vector3<Length>` arg there is a real error.
+    ///
+    /// Ruling and its basis: `crates/reify-core/src/ty.rs`. The Warning half of
+    /// the severity split for this same cell is pinned by
+    /// `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
+    /// (`struct_ctor_field_conformance_tests.rs`).
+    #[test]
+    fn dimensionless_quantity_param_rejects_dimensioned_vector_arg() {
+        assert_quantity_slot_conflict(
+            Type::vec3(Type::dimensionless_scalar()),
+            Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
+            },
+            "direction",
+            "a Vector3<Length> arg at a DIMENSIONLESS Vector3<Dimensionless> param must be \
+             REJECTED (task 6159) — a param's quantity slot is a written declaration, never an \
+             erasure, so `Dimensionless` there asserts unit-lessness. The ARG-side tolerance \
+             leg is deliberately untouched (`vector_param_accepts_dimensionless_vector_arg`).",
+        );
+    }
+
     /// FENCE (b), task 5766: an `Int` quantity slot stays CLEAN.
     ///
     /// Pins the ty.rs convention's statement that `Value::Vector::infer_type()`
