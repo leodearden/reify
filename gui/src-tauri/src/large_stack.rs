@@ -14,10 +14,19 @@
 //! thread is never a tokio context — the same reason `debug_server::run_on_engine`
 //! already spawns a `std` thread for engine work.
 //!
-//! # Which entry points are in scope (and which deliberately are NOT)
+//! # Three tiers, and what each one covers
 //!
-//! WRAPPED — the compile-bearing paths, i.e. the ones that run a FULL recursive
-//! compile over source the user just handed us, of arbitrary nesting depth:
+//! The tiers differ in the LIFETIME of the 256 MiB mapping, not in its size. A
+//! 256 MiB stack is far above glibc's ~40 MiB thread-stack cache ceiling, so it
+//! is never recycled: a per-call spawn pays a fresh `mmap` + guard-page
+//! `mprotect` + `munmap` every time. Negligible against a full compile, pure
+//! overhead per slider-drag frame or per keystroke — which is what makes the
+//! third tier a separate thing rather than a nicety.
+//!
+//! **1. Per-call, SCOPED — [`run_on_large_stack`].** For the compile-bearing
+//! paths: a FULL recursive compile over source the user just handed us, of
+//! arbitrary nesting depth. Its scoped thread lets the closure BORROW
+//! caller-stack data, so these sites need no `Arc` clone.
 //!
 //! * `main.rs::open_file_engine` → `commands::open_file_engine_impl`
 //! * `main.rs::update_source` (the frontend-invoked Tauri command) →
@@ -28,26 +37,50 @@
 //!   highest-frequency full recompile; it also runs on the `FileWatcher`'s own
 //!   `std::thread::spawn` worker (default ~2 MiB stack), so it needs the
 //!   wrapper for the same reason a tokio worker does.
+//!
+//! **2. Per-call, FIRE-AND-FORGET — [`spawn_on_large_stack`].** For an async
+//! caller that must not block its runtime worker on a join.
+//!
 //! * `debug_server.rs::run_on_engine` → every debug/MCP engine closure, which
 //!   includes the compile-bearing `open_file` / `load_fixture` tools
 //!
-//! NOT WRAPPED, as a deliberate scope choice for task 5357 — `set_parameter`,
-//! `get_initial_state`, `export`, `get_entity_tree`, and the other projection /
-//! incremental-re-eval commands. Two reasons, stated honestly:
+//! **3. PERSISTENT lanes — [`run_on_worker`] (engine) and
+//! [`run_on_lsp_worker`] (LSP).** For high-frequency work, where a per-call
+//! mapping is the wrong mechanism. One thread per lane for the process lifetime;
+//! the per-call cost becomes a queue push and a channel round trip. The `'static`
+//! bound is the price (see [`run_on_worker`]).
 //!
-//! 1. The hazard task 5337 diagnosed is in the full compile. The commands above
-//!    instead walk or project a graph a PRIOR compile already built, so they are
-//!    not the diagnosed overflow site. This is not a proof that they cannot
-//!    recurse deeply — a traversal of an already-deep structure can — only that
-//!    they are outside the failure this task hardens.
-//! 2. `set_parameter` is the highest-frequency engine entry point (it fires per
-//!    slider-drag frame). A per-call [`COMPILE_STACK_SIZE`] mapping is the wrong
-//!    mechanism there (see the cost note on [`COMPILE_STACK_SIZE`]); covering
-//!    that path wants a persistent large-stack worker thread, not a fresh spawn
-//!    per frame. That is tracked as follow-up work rather than bolted on here.
+//! * ENGINE lane — the fourteen projection / incremental-re-eval Tauri commands:
+//!   `set_parameter` (per slider-drag frame), `get_initial_state`,
+//!   `sync_observed_demand`, `sync_demand`, `export`, `get_source_location`,
+//!   `get_entity_tree`, `get_entity_identity_map`, `get_mechanism_descriptors`,
+//!   `get_def_preview`, `get_containing_definition`,
+//!   `get_entity_at_source_location`, `get_active_fea_case`,
+//!   `set_active_fea_case`.
+//! * LSP lane — `main.rs::lsp_request` → `lsp_bridge::lsp_request_on_worker`,
+//!   which fires on effectively every keystroke and cursor move.
 //!
-//! So: "compile-bearing GUI work runs on a large stack" is the invariant this
-//! module establishes — NOT "all engine-bearing GUI work".
+//! # What is still NOT covered
+//!
+//! Two boundaries, stated as limits rather than left to be inferred:
+//!
+//! 1. **Four LSP methods.** `InProcessLsp::handle_request`'s
+//!    `textDocument/definition`, `prepareRename`, `rename` and `references` arms
+//!    each call `tokio::task::spawn_blocking`, so their compiler work executes on
+//!    tokio's BLOCKING POOL, whose threads take the std ~2 MiB default (nothing
+//!    under `gui/src-tauri` sets `thread_stack_size`). Putting `handle_request`
+//!    on a lane gives the big stack only to that thread's OWN frames, so the LSP
+//!    lane cannot help those four. Closing them needs a change in
+//!    `crates/reify-lsp/src/server.rs`, which is outside this module and would
+//!    also regress the stdio `reify lsp` CLI server (it relies on
+//!    `spawn_blocking` to keep its 2-worker runtime responsive). Tracked as
+//!    follow-up work.
+//! 2. **`main.rs::mcp_tool_call`** remains unrouted; it is task 5466's scope, and
+//!    joins the ENGINE lane as a lane choice rather than a redesign.
+//!
+//! So the invariant this module establishes is: "compile-bearing and
+//! high-frequency engine work, plus the inline LSP dispatch arms, run on a large
+//! stack" — NOT "all engine-bearing GUI work", and NOT "all of LSP".
 
 /// Stack size for the large-stack compile thread: 256 MiB.
 ///
