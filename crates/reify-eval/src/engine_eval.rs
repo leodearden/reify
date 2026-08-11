@@ -1619,6 +1619,18 @@ struct CellReadIndex<'t> {
     /// δ's INSTANCE-PATH → STRUCTURE-NAME map, built once at the same budgets
     /// δ's own call site uses so the two sides of the seam truncate identically.
     path_map: HashMap<String, String>,
+    /// MEMOIZED reverse read-graph (`reverse[d]` = the cells whose
+    /// `default_expr` reads `d`), built lazily on the first
+    /// [`Self::cells_reaching`] call and reused by every later one.
+    ///
+    /// It is a pure function of `cell_map` + `path_map` and does NOT depend on
+    /// the `auto_ids` argument, so rebuilding it per call is pure waste on a
+    /// path that runs per scope per eval (including `eval_cached`, i.e. the LSP
+    /// keystroke path). `OnceCell` rather than a `build`-time field because the
+    /// FORWARD-only consumers (`detect_underdetermined`,
+    /// [`build_dependent_cells`]'s closure stage) must not pay for a reverse
+    /// graph they never read.
+    reverse: std::cell::OnceCell<HashMap<ValueCellId, Vec<ValueCellId>>>,
 }
 
 impl<'t> CellReadIndex<'t> {
@@ -1643,7 +1655,11 @@ impl<'t> CellReadIndex<'t> {
             max_unfold_depth,
             max_unfold_nodes,
         );
-        Self { cell_map, path_map }
+        Self {
+            cell_map,
+            path_map,
+            reverse: std::cell::OnceCell::new(),
+        }
     }
 
     /// Identity for an already-template-keyed id (`normalize_cell_id` returns
@@ -1655,9 +1671,15 @@ impl<'t> CellReadIndex<'t> {
     /// FORWARD: every id transitively read by `seeds`, following each in-map
     /// cell's `default_expr` reads DOWNWARD. The seeds' own direct reads are
     /// included; the seed expressions themselves are not ids and so are not.
-    fn read_closure<I>(&self, seeds: I) -> HashSet<ValueCellId>
+    ///
+    /// The seed lifetime `'e` is deliberately INDEPENDENT of the index's own
+    /// `'t`: seeds are typically borrowed from a caller-local `filtered_constraints`
+    /// / `ObjectiveSet`, not from the `all_templates` slice the index borrows, so
+    /// tying the two would force a shared index to be re-borrowed at the shorter
+    /// of the two at every call site.
+    fn read_closure<'e, I>(&self, seeds: I) -> HashSet<ValueCellId>
     where
-        I: IntoIterator<Item = &'t CompiledExpr>,
+        I: IntoIterator<Item = &'e CompiledExpr>,
     {
         let mut closure: HashSet<ValueCellId> = HashSet::new();
         let mut frontier: Vec<ValueCellId> = Vec::new();
@@ -1696,15 +1718,21 @@ impl<'t> CellReadIndex<'t> {
         if auto_ids.is_empty() {
             return HashSet::new();
         }
-        let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
-        for (id, expr) in &self.cell_map {
-            for dep in crate::deps::extract_value_deps(expr) {
-                reverse
-                    .entry(self.normalize(dep))
-                    .or_default()
-                    .push(id.clone());
+        // MEMOIZED (task #5467 amendment): the reverse graph is a pure function
+        // of `cell_map`/`path_map` and independent of `auto_ids`, so N calls on
+        // one index cost ONE `extract_value_deps` sweep, not N.
+        let reverse = self.reverse.get_or_init(|| {
+            let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+            for (id, expr) in &self.cell_map {
+                for dep in crate::deps::extract_value_deps(expr) {
+                    reverse
+                        .entry(self.normalize(dep))
+                        .or_default()
+                        .push(id.clone());
+                }
             }
-        }
+            reverse
+        });
         let mut reaches: HashSet<ValueCellId> = HashSet::new();
         let mut frontier: Vec<ValueCellId> = auto_ids.iter().cloned().collect();
         while let Some(id) = frontier.pop() {
@@ -1739,7 +1767,17 @@ impl<'t> CellReadIndex<'t> {
 ///
 /// * `seed_exprs` — the ALREADY-EXPANDED objective term exprs + constraint exprs
 ///   (so `cost(self.descendants)` is already `[ValueRef(line_cost) ...].sum`).
-/// * `all_templates` — supplies every non-auto cell's `default_expr`, cross-scope.
+/// * `all_templates` — supplies the instance-path ALIAS walk of stage (g)
+///   ([`build_single_instance_alias_paths`]). The cross-scope `default_expr`
+///   lookup comes from `index`, not from here.
+/// * `index` — the CALLER'S already-built [`CellReadIndex`] over those same
+///   templates at those same budgets. Passed IN rather than built here (task
+///   #5467 amendment) because both callers — [`build_solver_problem`] and
+///   [`build_merged_solver_problem`] — already build one for LAYER 1's
+///   `cells_reaching`, and building a second doubles the per-scope cost of the
+///   `value_cells` sweep AND the budgeted
+///   [`crate::resolve_order::build_instance_path_structure_map`] unfold on a
+///   path that runs per scope per eval, `eval_cached` included.
 /// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
 ///   the single-scope builder; the cluster-wide union for the merged builder);
 ///   the reachability target for membership rule (b).
@@ -1822,17 +1860,19 @@ impl<'t> CellReadIndex<'t> {
 fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
     all_templates: &[TopologyTemplate],
+    index: &CellReadIndex<'_>,
     auto_ids: &HashSet<ValueCellId>,
     functions: &[CompiledFunction],
     max_unfold_depth: usize,
     max_unfold_nodes: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<(ValueCellId, CompiledExpr)> {
-    // (a)/(a′) Cross-template `cell_map` + δ's instance-path bridge, built ONCE
-    //          by the shared [`CellReadIndex`] (task #5467) so layers 1 and 4 —
-    //          `filter_constraints_reading_autos` and `detect_underdetermined` —
-    //          consume the SAME walk instead of each re-implementing it.
-    let index = CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes);
+    // (a)/(a′) Cross-template `cell_map` + δ's instance-path bridge, supplied by
+    //          the caller's shared [`CellReadIndex`] (task #5467) so layers 1
+    //          and 4 — `filter_constraints_reading_autos` and
+    //          `detect_underdetermined` — consume the SAME walk instead of each
+    //          re-implementing it, and so a problem build pays for the index
+    //          ONCE rather than once per consumer.
     let cell_map = &index.cell_map;
     let path_map = &index.path_map;
 
@@ -2271,8 +2311,15 @@ fn build_solver_problem(
 
     // LAYER 1 (task #5467 / PRD2 α): the auto-reaching non-auto cells for THIS
     // scope's autos, so a constraint reading an auto only through a `let` is
-    // still admitted. Built once per problem build and shared with the
-    // `build_dependent_cells` call below.
+    // still admitted. Built ONCE per problem build and genuinely shared with the
+    // `build_dependent_cells` call below, which takes `&read_index` rather than
+    // building a second one — `CellReadIndex::build` sweeps every template's
+    // `value_cells` AND runs the budgeted `build_instance_path_structure_map`
+    // unfold, and this function runs per scope in `ro.order` on both `eval` and
+    // `eval_cached` (the LSP keystroke path). `owned_auto_ids` is likewise built
+    // once and reused as `build_dependent_cells`' reachability target — the two
+    // sets were literally the same `map(|c| c.id.clone())` over
+    // `regular_auto_cells`.
     let read_index = CellReadIndex::build(all_templates, max_unfold_depth, max_unfold_nodes);
     let owned_auto_ids: HashSet<ValueCellId> =
         regular_auto_cells.iter().map(|cell| cell.id.clone()).collect();
@@ -2333,12 +2380,11 @@ fn build_solver_problem(
         if let Some(obj) = objective.as_ref() {
             seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
         }
-        let dep_auto_ids: HashSet<ValueCellId> =
-            regular_auto_cells.iter().map(|c| c.id.clone()).collect();
         build_dependent_cells(
             &seed_exprs,
             all_templates,
-            &dep_auto_ids,
+            &read_index,
+            &owned_auto_ids,
             &functions,
             max_unfold_depth,
             max_unfold_nodes,
@@ -2489,7 +2535,11 @@ fn build_merged_solver_problem(
     // LAYER 1 (task #5467 / PRD2 α): built ONCE outside the per-member loop
     // below, over the CLUSTER-WIDE auto union — the same #5014 semantics the
     // `auto_ids` set carries, so a member's constraint reading a co-solved
-    // sibling's auto THROUGH a `let` is picked up too.
+    // sibling's auto THROUGH a `let` is picked up too. Shared with the
+    // `build_dependent_cells` call at the tail (which takes `&read_index`), so a
+    // merged problem build pays for the template sweep + budgeted
+    // instance-path unfold once, not twice — same reuse, same reason, as
+    // `build_solver_problem`.
     let read_index = CellReadIndex::build(templates, max_unfold_depth, max_unfold_nodes);
     let owned_auto_ids: HashSet<ValueCellId> =
         auto_cells.iter().map(|cell| cell.id.clone()).collect();
@@ -2691,12 +2741,11 @@ fn build_merged_solver_problem(
         if let Some(obj) = objective.as_ref() {
             seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
         }
-        let dep_auto_ids: HashSet<ValueCellId> =
-            auto_cells.iter().map(|c| c.id.clone()).collect();
         build_dependent_cells(
             &seed_exprs,
             templates,
-            &dep_auto_ids,
+            &read_index,
+            &owned_auto_ids,
             &functions,
             max_unfold_depth,
             max_unfold_nodes,
@@ -11707,7 +11756,7 @@ mod dependent_cells_admissibility_tests {
     use reify_ir::{BinOp, CompiledExpr, CompiledFunction};
     use reify_test_support::{TopologyTemplateBuilder, binop, literal, mm, value_ref};
 
-    use super::build_dependent_cells;
+    use super::{CellReadIndex, build_dependent_cells};
 
     /// Expansion budgets for the instance-path bridge. Matching δ's own
     /// `build_instance_path_structure_map` fixtures (`resolve_order.rs`), these
@@ -11807,9 +11856,12 @@ mod dependent_cells_admissibility_tests {
         let no_fns: [CompiledFunction; 0] = [];
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let index =
+            CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
         let cells = build_dependent_cells(
             &seed_exprs,
             &templates,
+            &index,
             &auto_ids,
             &no_fns,
             TEST_MAX_UNFOLD_DEPTH,
@@ -11912,9 +11964,12 @@ mod dependent_cells_admissibility_tests {
         let no_fns: [CompiledFunction; 0] = [];
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let index =
+            CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
         let cells = build_dependent_cells(
             &seed_exprs,
             &templates,
+            &index,
             &auto_ids,
             &no_fns,
             TEST_MAX_UNFOLD_DEPTH,
@@ -12017,9 +12072,12 @@ mod dependent_cells_admissibility_tests {
         let no_fns: [CompiledFunction; 0] = [];
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let index =
+            CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
         let cells = build_dependent_cells(
             &seed_exprs,
             &templates,
+            &index,
             &auto_ids,
             &no_fns,
             TEST_MAX_UNFOLD_DEPTH,
