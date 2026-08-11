@@ -212,6 +212,20 @@ _VAC_OUT="$(_ratchet_check_nonempty "$_FAKE_FP" "$_FAKE_FP" 2>&1)" || _VAC_RC=$?
 assert "vacuity floor is silent + rc0 when the live set is non-empty" \
     bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_OUT" "$_VAC_RC"
 
+# BASELINE axis — the floor must AUTO-DISARM once the baseline is drained.
+# The ratchet is shrink-only (PRD 6.6: "After δ the baseline should be ≈
+# empty"), so when the last grandfathered entry is burned down a
+# 0-fingerprint live set becomes the CORRECT end state, not a vacuous pass.
+# A floor hardcoded at >= 1 would false-RED from that moment on, and could
+# only be defused by whoever removes the last baseline entry also
+# remembering to delete an assertion in a different file.  Gating on the
+# committed baseline being non-empty retires the floor at exactly the moment
+# the ratchet succeeds, with nobody having to remember anything.
+_VAC_DRAINED_RC=0
+_VAC_DRAINED_OUT="$(_ratchet_check_nonempty "" "" 2>&1)" || _VAC_DRAINED_RC=$?
+assert "vacuity floor auto-disarms (silent + rc0) when the committed baseline is itself empty" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_DRAINED_OUT" "$_VAC_DRAINED_RC"
+
 # -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
