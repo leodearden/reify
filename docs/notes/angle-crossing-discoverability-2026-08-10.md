@@ -92,9 +92,13 @@ examples/best_practices/INDEX.md:46:… Arc length is `r * theta / 1rad` …
 ```
 
 **HIT**, and it lands on the identity itself plus the compiling exemplar.
-This is the #5825 case: the INDEX row states in the anti-pattern column
-that unannotated `r * theta` silently yields `m·rad` rather than a Length,
-which is what an author burned by it will recognise.
+The INDEX row states in the anti-pattern column that unannotated
+`r * theta` silently yields `m·rad` rather than a Length, which is what an
+author burned by it will recognise. The durable owner of that residual is
+`docs/legibility/design-invariants.md` → "Crossing catalogue and
+identities" (the `s = rθ/η` identity and its arc-length discharge note);
+see the amendment pass below for why this paragraph no longer cites a task
+id for it.
 
 ### Q4 — "Hz to rad/s" / "angular frequency"
 
@@ -176,6 +180,100 @@ Both failures share a root cause worth recording: **content written in the
 doctrine's vocabulary is not discoverable by an author who only has the
 goal.** The unit names and the plain verbs are what a goal phrase reduces
 to, and neither survived the first drafting pass.
+
+## Amendment pass — review-driven, walked at `6ac1bb7ad5`
+
+A comprehensive review of the landed four-pack found that the walk above
+had scored its own strongest result on a rule that is **narrower than the
+section stated**. Q1 deliberately made the section heading the author's
+goal phrase and scored it a HIT on all three surfaces — but "turn this
+ratio into an angle" is also exactly what an author holding *opposite over
+adjacent* greps, and the section taught `* 1rad` as if it were the only
+answer. It is the answer for an **arc-measure** ratio only. Measured on the
+built binary (`target/release/reify`, 2026-08-10 17:07):
+
+```
+$ ./target/release/reify eval /tmp/probe2_6181.ri     # o/a = 2.5 both ways
+P2.theta      = 2.5 rad                  # (s / r) * 1rad   — arc measure
+P2.theta_trig = 1.1902899496825317 rad   # atan(s / r)      — trigonometric
+```
+
+Both typecheck, so the type system gives **no** signal between them; the
+discoverability win was therefore routing trig-ratio authors to the wrong
+idiom. Putting the crossing on a producer *is* caught:
+
+```
+$ ./target/release/reify check /tmp/probe2_6181.ri    # let bad : Angle = atan(s / r) * 1rad
+error: let binding 'bad' declared `Scalar[rad]` but its initializer evaluates to `Scalar[rad^2]`
+EXIT=1
+```
+
+This also under-represented `INV-AD-1`, whose catalogue lists inverse trig /
+`phase` / `arg` and the geometry `angle` / `angle_between_surfaces` queries
+as *shipped* named Angle producers — `* 1rad` is one row of it, not the
+whole.
+
+### Re-walk of the affected queries
+
+| # | Goal phrase | Surface expected | Verdict | Evidence |
+|---|---|---|---|---|
+| 6 | "angle from opposite and adjacent" / "do I multiply an atan by 1rad" | the arc-measure vs trigonometric disambiguation | **HIT on all three surfaces** | `units.md:58`, `INDEX.md:46`, `SKILL.md:93` |
+| 1′ | "turn this ratio into an angle" (re-run) | heading still hits, now scoped one line later | **HIT, no longer misleading** | `units.md:54` → `units.md:58` |
+| 5′ | "why is torque N·m/rad" (re-run) | one-sentence crossing rationale, no task id | **PARTIAL, unchanged** — spelling still pending #5790 | `units.md:85` |
+
+```
+$ grep -rin "arc-measure" $S
+crates/reify-mcp/src/tools/chunks/units.md:58:**Which ratio, though.** This crossing is for an **arc-measure** ratio …
+examples/best_practices/INDEX.md:46:| `angle_crossings.ri` | An angle reading of an **arc-measure** ratio is an explicit crossing …
+.claude/skills/reify-design/SKILL.md:89:  only for an *arc-measure* ratio. `let theta : Angle = (s/r) * 1rad` to enter Angle,
+```
+
+The heading itself was deliberately **not** renamed: it is the Q1 hit, and
+renaming it would have traded a correctness fix for a discoverability
+regression. The disambiguation was placed immediately after the lead
+sentence instead, so a trig author lands on the heading and is redirected
+before reaching the code block.
+
+### Other changes in this pass
+
+1. **Stale task citations dropped.** The exemplar cited `#5825` for the
+   arc-length residual and `units.md` cited `#5799` for the torque
+   rationale. Both are `status: done`, so both cites were orphaned under
+   CLAUDE.md's convention — and neither is even the right owner: #5825's
+   own description says *"STILL OUT OF SCOPE: `arc = r * theta` evaluating
+   to `m·rad` … Needs its own task — do NOT fold it in"*, and #5799's
+   deliverable was re-dimensioning ROTATIONAL_STIFFNESS / ROTATIONAL_DAMPING
+   to rad⁻², not the torque dimension. Both now point at
+   `docs/legibility/design-invariants.md` (the "Crossing catalogue and
+   identities" discharge note and `INV-AD-1` respectively), which is the
+   durable owner. **No follow-up task was filed** for the arc-length
+   residual: the doctrine states plainly that *"no enforcement is possible
+   or chartered for the arc-length case itself — the teaching above is the
+   whole deliverable"*, and this leaf is that teaching.
+2. **The exemplar now pins the spelling the docs teach.** All three doc
+   surfaces teach `omega = 2*pi * f * 1rad`, but the executable line read
+   `2.0 * 3.14159265358979 * f * 1rad` — so the advertised "worked,
+   compile-gated exemplar" did not actually compile-gate the taught form,
+   and a best-practices file modelled a hand-expanded magic number. `pi` is
+   a built-in (`crates/reify-compiler/src/constants.rs:16`); the exemplar
+   now uses it and evaluates to `314.1592653589793 rad·s^-1`.
+3. **The constraints now discriminate.** The five original guards
+   (`r > 0mm`, `s > r`, `arc > 0mm`, `ratio > 1`, `f > 0Hz`) were all
+   trivially satisfied, so a regression that preserved dimensions while
+   moving magnitudes would have left the file green. They are now bands
+   around the measured values plus `theta_trig < theta`. **Honest scope:**
+   no automated corpus gate asserts constraint satisfaction —
+   `examples_smoke.rs` compiles only, the two `reify-eval` sweeps assert
+   zero stale-Undef and zero snapshot↔cache divergence, and
+   `auto_type_param_determinism_tests.rs` discards its `CheckResult` and
+   times the call (`let _ = check_source_with_stdlib(&src)`, :662). The
+   bands are enforced by `reify check`, which is the per-file command
+   `SKILL.md` already mandates before shipping — not by CI.
+4. **One verbatim copy of the compiler diagnostics.** The measured
+   diagnostic strings were transcribed in two ungated prose copies. The
+   exemplar (the compile-gated artifact) is now marked the canonical copy
+   and `units.md` paraphrases the error *shape*, following the
+   `design-invariants.md` "Canonical copy: this section" precedent.
 
 ## Scope note
 

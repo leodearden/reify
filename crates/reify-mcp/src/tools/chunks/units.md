@@ -55,6 +55,8 @@ Angle is the 8th base dimension (not dimensionless). Catches `torque + energy` a
 
 When you have a geometric ratio and want an angle — or you have an angle and want a plain number, an arc length, or a rate — you write the crossing yourself: **multiply by `1rad`** to enter Angle, **divide by `1rad`** to leave it. `rad` never appears out of a quotient on its own.
 
+**Which ratio, though.** This crossing is for an **arc-measure** ratio — `s / r`, a length over a length that *is* an angle in radians. A **trigonometric** ratio already has a named producer and needs no crossing: `atan`, `atan2`, `asin`, `acos` and the geometry `angle` / `angle_between_surfaces` queries all return `Angle` directly. Do not put `* 1rad` on a producer's result or its argument — `atan(o / a) * 1rad` is a hard error (it declares `rad` but computes `rad^2`). Picking the wrong one of the two readings is otherwise silent: for `o / a = 2.5`, `atan(o / a)` is `1.19… rad` and `(o / a) * 1rad` is `2.5 rad`, and both typecheck. `* 1rad` is one row of the crossing catalogue, not the whole of it.
+
 ```
 let theta : Angle  = (s / r) * 1rad      // ENTER: ratio -> Angle       (2.5 rad)
 let ratio          = theta / 1rad        // LEAVE: Angle -> plain ratio (2.5)
@@ -66,9 +68,11 @@ Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 
 ```
-let theta : Angle  = s / r      // error: declared `Scalar[rad]` but its initializer evaluates to `Real`
-let arc   : Length = r * theta  // error: declared `Scalar[m]` but its initializer evaluates to `Scalar[m·rad]`
+let theta : Angle  = s / r      // error: declares rad, initializer is dimensionless
+let arc   : Length = r * theta  // error: declares m, initializer is m·rad
 ```
+
+The verbatim compiler wording for these is transcribed once, in the compile-gated exemplar `examples/best_practices/angle_crossings.ri` — treat that file as the canonical copy and this one as a paraphrase of the error *shape*.
 
 Drop the annotation and the error becomes silence instead: `let arc = r * theta` evaluates clean to `0.005 m·rad`, which is not a Length and will not compose with one.
 
@@ -78,6 +82,6 @@ No operator over fields or tensors manufactures `rad` from a derivative — grad
 
 **Angular frequency is a different crossing** — this is the one to reach for to get from a frequency in `Hz` to an angular velocity in `rad/s`. `omega = 2*pi * f * 1rad` carries 2π rad/cycle, a distinct constant from the η = 1 rad above — see "The 2π rad/cycle distinction (D4)". There is no `cycle` unit to write; the typed layer forces the distinction, because `Frequency` and `AngularVelocity` are different types and neither silently stands in for the other.
 
-**Why torque is N·m/rad** (#5799): the same crossing. Work is `tau * theta` and `theta` carries `rad`, so `tau` must carry `rad^-1` for the product to close on Energy — `INV-AD-1`.
+**Why torque is N·m/rad**: the same crossing. Work is `tau * theta` and `theta` carries `rad`, so `tau` must carry `rad^-1` for the product to close on Energy — `INV-AD-1` in `docs/legibility/design-invariants.md` carries the argument. That is the *why*; how to spell a torque literal is not taught here.
 
 Worked, compile-gated exemplar: `examples/best_practices/angle_crossings.ri`.
