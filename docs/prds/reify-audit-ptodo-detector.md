@@ -200,6 +200,29 @@ checkout and a task worktree. **Every seeded line must be hand-inspected before 
 — a false positive seeded here is permanent by design, and worse, teaches later readers
 that the cite is real debt.
 
+**Vacuity floor on the live set (2026-08-11, task #6127, esc-6087-3).** The ratchet's
+oracle is `comm -23 <live> <baseline>` — subset-of — and the empty set is a subset of
+everything. A generator run that emitted **zero** fingerprints therefore satisfies it
+trivially, and the check reports green having asserted nothing. That is not hypothetical:
+a stale or reverted `ptodo-baseline-gen` produces exactly that, and mtime is a weak oracle
+against it because the freshness guard's epoch only tracks commits under
+`crates/reify-audit/` (`scripts/reify-audit-freshness.sh`, SCOPE LIMITATION). The check
+therefore runs **two** assertions in order: a non-emptiness floor on the live set, then
+the subset check. Measured basis at the time of writing: **4** structural fingerprints in
+the degraded no-task-DB mode the assertion runs under, against **5** committed baseline
+entries — the floor is a structural "did the detector report anything at all" oracle, not
+a tuned threshold. The floor is **gated on the committed baseline being non-empty**, so it
+retires itself automatically when the shrink-only ratchet drains the baseline to empty,
+the end state this section already anticipates ("After δ the baseline should be ≈ empty");
+nobody has to remember to delete an assertion. **One partition is deliberately uncovered:**
+if burn-down ever leaves a baseline holding only *liveness-derived* kinds (`orphaned` and
+friends, which §6.7 drops when the task DB is absent), the live set can legitimately be 0
+while the baseline is non-empty and the floor would false-RED. Classifying fingerprint
+kinds in the shell test would duplicate detector knowledge this section requires to live
+only in `ptodo-baseline-gen`, so that case is instead named as the second hypothesis in the
+floor's own diagnostic; the remedy is to remove the floor together with the last structural
+baseline entry.
+
 ### 6.7 Degradation contract — **fail-soft, mirroring the 4109 jcodemunch contract**
 
 `.taskmaster/` is untracked → the task DB is absent in task worktrees, where the infra

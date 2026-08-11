@@ -2,9 +2,12 @@
 # tests/infra/test_reify_audit_ptodo.sh
 #
 # Infra gate for the PTODO detector (task e / #4557):
-#   (a) RATCHET  — live ptodo-baseline-gen fingerprints must be a subset of
-#                  the committed crates/reify-audit/ptodo-baseline.txt
-#                  (live - baseline = empty).
+#   (a) RATCHET  — TWO assertions, in this order: a non-emptiness FLOOR on
+#                  the live fingerprint set, then the subset check — live
+#                  ptodo-baseline-gen fingerprints must be a subset of the
+#                  committed crates/reify-audit/ptodo-baseline.txt
+#                  (live - baseline = empty).  Subset-of alone is trivially
+#                  satisfied by the empty set; see RATCHET VACUITY FLOOR below.
 #   (b) SCENARIO 13 (hermetic) — a git-tracked code file carrying a fresh
 #                  untracked marker produces fingerprints absent from an empty
 #                  baseline, proving the ratchet fires red on new violations.
@@ -57,6 +60,25 @@
 #   * the $RAN tracker refuses to exit 0 unless at least one scenario block
 #     actually executed.
 # Both are pinned by tests/infra/test_reify_audit_ptodo_budget_skip.sh.
+#
+# RATCHET VACUITY FLOOR (task #6127, esc-6087-3).  The scenario-(a)-level
+# analogue of the block above: that floor stops a run which executed no
+# SCENARIOS from reporting green; this one stops a scenario that executed with
+# no DETECTOR OUTPUT from doing the same.  Scenario (a)'s oracle is
+# `comm -23 <live> <baseline>` — subset-of — and the empty set is a subset of
+# everything, so a generator run that emitted ZERO fingerprints satisfies it
+# trivially: the ratchet reports green having asserted nothing.  A stale or
+# reverted ptodo-baseline-gen produces exactly that, and mtime is a weak oracle
+# against it — the freshness guard's epoch only tracks commits under
+# crates/reify-audit/ (scripts/reify-audit-freshness.sh, SCOPE LIMITATION
+# :28-36), so a binary can read "fresh" while predating a behavioural change
+# made anywhere else.  _ratchet_check_nonempty is that floor, asserted BEFORE
+# the subset check so the precondition is reported before the thing it
+# conditions.  It self-disarms once the committed baseline is itself empty,
+# which the shrink-only ratchet is expected to reach (PRD 6.6, "After δ the
+# baseline should be ≈ empty").  The in-file meta-test below pins its
+# SEMANTICS; the WIRING into scenario (a), which that meta-test cannot observe,
+# is pinned by tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
 #
 # ACCEPTED UNCOVERED SKIP: the required-tool loop below still exits 0 before
 # any scenario runs when git/cargo/comm/sort/sqlite3 is off PATH, and the
