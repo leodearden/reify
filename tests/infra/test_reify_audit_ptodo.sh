@@ -130,6 +130,43 @@ assert "ratchet check is silent + rc0 when live set is empty" \
     bash -c '[ -z "$1" ]' -- "$_EMPTY"
 
 # -----------------------------------------------------------------------
+# VACUITY-FLOOR meta-test (task #6127, esc-6087-3).  The subset oracle above
+# is trivially satisfied by the EMPTY set: a generator run that emitted zero
+# fingerprints makes `comm -23 live baseline` empty, _ratchet_check_subset
+# returns 0, and scenario (a) reports green having asserted nothing.
+# _ratchet_check_nonempty is the floor that closes it.
+#
+# Same properties as the block above — unconditional, hermetic, driven by
+# synthetic strings, and placed BEFORE binary resolution so it runs
+# independently of RATCHET_SKIP.  It deliberately mints no temp files: the
+# single EXIT trap below (see "Single EXIT trap covers all temp paths") is
+# registered later, and a second `trap` here would silently replace it.
+#
+# Signature: _ratchet_check_nonempty <live-content> <baseline-content>, both
+# newline-joined STRINGS (matching _ratchet_check_subset's argument
+# convention) so it can be passed straight to assert() and land its
+# diagnostic in the on-FAIL captured-output dump.
+#
+# These two asserts pin the LIVE-SET axis with the baseline held non-empty;
+# the BASELINE axis (auto-disarm on a drained baseline) is pinned below.
+# The WIRING of the floor into scenario (a) — which this hermetic block
+# cannot see — is pinned by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+# -----------------------------------------------------------------------
+_VAC_DIAG="$(_ratchet_check_nonempty "" "$_FAKE_FP" 2>&1 1>/dev/null || true)"
+assert "vacuity floor fires on an empty live set, with the RATCHET VACUITY anchor + the stale-binary hypothesis" \
+    bash -c 'case "$1" in *"RATCHET VACUITY"*) ;; *) exit 1 ;; esac
+             case "$1" in *stale*) exit 0 ;; *) exit 1 ;; esac' -- "$_VAC_DIAG"
+
+# Positive control — a detector, not a constant failure: a non-empty live set
+# must be byte-for-byte silent and rc0, so an all-green suite's output is
+# unchanged (test_helpers.sh:48-51).
+_VAC_RC=0
+_VAC_OUT="$(_ratchet_check_nonempty "$_FAKE_FP" "$_FAKE_FP" 2>&1)" || _VAC_RC=$?
+assert "vacuity floor is silent + rc0 when the live set is non-empty" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_OUT" "$_VAC_RC"
+
+# -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
 # bins, incl. ptodo-baseline-gen) when the binary predates the last
