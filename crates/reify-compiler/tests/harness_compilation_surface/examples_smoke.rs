@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
+use reify_test_support::missing_paths_under;
+
 /// Absolute path to the workspace `examples/` directory, resolved at compile
 /// time from this crate's manifest directory (two levels up).
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
@@ -320,18 +322,44 @@ one diagnostic.";
 /// Sanity guard: every entry in SKIP_SET must name a relative path that actually
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
+///
+/// The existence filter itself is [`reify_test_support::missing_paths_under`],
+/// shared with the guard of the same name in
+/// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`, which
+/// projects its own three-tuple `SKIP_SET` through the same helper.  Nothing is
+/// asserted here about that file's skip list — only the filter is shared.
+///
+/// Every stale entry is reported in one panic rather than failing fast on the
+/// first, matching the corpus-wide-visibility principle this file applies to its
+/// other bulk guards; the reason string is re-joined from `SKIP_SET` so the
+/// mandatory justification still reaches the failure message.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
-    for (rel_path, reason) in SKIP_SET {
-        let path = Path::new(EXAMPLES_DIR).join(rel_path);
-        assert!(
-            path.exists(),
-            "SKIP_SET entry '{}' (reason: {}) does not exist under {}",
-            rel_path,
-            reason,
-            EXAMPLES_DIR,
-        );
+    let missing = missing_paths_under(
+        Path::new(EXAMPLES_DIR),
+        SKIP_SET.iter().map(|(rel, _)| *rel),
+    );
+    if missing.is_empty() {
+        return;
     }
+    let lines: Vec<String> = missing
+        .iter()
+        .map(|rel| {
+            let reason = SKIP_SET
+                .iter()
+                .find(|(p, _)| p == rel)
+                .map(|(_, r)| *r)
+                .unwrap_or("<no reason recorded>");
+            format!("  '{rel}' (reason: {reason})")
+        })
+        .collect();
+    panic!(
+        "SKIP_SET entry/entries name a relative path that does not exist under {}:\n{}\n\
+         A stale key silently disables coverage for a file that is no longer skipped — \
+         delete the entry or fix the path.",
+        EXAMPLES_DIR,
+        lines.join("\n")
+    );
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
