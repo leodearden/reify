@@ -299,6 +299,40 @@ fn signal_process_group(pid: u32, sig: &str) -> std::io::Result<ExitStatus> {
         .status()
 }
 
+/// Decide the outcome of a teardown: silent on success, loud on a leak.
+///
+/// Split out of [`Serve::drop`] so all three behaviours are directly testable
+/// with no serve in hand — which is the point, because the only test that
+/// drives a real teardown is `#[ignore]`d.
+///
+/// The gate is the OBSERVED outcome (`freed` — the port stopped accepting),
+/// never `kill`'s exit status. The buggy bare form returned 0 even for a
+/// group that does not exist, so a `status.success()` check would have been
+/// blind to the original defect; and once `--` is added, exit 1 (`No such
+/// process`) becomes the expected result of the `-KILL` escalation on the
+/// healthy path. The pgid and those statuses are therefore diagnostic detail,
+/// emitted by the caller on the line above this verdict.
+fn finish_teardown(freed: bool, port: u16, unwinding: bool) {
+    if freed {
+        return;
+    }
+    let message = format!(
+        "teardown failed: port {port} is still accepting connections — a \
+         jcodemunch serve is still listening and will keep indexing; this run \
+         leaked it. Find it with `ss -ltnp | grep {port}` and reclaim it by \
+         hand.",
+    );
+    if unwinding {
+        // Already unwinding from a failed assertion in the test body: a panic
+        // raised here would abort the process and swallow that assertion's
+        // message, which is strictly worse diagnosis for the case that matters
+        // most. The run is red either way, so report and let the unwind finish.
+        eprintln!("{message}");
+    } else {
+        panic!("{message}");
+    }
+}
+
 /// Render a `signal_process_group` outcome for a failure message.
 fn render_signal_outcome(sig: &str, outcome: Option<&std::io::Result<ExitStatus>>) -> String {
     match outcome {
@@ -350,15 +384,21 @@ impl Drop for Serve {
         let _ = self.child.kill();
         let _ = self.child.wait();
 
+        // Transport-level detail, emitted immediately before the verdict so
+        // the two read as one report. It cannot live inside
+        // `finish_teardown`: that function's signature is deliberately narrow
+        // enough to be called directly from a test with no serve in hand, and
+        // the pass/fail decision genuinely depends on nothing but `freed`.
         if !freed {
             eprintln!(
-                "warning: port {} still accepting connections after teardown \
-                 (pgid {pgid}; {}; {})",
+                "teardown diagnostics for port {}: pgid {pgid}; {}; {}\n{}",
                 self.port,
                 render_signal_outcome("-TERM", Some(&term)),
                 render_signal_outcome("-KILL", kill.as_ref()),
+                self.output(),
             );
         }
+        finish_teardown(freed, self.port, std::thread::panicking());
     }
 }
 
