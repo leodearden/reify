@@ -3073,7 +3073,7 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// rather than a bare placeholder — hence the `Cow` return: known arms
 /// borrow a `'static` string, the composed fallback owns a freshly
 /// formatted one.
-fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
+pub fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
         Cow::Borrowed("m")
     } else if *dim == DimensionVector::AREA {
