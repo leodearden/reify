@@ -7759,6 +7759,21 @@ mod tests {
              whichever the walk was entered with. Got {:?}",
             diagnostics[0].severity,
         );
+        // The message must name the QUANTITY slots, not just the whole types: at
+        // the Matrix/Tensor arm the family/arity difference the whole-type
+        // rendering leads with (`Tensor2x3` vs `Matrix3x3`) is exactly what this
+        // arm ACCEPTS, so it points the reader away from the actual cause.
+        assert!(
+            diagnostics[0].message.contains("quantity")
+                && diagnostics[0]
+                    .labels
+                    .iter()
+                    .any(|l| l.message.contains("quantity mismatch")),
+            "{why}\nthe diagnostic must be phrased around the quantity slot, got message {:?} \
+             and labels {:?}",
+            diagnostics[0].message,
+            diagnostics[0].labels,
+        );
     }
 
     /// FENCE (a-i), task 5766 unknown-ness boundary: a dimension-GENERIC param
