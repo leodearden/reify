@@ -1,0 +1,17 @@
+// EulerConvention argument-slot gate — OK fixture (task #6082).
+//
+// The no-false-positive control for euler_convention_arg_reject.ri: the SAME
+// two calls, with the convention passed as the qualified enum value that the
+// two Euler builtins now exclusively accept. This fixture must compile with
+// ZERO Error and ZERO Warning diagnostics.
+//
+// Note the deliberate argument-order asymmetry. `orient_euler` is a
+// CONSTRUCTOR, so its convention comes FIRST and selects the meaning of the
+// three angles that follow (R_xyz(a, b, c) notation). `orient_to_euler` is a
+// DECOMPOSER, so it is SUBJECT-first like its siblings orient_log(q) /
+// orient_to_axis_angle(q) / orient_inverse(q).
+
+structure def EulerArgOk {
+    let q      = orient_euler(EulerConvention.XYZ, 0.1, 0.2, 0.3)
+    let angles = orient_to_euler(q, EulerConvention.XYZ)
+}

@@ -1,0 +1,21 @@
+// EulerConvention argument-slot gate — reject fixture (task #6082).
+//
+// A String convention must be a COMPILE-TIME diagnostic, not a silent Undef at
+// eval. Task #6082 removed the raw lowercase-string convention path from both
+// Euler builtins; without a registered argument slot the removal is invisible
+// to the user until the value quietly evaluates to Undef.
+//
+// Exactly TWO Errors are expected, both DiagnosticCode::ArgTypeMismatch — one
+// per String convention below. Anti-cascade: no UnresolvedType or other
+// type-cascade noise. Both calls are otherwise well-formed (correct arity,
+// correct order, valid angles), so the convention slot is the only thing that
+// can be wrong.
+//
+// "XYZ" and "xyz" cover both spellings the removed path used to discriminate:
+// it accepted lowercase and silently rejected uppercase. Neither is a
+// convention any more.
+
+structure def EulerArgReject {
+    let q      = orient_euler("xyz", 0.1, 0.2, 0.3)
+    let angles = orient_to_euler(orient_identity(), "XYZ")
+}
