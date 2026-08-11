@@ -474,6 +474,18 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     # finding count; a non-zero exit is an infrastructure failure that must go red.
     env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
 
+    # VACUITY FLOOR (task #6127, esc-6087-3) — a precondition for the subset
+    # assertion below being meaningful: subset-of is trivially satisfied by the
+    # empty set, so a 0-fingerprint run would otherwise report green having
+    # detected nothing.  Reported FIRST, deliberately: a reader who saw only
+    # the subset assert fail would draw the wrong conclusion about why.  The
+    # wiring here (not just the helper) is pinned by
+    # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+    # $(cat ...) strips trailing newlines — correct and irrelevant, since the
+    # helper only counts non-blank lines.
+    assert "live generator emitted at least one fingerprint (subset oracle is not vacuous)" \
+        _ratchet_check_nonempty "$(cat "$LIVE_TMP")" "$(cat "$BASELINE")"
+
     # comm -23 requires both inputs sorted; the generator sorts internally but
     # sort -u here is defensive.
     NEW_IN_LIVE="$(comm -23 <(sort -u "$LIVE_TMP") <(sort -u "$BASELINE"))"
