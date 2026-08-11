@@ -291,33 +291,76 @@ pub(crate) fn expand_refs_through_dependent_cells(
     refs: &mut HashSet<ValueCellId>,
     auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
 ) -> Vec<ValueCellId> {
-    if auto_reads.is_empty() {
-        return Vec::new();
-    }
-    let reached: Vec<ValueCellId> = refs
-        .iter()
-        .filter_map(|id| auto_reads.get(id))
-        .flat_map(|autos| autos.iter().cloned())
-        .collect();
+    let reached = dependent_cell_reach_delta(refs, auto_reads);
     refs.extend(reached.iter().cloned());
     reached
 }
 
-/// The domain flag a bare auto param of this type contributes, mirroring
-/// `ConstraintClassifier`'s `ValueRef` arm exactly (numeric → `Dimensional`,
-/// `Bool` → `Logical`, anything else → no contribution).
+/// The REACH half of [`expand_refs_through_dependent_cells`], without the
+/// in-place widening: the autos `refs` reaches only THROUGH a dependent cell.
+///
+/// Split out so a caller that needs nothing but the delta — the objective-union
+/// step of [`decompose_into_components_with_reads`], which only ever maps the
+/// widened set down to auto-param INDICES — can skip cloning the whole ref set
+/// just to widen a copy of it. Both callers share this ONE body, so the two
+/// cannot drift out of lock-step (G7), which is the property the single
+/// expansion body exists to hold.
+///
+/// `auto_reads` is already transitive, so one pass closes the set, and the
+/// result may contain duplicates (and ids the caller already holds) — every
+/// consumer is duplicate-tolerant (`HashSet::extend`, `UnionFind::union`,
+/// `widen_domain`).
+pub(crate) fn dependent_cell_reach_delta(
+    refs: &HashSet<ValueCellId>,
+    auto_reads: &HashMap<ValueCellId, HashSet<ValueCellId>>,
+) -> Vec<ValueCellId> {
+    if auto_reads.is_empty() {
+        return Vec::new();
+    }
+    refs.iter()
+        .filter_map(|id| auto_reads.get(id))
+        .flat_map(|autos| autos.iter().cloned())
+        .collect()
+}
+
+/// The domain flag a bare auto param of this type contributes when it was
+/// reached only THROUGH a derived cell (`Scalar` → `Dimensional`, `Bool` →
+/// `Logical`, anything else → no contribution).
 ///
 /// `None` means "contributes nothing", which is NOT the same as `Dimensional`:
 /// `Dimensional` doubles as the classifier's empty-default, so folding a
 /// `String`/`Enum`-typed auto in as `Dimensional` would fabricate a numeric flag
 /// the classifier itself never sets.
+///
+/// # Why the numeric arm is `Scalar` only, and NOT `Type::is_numeric()`
+///
+/// This deliberately does NOT mirror `ConstraintClassifier`'s `ValueRef` arm,
+/// which uses `Type::is_numeric()` = `Int | Scalar`. The mirror would be wrong
+/// here because this function answers a ROUTING question, not a
+/// what-does-the-syntax-look-like question: the only reason to widen at all is
+/// that `SolverRegistry::solver_for` routes on `SubProblem.domain`, and a
+/// `Logical` verdict hands the component to `CpSatSolver`. `build_variable_domain`
+/// handles `Type::Bool`, `Type::Int` and `Type::Enum` NATIVELY and rejects only
+/// `Type::Scalar`, so `Scalar` is exactly the set of auto types that make a
+/// `Logical` routing unsafe.
+///
+/// Folding `Int` in as `Dimensional` would take `let ok = n > 5; constraint ok
+/// == true` over an `Int` auto from `Logical` to `CrossDomain` and route that
+/// purely-discrete component to the FALLBACK slot — a `DimensionalSolver` that
+/// cannot enumerate the `Bool` cell — instead of to the CP-SAT that handles both
+/// sides of it. `Enum` contributes `None` for the same reason (CP-SAT enumerates
+/// it), which is where the `Int` arm now sits too. Pinned by
+/// `an_int_auto_behind_a_bool_cell_stays_logical`.
+///
+/// KNOWN ASYMMETRY, accepted: a SYNTACTICALLY visible `Int` next to a `Bool` still
+/// classifies `CrossDomain` (the classifier's own `is_numeric()` arm, untouched
+/// here and outside this task's lock set). This function governs only the
+/// invisible-auto delta, where the routing-safety reading is the useful one.
 fn domain_of_auto_type(param_type: &reify_core::Type) -> Option<ConstraintDomain> {
-    if param_type.is_numeric() {
-        Some(ConstraintDomain::Dimensional)
-    } else if *param_type == reify_core::Type::Bool {
-        Some(ConstraintDomain::Logical)
-    } else {
-        None
+    match param_type {
+        reify_core::Type::Scalar { .. } => Some(ConstraintDomain::Dimensional),
+        reify_core::Type::Bool => Some(ConstraintDomain::Logical),
+        _ => None,
     }
 }
 
@@ -386,6 +429,16 @@ pub fn decompose_into_components(
 /// See [`dependent_cell_auto_reads`] for the map's construction and its
 /// fail-safe cycle semantics (a cell on or downstream of a back edge is
 /// OMITTED rather than published with a partial set).
+///
+/// # `objective_refs` is expanded HERE
+///
+/// Callers pass their RAW objective ref set; this function widens it through
+/// `auto_reads` itself, so pre-expanding is never required for the
+/// decomposition's sake. `SolverRegistry::solve_inner` pre-expands anyway
+/// because its own `objective_component` first-match lookup needs the widened
+/// set, and passing the already-widened set here is harmless: the expansion is
+/// IDEMPOTENT (`auto_reads` is transitive), and since the amendment above it
+/// costs one `Vec` of reached ids rather than a `HashSet` clone.
 pub(crate) fn decompose_into_components_with_reads(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -463,11 +516,31 @@ pub(crate) fn decompose_into_components_with_reads(
         // `None`, so both spellings fall back to `DimensionalSolver` and
         // production routing is unchanged today.
         //
-        // D1/B2 IDENTITY: only the EXPANSION'S OWN reach is folded in, never
-        // the syntactically-referenced autos (whose types the classifier
-        // already saw via their `ValueRef` nodes). An empty `auto_reads`
-        // returns an empty `reached`, so this loop never runs and the domain is
-        // bit-identical to pre-α.
+        // SCOPE of the fold: only the EXPANSION'S OWN reach (`reached`), never
+        // the whole widened `refs` set. `reached` is NOT disjoint from the
+        // syntactically-visible autos, though — `expand_refs_through_dependent_cells`
+        // derives it from each derived cell's TRANSITIVE auto set, which may
+        // contain an auto the constraint also references directly and whose
+        // type the classifier therefore already folded in. That overlap is
+        // harmless rather than merely tolerated: `widen_domain` is idempotent on
+        // an already-present flag (`a == b` fast path; `Geometric` absorbs
+        // `Dimensional`; `CrossDomain` absorbs everything), so re-widening with
+        // an already-seen type is a no-op by construction.
+        //
+        // FLAGLESS-EXPRESSION CAVEAT: `ConstraintClassifier` collapses its
+        // internal `DomainFlags` to the enum before returning, and `Dimensional`
+        // is BOTH "saw a numeric leaf" and the empty default (classifier.rs
+        // `into_domain`). A constraint expression that sets no flag at all
+        // therefore arrives here as `Dimensional`, and a reached `Bool` auto
+        // widens it to `CrossDomain` where `Logical` would be exact. That is a
+        // deliberate CONSERVATIVE over-approximation: `CrossDomain` routes to
+        // the fallback slot, never to a solver that cannot represent a param.
+        // Making it exact means propagating `DomainFlags` (or an
+        // `Option<ConstraintDomain>` meaning "no flags") out of `classify`, and
+        // `classifier.rs` is outside this task's lock set.
+        //
+        // D1/B2 IDENTITY: an empty `auto_reads` returns an empty `reached`, so
+        // this loop never runs and the domain is bit-identical to pre-α.
         let mut domain = ConstraintClassifier::classify(expr);
         for id in &reached {
             if let Some(&pi) = param_index.get(id)
@@ -492,18 +565,23 @@ pub(crate) fn decompose_into_components_with_reads(
         // The OBJECTIVE-side twin of the constraint expansion above. Leaving
         // this direct-only while constraint refs go transitive would be a G7
         // half-fix: the same union-find would receive transitive edges from one
-        // source and one-hop edges from the other. Borrowed unchanged when
-        // there is nothing to expand, so the direct path allocates nothing.
-        let refs: std::borrow::Cow<'_, HashSet<ValueCellId>> = if auto_reads.is_empty() {
-            std::borrow::Cow::Borrowed(refs)
-        } else {
-            let mut owned = refs.clone();
-            expand_refs_through_dependent_cells(&mut owned, auto_reads);
-            std::borrow::Cow::Owned(owned)
-        };
+        // source and one-hop edges from the other.
+        //
+        // Consumes the reach DELTA directly instead of materialising a widened
+        // clone of `refs` (task #5467 amendment). The union step's only use for
+        // the widened set is mapping it down to auto-param INDICES, and
+        // `UnionFind::union` is idempotent, so chaining the delta onto the
+        // borrowed original is equivalent and allocates ONE `Vec<ValueCellId>`
+        // instead of a whole `HashSet` clone. The old `Cow::Borrowed` fast path
+        // was never taken from `SolverRegistry::solve_inner`, whose `auto_reads`
+        // is non-empty exactly when the clone was most expensive; an empty
+        // `auto_reads` now yields an empty delta and allocates nothing either
+        // way, so the D1/B2 path is still zero-cost.
+        let reached = dependent_cell_reach_delta(refs, auto_reads);
 
         let obj_param_indices: Vec<usize> = refs
             .iter()
+            .chain(reached.iter())
             .filter_map(|id| param_index.get(id).copied())
             .collect();
 
@@ -958,6 +1036,71 @@ mod tests {
             "`let ok = not(a); constraint ok == true` over a Bool auto is \
              purely logical — the reached auto contributes the SAME flag the \
              classifier already had, so the widening must be a no-op here",
+        );
+    }
+
+    /// An `Int` cell over an `Int` auto behind a `Bool` derived cell stays
+    /// `Logical` — `let ok = n > 5; constraint ok == true`.
+    ///
+    /// `Type::is_numeric()` is `Int | Scalar`, so mirroring the classifier's
+    /// `ValueRef` arm verbatim would widen this component to `CrossDomain` and
+    /// route it to the FALLBACK slot. But the component is PURELY DISCRETE:
+    /// `CpSatSolver::build_variable_domain` enumerates `Type::Int` natively (as
+    /// it does `Bool` and `Enum`) and rejects only `Type::Scalar`, so `Logical`
+    /// is the routing that can actually solve it, while the fallback
+    /// `DimensionalSolver` cannot enumerate the `Bool` cell at all.
+    ///
+    /// This is the discriminator for `domain_of_auto_type`'s `Scalar`-only
+    /// numeric arm: reverting it to `param_type.is_numeric()` turns this red
+    /// while leaving all three sibling domain units green (they use
+    /// `Type::length()` or `Type::Bool` and never exercise `Int`).
+    #[test]
+    fn an_int_auto_behind_a_bool_cell_stays_logical() {
+        let params = vec![AutoParam {
+            id: ValueCellId::new("S", "n"),
+            param_type: Type::Int,
+            bounds: Some((0.0, 10.0)),
+            free: true,
+        }];
+        let constraints = vec![(
+            ConstraintNodeId::new("S", 0),
+            eq_true(bool_cell_ref("S", "ok")),
+        )];
+        let dependent_cells = vec![(
+            ValueCellId::new("S", "ok"),
+            CompiledExpr::binop(
+                BinOp::Gt,
+                CompiledExpr::value_ref(ValueCellId::new("S", "n"), Type::Int),
+                CompiledExpr::literal(Value::Int(5), Type::Int),
+                Type::Bool,
+            ),
+        )];
+
+        let components = decompose_into_components(&params, &constraints, None, &dependent_cells);
+
+        assert_eq!(
+            components.len(),
+            1,
+            "fixture integrity: `constraint ok == true` must reach `S.n` \
+             through `let ok = n > 5`, or the domain assertion below is \
+             vacuous; got {components:?}",
+        );
+        assert!(
+            components[0].auto_params.contains(&ValueCellId::new("S", "n")),
+            "fixture integrity: the component must actually hold the Int auto \
+             whose routing is under test; got {:?}",
+            components[0].auto_params,
+        );
+        assert_eq!(
+            components[0].domain,
+            ConstraintDomain::Logical,
+            "a Bool derived cell over a BOUNDED Int auto is a purely discrete \
+             component and must route to the `Logical` slot, where \
+             `CpSatSolver::build_variable_domain` enumerates both the Bool cell \
+             and the Int domain natively. Getting `CrossDomain` means \
+             `domain_of_auto_type` widened on `Type::is_numeric()` instead of \
+             `Type::Scalar`, which sends it to the fallback `DimensionalSolver` \
+             — a solver that cannot enumerate the Bool side at all",
         );
     }
 

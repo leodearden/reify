@@ -190,6 +190,15 @@ impl SolverRegistry {
                 // The returned reach-delta is only of interest to the
                 // decomposition's own domain widening; here the widened set is
                 // the whole point.
+                //
+                // This expansion exists for the `objective_component` FIRST-MATCH
+                // LOOKUP below, not for `decompose_into_components_with_reads` —
+                // that function widens `objective_refs` itself and never needed a
+                // pre-expanded input. Handing it the already-widened set is free:
+                // the expansion is idempotent, and the decompose side now consumes
+                // a reach DELTA rather than cloning the ref set (task #5467
+                // amendment), so the second pass is a handful of hash lookups that
+                // find nothing new.
                 let _ = crate::decompose::expand_refs_through_dependent_cells(
                     &mut refs,
                     &dependent_auto_reads,

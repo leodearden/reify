@@ -312,8 +312,21 @@ impl ConstraintSolver for CpSatSolver {
         //  (i)   A second `eval_cached` at the same `VersionId` serves a
         //        previously-SOLVED auto straight back from cache into `values`
         //        (engine_eval.rs:6949-6962), which is then cloned to here.
-        //  (ii)  A `param_override` on an auto cell (engine_eval.rs:7026-7031),
+        //  (ii)  A `param_override` on an auto cell (engine_eval.rs:7075-7080),
         //        written as `Determined` yet still admitted to `auto_params`.
+        //
+        // (ii) is NOT staleness and is not described as such: it is a user's
+        // explicit pin, and stripping it means CP-SAT searches that auto's whole
+        // domain and can answer with a value the override did not name. It is
+        // stripped anyway because that is what the only production-reachable
+        // solver already does — `solver.rs`'s `build_trial_values` clones
+        // `current_values` and OVERWRITES every auto id in it at every trial
+        // point, so `DimensionalSolver` ignores such an override too. Honouring
+        // it here and nowhere else would make the two solvers disagree about the
+        // same model. Pinned by
+        // `an_overridden_auto_is_searched_rather_than_pinned_to_its_seed`.
+        // Whether an overridden auto belongs in `auto_params` AT ALL is the real
+        // upstream question and lives in `build_auto_param_list`.
         //
         // Strip ONLY the auto ids: `current_values` is the sole channel by
         // which a CP-SAT constraint sees a NON-auto base value (pinned
@@ -391,8 +404,12 @@ impl ConstraintSolver for CpSatSolver {
 //        `VersionId` serves a previously-SOLVED auto from cache straight back
 //        into `values`, which `build_solver_problem` clones wholesale into
 //        `current_values` at engine_eval.rs:2326.
-//  (ii)  `engine_eval.rs:7026-7031` — a `param_override` on an auto cell, which
+//  (ii)  `engine_eval.rs:7075-7080` — a `param_override` on an auto cell, which
 //        is written as `Determined` yet is still admitted to `auto_params`.
+//        The odd one out: a deliberate user pin, not staleness. It is stripped
+//        anyway, for consistency with `DimensionalSolver`, and
+//        `an_overridden_auto_is_searched_rather_than_pinned_to_its_seed` pins
+//        that choice explicitly.
 //
 // The two locks are ONE module because they share a fixture vocabulary and
 // because lock 2's `*_direct_path_*` unit is what proves lock 2's repair
@@ -467,6 +484,15 @@ mod dependent_cell_forward_check_tests {
     fn mul_int(e: CompiledExpr, k: i64) -> CompiledExpr {
         CompiledExpr::binop(
             reify_ir::BinOp::Mul,
+            e,
+            CompiledExpr::literal(Value::Int(k), Type::Int),
+            Type::Int,
+        )
+    }
+
+    fn add_int(e: CompiledExpr, k: i64) -> CompiledExpr {
+        CompiledExpr::binop(
+            reify_ir::BinOp::Add,
             e,
             CompiledExpr::literal(Value::Int(k), Type::Int),
             Type::Int,
@@ -703,6 +729,119 @@ mod dependent_cell_forward_check_tests {
              UNSATISFIABLE. Getting `Solved` means the fold never produced a \
              `Bool` the forward-check could act on and the search fell through \
              to its first domain value; got {odd:?}",
+        );
+    }
+
+    /// LOCK 1 — STORED-ORDER DEPENDENCE, the one property the fold's
+    /// correctness argument rests on and that no other unit here exercises.
+    ///
+    /// Every other lock-1 fixture holds exactly ONE dependent cell, so a
+    /// regression that reordered `dependent_cells` — or hoisted the
+    /// `EvalContext` out of `fold_dependent_cells`' loop so a later cell no
+    /// longer sees an earlier one — would leave them all green. `solver.rs`'s
+    /// fold consumes the list in `build_dependent_cells`' STORED topological
+    /// order with the context rebuilt against the RUNNING map each iteration
+    /// (solver.rs:222-224, 262-266); this is the CP-SAT-side pin on that.
+    ///
+    /// `n : Int` bounded `[0, 5]`; CHAINED cells `let f = n * 2` then
+    /// `let g = f + 1`, stored in that order; `constraint g == 7` plus the
+    /// redundant-but-load-bearing `constraint f == 6`. `g = 2n + 1`, so the
+    /// unique satisfying assignment is `n = 3`.
+    ///
+    /// Discriminates in THREE directions, each landing on a DIFFERENT observable
+    /// — all three verified by mutating the code, not reasoned about:
+    ///
+    /// * NO FOLD at all → `S.f`/`S.g` are absent at every trial, both
+    ///   constraints evaluate to a non-`Bool`, the skip-don't-prune arm fires,
+    ///   and the FIRST trial is accepted whole → `Int(0)`.
+    /// * REVERSED stored order (or an `EvalContext` hoisted out of the fold
+    ///   loop) → `g` reads the PREVIOUS trial's `f` and lags one step, so `n = 3`
+    ///   sees `f = 6` but the stale `g = 5` and is wrongly PRUNED, while `n = 4`
+    ///   sees `g = 7` but `f = 8` and is pruned by the second constraint →
+    ///   `Infeasible`.
+    /// * CORRECT → `Int(3)`.
+    ///
+    /// `constraint f == 6` is what separates the reversed case from the no-fold
+    /// case. Without it, reversal leaves `g` `Undef` at `n = 0`, the
+    /// skip-don't-prune arm accepts that first trial outright, and reversal
+    /// reports `Int(0)` — still red, but indistinguishable from no fold at all.
+    /// A 6-value `Int` domain rather than a 2-value `Bool` one for the same
+    /// reason: on two values a lagged read can coincide with the correct one.
+    #[test]
+    fn chained_dependent_cells_are_folded_in_stored_order_within_one_trial() {
+        let p = problem(
+            vec![int_auto("n", 0, 5)],
+            vec![
+                (ConstraintNodeId::new("S", 0), eq_int(iref("g"), 7)),
+                (ConstraintNodeId::new("S", 1), eq_int(iref("f"), 6)),
+            ],
+            vec![
+                (ValueCellId::new("S", "f"), mul_int(iref("n"), 2)),
+                (ValueCellId::new("S", "g"), add_int(iref("f"), 1)),
+            ],
+        );
+
+        assert_eq!(
+            solved_value(&CpSatSolver.solve(&p), "n"),
+            Value::Int(3),
+            "`let f = n * 2; let g = f + 1` with `constraint g == 7` gives \
+             g = 2n + 1, satisfied ONLY by n = 3. `Int(0)` means the fold never \
+             ran at all; `Infeasible` means `g` was folded BEFORE `f` (or \
+             against an `EvalContext` hoisted out of the fold loop) and read the \
+             previous trial's `f`, which prunes the correct answer",
+        );
+    }
+
+    /// LOCK 2 — SCOPE BOUNDARY: an auto carrying a `param_override` is SEARCHED,
+    /// not pinned, and that is deliberate rather than an accident of the strip.
+    ///
+    /// Source (ii) in this module's header is the odd one out: unlike the
+    /// lexicographic warm start and the `eval_cached` replay, a `param_override`
+    /// on an auto cell is a user's explicit pin, written as
+    /// `DeterminacyState::Determined` (engine_eval.rs:7075-7080). Stripping it
+    /// from the seed means CP-SAT searches that auto's whole domain and can
+    /// return a value the override did not name.
+    ///
+    /// That is nonetheless the RIGHT choice here, because it is the behaviour
+    /// the only production-reachable solver already has: `build_auto_param_list`
+    /// admits an overridden auto to `auto_params` unchanged, and
+    /// `solver.rs`'s `build_trial_values` then clones `current_values` and
+    /// OVERWRITES every auto id in it at every trial point — so
+    /// `DimensionalSolver` ignores such an override too. Keeping the override in
+    /// the CP-SAT seed would make the two solvers disagree about the same model.
+    ///
+    /// Whether an overridden auto should be excluded from `auto_params` OUTRIGHT
+    /// (expressing the pin as "not an auto to solve") is the real upstream
+    /// question. It belongs to `build_auto_param_list`/`build_solver_problem` and
+    /// changes BOTH solvers' semantics, so it is filed as follow-up work rather
+    /// than decided on an amendment pass. This unit pins today's answer so the
+    /// choice is explicit and a future change to it is loud.
+    #[test]
+    fn an_overridden_auto_is_searched_rather_than_pinned_to_its_seed() {
+        // `S.a` carries the "override" and NO constraint mentions it; `S.b` is
+        // pinned by a constraint purely so the problem is not vacuous.
+        let p = problem_with_seed(
+            vec![bool_auto("a"), bool_auto("b")],
+            vec![(ConstraintNodeId::new("S", 0), eq_true(bref("b")))],
+            Vec::new(),
+            seed("a", Value::Bool(false)),
+        );
+
+        let result = CpSatSolver.solve(&p);
+        assert_eq!(
+            solved_value(&result, "a"),
+            Value::Bool(true),
+            "`S.a` is unconstrained, so the search returns its FIRST domain \
+             value `Bool(true)` — NOT the `Bool(false)` its `current_values` \
+             entry named. Getting `false` means the seed survived the strip and \
+             CP-SAT now honours a `param_override` on an auto that \
+             `DimensionalSolver` (via `build_trial_values`) does not",
+        );
+        assert_eq!(
+            solved_value(&result, "b"),
+            Value::Bool(true),
+            "fixture integrity: the constrained auto must still solve, or the \
+             assertion above could pass on a solver that failed outright",
         );
     }
 
