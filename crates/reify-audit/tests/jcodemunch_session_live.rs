@@ -589,6 +589,40 @@ fn teardown_signal_reaches_the_whole_process_group() {
     );
 }
 
+/// The happy path stays silent and returns.
+#[test]
+fn teardown_that_freed_the_port_is_quiet() {
+    // No observable effect to assert beyond "does not panic": the contract is
+    // that a clean teardown says nothing. If this ever starts panicking, the
+    // live test would fail on its own success path.
+    finish_teardown(true, 4242, false);
+}
+
+/// A teardown that failed to free the port must FAIL the run.
+///
+/// It used to `eprintln!` an advisory line. Combined with the swallowed group
+/// signal that meant every run leaked a long-lived indexing serve while
+/// reporting PASS — the same PASS-shaped vacuity this task exists to remove,
+/// reappearing in the teardown. Even with the signal fixed, a leak must be
+/// loud.
+#[test]
+#[should_panic(expected = "port 4242 is still accepting")]
+fn teardown_that_leaked_the_port_panics() {
+    finish_teardown(false, 4242, false);
+}
+
+/// ...but never while already unwinding.
+///
+/// `Drop` runs on the unwind path of any failing assertion in the test body,
+/// and a panic raised during an unwind aborts the process — converting a
+/// legible single-test failure into a SIGABRT that swallows the original
+/// assertion message. The run is already red in that case, so the panic buys
+/// nothing and costs the diagnosis; the report goes to stderr instead.
+#[test]
+fn teardown_that_leaked_the_port_does_not_panic_while_unwinding() {
+    finish_teardown(false, 4242, true);
+}
+
 // -----------------------------------------------------------------------
 // The live test
 // -----------------------------------------------------------------------
