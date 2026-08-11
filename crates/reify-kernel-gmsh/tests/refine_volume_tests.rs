@@ -143,9 +143,21 @@ fn uniform_size_field_refines_monotonically_under_leaked_global_clamp() {
 /// have strictly more P1 tets than the baseline, and `element_order` must echo
 /// the requested `ElementOrderTag::P1`.
 ///
-/// Fails RED because the `cfg(has_gmsh)` arm of `refine_volume_with_size_field`
-/// currently returns a placeholder `OperationFailed` error — step-6 replaces
-/// this with the real FFI-backed remesh implementation.
+/// This comparison is CROSS-PIPELINE: the baseline comes from
+/// `GmshKernel::mesh_to_volume` (which classifies at `FRAC_PI_2`) while the
+/// refined mesh comes from `refine_volume_with_size_field` (which classifies at
+/// `PI/12`). It is therefore a sanity check that the two paths agree in
+/// direction — NOT the primary size-field guard. That role belongs to
+/// [`uniform_size_field_refines_monotonically_under_leaked_global_clamp`] above,
+/// which is pipeline-independent and is what actually pins "a smaller size field
+/// produces a finer mesh".
+///
+/// Measured margin: 91 baseline tets vs 376 refined on this base, and 194 vs 376
+/// once sibling task #6200 lands its classify-angle fix — so the inequality holds
+/// for the right reason under both. Before #6211 it held only accidentally: the
+/// refined mesh was clamped to a size the baseline happened to under-resolve
+/// (181 tets for every hint), so the assertion passed vacuously while the size
+/// field was entirely inert.
 #[test]
 fn uniform_smaller_size_field_produces_more_tets() {
     use reify_kernel_gmsh::GmshKernel;
