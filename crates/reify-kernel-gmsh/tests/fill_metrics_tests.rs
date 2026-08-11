@@ -288,8 +288,18 @@ fn kuhn_non_cubic_box_reports_complete_fill() {
     let vm = kuhn_box_volume_mesh(1.0, 0.1, 0.1);
     let r = tet_fill_report(&vm).expect("well-formed P1 tet mesh");
     // f32 storage of 0.1 makes this inexact; 1e-6 relative is the derived bound.
-    assert_rel(r.abs_volume_sum, 0.01, 1e-6, "Σ|V_tet| of a 1.0x0.1x0.1 box");
-    assert_rel(r.aabb_volume, 0.01, 1e-6, "AABB volume of a 1.0x0.1x0.1 box");
+    assert_rel(
+        r.abs_volume_sum,
+        0.01,
+        1e-6,
+        "Σ|V_tet| of a 1.0x0.1x0.1 box",
+    );
+    assert_rel(
+        r.aabb_volume,
+        0.01,
+        1e-6,
+        "AABB volume of a 1.0x0.1x0.1 box",
+    );
     assert_rel(
         r.aabb_fill_fraction(),
         1.0,
@@ -304,7 +314,12 @@ fn centre_cone_unit_cube_reports_complete_fill() {
     let r = tet_fill_report(&vm).expect("well-formed P1 tet mesh");
     assert_eq!(r.n_tets, 12);
     assert_eq!(r.n_nodes, 9);
-    assert_rel(r.abs_volume_sum, 1.0, 1e-12, "Σ|V_tet| of the centre-cone cube");
+    assert_rel(
+        r.abs_volume_sum,
+        1.0,
+        1e-12,
+        "Σ|V_tet| of the centre-cone cube",
+    );
     assert_rel(r.aabb_volume, 1.0, 1e-12, "AABB volume");
     assert_eq!(r.inverted_tets, 0);
 }
@@ -322,8 +337,16 @@ fn a_single_inverted_tet_is_counted() {
     );
     let r = tet_fill_report(&vm).expect("well-formed P1 tet mesh");
     assert_eq!(r.n_tets, 1);
-    assert_eq!(r.inverted_tets, 1, "a negatively-oriented tet must be counted");
-    assert_rel(r.abs_volume_sum, 1.0 / 6.0, 1e-12, "magnitude is unaffected");
+    assert_eq!(
+        r.inverted_tets, 1,
+        "a negatively-oriented tet must be counted"
+    );
+    assert_rel(
+        r.abs_volume_sum,
+        1.0 / 6.0,
+        1e-12,
+        "magnitude is unaffected",
+    );
     assert_rel(
         r.signed_volume_sum,
         -1.0 / 6.0,
@@ -344,7 +367,12 @@ fn mixed_orientation_mesh_shows_signed_sum_below_abs_sum() {
 
     assert_eq!(r.inverted_tets, 1);
     assert_rel(r.abs_volume_sum, 1.0, 1e-12, "magnitudes still sum to 1");
-    assert_rel(r.signed_volume_sum, 2.0 / 3.0, 1e-12, "one tet cancels twice its volume");
+    assert_rel(
+        r.signed_volume_sum,
+        2.0 / 3.0,
+        1e-12,
+        "one tet cancels twice its volume",
+    );
     assert!(
         r.signed_volume_sum.abs() < r.abs_volume_sum,
         "mixed orientation must make |signed sum| strictly less than the abs sum \
@@ -367,12 +395,25 @@ fn enclosed_volume_of_unit_cube_is_exactly_one() {
     );
 }
 
+/// Non-dyadic extents get the f32-storage-derived 1e-6 bound, NOT the 1e-12
+/// used for integral-coordinate fixtures.
+///
+/// `Mesh::vertices` is `Vec<f32>`, and 0.1 is not representable in binary: it
+/// stores as 0.100000001490116…, so a 1.0x0.1x0.1 box measures
+/// 1.000000029802e-2 against an exact 1e-2 — relative 2.98e-8, pure storage
+/// round-off on the coordinate rather than any error in the summation. (#6154
+/// independently measured the identical 1.0000000298e-2 for the realized
+/// fixture's AABB.) The derived ceiling is ≈ 3 × 2^-23 ≈ 3.6e-7 for a
+/// degree-3 form in the coordinates; 1e-6 clears it ~3x while sitting five
+/// orders of magnitude below the ~26% defect #6200 is guarding against.
+const F32_STORAGE_REL: f64 = 1e-6;
+
 #[test]
 fn enclosed_volume_of_thin_box_matches_closed_form() {
     assert_rel(
         enclosed_volume_of_surface(&prismatic_box_mesh(1.0, 0.1, 0.1)),
         0.01,
-        1e-12,
+        F32_STORAGE_REL,
         "enclosed volume of a 1.0x0.1x0.1 box",
     );
 }
@@ -383,12 +424,23 @@ fn enclosed_volume_is_independent_of_vertex_welding() {
     // the reference volume must not depend on the repair pre-stage having run.
     let welded = prismatic_box_mesh(1.0, 0.1, 0.1);
     let unwelded = unwelded_prismatic_box_mesh(1.0, 0.1, 0.1);
-    assert_eq!(unwelded.vertices.len() / 3, 24, "unwelded fixture is 24 vertices");
+    assert_eq!(
+        unwelded.vertices.len() / 3,
+        24,
+        "unwelded fixture is 24 vertices"
+    );
     assert_eq!(welded.vertices.len() / 3, 8, "welded fixture is 8 vertices");
 
     let v_welded = enclosed_volume_of_surface(&welded);
     let v_unwelded = enclosed_volume_of_surface(&unwelded);
-    assert_rel(v_unwelded, 0.01, 1e-12, "unwelded box encloses the same volume");
+    assert_rel(
+        v_unwelded,
+        0.01,
+        F32_STORAGE_REL,
+        "unwelded box encloses the same volume",
+    );
+    // Welding-independence itself is EXACT — it is a statement about the
+    // summation, not about coordinate storage, so it gets no tolerance at all.
     assert_eq!(
         v_welded, v_unwelded,
         "welding must not change the enclosed volume — the per-triangle integral \
@@ -500,7 +552,10 @@ fn wedge_connectivity_yields_none() {
         normals: None,
         boundary: None,
     };
-    assert!(tet_fill_report(&vm).is_none(), "Wedge connectivity must yield None");
+    assert!(
+        tet_fill_report(&vm).is_none(),
+        "Wedge connectivity must yield None"
+    );
 }
 
 #[test]
@@ -612,7 +667,10 @@ fn p2_reference_tet_mesh() -> VolumeMesh {
 #[test]
 fn p2_element_is_measured_off_its_corner_nodes() {
     let r = tet_fill_report(&p2_reference_tet_mesh()).expect("well-formed P2 tet mesh");
-    assert_eq!(r.n_tets, 1, "10 indices at stride 10 is exactly one P2 element");
+    assert_eq!(
+        r.n_tets, 1,
+        "10 indices at stride 10 is exactly one P2 element"
+    );
     assert_eq!(r.n_nodes, 10);
     assert_rel(
         r.abs_volume_sum,

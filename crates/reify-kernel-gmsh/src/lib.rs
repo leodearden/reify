@@ -36,6 +36,7 @@
 
 pub mod auto_size;
 pub mod cache_key;
+pub mod fill_metrics;
 #[cfg(feature = "mesh-morph")]
 pub mod mesh_boundary;
 pub mod mesh_profile_2d;
