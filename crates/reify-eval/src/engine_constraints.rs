@@ -436,20 +436,43 @@ impl Engine {
                     // silent Indeterminate, which is what keeps `reify check`
                     // output unchanged.
                     //
+                    // `capture_repr_tol` does NOT widen or narrow that gate — it
+                    // only selects the *remedy*, because an empty map has two
+                    // distinct causes and each has a different fix:
+                    //   - capture OFF: nobody ever asked for a measurement on
+                    //     this surface (`reify build`, `reify eval`) → the
+                    //     remedy is `reify check`.
+                    //   - capture ON but map still empty: a measurement WAS
+                    //     asked for and tessellation produced none — the
+                    //     dominant cause being a binary with no geometry kernel
+                    //     (stub-mode `reify check`) → telling that user to "run
+                    //     `reify check`" is a dead end; the remedy is a kernel.
+                    // Emitting the capture-OFF remedy unconditionally would also
+                    // put "run `reify check`" into the diagnostics of the
+                    // pre-`check()` pass inside `tessellate_realizations`
+                    // (engine_build.rs), which runs before the map is populated
+                    // and is therefore precisely a surface that DOES measure.
+                    //
                     // `id` is embedded in the text so `labeled_diagnostics` can
                     // substitute a user-facing label, exactly as the
                     // language-level checker's message does.
                     if matches!(satisfaction, Satisfaction::Indeterminate)
                         && self.achieved_repr_tol.is_empty()
                     {
+                        let reason = if self.capture_repr_tol {
+                            "tessellation produced no achieved deviation for the subject, so \
+                             this run does not measure representation tolerance; a geometry \
+                             kernel is required — build with OCCT to evaluate this \
+                             RepresentationWithin bound"
+                        } else {
+                            "this evaluation surface does not measure representation tolerance \
+                             (no tessellation ran, so no achieved deviation exists for the \
+                             subject); run `reify check` to evaluate this RepresentationWithin \
+                             bound"
+                        };
                         messages.push(
-                            Diagnostic::info(format!(
-                                "constraint {id} indeterminate: this evaluation surface does \
-                                 not measure representation tolerance (no tessellation ran, so \
-                                 no achieved deviation exists for the subject); run \
-                                 `reify check` to evaluate this RepresentationWithin bound"
-                            ))
-                            .with_code(DiagnosticCode::ConstraintIndeterminate),
+                            Diagnostic::info(format!("constraint {id} indeterminate: {reason}"))
+                                .with_code(DiagnosticCode::ConstraintIndeterminate),
                         );
                     }
 

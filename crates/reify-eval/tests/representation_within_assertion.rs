@@ -238,6 +238,91 @@ fn non_measuring_surface_yields_attributable_indeterminate() {
     );
 }
 
+/// INV-SF-4: when a measurement *was* requested and still did not happen, the
+/// remedy must be the geometry kernel — NOT "run `reify check`".
+///
+/// An empty `achieved_repr_tol` has two causes, and `capture_repr_tol` is the
+/// discriminator the engine already carries:
+/// - capture OFF — nobody asked (`reify build` / `reify eval`); remedy is
+///   `reify check` (pinned by
+///   [`non_measuring_surface_yields_attributable_indeterminate`]).
+/// - capture ON, map still empty — `cmd_check` asked (it sets the flag whenever
+///   the module carries a `RepresentationWithin`) but tessellation produced
+///   nothing, the dominant cause being a binary with no geometry kernel
+///   (stub-mode `reify check`). Telling *that* user to run `reify check` is a
+///   dead end, so the remedy names the kernel instead.
+///
+/// The same branch keeps the pre-`check()` pass inside `tessellate_realizations`
+/// — which runs before the map is populated, on a surface that genuinely does
+/// measure — from minting a self-contradictory "run `reify check`" diagnostic.
+///
+/// The emission *gate* is unchanged: still `Indeterminate && map.is_empty()`.
+/// `capture_repr_tol` selects only the remedy clause.
+#[test]
+fn measurement_requested_but_unmeasured_points_at_the_kernel_not_at_check() {
+    let compiled = parse_and_compile(NON_MEASURING_SURFACE_SOURCE);
+    let mut engine = make_simple_engine();
+
+    // Exactly what `cmd_check` does for a module carrying a
+    // RepresentationWithin; with no kernel behind it, the map stays empty.
+    engine.set_capture_repr_tol(true);
+
+    let result = engine.check(&compiled);
+
+    let rw_entry = result
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    assert_eq!(
+        rw_entry.satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: no measurement ⇒ Indeterminate, whoever asked for it"
+    );
+
+    let attributions: Vec<&reify_core::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("Checker#constraint[0]"))
+        .collect();
+    assert_eq!(
+        attributions.len(),
+        1,
+        "INV-SF-4: exactly one diagnostic must name the constraint. Got: {:#?}",
+        result.diagnostics
+    );
+    let attribution = attributions[0];
+
+    assert_eq!(
+        attribution.severity,
+        Severity::Info,
+        "severity is unaffected by which remedy applies. Got: {attribution:#?}"
+    );
+    assert_eq!(
+        attribution.code,
+        Some(DiagnosticCode::ConstraintIndeterminate),
+        "INV-SF-6: coded on this branch too. Got: {attribution:#?}"
+    );
+    assert!(
+        attribution.message.contains("does not measure"),
+        "the surface is still the reason — that token is stable across both \
+         remedies. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        attribution.message.contains("geometry kernel"),
+        "INV-SF-4: a run that ASKED for the measurement must be told what was \
+         actually missing. Got: {:?}",
+        attribution.message
+    );
+    assert!(
+        !attribution.message.contains("reify check"),
+        "pointing a `reify check` run back at `reify check` is a dead end — that \
+         remedy belongs to the capture-OFF branch only. Got: {:?}",
+        attribution.message
+    );
+}
+
 /// A module with NO `RepresentationWithin` at all — the universal
 /// non-assertion case that must keep taking the C2 fast path.
 const NO_ASSERTION_SOURCE: &str = r#"
@@ -374,6 +459,97 @@ fn non_assertion_module_hot_path_is_unchanged() {
     );
 }
 
+/// The MIXED batch on a non-measuring surface: a `RepresentationWithin` peeled
+/// engine-side alongside an ordinary predicate routed to the language checker.
+///
+/// Before ζ this combination took the fast path wholesale (empty map, no
+/// registered impl) and never reached the slot-weaving branch at all, so the
+/// interleaving is newly exercised here and worth pinning: the ordinary
+/// constraint must keep its verdict, results must stay in input order, and the
+/// batch must gain exactly ONE attribution — for the assertion that could not be
+/// evaluated, not for its blameless neighbour.
+///
+/// [`INTERCEPTION_SOURCE`] is used precisely because its `subject` has no
+/// default: the peel must claim the constraint on shape alone, without waiting
+/// for the operands to be defined.
+#[test]
+fn non_measuring_mixed_batch_preserves_order_and_attributes_once() {
+    let compiled = parse_and_compile(INTERCEPTION_SOURCE);
+    // Fresh engine: empty `achieved_repr_tol`, `capture_repr_tol: false` — the
+    // `reify build` surface, and deliberately no injection.
+    let mut engine = make_simple_engine();
+
+    let result = engine.check(&compiled);
+
+    assert_eq!(
+        result.constraint_results.len(),
+        2,
+        "Checker has 2 constraints (RepresentationWithin + w>0) → 2 results; got {:?}",
+        result
+            .constraint_results
+            .iter()
+            .map(|e| (&e.id, e.satisfaction))
+            .collect::<Vec<_>>()
+    );
+
+    let rw_pos = result
+        .constraint_results
+        .iter()
+        .position(|e| e.id.entity == "Checker" && e.id.index == 0)
+        .expect("must have Checker#constraint[0] (RepresentationWithin)");
+    let ord_pos = result
+        .constraint_results
+        .iter()
+        .position(|e| e.id.entity == "Checker" && e.id.index == 1)
+        .expect("must have Checker#constraint[1] (w > 0.0)");
+
+    assert_eq!(
+        result.constraint_results[rw_pos].satisfaction,
+        Satisfaction::Indeterminate,
+        "C1: nothing measured this subject → Indeterminate, never a false Violated"
+    );
+    assert_eq!(
+        result.constraint_results[ord_pos].satisfaction,
+        Satisfaction::Satisfied,
+        "w=5.0 > 0.0 → Satisfied: peeling the assertion must not disturb the \
+         ordinary constraint that stayed on the language-checker path"
+    );
+    assert!(
+        rw_pos < ord_pos,
+        "input order must survive the peel on this surface too: \
+         RepresentationWithin (pos {rw_pos}) before the ordinary constraint \
+         (pos {ord_pos})"
+    );
+
+    let attributions = attribution_diagnostics(&result);
+    assert_eq!(
+        attributions.len(),
+        1,
+        "exactly ONE attribution for the batch — the assertion that could not be \
+         evaluated, not its neighbour. Got: {attributions:#?}"
+    );
+    assert!(
+        attributions[0].contains("Checker#constraint[0]"),
+        "INV-SF-4: the attribution must name the RepresentationWithin, not the \
+         ordinary constraint. Got: {:?}",
+        attributions[0]
+    );
+
+    let offenders: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.message
+                .contains("operator undefined for these operand kinds")
+        })
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "C-SURFACE 1 holds for the mixed batch too. Offending diagnostics: {offenders:#?}"
+    );
+}
+
 // ── BT1: over-bound → Violated ────────────────────────────────────────────────
 
 /// BT1: achieved value ABOVE the bound (5e-3 m > 1 mm = 1e-3 m) → `Violated`.
@@ -498,15 +674,26 @@ fn dispatch_interception_under_bound_yields_satisfied() {
 ///
 /// C1 invariant: absent key ⇒ realization not run ⇒ never a false `Violated`.
 ///
+/// The map is deliberately non-empty but non-matching: this test is about a
+/// MEASURING surface that simply holds no entry for *this* subject. An empty map
+/// is a different fact — "this surface never measured at all" — and since
+/// task-6169 ζ it routes through the surface-attribution branch instead; that
+/// case is covered by
+/// [`non_measuring_mixed_batch_preserves_order_and_attributes_once`].
+///
 /// RED until step-6.
 #[test]
 fn dispatch_interception_no_entry_yields_indeterminate() {
     let compiled = parse_and_compile(INTERCEPTION_SOURCE);
     let mut engine = make_simple_engine();
 
-    // Empty map — no key matching "MyGeom#realization[*]" → Indeterminate.
+    // Non-empty map (a tessellation ran) with no key matching
+    // "MyGeom#realization[*]" → Indeterminate.
     // RED: setter does not exist until step-6.
-    engine.set_achieved_repr_tol_for_test(BTreeMap::new());
+    engine.set_achieved_repr_tol_for_test(BTreeMap::from([(
+        "Unrelated#realization[0]".to_string(),
+        1e-9_f64,
+    )]));
 
     let result = engine.check(&compiled);
 
