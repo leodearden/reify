@@ -8,7 +8,7 @@
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
 //! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
-//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
+//! - `--pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`).
 //!
 //! ## Output
 //!
@@ -102,7 +102,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
     let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
-    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
+    let _ = writeln!(out, "  --pattern P1|P2|P5|PDEAD|PUNTESTED|PLAYER|PTODO|PDSSENTINEL|PDOCCOVER Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)");
     let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
@@ -262,10 +262,10 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
                     if !matches!(
                         tok,
                         "P1" | "P2" | "P5" | "PDEAD" | "PUNTESTED" | "PLAYER" | "PTODO"
-                            | "PDSSENTINEL"
+                            | "PDSSENTINEL" | "PDOCCOVER"
                     ) {
                         return Err(format!(
-                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, or PDSSENTINEL",
+                            "unknown --pattern value '{}'; expected P1, P2, P5, PDEAD, PUNTESTED, PLAYER, PTODO, PDSSENTINEL, or PDOCCOVER",
                             tok
                         ));
                     }
@@ -483,6 +483,20 @@ fn run_dssentinel(args: &Args) -> bool {
     args.pattern.as_deref().is_none_or(|p| pattern_selects(p, "PDSSENTINEL"))
 }
 
+/// Opt-in dispatch predicate for PDOCCOVER (task #5478): true only when
+/// `PDOCCOVER` is in the comma-separated `--pattern` set.
+///
+/// Structural like PTODO and PDSSENTINEL — working-tree `ls_files` + fs reads,
+/// never jcodemunch — but `is_some_and` rather than `is_none_or`, so it stays
+/// OUT of the default all-detector sweep. PDOCCOVER findings are High, and the
+/// exit code is the High-severity count, so a detector that currently reports
+/// ~80 undocumented names would turn every default audit run non-zero. It joins
+/// the default sweep when #5480 seeds `pdoccover-baseline.txt` and the residual
+/// count is zero — the same warn-first-then-ratchet path PTODO took.
+fn run_pdoccover(args: &Args) -> bool {
+    args.pattern.as_deref().is_some_and(|p| pattern_selects(p, "PDOCCOVER"))
+}
+
 // -----------------------------------------------------------------------
 // Main
 // -----------------------------------------------------------------------
@@ -659,6 +673,15 @@ fn main() -> ExitCode {
         let run_dssentinel = run_dssentinel(&args);
         if run_dssentinel {
             all.extend(reify_audit::pdssentinel::check(&ctx));
+        }
+        // PDOCCOVER structural lane: bidirectional registry↔chunk name drift.
+        // Same working-tree-reads-only posture as PTODO and PDSSENTINEL, but
+        // OPT-IN — High-severity findings drive the exit code and the corpus
+        // still carries a known backlog, so it stays out of the default sweep
+        // until #5480 seeds the ratchet baseline.
+        let run_pdoccover = run_pdoccover(&args);
+        if run_pdoccover {
+            all.extend(reify_audit::pdoccover::check(&ctx));
         }
         all
     };
@@ -1281,6 +1304,101 @@ mod tests {
         assert!(
             err.contains("PDSSENTINEL"),
             "error must list PDSSENTINEL as a valid pattern; got: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // PDOCCOVER CLI-wiring tests (task #5478, step-21 RED / step-22 GREEN)
+    //
+    // PDOCCOVER is the bidirectional registry↔chunk name-drift detector. Like
+    // PTODO and PDSSENTINEL it is *structural* — working-tree reads via
+    // ls_files + fs, never contacts jcodemunch. UNLIKE them it is OPT-IN
+    // (is_some_and, mirroring PDEAD/PUNTESTED/PLAYER): the chunk corpus has a
+    // known backlog of undocumented names, so until #5480 seeds
+    // pdoccover-baseline.txt the detector would add ~80 High findings to every
+    // default sweep. High severity feeds the exit code, so joining the default
+    // sweep now would turn every audit run non-zero. It joins the sweep when
+    // the baseline lands, not before.
+    // -------------------------------------------------------------------
+
+    /// `--pattern PDOCCOVER` must be accepted and stored.
+    #[test]
+    fn parse_args_accepts_pdoccover_pattern() {
+        let args = parse_args(&["--pattern".to_string(), "PDOCCOVER".to_string()])
+            .unwrap_or_else(|e| panic!("--pattern PDOCCOVER must parse successfully; got: {e}"));
+        assert_eq!(
+            args.pattern.as_deref(),
+            Some("PDOCCOVER"),
+            "parsed pattern must be Some(\"PDOCCOVER\")"
+        );
+    }
+
+    /// PDOCCOVER is structural — must NOT require jcodemunch. Requesting it
+    /// alone must leave the run fully offline.
+    #[test]
+    fn needs_jcodemunch_pdoccover_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PDOCCOVER"))),
+            "PDOCCOVER reads units.rs, the chunk corpus and the compiler/stdlib \
+             sources from the working tree; it must not open a jcodemunch \
+             connection"
+        );
+    }
+
+    /// PDOCCOVER is OPT-IN — the assertion inverted relative to
+    /// `run_ptodo`/`run_dssentinel`. Default (None) → FALSE; explicit
+    /// PDOCCOVER → true; a named non-PDOCCOVER pattern → false.
+    #[test]
+    fn pdoccover_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !run_pdoccover(&make_args(false, None)),
+            "PDOCCOVER must NOT run in the no-`--pattern` default sweep: its \
+             findings are High severity and the corpus has a known backlog, so \
+             joining the sweep before #5480 seeds the baseline would make every \
+             audit run exit non-zero"
+        );
+        assert!(
+            run_pdoccover(&make_args(false, Some("PDOCCOVER"))),
+            "PDOCCOVER must activate when --pattern PDOCCOVER is given"
+        );
+        assert!(
+            !run_pdoccover(&make_args(false, Some("P2"))),
+            "PDOCCOVER must be excluded when a named non-PDOCCOVER pattern is given"
+        );
+    }
+
+    /// PDOCCOVER must be selectable as a NON-LEADING token in a
+    /// comma-separated `--pattern` list — token-set membership, not a prefix
+    /// match.
+    #[test]
+    fn run_pdoccover_selected_via_comma_list() {
+        assert!(
+            run_pdoccover(&make_args(false, Some("P1,PDOCCOVER"))),
+            "P1,PDOCCOVER must enable PDOCCOVER"
+        );
+    }
+
+    /// Unknown pattern error message must list PDOCCOVER as a valid token —
+    /// an accepted-but-undiscoverable pattern is a usability bug.
+    #[test]
+    fn parse_args_unknown_pattern_lists_pdoccover() {
+        let err = unwrap_err(parse_args(&["--pattern".to_string(), "BOGUS".to_string()]));
+        assert!(
+            err.contains("PDOCCOVER"),
+            "error must list PDOCCOVER as a valid pattern; got: {err}"
+        );
+    }
+
+    /// `--help` must list PDOCCOVER on the `--pattern` line, for the same
+    /// discoverability reason.
+    #[test]
+    fn usage_text_lists_pdoccover() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("PDOCCOVER"),
+            "--help must list PDOCCOVER among the --pattern values; got:\n{usage}"
         );
     }
 }
