@@ -414,6 +414,59 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
 
 // ── EXPECTED_INDETERMINATE: pinned allowlist well-formedness (steps 7/8) ────
 
+/// The pinned set of `(basename, constraint index)` pairs that are expected
+/// to report `Satisfaction::Indeterminate` — never `Satisfied` — under the
+/// pure value-eval check surface this gate (and `reify check`) runs on. Each
+/// entry carries a mandatory reason citing the in-file documentation that
+/// explains why the Indeterminate is intentional, so a reviewer can confirm
+/// the exemption against the exemplar's own prose rather than trusting this
+/// const alone.
+///
+/// # This is NOT a `SKIP_SET`
+///
+/// `examples/best_practices/INDEX.md:13` and
+/// `.claude/skills/reify-design/SKILL.md:187-190` forbid adding a `SKIP_SET`
+/// entry to this corpus — but that prohibition is scoped to the COMPILE gate
+/// ("a file that cannot reach a clean compile does not belong here"). This
+/// const exempts NO file from anything: every listed constraint is still
+/// fully asserted by `run_corpus_gate`, just against `Indeterminate` instead
+/// of `Satisfied` — and bidirectionally, via `audit_file`: a listed entry
+/// that becomes `Satisfied` FAILS as stale (see
+/// `GateFailure::StaleExpectedIndeterminate`), so a resolved exemption can
+/// never linger as dead weight that masks recovered coverage.
+///
+/// Seeded with exactly the three entries measured on this branch, verified
+/// two independent ways (`./target/release/reify check` per file, and an
+/// in-process `check_source_with_stdlib` probe — both agree).
+const EXPECTED_INDETERMINATE: &[(&str, u32, &str)] = &[
+    (
+        "clearance_oracle.ri",
+        0,
+        "`constraint not fouls` — `intersects` is a geometry-consumer builtin: it needs \
+         a realized kernel and resolves only on the build()/tessellate() path, not the \
+         pure value-eval surface this gate (and `reify check`) runs on. Documented at \
+         clearance_oracle.ri:25-35, which states verbatim \"THAT IS EXPECTED, NOT A \
+         FAILURE\", and echoed by INDEX.md:44.",
+    ),
+    (
+        "clearance_oracle.ri",
+        1,
+        "`constraint gap > min_gap` — same class as constraint[0] above, via the \
+         geometry-consumer builtin `distance`. Documented at clearance_oracle.ri:25-35 \
+         and echoed by INDEX.md:44.",
+    ),
+    (
+        "discrete_choice.ri",
+        0,
+        "`constraint side * side == 1` — `DiscreteChoice.side` (an `auto(free)` param) is \
+         undefined on this check surface. discrete_choice.ri:49-60 documents the sharp \
+         edge: the solved root is only approximately +-1 (-0.9999999999999973, not \
+         -1.0), and `==` is exact float equality — accepted at solve time by the \
+         solver's own residual tolerance, which is why `reify eval` resolves this \
+         constraint cleanly even though this check surface cannot.",
+    ),
+];
+
 /// Guards a not-yet-existing `EXPECTED_INDETERMINATE`: every entry names a
 /// file that actually exists in `corpus_files()` (mirrors
 /// `examples_smoke.rs::skip_set_entries_exist_under_examples_dir`, line 248 —
