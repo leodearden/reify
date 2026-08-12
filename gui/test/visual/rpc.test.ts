@@ -234,6 +234,38 @@ describe("parseRpcResponse vs normalizeRpcEnvelope — the documented divergence
     expect(normalizeRpcEnvelope(envelope)).toEqual({ payload: null });
   });
 
+  it("4b. §2d SUCCESS two-block envelope: the image to the harness, the trailing text to the driver", () => {
+    // The §2d envelope (docs/debug-mcp-contract.md): an `element_screenshot` that
+    // matched more than one element APPENDS its pane diagnostics after the image,
+    // with no `isError` flag. Every other two-block case — case 3 above, and the
+    // sibling in ./rpcEnvelope.test.ts — sets isError:true and so exercises the
+    // §2b fold; this is the one that reaches the SUCCESS branches of both
+    // decoders, and it is the case that gives the positional/`.find` split in
+    // case 4 teeth on a real wire shape rather than a one-block synthetic.
+    //
+    // They disagree on purpose, and each is right for its own caller. ./run.ts
+    // feeds `value.data` straight into Buffer.from(…, "base64"), so the typed
+    // harness must stay POSITIONAL and take the image at content[0]; no driver
+    // reads image data, so the normaliser searches past it and hands back the
+    // diagnostics a driver can actually branch on. Do NOT "fix" them into
+    // agreement: turning parseRpcResponse's branch 3 into a `.find` would let the
+    // text block win branch 4 instead, and the corruption would surface as bad
+    // PNG bytes out of Buffer.from — never as a type error.
+    const envelope = {
+      result: {
+        // `isError` deliberately ABSENT — this is a success envelope.
+        content: [
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "text", text: '{"viewportId":"design-main","matchCount":2}' },
+        ],
+      },
+    };
+    expect(parseRpcResponse(envelope)).toEqual({ ok: true, value: { data: "iVBORw0KGgo=" } });
+    expect(normalizeRpcEnvelope(envelope)).toEqual({
+      payload: { viewportId: "design-main", matchCount: 2 },
+    });
+  });
+
   it("5. text block with no `text` field: an error to the harness, `null` to the driver", () => {
     const envelope = { result: { content: [{ type: "text" }] } };
     expect(parseRpcResponse(envelope)).toEqual({
