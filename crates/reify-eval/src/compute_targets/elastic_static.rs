@@ -137,18 +137,18 @@
 //!   PRD §3 sentinel the `stress` bullet below documents. The two fields'
 //!   sentinel contracts are identical; neither is exempt.
 //!
-//!   This bullet used to claim "every grid point lies inside the solid (prismatic
-//!   box), so all samples are finite". That is false on the REALIZED path (#6154).
-//!   All-finite requires the solve mesh to TILE the AABB the grid spans — a
-//!   property of the MESH, not of the geometry being prismatic. §7a spans the grid
-//!   over `aabb(&fea.coords)`, i.e. the realized tet mesh's own AABB, so a mesh
-//!   that under-fills its AABB emits sentinels even for a box. Measured for
-//!   `box(1000mm, 100mm, 100mm)` by
-//!   `solve_elastic_static_body_e2e::realized_box_grid_miss_report_reconciles_with_geometry`:
-//!   1055 of 2989 grid nodes out-of-solid (35.3%) — interior=36, face=749,
-//!   edge=266, corner=4 — because the realized tets sum to 8.4291e-3 m³ against
-//!   the 1.0000e-2 m³ AABB they span (84.3% fill). The sentinel is behaving
-//!   correctly; the mesh under-coverage upstream of §7a is tracked as #6200.
+//!   A PRISMATIC body does **not** exempt `displacement` from that sentinel.
+//!   All-finite requires the solve MESH to tile the AABB the grid spans — a
+//!   property of that mesh, not a consequence of the geometry being a box: §7a
+//!   spans the grid over `aabb(&fea.coords)`, i.e. the realized tet mesh's own
+//!   AABB, so a mesh that under-fills its AABB emits sentinels even for a box.
+//!   On the realized path today it does, and the sentinel is behaving correctly.
+//!   The measurement, its provenance, and the resolution are recorded once in PRD
+//!   `docs/prds/v0_4/fea-result-model.md` §11 Q2 (task #6154); the upstream mesh
+//!   under-coverage the sentinels are attributed to is tracked as #6200. Those
+//!   figures are deliberately NOT restated here — no test pins them (pinning the
+//!   count would cement a bug as a contract), so a second copy would go stale
+//!   silently the moment #6200 lands.
 //!
 //! - **`stress`** — `Value::Field{source:Sampled, domain:point3<Length>,
 //!   codomain:tensor(2,3,Pressure)}` backed by a `SampledField{kind:Regular3D}`.
