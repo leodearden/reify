@@ -147,3 +147,71 @@ export function parseEventChannelRows(markdown: string): EventChannelRow[] {
 
   return rows;
 }
+
+/** Every backtick-delimited span in a cell, in source order. */
+const BACKTICKED_SPAN_RE = /`([^`]*)`/g;
+
+/** The prefix a Consumer cell uses when it spells out the module. */
+const BRIDGE_PREFIX = 'bridge.ts::';
+
+/** A JS identifier. Used only for the `bridge.ts::NAME` suffix. */
+const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * A JS identifier whose FIRST character is lowercase.
+ *
+ * The lowercase requirement is the whole noise-rejection mechanism for bare
+ * (unprefixed) spans, and it is deliberate rather than incidental: the Consumer
+ * column legitimately carries PascalCase Solid component names —
+ * `BucklingPanel`, `AutoResolvePanel`, `WarmPoolDebugPanel`,
+ * `SolverProgressOverlay`, `FeaCasePickerDropdown` — which are real consumers
+ * of the channel but are NOT bridge.ts exports. Excluding them by character
+ * class costs nothing; excluding them by allowlist would cost five entries that
+ * all say "not a bridge symbol", and an allowlist whose entries carry no
+ * distinguishing reason has no signal left to give (the failure mode
+ * bridgeMockCoverage.test.ts documents when it refuses to glob its target list).
+ *
+ * The dotted and slashed exclusions fall out of the same character class rather
+ * than needing their own rule: `engineStore.setFeaDiagnostics`, `gui/src` and
+ * `gui/src/debug/WarmPoolDebugPanel.tsx` all contain a character outside
+ * `[\w$]`, so they fail the anchored match.
+ *
+ * Under-capture is not the dangerous direction here: a row whose Consumer cell
+ * yields nothing is classified `needs-allowlist` and must then be either
+ * allowlisted or fixed, so a missed identifier surfaces as a FAILING row rather
+ * than a silently unguarded one.
+ */
+const LOWER_INITIAL_IDENTIFIER_RE = /^[a-z][\w$]*$/;
+
+/**
+ * Extract the bridge.ts consumer identifiers named by one Consumer cell, in
+ * source order, deduplicated.
+ *
+ * Rule, per backticked span:
+ *   - `bridge.ts::NAME` → take NAME, stripping one trailing `()`, and keep it
+ *     when it is an identifier. The explicit module prefix is the author saying
+ *     "this is a bridge symbol", so no case restriction is applied to it.
+ *   - anything else → keep it only when it is a bare identifier starting with a
+ *     lowercase letter (see `LOWER_INITIAL_IDENTIFIER_RE` for why).
+ *
+ * Unbackticked prose (`same`, `(new)`, `animator`, `debug-bridge`) is never
+ * considered: only backticked spans are candidates.
+ */
+export function extractConsumerIdentifiers(cell: string): string[] {
+  const names: string[] = [];
+
+  BACKTICKED_SPAN_RE.lastIndex = 0;
+  for (let m = BACKTICKED_SPAN_RE.exec(cell); m !== null; m = BACKTICKED_SPAN_RE.exec(cell)) {
+    const span = m[1].trim();
+
+    if (span.startsWith(BRIDGE_PREFIX)) {
+      const name = span.slice(BRIDGE_PREFIX.length).replace(/\(\)$/, '');
+      if (IDENTIFIER_RE.test(name) && !names.includes(name)) names.push(name);
+      continue;
+    }
+
+    if (LOWER_INITIAL_IDENTIFIER_RE.test(span) && !names.includes(span)) names.push(span);
+  }
+
+  return names;
+}
