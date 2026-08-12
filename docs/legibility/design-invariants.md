@@ -404,9 +404,30 @@ producer or consumer materializes.
 ### Enforcement honesty (D7)
 
 The crossing idiom is **teachable but not yet mandatory**. `sin(2.5)`
-and `param x : Angle = 2.5` both pass silently **today**, because a
-bare dimensionless value widens into any declared dimension — nothing
-in this family changes that. Mandatoriness is owned elsewhere: the
+and `param x : Angle = 2.5` both pass silently **today**, for two
+unrelated reasons — nothing in this family changes that:
+
+- **Literal-only, `param`/`let` only**: a bare or negated
+  dimensionless literal widens into a dimensioned `Scalar` param
+  default or `let` annotation (`is_numeric_literal_expr`,
+  `crates/reify-compiler/src/entity.rs:390`; guards at `:479-485`
+  and `:563-569`). A dimensionless *expression* at the same boundary
+  is rejected instead: `param x : Angle = ratio * 2.0` is a `BinOp`,
+  so it falls through to `type_compatible` — which carries no
+  dimensionless→dimensioned rule of its own
+  (`crates/reify-compiler/src/type_compat.rs:220-237`) — and errors
+  `ParamDefaultTypeMismatch` (`let` twin:
+  `LetAnnotationTypeMismatch`). The carve-out never reaches function
+  param defaults: those are strict equality, so even
+  `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
+  (`crates/reify-compiler/src/functions.rs:187-215`).
+- **`sin(2.5)` isn't a widening — it's in-signature**: forward trig
+  *declares* ANGLE-or-Real (`MATH_TRANSCENDENTAL_NAMES`,
+  `crates/reify-compiler/src/math_signatures.rs:95-97`), so any
+  dimensionless argument qualifies, literal or expression alike —
+  `sin(ratio * 2.0)` passes too.
+
+Mandatoriness is owned elsewhere: the
 real-dimensionless-unification decision D5 (current ruling:
 `docs/prds/v0_6/dimensioned-construction-strictness.md` §0 — D5's own
 three-position reversal history is at that decision's "D5 status"
