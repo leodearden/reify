@@ -72,8 +72,10 @@ pub unit Nm : Torque = 1
 //
 // Extending si_units.rs with a cubic-metre base entry instead is the path
 // decision D7 (docs/prds/v0_6/angle-units-surface-convergence.md) explicitly
-// DECLINED: it would trip the exact-count assert over SI_DERIVED_UNITS at
-// crates/reify-compiler/tests/si_units_tests.rs:322-328 and reopen the
+// DECLINED: it would trip the exact-count assert over SI_DERIVED_UNITS in
+// `si_derived_units_table_defines_newtons_pascals_joules`
+// (crates/reify-compiler/tests/si_units_tests.rs — named by symbol, not line,
+// so the reference cannot rot) and reopen the
 // prefix-ambiguity questions D7 set aside.  Hand-declaring touches
 // SI_DERIVED_UNITS not at all.  `mL` and the other SI volume prefixes are
 // deliberately NOT declared — D7 scoped this to the single `L` rung the ladder
