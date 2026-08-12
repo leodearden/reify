@@ -1430,12 +1430,25 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # no change -- it completes before seed exits either way. As at the orphan
     # sweep above, 9<&- only NARROWS the fork-to-close window -- see the
     # LANE-LOCK RELEASE CONTRACT block at the flock acquire above (#5705).
+    # >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
+    # machine-readable result channel -- exactly one echo "$LANE_TARGET" at
+    # the very end (see the Stdout contract in the header) -- so a detached
+    # child must never hold a descriptor of it. Without this redirect, a
+    # caller that captures stdout through a PIPE rather than a file (e.g.
+    # scripts/warm-lane-gc.sh:648-649's `2>&1 | while IFS= read -r line; do
+    # ...; done`) blocks until this background rm of a possibly large tree
+    # ALSO exits, defeating the point of detaching it. Applied after 9<&- so
+    # the lane-lock close still happens first; a failed rm here is no longer
+    # observable on this fd, but a leaked entry is still reported by two
+    # other mechanisms: the orphan-trash sweep above re-finds and re-warns
+    # about it on this lane's next seed, and warm-lane-gc-sweep.sh's
+    # _reap_stale_trash reaps it pool-wide.
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } 9<&- &
+            { rm -rf "$RESEED_TRASH"; } 9<&- >/dev/null 2>&1 &
         fi
     fi
 fi
