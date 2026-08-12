@@ -43,6 +43,10 @@ JC_INDEX="$REPO_ROOT/scripts/jcodemunch-index-reify.sh"
 CANONICAL_ROOT="/home/leo/src/reify"
 CANONICAL_REPO_ID="local/reify-4ae45bbd"
 
+# The script's OWN success token. Every refusal path asserts its ABSENCE, so a
+# gate that refused after already claiming success cannot pass.
+SUCCESS_MARKER="INDEX-OK"
+
 _TMPDIRS=()
 cleanup() {
     local d
@@ -51,6 +55,9 @@ cleanup() {
     done
 }
 trap cleanup EXIT
+
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/jc-index-reify-scratch-XXXXXX")"
+_TMPDIRS+=("$SCRATCH")
 
 mk_tmpdir() {
     local d
@@ -114,6 +121,108 @@ check_distinct_ids() {
     fi
     if [ "$a" = "$b" ]; then
         printf 'two distinct roots produced the SAME repo-id %s (hardcoded?)\n' "$a" >&2
+        return 1
+    fi
+    return 0
+}
+
+# ── Synthetic-index fixtures ────────────────────────────────────────────────
+#
+# The DB gates are driven against sqlite DBs built here rather than against the
+# host-global ~/.code-index, so every assertion below is hermetic: no uvx, no
+# network, no ~5-10 minute run, and no chance of perturbing a live watcher/serve.
+# Table shapes are the real ones at the pinned 1.108.54 (storage/sqlite_store.py
+# :39 symbols, :68 files with `path TEXT PRIMARY KEY`) — only the columns these
+# gates read are reproduced.
+#
+# The fixture is placed at the path the UPSTREAM derivation names (via
+# recompute_repo_name), not at one the script computes. So if the script's
+# identity derivation ever drifts, it looks in the wrong place and these gates
+# fail loudly rather than silently passing against a file it invented.
+#
+# mk_index_db <index_dir> <project_root> <n_symbols> <n_files> -> echoes db path
+mk_index_db() {
+    local index_dir="$1" root="$2" n_sym="$3" n_files="$4"
+    local db i
+    db="$index_dir/local-$(recompute_repo_name "$root").db"
+    mkdir -p "$index_dir"
+    rm -f "$db"
+    {
+        echo 'create table symbols(id text primary key, file text, name text);'
+        echo 'create table files(path text primary key);'
+        echo 'begin;'
+        for ((i = 0; i < n_sym; i++)); do
+            echo "insert into symbols values('s$i','f$i.rs','sym$i');"
+        done
+        for ((i = 0; i < n_files; i++)); do
+            echo "insert into files values('f$i.rs');"
+        done
+        echo 'commit;'
+    } | sqlite3 "$db" || return 1
+    printf '%s\n' "$db"
+}
+
+# with_index_path <dir> <checker> [args...] — run a checker with CODE_INDEX_PATH
+# exported to <dir>, restoring the previous value (or unset-ness) afterwards.
+# `env CODE_INDEX_PATH=… expect_refusal …` cannot be used: env execs a PROGRAM,
+# and every checker here is a shell FUNCTION. An explicit export is also more
+# honest than a `VAR=x func` prefix, whose export semantics differ between
+# bash's default and POSIX modes.
+with_index_path() {
+    local dir="$1" rc=0; shift
+    local had="${CODE_INDEX_PATH+set}" prev="${CODE_INDEX_PATH:-}"
+    export CODE_INDEX_PATH="$dir"
+    "$@" || rc=$?
+    if [ "$had" = "set" ]; then export CODE_INDEX_PATH="$prev"; else unset CODE_INDEX_PATH; fi
+    return "$rc"
+}
+
+# expect_refusal <marker> [args...] — the script must exit NON-ZERO, carry
+# <marker> on STDERR, and print NO success summary. All three together: an
+# implementation that printed the marker and still exited 0, or that refused
+# after already claiming success, would satisfy a weaker check.
+expect_refusal() {
+    local marker="$1"; shift
+    local o e rc=0 bad=0
+    o="$SCRATCH/refusal.out"; e="$SCRATCH/refusal.err"
+    "$JC_INDEX" "$@" >"$o" 2>"$e" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf 'expected a NON-ZERO exit carrying %s, got 0\n' "$marker" >&2
+        bad=1
+    fi
+    if ! grep -q -- "$marker" "$e"; then
+        printf 'stderr did not carry the refusal marker %s\n' "$marker" >&2
+        bad=1
+    fi
+    if grep -q -- "$SUCCESS_MARKER" "$o" "$e"; then
+        printf 'a refusal path still printed the success marker %s\n' "$SUCCESS_MARKER" >&2
+        bad=1
+    fi
+    [ "$bad" -eq 0 ] || { echo "--- stdout ---" >&2; cat "$o" >&2; echo "--- stderr ---" >&2; cat "$e" >&2; return 1; }
+    return 0
+}
+
+# expect_ok [args...] — the script must exit 0 and print the success summary.
+expect_ok() {
+    local o e rc=0
+    o="$SCRATCH/ok.out"; e="$SCRATCH/ok.err"
+    "$JC_INDEX" "$@" >"$o" 2>"$e" || rc=$?
+    if [ "$rc" -ne 0 ] || ! grep -q -- "$SUCCESS_MARKER" "$o"; then
+        printf 'expected exit 0 with %s on stdout; rc=%d\n' "$SUCCESS_MARKER" "$rc" >&2
+        echo "--- stdout ---" >&2; cat "$o" >&2; echo "--- stderr ---" >&2; cat "$e" >&2
+        return 1
+    fi
+    return 0
+}
+
+# expect_ok_stdout <substring> [args...] — expect_ok, plus a literal substring
+# that must appear on stdout (e.g. the `<N> sym` count).
+expect_ok_stdout() {
+    local want="$1"; shift
+    expect_ok "$@" || return 1
+    if ! grep -qF -- "$want" "$SCRATCH/ok.out"; then
+        printf 'stdout did not contain %q\n' "$want" >&2
+        cat "$SCRATCH/ok.out" >&2
         return 1
     fi
     return 0
@@ -203,6 +312,58 @@ else
     # synthetic fixtures instead of the host-global index.
     assert "db-path honours a temp CODE_INDEX_PATH" \
         check_db_path_honours_code_index_path "$TMP_ROOT_A" "$TMP_ROOT_B"
+fi
+
+# -- Test 5: the symbol-count gate -------------------------------------------
+# PRD §4.3: index PRESENCE proves nothing. `delete-index` leaves a husk that
+# re-registers as an empty repo, so a chain that only checked "the DB file is
+# there" would report health over an index with zero symbols in it — which is
+# the substrate failure this whole PRD exists to end. The gate is therefore on
+# the symbol COUNT, and a DB that cannot be queried at all counts as empty.
+#
+# Driven entirely against synthetic DBs under a temp CODE_INDEX_PATH with
+# --check-only: hermetic, no uvx, no network, no ~5-10 minute run.
+echo ""
+echo "--- Test 5: symbol-count gate (missing / empty / populated) ---"
+
+GATE_ROOT="$(mk_tmpdir)"
+GATE_INDEX="$(mk_tmpdir)"
+
+if [ -z "$GATE_ROOT" ] || [ -z "$GATE_INDEX" ]; then
+    echo "  FAIL: could not mktemp -d the symbol-count gate fixtures"
+    FAIL=$((FAIL + 1))
+else
+    # (a) No DB file at all — nothing has ever indexed this identity.
+    assert "refuses E_JC_INDEX_MISSING when the index DB does not exist" \
+        with_index_path "$GATE_INDEX" \
+            expect_refusal E_JC_INDEX_MISSING --check-only --project-root "$GATE_ROOT"
+
+    # (b) The delete-index husk: DB present, schema present, ZERO symbols.
+    mk_index_db "$GATE_INDEX" "$GATE_ROOT" 0 0 >/dev/null
+    assert "refuses E_JC_INDEX_EMPTY when the DB has a symbols table but 0 rows" \
+        with_index_path "$GATE_INDEX" \
+            expect_refusal E_JC_INDEX_EMPTY --check-only --project-root "$GATE_ROOT"
+
+    # (b2) An unqueryable DB (no symbols table / wrong schema / corrupt) is
+    # EMPTY too — an index we cannot read the symbol count out of is not an
+    # index we may report health over.
+    : > "$GATE_INDEX/local-$(recompute_repo_name "$GATE_ROOT").db"
+    assert "refuses E_JC_INDEX_EMPTY when the DB has no symbols table at all" \
+        with_index_path "$GATE_INDEX" \
+            expect_refusal E_JC_INDEX_EMPTY --check-only --project-root "$GATE_ROOT"
+
+    # (c) A populated index passes, and the count it reports is the real one.
+    mk_index_db "$GATE_INDEX" "$GATE_ROOT" 7 3 >/dev/null
+    assert "accepts a populated index and reports the true count as '7 sym'" \
+        with_index_path "$GATE_INDEX" \
+            expect_ok_stdout "7 sym" --check-only --project-root "$GATE_ROOT"
+
+    # The count is READ, not echoed from a constant: a different fixture must
+    # report a different number.
+    mk_index_db "$GATE_INDEX" "$GATE_ROOT" 41 3 >/dev/null
+    assert "reports '41 sym' for a 41-symbol fixture (the count is read, not fixed)" \
+        with_index_path "$GATE_INDEX" \
+            expect_ok_stdout "41 sym" --check-only --project-root "$GATE_ROOT"
 fi
 
 test_summary
