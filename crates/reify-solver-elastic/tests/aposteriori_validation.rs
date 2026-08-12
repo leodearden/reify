@@ -1274,8 +1274,11 @@ impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
 ///
 /// `mesh_size = 0.25` is not an arbitrary choice: it is the specific
 /// resolution measured during impl to give a genuine (non-noise) global-
-/// indicator drop on the FIRST Dörfler refine (iter 0 ≈ 0.552, iter 1 ≈
-/// 0.503). Coarser/finer meshes and other θ values were also measured and
+/// indicator drop on the FIRST Dörfler refine — currently ≈15%, though the
+/// absolute indicator values move whenever the mesher is recalibrated, which
+/// is why callers key their targets off a measured seed rather than off a
+/// number quoted here. Coarser/finer meshes and other θ values were also
+/// measured and
 /// found noisier (the volume-weighted-average ZZ recovery is not the full
 /// SPR scheme — see `error_estimator.rs`'s module doc — and a full remesh
 /// from surface regenerates an independent tetrahedralization each refine,
@@ -1319,33 +1322,42 @@ fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
 /// non-increasing — a smooth solution refines "downhill", unlike the
 /// L-shaped re-entrant-corner case (later steps).
 ///
-/// `target_accuracy = 0.33` sits strictly between [`cantilever_gmsh_problem`]'s
-/// measured coarse-mesh indicator (iter 0 ≈ 0.35479) and its once-refined
-/// indicator (iter 1 ≈ 0.30297) — chosen ABOVE the refined value per this
-/// suite's calibration convention (measured during impl), so the loop
-/// converges right after its first Dörfler refine rather than on the first
-/// (unrefined) solve, giving a real (if short) monotone trajectory rather
-/// than a vacuous one-point history.
+/// The target is calibrated RELATIVE to a measured seed indicator — a hair
+/// below it — rather than pinned to an absolute constant: this suite's
+/// convention is a target that sits between the coarse-mesh indicator and the
+/// once-refined one, so the loop converges right after its first Dörfler
+/// refine rather than on the first (unrefined) solve, giving a real (if short)
+/// monotone trajectory rather than a vacuous one-point history. Expressing
+/// that as a fraction of the measured seed keeps it true across mesher
+/// recalibrations instead of demanding a hand re-derivation after each one
+/// (this constant was already re-derived twice: 0.53 → 0.33 in task #6211,
+/// when capping `Mesh.MeshSizeMax` made `seed_volume_from_surface` honour the
+/// requested size and shifted the whole trajectory down). Mirrors the same
+/// drift-free pattern used by
+/// [`convergence_status_reports_converged_when_target_is_reachable_immediately`].
 ///
-/// The constant moved from 0.53 in task #6211. This test's problem never calls
-/// `mesh_to_volume`, so it never inherited the leaked `Mesh.MeshSizeMax` clamp
-/// and always seeded at gmsh's 1e22 default; capping `MeshSizeMax` at the
-/// coarsest requested hint makes `seed_volume_from_surface` genuinely honour
-/// the requested size, so the whole trajectory shifts down to a measured
-/// `[0.35479, 0.30297, 0.25021, 0.19753]` — still strictly monotone, but with
-/// iter 0 already below the old 0.53. 0.33 is a re-derivation by the procedure
-/// documented above against the corrected mesh (~4.5% below iter 0, ~8.9% above
-/// iter 1 — margins at least as wide as 0.53's 4.0% / 5.4%), not a weakened
-/// threshold: every assertion below is unchanged.
+/// The 0.95 factor is what makes the trajectory non-vacuous: it must undercut
+/// the seed (else iteration 0 converges immediately) while staying above the
+/// once-refined indicator (else the budget's iteration cap trips first). The
+/// measured first-refine drop is ≈15%, so 5% leaves margin on both sides.
 #[test]
 fn cantilever_smooth_control_converges_within_few_iterations_with_monotone_drop() {
     if !reify_kernel_gmsh::GMSH_AVAILABLE {
         eprintln!("skipping: libgmsh not available in this build");
         return;
     }
+    // Measure the seed indicator on a THROWAWAY instance of the same fixture,
+    // not on `problem` — `RecordingProblem::solve_and_estimate` appends to
+    // `history`, so calibrating on the recorded problem would pad the history
+    // with a pre-loop entry and make the `history.len() >= 2` assertion below
+    // pass without any refinement having happened.
+    let seed_indicator = cantilever_gmsh_problem()
+        .solve_and_estimate()
+        .global_indicator;
+
     let mut problem = RecordingProblem::new(cantilever_gmsh_problem());
     let budget = RefinementBudget {
-        target_accuracy: 0.33,
+        target_accuracy: seed_indicator * 0.95,
         max_refinement_iterations: 5,
         max_dofs: 1_000_000,
     };
