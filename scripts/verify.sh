@@ -1347,8 +1347,22 @@ select_harness_kloc_guard
 # --narrow is a no-op for scope=branch (already narrowing) and scope=all
 # (condition never true).
 #
+# AFFECTED_CLOSURE — the raw reverse-dependency closure, COMPUTED whenever
+# RUN_RUST=1 AND SCOPE != all. That is deliberately WIDER than narrowing
+# eligibility above: it lets a consumer make a membership test against the
+# closure WITHOUT activating narrowing. `--scope staged` without `--narrow` —
+# exactly what hooks/project-checks execs on every commit — is that case, and it
+# is why the gui-feature test pass consults AFFECTED_CLOSURE rather than
+# inferring "merge gate" from NARROW_ACTIVE=0 (which also holds for staged and
+# for both fail-wide resets). Splitting COMPUTATION from ACTIVATION is
+# value-preserving: AFFECTED, NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with
+# the same values on every path, so the --workspace coupling that
+# tests/infra/test_verify_scope.sh's B9-default scenario pins is untouched.
+# affected_crates() is invoked at most ONCE per run (one `cargo metadata`, 0.53s
+# warm), and RUN_RUST=0 — a docs-only hook-gated commit — skips it entirely.
+#
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
-# separated crate names). When set AND narrowing is eligible, used verbatim in
+# separated crate names). When set AND the closure is eligible, used verbatim in
 # place of calling affected_crates(). This mirrors the REIFY_PSI_GATE_PROC_PATH
 # knob idiom and allows hermetic --print-plan assertions in the workspace-less
 # fixture (where cargo metadata fails and affected_crates() always returns ALL).
@@ -2029,13 +2043,33 @@ add_test_passes() {
     #     copy would cost another cold link for zero added coverage.
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
-    #   * NARROWED on the same affected-crate axis every other narrowed pass uses:
-    #     emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge gate), and
-    #     under NARROW_ACTIVE=1 only when reify-gui is in AFFECTED.  affected_crates()
-    #     is a REVERSE-dependency closure, so a change anywhere in reify-gui's
-    #     dependency graph puts reify-gui in the set — measured on this tree:
-    #     crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs both
-    #     yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses.
+    #     THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
+    #       1. SCOPE=all            -> emit.  The merge gate never narrows; that is
+    #                                  a CONTRACT, not a side effect.
+    #       2. closure unavailable  -> emit.  FAIL WIDE.  "Unavailable" covers the
+    #                                  ALL sentinel (a C4 workspace-global file, a
+    #                                  C5 cargo-metadata failure, an unmappable
+    #                                  path), an empty CHANGED_FILES_RAW, and a
+    #                                  REIFY_AFFECTED_CRATES_OVERRIDE that
+    #                                  word-splits to nothing.
+    #       3. otherwise            -> emit iff reify-gui ∈ AFFECTED_CLOSURE.
+    #     This is NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-
+    #     ACTIVATION flag, not a scope oracle: NARROW_ACTIVE=0 ALSO holds for
+    #     `--scope staged` without `--narrow` and for the two fail-wide resets, so
+    #     the old "emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge
+    #     gate)" reading was a false equivalence.  Its cost was concrete and
+    #     measured: `hooks/project-checks` execs
+    #     `verify.sh all --profile debug --scope staged --include-infra`, and a
+    #     staged crates/reify-doc/src/lib.rs emitted 1 gui-feature pass — i.e. every
+    #     per-commit hook run paid the full `--features gui` link for a closure that
+    #     cannot reach reify-gui.  Arm 3 now covers that shape too.  Arm 1 keeps the
+    #     merge gate unconditional, so a hook-tier miss can only ever be LATENCY,
+    #     never a coverage hole.
+    #     affected_crates() is a REVERSE-dependency closure, so a change anywhere in
+    #     reify-gui's dependency graph puts reify-gui in the set — measured on this
+    #     tree: crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs
+    #     both yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
     #     Emitting unconditionally made a `-p reify-doc` branch plan pay a full
     #     tauri + webkit2gtk + OCCT feature-unification build (20m42s cold / ~137s
     #     warm, and NOT shareable with any other pass's artifacts) that no reify-doc
