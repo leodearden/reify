@@ -23,7 +23,14 @@ import {
   splitTableCells,
   parseEventChannelRows,
   extractConsumerIdentifiers,
+  classifyEventChannelRows,
+  type EventChannelRow,
 } from './eventChannelConsumerContract';
+
+/** Terse `EventChannelRow` literal, so the classification tables stay readable. */
+function row(section: EventChannelRow['section'], channel: string, consumerCell: string): EventChannelRow {
+  return { section, channel, consumerCell };
+}
 
 describe('splitTableCells', () => {
   it('splits a plain §1 row so the Consumer cell lands at index 4', () => {
