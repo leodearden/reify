@@ -125,3 +125,35 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 `cone`, `tube`) sits base-first on the origin along +Z; `wedge` sits corner-first in the +octant.
 When in doubt, prefer the `_centered` variant over a manual `translate(primitive(...), 0, 0, -h/2)`
 workaround.
+
+## GD&T Tolerance Zones
+
+Constructors that build a geometric-tolerance zone as a real `Solid`, so a zone can be
+intersected, differenced and measured like any other body. Every one takes its zone extent
+as a **width**, and every one centres the zone on the feature it is given (`±width/2`):
+
+```
+zone_slab(face, width)                                 -> Solid   // face offset ±width/2, capped into a slab
+zone_cylinder(axis, width)                             -> Solid   // Ø-zone about an axis wire; width is the DIAMETER
+zone_annulus(axis, nominal_radius, width, length)      -> Solid   // annular shell at nominal_radius ± width/2
+zone_profile(solid, width)                             -> Solid   // surface-profile shell, ±width/2 about the solid
+```
+
+`zone_slab` takes a **face or 2D profile** as its first argument — not a solid — and offsets it
+`±width/2`, capping the result into a centred slab. (`zone_profile` is the solid-input sibling.)
+
+`zone_cylinder`'s `width` is the zone **diameter**, not its radius: it lowers to a pipe sweep with
+`radius = width * 0.5`. There is deliberately **no length argument** — the axis wire's own length
+sets the cylinder extent, so control the zone's length by controlling the wire.
+
+`zone_annulus` lowers to `Difference(Pipe(axis, R + width/2), Pipe(axis, R − width/2))`. Its
+fourth argument, `length`, is accepted and validated but does **not** drive the result: as with
+`zone_cylinder`, the swept extent comes from the axis wire. Pass it for signature completeness,
+and size the wire to size the zone.
+
+`zone_profile` lowers to `Difference(Thicken(solid, +width/2), Thicken(solid, −width/2))` via the
+OCCT thicken operation, giving a shell that straddles the input solid's surface. It has no
+closed-form volume — expect roughly `surface_area × width`, and query the realized solid rather
+than computing it by hand.
+
+Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
