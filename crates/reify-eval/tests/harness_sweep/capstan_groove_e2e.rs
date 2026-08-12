@@ -104,6 +104,9 @@ const DEV_CAPSTAN: &str = concat!(
 /// The design entity whose cells and constraints this module gates.
 const CAPSTAN_ENTITY: &str = "Capstan";
 
+/// The fairlead shuttle that has to track the capstan's migrating wrap band.
+const FAIRLEAD_ENTITY: &str = "Fairlead";
+
 /// Relative tolerance on `ΔV` against the ideal half-round swept solid
 /// `0.5·π·groove_r²·L`, the spine-radius arc length.
 ///
@@ -241,10 +244,23 @@ fn tessellate_dev_capstan() -> TessellateResult {
     result
 }
 
-/// Read a `Value::Scalar` cell of [`CAPSTAN_ENTITY`] out of the tessellation's
-/// value map, asserting its dimension, and return its SI value (m / m³).
-fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVector) -> f64 {
-    let id = ValueCellId::new(CAPSTAN_ENTITY, cell);
+/// Read a `Value::Scalar` cell of `entity` out of the tessellation's value map,
+/// asserting its dimension, and return its SI value (m / m³ / dimensionless).
+///
+/// Entity-parameterised so the cross-structure band↔stroke gate can read
+/// [`FAIRLEAD_ENTITY`] cells through the same dimension-checked path (and the
+/// same "is the cell declared in …?" hint) the capstan cells go through, rather
+/// than carrying a second copy of the `Value::Scalar` match. Both structures are
+/// `sub`s of the file's `CapstanDrive` assembly, but their scalar cells are
+/// keyed at the bare template — `Fairlead.stroke`, exactly as `Capstan.rope_dia`
+/// is — so one key form covers both.
+fn entity_cell(
+    result: &TessellateResult,
+    entity: &str,
+    cell: &str,
+    expected_dim: DimensionVector,
+) -> f64 {
+    let id = ValueCellId::new(entity, cell);
     match result.values.get(&id) {
         Some(Value::Scalar {
             si_value,
@@ -252,13 +268,45 @@ fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVe
         }) => {
             assert_eq!(
                 *dimension, expected_dim,
-                "{CAPSTAN_ENTITY}.{cell}: expected dimension {expected_dim:?}, got {dimension:?}"
+                "{entity}.{cell}: expected dimension {expected_dim:?}, got {dimension:?}"
             );
             *si_value
         }
         other => panic!(
-            "{CAPSTAN_ENTITY}.{cell} must be a Value::Scalar with dimension {expected_dim:?}, \
+            "{entity}.{cell} must be a Value::Scalar with dimension {expected_dim:?}, \
              got {other:?} — is the cell declared in {DEV_CAPSTAN}?"
+        ),
+    }
+}
+
+/// [`entity_cell`] fixed to [`CAPSTAN_ENTITY`] — the majority of this module's
+/// reads.
+fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVector) -> f64 {
+    entity_cell(result, CAPSTAN_ENTITY, cell, expected_dim)
+}
+
+/// Read a dimensionless (`: Real`) cell of `entity` — a pure count such as
+/// `active_turns` or `dead_total` — and return it.
+///
+/// Separate from [`entity_cell`] because the evaluator does NOT wrap a
+/// dimensionless quantity in `Value::Scalar { dimension: DIMENSIONLESS }`; a
+/// `: Real` cell comes back as a bare `Value::Real`. Both spellings are accepted
+/// here anyway: they denote the same mathematical object, and this module's
+/// assertions are about the DESIGN, not about which representation the evaluator
+/// picks for a unitless number. A `Value::Scalar` carrying any real dimension is
+/// still rejected — that would mean the cell had silently acquired units.
+fn entity_real(result: &TessellateResult, entity: &str, cell: &str) -> f64 {
+    let id = ValueCellId::new(entity, cell);
+    match result.values.get(&id) {
+        Some(Value::Real(v)) => *v,
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) if *dimension == DimensionVector::DIMENSIONLESS => *si_value,
+        other => panic!(
+            "{entity}.{cell} must be a dimensionless real (a count of turns), i.e. a \
+             `Value::Real` or a DIMENSIONLESS `Value::Scalar`, got {other:?} — is the \
+             cell declared in {DEV_CAPSTAN}, and is it still `: Real`?"
         ),
     }
 }
@@ -594,6 +642,144 @@ fn capstan_seat_volume_delta_matches_half_pi_r2_l() {
         HALF_ROUND_REL_TOL * 100.0,
         100.0 * v_band / v_pred,
         100.0 * v_ends / v_pred
+    );
+}
+
+// ── The shuttle stroke covers the band the wrap migrates over ────────────────
+
+/// Relative slack on the two exact band identities below.
+///
+/// `band == lead·active_turns` and `groove_len − band == lead·dead_total` are
+/// *algebraic* identities given the file's own definitions (`groove_len = lead ·
+/// (active_turns + dead_total)`), not empirical fits — the only thing separating
+/// the two sides is floating-point association order in the evaluator. So this
+/// is pure fp slack, and it is deliberately ~4 orders below the smallest
+/// physically meaningful drift (a 1 µm move on a 60 mm band is 1.7e-5 relative).
+const BAND_IDENTITY_REL_TOL: f64 = 1e-12;
+
+/// The drum carries TWO distinct axial figures, and the fairlead shuttle has to
+/// cover the smaller one.
+///
+///   * the **active band** (`band = lead · active_turns`) is how far the
+///     departure tangent walks axially over the full per-axis `feed` — 60.35 mm
+///     at the file's defaults. This is what the passive shuttle tracks;
+///   * the **total grooved length** (`groove_len = lead · (active_turns +
+///     dead_total)`) is the whole grooved extent, the band PLUS the dead
+///     (anchor) wraps at each end — 88.35 mm. The shuttle never travels this.
+///
+/// Conflating them is exactly the drift this test exists to stop: those two
+/// numbers and `Fairlead.stroke` (63 mm) read like three estimates of one
+/// quantity and are not, which is how `docs/projects/printer_v01.md` came to
+/// carry a stale "~80 mm over full travel" for the migration. The relation used
+/// to live only in a comment; here it is stated over the file's evaluated cells.
+///
+/// Four claims, all read back from those cells:
+///   1. `band` really is the ACTIVE migration — `lead · active_turns`. Guards
+///      the definition against a later edit that quietly redefines it as the
+///      total grooved extent;
+///   2. `groove_len − band == lead · dead_total` — the decomposition the project
+///      doc asserts in prose ("sized for the full per-axis feed … plus the base
+///      wraps") stated over cells: 88.346 mm − 60.346 mm = 28.000 mm = 7 mm × 4;
+///   3. `band < groove_len` strictly, i.e. the two figures have not collapsed
+///      into one (they cannot while `dead_total > 0`);
+///   4. the coverage relation itself: `band <= stroke <= band + lead`.
+///
+/// The upper bound in (4) is derived, not tuned to admit the observed 63 mm: the
+/// stroke is the band rounded UP to a whole turn, `ceil(active_turns) · lead`,
+/// and `ceil(x) · lead < x · lead + lead` holds identically for every `x`. A
+/// bare lower bound would let the stroke grow without limit and still pass, so
+/// it would not pin the design intent at all. Keeping both bounds derived is
+/// what lets a future `lead` or `d_ratio` edit move this gate with the design
+/// instead of going stale — the same principle as the module's "no geometry
+/// number is hard-coded here".
+#[test]
+fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let result = dev_capstan();
+
+    let band = capstan_cell(result, "band", DimensionVector::LENGTH);
+    let lead = capstan_cell(result, "lead", DimensionVector::LENGTH);
+    let active_turns = entity_real(result, CAPSTAN_ENTITY, "active_turns");
+    let dead_total = entity_real(result, CAPSTAN_ENTITY, "dead_total");
+    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
+    let stroke = entity_cell(result, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
+
+    // ---- (1) `band` is the ACTIVE migration, not the total grooved extent ----
+    let band_expected = lead * active_turns;
+    assert!(
+        (band - band_expected).abs() <= BAND_IDENTITY_REL_TOL * band_expected.abs(),
+        "`{CAPSTAN_ENTITY}.band` must be the ACTIVE wrap-band migration, one `lead` \
+         per active turn: lead · active_turns = {:.6} mm × {active_turns:.6} = \
+         {:.6} mm, but the cell reads {:.6} mm. If this failed at ~{:.4} mm the \
+         cell has been redefined as the TOTAL grooved extent (`groove_len`, which \
+         also counts the {dead_total} dead anchor wraps) — those are different \
+         lengths and only the active one is what the shuttle tracks.",
+        lead * 1e3,
+        band_expected * 1e3,
+        band * 1e3,
+        groove_len * 1e3
+    );
+
+    // ---- (2) The grooved length decomposes into band + dead wraps ----
+    // An algebraic identity given `groove_len = lead · (active_turns +
+    // dead_total)` and `band = lead · active_turns`, so only fp slack is needed;
+    // it is asserted anyway because it is the statement the project doc makes in
+    // prose, and it is what makes (1) and (3) mean what they say.
+    let dead_extent = lead * dead_total;
+    assert!(
+        (groove_len - band - dead_extent).abs() <= BAND_IDENTITY_REL_TOL * dead_extent.abs(),
+        "the drum's grooved length must decompose into the active band plus the \
+         dead (anchor) wraps: groove_len − band = {:.6} mm − {:.6} mm = {:.6} mm, \
+         but lead · dead_total = {:.6} mm × {dead_total} = {:.6} mm. This is the \
+         \"sized for the full per-axis feed … plus the base wraps\" claim in \
+         docs/projects/printer_v01.md, stated over the cells.",
+        groove_len * 1e3,
+        band * 1e3,
+        (groove_len - band) * 1e3,
+        lead * 1e3,
+        dead_extent * 1e3
+    );
+
+    // ---- (3) The two axial figures have not collapsed into one ----
+    assert!(
+        band < groove_len,
+        "the active band ({:.6} mm) must be strictly shorter than the total \
+         grooved length ({:.6} mm) — they are different measurements of the drum \
+         and the dead_total = {dead_total} anchor wraps are the difference. Equal \
+         values mean the anchor wraps have been lost, which puts the rope's dead \
+         turns under working tension.",
+        band * 1e3,
+        groove_len * 1e3
+    );
+
+    // ---- (4) The shuttle covers the band ----
+    // Lower bound: a stroke short of the band leaves the fleet angle to open up
+    // at one end of travel — the fairlead stops tracking and starts side-loading.
+    // Upper bound: the stroke is the band rounded UP to a whole turn,
+    // ceil(active_turns) · lead, and ceil(x) · lead < x · lead + lead for every
+    // x. So the two bounds together say "one whole turn of margin, no more" —
+    // neither is the literal 63 mm, which is deliberately absent from this
+    // assertion so a lead/d_ratio edit moves the gate with the design.
+    assert!(
+        stroke >= band && stroke <= band + lead,
+        "the fairlead shuttle's stroke must cover the capstan's band migration \
+         and overshoot it by less than one whole turn: {FAIRLEAD_ENTITY}.stroke = \
+         {:.6} mm against a band of {:.6} mm (lower bound) and band + lead = \
+         {:.6} mm (upper bound). The stroke is the band rounded UP to a whole \
+         turn, ceil(active_turns) · lead = ceil({active_turns:.6}) × {:.6} mm = \
+         {:.6} mm; a stroke below the band means the shuttle runs out of travel \
+         before the wrap band does (fleet angle opens, the fairlead side-loads \
+         instead of guiding), and one above the upper bound is no longer that \
+         rounding rule — it is an unexplained number.",
+        stroke * 1e3,
+        band * 1e3,
+        (band + lead) * 1e3,
+        lead * 1e3,
+        active_turns.ceil() * lead * 1e3
     );
 }
 
