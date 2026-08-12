@@ -2381,13 +2381,17 @@ impl Engine {
     ///     divergence from `current_eval_version()` that this site
     ///     deliberately avoids). This equals the *current eval* version in
     ///     eval-only flows, but the two notions are not the same guarantee:
-    ///     `engine_edit.rs` and `concurrent.rs` still bump `next_version_id`
-    ///     by hand (migration in progress — see `allocate_snapshot_version`'s
-    ///     doc), so a non-eval allocation occurring between an eval and a
-    ///     drain would stamp drained events with a version that does not
-    ///     correspond to that eval. Pre-existing exposure — the prior inline
-    ///     `next_version_id.saturating_sub(1)` formula had the identical
-    ///     coupling — left unchanged by this reader (task 5047 / δ).
+    ///     `engine_edit.rs`'s `edit_param` and `edit_source` still
+    ///     *allocate* versions on non-eval paths — now via
+    ///     `allocate_snapshot_version()` rather than by hand — so a
+    ///     non-eval allocation occurring between an eval and a drain would
+    ///     stamp drained events with a version that does not correspond to
+    ///     that eval. (The allowlisted `eval_cached` re-stamp is
+    ///     snapshot-only and never advances `next_version_id`, so it cannot
+    ///     contribute to this desync.) Pre-existing exposure — the prior
+    ///     inline `next_version_id.saturating_sub(1)` formula had the
+    ///     identical coupling — left unchanged by this reader (task 5047 /
+    ///     δ).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
