@@ -89,10 +89,11 @@ stamped by commit_planning).
 - `target-file-caveat` — **PASS** (wired) — the "HELICAL GROOVE itself is not
   modelled" caveat this row tracked was retired from `dev_capstan.ri`'s
   MODELLING CAVEATS header by this leaf (`b47aff5eed`): the rope channel is
-  modelled for real via `helix()` + `sweep()` + `difference` at
-  `prj/printer_v01/dev_capstan.ri:141-157` (`groove_profile`/`groove_path`/
-  `groove_cutter`), refined by #5580. Built on #5342's helix-sweep capability
-  (upstream producer — #5342/#5343 are not themselves cited in the file).
+  modelled for real via `groove_profile`/`groove_path`/`groove_cutter` →
+  `difference(drum_blank, groove_cutter)` in `prj/printer_v01/dev_capstan.ri`
+  (`helix()` + `sweep()` composition), refined by #5580. Built on #5342's
+  helix-sweep capability (upstream producer — #5342/#5343 are not themselves
+  cited in the file).
 
 ## ε — printer retrofit + first fastener holes (row 12)
 
