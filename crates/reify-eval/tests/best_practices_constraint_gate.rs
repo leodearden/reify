@@ -306,6 +306,48 @@ fn audit_reports_stale_expected_indeterminate() {
 
 // ── corpus_files: flat corpus discovery (steps 5/6) ──────────────────────────
 
+/// Absolute path to `examples/best_practices/`, resolved at compile time from
+/// this crate's manifest directory (two levels up) — matches
+/// `examples_smoke.rs:13`'s `EXAMPLES_DIR` and both sibling gates'
+/// `corpus_files`.
+const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/best_practices");
+
+/// Basenames of the `*.ri` files directly inside `examples/best_practices/`,
+/// sorted for deterministic reporting.
+///
+/// Deliberately a FLAT (non-recursive) read — this fn's flatness is
+/// load-bearing, not incidental: the corpus is a single flat drawer of idiom
+/// exemplars by design (`examples_smoke.rs::corpus_ri_files()`, line 636's
+/// comment), and a nested subdirectory appearing here is a structural change
+/// that should be reviewed rather than silently absorbed by switching this to
+/// a recursive walk.
+fn corpus_files() -> Vec<std::path::PathBuf> {
+    let dir = std::path::Path::new(CORPUS_DIR);
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "best_practices_constraint_gate: cannot read directory '{}': {e}",
+            dir.display()
+        )
+    });
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("ri"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// Renders `path` as a repo-relative `examples/best_practices/<name>` string
+/// for failure messages, so offenders are reported portably rather than as
+/// absolute build-machine paths.
+fn corpus_relative(path: &std::path::Path) -> String {
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some(name) => format!("examples/best_practices/{name}"),
+        None => path.display().to_string(),
+    }
+}
+
 /// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
 /// count measured on this branch — a floor that catches a silently-emptied
 /// or mis-resolved directory, the same class of guard as
