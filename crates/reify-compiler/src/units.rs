@@ -1698,6 +1698,15 @@ mod tests {
     // existing sibling slices, not just those that preceded it).
     use crate::parse_signatures::PARSE_FN_NAMES;
 
+    // Euler-angle family (task #6082) — single source of truth in
+    // `crate::orientation_signatures`, imported here for the same reason as
+    // PARSE_FN_NAMES above. This is now the newest family, so its own
+    // disjointness test checks against ALL sibling slices; the reciprocal
+    // clause is additionally carried by every sibling test, so a collision
+    // introduced by editing a sibling slice fails that sibling's own test too
+    // rather than only the newest family's.
+    use crate::orientation_signatures::ORIENTATION_EULER_FN_NAMES;
+
     // Local fixtures for name families that have no pub single-source slice —
     // they are hardcoded match arms in `affine_map_algebra_result_type` and
     // `infer_list_helper_return_type`. Keep in sync with those functions.
@@ -2367,6 +2376,11 @@ mod tests {
                 "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "GEOMETRY_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -2434,6 +2448,11 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "DYNAMICS_QUERY_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
             );
         }
     }
@@ -2512,6 +2531,11 @@ mod tests {
                 "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
                  MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
                  constructors and transcendentals are disjoint slices)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "MATH_CONSTRUCTION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
             );
         }
     }
@@ -2632,6 +2656,11 @@ mod tests {
                  MATH_TRANSCENDENTAL_NAMES (§1.2 trig/transcendental family, task 4352 — \
                  operations and transcendentals are disjoint slices)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "MATH_OPERATION_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -2737,6 +2766,11 @@ mod tests {
                 !LIST_HELPER_NAMES.contains(name),
                 "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be a \
                  list-helper (`single` / `flat_map` — earlier arm would shadow it)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "MATH_TRANSCENDENTAL_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
             );
         }
     }
@@ -3270,6 +3304,10 @@ mod tests {
                 "{name} in AFFINE_MAP_CONSTRUCTOR_NAMES"
             );
             assert!(!is_field_op(name), "{name} in FIELD_OP_NAMES");
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(&name),
+                "{name} in ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -3690,6 +3728,11 @@ mod tests {
                 "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "JOINT_TYPED_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -3759,6 +3802,11 @@ mod tests {
                 !FEA_ENVELOPE_NAMES.contains(name),
                 "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "ANALYSIS_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
             );
         }
     }
@@ -4095,6 +4143,11 @@ mod tests {
                 "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
                  FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "DYNAMICS_CONSTRUCTOR_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -4255,6 +4308,11 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in FIELD_OP_NAMES"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "FEA_ENVELOPE_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -4386,6 +4444,11 @@ mod tests {
                  (`single` / `flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
             );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "FIELD_OP_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
         }
     }
 
@@ -4479,6 +4542,11 @@ mod tests {
                 !FIELD_OP_NAMES.contains(name),
                 "RELATION_FN_NAMES entry {name:?} must NOT also be in \
                  FIELD_OP_NAMES (field-op family)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "RELATION_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
             );
         }
     }
@@ -5119,6 +5187,141 @@ mod tests {
                 "PARSE_FN_NAMES entry {name:?} must NOT also be a list-helper \
                  (`single`/`flat_map` — earlier arm in the NoUserFunctions \
                  ladder would shadow it)"
+            );
+            assert!(
+                !ORIENTATION_EULER_FN_NAMES.contains(name),
+                "PARSE_FN_NAMES entry {name:?} must NOT also be in \
+                 ORIENTATION_EULER_FN_NAMES (Euler-angle family, task #6082)"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Task #6082 — exhaustive Euler-angle-family disjointness
+    // -----------------------------------------------------------------------
+
+    /// Disjointness regression-lock for the Euler-angle family (task #6082):
+    /// every entry of `ORIENTATION_EULER_FN_NAMES` must be absent from every
+    /// sibling classification family, so `orient_euler` / `orient_to_euler`
+    /// route exclusively through the `is_orientation_euler_fn` arm in
+    /// `expr.rs`'s `NoUserFunctions` ladder.
+    ///
+    /// Mirrors `parse_fn_names_are_disjoint_from_other_families` and — since
+    /// this is now the newest family — checks against EVERY sibling slice that
+    /// exists today. The reciprocal clause (each sibling family's own test
+    /// asserting it does not contain an Euler name) is added alongside, so a
+    /// collision introduced from either direction is caught.
+    ///
+    /// GREEN on arrival — a regression lock that fails if a colliding name is
+    /// later added to either `ORIENTATION_EULER_FN_NAMES` or a sibling slice.
+    /// The collision it most plausibly guards is a future task #6004
+    /// tau-orientation family claiming the remaining mistyped `orient_*` names
+    /// and reaching for these two as well.
+    #[test]
+    fn orientation_euler_fn_names_are_disjoint_from_other_families() {
+        for name in ORIENTATION_EULER_FN_NAMES {
+            assert!(
+                !GEOMETRY_FUNCTION_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_FUNCTION_NAMES (geometry-constructor family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_HELPER_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_HELPER_NAMES (conformance-query family)"
+            );
+            assert!(
+                !GEOMETRY_KINEMATIC_QUERY_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_KINEMATIC_QUERY_NAMES (kinematic-query family)"
+            );
+            assert!(
+                !GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES (topology-selector family)"
+            );
+            assert!(
+                !GEOMETRY_QUERY_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 GEOMETRY_QUERY_NAMES (geometry-query family)"
+            );
+            assert!(
+                !DYNAMICS_QUERY_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_QUERY_NAMES (dynamics-query family, RBD-β task 3829)"
+            );
+            assert!(
+                !DYNAMICS_CONSTRUCTOR_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 DYNAMICS_CONSTRUCTOR_NAMES (dynamics-constructor family, task 4278)"
+            );
+            assert!(
+                !AFFINE_MAP_CONSTRUCTOR_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 AFFINE_MAP_CONSTRUCTOR_NAMES (affine constructor family)"
+            );
+            assert!(
+                !TOLERANCING_MARKER_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 TOLERANCING_MARKER_NAMES (tolerancing-marker family)"
+            );
+            assert!(
+                !FEA_ENVELOPE_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 FEA_ENVELOPE_NAMES (FEA envelope family, task #4629 W2)"
+            );
+            assert!(
+                !FIELD_OP_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 FIELD_OP_NAMES (field-op family, task 4219)"
+            );
+            assert!(
+                !MATH_CONSTRUCTION_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_CONSTRUCTION_NAMES (math-linalg construction family, task 4179)"
+            );
+            assert!(
+                !MATH_OPERATION_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_OPERATION_NAMES (math-linalg operation family, task 4182 δ)"
+            );
+            assert!(
+                !MATH_TRANSCENDENTAL_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 MATH_TRANSCENDENTAL_NAMES (trig/transcendental family, task 4352)"
+            );
+            assert!(
+                !JOINT_TYPED_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 JOINT_TYPED_FN_NAMES (joint-constructor family, task 4311)"
+            );
+            assert!(
+                !ANALYSIS_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 ANALYSIS_FN_NAMES (FEA stress-analysis reduction family, task 2884)"
+            );
+            assert!(
+                !RELATION_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 RELATION_FN_NAMES (geometric-relation family, task 4383)"
+            );
+            assert!(
+                !PARSE_FN_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be in \
+                 PARSE_FN_NAMES (fallible parse family, task #4535)"
+            );
+            assert!(
+                !AFFINE_ALGEBRA_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be an \
+                 affine-algebra name (`affine_compose`/`affine_inverse`/\
+                 `determinant` — earlier arm in the NoUserFunctions ladder would \
+                 shadow it)"
+            );
+            assert!(
+                !LIST_HELPER_NAMES.contains(name),
+                "ORIENTATION_EULER_FN_NAMES entry {name:?} must NOT also be a \
+                 list-helper (`single`/`flat_map` — earlier arm in the \
+                 NoUserFunctions ladder would shadow it)"
             );
         }
     }

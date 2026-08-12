@@ -3565,6 +3565,46 @@ fn compile_expr_guarded_with_expected_inner(
                         // `parse_signatures.rs`'s own two-name spot-check), so
                         // this arm's position in the ladder is unobservable.
                         parse_fn_result_type(name)
+                    } else if is_orientation_euler_fn(name) {
+                        // Euler-angle builtins (task #6082):
+                        //   orient_euler(EulerConvention, a, b, c)
+                        //                              → Orientation<3>
+                        //   orient_to_euler(Orientation<3>, EulerConvention)
+                        //                              → List<Angle> (3 elems)
+                        //
+                        // Pure eval-builtins (reify_stdlib::orientation,
+                        // dispatched via reify-expr's fallthrough to
+                        // reify_stdlib::eval_builtin — no reify-expr production
+                        // change), and like the parse family above the result
+                        // type is arg-INDEPENDENT: the convention selects WHICH
+                        // rotation, never the shape of the answer.
+                        //
+                        // Without this arm both names fall through to the
+                        // first-arg fallback below, which is the type of
+                        // whatever sits at argument 0 — a rule unrelated to
+                        // what either builtin evaluates to, and wrong for both
+                        // in the same way. The constructor takes its CONVENTION
+                        // at arg 0, so the composed rotation was typed
+                        // Enum("EulerConvention"); the decomposer inherited that
+                        // in turn, and #6082's subject-first flip alone would
+                        // only have re-aimed the fallback at Orientation(3).
+                        // The decomposer's real answer is a 3-element
+                        // Value::List of ANGLE scalars, and typing it so is
+                        // what lets it flow into a `List<Angle>` parameter.
+                        //
+                        // These must NOT be declared as `.ri pub fn`s instead:
+                        // a bodied .ri fn becomes a CompiledFunction dispatched
+                        // via eval_user_function_call and would SHADOW the Rust
+                        // eval_builtin arm (geometry_traits.ri documents the
+                        // prohibition). Argument types come from the other seam,
+                        // builtin_signatures::builtin_arg_slots.
+                        //
+                        // The family is pinned disjoint from all sibling
+                        // families by the `units.rs`
+                        // `orientation_euler_fn_names_are_disjoint_from_other_families`
+                        // test, so this arm's position in the ladder is
+                        // unobservable.
+                        orientation_euler_result_type(name)
                     } else {
                         compiled_args
                             .first()

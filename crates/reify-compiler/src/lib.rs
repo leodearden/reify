@@ -46,6 +46,7 @@ mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
 mod member_path;
+mod orientation_signatures;
 mod parse_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
@@ -100,6 +101,7 @@ pub(crate) use ice::*;
 pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
+pub(crate) use orientation_signatures::*;
 pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
