@@ -249,6 +249,17 @@ verify_env:
   REIFY_RELEASE_DELTA_SKIP: "1"
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
+  # Toolchain-cache UNIFICATION with the sandboxed agents (task 5836). MUST stay
+  # byte-identical to the role_env_overrides `&sandbox_cache_env` CARGO_HOME below
+  # — a warm lane's target/ is written by the AGENT and then re-read by VERIFY, and
+  # cargo's per-unit fingerprint embeds the registry source path, so any divergence
+  # makes each side dirty the other's units. /tmp is not a free choice: it is the one
+  # host-global writable root landlock grants the agent, so the agent side cannot
+  # move and verify is the side that must meet it. Enforced from outside by
+  # tests/infra/test_sandbox_cache_writability_seam.sh block (D), which reads BOTH
+  # values out of this file and requires equality for every redirected role.
+  # NOT mirrored: npm_config_cache — see block (E) of that guard.
+  CARGO_HOME: /tmp/reify-agent-cargo-home
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
   # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
   # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
@@ -668,11 +679,26 @@ sandbox:
 # Sandbox companion (task γ6a): toolchain-cache redirect. Covers 6 of the 9
 # dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
 # debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
-# covered, deliberately: merger, steward, deep_reviewer. merger is excluded
-# on blast radius — redirecting the merge agent's CARGO_HOME to a cold /tmp
-# cache would diverge it from the verify subprocess cache path on the one
-# gate that lands everything (the same reasoning applied to verify_env
-# above).
+# covered: merger, steward, deep_reviewer.
+#   merger's exclusion rationale was "redirecting the merge agent's
+#   CARGO_HOME to a cold /tmp cache would diverge it from the verify
+#   subprocess cache path on the one gate that lands everything" — which was
+#   explicitly the same reasoning as the verify_env deferral above. Task 5836
+#   REVERSED that deferral, so this rationale is now INVERTED, not merely
+#   stale: verify_env.CARGO_HOME is /tmp/reify-agent-cargo-home, while merger
+#   carries no override and so still resolves the DEFAULT ~/.cargo. The
+#   divergence the exclusion existed to prevent now exists in the opposite
+#   direction. It is reachable, not theoretical: merger is not sandboxed
+#   (roles.py:45 defaults sandboxed=False and merger does not set it) but
+#   holds unrestricted Bash (roles.py:1161), and its own system prompt
+#   directs it to "Run tests after resolving" a conflict.
+#   Deliberately NOT fixed by 5836, whose scope is the verify/agent seam:
+#   adding merger here would also have to extend CACHE_REDIRECT_ROLES in the
+#   seam guard (changing blocks (A)/(C) coverage), and it should carry its
+#   own measurement of how often the merge agent actually compiles — the
+#   exposure is bounded to the conflict-resolution path, not every merge.
+#   Filed as a follow-up; until it lands, merger is uncovered on a rationale
+#   that no longer holds.
 #   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
 #   sandboxed=True flip": workflow.py:_build_agent_env merges
 #   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or
@@ -714,7 +740,11 @@ sandbox:
 #   directly, which would retire this whole redirect): dark_factory:3162.
 #   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
 #   workflow.py:_build_agent_env for every role. verify_env (above) is the
-#   WRONG surface for this — verify subprocesses are not sandboxed.
+#   WRONG surface for THIS problem — verify subprocesses are not sandboxed,
+#   so setting CARGO_HOME there would not stop a sandboxed AGENT dying on an
+#   unwritable ~/.cargo. (verify_env does now carry the same CARGO_HOME, but
+#   for the unrelated task-5836 reason recorded above: fingerprint agreement
+#   over the shared warm target/, not write access.)
 #   WHY /tmp: it is the one host-global writable root in the write set, so
 #   the two dirs are shared across warm lanes and warm ONCE rather than
 #   per-lane; cargo's own .package-cache flock serializes concurrent access
@@ -734,14 +764,39 @@ sandbox:
 #       that crate's .cargo-ok marker survives) or npm's cacache store,
 #       producing missing-source build failures that don't look like a
 #       cache problem and surface only after long uptime.
-#     - Considered mirroring CARGO_HOME/npm_config_cache into verify_env
-#       too, so verify shares this /tmp cache instead of ~/.cargo/~/.npm,
-#       as an alternative fix for the double-copy problem; deferred —
-#       that would change the merge-gate build's cache path for EVERY
-#       task's verify run (high blast radius on the one gate that lands
-#       everything), whereas pre-seeding /tmp from the existing warm
-#       ~/.cargo/~/.npm (the ticket above) fixes the cold start without
-#       touching verify's cache path at all.
+#     - Mirroring CARGO_HOME into verify_env was once deferred here on
+#       blast-radius grounds. That deferral is REVERSED as of task 5836:
+#       verify_env above now carries the same CARGO_HOME. The original
+#       weighing was not wrong, it was INCOMPLETE — it compared the /tmp
+#       double-copy DISK cost against the merge gate's blast radius and
+#       never weighed FINGERPRINT INVALIDATION at all, because nobody had
+#       measured it yet. Measured since: cargo's per-unit Fingerprint
+#       embeds the registry source path ("Dirty <crate>: the path to the
+#       source changed"), so a CARGO_HOME split dirties all 685 registry
+#       deps in Cargo.lock and cascades into every workspace crate that
+#       depends on them. And because `-C metadata` is CARGO_HOME-
+#       INDEPENDENT, both homes write the SAME .fingerprint file and
+#       overwrite each other — so the thrash is BIDIRECTIONAL and
+#       recurring (measured a->b->a, dirty each time), not a one-time
+#       switching cost. That also rules out "just warm two caches": one
+#       target/ holds exactly one fingerprint set per unit.
+#       Seeding cannot substitute for agreement: this was never an mtime
+#       problem (extracted sources carry cargo's canonical fixed stamp and
+#       already match across both homes), so task 5729's cache seeding
+#       fixes cold START and leaves fingerprint IDENTITY untouched.
+#       Scope: CARGO_HOME only. npm_config_cache is deliberately NOT
+#       mirrored — npm has no path-keyed fingerprint equivalent, so
+#       widening the merge gate to it would buy nothing; that absence is
+#       pinned by block (E) of the seam guard so any future change arrives
+#       with its own evidence.
+#       Accepted cost: the current warm base was built under ~/.cargo, so
+#       the FIRST merge-verify after the activating restart pays ONE full
+#       cold rebuild to establish a /tmp-pathed base, which
+#       refresh-warm-base.sh then promotes normally. Steady state removes
+#       two full dependency-tree rebuilds per sandboxed task.
+#       Restart-tier, so this lands INERT and the operator picks when that
+#       one-time cost is paid.
+#       Full analysis lives in the seam-guard header, not here.
 #   Restart-tier: inert until the orchestrator restarts (companion task
 #   γ6b). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.
