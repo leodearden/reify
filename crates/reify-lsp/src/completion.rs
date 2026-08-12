@@ -753,8 +753,14 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "orient_euler",
-        signature: "orient_euler(a1: Angle, a2: Angle, a3: Angle, order: String) -> Orientation",
-        doc: "Constructs an orientation from Euler angles and a rotation order string (e.g. `\"xyz\"`).",
+        signature: "orient_euler(convention: EulerConvention, a: Angle, b: Angle, c: Angle) -> Orientation<3>",
+        doc: "Constructs an orientation by composing three angles about the body axes named by an `EulerConvention` (e.g. `EulerConvention.XYZ`), in that order. The convention comes FIRST: it selects the meaning of the three angles that follow, matching R_xyz(a, b, c) notation. All twelve conventions are available — six Tait-Bryan (three distinct axes) and six proper/classic Euler (first axis repeated as third).",
+        sort_group: "07-orientation",
+    },
+    BuiltinFunctionInfo {
+        name: "orient_to_euler",
+        signature: "orient_to_euler(q: Orientation<3>, convention: EulerConvention) -> List<Angle>",
+        doc: "Decomposes an orientation into the three angles that rebuild it under the given `EulerConvention` — returned in convention order, so `EulerConvention.XYZ` yields the X, then Y, then Z angle. Subject-FIRST, like its sibling decomposers `orient_log(q)` / `orient_to_axis_angle(q)` / `orient_inverse(q)`; note the deliberate asymmetry with the `orient_euler` constructor above.",
         sort_group: "07-orientation",
     },
     BuiltinFunctionInfo {
