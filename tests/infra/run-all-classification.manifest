@@ -176,6 +176,7 @@ test_setup_dev_no_ldconfig.sh pool
 test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
+test_slot_timeout_marker.sh pool
 test_sn_gate.sh pool
 test_stash_guard.sh pool
 test_sync_comments_grep.sh pool

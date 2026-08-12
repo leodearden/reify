@@ -161,7 +161,12 @@ test_semaphore_acquire() {
     # @@REIFY_CLOCK_*@@ markers on any contended wait (PRD §3, reason vocabulary).
     # Markers are only emitted when an actual wait occurs (first immediate acquire
     # fails), so uncontended fast-path acquires stay silent.
-    if slot_acquire "$LOCK" "$N" "$WAIT" "test_slot_starvation"; then
+    # The 5th TIMEOUT_REASON repeats the token the ${REASON:-...} fallback would
+    # already yield — deliberately. Explicit-at-every-site means one grep over
+    # the call sites enumerates every token a consumer can observe, and it stops
+    # a future edit to the CLOCK reason from silently changing the TIMEOUT
+    # reason, which is a cross-repo wire value.
+    if slot_acquire "$LOCK" "$N" "$WAIT" "test_slot_starvation" "test_slot_starvation"; then
         _REIFY_TEST_SEMAPHORE_HELD=1
         echo "lib_test_semaphore.sh: acquired test slot (slot ${SLOT_ACQUIRE_SLOT}/${N}) after ${SLOT_ACQUIRE_ELAPSED}s (LOCK=${LOCK})" >&2
         return 0
