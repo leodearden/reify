@@ -3165,6 +3165,93 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
         );
     }
 
+    /// Non-function call-shaped syntax that reads like a call but is grammar,
+    /// not an API claim. `auto(free)` is the real `parameters.md:13` shape (a
+    /// value literal/keyword, spec §2.10:207); `some(...)` is a language-level
+    /// `Option` constructor intercepted before general function resolution
+    /// (crates/reify-compiler/src/expr.rs:2223-2224, "some() is a
+    /// language-level constructor, not a user-defined function" — `none` gets
+    /// the same treatment at :1522-1525). Neither is ever a builtin the
+    /// compiler could fail to provide.
+    #[test]
+    fn mentions_ignore_grammar_value_literal_forms() {
+        let auto_line =
+            "param wall_thickness : Length = auto(free)      // Free exploration mode\n";
+        assert!(
+            chunk_call_mentions(auto_line).is_empty(),
+            "`auto(...)` is a value literal, not a builtin call; got {:?}",
+            chunk_call_mentions(auto_line)
+        );
+
+        let some_line = "let c : Option<CoatingSpec> = some(spec)\n";
+        assert!(
+            chunk_call_mentions(some_line).is_empty(),
+            "`some(...)` is a language-level Option constructor, not a \
+             builtin call; got {:?}",
+            chunk_call_mentions(some_line)
+        );
+    }
+
+    /// The carve-out that stops [`RI_KEYWORDS`] rotting into a false-negative
+    /// machine. docs/reify-language-spec.md:221 explicitly lists these as
+    /// "Not keywords (standard library functions)" — every one must still be
+    /// extracted as a claim when written call-shaped, and none may be a
+    /// `RI_KEYWORDS` member. The spec's "Removed keywords" (`derived`,
+    /// `require`, `dimension`, :219) are likewise absent — they are not part
+    /// of v0.1 at all, so admitting them as keywords would silently disarm a
+    /// chunk that (incorrectly) still calls them.
+    #[test]
+    fn ri_keywords_excludes_the_spec_carve_outs() {
+        for name in [
+            "determined",
+            "constrained",
+            "undetermined",
+            "partially_determined",
+            "point3",
+            "vec3",
+            "point2",
+            "vec2",
+            "project",
+            "geo_equiv",
+        ] {
+            assert!(
+                !RI_KEYWORDS.contains(&name),
+                "{name:?} is a spec §2.10 standard-library function, not a \
+                 keyword — it must not be in RI_KEYWORDS"
+            );
+            let hits = chunk_call_mentions(&format!("`{name}(x)`\n"));
+            assert_eq!(
+                hits,
+                vec![(name.to_string(), 1)],
+                "{name:?} must still be extracted as a claim when call-shaped; \
+                 got {hits:?}"
+            );
+        }
+
+        for removed in ["derived", "require", "dimension"] {
+            assert!(
+                !RI_KEYWORDS.contains(&removed),
+                "{removed:?} is a REMOVED keyword (spec :219, not part of \
+                 v0.1) — it must not be in RI_KEYWORDS"
+            );
+        }
+    }
+
+    /// `RI_KEYWORDS` must be a strict superset of [`RI_DECL_KEYWORDS`], so
+    /// widening the mention-side filter can never regress the declaration-
+    /// keyword filter a63c892eea already shipped.
+    #[test]
+    fn ri_keywords_is_a_superset_of_ri_decl_keywords() {
+        for kw in RI_DECL_KEYWORDS {
+            assert!(
+                RI_KEYWORDS.contains(kw),
+                "{kw:?} is in RI_DECL_KEYWORDS but not RI_KEYWORDS — the \
+                 widening must never lose a keyword the narrower filter \
+                 already had"
+            );
+        }
+    }
+
     /// A `.ri` declaration line DEFINES a name; it does not claim the compiler
     /// provides one. Example source in a chunk is full of them, and every one
     /// was an accusation against a name the example itself introduced.

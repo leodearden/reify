@@ -1153,6 +1153,50 @@ fn chunk_call_mention_floor_guard_against_real_chunks() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #5647 step-3(d): keyword-vs-builtin collision guard
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `RI_KEYWORDS` must never intersect the real registered-builtin census. A
+/// token that is BOTH a reserved word and a registered builtin name would be
+/// silently dropped from every chunk claim by `chunk_call_mentions`'s keyword
+/// filter, blinding the fabrication lane to that builtin — a false negative
+/// with no bound, which is exactly the risk of widening the mention-side
+/// filter from `RI_DECL_KEYWORDS` to the full reserved-word set. Measured
+/// empty today (46 spec keywords against the real `units.rs` registry
+/// census). If this ever fails, remove the colliding token from
+/// `RI_KEYWORDS` — do NOT delete this guard.
+#[test]
+fn ri_keywords_never_collides_with_the_real_registry_census() {
+    let units_path = repo_root().join("crates/reify-compiler/src/units.rs");
+    let src = std::fs::read_to_string(&units_path).unwrap_or_else(|e| {
+        panic!(
+            "the real units.rs must be readable at {}; got: {e}.",
+            units_path.display()
+        )
+    });
+    let regs = reify_audit::pdoccover::extract_registries(&src);
+    let census: std::collections::BTreeSet<&str> = regs
+        .iter()
+        .flat_map(|r| r.entries.iter())
+        .map(|e| e.name.as_str())
+        .collect();
+
+    let collisions: Vec<&str> = reify_audit::pdoccover::RI_KEYWORDS
+        .iter()
+        .copied()
+        .filter(|kw| census.contains(kw))
+        .collect();
+    assert!(
+        collisions.is_empty(),
+        "{collisions:?} are BOTH RI_KEYWORDS members AND registered builtin \
+         names in the real units.rs census. Every chunk claim naming one of \
+         them is silently dropped by the mention-side keyword filter, \
+         blinding the fabrication lane to that builtin. Remove the colliding \
+         token(s) from RI_KEYWORDS — do NOT delete this guard."
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // step-19: shared-derivation contract — baseline_candidates() vs check()
 // ─────────────────────────────────────────────────────────────────────────────
 
