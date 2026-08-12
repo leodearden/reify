@@ -91,8 +91,9 @@ One line per idiom. Worked, compile-gated exemplars live in `examples/best_pract
   `let theta : Angle = s / r` and `let arc : Length = r * theta` are hard errors; unannotated
   `let arc = r * theta` silently yields `m·rad`. Arc-measure ratios only — a *trigonometric*
   ratio needs no crossing: `atan`/`atan2`/`asin`/`acos` and the `angle`/`angle_between_surfaces`
-  queries return `Angle`, and `atan(o/a) * 1rad` is a hard error (declares `rad`, computes
-  `rad^2`). Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
+  queries return `Angle`, and annotated `let bad : Angle = atan(o/a) * 1rad` is a hard error
+  (declares `rad`, computes `rad^2`) — unannotated, or inside the call as `atan((o/a) * 1rad)`,
+  it is silent instead. Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
   separate class (2π rad/cycle; no `cycle` unit). → `angle_crossings.ri`
 
 A green `reify check` is weaker than it looks: geometry-argument dimension errors and

@@ -6,7 +6,7 @@
 |---|---|
 | PRD | `docs/prds/v0_6/angle-dimension-completion.md` (leaf γ, docs-truth four-pack) |
 | Task | #6181 |
-| Branch | `task/6181` — first walked at `b0d2128279` (steps 1–3 landed), amended at `6ac1bb7ad5`, re-walked at `9d5d2ca6fd` (step-5 landed), re-walked again at `b8473a248d` (third amendment pass) |
+| Branch | `task/6181` — first walked at `b0d2128279` (steps 1–3 landed), amended at `6ac1bb7ad5`, re-walked at `9d5d2ca6fd` (step-5 landed), re-walked again at `b8473a248d` (third amendment pass), enforcement claim re-measured and re-walked at the fifth pass (esc-6181-3) |
 | Date | 2026-08-10 |
 | Acceptance kind | `manual` — the capability manifest records that acceptance *is* this committed transcript |
 | Instrument | `grep -rin <terms> crates/reify-mcp/src/tools/chunks examples/best_practices/INDEX.md .claude/skills/reify-design/SKILL.md` |
@@ -86,7 +86,7 @@ The keyword `1rad` hit from the first pass:
 ```
 $ grep -rn "1rad" $S
 crates/reify-mcp/src/tools/chunks/units.md:56:… you write the crossing yourself: **multiply by `1rad`** to enter Angle, **divide by `1rad`** to leave it. …
-crates/reify-mcp/src/tools/chunks/units.md:58:**Which ratio, though.** … Do not put `* 1rad` on a producer's result or its argument — `atan(o / a) * 1rad` is a hard error (it declares `rad` but computes `rad^2`). …
+crates/reify-mcp/src/tools/chunks/units.md:58:**Which ratio, though.** … Do not put `* 1rad` on a producer's result. On an *annotated* binding that is a hard error — `let bad : Angle = atan(o / a) * 1rad` declares `rad` but computes `rad^2`. Everywhere else the compiler stays quiet … (re-taken at the fifth pass; see below)
 crates/reify-mcp/src/tools/chunks/units.md:64:let theta : Angle  = (s / r) * 1rad      // ENTER: ratio -> Angle       (2.5 rad)
 crates/reify-mcp/src/tools/chunks/units.md:65:let ratio          = theta / 1rad        // LEAVE: Angle -> plain ratio (2.5)
 crates/reify-mcp/src/tools/chunks/units.md:66:let arc   : Length = r * theta / 1rad    // round-trips back to s       (0.005 m)
@@ -97,8 +97,9 @@ examples/best_practices/INDEX.md:46:| `angle_crossings.ri` | An angle reading of
 .claude/skills/reify-design/SKILL.md:88:- **Turning an arc-measure ratio into an angle — and why the `* 1rad`**:
 .claude/skills/reify-design/SKILL.md:89:  `let theta : Angle = (s/r) * 1rad` enters Angle, `theta / 1rad` leaves; arc length is
 .claude/skills/reify-design/SKILL.md:90:  `r * theta / 1rad`. No-space literal only (`1 rad` is a parse error). Not optional:
-.claude/skills/reify-design/SKILL.md:94:  queries return `Angle`, and `atan(o/a) * 1rad` is a hard error (declares `rad`, computes
-.claude/skills/reify-design/SKILL.md:95:  `rad^2`). Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
+.claude/skills/reify-design/SKILL.md:94:  queries return `Angle`, and annotated `let bad : Angle = atan(o/a) * 1rad` is a hard error
+.claude/skills/reify-design/SKILL.md:95:  (declares `rad`, computes `rad^2`) — unannotated, or inside the call as `atan((o/a) * 1rad)`, …
+.claude/skills/reify-design/SKILL.md:96:  it is silent instead. Both readings typecheck, so the wrong one is silent. `omega = 2*pi * f * 1rad` is a
 ```
 
 (14 hits, all shown.) But the phrase as an author would *type* it — prose,
@@ -502,6 +503,41 @@ The walk was **not** re-executed for this pass, and did not need to be: neither
 edited file is in `$S` (the instrument greps `chunks/`, `INDEX.md` and
 `SKILL.md` — the exemplar and this note are not walked surfaces), so no citation
 above shifts.
+
+## Fifth pass — enforcement claim was measurably false, re-measured and split
+
+A review (esc-6181-3) found the one paragraph whose job is to separate what the
+compiler catches from what it silently accepts making two claims that do not
+hold. Every claim was re-measured against `./target/release/reify` in this
+worktree before editing; all three reproduce exactly as the reviewer reported.
+
+| Probe | Measured result | Old text said |
+|---|---|---|
+| `let bad : Angle = atan(s / r) * 1rad` | `error: let binding 'bad' declared \`Scalar[rad]\` but its initializer evaluates to \`Scalar[rad^2]\`; declared type and initializer type must agree` | hard error ✓ (the only true half) |
+| `let unann = atan(s / r) * 1rad` (no annotation) | `check` green; `eval` → `1.1902899496825317 rad^2` | implied hard error ✗ |
+| `let z : Angle = atan((s / r) * 1rad)` (argument side) | `check` green (`All constraints satisfied.`); `eval` → `1.1902899496825317 rad` — byte-identical to `atan(s / r)` | "or its argument … is a hard error" ✗ |
+
+So the `rad` on the argument side is **ignored, not consumed**, and the result-side
+error needs an *annotation* to fire. The old sentence grouped both under "is a hard
+error" and then told the reader the atan cases were the caught ones ("otherwise
+silent") — the exact inversion of the measurement, in a leaf whose stated premise is
+enforcement honesty.
+
+**Fixed in two files.** `units.md`'s *Which ratio, though.* paragraph now splits along
+the measured boundary (annotated → error; unannotated and argument-side → silent).
+`SKILL.md`'s index bullet carried the same unqualified claim and got the same
+qualification. The exemplar (`angle_crossings.ri`) — the designated canonical copy —
+was already correctly scoped: it says only "Putting the crossing on a producer's
+result IS caught" and shows the annotated `let bad : Angle = …`, so it needed no edit
+and the divergence was units.md/SKILL.md drifting from their own canonical source.
+
+**Re-walked.** `grep -rn "1rad" $S` re-run after the edit: `units.md` line numbers are
+unchanged (56/58/64/65/66/69/77/94), `SKILL.md`'s bullet grew one line (94–96 where it
+was 94–95), and every verdict-table anchor still hits — the tables are anchor-only
+since the third pass, which is why a one-line growth inside a bullet costs nothing.
+The Q2 stdout block above was re-taken for the two changed lines; the historical
+block inside "Amendment pass — walked at `6ac1bb7ad5`" was deliberately left alone,
+since it is stamped at that sha and was accurate there.
 
 ## Scope note
 
