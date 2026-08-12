@@ -1634,6 +1634,67 @@ assert "b13: a --scope staged plan (no --narrow) whose closure is reify-doc does
 assert "b13: a --scope staged plan whose closure contains reify-gui DOES emit it (got $S_GUI)" \
     test "$S_GUI" -eq 1
 
+# -- (b14): the three fail-wide arms survive the staged narrowing --------------
+# The staged narrowing tests the closure as an OPAQUE STRING.  A whitespace-only
+# REIFY_AFFECTED_CRATES_OVERRIDE is non-empty and is not the ALL sentinel, so it
+# reaches the membership loop, word-splits to NOTHING, the loop body never runs
+# — and the pass is silently narrowed away.  That is the same malformed-knob
+# class the narrowing block already guards for AFFECTED_ALL_FLAGS (its
+# whitespace-only fallback resets NARROW_ACTIVE=0 precisely to "preserve the
+# fail-wide invariant for a malformed knob value"), so the closure must get the
+# same treatment or a typo'd operator knob becomes a silent coverage gap.
+#
+# The two W_* assertions pin that hole; N_STAGED and A_DOC pin the two adjacent
+# invariants a plausible-but-wrong implementation would break — respectively
+# that an UNCOMPUTABLE closure still fails wide, and that scope=all is
+# unconditional by contract and cannot be defeated by a stray override.
+echo ""
+echo "--- (b14): a malformed/absent closure fails WIDE on every scope ---"
+
+# _staged_gui_plan_noenv <out_var> — as _staged_gui_plan but with NO
+# REIFY_AFFECTED_CRATES_OVERRIDE in the child env (`env -u` so a leaked export in
+# the parent cannot make this case silently identical to the override cases).
+# The workspace-less fixture makes `cargo metadata` fail, so affected_crates()
+# returns the ALL sentinel (affected-crates-lib.sh, C5).
+_staged_gui_plan_noenv() {
+    capture_print_plan "$1" "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_AFFECTED_CRATES_OVERRIDE \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$ST_FIX" || true
+}
+
+P_W_STAGED=""; P_W_BRANCH=""; P_N_STAGED=""; P_A_DOC=""
+_staged_gui_plan   P_W_STAGED "   "
+_narrowed_gui_plan P_W_BRANCH "   "
+_staged_gui_plan_noenv P_N_STAGED
+capture_print_plan P_A_DOC "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && REIFY_AFFECTED_CRATES_OVERRIDE="$2" exec bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan' \
+    _ "$ST_FIX" "reify-doc" || true
+
+assert "b14: whitespace-override staged-scope plan capture is complete" \
+    plan_capture_complete "$P_W_STAGED"
+W_STAGED="$(_gui_pass_count "$P_W_STAGED")"
+assert "b14: a whitespace-only affected-crates override fails WIDE on --scope staged (got $W_STAGED)" \
+    test "$W_STAGED" -eq 1
+
+assert "b14: whitespace-override branch-scope plan capture is complete" \
+    plan_capture_complete "$P_W_BRANCH"
+W_BRANCH="$(_gui_pass_count "$P_W_BRANCH")"
+assert "b14: a whitespace-only affected-crates override fails WIDE on --scope branch too (got $W_BRANCH)" \
+    test "$W_BRANCH" -eq 1
+
+assert "b14: no-override staged-scope plan capture is complete" \
+    plan_capture_complete "$P_N_STAGED"
+N_STAGED="$(_gui_pass_count "$P_N_STAGED")"
+assert "b14: closure unavailable (ALL sentinel) on --scope staged still emits — C5 fail-wide (got $N_STAGED)" \
+    test "$N_STAGED" -eq 1
+
+assert "b14: scope=all plan capture is complete" \
+    plan_capture_complete "$P_A_DOC"
+A_DOC="$(_gui_pass_count "$P_A_DOC")"
+assert "b14: the merge gate (scope=all) emits it unconditionally, even under a reify-doc-only override (got $A_DOC)" \
+    test "$A_DOC" -eq 1
+
 # -- (b12): --test-threads reaches the gui-feature pass ------------------------
 # `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test
 # fallback arm always honoured it; the nextest arm did not, so an explicit
