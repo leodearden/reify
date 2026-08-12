@@ -1128,9 +1128,13 @@ fn in_oracle_scope(path: &str) -> bool {
 /// A mention is an identifier immediately followed by `(` — the shape of a
 /// claim that the compiler provides a callable of that name. Backticked tokens
 /// with no parens are types, modules, units or constants (`Angle`, `std.math`,
-/// `pi`); admitting them would flood the lane with every prose noun. The
-/// left delimiter must not be `.`, because `solid.volume()` is member access
-/// on a value and the fabrication lane has no oracle for methods.
+/// `pi`); admitting them would flood the lane with every prose noun. The left
+/// delimiter must not be `.` or `@`: `solid.volume()` is member access on a
+/// value, and `pipe@region(outer)` (connect.md:52, "The `@` operator creates
+/// ad-hoc ports by designating geometric regions"; docs/reify-language-spec.md:1488,
+/// §D5) is an ad-hoc port/region designator on a value. Both are the same
+/// rule, not a special case for `@`: the lane has no oracle for a selector on
+/// a value, whichever delimiter introduces it, only for free-function claims.
 ///
 /// **Format-agnostic by construction** — a byte walk over each line, with no
 /// awareness of headings, fence tags, indented fences, table pipes,
@@ -1207,8 +1211,9 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
             if start == end {
                 continue; // `(` not preceded by an identifier
             }
-            // `.foo(` is member access, not a builtin call.
-            if start > 0 && bytes[start - 1] == b'.' {
+            // `.foo(` is member access, `@foo(` is an ad-hoc port/region
+            // designator — neither is a builtin call.
+            if start > 0 && matches!(bytes[start - 1], b'.' | b'@') {
                 continue;
             }
             let name = &line[start..end];
