@@ -257,4 +257,13 @@ pub structure Fairlead {
 pub structure CapstanDrive {
     sub capstan = Capstan()  at transform3(orient_identity(), vec3(0mm,   0mm, 0mm))
     sub shuttle = Fairlead() at transform3(orient_identity(), vec3(150mm, 0mm, 0mm))
+
+    // The shuttle must cover the capstan's full band migration, or the fairlead
+    // runs out of travel before the wrap band does (fleet angle opens, the
+    // fairlead side-loads instead of guiding). This is the one cross-structure
+    // relation in the file and it can only live here: `stroke` can't be passed
+    // through the `sub` (override drop, task 4147), so it is a hand-set param on
+    // Fairlead and the assembly asserts it stays consistent.
+    // `>=` and not `==`: the stroke is the band rounded up to a whole turn.
+    constraint shuttle.stroke >= capstan.band
 }
