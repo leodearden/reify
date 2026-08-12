@@ -142,3 +142,71 @@ DB_PATH="$CODE_INDEX_DIR/local-$REPO_NAME.db"
 say "project-root  $PROJECT_ROOT"
 say "repo-id       $REPO_ID"
 say "db-path       $DB_PATH"
+
+# ── Refusals ─────────────────────────────────────────────────────────────────
+#
+# Every refusal carries a stable, greppable marker rather than prose, so the
+# consumers downstream of this primitive (γ/δ/ε/ζ/θ/λ) and this script's own
+# guard bind to CODE IDENTITY that a later reword cannot break — the INV-SF-6
+# house pattern already applied to γ's E_JC_INDEX_STALE/E_JC_INDEX_EMPTY.
+#
+# Markers go to STDERR and always exit non-zero. Nothing prints the success
+# summary on a refusal path: a caller scraping for INDEX-OK must never see it
+# for an index this script just declined.
+refuse() {
+    local marker="$1"; shift
+    printf 'jcodemunch-index-reify: %s: %s\n' "$marker" "$*" >&2
+    exit 1
+}
+
+# ── The symbol-count gate ────────────────────────────────────────────────────
+#
+# PRD §4.3: index PRESENCE proves nothing. `delete-index` leaves a husk that
+# re-registers as an EMPTY repo, so a check that only asked "is the DB file
+# there?" would report health over an index with zero symbols in it. The gate
+# is on the symbol COUNT, and an index whose count cannot be read at all is
+# treated as empty — we may not report health over a DB we cannot query.
+#
+# Read STRICTLY READ-ONLY via the `file:…?mode=ro` URI form, so a concurrent
+# watcher or serve holding the same DB can never be perturbed by this probe.
+# (The URI form is required for ?mode=ro; sqlite3 3.45.1 on this host supports
+# it. mode=ro also means we can never create the file by probing it — a
+# would-be false GREEN on a missing index.)
+db_query() {
+    sqlite3 "file:${DB_PATH}?mode=ro" "$1"
+}
+
+symbol_count=""
+check_index() {
+    [ -f "$DB_PATH" ] || refuse E_JC_INDEX_MISSING \
+        "no index DB at $DB_PATH for $REPO_ID — nothing has indexed this identity. Run this script without --check-only."
+
+    local err
+    if ! symbol_count="$(db_query 'select count(*) from symbols' 2>"$SCRATCH_ERR")"; then
+        err="$(cat "$SCRATCH_ERR" 2>/dev/null || true)"
+        refuse E_JC_INDEX_EMPTY \
+            "cannot read the symbol count from $DB_PATH (${err:-unreadable / no symbols table}) — an index whose count cannot be queried is not one to report health over."
+    fi
+
+    case "$symbol_count" in
+        ''|*[!0-9]*) refuse E_JC_INDEX_EMPTY \
+            "non-numeric symbol count ${symbol_count:-<empty>} from $DB_PATH" ;;
+    esac
+
+    [ "$symbol_count" -gt 0 ] || refuse E_JC_INDEX_EMPTY \
+        "$REPO_ID has 0 symbols at $DB_PATH — the index is a husk (PRD §4.3: a delete-index husk re-registers as an empty repo, so presence proves nothing)."
+}
+
+SCRATCH_ERR="$(mktemp "${TMPDIR:-/tmp}/jc-index-reify-XXXXXX.err")"
+trap 'rm -f "$SCRATCH_ERR"' EXIT
+
+check_index
+
+# ── Success summary ──────────────────────────────────────────────────────────
+#
+# The script's OWN line, in a format this script owns. Deliberately NOT a
+# re-emission of an upstream token: `watch --once` runs watcher.py::sync_folders,
+# which emits neither `changed=N` nor `changed: N` (that line belongs to the
+# CONTINUOUS watch loop's re-index callback at watcher.py:305), so binding a
+# consumer to one would bind it to a string this code path never prints.
+say "INDEX-OK  repo=$REPO_ID  db=$DB_PATH  $symbol_count sym"
