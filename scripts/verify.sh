@@ -1354,6 +1354,7 @@ select_harness_kloc_guard
 # fixture (where cargo metadata fails and affected_crates() always returns ALL).
 # ---------------------------------------------------------------------------
 AFFECTED=""
+AFFECTED_CLOSURE=""
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -1364,10 +1365,19 @@ elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; th
     _narrowing_eligible=1
 fi
 
-if [ "$_narrowing_eligible" -eq 1 ]; then
+# Closure eligibility is deliberately WIDER than narrowing eligibility: the
+# reverse-dependency closure is COMPUTED whenever there is a changed-file list to
+# compute it from, which lets a consumer make a membership test without
+# ACTIVATING narrowing.  scope=staged WITHOUT --narrow is exactly that case.
+_closure_eligible=0
+if [ "$RUN_RUST" -eq 1 ] && { [ "$SCOPE" = "branch" ] || [ "$SCOPE" = "staged" ]; }; then
+    _closure_eligible=1
+fi
+
+if [ "$_closure_eligible" -eq 1 ]; then
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
         # Operator/testability override: use verbatim crate list.
-        AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
+        AFFECTED_CLOSURE="${REIFY_AFFECTED_CRATES_OVERRIDE}"
     elif [ -n "$CHANGED_FILES_RAW" ]; then
         # Real run: compute reverse-closure from the captured changed-file list.
         _af_args=()
@@ -1375,9 +1385,16 @@ if [ "$_narrowing_eligible" -eq 1 ]; then
             [ -n "$_af_f" ] && _af_args+=("$_af_f")
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
-            AFFECTED="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
         fi
     fi
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
+    # Narrowing eligibility ⊂ closure eligibility, so AFFECTED_CLOSURE is already
+    # computed here — consumed, never recomputed (one affected_crates() call, one
+    # `cargo metadata`, per run).
+    AFFECTED="$AFFECTED_CLOSURE"
     # NARROW_ACTIVE iff AFFECTED is non-empty and is NOT the sentinel "ALL".
     if [ -n "$AFFECTED" ] && [ "$AFFECTED" != "ALL" ]; then
         NARROW_ACTIVE=1
@@ -2070,15 +2087,22 @@ add_test_passes() {
     # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
-    local _emit_gui_feature_pass=0
+    local _emit_gui_feature_pass=0 _gui_ac
     if [ "$DF_VERIFY_ROLE" != "offline" ]; then
-        if [ "$NARROW_ACTIVE" -eq 0 ]; then
+        if [ "$SCOPE" = "all" ]; then
+            # Merge gate: unconditional BY CONTRACT, not as a side effect of
+            # narrowing happening to be inactive.
+            _emit_gui_feature_pass=1
+        elif [ -z "$AFFECTED_CLOSURE" ] || [ "$AFFECTED_CLOSURE" = "ALL" ]; then
+            # Closure unavailable (ALL sentinel from a C4 global file / C5
+            # metadata failure / unmappable path, or an empty CHANGED_FILES_RAW).
+            # Fail WIDE.
             _emit_gui_feature_pass=1
         else
-            # Word-split $AFFECTED (safe: Rust crate names never contain spaces),
-            # matching the AFFECTED_ALL_FLAGS loop above.
+            # Word-split $AFFECTED_CLOSURE (safe: Rust crate names never contain
+            # spaces), matching the AFFECTED_ALL_FLAGS loop above.
             # shellcheck disable=SC2086
-            for _gui_ac in $AFFECTED; do
+            for _gui_ac in $AFFECTED_CLOSURE; do
                 if [ "$_gui_ac" = "reify-gui" ]; then
                     _emit_gui_feature_pass=1
                     break
@@ -2744,7 +2768,13 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
+    # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
+    # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
+    # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
+    # matches NARROW_ACTIVE=([0-9]+); all three survive a trailing append and none
+    # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
+    # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
