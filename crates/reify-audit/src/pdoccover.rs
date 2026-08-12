@@ -66,11 +66,12 @@
 //!
 //! What survives them needs prose-vs-example-source context, which this
 //! detector deliberately does not model: grammar metavariables
-//! (`predicate(x)`), user-defined names CALLED inside example source
-//! (`Defaultable::make_default()` — note the declaration filter is
-//! declaration-site-scoped, so a name declared and then called in the same
-//! chunk survives on the call), and non-function call-shaped syntax
-//! (`auto(free)`, `@region(…)`). Narrowing THAT is **#5647**. Until it lands
+//! (`predicate(x)`), user-defined names CALLED inside example source that
+//! the chunk never DECLARES at all (`compute_moi(...)` in traits.md — the
+//! declaration filter is FILE-scoped as of #5647, so a name the chunk DOES
+//! declare, anywhere in it, no longer survives on a later call), and
+//! non-function call-shaped syntax (`auto(free)`, `@region(…)`). Narrowing
+//! THAT is **#5647**. Until it lands
 //! the omission lane is the trustworthy half, which is one more reason the CLI
 //! arm is opt-in — and the reason #5480's gate must leave `fabricated-name:`
 //! report-only (see "δ's gate must key on the OMISSION categories only").
@@ -1209,31 +1210,47 @@ fn in_oracle_scope(path: &str) -> bool {
 ///    `Trait::fn(args)` in prose about static dispatch reads as a call to
 ///    `fn`, and `auto(free)` reads as a call to `auto`; no keyword is ever a
 ///    builtin;
-/// 2. the name a line DECLARES, per [`ri_declared_name`] — `fn
-///    lateral_area(self)` or `purpose manufacturing_ready(subject)` inside
-///    example source defines a name, it does not claim the compiler provides
-///    one. Only the declared name is dropped, so a real call in the same line's
-///    body (`fn area(self) { rect_area(w, h) }`) is still a claim.
+/// 2. the name a line DECLARES, per [`ri_declared_name`] — collected over
+///    EVERY line of `content` first (FILE-scoped, not declaration-site-
+///    scoped): a name this chunk's own example source declares anywhere in
+///    it (`fn lateral_area(self)`, `purpose manufacturing_ready(subject)`,
+///    or a trait body declaring `fn make_default()` a few lines above a
+///    call to it) is example-local, not a claim that the compiler provides
+///    it, however far from the declaration the call sits. A name the
+///    content never declares at all is untouched by this filter — `fn
+///    area(self) { rect_area(w, h) }` still yields `rect_area` as a claim,
+///    because `rect_area` is declared nowhere in that content.
 ///
 /// Both can only REMOVE accusations, never add one, which is the safe
 /// direction for this lane (module header, "the existence oracle is
 /// deliberately asymmetric"). Filter 2 reuses `ri_declared_name` — the oracle
 /// lane's own grammar — rather than re-deriving one, so `pub fn`, `purpose`
 /// and the two-word `structure def` / `occurrence def` forms are all covered
-/// by a function that already has tests.
+/// by a function that already has tests. FILE scope, not CORPUS scope: a
+/// name declared in chunk A and called in chunk B is a cross-chunk reference
+/// to a documented API, not an example-local definition, so `content` is the
+/// unit — corpus scope would let one chunk's throwaway example silently
+/// disarm every other chunk's claims about that name.
 ///
 /// **Precision beyond that is deliberately deferred.** What remains needs
-/// prose-vs-example-source context — a metavariable (`predicate(x)` in a
-/// grammar production), a user-defined name in an example body
-/// (`compute_moi(...)`), non-function call-shaped syntax (`auto(free)`,
-/// `@region(...)`). That is **#5647**, not this function's contract today. Do
-/// not add a context-modelling filter here without updating that task and the
-/// floor guard's anchor set.
+/// prose-vs-example-source context that no syntactic rule — line-local or
+/// file-scoped — can decide: a grammar metavariable (`predicate(x)` in a
+/// grammar production), and a user-defined name CALLED inside example
+/// source that the chunk never declares AT ALL (`compute_moi(...)`, unlike
+/// the now-handled `make_default`/`scaled` case above). Do not add a
+/// context-modelling filter here without updating the floor guard's anchor
+/// set. See the module header for the full, dated accounting of what
+/// #5647 narrowed.
 ///
 /// Line numbers are 1-based over `str::lines()`, which strips a trailing `\r`,
 /// so CRLF chunks behave identically to LF ones.
 // G-allow: consumed by check() in-module, and by the chunk-path brittle-parse floor guard in tests/pdoccover.rs — a separate crate, so pub is required.
 pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
+    // Pass 1: every name this chunk's own example source declares, ANYWHERE
+    // in the content — not just on the line currently being scanned in pass
+    // 2. Borrowed from `content`, so no allocation per name.
+    let declared_names: BTreeSet<&str> = content.lines().filter_map(ri_declared_name).collect();
+
     let mut out = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         // A well-formed allow marker suppresses the whole line; a reasonless
@@ -1241,8 +1258,6 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
         if allow_marker_reason(line).is_some() {
             continue;
         }
-        // The name this line declares, if it is a `.ri` declaration at all.
-        let declared = ri_declared_name(line);
         let bytes = line.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
@@ -1270,9 +1285,10 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
                 continue;
             }
             // A reserved word is never a builtin (`Trait::fn(args)`,
-            // `auto(free)`), and the name a declaration line introduces is
-            // defined here, not claimed of the compiler.
-            if RI_KEYWORDS.contains(&name) || declared == Some(name) {
+            // `auto(free)`), and a name this CHUNK declares anywhere is
+            // defined by its own example source, not claimed of the
+            // compiler.
+            if RI_KEYWORDS.contains(&name) || declared_names.contains(name) {
                 continue;
             }
             out.push((name.to_string(), idx + 1));
