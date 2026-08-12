@@ -212,3 +212,61 @@ fn polygon_compiles() {
     // `polygon(x1, y1, x2, y2, ...)` (>= 6 args, even count; geometry.rs:1570).
     assert_compiles("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)");
 }
+
+// --- GD&T tolerance zones (geometry.md "GD&T Tolerance Zones" block) ---
+//
+// Four zone constructors that produce a tolerance-zone Solid rather than a
+// primitive. Their arities are checked by the compiler, but their argument
+// DIMENSIONS and ORDER are not — so each form below is a transcription of an
+// already-compiling call site (`examples/tolerancing/gdt_zones.ri`,
+// `crates/reify-eval/tests/zone_constructors_e2e.rs`,
+// `crates/reify-compiler/tests/zone_slab_compile_tests.rs`), concretized to
+// literals, rather than a signature read off the arm alone.
+
+#[test]
+fn zone_slab_compiles() {
+    // geometry.md's "GD&T Tolerance Zones" block documents the 2-arg
+    // `zone_slab(face, width)` form. Routed as a Modify extension
+    // (geometry.rs:2622 → geometry_modify.rs:86,
+    // `compile_modify_2arg(ModifyKind::ZoneSlab, "width")`), so arg 0 is a
+    // geometry TARGET — a face/profile, not a solid — offset ±width/2 and
+    // capped into a slab. Grounding site: zone_slab_compile_tests.rs:27.
+    assert_compiles("zone_slab", "zone_slab(rectangle(40mm, 20mm), 2mm)");
+}
+
+#[test]
+fn zone_cylinder_compiles() {
+    // geometry.md documents the exactly-2-arg `zone_cylinder(axis, width)`
+    // form (geometry.rs:2241). Arg 0 is an axis WIRE (its own length sets the
+    // cylinder extent — there is deliberately no length argument); `width` is
+    // the Ø-zone DIAMETER, lowered to Sweep{Pipe} with radius = width * 0.5.
+    // Grounding site: examples/tolerancing/gdt_zones.ri:23.
+    assert_compiles(
+        "zone_cylinder",
+        "zone_cylinder(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 8mm)",
+    );
+}
+
+#[test]
+fn zone_annulus_compiles() {
+    // geometry.md documents the exactly-4-arg
+    // `zone_annulus(axis, nominal_radius, width, length)` form
+    // (geometry.rs:2288) — Difference(Pipe(axis, R + w/2), Pipe(axis, R − w/2)).
+    // Arg 3 `length` is accepted and validated, but the swept extent still
+    // comes from the axis wire (ratified L2 esc-4476-88 Option A), so the
+    // 4-arg spelling must be pinned even though the argument is unused.
+    // Grounding site: examples/tolerancing/gdt_zones.ri:28.
+    assert_compiles(
+        "zone_annulus",
+        "zone_annulus(line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 20mm), 20mm, 4mm, 20mm)",
+    );
+}
+
+#[test]
+fn zone_profile_compiles() {
+    // geometry.md documents the exactly-2-arg `zone_profile(solid, width)`
+    // form (geometry.rs:2355) — Difference(Thicken(solid, +w/2),
+    // Thicken(solid, −w/2)) via OCCT Thicken. Arg 0 is a SOLID here (unlike
+    // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri:32.
+    assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
+}

@@ -741,13 +741,14 @@ fn every_documented_geometry_op_name_is_exercised_by_the_fixture() {
 // later. Like its siblings this is a NAME-EXISTENCE check against code
 // registries, deliberately NOT a wording/content pin on either chunk's prose.
 
-/// Registry entries that are primitive/profile CONSTRUCTORS, documented in
-/// `chunks/geometry.md` rather than in stdlib.md's "Key Geometry Operations"
-/// table.
+/// Registry entries documented in `chunks/geometry.md` rather than in
+/// stdlib.md's "Key Geometry Operations" table.
 ///
-/// These build the geometry that the operations table transforms, and
-/// geometry.md is where a designer looks for them — so their absence from
-/// stdlib.md is a placement decision, not a coverage gap.
+/// Most are the primitive/profile CONSTRUCTORS that build the geometry the
+/// operations table transforms; the GD&T tolerance zones below are not
+/// primitives at all, but are documented in the same chunk for the same
+/// reason — geometry.md is where a designer looks for a shape-producing call.
+/// Their absence from stdlib.md is a placement decision, not a coverage gap.
 ///
 /// This is a claim about where the docs live, and the guard checks it: an entry
 /// listed here that is NOT actually mentioned in geometry.md is itself
@@ -768,11 +769,16 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
     "ellipse",
     "rounded_box",
     "rounded_rect",
+    // GD&T tolerance zones — geometry.md's "GD&T Tolerance Zones" section.
+    "zone_slab",
+    "zone_cylinder",
+    "zone_annulus",
+    "zone_profile",
 ];
 
 /// Registry entries that are implemented but documented in NO chunk at all.
 ///
-/// None of these seven is mentioned in any file under [`CHUNKS_DIR`] — a claim
+/// None of these three is mentioned in any file under [`CHUNKS_DIR`] — a claim
 /// the guard enforces against the WHOLE corpus (via [`read_all_chunks`]), not
 /// just stdlib.md and geometry.md, so documenting one in any chunk reports it.
 /// This is a REAL residual documentation gap, carried here explicitly rather
@@ -786,15 +792,7 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
 /// these means deleting its entry; the guard reports any entry that has in fact
 /// been documented, so a closed gap cannot linger here and mask a later
 /// regression.
-const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[
-    "zone_slab",
-    "zone_cylinder",
-    "zone_annulus",
-    "zone_profile",
-    "half_space",
-    "nurbs_surface",
-    "isosurface",
-];
+const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &["half_space", "nurbs_surface", "isosurface"];
 
 /// Is `name` MENTIONED in this markdown — the identifier followed by `(`?
 ///
