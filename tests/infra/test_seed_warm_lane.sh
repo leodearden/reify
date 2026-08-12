@@ -4254,6 +4254,241 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
     test "$U4D_SRC_MTIME" -ne "$EPOCH_2020"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block V: detached trash-rm holds no caller FD (task #6219) — the two
+# backgrounded trash-rm jobs in scripts/seed-warm-lane.sh (the orphan sweep at
+# :1070, the reseed-trash rm at :1438) close the lane-lock FD (9<&-) but do
+# NOT redirect fd 1/fd 2. A caller that captures the script's stdout through a
+# PIPE rather than a file — scripts/warm-lane-gc.sh:648-649's
+# `2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done` is the live
+# example — therefore blocks until that detached rm ALSO exits, defeating the
+# whole point of detaching a possibly-large-tree rm from the acquire path.
+#
+# Method: a PATH-shimmed `rm` records its OWN fd 1/fd 2 targets for any
+# `*/.reseed-trash/*` argument, then no-ops (exit 0) IMMEDIATELY — no sleep,
+# no hang, no timing dependence (tests/infra/test_no_new_wallclock_upper_bounds.sh
+# is a live static guard against new wall-clock upper-bound asserts, and this
+# pool-bucket suite's C-P3 discipline requires load-independent verdicts). The
+# shim opens its own log file so the probe cannot perturb what it measures.
+#
+# fd-PROBING MECHANIC: reading a descriptor via `$(readlink /proc/self/fd/N)`
+# does NOT work here — command substitution itself runs in a subshell whose
+# OWN fd 1 is the internal pipe bash uses to capture $(...)'s output, so
+# `/proc/self/fd/1` inside that subshell always resolves to THAT capture
+# pipe, never to the shim's real, inherited fd 1 (verified empirically while
+# building this block: it read back `pipe:*` unconditionally, fix or no fix).
+# The shim instead captures `$BASHPID` — its own real PID, stable across the
+# fd redirects being probed — into a plain variable FIRST, then uses that
+# fixed value in `/proc/$BASHPID/fd/N` from inside the command substitution.
+# That decouples "what redirect does the probe's own output need" from "whose
+# fd table am I inspecting", which a self-referential `/proc/self` can never
+# do.
+#
+# The whole invocation deliberately mirrors the real blocking caller,
+# scripts/warm-lane-gc.sh:648-649 — `bash "$SCRIPT" ... 2>&1 | consumer` — so
+# BOTH fd 1 and fd 2 are the SAME pipe in one run, covering both descriptors.
+# Neither run_helper nor run_helper_real fits: both capture stdout via a real
+# FILE precisely to dodge this hang (see the NOTE at run_helper_real,
+# :456-467), so this block invokes the script directly through its own
+# bespoke pipe-connected stub dir instead.
+#
+# TIMING: pre-fix, the detached child still inherits the pipe, so THIS
+# invocation blocks on it too — but only for the instant the shim needs to
+# printf+exit (no sleep in the shim), so the test does not hang; the
+# pipeline's own completion is then a valid, already-settled read of the log.
+# Post-fix, the pipeline no longer waits on the grandchild at all, so the
+# shim's log write can race the main shell's very next statement (confirmed
+# empirically: an unconditional read immediately after the pipeline is
+# sometimes empty post-fix). Every log read below therefore goes through
+# `_wait_until` rather than a bare read, so the block is deterministic in
+# BOTH the RED and the GREEN state, with no upper-bound timing assertion.
+#
+# Non-vacuity is the load-bearing part of the design — two independent
+# guards, both required, because a `pipe:*` mismatch would otherwise pass
+# trivially if the fixture never connected a pipe or the site never fired:
+#   V3/V7 (site-fired):  the shim log really carries an entry for the path.
+#   V4    (pipe-wired):  REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces the
+#         reseed-trash rm (only, :1436) into the FOREGROUND, where inheriting
+#         the pipe is CORRECT — asserting THAT invocation's fd 1 IS `pipe:*`
+#         proves, in the same harness, that a pipe was genuinely connected.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block V: detached trash-rm holds no caller FD (task #6219) ---"
+
+# Fixture: direct copy of the I14/Block T recipe (:3627-3643) — a base with a
+# real artifact + .warm-base-meta (RUSTFLAGS="" to match the sidecar), and a
+# lane with a NON-EMPTY target so seed takes the rename-to-trash path. No
+# .fingerprint/ dir anywhere in the base, so inv.13's delta-touch-base guard
+# takes its vacuous skip (scripts/seed-warm-lane.sh:597-606) and neither
+# --base-commit nor REIFY_WARM_LANE_ALLOW_NO_BASE_COMMIT is needed — same
+# discipline as Block T's own fixture. One lane fixture serves both
+# invocations below (the async default and the SYNC control arm): after the
+# first invocation, target/ holds the freshly cloned base content, which is
+# itself non-empty, so the second invocation takes the same rename-to-trash
+# path again.
+V_BASE_PARENT="$(mktemp -d /tmp/test-seed-V-parent-XXXXXX)"
+V_BASE="$V_BASE_PARENT/target"
+_TMPDIRS+=("$V_BASE_PARENT")
+mkdir -p "$V_BASE/debug"
+echo "base artifact" > "$V_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$V_BASE_PARENT/.warm-base-meta"
+
+V_LANE="$(make_isolated_lane V-lane)"
+mkdir -p "$V_LANE/target"
+echo "stale" > "$V_LANE/target/stale.a"
+
+# Bespoke PATH stub dir (mirrors Block T's t4-*-stub pattern, :3739-3771):
+# minted under $_LANE_ROOT so the suite's single EXIT trap reclaims it, with
+# no new _TMPDIRS registration.
+V_STUB="$(mktemp -d "$_LANE_ROOT/V-stub-XXXXXX")"
+
+# cp: the reflink-OK body from run_helper_real (:396-410), trimmed to just
+# the physical copy -- this block does not need the FD9-squatter arm.
+cat > "$V_STUB/cp" << 'V_CP_STUB_EOF'
+#!/usr/bin/env bash
+src=""
+dest=""
+for arg in "$@"; do
+    case "$arg" in
+        -a|--reflink=always) ;;
+        -*) ;;
+        *) [ -z "$src" ] && src="$arg" || dest="$arg" ;;
+    esac
+done
+if [ -n "$src" ] && [ -n "$dest" ]; then
+    /bin/cp -a "$src" "$dest"
+fi
+exit 0
+V_CP_STUB_EOF
+chmod +x "$V_STUB/cp"
+
+# git: copied verbatim from the suite's shared stub -- the .fingerprint-
+# vacuous-skip fixture never consults REIFY_TEST_GIT_DIFF_FILES/HEAD.
+cp "$STUB_DIR/git" "$V_STUB/git"
+
+# rm: the fd-probing shim. Built on the existing PIN-stub shape (:420-431) --
+# same */.reseed-trash/* glob, same exec /bin/rm passthrough for every other
+# rm call (build-dir invalidation etc.) -- with the no-op arm extended to
+# record its own fd 1/fd 2 targets before exiting. See the block header above
+# for why $BASHPID (captured into a plain variable before the command
+# substitution) stands in for /proc/self here. Written as a quoted heredoc
+# into a mktemp'd dir, matching every other stub in this file.
+cat > "$V_STUB/rm" << 'V_RM_STUB_EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+    case "$arg" in
+        */.reseed-trash/*)
+            _v_mypid="$BASHPID"
+            printf '%s\t%s\t%s\n' "$arg" \
+                "$(readlink "/proc/$_v_mypid/fd/1")" \
+                "$(readlink "/proc/$_v_mypid/fd/2")" \
+                >> "$REIFY_TEST_FDLOG"
+            exit 0
+            ;;
+    esac
+done
+exec /bin/rm "$@"
+V_RM_STUB_EOF
+chmod +x "$V_STUB/rm"
+
+V_TRASH_GLOB="*/.reseed-trash/$(basename "$V_LANE").*"
+
+# _v_fdlog_has_entry <fdlog> <path-glob> -- _wait_until predicate: true once
+# <fdlog> carries a line whose path (tab-separated field 1) matches <glob>.
+# Mirrors _calls_file_has_trash_rm's line-match shape (:560-569).
+_v_fdlog_has_entry() {
+    local fdlog="$1" glob="$2" path
+    [ -f "$fdlog" ] || return 1
+    while IFS=$'\t' read -r path _ _; do
+        case "$path" in
+            $glob) return 0 ;;
+        esac
+    done < "$fdlog"
+    return 1
+}
+
+# _v_fdlog_field <fdlog> <path-glob> <1|2> -- prints the fd1 (field 2) or fd2
+# (field 3) recorded for the FIRST line whose path matches <glob>. Callers
+# only invoke this after _v_fdlog_has_entry has already proven the line
+# exists.
+_v_fdlog_field() {
+    local fdlog="$1" glob="$2" field="$3" path fd1 fd2
+    while IFS=$'\t' read -r path fd1 fd2; do
+        case "$path" in
+            $glob)
+                case "$field" in
+                    1) printf '%s' "$fd1" ;;
+                    2) printf '%s' "$fd2" ;;
+                esac
+                return 0
+                ;;
+        esac
+    done < "$fdlog"
+    return 1
+}
+
+# _v_field_not_pipe / _v_field_is_pipe <fdlog> <glob> <1|2> -- wait for the
+# entry (bounded, deterministic -- see TIMING above), then compare its fd
+# field against the pipe:* shape. A missing entry is a FAILURE for both --
+# neither can pass vacuously off an absent line.
+_v_field_not_pipe() {
+    local fdlog="$1" glob="$2" field="$3" val
+    _wait_until 10 _v_fdlog_has_entry "$fdlog" "$glob" || return 1
+    val="$(_v_fdlog_field "$fdlog" "$glob" "$field")"
+    [ -n "$val" ] || return 1
+    case "$val" in
+        pipe:*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+_v_field_is_pipe() {
+    local fdlog="$1" glob="$2" field="$3" val
+    _wait_until 10 _v_fdlog_has_entry "$fdlog" "$glob" || return 1
+    val="$(_v_fdlog_field "$fdlog" "$glob" "$field")"
+    case "$val" in
+        pipe:*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# ── V0-V3: the async DEFAULT path (both trash-rm sites backgrounded) ────────
+V_FDLOG="$_LANE_ROOT/.v-fdlog"
+: > "$V_FDLOG"
+V_SINK1="$_LANE_ROOT/.v-sink1"
+
+set +e
+( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG" \
+    bash "$SCRIPT" "$V_BASE" "$V_LANE" --fresh-checkout ) 2>&1 | cat > "$V_SINK1"
+V0_RC="${PIPESTATUS[0]}"
+set -e
+
+assert "V0: seed exits 0 (fixture sanity, mirrors T0)" test "$V0_RC" -eq 0
+
+assert "V3 (non-vacuity, site fired): the reseed-trash rm really ran and the shim recorded it" \
+    _wait_until 10 _v_fdlog_has_entry "$V_FDLOG" "$V_TRASH_GLOB"
+
+assert "V1 (RED, the defect): the detached reseed-trash rm's fd 1 is NOT the caller's pipe" \
+    _v_field_not_pipe "$V_FDLOG" "$V_TRASH_GLOB" 1
+assert "V2 (RED, the defect): the detached reseed-trash rm's fd 2 is NOT the caller's pipe" \
+    _v_field_not_pipe "$V_FDLOG" "$V_TRASH_GLOB" 2
+
+# ── V4: the SYNC control arm — proves a pipe was genuinely connected ───────
+V_FDLOG_SYNC="$_LANE_ROOT/.v-fdlog-sync"
+: > "$V_FDLOG_SYNC"
+V_SINK2="$_LANE_ROOT/.v-sink2"
+
+set +e
+( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG_SYNC" \
+    REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
+    bash "$SCRIPT" "$V_BASE" "$V_LANE" --fresh-checkout ) 2>&1 | cat > "$V_SINK2"
+V4_RC="${PIPESTATUS[0]}"
+set -e
+
+assert "V4-fixture: the SYNC control run exits 0 (target was non-empty again, so the same rename-to-trash path fires)" \
+    test "$V4_RC" -eq 0
+assert "V4 (non-vacuity, pipe really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd 1 IS the caller's pipe, proving this harness genuinely connects one" \
+    _v_field_is_pipe "$V_FDLOG_SYNC" "$V_TRASH_GLOB" 1
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
 # scripts/seed-warm-lane.sh:663 computes RESEED_TRASH_DIR as
