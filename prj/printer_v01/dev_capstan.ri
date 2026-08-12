@@ -97,8 +97,13 @@ pub structure IdlerPulley {
 /// the drum, not because the channel traps them.
 ///
 /// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
-/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
-/// band = active_turns·lead ≈ 63mm (= the shuttle stroke); helix angle ≈ 2.7°.
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → `active_turns` ≈ 8.62;
+/// helix angle ≈ 2.7°. Three DIFFERENT axial figures follow, each its own cell:
+///   - `band` = active_turns·lead ≈ 60.3mm — the departure tangent's migration
+///     over the full feed, i.e. what the shuttle tracks;
+///   - `Fairlead.stroke` = that rounded up to a whole turn, 9·lead = 63mm;
+///   - `groove_len` = (active_turns + dead_total)·lead ≈ 88.3mm — the whole
+///     grooved extent, band plus the dead anchor wraps.
 pub structure Capstan {
     param rope_dia    : Length = 6mm
     /// D/d ratio
