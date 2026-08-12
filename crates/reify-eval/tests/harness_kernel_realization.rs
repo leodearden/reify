@@ -12,6 +12,8 @@
 //! realization_cache_alloc_rotating_options_hash.rs each install a process-wide
 //! `#[global_allocator]`; two in one binary is a compile error, and one shared across siblings
 //! would corrupt their alloc-count delta assertions.
+#[path = "harness_kernel_realization/best_practices_clearance_oracle.rs"]
+mod best_practices_clearance_oracle;
 #[path = "harness_kernel_realization/kernel_attribute_hook_wiring.rs"]
 mod kernel_attribute_hook_wiring;
 #[path = "harness_kernel_realization/kernel_pin_enforcement.rs"]
