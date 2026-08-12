@@ -404,9 +404,35 @@ producer or consumer materializes.
 ### Enforcement honesty (D7)
 
 The crossing idiom is **teachable but not yet mandatory**. `sin(2.5)`
-and `param x : Angle = 2.5` both pass silently **today**, because a
-bare dimensionless value widens into any declared dimension — nothing
-in this family changes that. Mandatoriness is owned elsewhere: the
+and `param x : Angle = 2.5` both pass silently **today**, for two
+unrelated reasons — nothing in this family changes that:
+
+- **Literal-only, `param`/`let` only**: a bare or negated
+  dimensionless literal widens into a dimensioned `Scalar` param
+  default or `let` annotation (`is_numeric_literal_expr`,
+  `crates/reify-compiler/src/entity.rs:390`; guards at `:479-485`
+  and `:563-569`). A dimensionless *expression* at the same boundary
+  is rejected instead: `param x : Angle = ratio * 2.0` is a `BinOp`,
+  so it falls through to `type_compatible` — which carries no
+  dimensionless→dimensioned rule of its own
+  (`crates/reify-compiler/src/type_compat.rs:220-237`) — and errors
+  `ParamDefaultTypeMismatch` (`let` twin:
+  `LetAnnotationTypeMismatch`). The carve-out never reaches function
+  param defaults: those use strict equality
+  (`fn_param_default_compatible`), so even
+  `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
+  (`crates/reify-compiler/src/functions.rs:187-215`).
+- **`sin(2.5)` isn't a widening — trig arguments are unchecked**:
+  no argument-dimension check exists for the transcendental family.
+  `MATH_TRANSCENDENTAL_NAMES` is a name list only
+  (`crates/reify-compiler/src/math_signatures.rs:95-97`); its
+  "accept ANGLE-or-Real" comment is intent only, not enforced.
+  `math_fn_result_type` fixes just the RESULT type
+  (`crates/reify-compiler/src/math_signatures.rs:374`) and never
+  inspects the argument, so every argument passes: `sin(2.5)`,
+  `sin(ratio * 2.0)`, and `sin(5.0mm)` (LENGTH) all compile clean.
+
+Mandatoriness is owned elsewhere: the
 real-dimensionless-unification decision D5 (current ruling:
 `docs/prds/v0_6/dimensioned-construction-strictness.md` §0 — D5's own
 three-position reversal history is at that decision's "D5 status"
