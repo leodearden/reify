@@ -627,6 +627,13 @@ pub use progressive::{
 // Task 4135: BVH spatial index — O(grid·log elems) per call.  The public
 // resample_* fns are now thin wrappers over the instrumented cores (which
 // return ResampleStats for deterministic complexity assertions in tests).
+// Task 6154: the grid-miss instrument.  `GridMissReport`/`classify_grid_misses`
+// have an out-of-crate consumer (reify-eval's realized-body e2e tests);
+// `nearest_miss_margin` deliberately does NOT, and is exported anyway as the
+// re-derivation entry point for the measurement PRD `v0_4/fea-result-model.md`
+// §11 Q2 records — that resolution cites margins taken from a temporary in-tree
+// probe, and rests on their being reproducible by any later reader without
+// re-patching this crate.  Not dead code: do not sweep it.
 pub use resample::{
     GridMissReport, GridSpec, ResampleStats, classify_grid_misses, nearest_miss_margin,
     resample_multi_nodal_to_grid, resample_multi_nodal_to_grid_instrumented,

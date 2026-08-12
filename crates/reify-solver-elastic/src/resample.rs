@@ -373,6 +373,16 @@ pub struct GridMissReport {
     pub missed_edge: usize,
     /// Misses extreme on all 3 axes (an AABB corner).
     pub missed_corner: usize,
+    /// Grid points with *some but not all* stride components `NaN`.
+    ///
+    /// Not a miss — the out-of-solid sentinel is written all-or-nothing, so a
+    /// partially-`NaN` point is a non-finite *solution* value (a diverged solve),
+    /// a different defect. It is counted rather than bucketed so the condition
+    /// stays visible in release builds, where the `debug_assert!` that flags it
+    /// loudly is compiled out. A non-zero value here means the rest of this
+    /// report is describing a field that is already broken upstream of the
+    /// sampler, so read it before drawing any conclusion from the buckets.
+    pub n_partial_nan: usize,
     /// Physical coordinates of each miss, in visit order.
     pub missed_points: Vec<[f64; 3]>,
     /// Per-axis grid indices of each miss, parallel to `missed_points`.
@@ -388,7 +398,12 @@ pub struct GridMissReport {
 /// A grid point counts as missed iff **all** `stride` components are `NaN`,
 /// matching the sentinel's all-or-nothing write. A *partially* `NaN` point is a
 /// different defect (a non-finite solution value, not an out-of-solid marker),
-/// so it is caught by a `debug_assert!` rather than silently bucketed.
+/// so it is never bucketed: it trips a `debug_assert!` AND increments
+/// [`GridMissReport::n_partial_nan`]. The counter is what carries the signal in
+/// release builds, where the assert is compiled out — without it a diverged
+/// solve that writes one `NaN` component per point would be reported as full
+/// coverage, i.e. the instrument would claim the opposite of the truth in
+/// exactly the situation it exists to diagnose.
 ///
 /// Bucketing is purely INDEX-based — an axis is *extreme* when
 /// `index == 0 || index == axis_grids[a].len() - 1`. Because the §7a grid spans
@@ -440,6 +455,9 @@ pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport 
                      out-of-solid marker — a different defect.",
                 );
                 if n_nan != stride {
+                    if n_nan > 0 {
+                        report.n_partial_nan += 1;
+                    }
                     continue;
                 }
 
@@ -1252,5 +1270,103 @@ mod miss_diag_tests {
                  {p:?} at index {idx:?} gave {margin}, which is coverage-hole scale",
             );
         }
+    }
+
+    // ── The instrument's own boundary behaviour ──────────────────────────────
+    //
+    // (a)-(c) above point the instrument at fields the `resample_*` entry points
+    // produced. These pin what it does at its documented edges: the three
+    // malformed-input panics, the partial-NaN counter, and the empty mesh.
+
+    /// A well-formed stride-3 field over the fully-tiling fixture, for the
+    /// malformed-input cases below to corrupt one property of at a time.
+    fn well_formed_field() -> reify_ir::SampledField {
+        let (nodes, elems) = make_box_of_tets(4);
+        let vals = ramp(nodes.len());
+        let grid = GridSpec {
+            bounds_min: [0.0; 3],
+            bounds_max: [1.0; 3],
+            counts: [4, 4, 4],
+        };
+        resample_nodal_to_grid(&nodes, &elems, &vals, 3, &grid, "u", TOL)
+    }
+
+    #[test]
+    #[should_panic(expected = "stride must be > 0")]
+    fn classify_rejects_zero_stride() {
+        // Stride 0 would make every point vacuously "all NaN" (an empty
+        // component slice), i.e. report 100% out-of-solid on a perfect mesh.
+        let _ = classify_grid_misses(&well_formed_field(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected a Regular3D field (3 axis grids), got 2")]
+    fn classify_rejects_non_3_axis_field() {
+        // The index-extremity bucketing is defined on 3 axes; a 1D/2D field
+        // would silently mis-shape the flat-index arithmetic.
+        let mut sf = well_formed_field();
+        sf.axis_grids.truncate(2);
+        let _ = classify_grid_misses(&sf, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "data len")]
+    fn classify_rejects_data_length_mismatch() {
+        // A short buffer means the field was not produced by the `resample_*`
+        // entry points this instrument is a sibling of — index out of bounds
+        // would be the alternative, with a far worse message.
+        let mut sf = well_formed_field();
+        sf.data.pop();
+        let _ = classify_grid_misses(&sf, 3);
+    }
+
+    /// A partially-`NaN` grid point is counted, never bucketed.
+    ///
+    /// RELEASE-ONLY by construction: in a debug profile the same input trips
+    /// `classify_grid_misses`' `debug_assert!` (which is the *intended* loud
+    /// signal there), so this can only assert the release-mode behaviour — the
+    /// counter that keeps the condition visible once the assert is compiled
+    /// out. The verify pipeline runs both profiles, so it is exercised.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn miss_report_counts_partially_nan_points_without_bucketing_them() {
+        let mut sf = well_formed_field();
+        // Fixture (a) proves this field has ZERO misses, so any non-zero bucket
+        // below is attributable to the clobber alone.
+        sf.data[0] = f64::NAN; // 1 of grid point 0's 3 components
+
+        let report = classify_grid_misses(&sf, 3);
+
+        assert_eq!(
+            report.n_partial_nan, 1,
+            "a 1-of-3 NaN point must be COUNTED as partial — in release the \
+             debug_assert! is gone, so this counter is the only thing standing \
+             between a diverged solve and a report claiming full coverage",
+        );
+        assert_eq!(
+            report.n_missed, 0,
+            "a partially-NaN point is a non-finite solution value, not the \
+             all-or-nothing out-of-solid sentinel, so it must NOT be a miss",
+        );
+        assert_eq!(
+            (report.missed_interior, report.missed_face, report.missed_edge, report.missed_corner),
+            (0, 0, 0, 0),
+            "and it must not land in any bucket",
+        );
+    }
+
+    #[test]
+    fn nearest_miss_margin_on_empty_mesh_is_neg_infinity() {
+        // Documented return for an empty element list. Pinned because it
+        // compares `< 0.0` and so reads to a caller as "a miss" — the ONLY
+        // thing distinguishing "outside the mesh" from "there is no mesh" is
+        // that this value is not finite, so a caller applying the
+        // coverage-vs-round-off magnitude rule must test `is_finite()` first.
+        let (nodes, _elems) = make_box_of_tets(4);
+        assert_eq!(
+            nearest_miss_margin(&nodes, &[], [0.5, 0.5, 0.5]),
+            f64::NEG_INFINITY,
+            "an empty mesh has no nearest element, so there is no finite margin",
+        );
     }
 }
