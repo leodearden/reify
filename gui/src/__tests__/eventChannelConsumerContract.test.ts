@@ -24,12 +24,30 @@ import {
   parseEventChannelRows,
   extractConsumerIdentifiers,
   classifyEventChannelRows,
+  unknownConsumers,
+  uncoveredRows,
+  staleAllowlistEntries,
+  type ClassifiedRow,
   type EventChannelRow,
 } from './eventChannelConsumerContract';
 
 /** Terse `EventChannelRow` literal, so the classification tables stay readable. */
 function row(section: EventChannelRow['section'], channel: string, consumerCell: string): EventChannelRow {
   return { section, channel, consumerCell };
+}
+
+/**
+ * Terse `ClassifiedRow` literal for the set-difference tests, which take
+ * already-classified rows so they can be exercised without re-deriving them
+ * through the parser.
+ */
+function classified(
+  channel: string,
+  identifiers: string[],
+  kind: ClassifiedRow['kind'],
+  section: ClassifiedRow['section'] = '§1',
+): ClassifiedRow {
+  return { section, channel, identifiers, kind };
 }
 
 describe('splitTableCells', () => {
@@ -413,5 +431,191 @@ describe('classifyEventChannelRows', () => {
 
   it('returns [] for no rows', () => {
     expect(classifyEventChannelRows([])).toStrictEqual([]);
+  });
+});
+
+describe('unknownConsumers', () => {
+  const EXPORTS = ['onMeshUpdate', 'onWarmPoolEvent', 'subscribeToClaudeEvents'];
+
+  it('reports nothing when every doc-named consumer is a runtime export', () => {
+    expect(
+      unknownConsumers(EXPORTS, [
+        classified('mesh-update', ['onMeshUpdate'], 'named'),
+        classified('claude-text-delta', ['subscribeToClaudeEvents'], 'named'),
+        classified('claude-done', ['subscribeToClaudeEvents'], 'inherited'),
+        classified('debug-request', [], 'needs-allowlist'),
+        classified('diagnostics', [], 'explicit-none'),
+      ]),
+    ).toStrictEqual([]);
+  });
+
+  it('reports the live task 6227 defect: a row naming a deleted bridge export', () => {
+    // MECHANICAL REPLAY of the exact drift this guard exists to catch, not a
+    // comment claiming it would. Task 6227 deletes `bridge.ts::onDiagnostics`
+    // from gui/src/bridge.ts; docs/gui-event-channels.md's `diagnostics` row
+    // keeps naming it. Nothing in scripts/check_event_inventory.sh notices,
+    // because both of its passes key on column 1 (the channel name) only.
+    const docRows = [
+      classified('mesh-update', ['onMeshUpdate'], 'named'),
+      classified('diagnostics', ['onDiagnostics'], 'named'),
+    ];
+    const exportsBefore6227 = [...EXPORTS, 'onDiagnostics'];
+    const exportsAfter6227 = exportsBefore6227.filter((n) => n !== 'onDiagnostics');
+
+    // Green before the deletion, so the finding is caused by the deletion and
+    // not by the fixture being wrong.
+    expect(unknownConsumers(exportsBefore6227, docRows)).toStrictEqual([]);
+    expect(unknownConsumers(exportsAfter6227, docRows)).toStrictEqual([
+      { channel: 'diagnostics', name: 'onDiagnostics' },
+    ]);
+  });
+
+  it('checks INHERITED identifiers too, not just the cell a row spells out', () => {
+    // A `same` row is only genuinely guarded if the name it inherits is checked.
+    // Deleting `subscribeToClaudeEvents` must implicate all nine claude-* rows,
+    // not just the one that spells the name out.
+    const withoutSubscribe = EXPORTS.filter((n) => n !== 'subscribeToClaudeEvents');
+
+    expect(
+      unknownConsumers(withoutSubscribe, [
+        classified('claude-text-delta', ['subscribeToClaudeEvents'], 'named'),
+        classified('claude-done', ['subscribeToClaudeEvents'], 'inherited'),
+      ]),
+    ).toStrictEqual([
+      { channel: 'claude-done', name: 'subscribeToClaudeEvents' },
+      { channel: 'claude-text-delta', name: 'subscribeToClaudeEvents' },
+    ]);
+  });
+
+  it('names the offending ROW, not just the symbol, and reports each row separately', () => {
+    // `{channel, name}` pairs rather than bare names: a failure message has to
+    // point a maintainer at the doc line to edit. One symbol named by two rows
+    // is two findings.
+    expect(
+      unknownConsumers([], [
+        classified('b-channel', ['onGone'], 'named'),
+        classified('a-channel', ['onGone', 'onAlsoGone'], 'named'),
+      ]),
+    ).toStrictEqual([
+      { channel: 'a-channel', name: 'onAlsoGone' },
+      { channel: 'a-channel', name: 'onGone' },
+      { channel: 'b-channel', name: 'onGone' },
+    ]);
+  });
+
+  it('returns [] when there are no rows at all', () => {
+    expect(unknownConsumers(EXPORTS, [])).toStrictEqual([]);
+  });
+});
+
+describe('uncoveredRows', () => {
+  const ALLOWLIST = {
+    'debug-request': 'Consumer is the gui/src debug-bridge module, guarded by debugParity.test.ts.',
+  };
+
+  it('reports nothing when every needs-allowlist row is allowlisted', () => {
+    expect(
+      uncoveredRows(
+        [
+          classified('mesh-update', ['onMeshUpdate'], 'named'),
+          classified('claude-done', ['subscribeToClaudeEvents'], 'inherited'),
+          classified('diagnostics', [], 'explicit-none'),
+          classified('debug-request', [], 'needs-allowlist'),
+        ],
+        ALLOWLIST,
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it('reports a needs-allowlist row with no allowlist entry', () => {
+    // This is the non-vacuity floor: a row the parser failed to resolve shows up
+    // here and FAILS, instead of silently shrinking the checked set the way a
+    // global `>= N` count floor would let it.
+    expect(
+      uncoveredRows(
+        [
+          classified('debug-request', [], 'needs-allowlist'),
+          classified('mode-shape-frame', [], 'needs-allowlist', '§2'),
+        ],
+        ALLOWLIST,
+      ),
+    ).toStrictEqual(['mode-shape-frame']);
+  });
+
+  it('sorts its findings so a failure message reads as a stable list', () => {
+    expect(
+      uncoveredRows(
+        [
+          classified('zulu', [], 'needs-allowlist'),
+          classified('alpha', [], 'needs-allowlist'),
+          classified('mike', [], 'needs-allowlist'),
+        ],
+        {},
+      ),
+    ).toStrictEqual(['alpha', 'mike', 'zulu']);
+  });
+
+  it('returns [] for no rows', () => {
+    expect(uncoveredRows([], ALLOWLIST)).toStrictEqual([]);
+  });
+});
+
+describe('staleAllowlistEntries', () => {
+  // Without this self-check the allowlist decays into a rubber stamp: entries
+  // whose stated reason stopped being true keep suppressing checks nobody
+  // re-reads. Both rot directions are covered.
+
+  it('reports nothing when every entry names a genuinely unresolvable row', () => {
+    expect(
+      staleAllowlistEntries(
+        [
+          classified('mesh-update', ['onMeshUpdate'], 'named'),
+          classified('debug-request', [], 'needs-allowlist'),
+        ],
+        { 'debug-request': 'prose pointer to the gui/src debug-bridge module' },
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it('reports an entry naming a channel that no longer parses as a row', () => {
+    // The channel was renamed or deleted from the doc; the excuse now protects
+    // nothing.
+    expect(
+      staleAllowlistEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], {
+        'deleted-channel': 'was unwired',
+      }),
+    ).toStrictEqual(['deleted-channel']);
+  });
+
+  it('reports an entry whose row now names a real bridge consumer', () => {
+    // `mode-shape-frame` gets wired and its Consumer cell starts naming
+    // `bridge.ts::onModeShapeFrame`. The row is checkable now, so the excuse
+    // must be removed rather than silently keeping the row unguarded.
+    expect(
+      staleAllowlistEntries(
+        [classified('mode-shape-frame', ['onModeShapeFrame'], 'named', '§2')],
+        { 'mode-shape-frame': 'unwired; consumer is the BucklingPanel Solid component' },
+      ),
+    ).toStrictEqual(['mode-shape-frame']);
+  });
+
+  it('reports an entry whose row now uses a sentinel', () => {
+    // `inherited` and `explicit-none` rows are resolved by the classifier, so an
+    // allowlist entry for either is dead weight.
+    expect(
+      staleAllowlistEntries(
+        [
+          classified('claude-done', ['subscribeToClaudeEvents'], 'inherited'),
+          classified('diagnostics', [], 'explicit-none'),
+        ],
+        { 'claude-done': 'stale', diagnostics: 'stale' },
+      ),
+    ).toStrictEqual(['claude-done', 'diagnostics']);
+  });
+
+  it('returns [] for an empty allowlist', () => {
+    expect(staleAllowlistEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], {})).toStrictEqual(
+      [],
+    );
   });
 });
