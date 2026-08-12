@@ -59,7 +59,11 @@ tasks:
     verdict: PASS
   - name: new-codes-minted-in-own-diff
     binding: capability→producer — E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY minted in ε's
-      diff (D2 minting discipline + strum-completeness --lib tests same diff)
+      diff (D2 minting discipline + a hand-written per-variant --lib test in the same
+      diff; NO completeness sweep and no asymmetry scan exist for DiagnosticCode —
+      it derives no strum trait, so adding a variant fails nothing automatically.
+      Corrected 2026-08-12 by task 6224; the prose manifest row carries the full
+      evidence)
     verdict: PASS
     delivered_check:
       kind: grep
