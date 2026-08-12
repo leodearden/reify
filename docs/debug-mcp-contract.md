@@ -11,7 +11,7 @@
 | §0 Shipped tool surface + parity | `debugParity.test.ts` — tool_defs↔buildHandlers parity |
 | §1 Tool-def → dispatch → handler wiring | [step-3] `debugContract.test.ts` — error-envelope + wiring |
 | §2 JSON error envelope | [step-3] same file |
-| §2d Image + trailing-text envelope | `debug_server.rs` `mcp_content_blocks_*` tests — EMISSION side only; the JS decoders' handling of the two-block success envelope is not yet pinned (see §2d) |
+| §2d Image + trailing-text envelope | EMISSION: `debug_server.rs` `mcp_content_blocks_*` tests. DECODE: `rpc.test.ts` case 4b + `rpcEnvelope.test.ts`'s branch-3 fall-through case — the same success envelope through both JS decoders |
 | §3 Coordinate convention | [step-5] `debugContract.test.ts` — coordinate convention |
 | §4 Synthetic-event fidelity gaps | [step-7] `debugContract.test.ts` — pick↔raycast |
 | §5 pick\_entity\_at ↔ raycast convention | [step-7] same file |
@@ -283,18 +283,19 @@ POSITIONAL on `content[0]`. The rationale for each lives with the branch that
 enforces it — branch 3 of `gui/test/visual/rpc.ts` and branch 3 of
 `gui/test/visual/rpcEnvelope.mjs`.
 
-Coverage, stated exactly, because the two halves are not equally guarded: the
-error-envelope divergences are pinned case-by-case by
-`gui/test/visual/rpc.test.ts` ("the documented divergence" suite) and
-`gui/test/visual/rpcEnvelope.test.ts`. The §2d image envelope is pinned on the
-EMISSION side only, by `debug_server.rs`'s `mcp_content_blocks_*` tests — no JS
-case yet feeds a *success* two-block envelope through the two decoders (every
-existing two-block case sets `isError: true`, exercising the §2b branch
-instead). Until one does, collapsing `parseRpcResponse`'s positional image
-branch into a `.find` would pass the entire JS suite and surface only as corrupt
-PNG bytes in `run.ts`'s `Buffer.from(…, "base64")`. Closing that gap is filed as
-follow-up work against `gui/test/visual/rpc.test.ts`. Consult these tests before
-collapsing the two decoders.
+Coverage: §2d is pinned on both sides. EMISSION by `debug_server.rs`'s
+`mcp_content_blocks_*` tests; DECODE by one *success* two-block envelope fed
+through both decoders — case 4b of `gui/test/visual/rpc.test.ts`'s "the
+documented divergence" suite, which asserts the two verdicts side by side, and
+the branch-3 fall-through case in `gui/test/visual/rpcEnvelope.test.ts`. The
+error-envelope divergences are pinned case-by-case in those same two files.
+
+That decode pair is what makes the split above load-bearing rather than
+advisory. Collapsing `parseRpcResponse`'s positional image branch into a `.find`
+now fails case 4b, and only case 4b; before the pair existed it passed the
+entire JS suite and surfaced only as corrupt PNG bytes in `run.ts`'s
+`Buffer.from(…, "base64")`. Consult these tests before collapsing the two
+decoders.
 
 ---
 
