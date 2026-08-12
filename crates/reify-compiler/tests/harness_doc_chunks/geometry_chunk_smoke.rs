@@ -92,6 +92,23 @@ fn rounded_box_compiles() {
     assert_compiles("rounded_box", "rounded_box(20mm, 20mm, 10mm, 3mm)");
 }
 
+#[test]
+fn half_space_compiles() {
+    // geometry.md's "Solid Primitives" block documents the exactly-6-arg
+    // `half_space(px, py, pz, nx, ny, nz)` form (geometry.rs:1680,
+    // `PrimitiveKind::HalfSpace`) — the first Bounded=false producer.
+    //
+    // Mixed-dimension convention, same split `revolve_compiles` below pins:
+    // args 0-2 are a POINT on the boundary plane, a Length position, so they
+    // take `mm` literals; args 3-5 are the OUTWARD NORMAL pointing toward the
+    // retained material — a direction whose magnitude is irrelevant and which
+    // the compiler does not unit-check — so they take dimensionless literals,
+    // to avoid implying a direction vector carries a length unit. Arity alone
+    // does not constrain this split, which is why it is pinned here.
+    // Grounding site: examples/half_space.ri:19.
+    assert_compiles("half_space", "half_space(0mm, 0mm, 0mm, 0, 0, 1)");
+}
+
 // --- 2D profiles (geometry.md "2D profiles" block) ---
 
 #[test]

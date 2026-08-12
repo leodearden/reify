@@ -769,6 +769,7 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
     "ellipse",
     "rounded_box",
     "rounded_rect",
+    "half_space",
     // GD&T tolerance zones — geometry.md's "GD&T Tolerance Zones" section.
     "zone_slab",
     "zone_cylinder",
@@ -778,7 +779,7 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
 
 /// Registry entries that are implemented but documented in NO chunk at all.
 ///
-/// None of these three is mentioned in any file under [`CHUNKS_DIR`] — a claim
+/// Neither of these two is mentioned in any file under [`CHUNKS_DIR`] — a claim
 /// the guard enforces against the WHOLE corpus (via [`read_all_chunks`]), not
 /// just stdlib.md and geometry.md, so documenting one in any chunk reports it.
 /// This is a REAL residual documentation gap, carried here explicitly rather
@@ -792,7 +793,7 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
 /// these means deleting its entry; the guard reports any entry that has in fact
 /// been documented, so a closed gap cannot linger here and mask a later
 /// regression.
-const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &["half_space", "nurbs_surface", "isosurface"];
+const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &["nurbs_surface", "isosurface"];
 
 /// Is `name` MENTIONED in this markdown — the identifier followed by `(`?
 ///
