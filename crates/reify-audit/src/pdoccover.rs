@@ -56,31 +56,74 @@
 //! ### Known imprecision — the mention side, not the oracle
 //!
 //! The oracle is broad, but the *mention* side is only syntactically
-//! selective, and that is where the residual noise lives. Two syntactic
-//! filters are applied in [`chunk_call_mentions`] — a name that IS a
-//! [`RI_KEYWORDS`] member (the language's full reserved-word set,
-//! `Trait::fn(args)`, `auto(free)`), and the name a `.ri`
-//! declaration line introduces (`fn lateral_area(self)`, `purpose
-//! manufacturing_ready(…)`) — because each is decidable from the line alone
-//! and each can only REMOVE an accusation, never add one.
+//! selective, and that is where the residual noise lives. FIVE syntactic
+//! filters are applied in [`chunk_call_mentions`], each decidable from the
+//! line alone or from the chunk's own declaration set, each able only to
+//! REMOVE an accusation, never add one:
 //!
-//! What survives them needs prose-vs-example-source context, which this
-//! detector deliberately does not model: grammar metavariables
-//! (`predicate(x)`), user-defined names CALLED inside example source that
-//! the chunk never DECLARES at all (`compute_moi(...)` in traits.md — the
-//! declaration filter is FILE-scoped as of #5647, so a name the chunk DOES
-//! declare, anywhere in it, no longer survives on a later call), and
-//! non-function call-shaped syntax (`auto(free)`, `@region(…)`). Narrowing
-//! THAT is **#5647**. Until it lands
-//! the omission lane is the trustworthy half, which is one more reason the CLI
-//! arm is opt-in — and the reason #5480's gate must leave `fabricated-name:`
-//! report-only (see "δ's gate must key on the OMISSION categories only").
+//! 1. **`.` left delimiter** — `solid.volume()` is member access on a
+//!    value; the lane has no oracle for methods.
+//! 2. **`@` left delimiter** — `pipe@region(outer)` is an ad-hoc port/region
+//!    designator on a value (connect.md:52; docs/reify-language-spec.md:1488,
+//!    §D5); the same rule as (1), a different delimiter for the same shape.
+//! 3. **[`RI_KEYWORDS`] membership** — the language's full reserved-word set
+//!    (spec §2.10), not just declaration keywords: `Trait::fn(args)` reads
+//!    as a call to `fn`, `auto(free)` reads as a call to `auto`; no keyword
+//!    is ever a builtin.
+//! 4. **file-scoped [`ri_declared_name`]** — a name this chunk's own
+//!    example source declares ANYWHERE in it (`fn lateral_area(self)`, or a
+//!    trait body declaring `fn make_default()` a few lines above a call to
+//!    it) is example-local, not a claim that the compiler provides it,
+//!    however far from the declaration the call sits.
+//! 5. **elided `(...)` argument list** — geometry.md:126's
+//!    `translate(primitive(...), 0, 0, -h/2)` names `primitive` as a
+//!    metavariable for "any primitive constructor", not a claim; a fixed
+//!    five-byte compare, deliberately a false negative on a real builtin
+//!    documented only as `fillet(...)`.
 //!
-//! **No residual count is pinned in this comment.** It would be wrong within a
-//! chunk edit, and there is no test behind it (the floor guards deliberately
-//! assert floors, never exact counts — see below). The same caution applies in
-//! the other direction to #5647's own problem statement, whose numbers predate
-//! this filter and whose named example has since left the corpus. Re-measure:
+//! ### What #5647 left behind
+//!
+//! What survives all five needs prose-vs-example-source context that no
+//! syntactic rule can decide. Measured against the real corpus at
+//! HEAD=70f55eb5a0, exactly two SHAPES survive (not a count to hold onto —
+//! see below):
+//!
+//! - a user-defined name CALLED inside example source that the chunk never
+//!   DECLARES at all (`compute_moi(...)` in traits.md) — arguably a genuine
+//!   defect rather than detector imprecision: the chunk names a function
+//!   that exists nowhere in the compiler or stdlib and gives the reader no
+//!   signal that it is a placeholder;
+//! - a grammar metavariable that is not a reserved word (`predicate` in
+//!   `forall x in collection: predicate(x)`, constraints.md:50).
+//!
+//! Both are prose-vs-example-source judgements, and this detector must not
+//! make them. Two rejected approaches, both measured rather than assumed,
+//! are recorded here so they are not retried:
+//!
+//! - a fence-vs-prose / markdown-structure context model is forbidden
+//!   outright — it reintroduces the exact silent-blindness failure
+//!   `chunk_call_mention_floor_guard_against_real_chunks` exists to convert
+//!   into a RED test: a blind extractor makes the fabrication lane report
+//!   clean, not RED;
+//! - a "single-character argument" metavariable rule (to catch
+//!   `predicate(x)` specifically) was measured to ALSO drop `determined`,
+//!   `constrained`, `undetermined`, `partially_determined` and `some` —
+//!   five names spec §2.10:221 explicitly lists as standard library
+//!   functions, not keywords. Blinding the lane to five real builtins to
+//!   win one metavariable is the wrong trade.
+//!
+//! Do not add a context-modelling filter to [`chunk_call_mentions`] without
+//! updating this section and the floor guard's anchor set. Because two
+//! false positives remain rather than zero, the omission lane is still the
+//! more trustworthy half, which is one more reason the CLI arm stays
+//! opt-in — and the reason #5480's gate must leave `fabricated-name:`
+//! report-only (see "δ's gate keys on the OMISSION categories only").
+//!
+//! **No residual count is pinned in this comment as an invariant.** The two
+//! SHAPES above are the invariant; any site or count cited is a dated
+//! measurement, not an assertion — it would be wrong within a single chunk
+//! edit, and there is no test behind it (the floor guards deliberately
+//! assert floors, never exact counts — see below). Re-measure:
 //!
 //! ```text
 //! reify-audit --pattern PDOCCOVER --project-root . --no-jcodemunch \
@@ -139,7 +182,7 @@
 //! regenerator calls, sharing [`omission_dispositions`] with [`check`] so a
 //! generated baseline cannot disagree with the ratchet that checks it.
 //!
-//! ### δ's gate must key on the OMISSION categories only, until #5647 lands
+//! ### δ's gate keys on the OMISSION categories only
 //!
 //! Normative for #5480, recorded here because #5480's own text says this
 //! pattern "needs no change" and would otherwise inherit the constraint
@@ -149,15 +192,16 @@
 //! has no ratchet channel at all — it is suppressible only by hand-editing a
 //! `pdoccover:allow` marker onto the mentioning chunk line, one at a time.
 //!
-//! Combine that with the mention-side imprecision documented above — today's
-//! residue on the real corpus is dominated by #5647-class false positives
-//! (grammar metavariables, user names called inside example source,
-//! call-shaped non-function syntax) — and a hard gate over ALL five categories
-//! would land carrying unsuppressable false positives. So δ's gate keys on
-//! `undocumented-name:`, `stale-baseline-entry:`, `stale-allow-entry:` and
-//! `allow-missing-reason:`; `fabricated-name:` stays REPORT-ONLY. Two ways to
-//! lift that, whichever comes first: #5647 narrows the mention side until the
-//! residue is real, or the baseline format grows `path:name` rows and the
+//! #5647 landed the mention-side narrowing described above, but the
+//! conclusion is UNCHANGED: a hard gate over ALL five categories would still
+//! land carrying unsuppressable false positives, because two residual false
+//! positives remain — not zero — and the ratchet's one channel is
+//! name-shaped, so neither `compute_moi` nor `predicate` is suppressible by
+//! baseline. So δ's gate keys on `undocumented-name:`, `stale-baseline-entry:`,
+//! `stale-allow-entry:` and `allow-missing-reason:`; `fabricated-name:` stays
+//! REPORT-ONLY. Two ways to lift that, whichever comes first: a per-line
+//! `pdoccover:allow` marker on each of the two chunk lines (traits.md:9,
+//! constraints.md:50), or the baseline format grows `path:name` rows and the
 //! disposition logic covers fabrications so the ratchet absorbs them the way it
 //! absorbs omissions. Either is a deliberate decision with a test behind it —
 //! neither is a silent widening of the gate.
@@ -169,6 +213,17 @@
 //! headings, fence tags, indented fences, table pipes, bold-prefixed lists,
 //! nested backticks or trailing whitespace, and therefore cannot be broken by
 //! any of them. [`extract_registries`] is line-level for the same reason.
+//!
+//! This still holds with all FIVE mention-side filters in force (see "Known
+//! imprecision" above) — a reader arriving at five filters will reasonably
+//! ask. Every one is either a fixed-length byte test at the mention site
+//! itself (the `.`/`@` left delimiter, the `(...)` elision) or a whole-
+//! `content` set built from the SAME line-level [`ri_declared_name`] grammar
+//! the oracle already uses (the file-scoped declaration filter), or a static
+//! set membership test ([`RI_KEYWORDS`]). None inspects a heading, a fence
+//! tag, a table pipe or any other markdown structure, so a chunk reformat
+//! still cannot break extraction — only a change to the `.ri` grammar these
+//! filters key on could.
 //!
 //! This is a correctness property, not a shortcut. Both lanes are **silent on
 //! failure**: a blind chunk scanner makes the fabrication lane report clean
@@ -1828,10 +1883,11 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// `fabricated-name:` finding cannot be baselined at all — only hand-marked
 /// with `pdoccover:allow`, per chunk line. #5480's hard gate must therefore key
 /// on the omission categories only, leaving `fabricated-name:` report-only
-/// until #5647 narrows the mention side (or until the baseline format grows
-/// `path:name` rows and [`omission_dispositions`] is generalised to cover
-/// fabrications). Module header, "δ's gate must key on the OMISSION categories
-/// only", has the full rationale.
+/// until the baseline format grows `path:name` rows and
+/// [`omission_dispositions`] is generalised to cover fabrications (#5647
+/// narrowed the mention side to two residual shapes; it did not add a
+/// ratchet channel — see [`chunk_call_mentions`]). Module header, "δ's gate
+/// keys on the OMISSION categories only", has the full rationale.
 ///
 /// Reads only what the omission lane needs — [`load_inputs`], not
 /// [`load_oracle_sources`] — so a regenerator run does not pay for the

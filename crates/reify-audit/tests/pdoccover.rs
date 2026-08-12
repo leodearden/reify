@@ -1014,10 +1014,12 @@ fn registry_extraction_floor_guard_against_real_units_rs() {
 const CHUNK_MENTION_ANCHORS: &[&str] = &["union", "extrude", "fillet"];
 
 /// Conservative floor on the distinct call-shaped census over the real chunk
-/// corpus. 72 distinct names are extracted on main at the time of writing; the
-/// floor sits far below that so ordinary chunk edits — including whole-file
-/// rewrites of the smaller chunks — never flip this RED. Only an extraction
-/// regression that collapses the census does.
+/// corpus. 82 distinct names are extracted at HEAD=70f55eb5a0 (measured
+/// after #5647's four mention-side filters landed — the count moved from an
+/// earlier 72 as chunk content and detector precision both changed since);
+/// the floor sits far below that so ordinary chunk edits — including
+/// whole-file rewrites of the smaller chunks — never flip this RED. Only an
+/// extraction regression that collapses the census does.
 const CHUNK_MENTION_FLOOR: usize = 30;
 
 /// The census must span more than one chunk file. A single-file census is the
