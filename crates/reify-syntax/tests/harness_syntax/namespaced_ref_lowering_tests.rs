@@ -26,12 +26,25 @@ fn parse_decls(source: &str) -> (Vec<Declaration>, Vec<ParseError>) {
     (module.declarations, module.errors)
 }
 
-/// Unwrap the single structure declaration.
+/// Locate the single structure declaration.
+///
+/// LOCATES rather than indexing `decls[0]`: every case below that declares an
+/// `import` puts a `Declaration::Import` ahead of the structure, and an
+/// order-independence case puts it after. Indexing position 0 would panic on
+/// the former and silently pass on neither.
 fn only_structure(decls: &[Declaration]) -> &StructureDef {
-    match &decls[0] {
-        Declaration::Structure(s) => s,
-        other => panic!("expected Declaration::Structure, got {other:?}"),
-    }
+    let mut found = decls.iter().filter_map(|d| match d {
+        Declaration::Structure(s) => Some(s),
+        _ => None,
+    });
+    let structure = found
+        .next()
+        .unwrap_or_else(|| panic!("expected a Declaration::Structure, got {decls:?}"));
+    assert!(
+        found.next().is_none(),
+        "expected exactly one structure declaration, got {decls:?}"
+    );
+    structure
 }
 
 /// Unwrap the first member as a `param`, returning its type annotation.
@@ -241,9 +254,14 @@ fn as_function_call(expr: &Expr) -> (&str, &[Expr], &[Option<String>]) {
 }
 
 /// `let f = pp.Pulley()` → `FunctionCall { name: "pp.Pulley", args: [], .. }`.
+///
+/// The `import parts as pp` is LOAD-BEARING, not decoration: `first_let_value`
+/// asserts `errors.is_empty()`, so without a declared binding this case would
+/// pin the undeclared-qualifier hole as intended behaviour (which, until the
+/// import-binding gate below, is exactly what it did).
 #[test]
 fn nullary_qualified_call_lowers_to_dot_joined_function_call() {
-    let value = first_let_value("structure def S { let f = pp.Pulley() }");
+    let value = first_let_value("import parts as pp\nstructure def S { let f = pp.Pulley() }");
     let (name, args, arg_names) = as_function_call(&value);
     assert_eq!(name, "pp.Pulley");
     assert!(args.is_empty(), "expected no args; got {args:?}");
@@ -255,7 +273,8 @@ fn nullary_qualified_call_lowers_to_dot_joined_function_call() {
 /// argument-lowering helper, so they cannot drift).
 #[test]
 fn qualified_call_named_and_positional_args_at_parity() {
-    let value = first_let_value("structure def S { let g = pp.compute(1, scale: 2) }");
+    let value =
+        first_let_value("import parts as pp\nstructure def S { let g = pp.compute(1, scale: 2) }");
     let (name, args, arg_names) = as_function_call(&value);
     assert_eq!(name, "pp.compute");
     assert_eq!(args.len(), 2, "expected two args; got {args:?}");
@@ -269,7 +288,7 @@ fn qualified_call_named_and_positional_args_at_parity() {
 /// Whitespace normalisation applies to the call form too.
 #[test]
 fn qualified_call_whitespace_is_normalised() {
-    let value = first_let_value("structure def S { let f = pp . Pulley() }");
+    let value = first_let_value("import parts as pp\nstructure def S { let f = pp . Pulley() }");
     let (name, _, _) = as_function_call(&value);
     assert_eq!(name, "pp.Pulley");
 }
@@ -377,6 +396,204 @@ fn non_dotted_callee_object_is_rejected_with_a_fitting_diagnostic() {
              in `{source}`; got: {joined}"
         );
     }
+}
+
+// ── The import-binding gate (expression position only) ──────────────────────
+//
+// `namespaced_call` is `prec(12, seq(field('callee', $.member_access),
+// callTail($)))`, so it captures EVERY two-segment `ident.ident(args)` — not
+// only the import-qualified ones. Measured on this branch before the gate:
+// `obj.width()` and `self.w()` went from `Parse error … exit 1` (pre-μ) to a
+// bare "cannot infer return type" warning plus `All constraints satisfied.`
+// exit 0, and `totally.undefined_thing(1, 2)` to NO diagnostic at all — because
+// the compiler has no unknown-function error behind `ExprKind::FunctionCall`.
+// μ must not turn a hard parse error into silence, so lowering — the first
+// layer that knows the import set — rejects a qualifier that is not a declared
+// import binding.
+//
+// EXPRESSION POSITION ONLY. The other two positions μ widened are already loud
+// and need no second diagnostic for the same mistake: `param p : obj.width`
+// answers `error: unresolved type: obj.width` (exit 1) and `sub s =
+// obj.width()` answers `error: sub-component "s" references unknown structure
+// "obj.width"` (exit 1).
+
+/// A rejected qualifier: the enclosing member is DROPPED, one diagnostic spans
+/// exactly the callee, and the message names the offending qualifier, points at
+/// the `import ... as binding` form, and says Reify has no method-call syntax
+/// (the overwhelmingly likely intent behind `obj.width()`).
+///
+/// The qualifier is matched BACKTICK-QUOTED so the assertion is not satisfied
+/// incidentally by the echoed callee text: `` `obj` `` does not appear inside
+/// `` `obj.width(...)` ``.
+fn assert_qualifier_rejected(source: &str, callee: &str, qualifier: &str) {
+    let (decls, errors) = parse_decls(source);
+    assert!(
+        only_structure(&decls).members.is_empty(),
+        "a rejected qualifier must drop the enclosing member, not half-build it, \
+         in `{source}`; got {:?}",
+        only_structure(&decls).members
+    );
+
+    let joined = errors
+        .iter()
+        .map(|e| e.message.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains(&format!("`{qualifier}`")),
+        "the diagnostic must name the offending qualifier `{qualifier}` in `{source}`; \
+         got: {joined}"
+    );
+    assert!(
+        joined.contains("import"),
+        "the diagnostic must point at the `import ... as binding` form; got: {joined}"
+    );
+    assert!(
+        joined.contains("method-call"),
+        "the diagnostic must say Reify has no method-call syntax — that is the likely \
+         intent behind `{callee}(...)`; got: {joined}"
+    );
+    assert!(
+        !joined.contains("full-path qualification"),
+        "the full-path sentence belongs to the callee-SHAPE guard and must not fire for \
+         a two-segment callee in `{source}`; got: {joined}"
+    );
+
+    let start = source
+        .find(callee)
+        .unwrap_or_else(|| panic!("callee `{callee}` not found in `{source}`"))
+        as u32;
+    let end = start + callee.len() as u32;
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.span.start == start && e.span.end == end),
+        "the diagnostic must span the callee `{callee}` ({start}..{end}); got {errors:?}"
+    );
+}
+
+/// An accepted qualified call lowers to the dot-joined `FunctionCall` with no
+/// diagnostic at all.
+fn assert_qualified_call_accepted(source: &str, expected_name: &str) {
+    let value = first_let_value(source);
+    let (name, _, _) = as_function_call(&value);
+    assert_eq!(name, expected_name, "in `{source}`");
+}
+
+/// The three forms measured as silently accepted before the gate. Each is a
+/// two-segment call whose qualifier is not a declared import binding.
+#[test]
+fn undeclared_qualifier_is_rejected_with_a_diagnostic_naming_it() {
+    assert_qualifier_rejected(
+        "structure def S { let x = obj.width() }",
+        "obj.width",
+        "obj",
+    );
+    assert_qualifier_rejected("structure def S { let g = self.w() }", "self.w", "self");
+    assert_qualifier_rejected(
+        "structure def S { let g = totally.undefined_thing(1, 2) }",
+        "totally.undefined_thing",
+        "totally",
+    );
+}
+
+/// A declared binding does NOT rescue an unrelated qualifier — the gate checks
+/// the specific name, not merely that some import exists.
+#[test]
+fn an_unrelated_import_does_not_bind_another_qualifier() {
+    assert_qualifier_rejected(
+        "import parts as pp\nstructure def S { let x = obj.width() }",
+        "obj.width",
+        "obj",
+    );
+}
+
+// ── Which import kinds bind a namespace (D-7) ───────────────────────────────
+
+/// `import a.b as pp` → `ImportKind::Aliased`, binding the ALIAS.
+#[test]
+fn aliased_import_binds_the_alias() {
+    assert_qualified_call_accepted(
+        "import a.b as pp\nstructure def S { let f = pp.Thing() }",
+        "pp.Thing",
+    );
+}
+
+/// `import a.b` → `ImportKind::Module`, binding the FINAL PATH SEGMENT.
+#[test]
+fn module_import_binds_the_final_path_segment() {
+    assert_qualified_call_accepted(
+        "import a.b\nstructure def S { let f = b.Thing() }",
+        "b.Thing",
+    );
+}
+
+/// A single-segment module import binds that segment.
+#[test]
+fn single_segment_module_import_binds_that_segment() {
+    assert_qualified_call_accepted(
+        "import parts\nstructure def S { let f = parts.Thing() }",
+        "parts.Thing",
+    );
+}
+
+/// ORDER INDEPENDENCE: an import written AFTER the structure that uses it still
+/// binds, because the collector runs in `lower_source_file`'s first pass — the
+/// same pass that already seeds `known_enums` for exactly this guarantee.
+#[test]
+fn import_after_the_structure_still_binds() {
+    assert_qualified_call_accepted(
+        "structure def S { let f = pp.Pulley() }\nimport parts as pp",
+        "pp.Pulley",
+    );
+}
+
+/// `import a.b.Widget` → `ImportKind::Entity`, which binds an ENTITY name, not
+/// a module namespace. `Widget.mk()` is a method call on an entity — syntax
+/// Reify does not have, and a parse error before μ — so accepting it would
+/// reopen a narrower version of the same hole.
+#[test]
+fn entity_import_does_not_bind_a_namespace() {
+    assert_qualifier_rejected(
+        "import a.b.Widget\nstructure def S { let f = Widget.mk() }",
+        "Widget.mk",
+        "Widget",
+    );
+}
+
+/// `import a.b.{C, D}` → `ImportKind::Destructured`, likewise entity names.
+#[test]
+fn destructured_import_does_not_bind_a_namespace() {
+    assert_qualifier_rejected(
+        "import a.b.{C, D}\nstructure def S { let f = C.mk() }",
+        "C.mk",
+        "C",
+    );
+}
+
+/// RESIDUAL HOLE, pinned rather than assumed closed (ν / task 5505).
+///
+/// With a DECLARED binding, an unknown member still lowers to a dot-joined
+/// `FunctionCall` with no parse diagnostic: whether `parts` actually exports
+/// `thing` is resolution work, not parsing. It is not silent end-to-end when
+/// the module is absent — `import parts as pp` + `pp.thing()` answers `error:
+/// module 'parts' not found` (exit 1), measured — so the one genuinely silent
+/// case is: declared binding, module resolves, member does not.
+#[test]
+fn declared_binding_with_unknown_member_is_left_to_resolution() {
+    let source = "import parts as pp\nstructure def S { let f = pp.thing() }";
+    let (decls, errors) = parse_decls(source);
+    assert!(
+        errors.is_empty(),
+        "an unknown MEMBER is ν's to resolve, not a parse error; got {errors:?}"
+    );
+    let structure = only_structure(&decls);
+    let value = match &structure.members[0] {
+        MemberDecl::Let(l) => l.value.clone(),
+        other => panic!("expected MemberDecl::Let, got {other:?}"),
+    };
+    let (name, _, _) = as_function_call(&value);
+    assert_eq!(name, "pp.thing");
 }
 
 // ── Expression-position negative controls ───────────────────────────────────
