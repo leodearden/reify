@@ -131,6 +131,11 @@ pub structure Capstan {
     let flange_r   = pitch_r + rope_dia * 1.5     // stands proud of the rope crest
     let flange_w   = 6mm
     let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    /// Axial migration of the departure tangent over the full `feed` — one `lead`
+    /// per active turn. This is what the fairlead shuttle has to track, and it is
+    /// NOT `groove_len`: that is the total grooved extent, this band PLUS the
+    /// `dead_total` anchor wraps.
+    let band       : Length = lead * active_turns
     let bore_r     = bore_dia / 2
 
     // The rope channel: a circular section of radius groove_r, posed normal to the
@@ -220,7 +225,10 @@ pub structure Fairlead {
     param x_corner : Length = 30mm
     /// Up/down half-spacing of the lead turn points.
     param y_corner : Length = 50mm
-    /// Band-migration travel range the shuttle covers (= Capstan active band).
+    /// Band-migration travel range the shuttle covers: `Capstan.band` (60.3mm at
+    /// the defaults) rounded UP to a whole turn, 9·lead = 63mm. It can't be
+    /// derived through the `sub` (override drop, task 4147), so it is hand-set
+    /// here and `CapstanDrive` asserts the coverage as a constraint instead.
     param stroke   : Length = 63mm
 
     let rot_to_x = orient_axis_angle(vec3(0mm, 1mm, 0mm), 90deg)  // idler +Z → +X (spin axis)
