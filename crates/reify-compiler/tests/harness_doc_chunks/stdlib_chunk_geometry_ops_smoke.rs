@@ -775,25 +775,38 @@ const CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK: &[&str] = &[
     "zone_cylinder",
     "zone_annulus",
     "zone_profile",
+    // Free-form & implicit surfaces — geometry.md's section of that name.
+    "nurbs_surface",
+    "isosurface",
 ];
 
 /// Registry entries that are implemented but documented in NO chunk at all.
 ///
-/// Neither of these two is mentioned in any file under [`CHUNKS_DIR`] — a claim
-/// the guard enforces against the WHOLE corpus (via [`read_all_chunks`]), not
-/// just stdlib.md and geometry.md, so documenting one in any chunk reports it.
-/// This is a REAL residual documentation gap, carried here explicitly rather
-/// than folded into [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — filing them
-/// as "documented elsewhere" would launder a gap into a false coverage claim,
-/// which is exactly the failure mode this guard exists to catch, one level down.
-/// They are out of scope here (they are constructors, not operations) and are
-/// covered by a separate follow-up, task #5700.
+/// **Currently EMPTY, and that is the success state.** This list was born
+/// carrying seven real documentation gaps; task #5700 documented all seven in
+/// `chunks/geometry.md`, and each one left here as its prose landed. Empty
+/// means every registry entry is now either in stdlib.md's operations table or
+/// in [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`] — no name is exempt from
+/// the guard by fiat.
 ///
-/// This list is expected to SHRINK and must never grow. Documenting one of
-/// these means deleting its entry; the guard reports any entry that has in fact
-/// been documented, so a closed gap cannot linger here and mask a later
-/// regression.
-const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &["nurbs_surface", "isosurface"];
+/// The const and its class-3 check are deliberately KEPT rather than deleted,
+/// because the mechanism outlives the gap it was created for. It is the
+/// standing ratchet for any FUTURE registry entry that lands documented in no
+/// chunk: park it here explicitly rather than folding it into
+/// [`CONSTRUCTORS_DOCUMENTED_IN_GEOMETRY_CHUNK`], because filing a gap as
+/// "documented elsewhere" would launder it into a false coverage claim — the
+/// exact failure mode this guard exists to catch, one level down.
+///
+/// Membership here is a claim the guard enforces against the WHOLE corpus (via
+/// [`read_all_chunks`]), not just stdlib.md and geometry.md, so documenting a
+/// parked name in ANY chunk reports it. The list is expected to SHRINK and must
+/// never grow: documenting an entry means deleting it, and class 3 still
+/// reports any entry that has in fact been documented, so a closed gap cannot
+/// linger here and mask a later regression. With the list empty, class 3's
+/// discriminating power is proven by
+/// [`a_known_gap_entry_that_has_since_been_documented_is_reported`], which
+/// drives the check with synthetic data rather than these consts.
+const CONSTRUCTORS_DOCUMENTED_NOWHERE: &[&str] = &[];
 
 /// Is `name` MENTIONED in this markdown — the identifier followed by `(`?
 ///

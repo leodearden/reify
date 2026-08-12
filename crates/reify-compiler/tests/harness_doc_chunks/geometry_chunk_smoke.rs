@@ -287,3 +287,50 @@ fn zone_profile_compiles() {
     // zone_slab's face). Grounding site: examples/tolerancing/gdt_zones.ri:32.
     assert_compiles("zone_profile", "zone_profile(box(10mm, 10mm, 10mm), 1mm)");
 }
+
+// --- Free-form & implicit surfaces (geometry.md block of that name) ---
+
+#[test]
+fn nurbs_surface_compiles() {
+    // geometry.md's "Free-form & Implicit Surfaces" block documents the
+    // exactly-6-arg `nurbs_surface(control_points, weights, u_knots, v_knots,
+    // u_degree, v_degree)` form (geometry.rs:2639, `SurfaceKind::Nurbs`).
+    //
+    // The NESTING is the part arity cannot pin, and it differs per argument:
+    // control_points is a nested (u-major × v) grid of point3(...), weights a
+    // matching nested grid of reals, but u_knots/v_knots are FLAT clamped knot
+    // vectors and the degrees are bare integers. Transcribed from the
+    // already-evaluating bilinear patch at
+    // crates/reify-eval/tests/nurbs_surface_e2e.rs:47.
+    assert_compiles(
+        "nurbs_surface",
+        "nurbs_surface(\
+         [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]], \
+         [[1.0,1.0],[1.0,1.0]], [0,0,1,1], [0,0,1,1], 1, 1)",
+    );
+}
+
+#[test]
+fn isosurface_bare_compiles() {
+    // geometry.md documents the 1-arg `isosurface(grid)` form
+    // (geometry.rs:2670, `check_arg_count_at_least(..., 1)`). The grid operand
+    // is resolved via geom_ref(0); a BRep/Mesh operand is voxelized first.
+    // Grounding site: examples/multi_kernel/voxel_to_mesh.ri:30.
+    assert_compiles("isosurface_bare", "isosurface(box(10mm, 10mm, 10mm))");
+}
+
+#[test]
+fn isosurface_with_named_options_compiles() {
+    // geometry.md documents `iso` and `adaptive` as OPTIONAL NAMED arguments,
+    // and 3 args as the maximum (geometry.rs:2670 errors above 3). Both facts
+    // are pinned here: the named spellings `iso:` / `adaptive:` are what the
+    // arm forwards positionally into `args`, and their absence in the bare
+    // form above defers to the eval-lowering defaults (iso_level = 0.0,
+    // adaptive = false) rather than being defaulted at compile time.
+    // Grounding sites: examples/multi_kernel/voxel_to_mesh_iso.ri:32 and the
+    // arity/named-arg unit tests at geometry.rs:6326/6367.
+    assert_compiles(
+        "isosurface_with_named_options",
+        "isosurface(box(10mm, 10mm, 10mm), iso: 3mm, adaptive: true)",
+    );
+}
