@@ -2496,3 +2496,29 @@ fn tensor_matching_dimension_at_moi_param_stays_clean() {
          it does not reject dimensioned args. Got: {diags:#?}"
     );
 }
+
+const SRC_UNTYPED_PARAM_PROBE: &str = r#"module test.untyped_param_probe
+structure def Frame { param dir = vec3(1.0, 0.0, 0.0) }
+structure def Root { let f = Frame(dir: vec3(1m, 0m, 0m)) }
+"#;
+
+#[test]
+fn zz_throwaway_untyped_param_probe() {
+    let module = compile_source_with_stdlib(SRC_UNTYPED_PARAM_PROBE);
+    let cells: Vec<String> = module
+        .templates
+        .iter()
+        .flat_map(|t| {
+            t.value_cells
+                .iter()
+                .map(move |vc| format!("{}::{:?} kind={:?} ty={:?} default={:?}", t.name, vc.id, vc.kind, vc.cell_type, vc.default_expr.as_ref().map(|e| e.result_type.clone())))
+        })
+        .collect();
+    panic!(
+        "PROBE\n--- CELLS ---\n{}\n--- CTOR DIAGS ---\n{:#?}\n--- ERRORS ---\n{:#?}\n--- ALL DIAGS ---\n{:#?}",
+        cells.join("\n"),
+        ctor_conformance_diags(&module),
+        errors_only(&module),
+        module.diagnostics
+    );
+}
