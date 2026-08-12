@@ -93,7 +93,9 @@ pub use reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize};
 ///
 /// The path of least resistance for every repo-targeting call site — prefer
 /// this over hand-rolling `Command::new("git").arg("-C")`, which is how the
-/// bug above reaches a new helper.
+/// failure mode [`sanitize`] prevents reaches a new helper. That failure mode
+/// is described where the sanitizer is defined, in
+/// [`reify_test_support::git_env`].
 pub fn command(root: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(root);
