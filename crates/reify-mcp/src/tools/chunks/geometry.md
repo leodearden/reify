@@ -171,3 +171,44 @@ closed-form volume — expect roughly `surface_area × width`, and query the rea
 than computing it by hand.
 
 Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
+
+## Free-form & Implicit Surfaces
+
+Two constructors that produce a surface from data rather than from a parametric shape —
+a NURBS patch from an explicit control net, and a marching-cubes mesh from a voxel grid:
+
+```
+nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)  -> Surface
+isosurface(grid)                                     -> Mesh   // marching cubes, iso = 0.0
+isosurface(grid, iso: level)                         -> Mesh
+isosurface(grid, iso: level, adaptive: flag)         -> Mesh
+```
+
+`nurbs_surface`'s six arguments do **not** all have the same shape. `control_points` is a
+**nested** (u-major × v) list of `point3(...)`, and `weights` is a matching nested list of reals;
+but `u_knots`/`v_knots` are **flat** clamped knot vectors, and `u_degree`/`v_degree` are plain
+integers. A bilinear patch (degree 1 × 1, clamped knots `[0,0,1,1]`):
+
+```
+nurbs_surface(
+    [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+    [[1.0,1.0],[1.0,1.0]],
+    [0,0,1,1],
+    [0,0,1,1],
+    1,
+    1
+)
+```
+
+A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid profile for
+`extrude`/`revolve`/`sweep`/`loft` — passing one inline emits `GeometryProfileRequired`.
+
+`isosurface` extracts a surface by marching cubes from a Voxel-repr `grid` operand; a BRep or Mesh
+operand is voxelized first (Mesh→Voxel on OpenVDB) and surfaced back Voxel→Mesh. `iso` and
+`adaptive` are **optional named** arguments — spell them `iso:` and `adaptive:`, not positionally —
+and at most 3 arguments are accepted. Omitting them is not the same as passing a default at the
+call site: they are left unset and resolved during evaluation lowering to `iso = 0.0` and
+`adaptive = false`.
+
+Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
+`examples/multi_kernel/voxel_to_mesh_iso.ri`.
