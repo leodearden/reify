@@ -19,7 +19,11 @@
  *     a comment. Same discipline as `bridgeMockContract.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
-import { splitTableCells, parseEventChannelRows } from './eventChannelConsumerContract';
+import {
+  splitTableCells,
+  parseEventChannelRows,
+  extractConsumerIdentifiers,
+} from './eventChannelConsumerContract';
 
 describe('splitTableCells', () => {
   it('splits a plain §1 row so the Consumer cell lands at index 4', () => {
@@ -163,5 +167,92 @@ describe('parseEventChannelRows', () => {
   it('returns [] for a table that appears before any §-heading', () => {
     const orphan = '| `mesh-update` | `MeshData` | `delta_to_events` | `bridge.ts::onMeshUpdate` | |';
     expect(parseEventChannelRows(orphan)).toStrictEqual([]);
+  });
+});
+
+describe('extractConsumerIdentifiers', () => {
+  // ── Forms that ARE bridge consumers ────────────────────────────────────────
+
+  it('takes the suffix of a `bridge.ts::NAME` span', () => {
+    expect(extractConsumerIdentifiers('`bridge.ts::onMeshUpdate`')).toStrictEqual(['onMeshUpdate']);
+  });
+
+  it('takes a bare lowercase-initial backticked identifier', () => {
+    expect(extractConsumerIdentifiers('`onMeshRemoved`')).toStrictEqual(['onMeshRemoved']);
+  });
+
+  it('takes a bare `subscribeTo…` identifier — these ARE bridge.ts exports', () => {
+    // The 10 claude-* / sidecar rows name their consumer without the
+    // `bridge.ts::` prefix. Both names are real runtime exports of bridge.ts,
+    // so dropping them would silently shrink the guarded set by a fifth.
+    expect(extractConsumerIdentifiers('`subscribeToClaudeEvents`')).toStrictEqual([
+      'subscribeToClaudeEvents',
+    ]);
+    expect(extractConsumerIdentifiers('`subscribeToSidecarCrashed`')).toStrictEqual([
+      'subscribeToSidecarCrashed',
+    ]);
+  });
+
+  it('takes only the bridge identifier out of a multi-token routing cell', () => {
+    // The live `fea-diagnostics-changed` row (docs/gui-event-channels.md:23)
+    // documents the whole route, not just the bridge hop.
+    expect(
+      extractConsumerIdentifiers(
+        '`bridge.ts::onFeaDiagnosticsChanged` → `engineStore.setFeaDiagnostics` → FeaDiagnosticsPanel + DualViewport overlay',
+      ),
+    ).toStrictEqual(['onFeaDiagnosticsChanged']);
+  });
+
+  it('strips a trailing () from a bridge.ts:: span', () => {
+    expect(extractConsumerIdentifiers('`bridge.ts::cancelSolve()`')).toStrictEqual(['cancelSolve']);
+  });
+
+  it('deduplicates while preserving source order', () => {
+    expect(
+      extractConsumerIdentifiers('`bridge.ts::onSolverProgress` … also `onSolverProgress` … `onFocusEntity`'),
+    ).toStrictEqual(['onSolverProgress', 'onFocusEntity']);
+  });
+
+  // ── Noise that MUST be rejected, one assertion per shape ───────────────────
+  //
+  // Each of these appears in a live Consumer cell today. Rejecting them
+  // mechanically is what keeps the allowlist at 2 entries instead of ~10:
+  // an allowlist bloated with entries that all say "not a bridge symbol" has
+  // no signal left (the warning bridgeMockCoverage.test.ts makes explicitly).
+
+  it('rejects a dotted store path', () => {
+    expect(extractConsumerIdentifiers('`engineStore.setFeaConvergence`')).toStrictEqual([]);
+  });
+
+  it('rejects slashed paths', () => {
+    expect(extractConsumerIdentifiers('`gui/src` debug-bridge')).toStrictEqual([]);
+    expect(extractConsumerIdentifiers('`gui/src/debug/WarmPoolDebugPanel.tsx`')).toStrictEqual([]);
+  });
+
+  it('rejects PascalCase Solid component names', () => {
+    for (const component of [
+      'BucklingPanel',
+      'AutoResolvePanel',
+      'WarmPoolDebugPanel',
+      'SolverProgressOverlay',
+      'FeaCasePickerDropdown',
+    ]) {
+      expect(
+        extractConsumerIdentifiers(`\`${component}\``),
+        `${component} is a component, not a bridge export`,
+      ).toStrictEqual([]);
+    }
+  });
+
+  it('rejects unbackticked prose', () => {
+    expect(extractConsumerIdentifiers('same')).toStrictEqual([]);
+    expect(extractConsumerIdentifiers('(new) animator')).toStrictEqual([]);
+    // Backticked component inside prose is still rejected, prose still ignored.
+    expect(extractConsumerIdentifiers('(new) `BucklingPanel` animator')).toStrictEqual([]);
+  });
+
+  it('returns [] for a cell with no backticks at all', () => {
+    expect(extractConsumerIdentifiers('')).toStrictEqual([]);
+    expect(extractConsumerIdentifiers('*(none)*')).toStrictEqual([]);
   });
 });
