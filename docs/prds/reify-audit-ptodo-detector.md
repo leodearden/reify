@@ -200,6 +200,51 @@ checkout and a task worktree. **Every seeded line must be hand-inspected before 
 — a false positive seeded here is permanent by design, and worse, teaches later readers
 that the cite is real debt.
 
+**Vacuity floor on the live set (2026-08-11, task #6127, esc-6087-3).** *This paragraph is
+the single home for the floor's rationale — `test_reify_audit_ptodo.sh` and
+`test_reify_audit_ptodo_ratchet_vacuity.sh` point here rather than restating it.*
+
+The ratchet's oracle is `comm -23 <live> <baseline>` — subset-of — and the empty set is a
+subset of everything. A generator run that emitted **zero** fingerprints therefore satisfies
+it trivially, and the check reports green having asserted nothing. That is not hypothetical:
+a stale or reverted `ptodo-baseline-gen` produces exactly that, and mtime is a weak oracle
+against it because the freshness guard's epoch only tracks commits under
+`crates/reify-audit/` (`scripts/reify-audit-freshness.sh`, SCOPE LIMITATION). The check
+therefore runs **two** assertions in order: a non-emptiness floor on the live set, then the
+subset check. Measured basis at the time of writing: **4** structural fingerprints in the
+degraded no-task-DB mode the assertion runs under, against a committed baseline of **5**
+entries (4 structural + 1 `orphaned`) — the floor is a structural "did the detector report
+anything at all" oracle, not a tuned threshold.
+
+**Self-disarm keys on the STRUCTURAL baseline count, not on total baseline size**
+(#6127 review). Scenario (a) runs the generator with no task DB, where §6.7 drops every
+liveness-derived kind, so only *structural* baseline entries can ever have a live
+counterpart. Counting the total instead would hard-RED the exact commit the shrink-only
+ratchet exists to produce: a burn-down that fixes the last structural markers and shrinks
+them out of `ptodo-baseline.txt` leaves a non-empty baseline (the `orphaned` entry survives,
+because subset-of never forces it out) against a legitimately empty live set. The shell
+check therefore subtracts entries whose fingerprint `kind` field is DB-dependent
+(`orphaned`, `unknown-id`, `g-allow-orphaned`, `g-allow-unknown-id`, `parked-on-anchor`,
+`task-cites-deleted-path`) and disarms when the remainder is 0. An **unrecognised** kind
+counts as structural, keeping the floor ARMED: a kind added after that list was written
+should produce a loud false-RED, never a silent disarm back into vacuous green. This is a
+field read on an already-produced fingerprint, not a re-derivation, so the "derivation lives
+only in `ptodo-baseline-gen`" invariant above holds.
+
+**Cross-file contract.** The floor prints `@@RATCHET_VACUITY_FIRED@@` as the first line of
+its diagnostic, in the same idiom as the `@@HARDGATE_*_PASSED@@` sentinels; the wiring
+meta-test greps that token. Grepping the English text instead is wrong in both directions —
+a short anchor was observed matching the assert *descriptions* that `assert()` echoes into
+the same stream, and a longer sentence merely trades that false match for a false RED on the
+next rewording.
+
+**Residual limitation.** Even so, the floor keys on evidence the detector *found* something,
+not on evidence it *ran*; the two coincide only while structural debt remains. The principled
+fix is for `ptodo-baseline-gen` to emit scan evidence of its own (files scanned / markers
+examined, e.g. behind `--stats`) and for the floor to assert on that, which decouples the
+check from the debt level entirely and needs no kind list in the shell. That is a generator
+change, out of scope for #6127, and is filed as a follow-up.
+
 ### 6.7 Degradation contract — **fail-soft, mirroring the 4109 jcodemunch contract**
 
 `.taskmaster/` is untracked → the task DB is absent in task worktrees, where the infra
