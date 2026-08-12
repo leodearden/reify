@@ -2207,6 +2207,7 @@ mod tests {
     use crate::assert_value_approx;
     use crate::values::{meters, mm2, mm3, point3};
     use reify_core::Type;
+    use reify_expr::ContainmentQuery;
     use reify_ir::{CompiledExpr, Value, ValueMap};
     use std::borrow::Cow;
     use std::sync::Barrier;
@@ -4611,6 +4612,53 @@ mod tests {
             counts.is_orientable(),
             0,
             "extract_vertices must not increment is_orientable"
+        );
+    }
+
+    #[test]
+    fn no_containment_reports_indeterminate_for_every_query() {
+        // Pins the shared double's whole contract: `None` for EVERY
+        // (region, point) pair, not just one lucky input — the call sites
+        // that use it (reify-eval's cell_eval_ctx/engine_edit test modules)
+        // rely on containment never resolving, so an accidental `Some(_)`
+        // here would silently change what those tests exercise.
+        //
+        // The `&dyn` coercion is part of the contract too: every consumer
+        // passes the double as `&'a dyn ContainmentQuery`, so a hoist that
+        // (say) made the impl generic would break them without this line.
+        let q: &dyn ContainmentQuery = &NoContainment;
+
+        assert_eq!(
+            q.contains(&Value::Bool(false), &Value::Real(0.0)),
+            None,
+            "NoContainment must report indeterminate containment"
+        );
+        assert_eq!(
+            q.contains(&Value::Real(1.0), &Value::Int(3)),
+            None,
+            "NoContainment must be indeterminate independent of its arguments"
+        );
+    }
+
+    #[test]
+    fn always_inside_reports_contained_for_every_query() {
+        // The deliberate complement of `NoContainment`: always `Some(true)`,
+        // which is what drives `sample(restrict(field, region), point)` down
+        // its "inside" branch. cell_eval_ctx.rs's
+        // `cell_eval_ctx_containment_resolves_via_wired_query` only reaches
+        // `Value::Real(42.0)` because of this, so the argument-independence
+        // pinned here is load-bearing for that test.
+        let q: &dyn ContainmentQuery = &AlwaysInside;
+
+        assert_eq!(
+            q.contains(&Value::Bool(false), &Value::Real(0.0)),
+            Some(true),
+            "AlwaysInside must report the point as inside the region"
+        );
+        assert_eq!(
+            q.contains(&Value::Real(1.0), &Value::Int(3)),
+            Some(true),
+            "AlwaysInside must report inside independent of its arguments"
         );
     }
 }
