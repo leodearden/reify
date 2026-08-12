@@ -215,3 +215,102 @@ export function extractConsumerIdentifiers(cell: string): string[] {
 
   return names;
 }
+
+/**
+ * The literal Consumer cell meaning "same as the row above".
+ *
+ * Resolved by inheritance rather than allowlisted. Rows 34-41 of
+ * docs/gui-event-channels.md — the eight `claude-*` channels following
+ * `claude-text-delta` — write `same` in their Producer, Consumer AND Notes
+ * cells, and they genuinely do share `subscribeToClaudeEvents`. Allowlisting
+ * them would add eight entries that all say "excused", diluting an allowlist
+ * whose signal is meant to be "this row has an unusual NON-bridge consumer";
+ * bridgeMockCoverage.test.ts documents exactly that failure mode when it
+ * refuses to glob its target list. Resolving instead leaves those eight rows
+ * genuinely checked against a real export.
+ */
+const INHERIT_SENTINEL = 'same';
+
+/**
+ * The literal Consumer cell meaning "this channel deliberately has no consumer".
+ *
+ * Recognised for two reasons. A channel documented as consumer-less is a
+ * legitimate recurring state that should not need an allowlist entry naming an
+ * absence. And it decouples this guard from task 6227's merge order: 6227
+ * deletes `bridge.ts::onDiagnostics` and sets the `diagnostics` row's Consumer
+ * to `*(none)*`, so without this sentinel whichever of the two branches landed
+ * second would turn the other's tree RED and force a cross-task allowlist edit.
+ * With it, both merge orders are green with no coordination.
+ */
+const EXPLICIT_NONE_SENTINEL = '*(none)*';
+
+/**
+ * How a row's Consumer cell was resolved.
+ *
+ *  - `named`           — the cell itself yielded bridge identifiers.
+ *  - `inherited`       — the cell is `same`; identifiers come from the nearest
+ *                        preceding `named` row in the same section.
+ *  - `explicit-none`   — the cell is `*(none)*`; no consumer, by assertion.
+ *  - `needs-allowlist` — everything else. The SAFE DEFAULT: any cell this
+ *                        parser cannot resolve to bridge identifiers demands a
+ *                        deliberate allowlist entry carrying a prose reason, so
+ *                        an unparsed row FAILS the guard rather than silently
+ *                        dropping out of the checked set.
+ */
+export type ConsumerRowKind = 'named' | 'inherited' | 'explicit-none' | 'needs-allowlist';
+
+/** A parsed row plus the resolution of its Consumer cell. */
+export interface ClassifiedRow {
+  section: EventChannelRow['section'];
+  channel: string;
+  /** Bridge identifiers this row claims — its own, or inherited. Never partial. */
+  identifiers: string[];
+  kind: ConsumerRowKind;
+}
+
+/**
+ * Resolve every parsed row's Consumer cell, in document order.
+ *
+ * A single forward walk tracking, PER SECTION, the identifiers of the last row
+ * whose own cell yielded any. Two properties of that tracker are deliberate and
+ * pinned by unit tests:
+ *
+ *  - It is keyed by section, so inheritance never crosses the §1/§2 boundary.
+ *    §2 is a separate table with its own authorship; a `same` at the top of §2
+ *    does not mean "same as the last §1 row", and inheriting there would invent
+ *    a consumer nobody wrote.
+ *  - It only advances on a `named` row, so an `*(none)*` row cannot become an
+ *    inheritance source — it asserts an absence, and there is nothing to inherit.
+ *
+ * Degradation is safe rather than clever: a `same` with no eligible predecessor
+ * yields `needs-allowlist` with no identifiers, NOT a throw. Any spelling other
+ * than the two exact sentinels falls through to `needs-allowlist` too, so a
+ * variant like `Same` or `(none)` cannot silently excuse a row.
+ */
+export function classifyEventChannelRows(rows: EventChannelRow[]): ClassifiedRow[] {
+  const lastNamedBySection = new Map<EventChannelRow['section'], string[]>();
+
+  return rows.map(({ section, channel, consumerCell }) => {
+    const own = extractConsumerIdentifiers(consumerCell);
+    if (own.length > 0) {
+      lastNamedBySection.set(section, own);
+      return { section, channel, identifiers: own, kind: 'named' };
+    }
+
+    const cell = consumerCell.trim();
+
+    if (cell === INHERIT_SENTINEL) {
+      const inherited = lastNamedBySection.get(section);
+      if (inherited !== undefined) {
+        return { section, channel, identifiers: [...inherited], kind: 'inherited' };
+      }
+      return { section, channel, identifiers: [], kind: 'needs-allowlist' };
+    }
+
+    if (cell === EXPLICIT_NONE_SENTINEL) {
+      return { section, channel, identifiers: [], kind: 'explicit-none' };
+    }
+
+    return { section, channel, identifiers: [], kind: 'needs-allowlist' };
+  });
+}
