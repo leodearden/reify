@@ -96,6 +96,17 @@ scripts/lib_lane_x_flock.sh          tests/infra/test_lane_x_flock.sh
 # which is itself a load-bearing verify-pipeline artifact (every edit here
 # routes the touching task through the full --scope all gate).
 scripts/lib_slot_acquire.sh          tests/infra/test_slot_*.sh
+# Task 6024 (review amendment): the lib is not the only CARRIER of that wire
+# contract. Each caller below passes an explicit 5th TIMEOUT_REASON whose token
+# is itself a cross-repo wire value, so a task-scope edit that drops one selects
+# zero infra tests without a row here and is caught only at merge tier.
+# scripts/lib_test_semaphore.sh is the worst case: its 5th arg is a deliberate
+# literal duplicate of its 4th, so dropping it falls silently through
+# slot_acquire's ${REASON:-...} fallback and still emits a plausible-looking
+# token. Same glob as the lib row -- test_slot_timeout_marker.sh's B0/B2 already
+# pin both tokens behaviourally; these rows are what make them RUN.
+scripts/lib_test_semaphore.sh        tests/infra/test_slot_*.sh
+scripts/cargo-test-occt-gated.sh     tests/infra/test_slot_*.sh
 scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
 scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_audit.sh
 # Task 5608: the LOCK-axis availability oracle (sibling of the DISK-axis

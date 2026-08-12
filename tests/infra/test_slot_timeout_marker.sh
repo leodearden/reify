@@ -504,7 +504,12 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # fix. Sections A-C hold that discipline for THIS file's own emissions; D extends
 # it to the emit-adjacent sites this change turned from latent into live.
 #
-# The guard is BEHAVIOURAL and models run_all's capture exactly (see _d_capture).
+# TWO ARMS, because neither suffices alone. D1/D3 are BEHAVIOURAL and model
+# run_all's capture exactly (see _d_capture), catching any leak that actually
+# happens on this run. D4 is STATIC and covers what D1 structurally cannot: two
+# of the three members only reach their deadline under contention this suite
+# must not manufacture, so their D1 zero would look identical with the redirect
+# reverted. See D4's own preamble for the per-member reasoning.
 
 TMPD="$(mktemp -d)"; _TMPDIRS+=("$TMPD")
 
@@ -514,8 +519,10 @@ TMPD="$(mktemp -d)"; _TMPDIRS+=("$TMPD")
 # expression, so spelling it that way would silently match a literal `t`.
 D_ANCHOR="^[[:blank:]]*${SP}TIMEOUT@@"
 
-# Members that deliberately force a finite-WAIT slot deadline, so slot_acquire's
-# rc=75 branch -- and now its sentinel -- is reached on a normal GREEN run.
+# Members with a site that can reach slot_acquire's rc=75 branch -- and now its
+# sentinel. Only the FIRST reaches it on every green run; the other two reach it
+# only under contention this suite must not manufacture (see D4, which is the
+# arm that guards them deterministically).
 # RECURSION: test_slot_timeout_marker.sh is deliberately ABSENT from this list.
 # It is the one file whose captured sentinels are the assertion target, and every
 # one of them is confined to a temp file by the discipline at the top of this file.
@@ -527,6 +534,16 @@ D_HEADERS=(
     $'^--- Test 13:\n^--- Test 15:'
     $'^--- Test HG-2:'
     $'^--- Test 15:'
+)
+# Index-aligned: does this member reach the deadline on EVERY run, or only under
+# contention? Purely descriptive -- printed beside D1 so its zero is read for
+# what it is, never asserted on (asserting a member's own pass/fail here would
+# re-report that suite's flakes as failures of this one, which is exactly what
+# _d_capture's ignore-exit-status rule exists to prevent).
+D_ALWAYS_DEADLINES=(
+    'every run (Test 12/15 hold their own slot)'
+    'MERGE GATE ONLY (WAIT=0 vs the REAL host-global semaphore, which verify.sh holds across every test pass)'
+    'UNDER LOAD ONLY (WAIT=10 vs its own 6s holder)'
 )
 
 _d_capture() {  # <member-basename> <outfile>
@@ -590,13 +607,105 @@ for _d_i in "${!D_MEMBERS[@]}"; do
     # checker's captured output, and dumping the offending line would BE the leak
     # this assertion exists to prevent. The count is the actionable half; the
     # member name says where to look.
+    # SCOPE, stated in the description rather than left implied: this observes
+    # THIS RUN's capture, and two of the three members only deadline under
+    # contention -- so a zero from them means "no leak occurred here", not "no
+    # leak is possible". D4 below is what makes their redirects load-bearing.
     _d_n="$(grep -cE -- "$D_ANCHOR" "$_d_f" || true)"
-    assert "D1 [$_d_m]: leaks ZERO slot-timeout sentinels into its own captured output (got $_d_n)" \
+    assert "D1 [$_d_m]: leaked ZERO slot-timeout sentinels into its own captured output THIS RUN -- deadline reached: ${D_ALWAYS_DEADLINES[$_d_i]} (got $_d_n)" \
         test "$_d_n" -eq 0
 done
 
 echo ""
-echo "=== E: no assert DESCRIPTION interpolates an unfiltered stderr capture ==="
+echo "--- D4: each member's own deadline-forcing site still CAPTURES stderr (static) ---"
+
+# WHY A STATIC ARM IS REQUIRED. D1 can only observe a leak that actually
+# happened this run, and only test_lane_x_flock.sh reaches its deadline on every
+# run. The other two reach theirs only under contention this suite must not
+# manufacture:
+#   - test_test_run_semaphore.sh HG-2 waits on the REAL host-global semaphore
+#     with WAIT=0. It deadlines under the MERGE GATE (verify.sh holds that lock
+#     across every test pass -- the one scenario where the leak matters) and
+#     acquires instantly otherwise. Holding that lock from here to force it
+#     would starve every concurrent verify on this host.
+#   - test_occt_flock_gate.sh Test 15 sets REIFY_OCCT_LOCK / _LOCK_WAIT /
+#     _CONCURRENCY INLINE, so no ambient env from here can make it deadline.
+# So on a green standalone run D1 reports 0 for both WHETHER OR NOT their stderr
+# is captured -- it would report the same 0 with the redirects reverted, which
+# is precisely the hole. D4 goes RED on that revert: it reads each member's
+# SOURCE and asserts the deadline-forcing invocation still captures stderr to a
+# file, every run, contention or not.
+#
+# "The redirect is NECESSARY" and "the redirect is PRESENT" are pinned in
+# different sections on purpose: B0/B2 already prove BEHAVIOURALLY that these
+# exact entry points emit a column-0 sentinel when contended, so D4 does not
+# need to re-manufacture that contention -- only to prove the member site that
+# reaches them still swallows it.
+
+# Index-aligned with D_MEMBERS: the acquire entry point each member invokes.
+# Deliberately redirect-INDEPENDENT, so "the site vanished" (D4a) and "the site
+# stopped capturing" (D4b) stay distinguishable failures.
+D_INVOKE=('"\$LIB"' 'test_semaphore_acquire' '"\$WRAPPER"')
+# A capture to a FILE (`2>"$VAR"` / `2>$VAR`). `2>&1` deliberately does NOT
+# match -- merging the sentinel back into the re-emitted stream is the leak, not
+# a fix -- and neither does `2>/dev/null`, which would destroy the evidence a
+# failing assert needs.
+D_CAPTURE_RE='2>"?\$'
+
+_d_section_cmds() {  # <member-file> <output-header-anchor> -> that section's commands
+    # Continuations are joined FIRST so each logical command is ONE line: HG-2
+    # puts its `2>` on the continuation line, not on the line naming the acquire,
+    # and a line-at-a-time scan would call that unredirected.
+    # Then the section is sliced header-to-next-header, and comment / assert
+    # lines are dropped -- both name the entry point in PROSE without invoking it
+    # (test_test_run_semaphore.sh:859 is exactly that shape).
+    local _src
+    _src="echo \"${2#^}"
+    sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+        | awk -v s="$_src" '
+            !inb && index($0, s) { inb = 1; next }
+            inb && /^echo "---/ { exit }
+            inb { print }
+          ' \
+        | grep -vE '^[[:blank:]]*(#|assert )' || true
+}
+
+_d_unredirected() {  # <cmds-file> <invocation-ERE> -> count of invocations with no capture
+    local _n
+    _n="$( { grep -E -- "$2" "$1" || true; } | grep -cvE -- "$D_CAPTURE_RE" || true )"
+    echo "${_n:-0}"
+}
+
+# D4c FIRST: positive control on D4b's predicate, since D4b asserts a ZERO and a
+# typo'd predicate would be green forever. Synthetic section, built at runtime.
+D_CTRL_SEC="$TMPD/positive-control-section.cmds"
+printf 'REIFY_X=1     timeout 5 "$LIB" true || _EXIT=$?\n' > "$D_CTRL_SEC"
+D_CTRL_BARE="$(_d_unredirected "$D_CTRL_SEC" '"\$LIB"')"
+assert "D4c: positive control -- D4b's own predicate DOES flag an invocation with no stderr capture (got $D_CTRL_BARE)" \
+    test "$D_CTRL_BARE" -eq 1
+
+for _d_i in "${!D_MEMBERS[@]}"; do
+    _d_m="${D_MEMBERS[$_d_i]}"
+    while IFS= read -r _d_h; do
+        _d_tag="${_d_h#^--- }"
+        _d_sec="$TMPD/${_d_m}.$(printf '%s' "$_d_tag" | tr -cd 'A-Za-z0-9').cmds"
+        _d_section_cmds "$SCRIPT_DIR/$_d_m" "$_d_h" > "$_d_sec"
+
+        # D4a before D4b: without it, deleting or renaming the invocation would
+        # leave D4b trivially green on an empty set.
+        _d_inv="$(grep -cE -- "${D_INVOKE[$_d_i]}" "$_d_sec" || true)"
+        assert "D4a [$_d_m ${_d_tag%%:*}]: the deadline-capable invocation is still there (non-vacuity; got ${_d_inv:-0})" \
+            test "${_d_inv:-0}" -ge 1
+
+        # Counts only -- like D1, never the matching source line.
+        _d_bare="$(_d_unredirected "$_d_sec" "${D_INVOKE[$_d_i]}")"
+        assert "D4b [$_d_m ${_d_tag%%:*}]: every one of them still captures stderr to a file (got $_d_bare unredirected)" \
+            test "$_d_bare" -eq 0
+    done <<< "${D_HEADERS[$_d_i]}"
+done
+
+echo ""
+echo "=== E: no assert DESCRIPTION dumps a whole capture file (stderr OR stdout) ==="
 
 # THE SECOND, SNEAKIER LEAK CHANNEL. Section D covers a child's stderr reaching
 # the console; this covers evidence smuggled through assert's own description.
@@ -619,15 +728,33 @@ echo "=== E: no assert DESCRIPTION interpolates an unfiltered stderr capture ===
 TMPE="$(mktemp -d)"; _TMPDIRS+=("$TMPE")
 
 # Detector, in two halves so this file never contains the forbidden shape
-# itself. A line is a violation iff it is assert-wired AND interpolates a
-# capture file UNFILTERED via `cat`, where the variable name ends in
-# _ERR/_STDERR -- precisely the sentinel-carrying class. That scoping is
-# deliberate: it excludes the stdout-only interpolations elsewhere in
-# test_run_all.sh, keeping this a bounded safety lint rather than an unrelated
-# repo-wide refactor. Same-line only, which is what every site in-tree uses;
-# a description split across a `\`-continuation is out of the grammar.
+# itself. A line is a violation iff it is assert-wired AND DUMPS a whole
+# capture file into the description via an unfiltered reader (`cat`/`tail`/
+# `head`/`$(< f)`), quoted or not, where the variable names a capture:
+# _ERR/_STDERR/_OUT/_STDOUT with an optional numeric suffix ($A_ERR1/$A_ERR2
+# already exist in tests/infra/test_verify_semaphore_e2e.sh).
+#
+# STDOUT captures are IN SCOPE, not just stderr ones -- the narrower _ERR-only
+# reading of this lint had a demonstrable in-tree miss. run_all.sh's Phase-3
+# re-emission writes each member's COMBINED stdout+stderr `.out` capture to its
+# OWN stdout (_ra_emit_sanitized, run_all.sh:374-377), so a nested run_all's
+# stdout/combined capture carries member STDERR bytes -- a leaked sentinel
+# among them.
+#
+# BOUNDED BY DESIGN, and the assertion name says which bound: this flags a
+# whole-file DUMP, not every conceivable interpolation. A FILTERED reader
+# ($(sed ...) -- the sanctioned form, E3 -- or $(grep ...)) is out of grammar
+# because the filter is where the `  | ` prefix belongs, and a variable holding
+# text captured on an earlier line is out of grammar because there is no reader
+# to key on. The STRUCTURAL fix that closes every variant at once is to have
+# assert() itself pipe $desc through the same `sed 's/^/  | /'` it already
+# applies to a failing checker's captured output (tests/infra/test_helpers.sh:
+# 44/47/54), which would demote this lint to redundant belt-and-braces; it is
+# NOT done here only because test_helpers.sh is outside task 6024's module
+# locks. Same-line only, which is what every site in-tree uses; a description
+# split across a `\`-continuation is out of the grammar.
 E_ASSERT_RE='assert "'
-E_CAT_RE='\$\(cat "\$[A-Za-z_][A-Za-z0-9_]*(_ERR|_STDERR)"\)'
+E_CAT_RE='\$\((cat|tail|head|<)[^)]*\$\{?[A-Za-z_][A-Za-z0-9_]*(_ERR|_STDERR|_OUT|_STDOUT)[0-9]*'
 
 _e_scan() {  # <dir> -> prints "basename:lineno" per hit; NEVER the matched content
     local _d="$1" _f
@@ -650,9 +777,27 @@ _e_scan() {  # <dir> -> prints "basename:lineno" per hit; NEVER the matched cont
 E_POS_DIR="$TMPE/fx-pos"; mkdir -p "$E_POS_DIR"
 E_NEG_DIR="$TMPE/fx-neg"; mkdir -p "$E_NEG_DIR"
 
-_E_CAT='cat'   # assembled, so the forbidden shape is never contiguous above
-printf 'assert "E-probe: something went wrong (got stderr: $(%s "$_PROBE_ERR"))" false\n' \
-    "$_E_CAT" > "$E_POS_DIR/test_e_positive_probe.sh"
+# EVERY reader token is assembled from a variable, so no probe's forbidden shape
+# is ever contiguous in THIS file's source -- E1's sweep includes this file, and
+# a literal probe would make Section E self-flagging and unsatisfiable.
+_E_CAT='cat'
+_E_TAIL='tail'
+_E_LT='<'
+# One probe per grammar variant the detector must cover. Each is a shape that
+# reaches the same place -- a whole capture file dumped RAW into a description --
+# so a narrowing edit to E_CAT_RE turns E2 RED with the count naming how many
+# variants it stopped seeing.
+{
+    printf 'assert "E-probe 1 (got stderr: $(%s "$_PROBE_ERR"))" false\n' "$_E_CAT"
+    # unquoted variable
+    printf 'assert "E-probe 2 (got stderr: $(%s $_PROBE_STDERR))" false\n' "$_E_CAT"
+    # a reader taking arguments, on a numeric-suffixed capture name
+    printf 'assert "E-probe 3 (got stderr: $(%s -n 50 "$_PROBE_ERR2"))" false\n' "$_E_TAIL"
+    # the $(< f) reader, on a stdout/combined capture -- in scope because
+    # run_all Phase 3 re-emits a member's combined .out on its own stdout
+    printf 'assert "E-probe 4 (got: $(%s "$_PROBE_OUT"))" false\n' "$_E_LT"
+} > "$E_POS_DIR/test_e_positive_probe.sh"
+E_POS_VARIANTS=4
 # The sanctioned escape hatch: `  | ` is a NON-whitespace prefix, which is what
 # actually defeats dark-factory's `^[ \t]*` anchor (indentation alone does not).
 # Same filter assert itself uses on FAIL, and _dump_captured_stderr at
@@ -664,8 +809,8 @@ ENEGEOF
 E2_COUNT="$(_e_scan "$E_POS_DIR" | wc -l | tr -d ' ')"
 E3_COUNT="$(_e_scan "$E_NEG_DIR" | wc -l | tr -d ' ')"
 
-assert "E2: positive control -- the detector DOES flag an unfiltered \$(cat) in an assert description (got $E2_COUNT)" \
-    test "$E2_COUNT" -eq 1
+assert "E2: positive control -- the detector flags ALL $E_POS_VARIANTS raw-dump variants in an assert description (quoted/unquoted/reader-with-args/\$(< f), _ERR and _OUT alike; got $E2_COUNT)" \
+    test "$E2_COUNT" -eq "$E_POS_VARIANTS"
 assert "E3: the prefix-filtered form is the sanctioned escape hatch and is NOT flagged (got $E3_COUNT)" \
     test "$E3_COUNT" -eq 0
 
@@ -680,7 +825,7 @@ E1_COUNT="$(wc -l < "$E_HITS" | tr -d ' ')"
 # basename:lineno only.
 E1_HIT_LIST="$(tr '\n' ' ' < "$E_HITS")"
 
-assert "E1: no assert description interpolates an unfiltered stderr capture (got $E1_COUNT: $E1_HIT_LIST)" \
+assert "E1: no assert description DUMPS a whole capture file (cat/tail/head/\$(< f) of a *_ERR/*_STDERR/*_OUT/*_STDOUT var) into its text (got $E1_COUNT: $E1_HIT_LIST)" \
     test "$E1_COUNT" -eq 0
 
 test_summary
