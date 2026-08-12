@@ -397,11 +397,26 @@ mod tests {
             "bind must map to StructureRef(JointBinding)"
         );
 
-        // joint_jacobian → Twist.
+        // joint_jacobian → JacobianColumn.
         assert_eq!(
             joint_ctor_result_type("joint_jacobian", &[]),
+            Type::StructureRef("JacobianColumn".to_string()),
+            "joint_jacobian must map to StructureRef(JacobianColumn)"
+        );
+
+        // Ratchet (task 6102): joint_jacobian must NEVER be typed as a Twist.
+        // A Jacobian column is dpose/dq — a partial derivative with respect to a
+        // joint coordinate — not dpose/dt, a spatial velocity. The two were
+        // shape-punned onto one nominal tag; the pun breaks outright under the
+        // Twist narrowings (task 6080 angular : Vector3<Angle>, task 6126
+        // linear : Vector3<Length>). This negative assertion is what stops the
+        // pun being reintroduced, here or by the builtin-signature registry
+        // that supersedes this module.
+        assert_ne!(
+            joint_ctor_result_type("joint_jacobian", &[]),
             Type::StructureRef("Twist".to_string()),
-            "joint_jacobian must map to StructureRef(Twist)"
+            "joint_jacobian must NOT map to StructureRef(Twist): a Jacobian column \
+             is dpose/dq, not a spatial velocity"
         );
     }
 
