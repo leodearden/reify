@@ -181,8 +181,13 @@ tasks:
       kind: manual
       reason: asserted by δ's e2e volume-delta test
   - name: target-caveat-cleared
-    binding: 'capability→producer (this leaf) — dev_capstan.ri MODELLING CAVEATS header
-      names the gap + #5342'
+    binding: 'capability→producer (this leaf) — the "HELICAL GROOVE itself is
+      not modelled" caveat was retired from dev_capstan.ri''s MODELLING
+      CAVEATS header by this leaf (commit b47aff5eed); the rope channel is
+      modelled for real via helix() + sweep() + difference at
+      dev_capstan.ri:141-157 (groove_profile/groove_path/groove_cutter),
+      refined by #5580. #5342 is credited only as the upstream helix-sweep
+      producer — not itself cited in the file'
     verdict: PASS
     delivered_check:
       kind: grep
