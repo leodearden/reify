@@ -89,3 +89,56 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+say() { printf 'jcodemunch-index-reify: %s\n' "$*"; }
+die() { printf 'jcodemunch-index-reify: %s\n' "$*" >&2; exit 1; }
+
+# ── Identity resolution ──────────────────────────────────────────────────────
+#
+# Mirrors jcodemunch_mcp/storage/git_root.py::_local_repo_name at the pinned
+# 1.108.54:
+#     f"{folder_path.name}-{sha1(str(folder_path)).hexdigest()[:8]}"
+# where folder_path is the root AFTER `Path(p).expanduser().resolve()` (which
+# watcher.py::sync_folders applies before handing it on). The sha1 is therefore
+# over the RESOLVED ABSOLUTE PATH STRING — `readlink -f` is the bash equivalent
+# (absolutise + resolve symlinks, non-strict on a missing leaf).
+#
+# The DB path derives from that via IndexStore._db_path -> _repo_slug(owner,
+# name) = f"{owner}-{name}", i.e. `local-<repo-name>.db` under CODE_INDEX_PATH.
+#
+# Deliberately does NOT stat the project root: identity is a PURE FUNCTION of
+# the path string, and keeping it so is what lets the whole contract be tested
+# against throwaway paths. Existence is checked later, only where it matters —
+# immediately before the indexer actually runs.
+sha1_hex() {
+    if command -v sha1sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha1sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 1 | cut -d' ' -f1
+    else
+        die "neither sha1sum nor 'shasum -a 1' is available; cannot derive the index identity"
+    fi
+}
+
+# Expand a leading `~` ourselves: the path may arrive quoted (from a config or
+# another script), in which case the caller's shell never expanded it, and
+# readlink -f would resolve a literal './~' relative to cwd.
+case "$PROJECT_ROOT" in
+    "~")   PROJECT_ROOT="$HOME" ;;
+    "~/"*) PROJECT_ROOT="$HOME/${PROJECT_ROOT#\~/}" ;;
+esac
+PROJECT_ROOT="$(readlink -f -- "$PROJECT_ROOT")" \
+    || die "could not resolve --project-root to an absolute path"
+
+REPO_NAME="$(basename -- "$PROJECT_ROOT")-$(sha1_hex "$PROJECT_ROOT" | cut -c1-8)"
+REPO_ID="local/$REPO_NAME"
+CODE_INDEX_DIR="${CODE_INDEX_PATH:-$HOME/.code-index}"
+DB_PATH="$CODE_INDEX_DIR/local-$REPO_NAME.db"
+
+# Printed on EVERY run, including the refusal paths below: which index identity
+# was touched is the single most load-bearing fact this script reports (PRD §2.2
+# was a whole fleet writing to the wrong ones), so it must never be conditional
+# on success.
+say "project-root  $PROJECT_ROOT"
+say "repo-id       $REPO_ID"
+say "db-path       $DB_PATH"
