@@ -112,7 +112,7 @@ impl Mesh {
 ```
 
 **Lift** the weld+winding+closedness checker already hand-rolled at
-`crates/reify-kernel-occt/tests/tessellation_winding_integration.rs` (`weld_vertices` + directed-edge
+`crates/reify-kernel-occt/tests/harness_occt/tessellation_winding_integration.rs` (`weld_vertices` + directed-edge
 invariant + outward-normal check) into `reify-ir` as the body of `validate()`. The OCCT test then
 consumes the lifted function instead of its private copy (kills the duplicate).
 
@@ -224,7 +224,7 @@ under the conformance property test. Fix = mirror the `extracted_faces` cache fo
 Adopt existing task **#4876** (`deferred`, high) — do not duplicate. Decomposed into three leaves:
 
 **ν — Characterize** the exact OCCT fixture tripping tetgen. Run the fixture's **real** OCCT
-tessellation (named in #4876 / `crates/reify-eval/tests/fea_face_selector_bc_e2e.rs`) through the §3
+tessellation (named in #4876 / `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`) through the §3
 validator + `weldedness()` axis; record the concrete witness (unwelded vertex count, open/non-
 watertight edges). This proves the mechanism fires on the **real** input (G6 discipline), and is the
 diagnostic bridge both downstream leaves consume.
@@ -304,8 +304,8 @@ leaf cites its INV and the enforcement mechanism is in its done-criteria (INV-ME
 - **μ3** — gmsh state-inventory drift guard (`volume_mesh_store`/`VolumeMeshStore`). **Flips INV-GEO-3 → enforced** once κ+μ2+μ3 land. *Signal:* completeness test classifies the gmsh volume-mesh store; an unclassified field fails. *Files:* `crates/reify-kernel-gmsh/src/kernel_real.rs`. *Deps:* none.
 
 **INV-GEO-1 — 4876 cluster**
-- **ν** — characterize the 4876 OCCT fixture via the §3 validator + `weldedness()` (real input → concrete witness). *Signal:* `validate()`/`weldedness()` on the real 4876 tessellation reports the specific witness (counts); characterization committed. *Files:* `crates/reify-eval/tests/fea_face_selector_bc_e2e.rs`. *Deps:* α.
-- **#4876** (adopt) — watertightness preflight in the attributed path → `Err` → graceful degrade + diagnostic (fail-closed immediately). *Signal (b):* `fea_face_selector_bc_e2e` boundary-demand test un-ignored → graceful degrade + visible diagnostic, no SIGSEGV. *Files:* `crates/reify-kernel-gmsh/src/mesh_boundary.rs`, `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-eval/tests/fea_face_selector_bc_e2e.rs`. *Deps:* α, ν.
+- **ν** — characterize the 4876 OCCT fixture via the §3 validator + `weldedness()` (real input → concrete witness). *Signal:* `validate()`/`weldedness()` on the real 4876 tessellation reports the specific witness (counts); characterization committed. *Files:* `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`. *Deps:* α.
+- **#4876** (adopt) — watertightness preflight in the attributed path → `Err` → graceful degrade + diagnostic (fail-closed immediately). *Signal (b):* `fea_face_selector_bc_e2e` boundary-demand test un-ignored → graceful degrade + visible diagnostic, no SIGSEGV. *Files:* `crates/reify-kernel-gmsh/src/mesh_boundary.rs`, `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`. *Deps:* α, ν.
 - **ξ** — real fix: attribution-aware repair (vertex-merge correspondence map through `repair_surface_mesh`). *Signal:* §5 gmsh-attributed conformance arm un-ignored → real attributed volume mesh, attribution preserved. *Files:* `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-kernel-gmsh/src/mesh_boundary.rs`. *Deps:* ν, ε, #4876.
 
 ### Dependency view

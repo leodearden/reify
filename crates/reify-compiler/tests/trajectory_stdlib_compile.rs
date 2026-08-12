@@ -1120,7 +1120,7 @@ fn joint_limit_struct_has_correct_param_shape() {
 ///
 /// These constraint declarations feed the SIR-α generic constraint-firing
 /// pipeline, which is pinned end-to-end by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// (constraint → `Satisfaction::Violated` diagnostic) and the
 /// `Value::StructureInstance` round-trip in
 /// `crates/reify-eval/tests/structure_instance_e2e.rs`. A JointLimit-specific
@@ -1401,7 +1401,7 @@ fn tots_shaper_param_defaults_match_spec() {
 ///
 /// These declarations feed the SIR-α generic constraint-firing pipeline; the
 /// construction-time `Satisfaction::Violated` signal is pinned end-to-end by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// and `crates/reify-eval/tests/structure_instance_e2e.rs` — no duplicate
 /// TOTSShaper-specific construction-time firing test is needed here.
 #[test]

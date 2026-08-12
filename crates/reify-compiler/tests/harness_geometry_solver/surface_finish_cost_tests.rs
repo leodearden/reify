@@ -11,7 +11,7 @@
 //!
 //! Compile-only (no eval, no kernel) — runs everywhere including OCCT-stub
 //! builds.  The realized area VALUES (coat_cost/coat_mass) are locked
-//! separately by crates/reify-cli/tests/cli_surface_finish_cost.rs (B7 gate).
+//! separately by crates/reify-cli/tests/harness_cli/cli_surface_finish_cost.rs (B7 gate).
 //!
 //! File-stem `surface_finish_cost` matches the
 //! `cargo test -p reify-compiler -- surface_finish_cost` filter used in this

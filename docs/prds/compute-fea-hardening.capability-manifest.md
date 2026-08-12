@@ -40,7 +40,7 @@ trampoline-free `Engine`.
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
 | `cmd_check`'s posture comment exists as the pattern to mirror | `grep:crates/reify-cli/src/main.rs:450-471 wired` | PASS |
-| The locking-test pattern to copy exists and passes today | `grep:crates/reify-cli/tests/cli_build_fea.rs:147 wired` (`check_fea_violated_constraint_is_not_gated`, confirmed present at exactly this line) | PASS |
+| The locking-test pattern to copy exists and passes today | `grep:crates/reify-cli/tests/harness_cli/cli_build_fea.rs:147 wired` (`check_fea_violated_constraint_is_not_gated`, confirmed present at exactly this line) | PASS |
 | `Satisfaction::Indeterminate` is the actual runtime state an unregistered FEA constraint reaches | `grep:crates/reify-lsp/src/diagnostics.rs:190,236 wired` (both filter on `Satisfaction::Violated`, confirmed live) | PASS |
 | LSP test convention (inline `&str` source, no `.ri` fixture files) confirmed so C1 doesn't assume a missing fixture mechanism | `grep:crates/reify-lsp/src/diagnostics.rs:410-421 wired` (`valid_bracket_source_no_errors` uses `reify_test_support::bracket_source()`, an inline helper, not a file path) | PASS |
 

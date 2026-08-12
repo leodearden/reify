@@ -14326,7 +14326,7 @@ structure Part {
 ///
 /// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
 /// an `Ok` can only arise if the real checker is wired into `EngineSession`.
-/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/harness_cli/cli_auto_type_param_select.rs`
 /// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
 #[test]
 fn auto_type_param_real_checker_selects_in_gui_engine() {
@@ -14803,7 +14803,7 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
 fn build_gui_state_drops_display_output_with_unresolved_subject() {
     // `param b : Solid` with no default compiles legally (the Reify compiler
     // accepts geometry-typed params without a constructor; confirmed by
-    // crates/reify-compiler/tests/geometry_profile_precondition_tests.rs).
+    // crates/reify-compiler/tests/harness_geometry_solver/geometry_profile_precondition_tests.rs).
     // At eval time, the cell has no `RealizationDecl`, so
     // `mint_symbolic_geometry_handles_into_values` skips it and the
     // evaluator writes `Value::Undef` for it (no default_expr → Undef path

@@ -58,7 +58,7 @@
 //!
 //! The parse→compile→filter-`Severity::Error` sequence mirrors
 //! `examples_smoke.rs::smoke_one`; the fixture-path-const + named-test shape
-//! mirrors `reify-eval/tests/topology_selector_smoke_tests.rs`; the
+//! mirrors `reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs`; the
 //! cross-crate-source read plus anti-vacuity self-check mirrors
 //! `reify-eval/tests/ambient_default_material_integration_gate.rs`.
 

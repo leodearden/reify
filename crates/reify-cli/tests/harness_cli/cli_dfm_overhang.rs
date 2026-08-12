@@ -23,7 +23,7 @@
 //! (`default_kernel_name` is None → no kernel → no handles → no diagnostic).
 //! Both tests exit 0 and emit nothing (C1 graceful degradation).
 //!
-//! These mirror `crates/reify-cli/tests/cli_gdt_conformance.rs` and
+//! These mirror `crates/reify-cli/tests/harness_cli/cli_gdt_conformance.rs` and
 //! `cli_representation_within.rs` (the sibling routing-change harnesses).
 
 use crate::common;

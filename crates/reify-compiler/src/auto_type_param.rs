@@ -121,7 +121,7 @@
 //! when the module declares no `auto:` type-args). End-to-end source-level
 //! resolution is therefore live. Functions in this module remain unit-tested
 //! against compiler-built registries in addition to the integration coverage
-//! in `crates/reify-compiler/tests/auto_type_arg_lowering_tests.rs`.
+//! in `crates/reify-compiler/tests/harness_auto_binding/auto_type_arg_lowering_tests.rs`.
 //!
 //! Phase D (topology trigger / re-resolution on registry change) is
 //! explicitly deferred to a follow-up task.

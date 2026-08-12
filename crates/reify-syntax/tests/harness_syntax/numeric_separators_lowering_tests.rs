@@ -12,7 +12,7 @@
 //!
 //! CST-shape tests (asserting the grammar tokenises `_`-bearing literals as
 //! single `number_literal` nodes) live in
-//! `crates/reify-syntax/tests/numeric_separators_grammar_tests.rs` and are
+//! `crates/reify-syntax/tests/harness_syntax/numeric_separators_grammar_tests.rs` and are
 //! α-only; this file adds the β lowering layer on top.
 //!
 //! See also: `docs/prds/v0_6/numeric-and-range-literal-forms.md`.

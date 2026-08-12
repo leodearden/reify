@@ -638,7 +638,7 @@ tasks:
       expect: absent
   - name: unit-expressions-is-runtime-coupled
     binding: unlisted premise — grep:crates/reify-eval/tests/unit_expressions_e2e.rs:20
-      loads examples/unit_expressions.ri by path; crates/reify-compiler/tests/materials_fea_tests.rs:274-280
+      loads examples/unit_expressions.ri by path; crates/reify-compiler/tests/harness_units_materials/materials_fea_tests.rs:274-280
       cites its :17. Edits must keep both green
     verdict: PASS
 - label: π

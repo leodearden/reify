@@ -4,7 +4,7 @@
 //! declaration seeds the unit registry of that test compilation.  This keeps
 //! the tests order-independent of the stdlib's `pub unit USD : Money`
 //! (task 2378, commit 94b2fac20) and matches the convention established by
-//! `crates/reify-compiler/tests/money_force_diagnostic_tests.rs`.
+//! `crates/reify-compiler/tests/harness_units_materials/money_force_diagnostic_tests.rs`.
 //!
 //! Underlying impl wired by deps 57 (Money slot 9), 208 (unit registry),
 //! 209 (user-defined units with cross-unit factor expressions), and 2378

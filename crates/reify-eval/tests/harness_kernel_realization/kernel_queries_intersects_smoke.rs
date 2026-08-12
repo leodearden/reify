@@ -30,8 +30,8 @@
 //! fails on every runner. The kernel build + assertion is gated on
 //! `reify_kernel_occt::OCCT_AVAILABLE` — skips cleanly on runners without OCCT.
 //!
-//! Modelled on `crates/reify-eval/tests/kernel_queries_contains.rs` (Bool
-//! assertion pattern) and `crates/reify-eval/tests/kernel_queries_distance_smoke.rs`
+//! Modelled on `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_contains.rs` (Bool
+//! assertion pattern) and `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_distance_smoke.rs`
 //! (unconditional compile check + OCCT-gated value assertions).
 
 use reify_constraints::SimpleConstraintChecker;
