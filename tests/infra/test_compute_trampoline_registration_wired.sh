@@ -1549,6 +1549,91 @@ assert "b11: reify-gui anywhere in a multi-crate affected set is enough (got $N_
 assert "b11: still emitted EXACTLY ONCE, not once per affected crate (got $N_MANY)" \
     test "$N_MANY" -eq 1
 
+# -- (b13): narrowed on --scope staged too, not just --scope branch ------------
+# b11 above drives the narrowed path through `--scope branch`, which is the only
+# scope where narrowing ACTIVATES by default.  But the emission condition must
+# not be inferred from NARROW_ACTIVE: that flag is a narrowing-ACTIVATION flag,
+# not a scope oracle, and NARROW_ACTIVE=0 also holds for `--scope staged`
+# WITHOUT `--narrow` — which is byte-for-byte what hooks/project-checks execs on
+# every commit (`verify.sh all --profile debug --scope staged --include-infra`).
+# Reading NARROW_ACTIVE=0 as "scope=all, i.e. the merge gate" therefore made the
+# per-commit hook pay the full tauri + webkit2gtk + OCCT `--features gui`
+# feature-unification build (20m42s cold / ~137s warm, shared with no other
+# pass) for a staged diff whose reverse-dependency closure provably cannot reach
+# reify-gui.
+#
+# The closure IS computable on the staged path today — decide_scope populates
+# CHANGED_FILES_RAW from `git diff --cached --name-only` for scope=staged — it
+# was simply never asked for.  This block pins that it now is.
+echo ""
+echo "--- (b13): narrowed on --scope staged (no --narrow) as well as --scope branch ---"
+
+# ST_FIX — a SECOND hermetic throwaway repo, built with b10's idiom.  BR_FIX is
+# deliberately NOT reused: its change is COMMITTED on task-branch, so its staged
+# diff is empty.  `--scope staged` reads `git diff --cached`, and an empty staged
+# diff yields RUN_RUST=0 and zero test passes, which would make every assertion
+# below vacuously green.  The reify-doc file is therefore left in the INDEX,
+# uncommitted.
+ST_FIX="$DET_TMP/staged-fixture"
+mkdir -p "$ST_FIX/scripts" "$ST_FIX/.config"
+for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
+          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
+          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+          gen-nextest-config.sh heavy-test-filter-lib.sh; do
+    cp "$REPO_ROOT/scripts/$_f" "$ST_FIX/scripts/$_f"
+done
+cp "$REPO_ROOT/.config/nextest.toml" "$ST_FIX/.config/nextest.toml"
+chmod +x "$ST_FIX/scripts/verify.sh"
+assert_source_closure_copied "$REPO_ROOT/scripts" "$ST_FIX/scripts" verify.sh || exit 1
+git -C "$ST_FIX" init -q
+git -C "$ST_FIX" config user.email test@invalid.local
+git -C "$ST_FIX" config user.name test
+git -C "$ST_FIX" add scripts .config
+git -C "$ST_FIX" commit -q -m base
+git -C "$ST_FIX" branch -M main
+# STAGED, never committed — this is what `git diff --cached` must see.
+mkdir -p "$ST_FIX/crates/reify-doc/src"
+printf 'pub fn touched() {}\n' > "$ST_FIX/crates/reify-doc/src/lib.rs"
+git -C "$ST_FIX" add crates
+
+# _staged_gui_plan <out_var> <override> — capture the plan for exactly the shape
+# hooks/project-checks execs: action `all` (not `test`), `--scope staged`, and NO
+# `--narrow`.  Mirrors _narrowed_gui_plan's capture_print_plan + `|| true`
+# discipline so the capture is proven complete before any count is derived.
+_staged_gui_plan() {
+    capture_print_plan "$1" "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && REIFY_AFFECTED_CRATES_OVERRIDE="$2" exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$ST_FIX" "$2" || true
+}
+
+P_S_DOC=""; P_S_GUI=""
+_staged_gui_plan P_S_DOC "reify-doc"
+_staged_gui_plan P_S_GUI "reify-gui"
+
+# Capture integrity asserted SEPARATELY from the counts, for the reason b11's
+# header spells out: the headline assertion is a NEGATIVE and must not be
+# satisfiable by a fixture that produced nothing.
+assert "b13: staged-scope plan capture for closure='reify-doc' is complete" \
+    plan_capture_complete "$P_S_DOC"
+assert "b13: staged-scope plan capture for closure='reify-gui' is complete" \
+    plan_capture_complete "$P_S_GUI"
+
+S_DOC="$(_gui_pass_count "$P_S_DOC")"
+S_GUI="$(_gui_pass_count "$P_S_GUI")"
+
+# Anti-vacuity positive control, doubling as the B9-default coupling guard: a
+# staged plan WITHOUT --narrow must still be a full-workspace plan.  Its
+# presence proves RUN_RUST=1 (so test passes were emitted at all), and it pins
+# that computing the closure for scope=staged does NOT activate narrowing —
+# clippy and the workspace nextest pass keep --workspace, exactly as
+# tests/infra/test_verify_scope.sh's B9-default scenario requires.
+assert "b13: the staged plan is a real full-workspace plan (carries 'cargo clippy --workspace')" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "cargo clippy --workspace"' _ "$P_S_DOC"
+assert "b13: a --scope staged plan (no --narrow) whose closure is reify-doc does NOT emit the gui-feature pass (got $S_DOC)" \
+    test "$S_DOC" -eq 0
+assert "b13: a --scope staged plan whose closure contains reify-gui DOES emit it (got $S_GUI)" \
+    test "$S_GUI" -eq 1
+
 # -- (b12): --test-threads reaches the gui-feature pass ------------------------
 # `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test
 # fallback arm always honoured it; the nextest arm did not, so an explicit
