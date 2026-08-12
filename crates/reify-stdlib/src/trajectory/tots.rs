@@ -34,6 +34,40 @@ use super::simulate::{
 };
 use crate::dynamics::rnea::inverse_dynamics_open_chain;
 
+// ── Shaper-family recognition ─────────────────────────────────────────────────
+
+/// Is `type_name` a member of the TOTS shaper family? (task 6096)
+///
+/// **Single source of truth.** Both eval-side dispatch sites —
+/// `input_shape::eval_input_shape` and `trampoline::input_shape_value` — MUST
+/// route their TOTS-arm decision through this predicate rather than comparing
+/// the string themselves, so the two arms cannot drift apart. `tots.rs` holds
+/// it because both files already import from here, so the name set lives in
+/// exactly one place with no new module wiring.
+///
+/// The family has two members, one per joint kind (the per-joint-kind duality
+/// declared in `trajectory.ri`):
+///
+///   - `TOTSShaper`         — prismatic/linear (`Scalar<Velocity>` /
+///                            `Scalar<Acceleration>` limits)
+///   - `RevoluteTOTSShaper` — revolute/rotational (`Scalar<AngularVelocity>` /
+///                            `Rate<AngularVelocity>` limits)
+///
+/// **Why this must be widened in lockstep with the `.ri` surface.** A `Shaper`
+/// refiner that a dispatch site does not recognise falls through to
+/// `build_train_for_shaper`, which knows only ZV/ZVD/EI/Cascaded, gets `None`,
+/// and yields `Value::Undef` — exit 0, ZERO diagnostics. Adding a shaper type
+/// without adding it here therefore ships a booby-trapped surface that looks
+/// green from every angle except the value it produces.
+///
+/// Both kinds marshal identically downstream: `field_f64` → `read_scalar_si`
+/// discards the dimension, so the revolute shaper's rad·s⁻¹ / rad·s⁻² SI
+/// magnitudes flow into the canonical stand-in model exactly as the linear
+/// half's m·s⁻¹ / m·s⁻² do. Recognition is the only thing that differs.
+pub(crate) fn is_tots_shaper_type_name(type_name: &str) -> bool {
+    matches!(type_name, "TOTSShaper" | "RevoluteTOTSShaper")
+}
+
 // ── Parameter types ───────────────────────────────────────────────────────────
 
 /// Per-joint waypoint specification.

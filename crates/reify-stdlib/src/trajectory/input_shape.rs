@@ -39,7 +39,8 @@ use super::impulse_shaper::ImpulseTrain;
 use super::simulate::{EffectorLocation, MechanismModel, ModeDesc, ModalModel};
 use super::simulate::LinkDesc;
 use super::tots::{
-    JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams, solve_tots,
+    JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams, is_tots_shaper_type_name,
+    solve_tots,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 
@@ -257,11 +258,17 @@ pub(crate) fn eval_input_shape(args: &[Value]) -> Value {
         return Value::Undef;
     };
 
-    // ── λ: TOTSShaper arm — dispatch BEFORE impulse-train check ─────────────
-    // build_train_for_shaper returns None for TOTSShaper (it only knows
-    // ZV/ZVD/EI/Cascaded); placing this arm first prevents a TOTSShaper from
+    // ── λ: TOTS shaper FAMILY arm — dispatch BEFORE impulse-train check ─────
+    // build_train_for_shaper returns None for every TOTS-family shaper (it
+    // only knows ZV/ZVD/EI/Cascaded); placing this arm first prevents one from
     // being mis-rejected as an unknown shaper.
-    if shaper_data.type_name == "TOTSShaper" {
+    //
+    // Recognition goes through the shared `is_tots_shaper_type_name` predicate
+    // (task 6096) so this arm and `trampoline::input_shape_value`'s cannot
+    // drift: the family has two members, one per joint kind (`TOTSShaper` /
+    // `RevoluteTOTSShaper`), and a member either site fails to recognise falls
+    // through to a SILENT `Value::Undef`.
+    if is_tots_shaper_type_name(&shaper_data.type_name) {
         return match run_tots(shaper_data) {
             // ConstraintInfeasible → Undef (no feasible shaped profile exists;
             // surfaces E_TrajectoryConstraintInfeasible semantics).

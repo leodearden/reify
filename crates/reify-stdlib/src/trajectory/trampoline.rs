@@ -41,7 +41,10 @@ use super::simulate::{
     ModalModel, ModeDesc, Pose3,
 };
 use super::spline::{BoundaryCondition, CubicSpline, KnotData, MultiJointSpline, QuinticSpline};
-use super::tots::{solve_tots, JointWaypoints, SqpConfig, TotsModel, TotsOutcome, TotsParams};
+use super::tots::{
+    is_tots_shaper_type_name, solve_tots, JointWaypoints, SqpConfig, TotsModel, TotsOutcome,
+    TotsParams,
+};
 
 /// The result-determining inputs of a `simulate_trajectory` forward-pass solve,
 /// used to decide whether a cached `EndEffectorTrack` result (`reify-eval`'s
@@ -720,18 +723,26 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Value {
         return Value::Undef;
     };
 
-    // ── TOTS arm — dispatch BEFORE the impulse-train path ───────────────────
-    // build_train_for_shaper returns None for a TOTSShaper (it only knows
-    // ZV/ZVD/EI/Cascaded), so the heavy time-optimal SQP solve must be reached
-    // here first. Real command re-timing (κ → π), not an echo: infeasible ⇒
-    // Undef, Converged / NonConvergence ⇒ the re-timed Profile.
-    if shaper_data.type_name == "TOTSShaper" {
+    // ── TOTS FAMILY arm — dispatch BEFORE the impulse-train path ────────────
+    // build_train_for_shaper returns None for every TOTS-family shaper (it
+    // only knows ZV/ZVD/EI/Cascaded), so the heavy time-optimal SQP solve must
+    // be reached here first. Real command re-timing (κ → π), not an echo:
+    // infeasible ⇒ Undef, Converged / NonConvergence ⇒ the re-timed Profile.
+    //
+    // Recognition goes through the shared `is_tots_shaper_type_name` predicate
+    // (task 6096) so this arm and `input_shape::eval_input_shape`'s cannot
+    // drift: the family has two members, one per joint kind (`TOTSShaper` /
+    // `RevoluteTOTSShaper`), and a member either site fails to recognise falls
+    // through to a SILENT `Value::Undef`. Both marshal identically — the
+    // readers discard the dimension — so the revolute member's rad·s⁻¹ /
+    // rad·s⁻² SI magnitudes re-time exactly as the linear one's do.
+    if is_tots_shaper_type_name(&shaper_data.type_name) {
         return input_shape_tots(profile_data, shaper);
     }
 
     // Resolve the shaper to its impulse train. `build_train_for_shaper` returns
-    // None for an unrecognised shaper AND for a `TOTSShaper` (whose arm is above)
-    // — either ⇒ Undef here.
+    // None for an unrecognised shaper AND for every TOTS-family shaper (whose
+    // arm is above) — either ⇒ Undef here.
     let Some(train) = build_train_for_shaper(shaper) else {
         return Value::Undef;
     };
