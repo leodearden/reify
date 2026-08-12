@@ -8,6 +8,13 @@ description = "Test builders, fixtures, and mock implementations for Reify"
 [dependencies]
 reify-ast.workspace = true
 reify-core.workspace = true
+# Normal (not dev, not feature-gated) dependency: `mocks.rs`'s shared
+# `ContainmentQuery` doubles (`NoContainment`/`AlwaysInside`) implement
+# `reify_expr::ContainmentQuery` — the geometry-free trait that `EvalContext`
+# carries — so the library body itself needs it, not just this crate's tests.
+# Kept off `eval-helpers` so `reify-expr`'s own tests (which dev-depend on this
+# crate without enabling that feature) can consume the doubles too.
+reify-expr.workspace = true
 reify-ir.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
