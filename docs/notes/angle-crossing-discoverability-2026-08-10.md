@@ -485,13 +485,14 @@ Verified against the tree rather than re-applied:
 
 The reviewer's preferred fix for the first point — a corpus-wide constraint gate
 rather than a softened comment — is **#6215**, filed at the third pass as
-`tkt_0RSC4D0TRN61DMWKB71V1NZ83J` and now in progress.
+`tkt_0RSC4D0TRN61DMWKB71V1NZ83J` and now task **#6215**, status `pending`
+(re-measured via `get_task` at the fifth pass — it has not been started).
 
 **One residual, closed here: the honest-scope claim has a named expiry, and one
 of its three sites is unowned.** "No CI gate runs `reify check` over this
 corpus" is true as measured at `5692dbd44e` —
 `crates/reify-eval/tests/best_practices_constraint_gate.rs` is absent from
-`main` — but #6215 is in flight to add exactly that gate, and #6246 is already
+`main` — but #6215 is filed (`pending`) to add exactly that gate, and #6246 is already
 filed to refresh this note and `INDEX.md` when it lands. #6246's file list names
 those two only. The same claim also sits in the exemplar's *Bands, not sign
 guards* comment (`examples/best_practices/angle_crossings.ri`), a third site
@@ -539,6 +540,14 @@ The Q2 stdout block above was re-taken for the two changed lines; the historical
 block inside "Amendment pass — walked at `6ac1bb7ad5`" was deliberately left alone,
 since it is stamped at that sha and was accurate there.
 
+**One more measured correction, same pass.** The same review also observed that this
+note called #6215 "now in progress" (twice) and "in flight" (once). Re-measured via
+`get_task(6215)`: its status is `pending` — filed, unstarted, `priority: low`. Those
+three spots now say `pending`. It is a small thing, but a note whose whole subject is
+docs-truth does not get to assert a task state it did not measure; the same
+re-measure-before-asserting rule that produced the table above applies to its own
+prose. (#6246 was re-measured too — `pending`, and "already filed" was accurate.)
+
 ## Scope note
 
 No automated test greps these docs for prose. The PRD records this
@@ -551,7 +560,7 @@ the two 24-way `reify-eval` corpus sweeps). Those gates assert compilation
 and structure, **not** constraint satisfaction — the file's twelve bands are
 enforced by the per-file `reify check` that `SKILL.md` mandates before
 shipping, and closing that gap is ticket `tkt_0RSC4D0TRN61DMWKB71V1NZ83J`
-(third amendment pass, item 1), now task **#6215** and in progress. That
+(third amendment pass, item 1), now task **#6215**, status `pending`. That
 sentence is dated: when #6215 lands it is false here, in `INDEX.md` and in
 the exemplar's constraint comment — see the fourth pass above for why the
 third of those is not in #6246's file list.
