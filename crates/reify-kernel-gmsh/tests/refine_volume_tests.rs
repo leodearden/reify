@@ -50,34 +50,42 @@ fn unit_cube_mesh() -> Mesh {
 /// A uniform size field smaller than the baseline produces a mesh with
 /// strictly more tetrahedra.
 ///
-/// Baseline: unit cube meshed at target size 0.5 (via `GmshKernel::mesh_to_volume`).
-/// Refinement: call `refine_volume_with_size_field` with every surface vertex
-/// assigned size 0.25 (half the baseline target). The refined volume mesh must
-/// have strictly more P1 tets than the baseline, and `element_order` must echo
-/// the requested `ElementOrderTag::P1`.
+/// Baseline: unit cube refined with every surface vertex assigned size 0.5.
+/// Refinement: the same call with every vertex assigned 0.25 (half the
+/// baseline). The refined volume mesh must have strictly more P1 tets than the
+/// baseline, and `element_order` must echo the requested `ElementOrderTag::P1`.
 ///
-/// Fails RED because the `cfg(has_gmsh)` arm of `refine_volume_with_size_field`
-/// currently returns a placeholder `OperationFailed` error — step-6 replaces
-/// this with the real FFI-backed remesh implementation.
+/// # Why the baseline is `refine_volume_with_size_field`, not `mesh_to_volume`
+///
+/// It used to be `GmshKernel::mesh_to_volume(mesh_size = 0.5)`. That control
+/// was invalid in two ways, and #6200 exposed it.
+///
+/// 1. It compared two *different* producers. They do not share sizing
+///    semantics: `mesh_to_volume` applies a global target, while this function
+///    sets per-corner sizes with `Mesh.MeshSizeFromPoints=1` and lets gmsh
+///    interpolate. Measured on this cube at the same nominal 0.25, the two
+///    disagree by ~2x (mesh_to_volume 382 tets, refine 176), so no inequality
+///    between them pins a property of *this* function.
+/// 2. The inequality it asserted was an artefact of a bug. Before #6200
+///    `mesh_to_volume` passed `classify_surfaces` a 90 deg feature angle and
+///    tetrahedralized only part of the solid, so its baseline was tiny: 91 tets
+///    at mesh_size 0.5 (aabb fill 0.862916). With the angle fixed the same call
+///    returns 194 tets (fill 1.000000) and the assertion inverts against an
+///    unchanged refine result. The test was, in effect, pinned to the defect.
+///
+/// Refining against this function's own coarser output tests the property the
+/// name claims — a smaller field yields a denser mesh — with the cross-producer
+/// confound removed. Measured: 141 tets at 0.5, 176 at 0.25, both aabb fill
+/// 1.000000. This path was never affected by #6200 (it has always classified at
+/// PI/12, well below the 90 deg threshold that broke `mesh_to_volume`).
 #[test]
 fn uniform_smaller_size_field_produces_more_tets() {
-    use reify_kernel_gmsh::GmshKernel;
-
     let cube = unit_cube_mesh();
-    let kernel = GmshKernel::new();
     let opts = MeshingOptions {
         mesh_size: Some(0.5),
         deterministic: true,
         ..Default::default()
     };
-
-    // Establish the baseline mesh.
-    let vm_baseline = kernel
-        .mesh_to_volume(&cube, &opts, ElementOrderTag::P1)
-        .expect("baseline mesh_to_volume must succeed");
-
-    let n_base_tets = vm_baseline.tet_indices().expect("P1 tet mesh must have tet_indices").len() / 4;
-    assert!(n_base_tets > 0, "baseline must have at least one tet");
 
     let n_surface_verts = cube.vertices.len() / 3;
     assert!(
@@ -85,7 +93,16 @@ fn uniform_smaller_size_field_produces_more_tets() {
         "unit cube must have at least one surface vertex"
     );
 
-    // Uniform 0.25 per-vertex hint: half the baseline target.
+    // Establish the baseline mesh: same producer, uniform 0.5 hint.
+    let baseline_sizes = vec![0.5_f64; n_surface_verts];
+    let vm_baseline =
+        refine_volume_with_size_field(&cube, &baseline_sizes, &opts, ElementOrderTag::P1)
+            .expect("baseline refine_volume_with_size_field must succeed");
+
+    let n_base_tets = vm_baseline.tet_indices().expect("P1 tet mesh must have tet_indices").len() / 4;
+    assert!(n_base_tets > 0, "baseline must have at least one tet");
+
+    // Uniform 0.25 per-vertex hint: half the baseline hint.
     let vertex_sizes = vec![0.25_f64; n_surface_verts];
 
     let result = refine_volume_with_size_field(&cube, &vertex_sizes, &opts, ElementOrderTag::P1);
