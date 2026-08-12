@@ -156,6 +156,12 @@
 #       member of KNOWN_DISPATCH_ROLES, the hand-mirrored copy of DF's
 #       ROLES registry (roles.py:1512). Converts the nine role names this
 #       header states in prose into an executable constraint.
+#   (D) CARGO_HOME AGREEMENT (task 5836; python3+PyYAML, gated on the SAME
+#       sandbox.enabled precondition as (A) -- with sandbox off there is no
+#       agent-side redirect for verify to agree WITH): verify_env.CARGO_HOME
+#       is present, absolute, under /tmp, and byte-equal to
+#       role_env_overrides.<role>.CARGO_HOME for EVERY member of
+#       CACHE_REDIRECT_ROLES.
 #
 # (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the SKIP
 #     idiom used by test_merge_role_lint_first_seam.sh /
@@ -282,6 +288,34 @@ Checks:
                                                'reviewer' assertion in the
                                                caller)
 
+Section-aware variants (task 5836), for the ONE-level top-level mappings —
+`verify_env` — as opposed to role_env_overrides' TWO-level role -> env -> value
+shape. Same three predicates as the role_* trio above, generalized from "a key
+under role_env_overrides[<role>]" to "a key under a named top-level mapping":
+
+  top_key_present <section> <key>          -- d[section][key] exists, is a
+                                               string, and is non-empty
+  top_key_absolute <section> <key>         -- ...and is an absolute path
+  top_key_under_tmp <section> <key>        -- ...and lies STRICTLY under /tmp
+                                               (same strict-descendant rule,
+                                               same rationale, as
+                                               role_key_under_tmp above)
+  cross_section_key_equals <section> <key> <role> <rolekey>
+                                           -- d[section][key] is EQUAL to
+                                               role_env_overrides[role][rolekey].
+                                               The anti-split invariant: cargo's
+                                               per-unit Fingerprint embeds the
+                                               registry source path, so if
+                                               verify and the sandboxed agents
+                                               disagree on CARGO_HOME they
+                                               invalidate each other's units in
+                                               a SHARED warm-lane target/ and
+                                               each rebuild all 685 registry
+                                               deps. A divergence here has no
+                                               symptom other than slowness,
+                                               which is exactly why it needs a
+                                               test rather than review.
+
 Exit 0 on pass, 1 on fail (or missing key/role), 2 on unknown check/bad args.
 """
 import sys
@@ -304,6 +338,24 @@ def _role_value(role, key):
     if not isinstance(role_map, dict):
         return None
     val = role_map.get(key)
+    if not isinstance(val, str) or val.strip() == "":
+        return None
+    return val
+
+
+def _top_value(section, key):
+    """Value of d[<section>][<key>], or None unless it is a non-empty string.
+
+    Deliberately a SEPARATE accessor from _role_value rather than a shared
+    generic walker: role_env_overrides is a TWO-level mapping
+    (role -> env -> value) while verify_env is ONE level (key -> value), so
+    the two lookups differ in arity and collapsing them would only obscure
+    which shape a given check expects.
+    """
+    section_map = d.get(section)
+    if not isinstance(section_map, dict):
+        return None
+    val = section_map.get(key)
     if not isinstance(val, str) or val.strip() == "":
         return None
     return val
@@ -404,6 +456,54 @@ if check == "role_key_absent":
         sys.exit(1)
     sys.exit(0)
 
+if check == "top_key_present":
+    section, key = rest
+    sys.exit(0 if _top_value(section, key) is not None else 1)
+
+if check == "top_key_absolute":
+    section, key = rest
+    val = _top_value(section, key)
+    sys.exit(0 if val is not None and Path(val).is_absolute() else 1)
+
+if check == "top_key_under_tmp":
+    section, key = rest
+    val = _top_value(section, key)
+    if val is None:
+        sys.exit(1)
+    # Strict descendant only -- /tmp itself is REJECTED, for the same reason
+    # spelled out under role_key_under_tmp above.
+    sys.exit(0 if Path("/tmp") in Path(val).parents else 1)
+
+if check == "cross_section_key_equals":
+    section, key, role, rolekey = rest
+    section_val = _top_value(section, key)
+    role_val = _role_value(role, rolekey)
+    if section_val is None or role_val is None:
+        print(
+            f"missing value: {section}.{key}={section_val!r}, "
+            f"role_env_overrides.{role}.{rolekey}={role_val!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Exact scalar equality, NOT a normalized/resolved path comparison: cargo
+    # hashes the CARGO_HOME-derived source path as a STRING into each unit's
+    # fingerprint, so two spellings that resolve to the same directory (a
+    # trailing slash, a symlink, a `/tmp/./x`) still produce DIFFERENT
+    # fingerprints and still thrash. Normalizing here would hide exactly the
+    # divergence this check exists to catch.
+    if section_val != role_val:
+        print(
+            f"toolchain-cache SPLIT: {section}.{key}={section_val!r} != "
+            f"role_env_overrides.{role}.{rolekey}={role_val!r}. A warm-lane "
+            "target/ is shared between verify and the sandboxed agent, and "
+            "cargo's per-unit fingerprint embeds the registry source path, so "
+            "this divergence makes each side dirty the other's units and "
+            "rebuild the whole registry dep tree.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    sys.exit(0)
+
 print(f"unknown check or bad args: {check} {rest}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -443,8 +543,34 @@ PYEOF
 
         assert "role_env_overrides does NOT carry the collapsed 'reviewer' key at all (KNOWN_ROLE_NAMES accepts it, but _build_agent_env keys on role.name == 'reviewer_comprehensive', so a 'reviewer' entry is silently INERT -- no DF config warning, no redirect)" \
             python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absent reviewer
+
+        # -------------------------------------------------------------------
+        # (D) CARGO_HOME AGREEMENT -- verify_env vs role_env_overrides
+        #     (task 5836; gated on the SAME sandbox_enabled_true precondition
+        #     as (A) above, because with sandbox off there is no agent-side
+        #     redirect for verify to agree WITH)
+        # -------------------------------------------------------------------
+        echo "--- (D) CARGO_HOME agreement (verify_env vs role_env_overrides) ---"
+
+        assert "verify_env.CARGO_HOME is present and non-empty (verify subprocesses are NOT sandboxed, so nothing forces this -- but they share the warm lane's target/ with the sandboxed agent that built it, and leaving verify on the default ~/.cargo is the pre-5836 split)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_present verify_env CARGO_HOME
+
+        assert "verify_env.CARGO_HOME is an absolute path" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_absolute verify_env CARGO_HOME
+
+        assert "verify_env.CARGO_HOME lies under /tmp (not a free choice: /tmp is the one host-global writable root in the landlock write set, which PINS the agent side and therefore fixes where the two sides can meet)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_under_tmp verify_env CARGO_HOME
+
+        # THE load-bearing invariant of this block. Iterating CACHE_REDIRECT_ROLES
+        # rather than checking one representative role keeps agreement exact even
+        # if the yaml's `&sandbox_cache_env` anchor is ever expanded into per-role
+        # literals and one of them drifts.
+        for role in $CACHE_REDIRECT_ROLES; do
+            assert "verify_env.CARGO_HOME == role_env_overrides.${role}.CARGO_HOME (anti-split invariant: they share one warm target/, and a divergence has NO symptom except every sandboxed task rebuilding the whole registry dep tree twice -- agent, then verify)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" cross_section_key_equals verify_env CARGO_HOME "$role" CARGO_HOME
+        done
     else
-        echo "SKIP: sandbox.enabled is not true; cache-redirect contract does not apply (guard is conditional, see header)"
+        echo "SKIP: sandbox.enabled is not true; neither the (A) cache-redirect contract nor the (D) CARGO_HOME-agreement contract applies (guard is conditional, see header)"
     fi
 fi
 
