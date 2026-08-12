@@ -82,9 +82,10 @@ struct VolumeMeshStore {
 /// `classify_surfaces` call site in [`GmshKernel::mesh_to_volume`] for the full
 /// measured failure mode (#6200).
 ///
-/// FRAC_PI_4 (45°) matches the sibling attributed producer in
-/// `mesh_boundary.rs`, which has shipped this value against real OCCT geometry
-/// all along, rather than introducing a fourth distinct magic angle.
+/// FRAC_PI_4 (45°) is the value the sibling attributed producer in
+/// `mesh_boundary.rs` has shipped against real OCCT geometry all along, rather
+/// than a fourth distinct magic angle; that producer now consumes this constant
+/// too, so the crate holds exactly one definition.
 ///
 /// Exported so `tests/classify_feature_angle.rs` can census the B-rep
 /// decomposition against the PRODUCTION value instead of a copied literal that
