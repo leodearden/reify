@@ -1232,6 +1232,21 @@ fn in_oracle_scope(path: &str) -> bool {
 /// unit — corpus scope would let one chunk's throwaway example silently
 /// disarm every other chunk's claims about that name.
 ///
+/// ## The fourth #5647 filter — an elided argument list is not a claim
+///
+/// `(...)` — an argument list that is literally three dots — is a schematic
+/// placeholder, not a concrete call. geometry.md:126's
+/// `translate(primitive(...), 0, 0, -h/2)` names `primitive` as "any
+/// primitive constructor", not an accusation that the compiler provides a
+/// function literally named `primitive`. A fixed five-byte compare — the
+/// list must be EXACTLY `(...)`, not `(..)` or `(..., x)` — no scanning for
+/// a matching close paren, no nesting awareness. Deliberately a false
+/// NEGATIVE: a real builtin documented only as `fillet(...)` stops being
+/// seen, accepted under this lane's stated asymmetry ("take the miss" —
+/// module header, "the existence oracle is deliberately asymmetric"), and
+/// backstopped by `CHUNK_MENTION_ANCHORS` in tests/pdoccover.rs, which goes
+/// RED if the corpus ever drifts wholesale to the elided form.
+///
 /// **Precision beyond that is deliberately deferred.** What remains needs
 /// prose-vs-example-source context that no syntactic rule — line-local or
 /// file-scoped — can decide: a grammar metavariable (`predicate(x)` in a
@@ -1289,6 +1304,18 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
             // defined by its own example source, not claimed of the
             // compiler.
             if RI_KEYWORDS.contains(&name) || declared_names.contains(name) {
+                continue;
+            }
+            // An argument list that is literally `(...)` is a schematic
+            // placeholder ("any argument of this shape"), not a concrete
+            // call — geometry.md:126's `translate(primitive(...), 0, 0,
+            // -h/2)` names `primitive` as a metavariable, not a claim that
+            // the compiler provides a function literally named `primitive`.
+            // Fixed five-byte compare, no scanning for a matching close
+            // paren, no nesting awareness — deliberately a false NEGATIVE on
+            // a real builtin documented only as `fillet(...)` (module
+            // header, "take the miss").
+            if bytes[end..].starts_with(b"(...)") {
                 continue;
             }
             out.push((name.to_string(), idx + 1));
