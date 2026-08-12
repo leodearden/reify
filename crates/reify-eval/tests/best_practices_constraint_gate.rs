@@ -48,6 +48,7 @@
 //! backstop, so sharding would be dead weight (`examples_smoke.rs` is
 //! likewise un-sharded on purpose, for the same reason).
 
+use reify_core::ConstraintNodeId;
 use reify_ir::Satisfaction;
 
 // ── Seeded anti-silent-accept fire tests (step 1/2) ──────────────────────────
@@ -148,4 +149,92 @@ fn constraint_statuses(source: &str) -> Vec<(reify_core::ConstraintNodeId, Satis
         .into_iter()
         .map(|entry| (entry.id, entry.satisfaction))
         .collect()
+}
+
+// ── audit_file: pure per-file failure-taxonomy comparison (steps 3/4) ───────
+//
+// Unit-tests the FULL failure taxonomy of a not-yet-existing pure comparison
+// function against synthetic inputs only (no filesystem, no real corpus
+// file) — the live corpus is green today and can never exercise the
+// Violated, UnexpectedIndeterminate, or StaleExpectedIndeterminate arms on
+// its own, so these are the only proof each arm actually fires.
+
+/// All actual results Satisfied, empty expected-indeterminate set: nothing to
+/// report.
+#[test]
+fn audit_clean_file_reports_nothing() {
+    let actual = vec![
+        (ConstraintNodeId::new("Clean", 0), Satisfaction::Satisfied),
+        (ConstraintNodeId::new("Clean", 1), Satisfaction::Satisfied),
+    ];
+    let failures = audit_file("clean.ri", &[], &actual);
+    assert!(
+        failures.is_empty(),
+        "expected zero failures for an all-Satisfied file with an empty \
+         expected-indeterminate set, got {failures:?}"
+    );
+}
+
+/// A Violated constraint must be reported even when its index is (wrongly)
+/// listed in `expected_indeterminate` — a Violated is NEVER excusable by the
+/// allowlist. This is the arm that catches the ticket's named regression
+/// class (a drifted magnitude flipping a constraint to VIOLATED).
+#[test]
+fn audit_reports_violated_constraint() {
+    let id = ConstraintNodeId::new("Bad", 0);
+    let actual = vec![(id.clone(), Satisfaction::Violated)];
+
+    let failures = audit_file("bad.ri", &[0], &actual);
+    assert_eq!(
+        failures,
+        vec![GateFailure::Violated {
+            file: "bad.ri".to_string(),
+            id,
+        }],
+        "a Violated constraint must be reported even when its index is listed \
+         in expected_indeterminate — got {failures:?}"
+    );
+}
+
+/// An Indeterminate constraint whose index is NOT in the expected set must be
+/// reported as `UnexpectedIndeterminate`. This is the anti-coverage-erosion
+/// arm: without it, a regression that flips a constraint's inputs Undef
+/// (Satisfied -> Indeterminate) would pass the gate silently.
+#[test]
+fn audit_reports_unexpected_indeterminate() {
+    let id = ConstraintNodeId::new("Drifted", 0);
+    let actual = vec![(id.clone(), Satisfaction::Indeterminate)];
+
+    let failures = audit_file("drifted.ri", &[], &actual);
+    assert_eq!(
+        failures,
+        vec![GateFailure::UnexpectedIndeterminate {
+            file: "drifted.ri".to_string(),
+            id,
+        }],
+        "an Indeterminate constraint whose index is not in expected_indeterminate \
+         must be reported as UnexpectedIndeterminate — got {failures:?}"
+    );
+}
+
+/// An index IS in the expected set, but its actual status is now Satisfied:
+/// the exemption is stale and must be reported, so the dead entry gets
+/// deleted from `EXPECTED_INDETERMINATE` instead of lingering and masking
+/// the recovered coverage. The live corpus is green and can never exercise
+/// this arm, so this synthetic test is the only proof it fires.
+#[test]
+fn audit_reports_stale_expected_indeterminate() {
+    let id = ConstraintNodeId::new("Recovered", 0);
+    let actual = vec![(id.clone(), Satisfaction::Satisfied)];
+
+    let failures = audit_file("recovered.ri", &[0], &actual);
+    assert_eq!(
+        failures,
+        vec![GateFailure::StaleExpectedIndeterminate {
+            file: "recovered.ri".to_string(),
+            id,
+        }],
+        "a Satisfied constraint whose index is listed in expected_indeterminate \
+         must be reported as StaleExpectedIndeterminate — got {failures:?}"
+    );
 }
