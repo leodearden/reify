@@ -15,6 +15,32 @@
  * `gui/tsconfig.json`'s `include: ["src"]` still puts it in tsc's strict
  * program.
  */
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * Read docs/gui-event-channels.md from the repo root.
+ *
+ * The path is resolved from THIS module's own location, not the caller's:
+ * `import.meta.url` is per-module, so one computation is correct for every
+ * importer regardless of which directory it sits in. Same idiom as
+ * `toolDefNames.ts`'s `readDebugServerSource`, which documents why naive
+ * URL-relative `..` math over-shoots. Reading a REPO-ROOT file (outside gui/)
+ * from this directory is precedented by `reifyGrammarCorpus.test.ts`.
+ *
+ * Segment count:
+ *
+ *   <repo>/gui/src/__tests__/eventChannelConsumerContract.ts
+ *                  ^^^^^^^^^   (dirname = __tests__/)
+ *              ^^^               (..     = src/)
+ *          ^^^                   (..     = gui/)
+ *   ^^^^^^                       (..     = repo root)
+ */
+export function readEventChannelInventory(): string {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  return readFileSync(path.resolve(dir, '..', '..', '..', 'docs', 'gui-event-channels.md'), 'utf-8');
+}
 
 /**
  * The published row contract from docs/gui-event-channels.md §preamble:
