@@ -278,12 +278,17 @@ let transform3_identity : Transform<3>
 fn project(point: Point3<Length>, to: Frame<3>) -> Point3<Length>
 fn project(vector: Vector3<Length>, to: Frame<3>) -> Vector3<Length>
 
-enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX }
+enum EulerConvention { XYZ, XZY, YXZ, YZX, ZXY, ZYX,   // Tait-Bryan
+                       XYX, XZX, YXY, YZY, ZXZ, ZYZ }  // proper / classic Euler
 ```
 
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `project` (both the point and vector overloads), `orient_look_at`, and the qualified-enum-value path for `EulerConvention` are implemented by this PRD.
 
-**Bare vs. qualified `EulerConvention`:** `orient_euler`/`orient_to_euler` accept the convention argument either as a lowercase string (`"xyz"`) or as a qualified enum value (`EulerConvention.XYZ`) — a **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. The string path is case-sensitive: `"XYZ"` (uppercase) also evaluates to `Undef`.
+**What a convention names:** the three angles rotate about the named **body** axes, in the named order, composed intrinsically as `q = q_a · q_b · q_c`. The twelve conventions fall into two families that differ in where they break. **Tait-Bryan** (three distinct axes, e.g. `XYZ`) is singular where the middle angle reaches ±90°; **proper/classic Euler** (first axis repeated as third, e.g. `ZXZ`) is singular where the middle angle reaches 0 or π. So the choice is not cosmetic: it places the gimbal-lock locus somewhere different, and the right convention is the one whose singularity your mechanism never visits.
+
+**Qualified `EulerConvention` values only:** the convention argument must be a qualified enum value (`EulerConvention.XYZ`). A **bare** unqualified variant (`XYZ` alone) is not resolved and evaluates to `Undef`. A `String` is no longer accepted in any spelling — the lowercase-string path (`"xyz"`) and its case-sensitivity trap were removed in task #6082, and a String convention now raises a compile-time `ArgTypeMismatch` rather than silently evaluating to `Undef`.
+
+**Argument-order asymmetry, deliberate:** `orient_euler` takes its convention FIRST, `orient_to_euler` takes it LAST. `orient_euler` is a *constructor* whose convention is a mode selector for the three angles that follow, matching `R_xyz(a, b, c)` notation. `orient_to_euler` is a *decomposer*, so it is subject-first like its siblings `orient_log(q)` / `orient_to_axis_angle(q)` / `orient_inverse(q)`. Please do not "fix" the asymmetry by aligning them.
 
 #### SO(3) and SE(3) operations (v0.2)
 
@@ -300,7 +305,7 @@ fn orient_log(q: Orientation<3>) -> Vector3<Dimensionless>           // axis * a
 fn orient_exp(rot_vec: Vector3<Dimensionless>) -> Orientation<3>     // inverse of orient_log
 fn orient_slerp(a: Orientation<3>, b: Orientation<3>, t: Real) -> Orientation<3>
 fn orient_to_axis_angle(q: Orientation<3>) -> Map { axis: Vector3<Dimensionless>, angle: Angle }
-fn orient_to_euler(convention: EulerConvention, q: Orientation<3>) -> List<Angle>  // 3 elements
+fn orient_to_euler(q: Orientation<3>, convention: EulerConvention) -> List<Angle>  // 3 elements
 
 // SE(3) — rigid-body transforms on Transform<3>
 fn transform_compose(a: Transform<3>, b: Transform<3>) -> Transform<3>   // bit-equal to a * b
