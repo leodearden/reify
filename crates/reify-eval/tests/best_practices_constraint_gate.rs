@@ -153,11 +153,76 @@ fn constraint_statuses(source: &str) -> Vec<(reify_core::ConstraintNodeId, Satis
 
 // ── audit_file: pure per-file failure-taxonomy comparison (steps 3/4) ───────
 //
-// Unit-tests the FULL failure taxonomy of a not-yet-existing pure comparison
-// function against synthetic inputs only (no filesystem, no real corpus
-// file) — the live corpus is green today and can never exercise the
-// Violated, UnexpectedIndeterminate, or StaleExpectedIndeterminate arms on
-// its own, so these are the only proof each arm actually fires.
+// The tests below unit-test the FULL failure taxonomy of audit_file against
+// synthetic inputs only (no filesystem, no real corpus file) — the live
+// corpus is green today and can never exercise the Violated,
+// UnexpectedIndeterminate, or StaleExpectedIndeterminate arms on its own, so
+// these are the only proof each arm actually fires.
+
+/// A single per-constraint audit failure, naming the offending file and
+/// constraint. `id`'s `Display` impl (`reify_core::identity`) renders as
+/// `{entity}#constraint[{index}]` — the exact spelling `reify check` prints —
+/// so a failure is directly reproducible by copy-pasting into the CLI.
+#[derive(Debug, Clone, PartialEq)]
+enum GateFailure {
+    /// A constraint reported `Satisfaction::Violated` — a real regression.
+    /// Fires regardless of `expected_indeterminate`: a Violated is never
+    /// excusable by the allowlist.
+    Violated { file: String, id: ConstraintNodeId },
+    /// A constraint reported `Satisfaction::Indeterminate` but its index is
+    /// NOT in `expected_indeterminate` — lost coverage (a regression turned
+    /// a checked constraint's inputs Undef).
+    UnexpectedIndeterminate { file: String, id: ConstraintNodeId },
+    /// A constraint's index IS in `expected_indeterminate`, but it now
+    /// reports `Satisfaction::Satisfied` — the exemption is stale and must
+    /// be deleted from `EXPECTED_INDETERMINATE` instead of lingering and
+    /// masking the recovered coverage.
+    StaleExpectedIndeterminate { file: String, id: ConstraintNodeId },
+}
+
+/// Pure, total, side-effect-free comparison: comparing one file's actual
+/// per-constraint `Satisfaction` results against its pinned
+/// `expected_indeterminate` index set. No I/O, no panics — this keeps the
+/// full failure taxonomy unit-testable without touching the filesystem.
+///
+/// Precedence, evaluated per entry in `actual`:
+///   1. `Violated` -> `GateFailure::Violated`, ALWAYS, regardless of
+///      `expected_indeterminate`.
+///   2. `Indeterminate` && index not in `expected_indeterminate` ->
+///      `GateFailure::UnexpectedIndeterminate`.
+///   3. `Satisfied` && index IS in `expected_indeterminate` ->
+///      `GateFailure::StaleExpectedIndeterminate`.
+///   4. otherwise (`Satisfied` and not expected, or `Indeterminate` and
+///      expected) -> nothing.
+fn audit_file(
+    file: &str,
+    expected_indeterminate: &[u32],
+    actual: &[(ConstraintNodeId, Satisfaction)],
+) -> Vec<GateFailure> {
+    let mut failures = Vec::new();
+    for (id, satisfaction) in actual {
+        match satisfaction {
+            Satisfaction::Violated => failures.push(GateFailure::Violated {
+                file: file.to_string(),
+                id: id.clone(),
+            }),
+            Satisfaction::Indeterminate if !expected_indeterminate.contains(&id.index) => {
+                failures.push(GateFailure::UnexpectedIndeterminate {
+                    file: file.to_string(),
+                    id: id.clone(),
+                });
+            }
+            Satisfaction::Satisfied if expected_indeterminate.contains(&id.index) => {
+                failures.push(GateFailure::StaleExpectedIndeterminate {
+                    file: file.to_string(),
+                    id: id.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    failures
+}
 
 /// All actual results Satisfied, empty expected-indeterminate set: nothing to
 /// report.
