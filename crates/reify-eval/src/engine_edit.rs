@@ -4060,7 +4060,7 @@ impl Engine {
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -4069,8 +4069,10 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_source site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_source` arm of the
+            // warm-Resolution back-prop sync set; see the roster note in
+            // `edit_param`'s resolution phase above for the full membership and
+            // the sync obligation.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
