@@ -1713,7 +1713,7 @@ impl Engine {
         if let Some(ref solver) = self.solver {
             // Group auto params by entity (template) name.
             //
-            // Four-site sync note (task #4710): connector-instance auto cells
+            // Warm-resolution sync note (task #4710): connector-instance auto cells
             // (e.g. `Parent.__connector_0.gain`) are keyed by their full entity
             // string `"Parent.__connector_0"` — a distinct group that contains no
             // filtered_constraints (no parent-scope constraint reads the instance
@@ -1722,8 +1722,18 @@ impl Engine {
             // `constraints_dirty = false` for that group and the solver is never
             // invoked for it; the cold-eval value written by
             // `engine_eval::connector_pin_if_determined` (task #4710 step-2) is
-            // preserved automatically.  This is the edit_param site of the
-            // four-site sync invariant (see concurrent.rs module header).
+            // preserved automatically.  This is the `edit_param` arm of the
+            // warm-Resolution back-prop sync set: `Engine::eval`,
+            // `Engine::eval_cached`, `Engine::edit_param` and `Engine::edit_source`
+            // (four entry points; six write-back arms, because `eval` and
+            // `eval_cached` each take a mutually exclusive merged-cluster branch
+            // through `dispatch_merged_cluster_solve` / `..._cached`, task #5118).
+            // Every one writes the resolved auto into `values` and the snapshot map
+            // as `Determined` and records a cache entry; keep them in sync when
+            // modifying warm Resolution back-prop.  A fifth arm,
+            // `resolve_concurrent_edit`, was removed with `concurrent.rs` in
+            // ffb85f0627 (task ο, #5065) — the older "four-site (see concurrent.rs
+            // module header)" phrasing predates that deletion.
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
