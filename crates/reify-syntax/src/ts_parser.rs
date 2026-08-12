@@ -153,6 +153,13 @@ struct Lowering<'a> {
     errors: RefCell<Vec<ParseError>>,
     /// Enum names collected in the first pass for disambiguation.
     known_enums: HashSet<&'a str>,
+    /// Module-namespace bindings introduced by this file's `import`
+    /// declarations, collected in the SAME order-independent first pass as
+    /// `known_enums` (task 5495 μ). Only `ImportKind::Aliased` (the alias) and
+    /// `ImportKind::Module` (the final path segment) contribute — see
+    /// `collect_import_bindings` for why the entity-binding kinds do not.
+    /// Read by `lower_namespaced_call`'s qualifier gate.
+    import_bindings: HashSet<String>,
     /// Module-level pragmas collected during source-file lowering.
     module_pragmas: Vec<Pragma>,
     /// Structured module path from a top-of-file `module a.b.c` declaration.
@@ -184,6 +191,7 @@ impl<'a> Lowering<'a> {
             declarations: Vec::new(),
             errors: RefCell::new(Vec::new()),
             known_enums,
+            import_bindings: HashSet::new(),
             module_pragmas: Vec::new(),
             declared_module_path: None,
         }
@@ -298,13 +306,17 @@ impl<'a> Lowering<'a> {
 
     fn lower_source_file(&mut self, node: tree_sitter::Node) {
         // First pass: collect enum names for disambiguation of member_access
-        // vs EnumAccess in expressions. This enables order-independent declarations.
+        // vs EnumAccess in expressions, and the module-namespace bindings this
+        // file's imports introduce. This enables order-independent declarations.
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             if child.kind() == "enum_declaration"
                 && let Some(name_node) = child.child_by_field_name("name")
             {
                 self.known_enums.insert(self.node_text(name_node));
+            }
+            if child.kind() == "import_declaration" {
+                self.collect_import_bindings(child);
             }
         }
 
@@ -514,6 +526,48 @@ impl<'a> Lowering<'a> {
                 }
                 _ => self.warn_unexpected_child(child, "source file"),
             }
+        }
+    }
+
+    /// Record the module-namespace binding, if any, that one
+    /// `import_declaration` introduces (task 5495 μ; PRD
+    /// `docs/prds/v0_6/stdlib-namespace.md` D-7).
+    ///
+    /// D-7 defines the qualifier of a qualified reference as the import's
+    /// binding name — the alias if `as` was used, else the final path segment —
+    /// so exactly two of the five `ImportKind`s contribute:
+    ///
+    /// - `Aliased { alias }` → the alias (`import a.b as pp` binds `pp`)
+    /// - `Module` → the final `.`-segment of the path (`import a.b` binds `b`)
+    ///
+    /// `Entity`, `EntityAliased` and `Destructured` deliberately contribute
+    /// NOTHING: they bind ENTITY names, not module namespaces. `Widget.mk()`
+    /// (from `import a.b.Widget`) is a method call on an entity — syntax Reify
+    /// does not have, and a hard parse error before μ — so binding those kinds
+    /// would reopen a narrower version of the very hole this gate closes.
+    ///
+    /// The classification is obtained by CALLING `lower_import` and matching the
+    /// returned `ImportKind`, rather than re-deriving Module-vs-Entity from the
+    /// CST: the uppercase-final-segment heuristic then has exactly one
+    /// implementation and this gate cannot drift from what the import system
+    /// actually binds. The second call is pure — `lower_import` pushes no
+    /// diagnostic — so no error is duplicated by lowering the node twice.
+    ///
+    /// Called from `lower_source_file`'s FIRST pass, the same order-independent
+    /// pass that seeds `known_enums`, so an `import parts as pp` written after
+    /// the structure that uses `pp.Pulley()` still binds.
+    fn collect_import_bindings(&mut self, node: tree_sitter::Node) {
+        let Some(import) = self.lower_import(node) else {
+            return;
+        };
+        let binding = match &import.kind {
+            ImportKind::Aliased { alias } => Some(alias.clone()),
+            ImportKind::Module => import.path.rsplit('.').next().map(str::to_string),
+            ImportKind::Entity(_) | ImportKind::EntityAliased { .. } => None,
+            ImportKind::Destructured(_) => None,
+        };
+        if let Some(binding) = binding.filter(|b| !b.is_empty()) {
+            self.import_bindings.insert(binding);
         }
     }
 
@@ -4346,6 +4400,12 @@ impl<'a> Lowering<'a> {
     /// `"pp.Pulley"` — the same single implementation `namespaced_name_text`
     /// uses for the type-position form.
     ///
+    /// **Two guards, in this order.** Guard 1 checks the callee's SHAPE; guard 2
+    /// checks that its qualifier is a DECLARED import binding. The order is
+    /// load-bearing: a mis-shaped callee (`a.b.c()`, `arr[0].g()`) has no single
+    /// qualifier to name, so it must reach guard 1 first and keep that guard's
+    /// own wording.
+    ///
     /// **Callee-shape guard (D-7 / PRD §9).** The grammar's callee is a full
     /// `member_access` (grammar.js:1609 — an inline `identifier '.' identifier`
     /// would collide with `member_access` as a reduce-reduce ambiguity), and
@@ -4363,6 +4423,33 @@ impl<'a> Lowering<'a> {
     /// fabricated multi-segment name ever reaches the AST — and, since
     /// `lower_binding_value` propagates the `None`, the enclosing member is
     /// dropped rather than half-built.
+    ///
+    /// **Import-binding guard (D-7).** The grammar rule is
+    /// `prec(12, seq(field('callee', $.member_access), callTail($)))`, so it
+    /// captures EVERY two-segment `ident.ident(args)` — not only the
+    /// import-qualified ones. Without this guard μ turns hard parse errors into
+    /// SILENCE: `obj.width()`, `self.w()` and `totally.undefined_thing(1, 2)`
+    /// were all `Parse error … exit 1` before μ, and measured as exit 0 after it,
+    /// because the compiler has no unknown-function diagnostic behind
+    /// `ExprKind::FunctionCall`. Lowering is the first layer that knows the
+    /// import set (`import_bindings`, seeded by `collect_import_bindings` in
+    /// `lower_source_file`'s order-independent first pass), so the gate lives
+    /// here rather than on any of the three grammar surfaces — none of which
+    /// knows the imports, and restricting the callee inline would reintroduce the
+    /// reduce-reduce ambiguity with `member_access` described above.
+    ///
+    /// This guard runs strictly AFTER the callee-shape guard so that guard's
+    /// diagnostics are untouched, and it uses the same rejection shape: one
+    /// `push_error` spanning the callee, then `return None`, which
+    /// `lower_binding_value` propagates so the enclosing member is dropped rather
+    /// than half-built.
+    ///
+    /// After both guards, exactly one silence remains in expression position: a
+    /// DECLARED binding whose module resolves but whose member does not. That is
+    /// resolution work by definition and therefore ν's (task 5505) — pinned as an
+    /// executable case by `declared_binding_with_unknown_member_is_left_to_resolution`
+    /// rather than assumed closed. A declared binding whose module is ABSENT is
+    /// already loud downstream (`error: module 'parts' not found`, exit 1).
     ///
     /// The call-LESS forms (`pp.Pulley`, `pp.FitClass.Clearance`) are NOT routed
     /// here: they stay `member_access`, indistinguishable from `self.width` at
@@ -4388,6 +4475,23 @@ impl<'a> Lowering<'a> {
                      name{scope_note}",
                     callee_text = self.node_text(callee),
                     object_text = self.node_text(object),
+                ),
+                self.span(callee),
+            );
+            return None;
+        }
+
+        let qualifier = self.node_text(object);
+        if !self.import_bindings.contains(qualifier) {
+            self.push_error(
+                format!(
+                    "unknown qualifier `{qualifier}` in `{callee_text}(...)`: the qualifier \
+                     of a qualified call must be a module namespace bound by an import, but \
+                     no import in this file binds `{qualifier}` — declare one as \
+                     `import <path> as {qualifier}` or `import <path>.{qualifier}`. Reify has \
+                     no method-call syntax, so this cannot be a call on a value named \
+                     `{qualifier}`",
+                    callee_text = self.node_text(callee),
                 ),
                 self.span(callee),
             );
