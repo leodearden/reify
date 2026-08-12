@@ -966,8 +966,19 @@ fn halves(path: &str) -> (EvalResult, EvalResult) {
 /// independently in each test would let them silently drift apart, exactly
 /// the failure mode `strip_inlined_minimize`'s own doc comment warns about
 /// for "derived, never transcribed" baselines.
-fn joint_drive_halves() -> (EvalResult, EvalResult) {
-    halves(JOINT_DRIVE_EXAMPLE_PATH)
+///
+/// MEMOIZED behind a `OnceLock`: this is the most expensive fixture in the
+/// file (two real `DimensionalSolver` runs end to end), and it has exactly
+/// two callers. Without caching, each call site re-solves both halves
+/// independently, doubling the cost for no additional signal — the two
+/// callers want the SAME evaluation, not two independent ones.
+/// `OnceLock::get_or_init` also de-duplicates correctly if the two `#[test]`
+/// functions run concurrently on separate threads (the default libtest
+/// harness): the second caller blocks on the first's in-flight solve rather
+/// than racing a redundant one.
+fn joint_drive_halves() -> &'static (EvalResult, EvalResult) {
+    static CACHE: std::sync::OnceLock<(EvalResult, EvalResult)> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| halves(JOINT_DRIVE_EXAMPLE_PATH))
 }
 
 /// BT-5 — THE LEAF. The parent's cost objective reaches the CHILD's auto in one
@@ -1035,8 +1046,8 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // solver-resolved auto in EITHER half (a separate, pre-existing
     // sub-elaboration gap — see the example header's "reading the result" note).
     let auto_id = ValueCellId::new("Rivet", "quantity_produced");
-    let merged_q = scalar_si(&merged, &auto_id, "merged");
-    let frozen_q = scalar_si(&frozen, &auto_id, "frozen-cascade");
+    let merged_q = scalar_si(merged, &auto_id, "merged");
+    let frozen_q = scalar_si(frozen, &auto_id, "frozen-cascade");
 
     // Asserted with a DIRECTION, which is strictly stronger than `!=` and still
     // purely comparative: cost-min drives the auto DOWN toward the box's lower
@@ -1064,8 +1075,8 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // (immediately below) / #5835.
     let line_cost = ValueCellId::new("Rivet", "line_cost");
 
-    let merged_cost = scalar_si(&merged, &line_cost, "merged");
-    let frozen_cost = scalar_si(&frozen, &line_cost, "frozen-cascade");
+    let merged_cost = scalar_si(merged, &line_cost, "merged");
+    let frozen_cost = scalar_si(frozen, &line_cost, "frozen-cascade");
     assert!(
         merged_cost < frozen_cost,
         "BT-5(ii): the merged whole-assembly cost (read from the child's \
@@ -1091,11 +1102,11 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
     // the same eval — the `Costed` closed form. A stale (unfolded) cell fails
     // this even when (i) and (ii) would pass.
     let aliased_cost = scalar_si(
-        &merged,
+        merged,
         &ValueCellId::new("RivetedPanel.rivets", "line_cost"),
         "merged",
     );
-    let merged_line_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "line_cost"), "merged");
+    let merged_line_cost = scalar_si(merged, &ValueCellId::new("Rivet", "line_cost"), "merged");
     assert_eq!(
         aliased_cost, merged_line_cost,
         "BT-5(iii): the INSTANCE-PATH cost cell the expanded objective actually \
@@ -1103,7 +1114,7 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
          source — that alias entry is what makes the objective non-`Undef` \
          inside the merged solve",
     );
-    let merged_unit_cost = scalar_si(&merged, &ValueCellId::new("Rivet", "unit_cost"), "merged");
+    let merged_unit_cost = scalar_si(merged, &ValueCellId::new("Rivet", "unit_cost"), "merged");
     assert_eq!(
         merged_line_cost,
         merged_unit_cost * merged_q,
@@ -1136,6 +1147,8 @@ fn bt5_parent_objective_drives_child_auto_strictly_below_the_frozen_cascade() {
 /// aggregate as BT-5(ii)'s preferred cost cell and update the example
 /// header's "Reading the result" section — NOT a silent edit to this
 /// assertion or to #5835's status.
+// TODO(#5835): delete this known-limitation pin and re-enable the parent
+// aggregate as BT-5(ii)'s cost cell when the engine gap closes.
 #[test]
 fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     let (merged, frozen) = joint_drive_halves();
@@ -1149,7 +1162,7 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
     // silently not be applied to the other. Precedent:
     // `mwhole_bt3_cross_scope_surface_read_surfaces_the_co_solved_value`
     // below loops over its cases the same way.
-    for (what, result) in [("merged", &merged), ("frozen-cascade", &frozen)] {
+    for (what, result) in [("merged", merged), ("frozen-cascade", frozen)] {
         // PRESENCE — the anti-vacuity guard. A misspelled `ValueCellId`, or a
         // future edit that deletes `let total_cost` from the shipped
         // example, must fail HERE rather than sail through the permissive
@@ -1174,12 +1187,13 @@ fn parent_let_total_cost_is_declared_but_stays_unresolved_in_both_halves() {
             ),
             "KNOWN-LIMITATION REGRESSED (#5835): `RivetedPanel.total_cost` \
              resolved to a usable number in the {what} eval — got {cell:?}. \
-             The engine gap #5835 tracks has apparently closed: a \
-             parent-level consumer `let` over a cluster-solved cross-sub \
-             cell now materialises post-solve. That needs a reviewed design \
-             change (re-enable the parent aggregate as BT-5(ii)'s preferred \
-             cost cell, update the example header's \"Reading the result\" \
-             section), not a silent edit to this assertion.",
+             The engine gap #5835 tracks has apparently closed in this half \
+             (merged and frozen-cascade fail it for different underlying \
+             reasons — see #5835). That needs a reviewed design change \
+             (re-enable the parent aggregate as BT-5(ii)'s preferred cost \
+             cell, update the example header's \"Reading the result\" \
+             section), not a silent edit to this assertion or to #5835's \
+             status.",
         );
 
         // LIVENESS — the eval produced values at all, so PRESENCE/UNRESOLVED
