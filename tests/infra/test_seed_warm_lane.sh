@@ -454,17 +454,23 @@ REAL_SLEEP_RM_STUB_EOF
         chmod +x "$real_stub_dir/rm"
     fi
     # NOTE: stdout is captured via a real FILE (OUT_FILE), NOT command
-    # substitution ($(...)). A backgrounded child of $SCRIPT that inherits
-    # stdout (fd 1) -- e.g. the reseed-trash `rm &` -- keeps a pipe's write
-    # end open, so $(...) would block until THAT descendant also exits
-    # (the classic bash "command substitution hangs on a background job"
+    # substitution ($(...)). A file redirect has no EOF-on-all-writers
+    # semantics: this returns as soon as the direct `bash "$SCRIPT"` child
+    # exits, like a plain `wait`, letting H4 observe seed's own exit
+    # independently of ANY detached grandchild this script forks -- present
+    # or future. $(...) does not have that property: a backgrounded child of
+    # $SCRIPT that inherited stdout (fd 1) would keep a pipe's write end
+    # open, so $(...) would block until THAT descendant also exited (the
+    # classic bash "command substitution hangs on a background job"
     # pitfall) -- masking exactly the FD-hygiene bug Block Q/H4 exists to
     # catch: with a pipe, the probe below would never run until the leaking
     # background rm had already exited on its own, so the lock would always
-    # read back FREE regardless of whether seed itself leaked FD 9. A file
-    # redirect has no EOF-on-all-writers semantics: this returns as soon as
-    # the direct `bash "$SCRIPT"` child exits, like a plain `wait`, letting
-    # H4 observe seed's own exit independently of any detached grandchild.
+    # read back FREE regardless of whether seed itself leaked FD 9.
+    # (Task #6219: seed's own trash rm jobs -- e.g. the reseed-trash `rm &`,
+    # formerly cited here as the live example -- no longer hold fd 1/fd 2 at
+    # all, so that example is now stale; see Block V above. The choice of a
+    # file over $(...) stays load-bearing regardless, against any future
+    # detached child that DOES inherit them.)
     > "$OUT_FILE"
     REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
     REIFY_TEST_TRASH_GLOB_LEGACY="$_TRASH_GLOB_LEGACY" \

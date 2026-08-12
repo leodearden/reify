@@ -82,6 +82,13 @@
 #   `set -euo pipefail` and writes stdout exactly once, at the terminal echo.
 #   (§9.5 inv.13 "Caller obligation on the fail-closed path" is the ruling.)
 #
+#   PIPE-SAFE (task #6219): every DETACHED child this script forks (the
+#   orphan-trash sweep and the reseed-trash rm) redirects its own fd 1 and
+#   fd 2 away from the caller's descriptors, so a caller may capture this
+#   stdout through a pipe -- `$(...)`, `| consumer`, or the
+#   `2>&1 | while read` shape warm-lane-gc.sh:648-649 uses -- without
+#   blocking on that background rm of a possibly large tree.
+#
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
 #
