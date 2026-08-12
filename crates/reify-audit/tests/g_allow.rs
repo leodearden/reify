@@ -182,40 +182,42 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// sanitizes, this test pins that sanitizing is what makes the difference.
 /// Neither can silently go vacuous while the other still holds.
 ///
-/// # Measured (HEAD b2a758678a5409099ffd108459eb97a430c5c41b)
+/// # What each half demonstrates
 ///
 /// `audit-orphan-producers.sh --scope crates/reify-audit/src --quiet --format
 /// json`, three ways, against a `git init`ed tempdir carrying a planted
 /// `.git/index.lock` — exactly what [`common::git_env::decoy_repo`] builds:
 ///
-/// - clean: exit 0, stdout 7417 bytes, `total_pub_fns_scanned` 46,
-///   `orphan_count` 0.
-/// - `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` pointed at the decoy: exit 0,
-///   stdout **0 bytes**, stderr `audit-orphan-producers.sh: no source files
-///   matched`.
-/// - the same poison, then those three vars `env_remove`d: exit 0, stdout 7417
-///   bytes, `orphan_count` 0.
+/// - clean: a JSON envelope with a numeric `orphan_count`.
+/// - `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` pointed at the decoy: empty
+///   stdout, stderr `audit-orphan-producers.sh: no source files matched`.
+/// - the same poison, then those three vars `env_remove`d: the same JSON
+///   envelope as the clean run.
+///
+/// Exit status is 0 in all three shapes above — the exit code carries no
+/// signal here, which is why the assertions below read stdout (each run's
+/// status and stderr are still carried on `common::git_env::AuditRun` for a
+/// failure message to report, even though neither is asserted on directly).
 ///
 /// The mechanism is `audit-orphan-producers.sh` line 66 —
 /// `REPO_ROOT="$(git rev-parse --show-toplevel)"` followed by
 /// `cd "$REPO_ROOT"`. An ambient `GIT_DIR`/`GIT_WORK_TREE` overrides both the
 /// cwd and any `-C`, so the whole scan is redirected into the empty decoy
-/// tree, matches no source files, and emits nothing. Note that exit status is
-/// 0 in every one of the three runs: the exit code carries no signal here,
-/// which is why the assertions below read stdout (each run's status and
-/// stderr are still carried on `common::git_env::AuditRun` for a failure
-/// message to report, even though neither is asserted on directly).
+/// tree, matches no source files, and emits nothing.
 ///
 /// The "poisoned defeats the script" half is checked, not asserted: a script
 /// that has become immune to this hazard on its own is not a regression in
 /// reify's sanitization, so this test logs and skips the comparison in that
 /// case rather than failing — see the test body for the full rationale.
 ///
-/// Those assertions deliberately pin only "empty" vs "non-empty and parses as
-/// an envelope". The 7417 bytes and the 46 scanned fns are today's incidental
-/// corpus size for this crate; pinning them would make an unrelated `pub fn`
-/// addition fail this test, and that churn is how a signal gets weakened or
-/// deleted.
+/// The sanitized-half assertions deliberately pin only "non-empty and parses
+/// as an envelope with a numeric `orphan_count`" — never a byte count or a
+/// scanned-fn count. Those are today's incidental corpus size for this crate
+/// (they do drift: measured at 7417 bytes / 46 fns when this test was
+/// written, 7418 bytes on a later checkout with no behavioural change);
+/// pinning them would make an unrelated `pub fn` addition fail this test,
+/// and that kind of churn is exactly how a signal gets weakened or deleted
+/// by a later maintainer.
 ///
 /// This test never runs inside the poisoned replay child: that replay's filter
 /// selects `reify_audit_pub_fns_are_g_allow_marked` only, and this name does
@@ -235,36 +237,14 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
     // `{:.400}` is a Display precision, i.e. a truncating max width: enough of
     // the offending stdout/stderr to diagnose a failure without dumping 7 KiB.
     //
-    // The "poisoned" half is deliberately NOT a hard assertion. Its only two
-    // failure causes are the script becoming immune to the hazard on its own
-    // (e.g. resolving its repo root some way other than `git rev-parse
-    // --show-toplevel`) or the decoy no longer being empty — neither is a
-    // regression in reify's own sanitization, which
-    // `build_audit_command_removes_every_repo_redirect_var` and
-    // `wrong_tree_with_real_scope_panics` (orphan_audit.rs) plus
-    // `orphan_audit_survives_ambient_hook_git_env` (here) already guard. A
-    // hard failure here would instead penalize hardening the script itself —
-    // so log and skip the comparison rather than assert.
-    if !poisoned.stdout.trim().is_empty() {
-        eprintln!(
-            "the hook git environment no longer defeats the audit script: with \
-             GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an empty decoy repo, \
-             the script still emitted {} byte(s) on stdout (exit {:?}). The \
-             script has apparently become immune to this hazard on its own; \
-             nothing left for this test to demonstrate. If that's confirmed \
-             deliberate, `reify_audit_pub_fns_are_g_allow_marked`'s \
-             replay-child panic and reify-test-support's `sanitize()` are both \
-             dead weight and should be retired together.\n\
-             --- poisoned stdout (truncated) ---\n{:.400}\n\
-             --- poisoned stderr (truncated) ---\n{:.400}",
-            poisoned.stdout.len(),
-            poisoned.status.code(),
-            poisoned.stdout,
-            poisoned.stderr,
-        );
-        return;
-    }
-
+    // The sanitized half is asserted UNCONDITIONALLY, and FIRST. These three
+    // checks (non-empty stdout, valid JSON, numeric `orphan_count`) are real
+    // and independently meaningful regardless of what the poisoned half
+    // shows, so they must not be reachable only through a branch the poisoned
+    // check could skip. Ordering the soft poisoned check first would let a
+    // hardened script (or a decoy that stops being empty) return early and
+    // silently skip these too, degrading the whole test to a no-op PASS
+    // instead of merely skipping the poisoned/sanitized comparison.
     assert!(
         !sanitized.stdout.trim().is_empty(),
         "stripping GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE did NOT restore the \
@@ -295,4 +275,34 @@ fn hook_git_env_defeats_the_audit_script_and_stripping_it_cures_the_defeat() {
          stripping restores.\n--- parsed value (truncated) ---\n{:.400}",
         envelope.to_string(),
     );
+
+    // The "poisoned" half runs LAST and is deliberately NOT a hard assertion.
+    // Its only two failure causes are the script becoming immune to the
+    // hazard on its own (e.g. resolving its repo root some way other than
+    // `git rev-parse --show-toplevel`) or the decoy no longer being empty —
+    // neither is a regression in reify's own sanitization, which
+    // `build_audit_command_removes_every_repo_redirect_var` and
+    // `wrong_tree_with_real_scope_panics` (orphan_audit.rs) plus
+    // `orphan_audit_survives_ambient_hook_git_env` (here) already guard. A
+    // hard failure here would instead penalize hardening the script itself —
+    // so log and skip the comparison rather than assert, after the real
+    // checks above have already run unconditionally.
+    if !poisoned.stdout.trim().is_empty() {
+        eprintln!(
+            "the hook git environment no longer defeats the audit script: with \
+             GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointed at an empty decoy repo, \
+             the script still emitted {} byte(s) on stdout (exit {:?}). The \
+             script has apparently become immune to this hazard on its own; \
+             nothing left for this test to demonstrate. If that's confirmed \
+             deliberate, `reify_audit_pub_fns_are_g_allow_marked`'s \
+             replay-child panic and reify-test-support's `sanitize()` are both \
+             dead weight and should be retired together.\n\
+             --- poisoned stdout (truncated) ---\n{:.400}\n\
+             --- poisoned stderr (truncated) ---\n{:.400}",
+            poisoned.stdout.len(),
+            poisoned.status.code(),
+            poisoned.stdout,
+            poisoned.stderr,
+        );
+    }
 }
