@@ -314,3 +314,82 @@ export function classifyEventChannelRows(rows: EventChannelRow[]): ClassifiedRow
     return { section, channel, identifiers: [], kind: 'needs-allowlist' };
   });
 }
+
+/**
+ * One doc row naming a consumer that `gui/src/bridge.ts` does not export.
+ *
+ * A `{channel, name}` PAIR rather than a bare name, so a failure message points
+ * at the doc row a maintainer has to edit — the symbol alone would leave them
+ * grepping. One symbol named by two rows is therefore two findings.
+ */
+export interface UnknownConsumer {
+  channel: string;
+  name: string;
+}
+
+/** Compare two findings by channel, then by name. Keeps failure output stable. */
+function byChannelThenName(a: UnknownConsumer, b: UnknownConsumer): number {
+  return a.channel === b.channel ? a.name.localeCompare(b.name) : a.channel.localeCompare(b.channel);
+}
+
+/**
+ * THE GUARD: every bridge-shaped consumer the doc names that `bridge.ts` does
+ * not actually export, sorted.
+ *
+ * `inherited` identifiers are checked exactly like `named` ones — that is the
+ * point of resolving `same` rather than allowlisting it. Deleting an export
+ * named by an inheritance source implicates every row that inherits from it,
+ * not just the one that spells it out.
+ *
+ * `needs-allowlist` and `explicit-none` rows carry no identifiers, so they
+ * contribute nothing here; their coverage is `uncoveredRows`' job.
+ */
+export function unknownConsumers(
+  runtimeExports: string[],
+  rows: ClassifiedRow[],
+): UnknownConsumer[] {
+  const exported = new Set(runtimeExports);
+  return rows
+    .flatMap(({ channel, identifiers }) =>
+      identifiers.filter((name) => !exported.has(name)).map((name) => ({ channel, name })),
+    )
+    .sort(byChannelThenName);
+}
+
+/**
+ * THE NON-VACUITY FLOOR: rows this parser could not resolve to a consumer and
+ * which carry no allowlist entry either, sorted.
+ *
+ * Row-granular on purpose. A global `>= N` count floor is weak — a parser that
+ * drops 5 of 40 rows still clears it, and the dropped rows are exactly the ones
+ * that stopped being guarded. Requiring every row to land in {named, inherited,
+ * explicit-none, allowlisted} instead means a parse miss surfaces HERE and
+ * fails, rather than silently shrinking the checked set.
+ */
+export function uncoveredRows(rows: ClassifiedRow[], allowlist: Record<string, string>): string[] {
+  return rows
+    .filter((r) => r.kind === 'needs-allowlist' && !(r.channel in allowlist))
+    .map((r) => r.channel)
+    .sort();
+}
+
+/**
+ * THE ALLOWLIST SELF-CHECK: entries that have rotted, sorted — either because
+ * no parsed row carries that channel any more, or because the row it names is
+ * no longer `needs-allowlist` (it now yields a bridge consumer of its own, or
+ * inherits one, or declares an explicit absence).
+ *
+ * Without this the allowlist decays into a rubber stamp: entries whose stated
+ * reason stopped being true keep suppressing checks nobody re-reads. Both rot
+ * directions matter — a renamed channel leaves an excuse protecting nothing,
+ * and a newly-wired channel keeps an excuse that now hides a checkable row.
+ */
+export function staleAllowlistEntries(
+  rows: ClassifiedRow[],
+  allowlist: Record<string, string>,
+): string[] {
+  const needing = new Set(rows.filter((r) => r.kind === 'needs-allowlist').map((r) => r.channel));
+  return Object.keys(allowlist)
+    .filter((channel) => !needing.has(channel))
+    .sort();
+}
