@@ -952,12 +952,18 @@ mod tests {
         );
     }
 
-    /// Mirrors the sanitization tests in `reify-audit`'s `git_env.rs`, from
-    /// the other side of the dependency edge: asserts the constructed
-    /// script-spawn `Command` records a removal (`env_remove` -> `(key, None)`
-    /// in `get_envs()`) for every [`crate::git_env::REPO_REDIRECT_VARS`]
-    /// entry — i.e. that this crate's script spawn sanitizes from the SHARED
-    /// definition, not from a module-local copy.
+    /// Asserts the constructed script-spawn `Command` records a removal
+    /// (`env_remove` -> `(key, None)` in `get_envs()`) for every
+    /// [`crate::git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
+    /// script spawn sanitizes from the SHARED definition, not from a
+    /// module-local copy. Uses [`crate::git_env::removed_vars`], the same
+    /// removal-collecting helper the definition site's own tests use, so both
+    /// read the `(key, None)` encoding through one place.
+    ///
+    /// This covers the WIRING only — that [`build_audit_command`] applies the
+    /// sanitizer. That the sanitizer actually defeats an ambient redirect var
+    /// against real git is proved once, at the definition site, by
+    /// `crate::git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
     ///
     /// Unlike the two tests above, this one never spawns the script and needs
     /// neither `git` nor `python3` on `PATH` — it only inspects `Command`
@@ -973,11 +979,7 @@ mod tests {
             "crates/reify-audit/src",
             Path::new("/nonexistent/repo-root"),
         );
-        let removed: Vec<String> = cmd
-            .get_envs()
-            .filter(|(_, v)| v.is_none())
-            .map(|(k, _)| k.to_string_lossy().into_owned())
-            .collect();
+        let removed = crate::git_env::removed_vars(&cmd);
         for var in crate::git_env::REPO_REDIRECT_VARS {
             assert!(
                 removed.iter().any(|r| r == var),

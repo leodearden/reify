@@ -2,16 +2,15 @@
 //! repository.
 //!
 //! **Start one crate down for the *why*.** The sanitized variable set
-//! ([`REPO_REDIRECT_VARS`]), the sanitizer ([`sanitize`]) and the failure mode
-//! they exist to prevent are defined and argued once, in
-//! `reify_test_support::git_env`; this module re-exports the two items rather
-//! than restating the argument. What is local to HERE, and what the rest of
-//! this doc covers, is the `git -C <root>` shape [`command`] builds, the
-//! workspace rule that every repo-targeting invocation be built through it, the
-//! measured evidence that an ambient redirect var beats `-C`, and the call-site
-//! sweep that enforces the rule. That deferral is one-directional: the
-//! definition site is self-contained about the *why* and names this module only
-//! as further reading, so a reader is never bounced back and forth.
+//! ([`REPO_REDIRECT_VARS`]), the sanitizer ([`sanitize`]), the failure mode they
+//! exist to prevent and the measured evidence for it are defined and argued
+//! once, in `reify_test_support::git_env`; this module re-exports the two items
+//! rather than restating the argument. What is local to HERE, and what the rest
+//! of this doc covers, is the `git -C <root>` shape [`command`] builds, the
+//! workspace rule that every repo-targeting invocation be built through it, and
+//! the call-site sweep that enforces the rule. That deferral is one-directional:
+//! the definition site is self-contained about the *why* and names this module
+//! only as further reading, so a reader is never bounced back and forth.
 //!
 //! # The rule
 //!
@@ -24,74 +23,49 @@
 //! **Carve-out:** a bare `git --version` availability probe opens no
 //! repository, so no redirect var can affect it and it is exempt. The line is
 //! sharp — anything with `-C`, a repository path, or an implicit cwd
-//! repository is NOT exempt. (The three exempt probes in this workspace are
+//! repository is NOT exempt. (The exempt probes in this workspace are
 //! `tests/g_allow_repo_wide_hard_gate.rs`, `tests/ptodo_baseline.rs` and
-//! `reify-test-support/src/orphan_audit.rs`, all `git --version`.)
+//! `reify-test-support`'s `orphan_audit.rs` and `git_env.rs`, all
+//! `git --version`.)
 //!
-//! **Resolved non-central case:** `reify-test-support`'s
-//! `scripts/audit-orphan-producers.sh` spawn
-//! (`crates/reify-test-support/src/orphan_audit.rs`) sanitizes the same
-//! [`REPO_REDIRECT_VARS`] set. It reaches the sanitizer directly rather than
-//! calling into this crate, because the dependency edge runs `reify-audit` ->
-//! `reify-test-support` and cannot be inverted. **As of task 5657** that is no
-//! longer a duplication at all: the const and the fn were moved DOWN into
-//! `reify_test_support::git_env`, the workspace's single definition, and this
-//! module re-exports them. `orphan_audit.rs` and [`command`] therefore share
-//! ONE sanitizer, with no drift surface left to pin — the duplicate copy and
-//! the test that held the two lists equal are both gone. Without the
-//! sanitization, the script's first action,
-//! `REPO_ROOT="$(git rev-parse --show-toplevel)"`, would have been vulnerable
-//! to exactly the failure mode documented at the definition site: an ambient
-//! `GIT_DIR`/`GIT_WORK_TREE` beats BOTH cwd and `-C` (measured:
-//! `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C /tmp/gwt_b
-//! rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the two vars
-//! prints `/tmp/gwt_b`), and under this project's warm-lane topology tests
-//! routinely execute inside `worktrees/_lane-NN` while an ambient hook
-//! environment may name a different checkout. The blast radius would have
-//! been an orphan audit silently enumerating the wrong tree rather than
-//! erroring.
-//!
-//! **As of task 5698**, the shared sanitizer covers a SECOND `orphan_audit.rs`
-//! site too: `child_repo_root`, a `git rev-parse --show-toplevel` probe run
-//! against the caller-supplied `repo_root` before the script spawn. Where the
-//! sanitization above stops an ambient redirect var from overriding an
-//! otherwise-correct `repo_root`, this probe covers a channel sanitization
-//! cannot: a `repo_root` that was wrong to begin with — a `CARGO_MANIFEST_DIR`
-//! `.parent()` walk landing on the wrong level, a `.git` file pointing at
-//! another checkout, a symlinked or embedded checkout. It asserts the
-//! property the sanitization is meant to establish — that the child resolves
-//! the SAME work tree the caller intended — by comparing the caller's
-//! `repo_root` against what the (sanitized) child itself resolves; a
-//! disagreement is now a hard panic. That closes the "blast radius" named
-//! above for this second channel too: without the probe, a wrong `repo_root`
-//! would have been an orphan audit silently enumerating the wrong tree rather
-//! than erroring, exactly like the unsanitized-redirect-var case above.
+//! **Sites below the dependency edge:** `orphan_audit.rs` reaches
+//! [`reify_test_support::git_env::sanitize`] directly rather than through this
+//! module, because the dependency edge runs `reify-audit` ->
+//! `reify-test-support`. Its two repo-targeting sites — the
+//! `scripts/audit-orphan-producers.sh` spawn, whose first action is
+//! `REPO_ROOT="$(git rev-parse --show-toplevel)"`, and the `child_repo_root`
+//! probe that checks the spawned child resolves the work tree the caller
+//! intended — satisfy the rule above through that one shared sanitizer without
+//! calling into this crate. Each carries its own argument at its own definition;
+//! `child_repo_root`'s doc explains what its probe catches that sanitization
+//! alone cannot (a `repo_root` that was wrong to begin with).
 //!
 //! ## Sweep status
 //!
 //! `git grep -n 'Command::new("git")' -- '*.rs'` over the whole workspace
-//! returns, besides this module and prose references to it, the `git
-//! --version` probes named above. **As of task 5698**, the same grep also
-//! returns two more accounted-for, non-exempt sites, both in
-//! `crates/reify-test-support/src/orphan_audit.rs`: the `child_repo_root`
-//! probe described above, and a `git init` test fixture in
-//! `wrong_tree_with_real_scope_panics` (builds a decoy repo to audit; "a
-//! fixture helper that shells `git init` into a tempdir" is literally the
-//! example the rule at the top of this module names). Neither is a
-//! `--version` probe, so neither qualifies for the carve-out above; both are
-//! legitimate because both are routed through the shared
-//! [`reify_test_support::git_env::sanitize`] — the same one [`sanitize`] here
-//! re-exports — for the same dependency-direction reason the script spawn is
-//! (see "Resolved non-central case" above). Every OTHER repo-targeting
-//! *git* site — the three `RealGitOps` methods (`spawn_once`,
-//! `is_gitignored`, `is_ancestor`) and the six fixture helpers in
-//! `tests/cli.rs` and `tests/real_git_ops.rs` — is routed through here. The
-//! grep does NOT catch the orphan-audit *script spawn* described above,
-//! because that site spawns a *shell script* that runs git internally rather
-//! than calling `git` directly; a sweep for new call sites must consider both
-//! shapes. Re-run that grep when adding a git call site: a new hit that is
-//! neither a `--version` probe nor one of the two `orphan_audit.rs` sites
-//! named above is a defect.
+//! returns, besides this module and prose references to it, the `git --version`
+//! probes covered by the carve-out above. Every repo-targeting *git* site in
+//! this crate — the three `RealGitOps` methods (`spawn_once`, `is_gitignored`,
+//! `is_ancestor`) and the six fixture helpers in `tests/cli.rs` and
+//! `tests/real_git_ops.rs` — is routed through [`command`].
+//!
+//! Below the edge, in `reify-test-support`, four non-exempt sites are routed
+//! through the shared [`reify_test_support::git_env::sanitize`] instead, for the
+//! dependency-direction reason above: `orphan_audit.rs`'s `child_repo_root`
+//! probe and its `git init` decoy fixture in `wrong_tree_with_real_scope_panics`
+//! ("a fixture helper that shells `git init` into a tempdir" is literally the
+//! example the rule names), plus the `git -C` init loop and the FIX spawn in
+//! `git_env.rs`'s own `sanitize_makes_dash_c_authoritative_against_real_git`.
+//! That test also holds the workspace's ONE deliberately unsanitized site — its
+//! HAZARD half, which exists to prove an ambient redirect var still overrides
+//! `-C`. It is a premise check rather than a call site, and must stay
+//! unsanitized to have any teeth.
+//!
+//! The grep does NOT catch the orphan-audit *script spawn*, because that site
+//! spawns a *shell script* that runs git internally rather than calling `git`
+//! directly; a sweep for new call sites must consider both shapes. Re-run the
+//! grep when adding a git call site: a new hit that is neither a `--version`
+//! probe nor one of the sites named above is a defect.
 
 use std::path::Path;
 use std::process::Command;
@@ -108,11 +82,11 @@ use std::process::Command;
 /// builds the `git -C <root>` shape on top.
 ///
 /// Everything about the set itself — why removal rather than assignment, why
-/// an enumerated set rather than a wholesale `GIT_*` clear, and the deletion
-/// guard that stops an entry being dropped silently — lives with the
-/// definition. This module's tests below cover only what is local here: the
-/// `git -C <root>` shape [`command`] builds, and the real-git behavioural test
-/// proving the sanitization actually beats an ambient redirect var.
+/// an enumerated set rather than a wholesale `GIT_*` clear, the deletion guard
+/// that stops an entry being dropped silently, and the real-git proof that the
+/// removals actually defeat an ambient redirect var — lives with the definition.
+/// This module's tests below cover only what is local here: that [`command`]
+/// builds the `git -C <root>` shape and applies the sanitizer to it.
 pub use reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize};
 
 /// A pre-sanitized `git -C <root>` command.
@@ -129,7 +103,7 @@ pub fn command(root: &Path) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{REPO_REDIRECT_VARS, command, sanitize};
+    use super::{REPO_REDIRECT_VARS, command};
     use std::ffi::OsStr;
     use std::path::Path;
     use std::process::Command;
@@ -166,12 +140,13 @@ mod tests {
     /// without any other unit test here noticing.
     ///
     /// Deliberately does NOT re-assert that [`sanitize`] itself removes every
-    /// entry: that is asserted at the definition site
-    /// (`reify_test_support::git_env`'s own tests), and a second loop through a
-    /// caller-built command here only re-ran the same self-referential check
-    /// one crate up. Re-export reachability needs no test of its own either —
-    /// this module's `use super::{REPO_REDIRECT_VARS, command, sanitize};`
-    /// fails to COMPILE if the `pub use` stops carrying a name.
+    /// entry, nor that it defeats a real ambient redirect var: both are asserted
+    /// at the definition site (`reify_test_support::git_env`'s own tests), and a
+    /// second loop through a caller-built command here only re-ran the same
+    /// self-referential check one crate up. Re-export reachability needs no test
+    /// of its own either — [`command`]'s body calls [`sanitize`] and this
+    /// module's `use super::{REPO_REDIRECT_VARS, command};` names the const, so
+    /// the crate fails to COMPILE if the `pub use` stops carrying either name.
     ///
     /// Self-referential by construction — it asserts the code removes exactly
     /// what the same constant lists, so it stays green through a DELETION from
@@ -188,110 +163,5 @@ mod tests {
                  merely overwrite it; removals seen: {removed:?}"
             );
         }
-    }
-
-    /// Close the loop on REAL git behaviour rather than on `Command` metadata.
-    ///
-    /// Every other test here inspects what [`sanitize`] *records*. That is
-    /// necessary but not sufficient: those tests would stay green if git
-    /// ignored the vars, or if a later `env_remove` failed to override an
-    /// earlier value. This one spawns git twice against the same `-C <root>`
-    /// and asserts both halves of the claim:
-    ///
-    /// - **HAZARD** — with the hook's exported vars present,
-    ///   `git -C <root> rev-parse --show-toplevel` reports the DECOY, not
-    ///   `<root>`. If this half ever stops holding, this whole module is
-    ///   unnecessary and should be deleted rather than trusted.
-    /// - **FIX** — applying the same vars and THEN [`sanitize`] reports
-    ///   `<root>`.
-    ///
-    /// Setting the vars via `.env(..)` and then sanitizing is a faithful stand-in
-    /// for an ambient environment, not a weaker one: `std` records `env_remove`
-    /// as a `(key, None)` entry in the command's env map, and the final child
-    /// environment is built by applying those entries over the inherited
-    /// `env::vars_os()`. A `None` entry deletes an inherited value by exactly
-    /// the same mechanism it deletes an explicitly-set one.
-    ///
-    /// The poison reaches the CHILD only. This test never touches its own
-    /// process environment — `std::env::set_var` is process-global and would
-    /// race sibling tests under `cargo test`'s thread-per-test model.
-    #[test]
-    fn sanitize_makes_dash_c_authoritative_against_real_git() {
-        // Graceful skip if git is absent, matching the probe convention in
-        // tests/g_allow_repo_wide_hard_gate.rs.
-        if Command::new("git").arg("--version").output().is_err() {
-            eprintln!("git_env: skipping real-git test — git not available");
-            return;
-        }
-
-        let target = tempfile::tempdir().expect("target repo tempdir");
-        let decoy = tempfile::tempdir().expect("decoy repo tempdir");
-        for dir in [target.path(), decoy.path()] {
-            let status = command(dir)
-                .args(["init", "--initial-branch=main"])
-                .status()
-                .expect("git init failed to spawn");
-            assert!(
-                status.success(),
-                "git init {dir:?} exited {:?}",
-                status.code()
-            );
-        }
-
-        // `--show-toplevel` canonicalizes, so compare against canonical paths
-        // (TMPDIR is a symlink on some platforms).
-        let canonical = |p: &Path| {
-            std::fs::canonicalize(p)
-                .expect("canonicalize repo path")
-                .to_string_lossy()
-                .into_owned()
-        };
-        let decoy_git_dir = decoy.path().join(".git");
-
-        let toplevel = |cmd: &mut Command| -> String {
-            let out = cmd
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                .expect("git rev-parse failed to spawn");
-            assert!(
-                out.status.success(),
-                "git rev-parse exited {:?}; stderr: {}",
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-
-        // HAZARD: an unsanitized `-C <target>` obeys the poison instead.
-        let mut hazard = Command::new("git");
-        hazard
-            .arg("-C")
-            .arg(target.path())
-            .env("GIT_DIR", &decoy_git_dir)
-            .env("GIT_WORK_TREE", decoy.path())
-            .env("GIT_INDEX_FILE", decoy_git_dir.join("index"));
-        assert_eq!(
-            toplevel(&mut hazard),
-            canonical(decoy.path()),
-            "PREMISE CHECK: a hook's exported git env must still override an \
-             explicit `-C <root>`. If this fails, git's behaviour changed and \
-             this module's reason to exist should be re-examined, not patched."
-        );
-
-        // FIX: the same poison, then sanitize -> `-C <target>` wins.
-        let mut fixed = Command::new("git");
-        fixed
-            .arg("-C")
-            .arg(target.path())
-            .env("GIT_DIR", &decoy_git_dir)
-            .env("GIT_WORK_TREE", decoy.path())
-            .env("GIT_INDEX_FILE", decoy_git_dir.join("index"));
-        sanitize(&mut fixed);
-        assert_eq!(
-            toplevel(&mut fixed),
-            canonical(target.path()),
-            "sanitize() must make `-C <root>` authoritative against real git, not \
-             merely record removals on the Command"
-        );
     }
 }
