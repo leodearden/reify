@@ -3335,26 +3335,62 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
         );
     }
 
-    /// The declaration filter is DECLARATION-SITE-scoped, not name-scoped: the
-    /// same name called elsewhere is still a claim.
+    /// The declaration filter is FILE-scoped — a name declared ANYWHERE in
+    /// this chunk's own content is example-local, wherever in the chunk it is
+    /// later called.
     ///
-    /// This is why the filter removes fewer distinct names than a count of
-    /// declaration sites suggests — `make_default` and `scaled` are declared in
-    /// `traits.md`'s example trait and then CALLED a few lines further down, so
-    /// they survive on the call site. Narrowing that is #5647's prose-vs-
-    /// example-source problem, not a keyword one.
+    /// This is the real `traits.md:77-96` shape: `make_default` and `scaled`
+    /// are declared in the example trait body (:78-79) and then CALLED a few
+    /// lines further down to demonstrate static dispatch (:94-95). A
+    /// declaration-SITE-scoped filter lets both survive on the call, which
+    /// was exactly two of #5647's 7 live fabrication findings.
     #[test]
-    fn mentions_keep_a_declared_name_when_it_is_also_called() {
+    fn mentions_ignore_a_name_declared_anywhere_in_the_chunk() {
         let content = "\
+trait Defaultable {
     fn make_default() -> Length { 10mm }
+    fn scaled(factor : Real) -> Length { 10mm * factor }
+}
+
+**Instance dispatch** — `obj.(Trait::fn)(args)`: resolves to the conformer's associated function (trait default or per-conformer override).
+
+let wetted = pin.(Cylindrical::lateral_area)()
+
+**Static dispatch** — `Trait::fn(args)`: calls a trait-static function directly; no receiver or conformance relationship required.
 
 let gap : Length = Defaultable::make_default()
+let wide : Length = Defaultable::scaled(3.0)
 ";
+        assert!(
+            chunk_call_mentions(content).is_empty(),
+            "make_default and scaled are declared by this chunk's own \
+             example source (lines 2-3); calling them later in the SAME \
+             chunk is not a claim that the compiler provides them; got {:?}",
+            chunk_call_mentions(content)
+        );
+
+        // Negative 1: a name only ever CALLED, never declared, in this
+        // content is still a claim.
+        let called_only = chunk_call_mentions("let s = extrude(profile, 10mm)\n");
         assert_eq!(
-            chunk_call_mentions(content),
-            vec![("make_default".to_string(), 3)],
-            "the declaration at line 1 is dropped; the call at line 3 remains a \
-             claim, reported at its own line"
+            called_only,
+            vec![("extrude".to_string(), 1)],
+            "a name this content never declares is still a claim; got {called_only:?}"
+        );
+
+        // Negative 2: the filter is per-`content` — a declaration in one
+        // chunk must not suppress a call in another. Corpus scope would let
+        // one chunk's throwaway example silently disarm every other chunk's
+        // claims about that name, an unbounded false-negative amplifier.
+        let declaring_chunk = "fn make_default() -> Length { 10mm }\n";
+        let other_chunk = "let gap : Length = Defaultable::make_default()\n";
+        let _ = chunk_call_mentions(declaring_chunk);
+        let other_hits = chunk_call_mentions(other_chunk);
+        assert_eq!(
+            other_hits,
+            vec![("make_default".to_string(), 1)],
+            "a declaration in one chunk must not suppress a call in a \
+             DIFFERENT chunk; got {other_hits:?}"
         );
     }
 
