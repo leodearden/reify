@@ -97,6 +97,7 @@ structure def AngleCrossings {
     param s : Length    = 5mm
     param r : Length    = 2mm
     param f : Frequency = 50Hz
+    param phi : Angle   = 30deg
 
     // THE IDIOM: `* 1rad` to enter, `/ 1rad` to leave. Each annotation is an
     // assertion — remove the crossing and the binding stops compiling.
@@ -110,10 +111,21 @@ structure def AngleCrossings {
     // are not interchangeable, and no `* 1rad` belongs here.
     let theta_trig : Angle      = atan(s / r)        // 1.1902899496825317 rad
 
+    // FORWARD DIRECTION — the case an author reaching for `s = r*theta`
+    // actually has: an angle known independently, not one recovered from a
+    // ratio. `arc` above round-trips — `r * (s/r)` is `s` by construction, so
+    // it pins the crossing algebra but not the arithmetic. `arc2` does not.
+    let arc2  : Length          = r * phi / 1rad     // 0.0010471975511965976 m
+
     // Bands, not sign guards. A regression that preserved dimensions but moved
     // magnitudes would still satisfy `arc > 0mm`; these fail `reify check`
     // instead, so each identity above is pinned by a predicate and not only by
-    // a comment.
+    // a comment. HONEST SCOPE: `reify check` is the enforcer, and no CI gate
+    // runs it over this corpus — `examples_smoke.rs` compiles only, and the
+    // two `reify-eval` corpus sweeps assert zero stale-Undef and zero
+    // snapshot/cache divergence, never constraint status. What these bands
+    // pin is the per-file `reify check` SKILL.md already mandates before
+    // shipping a design.
     constraint r > 0mm
     constraint s > r
     constraint f > 0Hz
@@ -121,6 +133,8 @@ structure def AngleCrossings {
     constraint ratio < 2.6
     constraint arc > 4.9mm              // s = r*theta/eta
     constraint arc < 5.1mm
+    constraint arc2 > 1.04mm            // forward: r*phi/eta, phi = pi/6
+    constraint arc2 < 1.05mm
     constraint omega > 314.0rad_per_s   // 2*pi*f — the 2*pi rad/cycle class
     constraint omega < 314.3rad_per_s
     constraint theta_trig < theta       // trig reading != arc-measure reading

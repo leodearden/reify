@@ -58,10 +58,21 @@ When you have a geometric ratio and want an angle — or you have an angle and w
 **Which ratio, though.** This crossing is for an **arc-measure** ratio — `s / r`, a length over a length that *is* an angle in radians. A **trigonometric** ratio already has a named producer and needs no crossing: `atan`, `atan2`, `asin`, `acos` and the geometry `angle` / `angle_between_surfaces` queries all return `Angle` directly. Do not put `* 1rad` on a producer's result or its argument — `atan(o / a) * 1rad` is a hard error (it declares `rad` but computes `rad^2`). Picking the wrong one of the two readings is otherwise silent: for `o / a = 2.5`, `atan(o / a)` is `1.19… rad` and `(o / a) * 1rad` is `2.5 rad`, and both typecheck. `* 1rad` is one row of the crossing catalogue, not the whole of it.
 
 ```
+let s : Length     = 5mm                 // an arc measured along the rim
+let r : Length     = 2mm                 // its radius
+
 let theta : Angle  = (s / r) * 1rad      // ENTER: ratio -> Angle       (2.5 rad)
 let ratio          = theta / 1rad        // LEAVE: Angle -> plain ratio (2.5)
-let arc   : Length = r * theta / 1rad    // arc length s = r*theta/eta  (0.005 m)
+let arc   : Length = r * theta / 1rad    // round-trips back to s       (0.005 m)
+
+let phi   : Angle  = 30deg               // an angle known independently
+let arc2  : Length = r * phi / 1rad      // arc length s = r*phi/eta    (0.00104719… m)
 ```
+
+`arc` recovers the `s` it started from — `r * (s/r)` is `s` by construction, so
+it demonstrates the algebra but not the arithmetic. `arc2` is the direction an
+author usually wants: an arc length computed from an angle that was *not* derived
+from a ratio.
 
 Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error: rad`.
 
