@@ -709,6 +709,78 @@ structure def TOTSShaper : Shaper {
     //   rationale (producer/consumer-enforced at the SQP loop).
 }
 
+// ── RevoluteTOTSShaper (task 6096) ────────────────────────────────────────────
+
+// RevoluteTOTSShaper — the REVOLUTE / rotational half of the TOTS-shaper
+// duality (task 6096). Mirrors `TOTSShaper` above exactly: same 7 params in
+// the same canonical order, the same `Shaper` refinement, the same 6 ctor
+// constraints. It differs ONLY in the three per-joint-kind types:
+//
+//   - actuator_limits    : List<RevoluteJointLimit>  (vs List<JointLimit>)
+//   - velocity_limit     : Scalar<AngularVelocity>   (rad·s⁻¹, vs m·s⁻¹)
+//   - acceleration_limit : Rate<AngularVelocity>     (rad·s⁻², vs m·s⁻²)
+//
+// WHY `Rate<AngularVelocity>` AND NOT A NAMED `AngularAcceleration`:
+// there is no `ANGULAR_ACCELERATION` DimensionVector const and no
+// "AngularAcceleration" NAMED_DIMENSIONS row in reify-core today (zero hits
+// repo-wide). That name is chartered to a DIFFERENT PRD leaf —
+// `docs/prds/v0_6/angle-dimension-completion.md` leaf δ ("ANGULAR_ACCELERATION
+// + closure exemplar") — so adding it here would be cross-PRD scope theft of
+// an owned leaf. It is also unnecessary: the prelude alias
+// `pub type Rate<Q: Dimension> = Q / Time` (units.ri:116) composes the
+// IDENTICAL rad·s⁻² vector today. The cost is a spelling asymmetry
+// (`Scalar<AngularVelocity>` beside `Rate<AngularVelocity>`); retype this
+// field to the named dimension when δ lands.
+//
+// The `velocity_limit > 0` / `acceleration_limit > 0` constraints use bare
+// `0`, coerced per-field to Scalar<AngularVelocity> / Scalar<rad·s⁻²> at
+// compile time by the task-4485/β polymorphic-zero rewrite — exactly as
+// TOTSShaper's do. The constraint SOURCE TEXT is therefore byte-identical
+// across the two halves; the per-kind difference lives entirely in the param
+// declarations, which is what makes the coerced literal's dimension worth
+// pinning in the tests.
+//
+// TOTSShaper above stays byte-identical as the LINEAR / prismatic half, so no
+// existing caller of it moves.
+structure def RevoluteTOTSShaper : Shaper {
+    param modes : List<Mode>
+    param actuator_limits : List<RevoluteJointLimit>
+    param velocity_limit : Scalar<AngularVelocity>
+    param acceleration_limit : Rate<AngularVelocity>
+    param vibration_tolerance : Real
+
+    // Solver-loop knobs, identical to the linear half's — these are entirely
+    // independent of the joint kind, so the two halves must not diverge here.
+    param max_iters : Int = 100
+
+    // 0.000001 = 1e-6, spelled as a decimal literal because Reify's
+    // number-literal grammar has no scientific notation (same convention as
+    // TOTSShaper.tol above and ModalOptions.tol in modal_analysis.ri).
+    param tol : Real = 0.000001
+
+    // Same 6 constraints as the linear half, same rationale:
+    // a zero or negative angular velocity/acceleration limit is non-physical,
+    // vibration_tolerance ∈ (0, 1] is the residual-vibration fraction, and
+    // max_iters / tol must be strictly positive for the solver to run and
+    // converge. All fire at construction via SIR-α's
+    // `check_constraints_against_templates` machinery.
+    constraint velocity_limit > 0
+    constraint acceleration_limit > 0
+
+    constraint vibration_tolerance > 0
+    constraint vibration_tolerance <= 1
+
+    constraint max_iters > 0
+
+    constraint tol > 0
+
+    // NOTE — explicitly NOT constrained:
+    //   `modes : List<Mode>` — collection invariants deferred to the κ-task
+    //   SQP-loop trampoline (same discipline as ModalResult.modes).
+    //   `actuator_limits : List<RevoluteJointLimit>` — same collection-
+    //   invariant rationale (producer/consumer-enforced at the SQP loop).
+}
+
 // ── Impulse shapers (PRD §5.1) ────────────────────────────────────────────────
 //
 // δ task (3857) adds ZVShaper, ZVDShaper, EIShaper, and CascadedShaper — all
