@@ -2392,7 +2392,7 @@ mod tests {
         // `dispatch_by_realization`). Pin the types here. Deeper VALUE-level
         // coverage — a pruned realization's count being 0/absent vs a dispatched
         // one's > 0 — lives in the engine integration test
-        // (crates/reify-eval/tests/selective_demand_epsilon.rs) and the GUI-side
+        // (crates/reify-eval/tests/harness_selective_demand/selective_demand_epsilon.rs) and the GUI-side
         // §8 boundary rows (gui/src-tauri/src/tests/commands_tests.rs); this test
         // only guards the tool wiring + projection shape on a cold engine.
         assert!(

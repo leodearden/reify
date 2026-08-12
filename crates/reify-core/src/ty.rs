@@ -628,7 +628,7 @@ impl Type {
     /// top of the root-cause diagnostic.
     ///
     /// This cascade is pinned as a regression test at:
-    /// `crates/reify-compiler/tests/type_error_propagation_tests.rs`
+    /// `crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs`
     /// `::nested_compound_error_cascades_through_trait_let_annotation`
     ///
     /// # Follow-up plan
@@ -1712,7 +1712,7 @@ mod tests {
     // They are INTENTIONALLY written so that they PASS on current code (where
     // `is_error()` is top-level-only) and would FAIL if `is_error()` were
     // changed to recurse. Paired with the integration regression test at:
-    //   crates/reify-compiler/tests/type_error_propagation_tests.rs
+    //   crates/reify-compiler/tests/harness_langcore/type_error_propagation_tests.rs
     //   ::nested_compound_error_cascades_through_trait_let_annotation
     //
     // If you are implementing a recursive `contains_error()` helper (option (a)

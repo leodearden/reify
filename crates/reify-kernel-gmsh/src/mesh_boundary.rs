@@ -294,7 +294,7 @@ pub fn preflight_watertight_surface(surface: &Mesh, tol: f64) -> Result<(), Geom
 /// `pub` (not crate-private): this is the SINGLE shared implementation of
 /// the raw directed-edge scan. Both [`preflight_watertight_surface`] (above)
 /// and the #4876/#5115 characterization test
-/// (`crates/reify-eval/tests/fea_face_selector_bc_e2e.rs::characterizes_4876_occt_tessellation_unwelded_witness`)
+/// (`crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs::characterizes_4876_occt_tessellation_unwelded_witness`)
 /// call this same function — the latter as
 /// `reify_kernel_gmsh::mesh_boundary::raw_open_edge_census`, reachable
 /// because `reify-eval`'s dev-dependency on this crate enables the

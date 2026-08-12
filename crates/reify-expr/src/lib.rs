@@ -2132,7 +2132,7 @@ fn emit_snapshot_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &E
 /// `result_for`.
 ///
 /// Pinned per guard by per-case E2E smoke tests in
-/// `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`:
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs`:
 /// - `wrong_arity` — `args.len() != 2` returns `Value::Undef` immediately
 ///   (internal guard; pinned by `eval_worst_case_dispatch_wrong_arity_returns_undef`
 ///   in mod tests). At the E2E level, `arity_one` / `arity_three` fall through

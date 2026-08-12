@@ -2442,7 +2442,7 @@ mod tests {
     /// LEGITIMATE product-module sentinel test, NOT a placeholder test.
     ///
     /// Real corpus name: `tessellate_sentinel_placeholder_continues_independent_ops`
-    /// (crates/reify-eval/tests/geometry_error_handling.rs). The word
+    /// (crates/reify-eval/tests/harness_geometry/geometry_error_handling.rs). The word
     /// "placeholder" here describes a sentinel value / code-path placeholder in
     /// the *geometry kernel*, not a not-yet-implemented test. The fn body
     /// legitimately asserts `is_empty()` because the sentinel path produces an
@@ -2461,7 +2461,7 @@ mod tests {
         // legitimately asserts that the sentinel path produces an empty geometry list.
         let findings = run_h1_single_file(
             "H1DN1",
-            "crates/reify-eval/tests/geometry_error_handling.rs",
+            "crates/reify-eval/tests/harness_geometry/geometry_error_handling.rs",
             vec![
                 (1, "    #[test]".to_string()),
                 (2, "    fn tessellate_sentinel_placeholder_continues_independent_ops() {".to_string()),

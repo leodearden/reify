@@ -758,7 +758,7 @@ fn modal_options_param_defaults_match_spec() {
 /// design-decision 7), not re-verified here. These structure-def
 /// declarations feed the SIR-α generic constraint-firing pipeline, which is
 /// pinned end-to-end by
-/// `crates/reify-eval/tests/stress_error_messages.rs::constraint_violation_diagnostic`
+/// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// (constraint → `Satisfaction::Violated` diagnostic) and the
 /// `Value::StructureInstance` round-trip in
 /// `crates/reify-eval/tests/structure_instance_e2e.rs`. A modal-specific

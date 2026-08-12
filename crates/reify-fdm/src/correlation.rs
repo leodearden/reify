@@ -460,7 +460,7 @@ mod tests {
     /// Scope is the Rust surface only — the name no longer claims `_and_stdlib`
     /// because nothing here loads the stdlib. The stdlib `FDMCorrelationDefaults`
     /// surface is pinned to the same literals independently by
-    /// `reify-compiler/tests/fdm_correlations_stdlib_compile.rs`; see the module
+    /// `reify-compiler/tests/harness_geometry_solver/fdm_correlations_stdlib_compile.rs`; see the module
     /// header for why a direct cross-surface comparison lives in neither place.
     #[test]
     fn default_constants_match_prd() {

@@ -12,7 +12,7 @@
 //!
 //! CST-shape tests (asserting the grammar tokenises radix literals as single
 //! `number_literal` nodes) live in
-//! `crates/reify-syntax/tests/radix_literals_grammar_tests.rs` and are
+//! `crates/reify-syntax/tests/harness_syntax/radix_literals_grammar_tests.rs` and are
 //! γ-only; this file adds the δ lowering layer on top (task 3913).
 //!
 //! See also: `docs/prds/v0_6/numeric-and-range-literal-forms.md`.

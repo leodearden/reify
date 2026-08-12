@@ -95,7 +95,7 @@ pub struct DiagnosticsResult {
 /// `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
 /// (below, in `mod tests`) — the LSP-side analog of `cmd_check`'s
 /// `check_fea_violated_constraint_is_not_gated` lock
-/// (`crates/reify-cli/tests/cli_build_fea.rs`); changing this posture
+/// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`); changing this posture
 /// requires updating that test intentionally.
 pub fn compute_diagnostics_with_state(
     state: &mut EvalState,
@@ -2426,7 +2426,7 @@ structure S {
     /// FEA constraint produces neither a false violation nor a false pass
     /// (see [`assert_no_false_violation_or_pass`]) — the LSP-side analog of
     /// the CLI's `check_fea_violated_constraint_is_not_gated`
-    /// (`crates/reify-cli/tests/cli_build_fea.rs`). GREEN before and after:
+    /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before and after:
     /// this locks pre-existing gate behaviour, not new runtime behaviour.
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {

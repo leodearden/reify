@@ -4,7 +4,7 @@ use reify_core::field_calculus::{DifferentialOp, differential_codomain};
 /// The complete set of stdlib geometry constructor names recognised by the
 /// compiler. This is the **source of truth** for both [`is_geometry_function`]
 /// (derived via `.contains(&name)`) and the dispatch coverage test in
-/// `crates/reify-compiler/tests/geometry_traits_inference_tests.rs`.
+/// `crates/reify-compiler/tests/harness_geometry_solver/geometry_traits_inference_tests.rs`.
 ///
 /// # Maintenance contract
 ///

@@ -2,7 +2,7 @@
 //! aggregation builtin (task 5015, M-WHOLE γ).
 //!
 //! Compile-side structural assertions live in
-//! `crates/reify-compiler/tests/cost_subtree_aggregate_compile_tests.rs`;
+//! `crates/reify-compiler/tests/harness_units_materials/cost_subtree_aggregate_compile_tests.rs`;
 //! this binary locks the runtime end-to-end behaviour: `cost(self.descendants)`
 //! sums the `line_cost` of every `Costed`-conforming descendant into a
 //! `Scalar<MONEY>` total, via the `apply_cost_aggregation` pre-eval rewrite

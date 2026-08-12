@@ -1503,7 +1503,7 @@ fn compile_geometry_call_inner(
                 // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
                 // `Scalar{AREA}` — numerically silent through `Value::as_f64()`, but
                 // rejected by the incoming eval-layer length gate. Pinned by
-                // crates/reify-compiler/tests/geometry_centered_primitives_tests.rs.
+                // crates/reify-compiler/tests/harness_geometry_solver/geometry_centered_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
