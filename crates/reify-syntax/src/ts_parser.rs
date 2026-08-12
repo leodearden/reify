@@ -881,8 +881,23 @@ impl<'a> Lowering<'a> {
     /// `sub_structure_name_whitespace_is_normalised` in
     /// `tests/harness_syntax/namespaced_ref_lowering_tests.rs`.
     ///
-    /// Pre-ν behaviour is loud, never silent: an unresolved `"pp.Pulley"`
-    /// produces the ordinary unresolved-name / unknown-type diagnostic.
+    /// **Pre-ν loudness is per-POSITION, not blanket** — measured on this
+    /// branch with `target/debug/reify check`:
+    ///
+    /// - TYPE position is loud on its own: `param p : obj.width` answers
+    ///   `error: unresolved type: obj.width` (exit 1).
+    /// - `sub` structure_name is loud on its own: `sub s = obj.width()` answers
+    ///   `error: sub-component "s" references unknown structure "obj.width"`
+    ///   (exit 1).
+    /// - EXPRESSION position is NOT, because the compiler has no unknown-function
+    ///   diagnostic behind `ExprKind::FunctionCall`. Loudness there is delivered
+    ///   by `lower_namespaced_call`'s import-binding guard for an undeclared
+    ///   qualifier, and by module resolution (`error: module 'parts' not found`,
+    ///   exit 1) for a declared binding whose module is absent.
+    ///
+    /// That leaves exactly one silent case — declared binding, module resolves,
+    /// member does not — which is resolution work and therefore ν's (task 5505).
+    /// See `lower_namespaced_call` for the two-guard sequence.
     fn namespaced_name_text(&self, node: tree_sitter::Node) -> Option<String> {
         if node.kind() != "namespaced_name" {
             return None;
