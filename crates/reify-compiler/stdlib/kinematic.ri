@@ -25,7 +25,8 @@
 //   - structure def Coupling  : Joint  (derived motion — no independent motion var)
 //   - structure def Fixed     : Joint  (0-DOF sub-assembly grouping)
 //   - structure def JointBinding       (element type of snapshot()'s `bindings` arg)
-//   - structure def Twist              (spatial-velocity / joint-Jacobian element)
+//   - structure def Twist              (spatial velocity — transform_log/exp element)
+//   - structure def JacobianColumn     (dpose/dq column of joint_jacobian)
 //   - structure def BodyId             (opaque body identifier placeholder)
 //   - structure def Mechanism          (body+joint-parent graph placeholder)
 //   - structure def Snapshot           (free_values, is_singular)
@@ -239,9 +240,51 @@ structure def Fixed : Joint { }
 structure def JointBinding { }
 
 // Twist — spatial velocity of a rigid body (linear + angular components).
-// Used as the element type of joint-Jacobian columns and wrench vectors.
+// Used as the element type of wrench vectors; it is the return type of
+// `transform_log` / `transform_exp` (std.transform). It is NOT the type of a
+// joint-Jacobian column — see `JacobianColumn` below.
 // Empty marker; field layout is deferred to the β/SIR-α signature family.
 structure def Twist { }
+
+// JacobianColumn — one column of a joint Jacobian: the partial derivative of
+// pose with respect to that joint's generalized coordinate, dpose/dq. This is
+// the return type of `joint_jacobian`.
+//
+// A Jacobian column is NOT a spatial velocity, and therefore NOT a `Twist`. A
+// twist is dpose/dt; a column is dpose/dq. They coincide numerically only after
+// multiplication by q̇, which is the consumer's job, never this type's.
+//
+// Dimensions. The true per-joint-kind dimensions are heterogeneous, so no one
+// monomorphic structure can state them:
+//
+//   revolute column (q : Angle)   — angular is rad/rad, linear is m/rad
+//   prismatic column (q : Length) — angular is rad/m,   linear is m/m
+//
+// Reify has no dimension-arithmetic type parameters to express `Vector3<Length/Q>`,
+// so the components are carried unit-tagless and declared `Vec3<Dimensionless>`.
+// That is exactly what the runtime emits: measured, every arm — prismatic,
+// revolute, screw, gear, rack_and_pinion, cylindrical — yields a bare untagged
+// `vec(...)` on both components. The declaration states what is CARRIED; this
+// comment carries what it MEANS. (`Vec3` bare would be false: it is
+// `Vector3<Length>`, trajectory.ri.)
+//
+// Why this is a separate structure from `Twist`. `Twist` is being narrowed to
+// `angular : Vector3<Angle>` (task 6080) and `linear : Vector3<Length>`
+// (task 6126). Under ANY such monomorphic `Twist`, the old claim
+// `joint_jacobian -> Twist` becomes false. Splitting the column onto its own
+// nominal type decouples the two, so those narrowings do not drag Jacobian
+// columns with them.
+//
+// Multi-DOF fidelity gap (pre-existing, NOT closed here). 1-DOF joints
+// (prismatic / revolute / fixed / the coupling family) evaluate to a single
+// `Value::Map`, while cylindrical / planar / spherical evaluate to a
+// `Value::List` of columns — yet the compiler assigns this one flat nominal tag
+// either way. Closing that means changing the signature's SHAPE, which is owned
+// by the builtin-signature-registry work, not by this nominal-name split.
+structure def JacobianColumn {
+    param angular : Vec3<Dimensionless> // dpose/dq rotational part (rad/rad or rad/m)
+    param linear  : Vec3<Dimensionless> // dpose/dq translational part (m/rad or m/m)
+}
 
 // ── Top-level kinematic types ─────────────────────────────────────────────────
 
