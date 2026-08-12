@@ -3073,6 +3073,19 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// rather than a bare placeholder — hence the `Cow` return: known arms
 /// borrow a `'static` string, the composed fallback owns a freshly
 /// formatted one.
+///
+/// # Stability — PROVISIONAL public surface
+///
+/// Widened from a private helper by task λ (#5788, §11 Q2) so task μ can read
+/// the curated raw-SI label across the crate boundary. That consumer has not
+/// landed, so no real call site has yet exercised this signature: the
+/// `&DimensionVector -> Cow<'static, str>` shape is not settled and may change
+/// (or narrow back to `pub(crate)`) once μ shows what it actually needs.
+/// `crates/reify-ir/tests/api_surface.rs` pins only that both the flat and
+/// module-path spellings resolve — it is not a promise about the shape.
+/// In-crate callers wanting the rendered value should keep using
+/// [`Value::format_hover`] / `format_display_pair` / `resolve_display`, which
+/// remain the stable surface.
 pub fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
         Cow::Borrowed("m")
