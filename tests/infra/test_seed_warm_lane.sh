@@ -4488,6 +4488,119 @@ assert "V4-fixture: the SYNC control run exits 0 (target was non-empty again, so
 assert "V4 (non-vacuity, pipe really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd 1 IS the caller's pipe, proving this harness genuinely connects one" \
     _v_field_is_pipe "$V_FDLOG_SYNC" "$V_TRASH_GLOB" 1
 
+# ── V5-V7: the orphan-sweep arm (:1070) ─────────────────────────────────────
+# Reuses the H4e orphan-trash plant recipe (:2553-2565) — a FRESH lane with a
+# non-empty target/ (a precondition: the orphan sweep lives inside the same
+# `if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A ...)" ]` block as the
+# rename-to-trash it accompanies) plus a pre-planted `<lane>.999999` orphan
+# entry under the lane's own private dirname(LANE)/.reseed-trash, naming a
+# dead PID so seed's crash-recovery sweep treats it as reclaimable. Same pipe
+# shape and fd-probing rm stub as V0-V4 above (V_STUB is reused verbatim).
+V_LANE2="$(make_isolated_lane V-lane2)"
+mkdir -p "$V_LANE2/target"
+echo "stale" > "$V_LANE2/target/stale.a"
+
+V_TRASH2="$(dirname "$V_LANE2")/.reseed-trash"
+mkdir -p "$V_TRASH2/$(basename "$V_LANE2").999999"
+echo "orphan artifact" > "$V_TRASH2/$(basename "$V_LANE2").999999/orphan.a"
+
+V_ORPHAN_GLOB="*/.reseed-trash/$(basename "$V_LANE2").999999"
+
+V_FDLOG2="$_LANE_ROOT/.v-fdlog2"
+: > "$V_FDLOG2"
+V_SINK3="$_LANE_ROOT/.v-sink3"
+
+set +e
+( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG2" \
+    bash "$SCRIPT" "$V_BASE" "$V_LANE2" --fresh-checkout ) 2>&1 | cat > "$V_SINK3"
+V5_RC="${PIPESTATUS[0]}"
+set -e
+
+assert "V5-fixture: seed exits 0 (orphan-sweep fixture sanity)" test "$V5_RC" -eq 0
+
+assert "V7 (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors H4e's assert at :2571)" \
+    grep -q "Sweeping orphaned trash entry" "$V_SINK3"
+
+assert "V5 (RED, the defect): the detached orphan-sweep rm's fd 1 is NOT the caller's pipe" \
+    _v_field_not_pipe "$V_FDLOG2" "$V_ORPHAN_GLOB" 1
+assert "V6 (RED, the defect): the detached orphan-sweep rm's fd 2 is NOT the caller's pipe" \
+    _v_field_not_pipe "$V_FDLOG2" "$V_ORPHAN_GLOB" 2
+
+# ── V8: structural regression guard — a behavioural test only pins the two
+# sites that exist TODAY; a future third detached job in this script would
+# silently reintroduce the identical defect. Borrows the DETACH definition
+# already used by tests/infra/test_flock_detached_fork_guard.sh (a
+# non-comment line whose final effective token is a bare `&`, i.e. not `&&`)
+# rather than inventing a competing one. ─────────────────────────────────────
+
+# _v8_detach_offenders <file> -- prints "<lineno>: <line>" for every DETACH
+# line in <file> that does NOT also carry an output redirect (no `>`
+# anywhere once a trailing `# comment` is stripped). Exits 1 if any such line
+# was printed, 0 if none -- mirrors _flock_fork_offenders' print+return-code
+# shape (tests/infra/test_flock_detached_fork_guard.sh).
+_v8_detach_offenders() {
+    local f="$1"
+    awk '
+        function is_detach(s) {
+            sub(/[[:space:]]+#.*$/, "", s)
+            return (s ~ /[^&>|]&[[:space:]]*$/)
+        }
+        {
+            t = $0
+            sub(/^[[:space:]]+/, "", t)
+            if (t == "" || t ~ /^#/) next
+            body = t
+            sub(/[[:space:]]+#.*$/, "", body)
+            if (is_detach(t) && body !~ />/) {
+                printf "%d: %s\n", NR, t
+                bad = 1
+            }
+        }
+        END { exit (bad ? 1 : 0) }
+    ' "$f"
+}
+
+# _v8_assert_no_offenders <file> -- the assert-shaped wrapper: prints any
+# offenders (captured by assert's own on-FAIL dump, per its tmpfile
+# mechanism) and returns non-zero iff at least one was found.
+_v8_assert_no_offenders() {
+    local f="$1" out rc=0
+    out="$(_v8_detach_offenders "$f")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '%s\n' "$out"
+        return 1
+    fi
+    return 0
+}
+
+# Sensitivity pin (self-match-safety convention shared with
+# test_flock_detached_fork_guard.sh / test_no_new_wallclock_upper_bounds.sh /
+# test_reify_audit_ptodo.sh): the offending shape is assembled from shell
+# variables into a mktemp'd file, NEVER written as a literal line in this
+# file — tests/infra/test_flock_detached_fork_guard.sh:762-763 asserts this
+# very file scans clean under its own detached-fork/FD-9 scanner, and a
+# literal offending line here would put that at risk.
+V8_FIXTURE_DIR="$(mktemp -d "$_LANE_ROOT/V8-fixture-XXXXXX")"
+V8_OFFENDER="$V8_FIXTURE_DIR/offender.sh"
+V8_CLEAN="$V8_FIXTURE_DIR/redirected-twin.sh"
+_v8_amp='&'
+_v8_close='9<&-'
+printf '{ rm -rf "$X"; } %s %s\n' "$_v8_close" "$_v8_amp" > "$V8_OFFENDER"
+printf '{ rm -rf "$X"; } %s >/dev/null 2>&1 %s\n' "$_v8_close" "$_v8_amp" > "$V8_CLEAN"
+
+V8_OFF_RC=0
+_v8_detach_offenders "$V8_OFFENDER" >/dev/null || V8_OFF_RC=$?
+assert "V8-sensitivity: the detector FLAGS a synthetic offender (9<&- & with no stdout redirect) -- proves it is not vacuously green" \
+    test "$V8_OFF_RC" -ne 0
+
+V8_CLEAN_RC=0
+_v8_detach_offenders "$V8_CLEAN" >/dev/null || V8_CLEAN_RC=$?
+assert "V8-sensitivity: the detector does NOT flag the redirected twin (>/dev/null 2>&1 added)" \
+    test "$V8_CLEAN_RC" -eq 0
+
+assert "V8: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs lacking a stdout redirect (structural regression guard)" \
+    _v8_assert_no_offenders "$SCRIPT"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
 # must be nested under a private per-run parent, never bare /tmp, because
