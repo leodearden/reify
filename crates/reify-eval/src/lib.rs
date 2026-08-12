@@ -916,10 +916,14 @@ pub struct Engine {
     /// `Engine` *as long as the inputs are value-stable*.
     ///
     /// **Auto-invalidation hook points (task 2874, steps 17-20)**: `edit_param`
-    /// and `edit_source` reset the cache to a fresh `RealizationCache::new()`
+    /// and `edit_source` delegate to [`Engine::clear_realization_cache`](Engine::clear_realization_cache)
     /// near function entry, mirroring the established `feature_tag_table` /
     /// `topology_attribute_table` reset-at-hook-point pattern
-    /// (engine_build.rs:531/406). After an edit, the next `build()` /
+    /// (engine_build.rs:531/406). That mutator clears the existing cache in
+    /// place via `RealizationCache::clear()` (task 4152) rather than reseating
+    /// it to a fresh `RealizationCache::new()` — the reseat was the original
+    /// step-18/step-19 shape but was replaced because it zeroes the monotonic
+    /// `realization_entries` counter. After an edit, the next `build()` /
     /// `build_snapshot()` cold-misses on every realization and re-populates
     /// the cache from kernel execution. The reset is conservative — the
     /// engine cannot prove which cached entries survive a given edit without
