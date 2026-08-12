@@ -22,13 +22,12 @@
 #   On the finite-WAIT deadline (the rc=75 path) slot_acquire emits ONE line to
 #   stderr, first token at COLUMN 0:
 #     @@REIFY_SLOT_TIMEOUT@@ reason=<R> slots=<N> waited=<secs> disposition=<D> lock=<LOCK_BASE>
-#   dark-factory's SEMAPHORE_TIMEOUT classifier matches it LINE-ANCHORED, so it
-#   must never be appended mid-line to another message; the human-readable
-#   deadline messages the three wrapper callers print are DF's other grounded
-#   anchors and this marker is strictly additive alongside them.
-#   A DISTINCT family from @@REIFY_CLOCK_*@@: unpaired and terminal, and
-#   deliberately outside run_all.sh's `@@REIFY_CLOCK_` sanitizer prefix so it
-#   survives re-emission. Guard: tests/infra/test_slot_timeout_marker.sh.
+#   It is strictly ADDITIVE alongside the human-readable deadline messages the
+#   three wrapper callers print (dark-factory's other grounded anchors).
+#   Emission contract -- why column 0, why lock= is last, why it is non-fatal:
+#   slot_emit_timeout's header below.  Consumer, reason vocabulary and how this
+#   family relates to @@REIFY_CLOCK_*@@: docs/notes/verify-pipeline-knobs.md.
+#   Guard: tests/infra/test_slot_timeout_marker.sh.
 #
 # OUTPUT GLOBALS (set by slot_acquire):
 #   SLOT_ACQUIRE_SLOT    — slot number (1..N) acquired; "" on 75 return.
@@ -141,10 +140,8 @@ slot_emit_event() {
 #   be able to substitute an ERR-exit for that contract: diagnostics never
 #   change control flow.
 #
-#   DISTINCT FAMILY from @@REIFY_CLOCK_*@@: unpaired and terminal ("this wait
-#   failed"), not a STOP/START span transition ("exclude this span from the
-#   verify timeout budget").  It deliberately falls outside run_all.sh's
-#   `@@REIFY_CLOCK_`-prefixed sanitizer so it survives re-emission.
+#   A DISTINCT marker family from @@REIFY_CLOCK_*@@, and outside run_all.sh's
+#   sanitizer prefix by design -- stated once, in docs/notes/verify-pipeline-knobs.md.
 # ---------------------------------------------------------------------------
 slot_emit_timeout() {
     printf '@@REIFY_SLOT_TIMEOUT@@ reason=%s slots=%s waited=%s disposition=%s lock=%s\n' \
@@ -215,10 +212,8 @@ slot_acquire() {
     local _n="$2"
     local _wait="$3"
     local _reason="${4:-}"   # OPTIONAL: non-empty → emit @@REIFY_CLOCK_*@@ markers
-    # OPTIONAL 5th: reason token carried by the deadline sentinel only.  SEPARATE
-    # from _reason because _reason is load-bearing for CLOCK-STOP accounting --
-    # making a deliberately-3-arg caller pass one just to name its timeout would
-    # newly exclude its wait from dark-factory's verify timeout budget.  The
+    # OPTIONAL 5th: reason token carried by the deadline sentinel only, SEPARATE
+    # from _reason -- see the TIMEOUT_REASON arg doc above for why.  The
     # ${_reason:-slot_acquire} fallback keeps every existing 3-/4-arg caller
     # working, set -u safe, and guarantees a non-empty reason field on the wire.
     # Both fallback branches are exercised directly by A7/A8 in

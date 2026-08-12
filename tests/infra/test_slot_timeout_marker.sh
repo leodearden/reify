@@ -210,12 +210,9 @@ assert "A8b: with no TIMEOUT_REASON the clock REASON is inherited onto the senti
 echo ""
 echo "--- A9: a whitespace-bearing LOCK_BASE cannot shift any other field ---"
 
-# LOCK_BASE is the one OPERATOR-controlled field on every path (the REIFY_*_LOCK
-# knobs and their ${TMPDIR:-/tmp}-derived defaults), so it is the only value that
-# can contain whitespace. Emitting it LAST is what keeps a space-bearing path
-# from shifting reason=/slots=/waited=/disposition= out from under a
-# field-position parser. This case is the guard on that ordering choice: move
-# lock= back into the middle and the shape assertion below goes RED.
+# The guard on the terminal-lock= ordering choice stated in this file's header
+# (rationale in full: slot_emit_timeout's header in scripts/lib_slot_acquire.sh).
+# Move lock= back into the middle and the shape assertion below goes RED.
 A9_DIR="$TMPA/a9 dir"
 mkdir -p "$A9_DIR"
 A9_LOCK="$A9_DIR/a9 lock.lock"

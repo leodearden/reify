@@ -1405,10 +1405,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     #     lib_lane_x_flock), so the @@REIFY_SLOT_TIMEOUT@@ sentinel is its only
     #     classification route, and a token shared with the test-semaphore path
     #     would make a starved POOL indistinguishable from a starved test slot.
-    # The sentinel rides the worker subshell's inherited parent stderr for the
-    # same reason the clock markers do (see the `.out` note above), and is
-    # outside _RA_CLOCK_SANITIZE's `@@REIFY_CLOCK_` prefix, so it survives
-    # re-emission by design.
+    # The sentinel rides the inherited parent stderr for the same reason the
+    # clock markers do (the `.out` note above) and survives re-emission by
+    # design (docs/notes/verify-pipeline-knobs.md).
     _H2_POOL_TIMEOUT_REASON="run_all_pool_starvation"
 
     # Slot-timeout DISPOSITION for the same wait (slot_acquire's optional 6th
@@ -1419,9 +1418,12 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # field the sentinel would be indistinguishable from a genuine starvation
     # abort, so a merely-degraded pool would read on the wire exactly like the
     # infra-hold class task #6024 exists to make identifiable -- inverted.
-    # dark-factory's detector does not gate on the field yet (it is
-    # presence-anchored); emitting it is what makes that gate possible without a
-    # second reify-side wire change.
+    # ACCEPTED TEMPORARY STATE: dark-factory's detector is presence-anchored and
+    # does not gate on this field yet, so until it does, a soft pool deadline in
+    # the output of an ALREADY-FAILING verify is attributed to SEMAPHORE_TIMEOUT
+    # rather than to the real cause. Bounds, why emitting anyway is still the
+    # right trade, and what closes it: docs/notes/verify-pipeline-knobs.md,
+    # "known false-positive window".
     _H2_POOL_TIMEOUT_DISPOSITION="soft"
 
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
