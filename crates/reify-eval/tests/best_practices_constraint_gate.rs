@@ -411,3 +411,43 @@ fn corpus_discovery_finds_the_flat_best_practices_drawer() {
         "expected corpus_files() to contain clearance_oracle.ri, got {basenames:?}"
     );
 }
+
+// ── EXPECTED_INDETERMINATE: pinned allowlist well-formedness (steps 7/8) ────
+
+/// Guards a not-yet-existing `EXPECTED_INDETERMINATE`: every entry names a
+/// file that actually exists in `corpus_files()` (mirrors
+/// `examples_smoke.rs::skip_set_entries_exist_under_examples_dir`, line 248 —
+/// an entry left behind after its exemplar is renamed or deleted must fail
+/// loudly instead of silently never matching), no duplicate `(file, index)`
+/// pairs, and every entry's reason string is non-empty — the
+/// auditable-justification contract `SKIP_SET`'s `(&str, &str)` tuple shape
+/// encodes (`examples_smoke.rs:20-22`).
+///
+/// RED until `EXPECTED_INDETERMINATE` exists.
+#[test]
+fn expected_indeterminate_entries_are_well_formed() {
+    let files = corpus_files();
+    let basenames: Vec<&str> = files
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+        .collect();
+
+    let mut seen: std::collections::HashSet<(&str, u32)> = std::collections::HashSet::new();
+    for &(file, index, reason) in EXPECTED_INDETERMINATE {
+        assert!(
+            basenames.contains(&file),
+            "EXPECTED_INDETERMINATE entry ({file:?}, {index}) names a file that does not \
+             exist under examples/best_practices/ — got corpus basenames {basenames:?}"
+        );
+        assert!(
+            seen.insert((file, index)),
+            "duplicate EXPECTED_INDETERMINATE entry for ({file:?}, {index}) — each \
+             (file, constraint index) pair must appear at most once"
+        );
+        assert!(
+            !reason.is_empty(),
+            "EXPECTED_INDETERMINATE entry ({file:?}, {index}) has an empty reason string \
+             — every exemption must carry a mandatory, auditable justification"
+        );
+    }
+}
