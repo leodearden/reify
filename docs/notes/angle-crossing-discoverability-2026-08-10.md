@@ -470,6 +470,39 @@ kind the walk exists to catch.
    lands on the forward direction, a strictly better hit than the round-trip
    line it had before.
 
+## Fourth pass — review re-issued against the pre-amendment tree, checked at `5692dbd44e`
+
+A comprehensive review arrived naming the same three points the third pass had
+already closed; it was taken against `502fdbc24c`, before that pass landed.
+Verified against the tree rather than re-applied:
+
+| Review point | Where it landed | Verified at `5692dbd44e` |
+|---|---|---|
+| Exemplar claims a gate it does not have | `b8473a248d` | the *Bands, not sign guards* comment carries `HONEST SCOPE` |
+| Chunk code block unreproducible / round-trip only | `b8473a248d` | the block binds `s = 5mm`, `r = 2mm`, and carries `phi`/`arc2` |
+| Line-number citations rot | `5692dbd44e` | both verdict tables are anchor-only; zero `file:line` in any row |
+
+The reviewer's preferred fix for the first point — a corpus-wide constraint gate
+rather than a softened comment — is **#6215**, filed at the third pass as
+`tkt_0RSC4D0TRN61DMWKB71V1NZ83J` and now in progress.
+
+**One residual, closed here: the honest-scope claim has a named expiry, and one
+of its three sites is unowned.** "No CI gate runs `reify check` over this
+corpus" is true as measured at `5692dbd44e` —
+`crates/reify-eval/tests/best_practices_constraint_gate.rs` is absent from
+`main` — but #6215 is in flight to add exactly that gate, and #6246 is already
+filed to refresh this note and `INDEX.md` when it lands. #6246's file list names
+those two only. The same claim also sits in the exemplar's *Bands, not sign
+guards* comment (`examples/best_practices/angle_crossings.ri`), a third site
+nothing was tracking; that comment now names #6215, so a reader who meets it
+after the gate lands can tell it is stale. **Whoever executes #6246 should
+refresh all three.**
+
+The walk was **not** re-executed for this pass, and did not need to be: neither
+edited file is in `$S` (the instrument greps `chunks/`, `INDEX.md` and
+`SKILL.md` — the exemplar and this note are not walked surfaces), so no citation
+above shifts.
+
 ## Scope note
 
 No automated test greps these docs for prose. The PRD records this
@@ -482,4 +515,7 @@ the two 24-way `reify-eval` corpus sweeps). Those gates assert compilation
 and structure, **not** constraint satisfaction — the file's twelve bands are
 enforced by the per-file `reify check` that `SKILL.md` mandates before
 shipping, and closing that gap is ticket `tkt_0RSC4D0TRN61DMWKB71V1NZ83J`
-(third amendment pass, item 1).
+(third amendment pass, item 1), now task **#6215** and in progress. That
+sentence is dated: when #6215 lands it is false here, in `INDEX.md` and in
+the exemplar's constraint comment — see the fourth pass above for why the
+third of those is not in #6246's file list.

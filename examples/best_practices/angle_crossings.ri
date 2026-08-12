@@ -125,7 +125,9 @@ structure def AngleCrossings {
     // two `reify-eval` corpus sweeps assert zero stale-Undef and zero
     // snapshot/cache divergence, never constraint status. What these bands
     // pin is the per-file `reify check` SKILL.md already mandates before
-    // shipping a design.
+    // shipping a design. A corpus-wide constraint gate is in flight as #6215;
+    // if it lands, the no-CI-gate half of this paragraph is stale — re-measure
+    // before repeating it.
     constraint r > 0mm
     constraint s > r
     constraint f > 0Hz
