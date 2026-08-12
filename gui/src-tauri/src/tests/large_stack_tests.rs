@@ -299,7 +299,12 @@ fn run_on_worker_returns_value_and_runs_on_named_distinct_thread() {
     let caller_id = std::thread::current().id();
     // Owned by the caller and MOVED into the job — the worker outlives this
     // frame, so it cannot borrow from it.
-    let data = vec![1u64, 2, 3, 4];
+    //
+    // Deliberately a heap-owned `Vec`, NOT the `[1u64, 2, 3, 4]` array clippy's
+    // `useless_vec` would suggest: `[u64; N]` is `Copy`, so the array spelling
+    // would let the closure COPY the payload and the test would no longer
+    // exercise the move that the `'static` bound actually forces.
+    let data = Vec::from([1u64, 2, 3, 4]);
 
     let (sum, inner_id, inner_name) = run_on_worker(move || {
         let s: u64 = data.iter().sum();
@@ -643,8 +648,10 @@ fn lsp_lane_runs_jobs_on_its_own_named_thread() {
 
     let caller_id = std::thread::current().id();
     // Owned and MOVED — a lane outlives the frame that submitted to it, exactly
-    // as the engine lane's `'static` bound requires.
-    let data = vec![10u64, 20, 30];
+    // as the engine lane's `'static` bound requires. Heap-owned `Vec` rather
+    // than a `Copy` array, for the reason spelled out in
+    // `run_on_worker_returns_value_and_runs_on_named_distinct_thread`.
+    let data = Vec::from([10u64, 20, 30]);
 
     let (sum, inner_id, inner_name) = dispatch(LSP_LANE.sender(), move || {
         let s: u64 = data.iter().sum();
@@ -836,7 +843,10 @@ async fn run_on_lsp_worker_returns_value_and_runs_on_the_lane() {
     use crate::large_stack::{LSP_WORKER_THREAD_NAME, run_on_lsp_worker};
 
     let caller_id = std::thread::current().id();
-    let data = vec![1u64, 2, 3, 4, 5];
+    // Owned and MOVED into the job, heap-owned `Vec` rather than a `Copy`
+    // array, for the reason spelled out in
+    // `run_on_worker_returns_value_and_runs_on_named_distinct_thread`.
+    let data = Vec::from([1u64, 2, 3, 4, 5]);
 
     let (sum, inner_id, inner_name) = run_on_lsp_worker(move || {
         let s: u64 = data.iter().sum();
