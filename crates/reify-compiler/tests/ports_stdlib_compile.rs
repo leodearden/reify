@@ -3096,11 +3096,14 @@ structure def S {
 /// collision with the unrelated stdlib `Coupling<P: DrivingJoint + HasMotion>`
 /// kinematic joint type in crates/reify-compiler/stdlib/kinematic.ri.)
 ///
-/// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
+/// Note: direction/Bidi/StructurePort/Bore/Shaft and max_torque/max_speed
 /// params are not exercised through an actual conformance path in this example
 /// (no concrete RotaryPort conformer is instantiated per PRD §4 decision 4).
-/// A follow-up that adds a concrete conformer supplying torque_capacity /
-/// max_speed / direction literals would close that coverage gap end-to-end.
+/// A concrete conformer supplying max_torque / max_speed literals is covered
+/// separately by `rotary_port_concrete_conformer_compiles` in this file;
+/// `direction` is exercised only through its Bidi default (see
+/// `port_conforms_without_direction_compiles_clean`) — an explicit non-default
+/// `direction` literal remains uncovered.
 #[test]
 fn example_ports_mechanical_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
