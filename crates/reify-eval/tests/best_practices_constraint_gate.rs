@@ -303,3 +303,69 @@ fn audit_reports_stale_expected_indeterminate() {
          must be reported as StaleExpectedIndeterminate — got {failures:?}"
     );
 }
+
+// ── corpus_files: flat corpus discovery (steps 5/6) ──────────────────────────
+
+/// Guards a not-yet-existing `corpus_files()`: at least 6 `.ri` files (the
+/// count measured on this branch — a floor that catches a silently-emptied
+/// or mis-resolved directory, the same class of guard as
+/// `examples_smoke.rs`'s `total >= 40`), every returned path a `.ri` file
+/// sitting directly inside a `best_practices` directory (FLAT — a nested
+/// subdirectory must NOT be swept, matching
+/// `examples_smoke.rs::corpus_ri_files()`, whose comment records that a
+/// nested subdirectory here is a structural change that should be reviewed
+/// rather than silently absorbed), sorted (deterministic failure output),
+/// and containing the known exemplars `bolt_circle.ri` and
+/// `clearance_oracle.ri` by basename (proving path resolution actually
+/// reached the real directory rather than returning an empty vec that would
+/// make every later assertion vacuous).
+///
+/// RED until `corpus_files` exists.
+#[test]
+fn corpus_discovery_finds_the_flat_best_practices_drawer() {
+    let files = corpus_files();
+
+    assert!(
+        files.len() >= 6,
+        "expected at least 6 .ri files under examples/best_practices/, got {}: {files:?}",
+        files.len()
+    );
+
+    for path in &files {
+        assert_eq!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("ri"),
+            "expected every corpus_files() entry to be a .ri file, got {}",
+            path.display()
+        );
+        assert_eq!(
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str()),
+            Some("best_practices"),
+            "expected {} to sit directly inside a 'best_practices' directory — \
+             the walk must be FLAT, a nested subdirectory must not be swept",
+            path.display()
+        );
+    }
+
+    let mut sorted = files.clone();
+    sorted.sort();
+    assert_eq!(
+        files, sorted,
+        "expected corpus_files() to return a sorted list for deterministic failure output"
+    );
+
+    let basenames: Vec<&str> = files
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+        .collect();
+    assert!(
+        basenames.contains(&"bolt_circle.ri"),
+        "expected corpus_files() to contain bolt_circle.ri, got {basenames:?}"
+    );
+    assert!(
+        basenames.contains(&"clearance_oracle.ri"),
+        "expected corpus_files() to contain clearance_oracle.ri, got {basenames:?}"
+    );
+}
