@@ -74,7 +74,21 @@ torus(major_radius, minor_radius)                    -> Solid
 wedge(width, depth, height, top_width)               -> Solid
 tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinder minus inner cylinder
 rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 4 vertical edges rounded
+half_space(px, py, pz, nx, ny, nz)                   -> Solid   // UNBOUNDED — Bounded = false
 ```
+
+`half_space` is the one primitive that is not a finite body: `(px, py, pz)` is a point **on** the
+boundary plane (a Length position, so `mm` literals), and `(nx, ny, nz)` is the **outward normal**
+pointing toward the side whose material is retained — a direction, so plain dimensionless numbers,
+not lengths. Because the result has `Bounded = false` it cannot be used where a Bounded shape is
+required; intersect it with a finite solid to get a bounded result usable for export and
+mass-property queries:
+
+```
+intersection(half_space(0mm, 0mm, 0mm, 0, 0, 1), box(40mm, 40mm, 40mm))
+```
+
+Worked example: `examples/half_space.ri`.
 
 `rounded_box` requires `corner_r > 0` and `2*corner_r < min(width, depth)`; violations are a compile-time error when the args are constant literals (including constant arithmetic like `10mm + 15mm`). A param-driven `corner_r` that violates the constraint at runtime is **not** caught statically — it fails at evaluation with an opaque kernel error instead of a diagnostic.
 
