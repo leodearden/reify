@@ -3410,6 +3410,54 @@ let wide : Length = Defaultable::scaled(3.0)
         );
     }
 
+    /// An argument list that is literally `(...)` is a schematic placeholder
+    /// standing for "any argument of this shape", not a concrete call — the
+    /// real `geometry.md:126` shape `translate(primitive(...), 0, 0, -h/2)`
+    /// names `primitive` as a metavariable for "any primitive constructor",
+    /// not an accusation that the compiler provides a function literally
+    /// named `primitive`.
+    ///
+    /// This is a deliberate false NEGATIVE: a real builtin documented only as
+    /// `fillet(...)` would stop being seen. Accepted under the module's
+    /// stated asymmetry ("take the miss" — module header, "the existence
+    /// oracle is deliberately asymmetric"), and backstopped by
+    /// `CHUNK_MENTION_ANCHORS` in tests/pdoccover.rs, which goes RED if the
+    /// corpus ever drifts wholesale to the elided form.
+    #[test]
+    fn mentions_ignore_elided_argument_list() {
+        let hits = chunk_call_mentions(
+            "When in doubt, prefer the `_centered` variant over a manual \
+             `translate(primitive(...), 0, 0, -h/2)`\n",
+        );
+        assert_eq!(
+            hits,
+            vec![("translate".to_string(), 1)],
+            "the outer call is a real claim; the inner `primitive(...)` is a \
+             metavariable, not a claim; got {hits:?}"
+        );
+
+        // Pin the boundary tightly — only an argument list that is EXACTLY
+        // `...` elides. This is the narrowest and lowest-confidence of the
+        // four rules and must not creep.
+        for (label, line) in [
+            ("empty argument list", "f()\n"),
+            ("... plus a real arg", "f(..., x)\n"),
+            ("single dot", "f(.)\n"),
+            ("double dot", "f(..)\n"),
+            // U+2026 HORIZONTAL ELLIPSIS: the real corpus uses only ASCII
+            // `...`, so the rule stays keyed to that one byte sequence
+            // rather than guessing at Unicode look-alikes.
+            ("unicode ellipsis", "f(…)\n"),
+        ] {
+            let hits = chunk_call_mentions(line);
+            assert_eq!(
+                hits,
+                vec![("f".to_string(), 1)],
+                "[{label}] must still be a claim; got {hits:?}"
+            );
+        }
+    }
+
     /// The chunk-side escape hatch: a line carrying a well-formed
     /// `pdoccover:allow — <reason>` documents something deliberately ahead of
     /// the implementation, and its claims are suppressed.
