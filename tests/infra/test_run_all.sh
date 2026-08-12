@@ -1894,7 +1894,7 @@ EOF
     if grep -qE '^INFO: run_all\.sh pool progress: [0-9]+/[0-9]+ complete, elapsed [0-9]+s$' "$T22_STDERR"; then
         assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence)" true
     else
-        assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence) (got stderr: $(cat "$T22_STDERR"))" false
+        assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence) (got stderr: $(sed 's/^/  | /' "$T22_STDERR"))" false
     fi
 
     if grep -qE '^INFO: run_all\.sh pool progress: ' "$T22_STDOUT"; then
@@ -1904,7 +1904,7 @@ EOF
     fi
 
     if grep -F "${T22_CP}" "$T22_STDERR" >/dev/null 2>&1 || grep -F "${T22_CP}" "$T22_STDOUT" >/dev/null 2>&1; then
-        assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4) (got stderr: $(cat "$T22_STDERR"); stdout: $(cat "$T22_STDOUT"))" false
+        assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4) (got stderr: $(sed 's/^/  | /' "$T22_STDERR"); stdout: $(cat "$T22_STDOUT"))" false
     else
         assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4)" true
     fi
@@ -1947,7 +1947,7 @@ EOF
         bash "$RUN_ALL" "$TMPDIR_T22F" >/dev/null 2>"$T22F_STDERR" || t22f_rc=$?
 
     if grep -q 'pool progress:' "$T22F_STDERR"; then
-        assert "T22g: fast pool + high interval emits NO pool-progress line (got: $(cat "$T22F_STDERR"))" false
+        assert "T22g: fast pool + high interval emits NO pool-progress line (got: $(sed 's/^/  | /' "$T22F_STDERR"))" false
     else
         assert "T22g: fast pool + high interval emits NO pool-progress line" true
     fi
@@ -2289,11 +2289,11 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     if grep -Fq '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$T24_STDERR"; then
         assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker" true
     else
-        assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (got stderr: $(cat "$T24_STDERR"))" false
+        assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (got stderr: $(sed 's/^/  | /' "$T24_STDERR"))" false
     fi
 
     if grep -Fq '@@REIFY_QUOTED_CLOCK_STOP@@' "$T24_STDERR"; then
-        assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (got stderr: $(cat "$T24_STDERR"))" false
+        assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (got stderr: $(sed 's/^/  | /' "$T24_STDERR"))" false
     else
         assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream)" true
     fi
@@ -3001,7 +3001,7 @@ if [ -f "$RUN_ALL" ]; then
     if grep -q 'WARNING' "$T28B_STDERR" && grep -q 'test_ghost.sh' "$T28B_STDERR"; then
         assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING" true
     else
-        assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (got stderr: $(cat "$T28B_STDERR"))" false
+        assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (got stderr: $(sed 's/^/  | /' "$T28B_STDERR"))" false
     fi
 
     assert "T28b: unmatched subset member does not sink the run (exits 0)" \
