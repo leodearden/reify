@@ -310,13 +310,15 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // options) -> ModalResult` — the κ-modal-bridge (task 4271).
         //
         // Ordering constraint: MUST follow BOTH:
-        //   - `std.modal.analysis` (line 147) — supplies ModalOptions/ModalResult/Mode
-        //   - `std.kinematic` (line 233) — supplies the Mechanism type
-        // The existing `std.modal.analysis.fns` (line 157) loads BEFORE
+        //   - `std.modal.analysis` — supplies ModalOptions/ModalResult/Mode
+        //   - `std.kinematic` — supplies the Mechanism type
+        // The existing `std.modal.analysis.fns` loads BEFORE
         // `std.kinematic`, so Mechanism is not yet in its prelude; placing
         // `mechanism_modal_analysis` there would produce an unresolved-type error.
-        // Tail placement after `std.dynamics` (which itself requires both
-        // std.kinematic and std.modal.analysis) satisfies all ordering constraints.
+        // Tail placement after `std.dynamics` satisfies both constraints
+        // directly: `std.modal.analysis` and `std.kinematic` both precede
+        // this entry (`std.kinematic` is itself pulled in ahead of
+        // `std.dynamics`).
         // Same prelude-ordering rationale as the original std.modal.analysis /
         // std.modal.analysis.fns split (esc-3851-32).
         (
