@@ -201,38 +201,42 @@ pub struct AuditRun {
 
 /// Run `scripts/audit-orphan-producers.sh --scope <scope> --quiet --format
 /// json` TWICE against one shared [`decoy_repo`]: once with the hook poison
-/// ambient in the child, once with the full
-/// [`reify_audit::git_env::REPO_REDIRECT_VARS`] set `env_remove`d — the same
-/// baseline `reify_test_support::sanitize` strips in production, not just the
-/// three vars this helper poisons. Returns `(poisoned, sanitized)` as
-/// [`AuditRun`]s.
+/// ambient in the child, once with [`reify_audit::git_env::sanitize`] applied
+/// — the same baseline `reify_test_support::sanitize` strips in production,
+/// not just the three vars this helper poisons. Returns `(poisoned,
+/// sanitized)` as [`AuditRun`]s.
 ///
 /// Both commands are built from one closure against one decoy, so the poison
-/// is the only difference between them apart from that fuller strip —
-/// structural rather than a comment two call sites could drift apart on. The
-/// sanitized half first removes the three poisoned vars by iterating
-/// [`hook_git_env`] rather than re-typing `GIT_DIR`/`GIT_WORK_TREE`/
-/// `GIT_INDEX_FILE` (so "poisoned set is a subset of stripped set" is a fact
-/// about the code, inheriting `hook_git_env`'s own assertion that every
-/// member is one [`reify_audit::git_env::REPO_REDIRECT_VARS`] strips), then
-/// removes the remaining `REPO_REDIRECT_VARS` entries so the baseline matches
-/// what production's `sanitize()` actually spawns with.
+/// is the only difference between them apart from that sanitize call —
+/// structural rather than a comment two call sites could drift apart on.
+/// Calling the canonical [`reify_audit::git_env::sanitize`] directly, instead
+/// of hand-rolling a second removal loop over `REPO_REDIRECT_VARS`, is what
+/// keeps "sanitized" meaning what production means by it with no second copy
+/// of the strip list to drift out of sync — [`hook_git_env`]'s own assertion
+/// that every var it poisons is one `sanitize` removes is what makes "the
+/// poisoned set is a subset of the sanitized set" a fact about the code
+/// rather than a claim in this comment.
 ///
 /// # Graceful-skip protocol
 ///
-/// Returns `None` with an explanatory `stderr` note when `python3` or `git` is
-/// absent from `PATH`, or the script is not on disk — the same three
-/// conditions, probed the same way, as
-/// `reify_test_support::run_orphan_audit`, so a reader meets one protocol
-/// rather than two. (Both probes are a bare `--version`, which the
-/// `reify_audit::git_env` module doc explicitly exempts from the sanitizing
-/// rule: neither one targets a repository.)
+/// Returns `None` with an explanatory `stderr` note under any of the four
+/// conditions `reify_test_support::run_orphan_audit` itself treats as an
+/// environment skip: `python3` or `git` absent from `PATH`, the script not on
+/// disk, or `repo_root` itself not inside any git work tree (e.g. an exported
+/// source tarball). The fourth is probed the same way as production's
+/// `child_repo_root`: a sanitized `git rev-parse --show-toplevel` run in
+/// `repo_root`, skipping only when stderr contains "(or any of the parent
+/// directories)" — the phrase unique to a genuinely repo-less directory. So a
+/// reader meets one protocol rather than two. (The `--version` probes are a
+/// bare version check, which the `reify_audit::git_env` module doc explicitly
+/// exempts from the sanitizing rule: neither one targets a repository.)
 ///
 /// The skip is load-bearing here, not merely conventional. Without `python3`
 /// the script exits 3 with empty stdout on BOTH halves, so a caller's
 /// "poisoned output is empty" assertion would pass while its "sanitized output
 /// is non-empty" assertion failed — a spurious RED that says nothing about the
-/// hazard.
+/// hazard. The work-tree probe closes the same class of spurious RED for a
+/// checkout where `repo_root` resolves outside any git work tree.
 ///
 /// Spawn failures are hard failures, matching `run_orphan_audit`. Exit status
 /// is not asserted by this helper's own logic — all three runs exit 0
@@ -282,6 +286,37 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
         return None;
     }
 
+    // Fourth graceful-skip condition (mirrors `reify_test_support::
+    // run_orphan_audit`'s `EnvUnavailable("repo root is not a git work
+    // tree")`, task 5698): `repo_root` itself might not be inside any git
+    // work tree at all (e.g. an exported source tarball). Probe with a
+    // sanitized `git rev-parse --show-toplevel` run IN repo_root before
+    // spawning either half — without this, that scenario would fail the
+    // sanitized run's own script call with empty stdout: a spurious RED that
+    // says nothing about the hazard this test exists to demonstrate.
+    let probe = git_cmd(repo_root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .unwrap_or_else(|e| {
+            panic!("failed to probe repo_root {repo_root:?} for a git work tree: {e}")
+        });
+    if !probe.status.success() {
+        let stderr = String::from_utf8_lossy(&probe.stderr);
+        // Same phrase `reify_test_support::orphan_audit::child_repo_root`
+        // keys on: only a truly repo-less directory's `git rev-parse
+        // --show-toplevel` includes it. Anything else (dubious ownership, a
+        // corrupt `.git` file) means a real repository is expected to exist
+        // here, so — matching production — it is left to fail loudly rather
+        // than being folded into this skip.
+        if stderr.contains("(or any of the parent directories)") {
+            eprintln!(
+                "repo_root {repo_root:?} is not inside a git work tree; skipping \
+                 hook-git-env audit probe for scope {scope:?}"
+            );
+            return None;
+        }
+    }
+
     let decoy = decoy_repo();
 
     // One closure, so the two spawns are provably identical apart from the
@@ -298,19 +333,12 @@ pub fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditR
 
     let mut sanitized_cmd = build();
     poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
-    for (name, _) in hook_git_env(&decoy) {
-        sanitized_cmd.env_remove(name);
-    }
-    // Match production's full baseline, not just the three vars this helper
-    // poisons: `reify_test_support::sanitize` strips all of
-    // `REPO_REDIRECT_VARS` before every real spawn. Redundant for the three
-    // above (already removed) but cheap, and it closes the gap where
-    // GIT_OBJECT_DIRECTORY/GIT_ALTERNATE_OBJECT_DIRECTORIES/GIT_COMMON_DIR/
-    // GIT_NAMESPACE/GIT_PREFIX would otherwise survive from the ambient
-    // environment into a run this test calls "sanitized".
-    for name in reify_audit::git_env::REPO_REDIRECT_VARS {
-        sanitized_cmd.env_remove(name);
-    }
+    // Matches production's baseline exactly: `reify_test_support::sanitize`
+    // strips this same `REPO_REDIRECT_VARS` set before every real spawn.
+    // Calling the canonical sanitizer here, instead of hand-rolling a
+    // removal loop, is what keeps this in lockstep with production with no
+    // second copy of the strip list to drift out of sync.
+    reify_audit::git_env::sanitize(&mut sanitized_cmd);
 
     let run = |mut cmd: Command, label: &str| -> AuditRun {
         let out = cmd.output().unwrap_or_else(|e| {
