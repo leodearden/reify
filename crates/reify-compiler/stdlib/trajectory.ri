@@ -488,9 +488,43 @@ pub fn peak_deviation(track: EndEffectorTrack, location: LocationId) -> Length {
 // `trait BoundaryCondition { }` (both declared above in this file).
 trait Shaper { }
 
+// ── ActuatorLimit marker trait (task 6096) ────────────────────────────────────
+
+// ActuatorLimit — marker trait rooting the per-joint-kind actuator-limit
+// family (task 6096).
+//
+// Two structures refine it, one per joint kind, sharing every param NAME and
+// differing ONLY in the declared dimension of `max_force`:
+//
+//   - JointLimit         : Scalar<Force>   — prismatic / translational
+//   - RevoluteJointLimit : Scalar<Torque>  — revolute / rotational
+//
+// The trait exists so that duality is pinned in the TYPE SYSTEM rather than in
+// prose. The shaper half of the same duality gets this for free from the
+// pre-existing `trait Shaper { }` above (TOTSShaper / RevoluteTOTSShaper);
+// without this marker the limit half would be the asymmetric one.
+//
+// Kept empty by design, same marker-trait discipline as `trait Shaper { }`,
+// `trait Profile { }` and `trait BoundaryCondition { }`.
+trait ActuatorLimit { }
+
 // ── JointLimit (PRD §5.2) ─────────────────────────────────────────────────────
 
 // JointLimit — per-joint actuator constraint consumed by TOTSShaper (PRD §5.2).
+//
+// This is the PRISMATIC / translational half of the per-joint-kind
+// actuator-limit duality (task 6096); `RevoluteJointLimit` below is the
+// rotational half. Both refine `trait ActuatorLimit` and are identical apart
+// from the dimension of `max_force` (Force here, Torque there) — the same
+// shape as the `spring_rate` precedent in kinematic.ri
+// (`Prismatic.spring_rate : Option<TranslationalStiffness>` vs
+// `Revolute.spring_rate : Option<RotationalStiffness>`).
+//
+// Supplying a Force-dimensioned limit to a revolute joint (or vice versa) is
+// a wrong-kind PAIRING; DIAGNOSING that at the ctor call site is task #6240's
+// (dep-gated on #5627) and is deliberately not enforced here. What IS enforced
+// today is the field-READ dimension: `limit.max_force` carries the declared
+// dimension, so arithmetic against the wrong family is rejected.
 //
 // Fields:
 //   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
@@ -500,23 +534,24 @@ trait Shaper { }
 //                          kinematic-completion-PRD-owned types that have not
 //                          yet landed. When kinematic-completion lands, both
 //                          retarget via the same refactor sweep.
-//   - max_force : Scalar<Force>  — RESOLVED(force-scalar): tightened from Real
-//                                  by task 4580. Constraint RHS updated to
-//                                  dimensioned-zero `0 * 1N` (esc-3115 rule:
-//                                  bare `0` is dimensionless; Scalar<Force>
-//                                  LHS requires a dimensioned RHS literal).
+//   - max_force : Scalar<Force>  — the TRANSLATIONAL actuator limit
+//                                  (m·kg·s⁻²). Tightened from Real by task
+//                                  4580; the per-joint-kind counterpart is
+//                                  `RevoluteJointLimit.max_force :
+//                                  Scalar<Torque>` (task 6096).
 //
 // No defaults: both fields are caller-supplied. There is no canonical "default
 // max force" (the limit is entirely application-specific).
 //
-// Constraint `max_force > 0 * 1N` is added in step-34, tightened in task 4580.
+// Constraint `max_force > 0` is added in step-34, tightened in task 4580.
 // Explicitly NOT constrained:
 // `joint : Real` — placeholder for an entity-handle type; no meaningful scalar
 // predicate on a handle.
 //
-// Refines no trait (JointLimit is a plain data container, not a Shaper
-// variant or a BoundaryCondition).
-structure def JointLimit {
+// Refines exactly `trait ActuatorLimit` (task 6096) — the family marker, not a
+// Shaper variant and not a BoundaryCondition. It previously refined NO trait;
+// that contract changed deliberately when 6096 introduced the duality.
+structure def JointLimit : ActuatorLimit {
     param joint : Real
     param max_force : Scalar<Force>
 
@@ -530,6 +565,42 @@ structure def JointLimit {
     //
     // Bare `0` coerced to Scalar<Force> at compile time by task-4485/β
     // polymorphic-zero rewrite (esc-3115-112 resolved).
+    //
+    // NOTE — explicitly NOT constrained:
+    //   `joint : Real` — placeholder for an entity-handle type; no
+    //   meaningful scalar predicate on a handle.
+    constraint max_force > 0
+}
+
+// ── RevoluteJointLimit (task 6096) ────────────────────────────────────────────
+
+// RevoluteJointLimit — the REVOLUTE / rotational half of the per-joint-kind
+// actuator-limit duality (task 6096). Mirrors `JointLimit` above exactly —
+// same param names, same canonical order, same positivity constraint — and
+// differs ONLY in the declared dimension of `max_force`:
+//
+//   - JointLimit.max_force         : Scalar<Force>   (m·kg·s⁻²)
+//   - RevoluteJointLimit.max_force : Scalar<Torque>  (m²·kg·s⁻²·rad⁻¹)
+//
+// Reify's Torque carries an explicit Angle⁻¹ slot (N·m/rad), which is what
+// keeps it a DISTINCT vector from Energy — do not hand-compose it as
+// Force·Length anywhere.
+//
+// The field NAME stays `max_force` rather than `max_torque`: the `spring_rate`
+// precedent this task extends (kinematic.ri Prismatic/Revolute) keeps ONE name
+// across joint kinds and varies only the dimension, and the dimension-blind
+// `field_f64(data, "max_force", ..)` marshalling readers in reify-stdlib stay
+// uniform across both kinds as a result.
+//
+// No defaults: both fields are caller-supplied (same rationale as JointLimit).
+structure def RevoluteJointLimit : ActuatorLimit {
+    param joint : Real
+    param max_force : Scalar<Torque>
+
+    // Same physical rationale as JointLimit's: a zero max torque means the
+    // joint can exert nothing, and a negative one is non-physical. Bare `0`
+    // is coerced to Scalar<Torque> at compile time by the task-4485/β
+    // polymorphic-zero rewrite, exactly as the prismatic half's is.
     //
     // NOTE — explicitly NOT constrained:
     //   `joint : Real` — placeholder for an entity-handle type; no
