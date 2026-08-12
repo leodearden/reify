@@ -370,34 +370,3 @@ structure def Consumer {
         "Consumer.f must still lower to the shadowing local enum; got {f:?}"
     );
 }
-
-#[test]
-fn tmp_probe2() {
-    const A: &str = r#"
-module test.alias_gap2
-
-enum Fit { Close, Medium }
-
-type F = Fit
-
-structure def C {
-    param g: F = Fit.Close
-}
-"#;
-    let m = compile_source_with_stdlib(A);
-    println!("A_TYPE: {:?}", param_cell_type(&m, "C", "g"));
-    println!("A_DIAGS: {:?}", m.diagnostics.iter().map(|d| (d.severity, &d.message)).collect::<Vec<_>>());
-
-    const B: &str = r#"
-module test.prelude_ctor
-
-enum Fit { Close, Medium }
-
-structure def C {
-    param t : DimensionalTolerance = DimensionalTolerance(nominal: 10mm, upper_deviation: 0.1mm, lower_deviation: -0.1mm)
-    let f = Fit(hole_tolerance: t, shaft_tolerance: t, fit_type: FitCategory.Clearance)
-}
-"#;
-    let m2 = compile_source_with_stdlib(B);
-    println!("B_ERRS: {:?}", errors_only(&m2).iter().map(|d| &d.message).collect::<Vec<_>>());
-}
