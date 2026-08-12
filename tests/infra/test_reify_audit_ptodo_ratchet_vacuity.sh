@@ -10,11 +10,10 @@
 # the dead instrument this task exists to eliminate, so the call site gets its
 # own test — this one.
 #
-# THE GAP BEING PINNED.  Scenario (a)'s oracle is
-# `comm -23 <(sort -u live) <(sort -u baseline)`, i.e. subset-of.  The empty
-# set is a subset of everything, so a generator run that emitted ZERO
-# fingerprints satisfies it trivially and the ratchet reports green having
-# asserted nothing.  This test drives exactly that state and requires a RED.
+# THE GAP BEING PINNED: scenario (a)'s oracle is subset-of, which the empty
+# set satisfies trivially — see PRD 6.6, "Vacuity floor on the live set", for
+# the full argument.  This test drives the generator into that zero-fingerprint
+# state and requires a RED.
 #
 # Design:
 #   - FRESHNESS INVERSION.  test_reify_audit_ptodo_orphan_hardgate.sh copies
@@ -38,11 +37,12 @@
 # Assertions:
 #   (1) test_reify_audit_ptodo.sh exits 1 — a zero-fingerprint generator run
 #       must NOT report green.
-#   (2) it exits 1 for THAT reason: the RATCHET VACUITY anchor appears in the
-#       captured output.  Same discrimination discipline the sibling
-#       meta-tests state at test_reify_audit_ptodo_budget_skip.sh:142-148 — a
-#       bare exit-code check is satisfied by any unrelated failure and would
-#       leave this test green after the behaviour it pins had disappeared.
+#   (2) it exits 1 for THAT reason: the floor's @@RATCHET_VACUITY_FIRED@@
+#       machine token appears in the captured output.  Same discrimination
+#       discipline the sibling meta-tests state at
+#       test_reify_audit_ptodo_budget_skip.sh:142-148 — a bare exit-code check
+#       is satisfied by any unrelated failure and would leave this test green
+#       after the behaviour it pins had disappeared.
 #   (3) EXACTLY one assert failed.  With the project-root-aware stub keeping
 #       (b) through (f) green, this turns "the floor fired" into a positive,
 #       discriminating observation rather than an inference: the RED is the
@@ -185,16 +185,18 @@ assert "zero-fingerprint generator run makes test_reify_audit_ptodo.sh exit 1 (n
 # (2) ...and for the right reason.  Without this, any unrelated failure would
 #     satisfy (1) and this meta-test would stay green after the floor was gone.
 #
-#     MATCH THE RENDERED DIAGNOSTIC, NOT THE BARE ANCHOR.  test_reify_audit_
-#     ptodo.sh's in-file meta-test carries the words "RATCHET VACUITY" in its
-#     own assert DESCRIPTION, and assert() echoes every description — passing
-#     or failing — into this same captured stream.  A `grep -qF 'RATCHET
-#     VACUITY'` therefore passes even when the floor never fired; it was
-#     observed doing exactly that while this test was RED.  Keying on the
-#     diagnostic's full first-line prefix, which only _ratchet_check_nonempty
-#     itself ever prints, restores the discrimination.
-assert "the RED is the vacuity floor: its rendered diagnostic is present in the output" \
-    bash -c "grep -qF 'RATCHET VACUITY — ptodo-baseline-gen emitted 0 fingerprints' '$RVM_OUTPUT_FILE'"
+#     MATCH THE MACHINE TOKEN, NOT THE PROSE.  _ratchet_check_nonempty emits
+#     @@RATCHET_VACUITY_FIRED@@ as the first line of its diagnostic for exactly
+#     this cross-file handshake — the same idiom as the @@HARDGATE_*_PASSED@@
+#     sentinels in test_reify_audit_ptodo.sh.  An English anchor is the wrong
+#     discriminator both ways: `grep -qF 'RATCHET VACUITY'` was OBSERVED
+#     matching while this test was still RED (assert() echoes every
+#     description, passing or failing, into this same captured stream, and the
+#     in-file meta-test's description carried those words), and keying on a
+#     longer sentence instead only trades a false match for a false RED the
+#     next time the wording is edited.  The token appears nowhere else.
+assert "the RED is the vacuity floor: its machine token is present in the output" \
+    bash -c "grep -qF '@@RATCHET_VACUITY_FIRED@@' '$RVM_OUTPUT_FILE'"
 
 # (3) ...and ONLY the floor.  Scenarios (b)-(f) stay green under the
 #     project-root-aware stub, so exactly one assert may have failed.

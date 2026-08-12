@@ -64,21 +64,15 @@
 # RATCHET VACUITY FLOOR (task #6127, esc-6087-3).  The scenario-(a)-level
 # analogue of the block above: that floor stops a run which executed no
 # SCENARIOS from reporting green; this one stops a scenario that executed with
-# no DETECTOR OUTPUT from doing the same.  Scenario (a)'s oracle is
-# `comm -23 <live> <baseline>` — subset-of — and the empty set is a subset of
-# everything, so a generator run that emitted ZERO fingerprints satisfies it
-# trivially: the ratchet reports green having asserted nothing.  A stale or
-# reverted ptodo-baseline-gen produces exactly that, and mtime is a weak oracle
-# against it — the freshness guard's epoch only tracks commits under
-# crates/reify-audit/ (scripts/reify-audit-freshness.sh, SCOPE LIMITATION
-# :28-36), so a binary can read "fresh" while predating a behavioural change
-# made anywhere else.  _ratchet_check_nonempty is that floor, asserted BEFORE
-# the subset check so the precondition is reported before the thing it
-# conditions.  It self-disarms once the committed baseline is itself empty,
-# which the shrink-only ratchet is expected to reach (PRD 6.6, "After δ the
-# baseline should be ≈ empty").  The in-file meta-test below pins its
-# SEMANTICS; the WIRING into scenario (a), which that meta-test cannot observe,
-# is pinned by tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+# no DETECTOR OUTPUT from doing the same, since subset-of is trivially
+# satisfied by the empty set.  _ratchet_check_nonempty below is that floor,
+# asserted BEFORE the subset check so the precondition is reported before the
+# thing it conditions.  Its rationale, self-disarm rule and known limits live
+# in ONE place — PRD 6.6, "Vacuity floor on the live set"
+# (docs/prds/reify-audit-ptodo-detector.md); do not restate them here.  The
+# in-file meta-test below pins its SEMANTICS; the WIRING into scenario (a),
+# which that meta-test cannot observe, is pinned by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
 #
 # ACCEPTED UNCOVERED SKIP: the required-tool loop below still exits 0 before
 # any scenario runs when git/cargo/comm/sort/sqlite3 is off PATH, and the
@@ -138,44 +132,55 @@ _ratchet_check_subset() {
 # -----------------------------------------------------------------------
 # Vacuity floor (task #6127, esc-6087-3).  _ratchet_check_subset above can
 # only ever report "no NEW fingerprints"; it says nothing about whether the
-# generator produced ANY.  A zero-fingerprint run therefore passes it
-# trivially — the empty set is a subset of everything — and scenario (a)
-# reports green having asserted nothing.  This is the precondition check
-# that makes that subset assertion meaningful: the live set ($1) must be
-# non-empty.  Silent + rc0 on the passing path so an all-green suite stays
-# byte-for-byte unchanged (test_helpers.sh:48-51); a multi-line diagnostic
-# to stderr + rc1 otherwise, landing in assert()'s on-FAIL captured-output
-# dump.
+# generator produced ANY, and the empty set is a subset of everything.  This
+# is the precondition that makes that subset assertion meaningful.
+# WHY, when it retires, and what it does not cover: PRD 6.6, "Vacuity floor
+# on the live set" — the single home for that argument, not restated here.
 #
-# The committed-baseline content ($2) is used only to size the diagnostic.
-# No fingerprints are re-derived here — counting lines of an already-produced
-# set is not derivation, so the PRD 6.6 invariant in this file's header
-# (derivation lives ONLY in ptodo-baseline-gen) is preserved.
+# Local contract:
+#   _ratchet_check_nonempty <live-content> <baseline-content>, both
+#   newline-joined STRINGS (matching _ratchet_check_subset's argument
+#   convention) so it can be passed straight to assert() and land its
+#   diagnostic in the on-FAIL captured-output dump.  Silent + rc0 on the
+#   passing path so an all-green suite stays byte-for-byte unchanged
+#   (test_helpers.sh:48-51); stderr diagnostic + rc1 otherwise.
+#
+#   @@RATCHET_VACUITY_FIRED@@ on the failing path is a MACHINE TOKEN — the
+#   deliberate contract with test_reify_audit_ptodo_ratchet_vacuity.sh, in the
+#   same idiom as the @@HARDGATE_*_PASSED@@ sentinels below.  Grep for the
+#   token, never for the prose; the prose is free to change.
+#
+# No fingerprints are re-derived here: this counts lines and reads the `kind`
+# field of an already-produced fingerprint, so the PRD 6.6 invariant in this
+# file's header (derivation lives ONLY in ptodo-baseline-gen) is preserved.
 # -----------------------------------------------------------------------
+
+# Kinds the liveness/inverse lanes derive from the task DB, which PRD 6.7
+# DROPS in the degraded no-task-DB mode scenario (a) runs under.  A baseline
+# entry of one of these kinds can never appear in that live set, so it must
+# not keep the floor armed.  Anything else — INCLUDING a kind added after this
+# line was written — counts as structural, so an unrecognised kind keeps the
+# floor ARMED (loud) rather than silently disarming it, which would reopen the
+# vacuous-green hole this floor exists to close.
+_PTODO_DB_DEPENDENT_KINDS_RE=' :: (orphaned|unknown-id|g-allow-orphaned|g-allow-unknown-id|parked-on-anchor|task-cites-deleted-path) :: '
+
 _ratchet_check_nonempty() {
     local _live="$1"
     local _baseline="${2:-}"
-    local _live_n _baseline_n
+    local _live_n _baseline_n _dbdep_n _struct_n
     _live_n="$(printf '%s\n' "$_live" | grep -c . || true)"
     _baseline_n="$(printf '%s\n' "$_baseline" | grep -c . || true)"
+    _dbdep_n="$(printf '%s\n' "$_baseline" | grep -cE "$_PTODO_DB_DEPENDENT_KINDS_RE" || true)"
+    _struct_n=$((_baseline_n - _dbdep_n))
 
-    # AUTO-DISARM on a drained baseline.  The ratchet is shrink-only (PRD 6.6,
-    # "After δ the baseline should be ≈ empty"), so once the last grandfathered
-    # entry is burned down a 0-fingerprint live set is the CORRECT end state and
-    # this floor must retire itself rather than false-RED forever.
-    #
-    # REVISIT — the one partition this gate does NOT cover: if burn-down ever
-    # leaves a baseline holding ONLY liveness-derived entries (kinds like
-    # `orphaned`, which PRD 6.7 says drop in the degraded no-task-DB mode
-    # scenario (a) runs under), the live set can legitimately be 0 while the
-    # baseline is non-empty, and the floor would false-RED.  That partition is
-    # deliberately NOT computed here: classifying fingerprint kinds in bash
-    # would duplicate detector knowledge that PRD 6.6 and this file's header
-    # require to live only in ptodo-baseline-gen.  It is instead named as the
-    # SECOND hypothesis in the diagnostic below, so whoever hits it is not sent
-    # chasing a stale binary.  The condition is distant today: 4 structural live
-    # fingerprints against 5 baseline entries as of task #6127.
-    if [ "$_baseline_n" -eq 0 ]; then
+    # AUTO-DISARM once no STRUCTURAL baseline entry remains — the point at
+    # which a 0-fingerprint live set becomes the CORRECT end state rather than
+    # a vacuous pass, so the floor must retire itself instead of false-REDding
+    # forever.  Keyed on the STRUCTURAL count, not on total baseline size:
+    # a baseline drained down to DB-dependent kinds only is already that end
+    # state, and gating on the total would hard-RED an ordinary burn-down
+    # commit (#6127 review).
+    if [ "$_struct_n" -le 0 ]; then
         return 0
     fi
 
@@ -184,26 +189,18 @@ _ratchet_check_nonempty() {
     fi
 
     {
-        printf 'RATCHET VACUITY — ptodo-baseline-gen emitted 0 fingerprints (committed baseline entries: %s).\n' \
-            "$_baseline_n"
-        printf '  This is NOT a pass.  The ratchet oracle is `comm -23 <live> <baseline>`\n'
-        printf '  (subset-of), and the empty set is a subset of everything — so the\n'
-        printf '  subset assertion just observed nothing.  Reporting green here would\n'
-        printf '  claim "the detector found no violations" when the detector in fact\n'
-        printf '  reported nothing at all.\n'
-        printf '  Hypothesis (1), the likely one: target/release/ptodo-baseline-gen is\n'
-        printf '  STALE or reverted.  mtime is a weak oracle for staleness — see the SCOPE\n'
-        printf '  LIMITATION block in scripts/reify-audit-freshness.sh:28-36: the freshness\n'
-        printf '  epoch only tracks commits under crates/reify-audit/, so a binary can read\n'
-        printf '  "fresh" while predating a behavioural change made anywhere else.\n'
-        printf '  Hypothesis (2): the baseline has been burned down to liveness-derived\n'
-        printf '  entries only (kinds like `orphaned`, which PRD 6.7 drops in the degraded\n'
-        printf '  no-task-DB mode this assertion runs under).  Then a 0-fingerprint live set\n'
-        printf '  is legitimate and this floor should be REMOVED with the last structural\n'
-        printf '  baseline entry — it self-disarms only on a fully drained baseline.\n'
-        printf '  NEXT: run `cargo build --release -p reify-audit`, then re-run.  If the\n'
-        printf '  count is still 0, check which kinds remain in the baseline before\n'
-        printf '  assuming a stale binary.\n'
+        printf '@@RATCHET_VACUITY_FIRED@@\n'
+        printf 'RATCHET VACUITY — ptodo-baseline-gen emitted 0 fingerprints (structural baseline entries: %s).\n' \
+            "$_struct_n"
+        printf '  NOT a pass: the oracle below is subset-of and the empty set is a subset\n'
+        printf '  of everything, so it would observe nothing.  Two hypotheses, in order:\n'
+        printf '  (1) target/release/ptodo-baseline-gen is STALE or reverted — run\n'
+        printf '      `cargo build --release -p reify-audit`, then re-run.  mtime is a weak\n'
+        printf '      oracle here (scripts/reify-audit-freshness.sh, SCOPE LIMITATION).\n'
+        printf '  (2) the debt was genuinely burned down but crates/reify-audit/\n'
+        printf '      ptodo-baseline.txt was not shrunk with it — drop the fixed entries\n'
+        printf '      from the baseline and this floor retires itself.\n'
+        printf '  Background and exit condition: PRD 6.6, "Vacuity floor on the live set".\n'
     } >&2
     return 1
 }
@@ -225,11 +222,11 @@ assert "ratchet check is silent + rc0 when live set is empty" \
     bash -c '[ -z "$1" ]' -- "$_EMPTY"
 
 # -----------------------------------------------------------------------
-# VACUITY-FLOOR meta-test (task #6127, esc-6087-3).  The subset oracle above
-# is trivially satisfied by the EMPTY set: a generator run that emitted zero
-# fingerprints makes `comm -23 live baseline` empty, _ratchet_check_subset
-# returns 0, and scenario (a) reports green having asserted nothing.
-# _ratchet_check_nonempty is the floor that closes it.
+# VACUITY-FLOOR meta-test (task #6127, esc-6087-3) — pins what
+# _ratchet_check_nonempty DOES.  Why the floor exists at all: PRD 6.6,
+# "Vacuity floor on the live set".  Its WIRING into scenario (a), which this
+# hermetic block cannot see, is pinned by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
 #
 # Same properties as the block above — unconditional, hermetic, driven by
 # synthetic strings, and placed BEFORE binary resolution so it runs
@@ -237,43 +234,47 @@ assert "ratchet check is silent + rc0 when live set is empty" \
 # single EXIT trap below (see "Single EXIT trap covers all temp paths") is
 # registered later, and a second `trap` here would silently replace it.
 #
-# Signature: _ratchet_check_nonempty <live-content> <baseline-content>, both
-# newline-joined STRINGS (matching _ratchet_check_subset's argument
-# convention) so it can be passed straight to assert() and land its
-# diagnostic in the on-FAIL captured-output dump.
-#
-# These two asserts pin the LIVE-SET axis with the baseline held non-empty;
-# the BASELINE axis (auto-disarm on a drained baseline) is pinned below.
-# The WIRING of the floor into scenario (a) — which this hermetic block
-# cannot see — is pinned by
-# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
+# Baseline fixtures use the real `path :: kind :: text` fingerprint shape so
+# the structural / DB-dependent split is genuinely exercised; the text field
+# is inert prose (SELF-MATCH SAFETY: no swept marker token).
 # -----------------------------------------------------------------------
-_VAC_DIAG="$(_ratchet_check_nonempty "" "$_FAKE_FP" 2>&1 1>/dev/null || true)"
-assert "vacuity floor fires on an empty live set, with the RATCHET VACUITY anchor + the stale-binary hypothesis" \
-    bash -c 'case "$1" in *"RATCHET VACUITY"*) ;; *) exit 1 ;; esac
-             case "$1" in *stale*) exit 0 ;; *) exit 1 ;; esac' -- "$_VAC_DIAG"
+_FAKE_BL_STRUCT='crates/foo/src/a.rs :: untracked :: synthetic structural entry'
+_FAKE_BL_DBDEP='crates/foo/src/b.rs :: orphaned :: synthetic liveness-derived entry'
+
+# Assert on the machine token and on a count DERIVED FROM THE INPUTS (one of
+# the two given entries is structural) rather than on the diagnostic's
+# wording — the prose is free to change, the contract is not.
+_VAC_DIAG="$(_ratchet_check_nonempty "" "$_FAKE_BL_STRUCT"$'\n'"$_FAKE_BL_DBDEP" 2>&1 1>/dev/null || true)"
+assert "vacuity floor fires on an empty live set, emitting its machine token + the structural baseline count" \
+    bash -c 'case "$1" in *"@@RATCHET_VACUITY_FIRED@@"*) ;; *) exit 1 ;; esac
+             case "$1" in *"structural baseline entries: 1"*) exit 0 ;; *) exit 1 ;; esac' -- "$_VAC_DIAG"
 
 # Positive control — a detector, not a constant failure: a non-empty live set
 # must be byte-for-byte silent and rc0, so an all-green suite's output is
 # unchanged (test_helpers.sh:48-51).
 _VAC_RC=0
-_VAC_OUT="$(_ratchet_check_nonempty "$_FAKE_FP" "$_FAKE_FP" 2>&1)" || _VAC_RC=$?
+_VAC_OUT="$(_ratchet_check_nonempty "$_FAKE_FP" "$_FAKE_BL_STRUCT" 2>&1)" || _VAC_RC=$?
 assert "vacuity floor is silent + rc0 when the live set is non-empty" \
     bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_OUT" "$_VAC_RC"
 
-# BASELINE axis — the floor must AUTO-DISARM once the baseline is drained.
-# The ratchet is shrink-only (PRD 6.6: "After δ the baseline should be ≈
-# empty"), so when the last grandfathered entry is burned down a
-# 0-fingerprint live set becomes the CORRECT end state, not a vacuous pass.
-# A floor hardcoded at >= 1 would false-RED from that moment on, and could
-# only be defused by whoever removes the last baseline entry also
-# remembering to delete an assertion in a different file.  Gating on the
-# committed baseline being non-empty retires the floor at exactly the moment
-# the ratchet succeeds, with nobody having to remember anything.
+# BASELINE axis — the floor must AUTO-DISARM once no structural entry remains,
+# which is when a 0-fingerprint live set becomes the correct end state rather
+# than a vacuous pass (PRD 6.6).  Two sub-cases, both disarms:
+#   (i) the baseline is fully drained;
+#  (ii) it holds only DB-dependent kinds, which PRD 6.7 drops in the degraded
+#       no-task-DB mode scenario (a) runs under — so live=0 is legitimate.
+# (ii) is the one an ordinary burn-down commit reaches: gating the disarm on
+# TOTAL baseline size would hard-RED that commit and force whoever wrote it to
+# hand-delete an assertion in another file (#6127 review).
 _VAC_DRAINED_RC=0
 _VAC_DRAINED_OUT="$(_ratchet_check_nonempty "" "" 2>&1)" || _VAC_DRAINED_RC=$?
 assert "vacuity floor auto-disarms (silent + rc0) when the committed baseline is itself empty" \
     bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_DRAINED_OUT" "$_VAC_DRAINED_RC"
+
+_VAC_DBONLY_RC=0
+_VAC_DBONLY_OUT="$(_ratchet_check_nonempty "" "$_FAKE_BL_DBDEP" 2>&1)" || _VAC_DBONLY_RC=$?
+assert "vacuity floor auto-disarms when the baseline holds only DB-dependent (liveness) kinds" \
+    bash -c '[ -z "$1" ] && [ "$2" -eq 0 ]' -- "$_VAC_DBONLY_OUT" "$_VAC_DBONLY_RC"
 
 # -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
@@ -496,12 +497,11 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     # finding count; a non-zero exit is an infrastructure failure that must go red.
     env -u REIFY_PTODO_TASKS_DB "$GEN" --project-root "$REPO_ROOT" >"$LIVE_TMP" 2>/dev/null
 
-    # VACUITY FLOOR (task #6127, esc-6087-3) — a precondition for the subset
-    # assertion below being meaningful: subset-of is trivially satisfied by the
-    # empty set, so a 0-fingerprint run would otherwise report green having
-    # detected nothing.  Reported FIRST, deliberately: a reader who saw only
-    # the subset assert fail would draw the wrong conclusion about why.  The
-    # wiring here (not just the helper) is pinned by
+    # VACUITY FLOOR (task #6127, esc-6087-3) — the precondition that makes the
+    # subset assertion below meaningful (PRD 6.6, "Vacuity floor on the live
+    # set").  Reported FIRST, deliberately: a reader who saw only the subset
+    # assert fail would draw the wrong conclusion about why.  The wiring here
+    # (not just the helper) is pinned by
     # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
     # $(cat ...) strips trailing newlines — correct and irrelevant, since the
     # helper only counts non-blank lines.
