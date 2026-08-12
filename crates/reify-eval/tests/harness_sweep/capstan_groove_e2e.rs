@@ -107,6 +107,10 @@ const CAPSTAN_ENTITY: &str = "Capstan";
 /// The fairlead shuttle that has to track the capstan's migrating wrap band.
 const FAIRLEAD_ENTITY: &str = "Fairlead";
 
+/// The assembly holding both — and therefore the only scope in which the
+/// cross-structure band↔stroke relation can be stated.
+const CAPSTAN_DRIVE_ENTITY: &str = "CapstanDrive";
+
 /// Relative tolerance on `ΔV` against the ideal half-round swept solid
 /// `0.5·π·groove_r²·L`, the spine-radius arc length.
 ///
@@ -922,5 +926,87 @@ fn capstan_surfaces_only_the_finished_drum() {
     assert!(
         violated.is_empty(),
         "{DEV_CAPSTAN} must satisfy every constraint at its defaults; violated: {violated:#?}"
+    );
+}
+
+// ── The design enforces the coverage itself, not only this gate ──────────────
+
+/// The band↔stroke coverage must be a constraint the *design file* carries, so
+/// that plain `reify check` reports a divergence — not only a full OCCT run of
+/// this Rust module.
+///
+/// `capstan_active_band_is_covered_by_the_fairlead_stroke` above asserts the
+/// same relation, but it only bites when this one test happens to run. An edit
+/// to `Fairlead.stroke`, `Capstan.lead` or `d_ratio` that breaks the coverage
+/// should be loud for anyone opening the file, which means it has to be stated
+/// in the DSL.
+///
+/// Two claims:
+///   1. `CapstanDrive` declares constraints at all. The relation is
+///      cross-structure — it reads a cell of `capstan` against a cell of
+///      `shuttle` — so the assembly that owns both `sub`s is the only scope it
+///      CAN be stated in. Deriving `Fairlead.stroke` from the capstan instead
+///      would need a parameter override through `sub shuttle = Fairlead(…)`,
+///      which is precisely the override drop (task 4147) the design file's own
+///      header records as not working: only `at` poses come through. So the
+///      stroke stays a hand-set param and the assembly asserts it stays honest;
+///   2. every one of those results is `Satisfied`.
+///
+/// (2) is asserted positively rather than as "nothing is `Violated`" — the same
+/// reason `capstan_surfaces_only_the_finished_drum` gives for `Capstan`, and it
+/// matters more here. A cross-sub field reference that fails to resolve
+/// evaluates to `Indeterminate`, not `Violated`, so a `!= Violated` filter would
+/// stay green on exactly the failure mode this constraint is most exposed to,
+/// and the file-wide `violated.is_empty()` check in that test is likewise
+/// vacuous on it. That combination — an empty result set and an indeterminate
+/// one both reading as green — is the gap this test closes.
+#[test]
+fn capstan_drive_constrains_the_shuttle_to_cover_the_band() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let result = dev_capstan();
+
+    // ---- (1) The assembly states the relation ----
+    let drive_constraints: Vec<_> = result
+        .constraint_results
+        .iter()
+        .filter(|c| c.id.entity == CAPSTAN_DRIVE_ENTITY)
+        .collect();
+    assert!(
+        !drive_constraints.is_empty(),
+        "`{CAPSTAN_DRIVE_ENTITY}` must carry the shuttle-covers-the-band constraint \
+         (`shuttle.stroke >= capstan.band`), but it declares none. That relation \
+         reads a `{CAPSTAN_ENTITY}` cell against a `{FAIRLEAD_ENTITY}` cell, so the \
+         assembly owning both `sub`s is the ONLY scope it can live in: deriving \
+         `{FAIRLEAD_ENTITY}.stroke` from the capstan would need a parameter \
+         override through `sub shuttle = {FAIRLEAD_ENTITY}(…)`, and that is the \
+         override drop (task 4147) {DEV_CAPSTAN}'s own header records as not \
+         working — only `at` poses come through. Entities checked: {:?}",
+        result
+            .constraint_results
+            .iter()
+            .map(|c| &c.id.entity)
+            .collect::<Vec<_>>()
+    );
+
+    // ---- (2) …and it holds at the file's defaults ----
+    let unsatisfied: Vec<_> = drive_constraints
+        .iter()
+        .filter(|c| c.satisfaction != Satisfaction::Satisfied)
+        .collect();
+    assert!(
+        unsatisfied.is_empty(),
+        "every `{CAPSTAN_DRIVE_ENTITY}` constraint must be Satisfied at the file's \
+         defaults ({} of {} were not). `Violated` means the shuttle's stroke no \
+         longer covers the capstan's band migration — the fairlead runs out of \
+         travel before the wrap band does. `Indeterminate` means something quite \
+         different and is why this is asserted positively: it is what a cross-sub \
+         field reference produces when it fails to EVALUATE, so the constraint is \
+         present but checking nothing. Results: {unsatisfied:#?}",
+        unsatisfied.len(),
+        drive_constraints.len()
     );
 }
