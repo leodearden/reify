@@ -1128,10 +1128,16 @@ pub fn resolve_inverse(
         .collect::<rusqlite::Result<_>>()?;
 
     let mut out: Vec<Finding> = Vec::new();
-    // Per-run cache: avoid redundant `git log` spawns when multiple tasks cite
-    // the same absent path (common in larger backlogs where a single deleted
-    // file is referenced by several related tasks).
+    // Per-run caches: avoid redundant `git log` / `git show` spawns when
+    // multiple tasks cite the same absent path (common in larger backlogs where
+    // a single deleted or renamed file is referenced by several related tasks —
+    // the measured live case was 2 renamed paths cited by 6 tasks).
     let mut git_cache: HashMap<String, Option<GitCommit>> = HashMap::new();
+    // Keyed on (cited path, sha) rather than the path alone: within a run the
+    // sha IS a pure function of the path (it comes from `git_cache`), but the
+    // tuple key is correct without depending on that invariant, and matches the
+    // `HashMap<(String, String), _>` shape the GitOps mock uses.
+    let mut rename_cache: HashMap<(String, String), Option<String>> = HashMap::new();
 
     for (id, status, metadata_opt) in rows {
         if is_terminal_status(&status) {
@@ -1162,7 +1168,17 @@ pub fn resolve_inverse(
                 // Did that same commit RENAME the path rather than delete it?
                 // Fail-safe: None on a merge commit, a genuine delete, or any
                 // git error → the unchanged deleted-path finding below.
-                let rename_target = git.rename_target_for_path(&path, &commit.sha);
+                let rename_target = rename_cache
+                    .entry((path.clone(), commit.sha.clone()))
+                    .or_insert_with(|| git.rename_target_for_path(&path, &commit.sha))
+                    .clone()
+                    // Only advertise a target the reader can actually go look
+                    // at: a target that was itself renamed again or deleted
+                    // falls back to the deleted kind. `path_present_in_tracked`
+                    // (not a bare `tracked.contains`) keeps the trailing-slash
+                    // and directory-prefix semantics identical to the cited-path
+                    // check above, so the two membership tests cannot drift.
+                    .filter(|new_path| path_present_in_tracked(new_path, tracked));
                 if let Some(new_path) = rename_target {
                     out.push(Finding {
                         pattern: Pattern::PTodo,
