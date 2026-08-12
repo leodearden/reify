@@ -1264,6 +1264,109 @@ mod inverse {
         assert!(has_commit, "evidence must contain Commit ref with sha: {:?}", f.evidence);
     }
 
+    // Scenario 17 (PRD §9): non-terminal task whose metadata.files names a path
+    // that was RENAMED (not deleted), to a target still tracked at HEAD → one
+    // task-cites-renamed-path finding naming BOTH paths.
+    //
+    // The summary assertions are the point of the whole lane refinement: a
+    // consumer must be able to read the finding and repoint metadata.files
+    // without re-running any git archaeology.
+    #[test]
+    fn renamed_path_emits_renamed_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            50,
+            "pending",
+            r#"{"files":["crates/old.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_last_commit_for_path(
+            "crates/old.rs",
+            mock_commit("abc123", "absorb old.rs into new/"),
+        );
+        git.set_rename_target_for_path("crates/old.rs", "abc123", "crates/new/old.rs");
+
+        // The NEW path is tracked at HEAD; the cited (old) one is not.
+        let tracked = tracked(&["crates/new/old.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one task-cites-renamed-path finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PTodo, "pattern: {f:?}");
+        // Medium keeps the inverse lane exit-neutral (PRD §8.4).
+        assert_eq!(f.severity, Severity::Medium, "severity: {f:?}");
+        assert_eq!(f.task_id, "50", "task_id must equal the task id: {f:?}");
+        assert!(
+            f.summary.starts_with("task-cites-renamed-path:"),
+            "summary must start with the renamed kind prefix: {}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("crates/old.rs"),
+            "summary must name the cited (old) path: {}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("crates/new/old.rs"),
+            "summary must name the rename target: {}",
+            f.summary
+        );
+        assert!(
+            f.summary.contains("abc123"),
+            "summary must carry the commit sha: {}",
+            f.summary
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.summary.starts_with("task-cites-deleted-path:")),
+            "a renamed path must not also be reported as deleted; got {findings:?}"
+        );
+
+        // Evidence: MetadataFiles carries ONLY the cited path (it is the sort
+        // key, and the rename target is by definition not a metadata.files
+        // entry); the target rides in a File ref; the commit in a Commit ref.
+        let metadata_entries = f
+            .evidence
+            .iter()
+            .find_map(|e| match e {
+                EvidenceRef::MetadataFiles { entries } => Some(entries.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("evidence must contain MetadataFiles ref: {:?}", f.evidence));
+        assert_eq!(
+            metadata_entries,
+            vec!["crates/old.rs".to_string()],
+            "MetadataFiles must carry exactly the CITED path: {:?}",
+            f.evidence
+        );
+        let has_file = f.evidence.iter().any(|e| {
+            matches!(e, EvidenceRef::File { path } if path == "crates/new/old.rs")
+        });
+        assert!(
+            has_file,
+            "evidence must contain a File ref at the rename target: {:?}",
+            f.evidence
+        );
+        let has_commit = f.evidence.iter().any(|e| {
+            matches!(e, EvidenceRef::Commit { sha, .. } if sha == "abc123")
+        });
+        assert!(
+            has_commit,
+            "evidence must contain a Commit ref with the rename sha: {:?}",
+            f.evidence
+        );
+    }
+
     // Scenario 12 (PRD §9): path absent from tracked set but never committed
     // (mock returns None) → no finding (presumed to-be-created).
     #[test]
