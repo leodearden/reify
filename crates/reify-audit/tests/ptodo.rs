@@ -1367,6 +1367,166 @@ mod inverse {
         );
     }
 
+    // Scenario 18 (PRD §9): the rename target is itself absent from the tracked
+    // set (renamed again, or subsequently deleted) → stays task-cites-deleted-path.
+    //
+    // The renamed kind's whole promise is "the summary names a path you can go
+    // look at". Advertising a target that is itself gone would trade one
+    // misleading finding for another, so the reclassification is gated on the
+    // target being present at HEAD.
+    #[test]
+    fn renamed_target_absent_from_tracked_stays_deleted() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            51,
+            "pending",
+            r#"{"files":["crates/old.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_last_commit_for_path(
+            "crates/old.rs",
+            mock_commit("def456", "move old.rs again"),
+        );
+        git.set_rename_target_for_path("crates/old.rs", "def456", "crates/moved_again.rs");
+
+        // NEITHER path is tracked at HEAD.
+        let tracked = tracked(&["crates/unrelated.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {findings:?}"
+        );
+        assert!(
+            findings[0].summary.starts_with("task-cites-deleted-path:"),
+            "a rename target that is itself untracked must stay the deleted kind: {}",
+            findings[0].summary
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.summary.starts_with("task-cites-renamed-path:")),
+            "must not advertise a rename target that is itself gone; got {findings:?}"
+        );
+    }
+
+    // Scenario 19 (PRD §9): regression pin beside scenario 11 — a genuine
+    // deletion (no rename target resolvable) is NOT silently reclassified by
+    // the class fix.
+    #[test]
+    fn genuine_delete_still_emits_deleted_finding() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            52,
+            "pending",
+            r#"{"files":["crates/gone.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_last_commit_for_path("crates/gone.rs", mock_commit("beef01", "rm crates/gone.rs"));
+        // No rename target canned → rename_target_for_path returns None, which
+        // is also what the real seam returns for a delete commit, a merge
+        // commit, and any git error.
+
+        let tracked = tracked(&["crates/alive.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly one finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert!(
+            f.summary.starts_with("task-cites-deleted-path:"),
+            "a genuine delete must stay the deleted kind: {}",
+            f.summary
+        );
+        assert_eq!(f.severity, Severity::Medium, "severity: {f:?}");
+        assert_eq!(f.task_id, "52", "task_id must equal the task id: {f:?}");
+        let has_metadata_files = f.evidence.iter().any(|e| {
+            matches!(e, EvidenceRef::MetadataFiles { entries } if entries == &vec!["crates/gone.rs".to_string()])
+        });
+        assert!(has_metadata_files, "evidence must contain MetadataFiles ref: {:?}", f.evidence);
+        let has_commit = f
+            .evidence
+            .iter()
+            .any(|e| matches!(e, EvidenceRef::Commit { sha, .. } if sha == "beef01"));
+        assert!(has_commit, "evidence must contain Commit ref: {:?}", f.evidence);
+        assert!(
+            !f.evidence
+                .iter()
+                .any(|e| matches!(e, EvidenceRef::File { .. })),
+            "a deleted-path finding must carry NO File ref (there is no target): {:?}",
+            f.evidence
+        );
+    }
+
+    // Several tasks citing the SAME renamed path all report — the measured
+    // real-world shape (one renamed harness file cited by 4 tasks). Pins that
+    // the per-run rename memo neither drops the second finding nor perturbs the
+    // deterministic (task_id, path) order.
+    #[test]
+    fn two_tasks_citing_same_renamed_path_both_report() {
+        let conn = seed_tasks_db();
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            53,
+            "pending",
+            r#"{"files":["crates/old.rs"]}"#,
+        );
+        insert_task_with_metadata(
+            &conn,
+            "master",
+            54,
+            "in-progress",
+            r#"{"files":["crates/old.rs"]}"#,
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_last_commit_for_path("crates/old.rs", mock_commit("abc123", "absorb old.rs"));
+        git.set_rename_target_for_path("crates/old.rs", "abc123", "crates/new/old.rs");
+
+        let tracked = tracked(&["crates/new/old.rs"]);
+
+        let findings =
+            reify_audit::ptodo::resolve_inverse(&conn, &git, &tracked).expect("resolve_inverse");
+
+        assert_eq!(
+            findings.len(),
+            2,
+            "both citing tasks must report; got {findings:?}"
+        );
+        assert_eq!(
+            findings.iter().map(|f| f.task_id.as_str()).collect::<Vec<_>>(),
+            vec!["53", "54"],
+            "findings must stay ordered by task id; got {findings:?}"
+        );
+        for f in &findings {
+            assert!(
+                f.summary.starts_with("task-cites-renamed-path:"),
+                "both findings must be the renamed kind: {}",
+                f.summary
+            );
+            assert!(
+                f.summary.contains("crates/new/old.rs"),
+                "both findings must name the rename target: {}",
+                f.summary
+            );
+        }
+    }
+
     // Scenario 12 (PRD §9): path absent from tracked set but never committed
     // (mock returns None) → no finding (presumed to-be-created).
     #[test]
