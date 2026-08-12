@@ -4472,6 +4472,21 @@ assert "V2 (RED, the defect): the detached reseed-trash rm's fd 2 is NOT the cal
     _v_field_not_pipe "$V_FDLOG" "$V_TRASH_GLOB" 2
 
 # ── V4: the SYNC control arm — proves a pipe was genuinely connected ───────
+# A FRESH, never-before-seeded lane (V_LANE_SYNC), NOT a second run on V_LANE:
+# reusing V_LANE would leave run1's own leftover trash entry on disk (the fd
+# shim no-ops rather than really deleting it) as a live orphan for THIS run to
+# sweep, so once the orphan-sweep site is ALSO fixed (step-4) that entry's fd
+# 1 is NOT pipe while the SYNC entry's IS -- and V_TRASH_GLOB's trailing `.*`
+# matches either one, so which line _v_fdlog_field finds first becomes a race
+# between the backgrounded orphan-sweep child and the foreground SYNC rm
+# (caught empirically: this exact ambiguity made V4 flake red once step-4
+# landed). A never-seeded lane has no pre-existing trash dir, so no orphan
+# sweep can fire and only the SYNC entry ever reaches the log.
+V_LANE_SYNC="$(make_isolated_lane V-lane-sync)"
+mkdir -p "$V_LANE_SYNC/target"
+echo "stale" > "$V_LANE_SYNC/target/stale.a"
+V_TRASH_GLOB_SYNC="*/.reseed-trash/$(basename "$V_LANE_SYNC").*"
+
 V_FDLOG_SYNC="$_LANE_ROOT/.v-fdlog-sync"
 : > "$V_FDLOG_SYNC"
 V_SINK2="$_LANE_ROOT/.v-sink2"
@@ -4479,14 +4494,14 @@ V_SINK2="$_LANE_ROOT/.v-sink2"
 set +e
 ( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG_SYNC" \
     REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
-    bash "$SCRIPT" "$V_BASE" "$V_LANE" --fresh-checkout ) 2>&1 | cat > "$V_SINK2"
+    bash "$SCRIPT" "$V_BASE" "$V_LANE_SYNC" --fresh-checkout ) 2>&1 | cat > "$V_SINK2"
 V4_RC="${PIPESTATUS[0]}"
 set -e
 
-assert "V4-fixture: the SYNC control run exits 0 (target was non-empty again, so the same rename-to-trash path fires)" \
+assert "V4-fixture: the SYNC control run exits 0" \
     test "$V4_RC" -eq 0
 assert "V4 (non-vacuity, pipe really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd 1 IS the caller's pipe, proving this harness genuinely connects one" \
-    _v_field_is_pipe "$V_FDLOG_SYNC" "$V_TRASH_GLOB" 1
+    _v_field_is_pipe "$V_FDLOG_SYNC" "$V_TRASH_GLOB_SYNC" 1
 
 # ── V5-V7: the orphan-sweep arm (:1070) ─────────────────────────────────────
 # Reuses the H4e orphan-trash plant recipe (:2553-2565) — a FRESH lane with a

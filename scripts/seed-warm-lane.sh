@@ -1065,9 +1065,15 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # was never opened (--lane-lock not passed). It only NARROWS the
         # fork-to-close window and cannot close it -- see the LANE-LOCK RELEASE
         # CONTRACT block at the flock acquire above (#5705).
+        # >/dev/null 2>&1 (task #6219): same rationale as the reseed-trash rm
+        # below (see its comment for the full fd-1/fd-2 argument) -- this
+        # detached child must not hold a descriptor of a pipe-capturing
+        # caller either. A failed rm here is still surfaced: this very sweep
+        # re-finds and re-warns about the entry on the lane's next seed, and
+        # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
+            { rm -rf "$_rp_orphan"; } 9<&- >/dev/null 2>&1 &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
