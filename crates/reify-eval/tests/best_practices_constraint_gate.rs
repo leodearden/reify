@@ -507,6 +507,106 @@ fn expected_indeterminate_entries_are_well_formed() {
 
 // ── run_corpus_gate: headline end-to-end corpus sweep (steps 9/10) ──────────
 
+/// Break-glass: `REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS=1` downgrades the
+/// corpus assertion to a warn (prints offenders, does not fail) — mirrors
+/// `REIFY_MAIN_GATE_BYPASS` (CLAUDE.md) and this crate's sibling gate
+/// (`snapshot_cache_divergence_gate.rs::audit_bypassed`), so a future corpus
+/// change can never wedge the merge queue.
+fn audit_bypassed() -> bool {
+    std::env::var("REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS").is_ok_and(|v| v == "1")
+}
+
+/// Renders one `GateFailure` as a single human-readable line, using `id`'s
+/// `Display` impl so the offender is directly reproducible by copy-pasting
+/// into `reify check`.
+fn describe_failure(failure: &GateFailure) -> String {
+    match failure {
+        GateFailure::Violated { file, id } => format!("VIOLATED: {file}: {id}"),
+        GateFailure::UnexpectedIndeterminate { file, id } => {
+            format!("UNEXPECTED INDETERMINATE: {file}: {id}")
+        }
+        GateFailure::StaleExpectedIndeterminate { file, id } => {
+            format!("STALE EXPECTED_INDETERMINATE: {file}: {id}")
+        }
+    }
+}
+
+/// The thin driver wiring `corpus_files` (discovery), `constraint_statuses`
+/// (per-file check surface), and `audit_file` (pure per-file comparison
+/// against `EXPECTED_INDETERMINATE`) into the headline corpus sweep. Returns
+/// every `GateFailure` found across `examples/best_practices/`.
+///
+/// Deliberately does NOT re-assert the zero-Error compile contract —
+/// `examples_smoke.rs` owns that gate and duplicating it here would be
+/// lockstep duplication. `constraint_statuses` (via
+/// `check_source_with_stdlib`) panics on a parse/compile error, so this fn
+/// `eprintln!`s each file's repo-relative path immediately BEFORE checking
+/// it, keeping such a panic attributable to a file without re-asserting the
+/// compile contract itself.
+///
+/// When `REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS=1` is set, the offender
+/// report is still printed but this returns an empty vec, downgrading
+/// `best_practices_corpus_satisfies_every_constraint` to a warn.
+fn run_corpus_gate() -> Vec<GateFailure> {
+    let files = corpus_files();
+    let mut failures: Vec<GateFailure> = Vec::new();
+    let mut constraints_checked = 0usize;
+
+    for path in &files {
+        let display = corpus_relative(path);
+        eprintln!("  checking {display}");
+
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("best_practices_constraint_gate: reading {display}: {e}"));
+        let statuses = constraint_statuses(&source);
+        constraints_checked += statuses.len();
+
+        let basename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let expected: Vec<u32> = EXPECTED_INDETERMINATE
+            .iter()
+            .filter(|(file, _, _)| *file == basename)
+            .map(|(_, index, _)| *index)
+            .collect();
+
+        failures.extend(audit_file(&display, &expected, &statuses));
+    }
+
+    eprintln!(
+        "best_practices_constraint_gate: {} file(s) swept, {} constraint(s) checked, {} \
+         EXPECTED_INDETERMINATE exemption(s) applied:",
+        files.len(),
+        constraints_checked,
+        EXPECTED_INDETERMINATE.len(),
+    );
+    for (file, index, reason) in EXPECTED_INDETERMINATE {
+        eprintln!("    {file}#constraint[{index}]: {reason}");
+    }
+
+    if failures.is_empty() {
+        return failures;
+    }
+
+    if audit_bypassed() {
+        eprintln!(
+            "[REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS] {} failure(s) DOWNGRADED to warn:",
+            failures.len()
+        );
+        for failure in &failures {
+            eprintln!("    {}", describe_failure(failure));
+        }
+        eprintln!(
+            "(unset REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS to re-enforce this gate as a hard \
+             failure)"
+        );
+        return Vec::new();
+    }
+
+    failures
+}
+
 /// The headline gate: sweeps every file `corpus_files()` returns, checking
 /// each constraint via `constraint_statuses` and auditing it via
 /// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
