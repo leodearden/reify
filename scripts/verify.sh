@@ -190,6 +190,15 @@
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
+#   REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT — outer timeout for the gui-feature
+#                                  TEST-EXECUTION pass (`-p reify-gui --features gui`)
+#                                  emitted at the tail of add_test_passes(). Default 45m,
+#                                  sized from measurement on the workstation: a cold
+#                                  `--features gui` build (tauri + webkit2gtk + OCCT link)
+#                                  took 20m42s; a warm re-run took 137s total of which 59s
+#                                  was nextest execution over 906 tests. Distinct from
+#                                  REIFY_VERIFY_CLIPPY_TIMEOUT because that knob budgets a
+#                                  compile-only pass — this one budgets build + execution.
 #   REIFY_VERIFY_CHECK_TIMEOUT  — outer timeout for `cargo check --workspace --tests`.
 #                                  Default 30m.
 #   Values validated as ^[0-9]+[smhd]?$; invalid → default + stderr warning.
@@ -403,6 +412,7 @@ _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
 _VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
+_VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
@@ -1982,6 +1992,129 @@ add_test_passes() {
         fi
     done
 
+    # gui-feature TEST-EXECUTION pass (task 5076; PRD docs/prds/compute-fea-hardening.md
+    # task A5).  reify-gui's #[cfg(feature = "gui")] code — gui_feature_tests in
+    # tests/engine_tests.rs, gui_tests in kernel_status_tests.rs, the gui-gated #[test]
+    # fns in event_bus_tests.rs / claude_bridge.rs, and the wholly gui-gated
+    # debug_server / event_bus modules — is reached by NO workspace pass above (all run
+    # without --features gui).  Until this pass existed it was only COMPILE-checked, by
+    # the `cargo check -p reify-gui --features gui --tests` line in build_plan, so a
+    # change that flipped engine.rs's cfg(feature="gui") arm to
+    # MorphRegistration::Unavailable compiled clean and passed every CI pass silently.
+    #
+    # PLACEMENT — inside the semaphore bracket, at the tail of the profile loop:
+    #   * Inside the slot because a --features gui build links tauri + webkit2gtk +
+    #     OCCT, i.e. exactly the RSS-heavy link wave the held slot exists to bound
+    #     (see the ACQUIRE-block comment above: memory is the binding constraint on
+    #     this host and whole-block serialization is its only implicit bound).
+    #   * OUTSIDE the profile loop so `--profile both` emits it exactly ONCE.
+    #     --features is a FEATURE axis, not a profile axis; a second release-profile
+    #     copy would cost another cold link for zero added coverage.
+    #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
+    #     partition only.
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses:
+    #     emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge gate), and
+    #     under NARROW_ACTIVE=1 only when reify-gui is in AFFECTED.  affected_crates()
+    #     is a REVERSE-dependency closure, so a change anywhere in reify-gui's
+    #     dependency graph puts reify-gui in the set — measured on this tree:
+    #     crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs both
+    #     yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
+    #     Emitting unconditionally made a `-p reify-doc` branch plan pay a full
+    #     tauri + webkit2gtk + OCCT feature-unification build (20m42s cold / ~137s
+    #     warm, and NOT shareable with any other pass's artifacts) that no reify-doc
+    #     change can regress — while that same plan already narrowed reify-gui's
+    #     UNGATED tests away, so running its gui-GATED ones would have been
+    #     incoherent.  Membership is the reverse closure rather than a hand-listed
+    #     trigger set (reify-gui/reify-eval/reify-mesh-morph) so a change to an
+    #     indirect dependency (reify-syntax, reify-ir, …) cannot silently fall out
+    #     of the trigger.
+    #
+    # NOT reusing emit_nextest_pass — nor extending it with an optional extra-flags
+    # parameter, which was considered and rejected.  Three structural mismatches, not
+    # one missing slot: (a) this pass is wrapped in an `if test -f …; then … fi` guard
+    # with a sidecar-placeholder prefix, so it needs a prefix AND a suffix hook, not a
+    # trailing-flags one; (b) emit_nextest_pass unconditionally interpolates
+    # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
+    # can emit an `-E` filterset — and an `-E` here would narrow away the very
+    # gui-gated tests this pass exists to run (asserted by (b8) in
+    # tests/infra/test_compute_trampoline_registration_wired.sh), so they would all
+    # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
+    # that single construction site.  The two arms below therefore mirror its
+    # nextest/cargo-test if/else by hand so this pass is shape-identical on a
+    # nextest-less host.  What IS shared with it is kept in lockstep deliberately and
+    # is individually asserted: the memoized _NEXTEST_CONFIG_FILE + its lazy init,
+    # the --test-threads fragment, and the trailing ` 9<&-`.
+    #
+    # Three non-obvious requirements, each pinned by a live guard:
+    #  (i)  trailing ` 9<&-` — FD 9 is the held slot; tests/infra/test_verify_semaphore_
+    #       wiring.sh (1k) fails when ANY cargo test/nextest line lacks it.  This is a
+    #       direct `add`, so the token is NOT inherited from emit_nextest_pass's single
+    #       append site and is appended explicitly (valid shell: a redirection on a
+    #       compound command, kept on the same plan line the grep inspects).
+    #  (ii) --config-file — scripts/gen-nextest-config.sh's header records that plain
+    #       `--config` is a NO-OP for nextest test-groups on 0.9.136, so --config-file is
+    #       the only mechanism that applies the occt test-group cap, the global
+    #       [profile.default] test-threads pool cap and the per-binary priority
+    #       overrides.  Without it this pass would run UNCAPPED inside the held slot.
+    #       The SAME memoized _NEXTEST_CONFIG_FILE is reused (one temp file, one
+    #       _verify_cleanup EXIT removal — generating a second would leak it), with
+    #       emit_nextest_pass's lazy-init guard repeated so the pass cannot silently
+    #       degrade to an uncapped run in a scope that emitted no workspace pass.
+    #       --print-plan keeps the hermetic placeholder for the same reason it does
+    #       there (no subprocess, no temp file).
+    #  (iii) NO `-E` filterset.  Running the whole -p reify-gui --features gui suite is
+    #       what makes ALL gui-gated code execute; an enumerated name filter would
+    #       silently drift away from that set as modules are added.
+    # Outer timeout: its own _VERIFY_GUI_FEATURE_TEST_TIMEOUT knob (45m default) —
+    # see the REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT header entry for the measurement.
+    # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
+    # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
+    # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
+    local _emit_gui_feature_pass=0
+    if [ "$DF_VERIFY_ROLE" != "offline" ]; then
+        if [ "$NARROW_ACTIVE" -eq 0 ]; then
+            _emit_gui_feature_pass=1
+        else
+            # Word-split $AFFECTED (safe: Rust crate names never contain spaces),
+            # matching the AFFECTED_ALL_FLAGS loop above.
+            # shellcheck disable=SC2086
+            for _gui_ac in $AFFECTED; do
+                if [ "$_gui_ac" = "reify-gui" ]; then
+                    _emit_gui_feature_pass=1
+                    break
+                fi
+            done
+        fi
+    fi
+    if [ "$_emit_gui_feature_pass" -eq 1 ]; then
+        local _gui_feat_cmd
+        # --test-threads=N (task 5264) applies here for the SAME reason it applies
+        # to every other test pass: an explicit --test-threads caps test-execution
+        # parallelism, and this pass — a tauri + webkit2gtk + OCCT link inside the
+        # held slot — is the last one that should run uncapped while the workspace
+        # passes are capped.  Empty when the flag is unset, so the emitted line is
+        # byte-for-byte unchanged by default (the same empty-or-leading-space idiom
+        # emit_nextest_pass uses for _tt_flag).  The cargo-test arm below already
+        # honoured ${TEST_THREADS:-1}; the two arms are now consistent.
+        local _gui_tt_flag=""
+        [ -n "$TEST_THREADS" ] && _gui_tt_flag=" --test-threads=${TEST_THREADS}"
+        if [ "$NEXTEST" -eq 1 ]; then
+            local _gui_cfg_path
+            if [ "$PRINT_PLAN" -eq 1 ]; then
+                _gui_cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+            else
+                if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                    _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                fi
+                _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
+            fi
+            _gui_feat_cmd="${CARGO_PRIO}cargo nextest run -p reify-gui --features gui${_gui_tt_flag} --config-file ${_gui_cfg_path}"
+        else
+            _gui_feat_cmd="${CARGO_PRIO}cargo test -p reify-gui --features gui -- --test-threads=${TEST_THREADS:-1}"
+        fi
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_GUI_FEATURE_TEST_TIMEOUT} ${_gui_feat_cmd}; fi 9<&-"
+    fi
+
     # Release the semaphore slot after all passes complete.
     # The executor calls test_semaphore_release; the printer emits a comment.
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
@@ -2253,6 +2386,7 @@ build_plan() {
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
             add "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
+            add "if test -f scripts/check-compute-trampoline-registration.sh; then timeout --kill-after=60 5m bash scripts/check-compute-trampoline-registration.sh; else echo 'WARNING: check-compute-trampoline-registration.sh not found, skipping'; fi"
         fi
     fi
 
