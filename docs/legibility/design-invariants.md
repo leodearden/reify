@@ -418,14 +418,19 @@ unrelated reasons — nothing in this family changes that:
   (`crates/reify-compiler/src/type_compat.rs:220-237`) — and errors
   `ParamDefaultTypeMismatch` (`let` twin:
   `LetAnnotationTypeMismatch`). The carve-out never reaches function
-  param defaults: those are strict equality, so even
+  param defaults: those use strict equality
+  (`fn_param_default_compatible`), so even
   `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
   (`crates/reify-compiler/src/functions.rs:187-215`).
-- **`sin(2.5)` isn't a widening — it's in-signature**: forward trig
-  *declares* ANGLE-or-Real (`MATH_TRANSCENDENTAL_NAMES`,
-  `crates/reify-compiler/src/math_signatures.rs:95-97`), so any
-  dimensionless argument qualifies, literal or expression alike —
-  `sin(ratio * 2.0)` passes too.
+- **`sin(2.5)` isn't a widening — trig arguments are unchecked**:
+  no argument-dimension check exists for the transcendental family.
+  `MATH_TRANSCENDENTAL_NAMES` is a name list only
+  (`crates/reify-compiler/src/math_signatures.rs:95-97`); its
+  "accept ANGLE-or-Real" comment is intent only, not enforced.
+  `math_fn_result_type` fixes just the RESULT type
+  (`crates/reify-compiler/src/math_signatures.rs:374`) and never
+  inspects the argument, so every argument passes: `sin(2.5)`,
+  `sin(ratio * 2.0)`, and `sin(5.0mm)` (LENGTH) all compile clean.
 
 Mandatoriness is owned elsewhere: the
 real-dimensionless-unification decision D5 (current ruling:
