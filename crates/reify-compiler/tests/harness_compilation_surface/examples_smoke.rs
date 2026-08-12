@@ -323,16 +323,12 @@ one diagnostic.";
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
 ///
-/// The existence filter itself is [`reify_test_support::missing_paths_under`],
-/// shared with the guard of the same name in
-/// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`, which
-/// projects its own three-tuple `SKIP_SET` through the same helper.  Nothing is
-/// asserted here about that file's skip list — only the filter is shared.
+/// Existence filter: [`reify_test_support::missing_paths_under`], where its
+/// contract is documented and unit-tested.
 ///
 /// Every stale entry is reported in one panic rather than failing fast on the
 /// first, matching the corpus-wide-visibility principle this file applies to its
-/// other bulk guards; the reason string is re-joined from `SKIP_SET` so the
-/// mandatory justification still reaches the failure message.
+/// other bulk guards.
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
     let missing = missing_paths_under(
@@ -342,16 +338,14 @@ fn skip_set_entries_exist_under_examples_dir() {
     if missing.is_empty() {
         return;
     }
-    let lines: Vec<String> = missing
+    // Build the report by walking SKIP_SET and keeping the flagged entries,
+    // rather than looking each flagged path back up in SKIP_SET: the reason
+    // string stays in hand, so there is no lookup that cannot fail and hence no
+    // unreachable "reason missing" branch to justify.
+    let lines: Vec<String> = SKIP_SET
         .iter()
-        .map(|rel| {
-            let reason = SKIP_SET
-                .iter()
-                .find(|(p, _)| p == rel)
-                .map(|(_, r)| *r)
-                .unwrap_or("<no reason recorded>");
-            format!("  '{rel}' (reason: {reason})")
-        })
+        .filter(|(rel, _)| missing.contains(rel))
+        .map(|(rel, reason)| format!("  '{rel}' (reason: {reason})"))
         .collect();
     panic!(
         "SKIP_SET entry/entries name a relative path that does not exist under {}:\n{}\n\

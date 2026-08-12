@@ -795,18 +795,12 @@ fn compile_correctness_skips_still_fail_to_compile() {
 /// Return the subset of `entries`' relative paths that do not exist under
 /// `examples_dir`, regardless of [`SkipKind`].
 ///
-/// A thin [`SkipKind`]-projecting adapter over
-/// [`reify_test_support::missing_paths_under`], which owns the existence
-/// filter itself and is where its contracts (the full offending set is
-/// returned; input order is preserved) are documented and unit-tested.
-/// `examples_smoke.rs`'s guard of the same name projects its own two-tuple
-/// `SKIP_SET` through that same shared helper.
+/// Existence filter: [`reify_test_support::missing_paths_under`], where its
+/// contract is documented and unit-tested.
 ///
-/// The adapter is kept rather than inlined at the call site because the
-/// `.map(|(rel, _, _)| *rel)` projection is the one piece of behaviour the
-/// shared helper structurally cannot cover — it never sees a [`SkipKind`] —
-/// and `missing_skip_set_paths_contract` below is precisely the test that
-/// pins that projection's kind-agnosticism.
+/// Kept as a named adapter rather than inlined so `missing_skip_set_paths_contract`
+/// below can pin the one piece of behaviour the shared helper cannot see: that
+/// the projection discards [`SkipKind`].
 fn missing_skip_set_paths<'a>(
     entries: &'a [(&'a str, SkipKind, &'a str)],
     examples_dir: &Path,
@@ -819,13 +813,10 @@ fn missing_skip_set_paths<'a>(
 /// assertion message below for why this matters most for `SkipKind::PerfBudget`
 /// keys specifically.
 ///
-/// Mirrors the guard of the same name in
-/// `crates/reify-compiler/tests/examples_smoke.rs`, which performs the same
-/// check against its own two-tuple `SKIP_SET`; both now route through the
-/// shared `reify_test_support::missing_paths_under`, each projecting its own
-/// tuple shape away at the call boundary. Only the filter is shared — this
-/// asserts nothing about that file's contents, and no fixed relation between
-/// the two skip lists is claimed (see the `SKIP_SET` doc above).
+/// A guard of the same name in `crates/reify-compiler/tests/examples_smoke.rs`
+/// covers that crate's own skip list. Only the existence filter is shared —
+/// this asserts nothing about that file's contents, and no fixed relation
+/// between the two skip lists is claimed (see the `SKIP_SET` doc above).
 #[test]
 fn skip_set_entries_exist_under_examples_dir() {
     let missing = missing_skip_set_paths(SKIP_SET, Path::new(EXAMPLES_DIR));
@@ -899,11 +890,9 @@ fn missing_skip_set_paths_contract() {
 
     let mut names = missing_skip_set_paths(entries, dir.path());
 
-    // Sort before comparing as belt-and-braces: this assertion is about WHICH
-    // entries are flagged, not the order they come back in. (Order preservation
-    // is in fact guaranteed and separately pinned on
-    // `reify_test_support::missing_paths_under`; sorting here keeps this test
-    // aimed squarely at the SkipKind-agnostic projection it exists to cover.)
+    // Sorted on purpose: this assertion is about WHICH entries are flagged, not
+    // the order they come back in, which keeps it aimed squarely at the
+    // SkipKind-agnostic projection it exists to cover.
     names.sort_unstable();
     assert_eq!(
         names,
