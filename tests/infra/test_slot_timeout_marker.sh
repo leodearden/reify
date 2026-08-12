@@ -595,4 +595,92 @@ for _d_i in "${!D_MEMBERS[@]}"; do
         test "$_d_n" -eq 0
 done
 
+echo ""
+echo "=== E: no assert DESCRIPTION interpolates an unfiltered stderr capture ==="
+
+# THE SECOND, SNEAKIER LEAK CHANNEL. Section D covers a child's stderr reaching
+# the console; this covers evidence smuggled through assert's own description.
+# assert() (tests/infra/test_helpers.sh:42-57) echoes "  PASS: $desc" /
+# "  FAIL: $desc" with NO sanitizing, and indents only the CHECKER's captured
+# output (l.54, `sed 's/^/  | /'`). Anything inside $desc prints RAW -- so lines
+# 2+ of a multi-line interpolation start at COLUMN 0, on a PASSING assertion,
+# and the `$(cat ...)` is evaluated on EVERY run even when only the printing is
+# conditional. A captured stderr that carries a live sentinel therefore reaches
+# the verify log through a green assert.
+#
+# Unlike Section D this channel is not observable on demand -- it prints only
+# when that specific assert runs, under the contention that produced the
+# deadline (test_test_run_semaphore.sh's HG-2 deadlines only when the parent
+# verify.sh holds the host-global lock, which is exactly the merge-gate case).
+# So the guard is STATIC, in the same genre as the existing
+# tests/infra/test_no_new_wallclock_upper_bounds.sh scanner: a machine-checkable
+# output-safety property, not a documentation-wording grep.
+
+TMPE="$(mktemp -d)"; _TMPDIRS+=("$TMPE")
+
+# Detector, in two halves so this file never contains the forbidden shape
+# itself. A line is a violation iff it is assert-wired AND interpolates a
+# capture file UNFILTERED via `cat`, where the variable name ends in
+# _ERR/_STDERR -- precisely the sentinel-carrying class. That scoping is
+# deliberate: it excludes the stdout-only interpolations elsewhere in
+# test_run_all.sh, keeping this a bounded safety lint rather than an unrelated
+# repo-wide refactor. Same-line only, which is what every site in-tree uses;
+# a description split across a `\`-continuation is out of the grammar.
+E_ASSERT_RE='assert "'
+E_CAT_RE='\$\(cat "\$[A-Za-z_][A-Za-z0-9_]*(_ERR|_STDERR)"\)'
+
+_e_scan() {  # <dir> -> prints "basename:lineno" per hit; NEVER the matched content
+    local _d="$1" _f
+    for _f in "$_d"/*.sh; do
+        [ -e "$_f" ] || continue
+        # `cut -d: -f1` keeps ONLY grep -n's line number, so the offending line's
+        # text can never reach stdout -- printing it would BE the leak.
+        { grep -niE -- "$E_CAT_RE" "$_f" \
+            | grep -iE -- "$E_ASSERT_RE" \
+            | cut -d: -f1 \
+            | sed "s|^|${_f##*/}:|"; } || true
+    done
+}
+
+# --- E2/E3 FIRST: the detector's own controls, on synthetic fixtures.
+# E1 asserts an ABSENCE, so a typo'd regex would make it green forever (E2), and
+# a detector that also flagged the sanctioned remediation would make Section E
+# unsatisfiable (E3). Fixtures are BUILT AT RUNTIME in mktemp dirs so this file
+# carries no literal that E1's own repo-wide scan could trip over.
+E_POS_DIR="$TMPE/fx-pos"; mkdir -p "$E_POS_DIR"
+E_NEG_DIR="$TMPE/fx-neg"; mkdir -p "$E_NEG_DIR"
+
+_E_CAT='cat'   # assembled, so the forbidden shape is never contiguous above
+printf 'assert "E-probe: something went wrong (got stderr: $(%s "$_PROBE_ERR"))" false\n' \
+    "$_E_CAT" > "$E_POS_DIR/test_e_positive_probe.sh"
+# The sanctioned escape hatch: `  | ` is a NON-whitespace prefix, which is what
+# actually defeats dark-factory's `^[ \t]*` anchor (indentation alone does not).
+# Same filter assert itself uses on FAIL, and _dump_captured_stderr at
+# tests/infra/test_verify_semaphore_e2e.sh:436.
+cat > "$E_NEG_DIR/test_e_filtered_probe.sh" <<'ENEGEOF'
+assert "E-probe: something went wrong (got stderr: $(sed 's/^/  | /' "$_PROBE_ERR"))" false
+ENEGEOF
+
+E2_COUNT="$(_e_scan "$E_POS_DIR" | wc -l | tr -d ' ')"
+E3_COUNT="$(_e_scan "$E_NEG_DIR" | wc -l | tr -d ' ')"
+
+assert "E2: positive control -- the detector DOES flag an unfiltered \$(cat) in an assert description (got $E2_COUNT)" \
+    test "$E2_COUNT" -eq 1
+assert "E3: the prefix-filtered form is the sanctioned escape hatch and is NOT flagged (got $E3_COUNT)" \
+    test "$E3_COUNT" -eq 0
+
+echo ""
+echo "--- E1: repo-wide sweep of tests/infra/*.sh ---"
+
+E_HITS="$TMPE/e1-hits.txt"
+_e_scan "$SCRIPT_DIR" > "$E_HITS"
+E1_COUNT="$(wc -l < "$E_HITS" | tr -d ' ')"
+# Precomputed into a plain variable (not a $(...) inside the description) so this
+# assert can never itself become an instance of what it forbids. The list is
+# basename:lineno only.
+E1_HIT_LIST="$(tr '\n' ' ' < "$E_HITS")"
+
+assert "E1: no assert description interpolates an unfiltered stderr capture (got $E1_COUNT: $E1_HIT_LIST)" \
+    test "$E1_COUNT" -eq 0
+
 test_summary
