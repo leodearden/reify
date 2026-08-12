@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
+use reify_expr::ContainmentQuery;
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
 
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
@@ -2164,6 +2165,41 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     fn solve(&self, problem: &ResolutionProblem) -> SolveResult {
         self.captured.lock().unwrap().push(problem.clone());
         self.inner.solve(problem)
+    }
+}
+
+/// A [`ContainmentQuery`] that never resolves containment.
+///
+/// The trivial stub for tests that do not exercise `restrict`/`sample`
+/// containment resolution but must still supply the capability: constructing
+/// it needs no `Engine` and no geometry kernel.
+///
+/// Note it is NOT an "always outside" double. Per [`ContainmentQuery`]'s
+/// documented return semantics, `None` means containment is *indeterminate*
+/// (non-geometry region, malformed point, kernel error) — which yields
+/// `Value::Undef`, the same observable value a `Some(false)` would, but for a
+/// different reason. A test that needs strictly-outside behaviour wants a
+/// `Some(false)` double; none exists yet, and this is where to add it when one
+/// is first needed.
+pub struct NoContainment;
+
+impl ContainmentQuery for NoContainment {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        None
+    }
+}
+
+/// A [`ContainmentQuery`] that reports every point as inside the region.
+///
+/// The deliberate complement of [`NoContainment`], used to drive the
+/// `sample(restrict(field, region), point)` dispatch arm down its "inside"
+/// branch so a behavioral test can observe a wired `containment` capability
+/// actually taking effect, rather than merely being carried.
+pub struct AlwaysInside;
+
+impl ContainmentQuery for AlwaysInside {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        Some(true)
     }
 }
 
