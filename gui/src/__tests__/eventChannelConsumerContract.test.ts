@@ -263,3 +263,155 @@ describe('extractConsumerIdentifiers', () => {
     expect(extractConsumerIdentifiers('*(none)*')).toStrictEqual([]);
   });
 });
+
+describe('classifyEventChannelRows', () => {
+  it('classifies an identifier-bearing cell as named', () => {
+    expect(
+      classifyEventChannelRows([row('§1', 'mesh-update', '`bridge.ts::onMeshUpdate`')]),
+    ).toStrictEqual([
+      { section: '§1', channel: 'mesh-update', identifiers: ['onMeshUpdate'], kind: 'named' },
+    ]);
+  });
+
+  it('resolves the literal `same` cell by inheriting the nearest preceding named row', () => {
+    // Live shape: docs/gui-event-channels.md rows 34-41 write `same` in the
+    // Producer, Consumer AND Notes cells of the 8 claude-* rows that follow
+    // `claude-text-delta`, meaning "same as the row above" —
+    // i.e. `subscribeToClaudeEvents`. Resolving that mechanically is what keeps
+    // those 8 rows genuinely CHECKED against a real export, instead of adding 8
+    // allowlist entries that would all say "excused" and dilute an allowlist
+    // whose signal is meant to be "this row has an unusual non-bridge consumer".
+    const claudeRows = [
+      row('§1', 'claude-text-delta', '`subscribeToClaudeEvents`'),
+      row('§1', 'claude-thinking-delta', 'same'),
+      row('§1', 'claude-tool-call', 'same'),
+      row('§1', 'claude-tool-result', 'same'),
+      row('§1', 'claude-done', 'same'),
+      row('§1', 'claude-error', 'same'),
+      row('§1', 'claude-notice', 'same'),
+      row('§1', 'claude-ready', 'same'),
+      row('§1', 'claude-permission-request', 'same'),
+    ];
+
+    const classified = classifyEventChannelRows(claudeRows);
+
+    expect(classified[0].kind).toBe('named');
+    expect(classified.slice(1).map((c) => c.kind)).toStrictEqual(Array(8).fill('inherited'));
+    for (const c of classified.slice(1)) {
+      expect(c.identifiers, `${c.channel} should inherit the claude-text-delta consumer`).toStrictEqual([
+        'subscribeToClaudeEvents',
+      ]);
+    }
+  });
+
+  it('inherits from the nearest preceding named row, not the first one in the section', () => {
+    const classified = classifyEventChannelRows([
+      row('§1', 'a', '`onA`'),
+      row('§1', 'b', '`onB`'),
+      row('§1', 'c', 'same'),
+    ]);
+
+    expect(classified[2]).toStrictEqual({
+      section: '§1',
+      channel: 'c',
+      identifiers: ['onB'],
+      kind: 'inherited',
+    });
+  });
+
+  it('degrades a `same` row with no preceding named row to needs-allowlist rather than throwing', () => {
+    const classified = classifyEventChannelRows([row('§1', 'orphan', 'same')]);
+
+    expect(classified).toStrictEqual([
+      { section: '§1', channel: 'orphan', identifiers: [], kind: 'needs-allowlist' },
+    ]);
+  });
+
+  it('never inherits across the §1/§2 boundary', () => {
+    // §2 is a separate table with its own Producer/Consumer authorship; a `same`
+    // at the top of §2 does NOT mean "same as the last §1 row". Inheriting there
+    // would invent a consumer for a row nobody wrote one for — so the §2 row
+    // degrades to needs-allowlist and must be fixed or allowlisted deliberately.
+    const classified = classifyEventChannelRows([
+      row('§1', 'claude-text-delta', '`subscribeToClaudeEvents`'),
+      row('§2', 'mode-shape-frame', 'same'),
+    ]);
+
+    expect(classified[1]).toStrictEqual({
+      section: '§2',
+      channel: 'mode-shape-frame',
+      identifiers: [],
+      kind: 'needs-allowlist',
+    });
+  });
+
+  it('classifies the `*(none)*` sentinel as explicit-none with no identifiers', () => {
+    expect(classifyEventChannelRows([row('§1', 'diagnostics', '*(none)*')])).toStrictEqual([
+      { section: '§1', channel: 'diagnostics', identifiers: [], kind: 'explicit-none' },
+    ]);
+  });
+
+  it('does not let an `*(none)*` row become the inheritance source for a later `same`', () => {
+    // `*(none)*` asserts "no consumer", so a following `same` must not resolve
+    // to it — there is nothing to inherit. It falls back to the last row that
+    // actually named a consumer.
+    const classified = classifyEventChannelRows([
+      row('§1', 'a', '`onA`'),
+      row('§1', 'diagnostics', '*(none)*'),
+      row('§1', 'c', 'same'),
+    ]);
+
+    expect(classified[2].identifiers).toStrictEqual(['onA']);
+    expect(classified[2].kind).toBe('inherited');
+  });
+
+  it('classifies any other identifier-free prose cell as needs-allowlist', () => {
+    // Both live today: `debug-request` points at the gui/src debug-bridge
+    // module, and `mode-shape-frame` at an unwired Solid component. Neither is a
+    // bridge export, and neither uses a sentinel — so each must be explicitly
+    // allowlisted by the consumer suite or the guard fails.
+    const classified = classifyEventChannelRows([
+      row('§1', 'debug-request', '`gui/src` debug-bridge'),
+      row('§2', 'mode-shape-frame', '(new) `BucklingPanel` animator'),
+    ]);
+
+    expect(classified.map((c) => [c.channel, c.kind, c.identifiers])).toStrictEqual([
+      ['debug-request', 'needs-allowlist', []],
+      ['mode-shape-frame', 'needs-allowlist', []],
+    ]);
+  });
+
+  it('treats a near-miss sentinel spelling as needs-allowlist, the safe default', () => {
+    // Only the exact trimmed strings `same` and `*(none)*` are sentinels. A
+    // variant spelling must NOT silently excuse a row — it falls through to the
+    // classification that demands a deliberate allowlist entry.
+    for (const cell of ['Same', 'same as above', '(none)', '*none*', '—', 'n/a']) {
+      expect(
+        classifyEventChannelRows([row('§1', 'x', cell)])[0].kind,
+        `${cell} must not be read as a sentinel`,
+      ).toBe('needs-allowlist');
+    }
+  });
+
+  it('preserves input order and section tagging across a mixed table', () => {
+    const classified = classifyEventChannelRows([
+      row('§1', 'mesh-update', '`bridge.ts::onMeshUpdate`'),
+      row('§1', 'claude-text-delta', '`subscribeToClaudeEvents`'),
+      row('§1', 'claude-done', 'same'),
+      row('§1', 'debug-request', '`gui/src` debug-bridge'),
+      row('§2', 'warm-pool-event', '`bridge.ts::onWarmPoolEvent` → `WarmPoolDebugPanel`'),
+    ]);
+
+    expect(classified.map((c) => [c.section, c.channel, c.kind])).toStrictEqual([
+      ['§1', 'mesh-update', 'named'],
+      ['§1', 'claude-text-delta', 'named'],
+      ['§1', 'claude-done', 'inherited'],
+      ['§1', 'debug-request', 'needs-allowlist'],
+      ['§2', 'warm-pool-event', 'named'],
+    ]);
+  });
+
+  it('returns [] for no rows', () => {
+    expect(classifyEventChannelRows([])).toStrictEqual([]);
+  });
+});
