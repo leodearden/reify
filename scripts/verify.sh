@@ -2088,21 +2088,33 @@ add_test_passes() {
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
     local _emit_gui_feature_pass=0 _gui_ac
+    # Normalize the closure ONCE: word-split and rejoin, so a whitespace-only
+    # value collapses to "".  Without this, a malformed
+    # REIFY_AFFECTED_CRATES_OVERRIDE ("   ") is non-empty and is not the ALL
+    # sentinel, so it reaches the membership loop, word-splits to nothing, the
+    # loop body never runs, and the pass is silently narrowed away.  Same guard,
+    # same rationale, as the AFFECTED_ALL_FLAGS-empty reset in the Phase-2
+    # narrowing block: a malformed knob must fail WIDE, never narrow.
+    local _gui_closure_norm=""
+    # shellcheck disable=SC2086
+    for _gui_ac in $AFFECTED_CLOSURE; do
+        _gui_closure_norm="${_gui_closure_norm:+$_gui_closure_norm }$_gui_ac"
+    done
     if [ "$DF_VERIFY_ROLE" != "offline" ]; then
         if [ "$SCOPE" = "all" ]; then
             # Merge gate: unconditional BY CONTRACT, not as a side effect of
             # narrowing happening to be inactive.
             _emit_gui_feature_pass=1
-        elif [ -z "$AFFECTED_CLOSURE" ] || [ "$AFFECTED_CLOSURE" = "ALL" ]; then
-            # Closure unavailable (ALL sentinel from a C4 global file / C5
-            # metadata failure / unmappable path, or an empty CHANGED_FILES_RAW).
-            # Fail WIDE.
+        elif [ -z "$_gui_closure_norm" ] || [ "$_gui_closure_norm" = "ALL" ]; then
+            # Closure unavailable — the ALL sentinel from a C4 global file / C5
+            # metadata failure / unmappable path, an empty CHANGED_FILES_RAW, or
+            # a malformed knob that word-splits to nothing.  Fail WIDE.
             _emit_gui_feature_pass=1
         else
-            # Word-split $AFFECTED_CLOSURE (safe: Rust crate names never contain
+            # Word-split $_gui_closure_norm (safe: Rust crate names never contain
             # spaces), matching the AFFECTED_ALL_FLAGS loop above.
             # shellcheck disable=SC2086
-            for _gui_ac in $AFFECTED_CLOSURE; do
+            for _gui_ac in $_gui_closure_norm; do
                 if [ "$_gui_ac" = "reify-gui" ]; then
                     _emit_gui_feature_pass=1
                     break
