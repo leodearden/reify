@@ -489,4 +489,110 @@ assert "C4: soft admission -- run_all still exits 0 despite the pool deadline (g
 assert "C5: the pool sentinel says disposition=soft, so the wire distinguishes it from an abort" \
     _has_line "$RA_OUT" "^${SP}TIMEOUT@@ .* disposition=soft "
 
+echo ""
+echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verify log ==="
+
+# THE FIX MUST NOT BECOME THE INCIDENT. Sections A-C made slot_acquire emit a
+# live column-0 sentinel on EVERY finite-WAIT rc=75 -- including the deadlines
+# that PRE-EXISTING infra tests force deliberately, on a normal GREEN run. Under
+# run_all.sh a member's stdout+stderr land in <n>.out and Phase 3 re-emits them
+# UNCONDITIONALLY (run_all.sh:1785/1799) through a sanitizer that is prefix-scoped
+# to `@@REIFY_CLOCK_` (:368, pinned by A6) -- so such a sentinel survives verbatim
+# at column 0 into the merge-gate verify log, and dark-factory's presence-anchored
+# classifier marks the ENTIRE merge verify as SEMAPHORE_TIMEOUT. That is precisely
+# the infra-hold misclassification this task exists to remove, reintroduced by the
+# fix. Sections A-C hold that discipline for THIS file's own emissions; D extends
+# it to the emit-adjacent sites this change turned from latent into live.
+#
+# The guard is BEHAVIOURAL and models run_all's capture exactly (see _d_capture).
+
+TMPD="$(mktemp -d)"; _TMPDIRS+=("$TMPD")
+
+# dark-factory's anchor, semantics verbatim: `^[ \t]*` TOLERATES leading
+# whitespace, so INDENTING IS NOT A DEFENCE (D2b pins that). POSIX [[:blank:]] is
+# exactly space+tab -- GNU grep -E does not honour `\t` inside a bracket
+# expression, so spelling it that way would silently match a literal `t`.
+D_ANCHOR="^[[:blank:]]*${SP}TIMEOUT@@"
+
+# Members that deliberately force a finite-WAIT slot deadline, so slot_acquire's
+# rc=75 branch -- and now its sentinel -- is reached on a normal GREEN run.
+# RECURSION: test_slot_timeout_marker.sh is deliberately ABSENT from this list.
+# It is the one file whose captured sentinels are the assertion target, and every
+# one of them is confined to a temp file by the discipline at the top of this file.
+D_MEMBERS=(test_lane_x_flock.sh test_test_run_semaphore.sh test_occt_flock_gate.sh)
+# Index-aligned non-vacuity anchors: the deadline-forcing section header(s) of
+# each member, newline-separated, each asserted on its own. Renaming or deleting
+# one of those sections turns this guard RED rather than silently green.
+D_HEADERS=(
+    $'^--- Test 13:\n^--- Test 15:'
+    $'^--- Test HG-2:'
+    $'^--- Test 15:'
+)
+
+_d_capture() {  # <member-basename> <outfile>
+    # Combined stdout+stderr into ONE file -- byte-identical to run_all's own
+    # member capture (`bash "$INFRA_DIR/$name" > "<n>.out" 2>&1`, run_all.sh:1691),
+    # which is the stream Phase 3 re-emits. A nested run_all would add nothing:
+    # its sanitizer provably cannot touch this token family (A6), so direct
+    # capture is equally faithful at a fraction of the cost.
+    #
+    # Exit status is IGNORED BY DESIGN: this guard asserts OUTPUT SHAPE only, so
+    # it can never double-report another suite's failure (or its load flakes) as
+    # a failure of this one. `timeout` here is a pure anti-hang backstop, not a
+    # timing assertion -- nothing below compares an elapsed duration.
+    timeout 600 bash "$SCRIPT_DIR/$1" > "$2" 2>&1 || true
+}
+
+# --- D2 FIRST: positive control on the D1 predicate.
+# D1 asserts an ABSENCE, and an absence-assert with a typo'd regex is green
+# forever. D2 pins that the exact predicate D1 uses does detect the real shape,
+# at column 0 (D2a) and indented (D2b -- the anchor's whitespace tolerance is
+# what makes indentation a non-defence, and the reason D1 must scan for it).
+D_CTRL0="$TMPD/positive-control-col0.out"
+D_CTRL1="$TMPD/positive-control-indented.out"
+printf '%sTIMEOUT@@ reason=lane_x_slot_starvation slots=1 waited=1 disposition=fatal lock=/tmp/x.lock\n' \
+    "$SP" > "$D_CTRL0"
+printf '    %sTIMEOUT@@ reason=lane_x_slot_starvation slots=1 waited=1 disposition=fatal lock=/tmp/x.lock\n' \
+    "$SP" > "$D_CTRL1"
+
+D_CTRL0_COUNT="$(grep -cE -- "$D_ANCHOR" "$D_CTRL0" || true)"
+D_CTRL1_COUNT="$(grep -cE -- "$D_ANCHOR" "$D_CTRL1" || true)"
+
+assert "D2a: positive control -- D1's own predicate DOES detect a column-0 sentinel (got $D_CTRL0_COUNT)" \
+    test "$D_CTRL0_COUNT" -eq 1
+assert "D2b: positive control -- it detects an INDENTED one too (indentation is not a defence; got $D_CTRL1_COUNT)" \
+    test "$D_CTRL1_COUNT" -eq 1
+
+echo ""
+echo "--- D1/D3: each deadline-forcing member, captured exactly as run_all captures it ---"
+
+# Concurrently, so the added wall clock is max(member) rather than sum(member).
+_d_pids=()
+for _d_i in "${!D_MEMBERS[@]}"; do
+    _d_capture "${D_MEMBERS[$_d_i]}" "$TMPD/${D_MEMBERS[$_d_i]}.out" &
+    _d_pids+=("$!")
+done
+for _d_p in "${_d_pids[@]}"; do wait "$_d_p" 2>/dev/null || true; done
+
+for _d_i in "${!D_MEMBERS[@]}"; do
+    _d_m="${D_MEMBERS[$_d_i]}"
+    _d_f="$TMPD/${_d_m}.out"
+
+    # D3 BEFORE D1: without it D1 would pass vacuously on an empty capture (a
+    # member that failed to start, or whose deadline-forcing section was renamed).
+    while IFS= read -r _d_h; do
+        assert "D3 [$_d_m]: deadline-forcing section '${_d_h#^--- }' actually ran (non-vacuity)" \
+            _has_line "$_d_f" "$_d_h"
+    done <<< "${D_HEADERS[$_d_i]}"
+
+    # D1 reports the COUNT and the MEMBER NAME only -- never the matched content.
+    # `test` as the checker is load-bearing, not style: assert dumps a FAILING
+    # checker's captured output, and dumping the offending line would BE the leak
+    # this assertion exists to prevent. The count is the actionable half; the
+    # member name says where to look.
+    _d_n="$(grep -cE -- "$D_ANCHOR" "$_d_f" || true)"
+    assert "D1 [$_d_m]: leaks ZERO slot-timeout sentinels into its own captured output (got $_d_n)" \
+        test "$_d_n" -eq 0
+done
+
 test_summary
