@@ -144,8 +144,10 @@ so neither of those shapes sees the +1._
 _Counts corrected 2026-08-05 (task 5076, review amendment): the gui-feature
 TEST-EXECUTION pass above is no longer emitted unconditionally. It is now
 narrowed on the same affected-crate axis every other narrowed pass uses —
-emitted whenever `NARROW_ACTIVE=0` (`scope=all`, i.e. the merge gate) and, under
-`NARROW_ACTIVE=1`, only when `reify-gui` is in `AFFECTED`. A `--features gui`
+emitted unconditionally for `scope=all` (the merge gate never narrows), emitted
+whenever the affected-crate closure is unavailable (the `ALL` sentinel, an empty
+changed-file list, or a malformed override — fail wide), and otherwise emitted
+only when `reify-gui` is in that closure. A `--features gui`
 build is a distinct feature-unification of the dependency graph, so it shares
 artifacts with no other pass and costs 20m42s cold / ~137s warm on its own; a
 `-p reify-doc` branch plan was paying that for code no reify-doc change can
@@ -163,6 +165,32 @@ through `REIFY_AFFECTED_CRATES_OVERRIDE` with a literal single-crate list
 `reify-eval` and lacks `reify-gui`. Every `scope=all` cell stays 18 (narrowing
 is structurally unreachable there), docs-only branch stays 0 and gui-only branch
 stays 3 (`RUN_RUST=0`). The table and the sentinel move in lockstep._
+
+_Counts UNCHANGED 2026-08-13 (task 6030): the amendment above described the
+gui-feature pass's unconditional arm as `NARROW_ACTIVE=0`, i.e. as the merge
+gate. That equivalence was never true. `NARROW_ACTIVE` is a narrowing-ACTIVATION
+flag, not a scope oracle: narrowing is eligible only for `scope=branch` or
+`scope=staged` **with** `--narrow`, so `NARROW_ACTIVE=0` also holds for
+`--scope staged` WITHOUT `--narrow` — which is exactly what `hooks/project-checks`
+execs on every commit (`verify.sh all --profile debug --scope staged
+--include-infra`) — and for the two fail-wide resets. Measured on a hermetic
+fixture whose only staged path was `crates/reify-doc/src/lib.rs`: the
+`--features gui` pass WAS emitted, so every per-commit hook run was paying that
+tauri + webkit2gtk + OCCT feature-unification link for a reverse-dependency
+closure that provably cannot reach `reify-gui`. The closure was computable on
+that path all along — `decide_scope` already fills `CHANGED_FILES_RAW` from
+`git diff --cached` for `scope=staged` — it was simply never asked for. It is
+now, via a separate `AFFECTED_CLOSURE` computed whenever `RUN_RUST=1` and
+`SCOPE != all`: strictly wider than narrowing eligibility, so a membership test
+can consult the closure without ACTIVATING narrowing. `NARROW_ACTIVE`,
+`AFFECTED`, `AFFECTED_ALL_FLAGS` and the `--workspace` coupling on
+staged-without-`--narrow` are all value-identical to before. **The
+THROUGHPUT-COUNTS sentinel does NOT move**, and no cell of the table above
+changes: all four shapes are captured only at `--scope all` and `--scope branch`,
+and this change is confined to `--scope staged` while being value-preserving for
+the other two — confirmed by running `tests/infra/test_verify_throughput.sh`
+green rather than by asserting it. The merge gate remains unconditional by
+contract, so a hook-tier skip is LATENCY, never a coverage hole._
 
 ## Heavy-Work Narrowed Markers
 
@@ -231,6 +259,13 @@ only WHAT each shape drops, which is the qualitative half of the evidence.
   `--features gui` test-execution pass, whose affected-crate closure does not
   reach `reify-gui`.  The remaining savings are wall-clock, from skipping
   unaffected crate compilation.
+- **staged per-commit-hook tier (`--scope staged`, no `--narrow`):** since
+  2026-08-13 (task 6030) the `--features gui` drop applies here too, on the same
+  closure-membership test — this tier is `hooks/project-checks`' own invocation,
+  so a staged diff that cannot reach `reify-gui` no longer pays that link on
+  every commit.  Nothing ELSE narrows on this tier: clippy and the workspace
+  nextest pass keep `--workspace`, so this shape is absent from the table above
+  and its plan-step counts are untouched.
 - **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
   to `-p reify-eval` (task 4451: gated pass folded into the nextest pool), and
   the `--features gui` pass likewise dropped — the fixture drives `AFFECTED`
