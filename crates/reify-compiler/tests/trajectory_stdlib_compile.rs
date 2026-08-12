@@ -1022,9 +1022,16 @@ fn shaper_trait_exists_with_no_params() {
 ///     kinematic-completion Joint type)
 ///   - `max_force : Scalar<Force>`  (task 4580: tightened from Real)
 ///
-/// Both fields are caller-supplied — no canonical defaults. JointLimit
-/// refines no trait (zero `trait_bounds`). Constraint `max_force > 0` is
-/// asserted separately in step-33.
+/// Both fields are caller-supplied — no canonical defaults. Constraint
+/// `max_force > 0` is asserted separately in step-33.
+///
+/// JointLimit refines the `ActuatorLimit` marker trait (task 6096). It
+/// previously refined NO trait; that contract changed deliberately when 6096
+/// introduced the per-joint-kind actuator-limit duality, so that the two
+/// halves — `JointLimit` (prismatic/translational, `Scalar<Force>`) and
+/// `RevoluteJointLimit` (revolute/rotational, `Scalar<Torque>`) — are unified
+/// in the TYPE SYSTEM rather than only in prose. The shaper half of the same
+/// duality gets this for free via the pre-existing `trait Shaper`.
 ///
 /// Mirrors `waypoint_struct_has_correct_param_shape` (step-9) and
 /// `rayleigh_damping_param_shape` in modal_options_validation_tests.rs.
@@ -1032,11 +1039,16 @@ fn shaper_trait_exists_with_no_params() {
 fn joint_limit_struct_has_correct_param_shape() {
     let template = find_structure("JointLimit");
 
-    // JointLimit refines no trait (not a BoundaryCondition, not a Profile).
+    // JointLimit refines the ActuatorLimit family marker (task 6096) — and
+    // ONLY that (it is still not a BoundaryCondition, not a Profile, not a
+    // Shaper). Tight equality, not `contains`, so an accidental extra
+    // refinement is caught here.
     assert_eq!(
         template.trait_bounds,
-        Vec::<String>::new(),
-        "JointLimit should refine no traits; got trait_bounds: {:?}",
+        vec!["ActuatorLimit".to_string()],
+        "JointLimit must refine exactly the ActuatorLimit marker trait \
+         (task 6096: the prismatic/translational half of the per-joint-kind \
+         actuator-limit duality); got trait_bounds: {:?}",
         template.trait_bounds
     );
 
@@ -1184,6 +1196,277 @@ fn joint_limit_constrains_max_force_positive() {
          got: {:?}",
         right.kind
     );
+}
+
+// ─── task 6096: RevoluteJointLimit — the revolute half of the duality ────────
+
+/// `RevoluteJointLimit` is the REVOLUTE/rotational half of the per-joint-kind
+/// actuator-limit duality (task 6096). It mirrors `JointLimit` exactly —
+/// same param names, same canonical order, same positivity constraint — and
+/// differs ONLY in the declared dimension of `max_force`:
+///
+///   - `JointLimit.max_force        : Scalar<Force>`   (m·kg·s⁻², prismatic)
+///   - `RevoluteJointLimit.max_force: Scalar<Torque>`  (m²·kg·s⁻²·rad⁻¹)
+///
+/// This is the same shape as the `spring_rate` precedent this task extends —
+/// `Prismatic.spring_rate : Option<TranslationalStiffness>` vs
+/// `Revolute.spring_rate : Option<RotationalStiffness>` (kinematic.ri:147/165)
+/// are likewise two sibling structures sharing a field NAME and varying only
+/// the dimension. The name stays `max_force` (not `max_torque`) for exactly
+/// that reason, and so the dimension-blind `field_f64(data, "max_force", ..)`
+/// marshalling readers stay uniform across both kinds.
+///
+/// TORQUE is read from the registry const and NEVER composed as FORCE·LENGTH:
+/// Reify's τ carries an explicit Angle⁻¹ slot (N·m/rad), which is what makes
+/// it a DISTINCT vector from ENERGY (see `DimensionVector::TORQUE` docs) —
+/// hand-composing it would silently assert the wrong thing.
+#[test]
+fn revolute_joint_limit_struct_has_correct_param_shape() {
+    let template = find_structure("RevoluteJointLimit");
+
+    // Refines the shared ActuatorLimit family marker — this is what pins the
+    // duality in the type system rather than in a comment.
+    assert_eq!(
+        template.trait_bounds,
+        vec!["ActuatorLimit".to_string()],
+        "RevoluteJointLimit must refine exactly the ActuatorLimit marker \
+         trait (task 6096); got trait_bounds: {:?}",
+        template.trait_bounds
+    );
+
+    let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
+
+    assert_eq!(
+        params.len(),
+        2,
+        "RevoluteJointLimit should have exactly 2 param cells \
+         (joint, max_force) — the same shape as JointLimit (task 6096); \
+         got: {:?}",
+        names
+    );
+
+    let expected: &[(&str, Type)] = &[
+        // `joint` is a dimensionless joint INDEX, identical to JointLimit's —
+        // the per-kind variation is confined to `max_force`.
+        ("joint", Type::dimensionless_scalar()),
+        (
+            "max_force",
+            Type::Scalar {
+                dimension: DimensionVector::TORQUE,
+            },
+        ),
+    ];
+
+    // Param declaration order is part of the contract (mirrors JointLimit).
+    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
+    assert_eq!(
+        names, expected_names,
+        "RevoluteJointLimit params must be in canonical order \
+         (joint, max_force) (task 6096); got: {:?}",
+        names
+    );
+
+    for (member, expected_ty) in expected {
+        let cell = params
+            .iter()
+            .find(|vc| vc.id.member == *member)
+            .unwrap_or_else(|| {
+                panic!(
+                    "RevoluteJointLimit missing required param '{}' (task 6096); got: {:?}",
+                    member, names
+                )
+            });
+        assert_eq!(
+            cell.cell_type, *expected_ty,
+            "RevoluteJointLimit.{} should be {:?}, got {:?} (task 6096)",
+            member, expected_ty, cell.cell_type
+        );
+    }
+
+    // The whole point of the duality: the two halves must NOT collapse onto
+    // the same vector. TORQUE carries an Angle⁻¹ slot that FORCE does not.
+    let revolute_max_force = params
+        .iter()
+        .find(|vc| vc.id.member == "max_force")
+        .expect("checked above");
+    assert_ne!(
+        revolute_max_force.cell_type,
+        Type::Scalar {
+            dimension: DimensionVector::FORCE,
+        },
+        "RevoluteJointLimit.max_force must NOT be Scalar<Force> — that is the \
+         PRISMATIC half's dimension; the revolute half carries Torque \
+         (m²·kg·s⁻²·rad⁻¹) (task 6096)"
+    );
+
+    // Both fields are caller-supplied — no canonical defaults (mirrors
+    // JointLimit: there is no canonical "default max torque" either).
+    for cell in &params {
+        assert!(
+            cell.default_expr.is_none(),
+            "RevoluteJointLimit.{} should have no default_expr \
+             (caller-supplied) (task 6096); got: {:?}",
+            cell.id.member,
+            cell.default_expr
+        );
+    }
+}
+
+/// `RevoluteJointLimit` must declare exactly one constraint: `max_force > 0`.
+///
+/// Mirrors `joint_limit_constrains_max_force_positive` above — a zero or
+/// negative actuator limit is degenerate for a revolute joint for exactly the
+/// same physical reason it is for a prismatic one. Tight count == 1 is the
+/// regression gate: `joint : Real` is explicitly NOT constrained (it is an
+/// entity-handle placeholder — no meaningful scalar predicate on a handle).
+///
+/// The RHS bare `0` is coerced per-field by the task-4485/β polymorphic-zero
+/// rewrite; its concrete dimension is NOT pinned here (the linear counterpart
+/// pins FORCE) because the constraint's contract at this level is the
+/// predicate shape, and the field's dimension is already pinned tightly by
+/// `revolute_joint_limit_struct_has_correct_param_shape` above.
+#[test]
+fn revolute_joint_limit_constrains_max_force_positive() {
+    let template = find_structure("RevoluteJointLimit");
+
+    assert_eq!(
+        template.constraints.len(),
+        1,
+        "RevoluteJointLimit should declare exactly 1 constraint \
+         (max_force > 0) (task 6096); got {} constraints: {:?}",
+        template.constraints.len(),
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    );
+
+    let constraint = &template.constraints[0];
+
+    let (left, op) = match &constraint.expr.kind {
+        CompiledExprKind::BinOp { op, left, .. } => (left.as_ref(), op),
+        other => panic!(
+            "RevoluteJointLimit constraint should be a BinOp (task 6096); got: {:?}",
+            other
+        ),
+    };
+    assert_eq!(
+        *op,
+        BinOp::Gt,
+        "RevoluteJointLimit constraint should use BinOp::Gt (max_force > 0) \
+         (task 6096); got: {:?}",
+        op
+    );
+
+    let lhs_refs = collect_value_ref_members(left);
+    assert!(
+        lhs_refs.iter().any(|m| m.as_str() == "max_force"),
+        "RevoluteJointLimit constraint LHS should reference `max_force` \
+         (task 6096); got refs: {:?}",
+        lhs_refs
+    );
+}
+
+// ─── task 6096: actuator-limit field-READ dimensional signal ─────────────────
+
+/// Compile `source` against the production stdlib and return the
+/// Error-severity diagnostic MESSAGES.
+///
+/// Thin `String`-projecting wrapper over the shared
+/// `compile_source_with_stdlib` + `errors_only` pair (rather than a second
+/// copy of that logic) so the field-READ signal tests below can assert on
+/// message TEXT — the dimensional-unification diagnostic is only observable
+/// in the rendered message, and `errors_only` hands back borrowed
+/// `&Diagnostic`s tied to a temporary `CompiledModule`.
+fn stdlib_compile_error_messages(source: &str) -> Vec<String> {
+    let module = compile_source_with_stdlib(source);
+    errors_only(&module)
+        .iter()
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// The dimensional retype's user-observable COMPILE-TIME signal, both
+/// polarities, both joint kinds (task 6096).
+///
+/// Reading `.max_force` off a limit yields a value carrying that limit's
+/// declared dimension, so arithmetic against a matching-dimension literal
+/// unifies and arithmetic against any other family is REJECTED. This is
+/// arithmetic-site dimension unification — deliberately independent of
+/// ctor-ARG checking, which does not yet reject a cross-dimension scalar at a
+/// `Scalar<Q>` param slot.
+///
+/// Scope boundary: the wrong-kind-PAIRING diagnostic ("a Force-dimensioned
+/// `max_force` supplied to a RevoluteJointLimit ctor must error") is task
+/// #6240's (dep-gated on #5627) and is deliberately NOT asserted here — it
+/// would be a doomed RED today.
+///
+/// The prismatic rows are the CONTROL: they prove the linear half kept its
+/// `Scalar<Force>` spelling and that the two halves reject each other
+/// symmetrically, so a regression collapsing Torque onto Force cannot pass by
+/// making both directions clean.
+#[test]
+fn actuator_limit_max_force_reads_carry_their_per_joint_kind_dimension() {
+    // (expr, expect_clean, label)
+    let cases: &[(&str, bool, &str)] = &[
+        // ── REVOLUTE half: Scalar<Torque> (m²·kg·s⁻²·rad⁻¹) ──
+        ("rev.max_force + 1.0Nm", true, "revolute + torque literal"),
+        ("rev.max_force + 1.0", false, "revolute + bare Real"),
+        (
+            "rev.max_force + 1.0N",
+            false,
+            "revolute + LINEAR force literal",
+        ),
+        // ── PRISMATIC control: Scalar<Force> (m·kg·s⁻²) ──
+        ("pri.max_force + 1.0N", true, "prismatic + force literal"),
+        ("pri.max_force + 1.0", false, "prismatic + bare Real"),
+        (
+            "pri.max_force + 1.0Nm",
+            false,
+            "prismatic + ROTATIONAL torque literal",
+        ),
+    ];
+
+    for (expr, expect_clean, label) in cases {
+        let source = format!(
+            r#"
+structure def ActuatorLimitReadProbe {{
+    let rev = RevoluteJointLimit(joint: 0.0, max_force: 2.0Nm)
+    let pri = JointLimit(joint: 0.0, max_force: 2.0N)
+    let x = {expr}
+}}
+"#
+        );
+        let errors = stdlib_compile_error_messages(&source);
+
+        if *expect_clean {
+            assert!(
+                errors.is_empty(),
+                "`{}` ({}) should compile with zero Error diagnostics — the \
+                 field read carries the limit's declared dimension and \
+                 unifies with a matching literal (task 6096); got {}: {:?}",
+                expr,
+                label,
+                errors.len(),
+                errors
+            );
+        } else {
+            assert!(
+                errors
+                    .iter()
+                    .any(|m| m.contains("dimension mismatch in addition")),
+                "`{}` ({}) should report a \"dimension mismatch in addition\" \
+                 Error — the field read is dimensioned, so a mismatched \
+                 addend must be rejected (task 6096); got {}: {:?}",
+                expr,
+                label,
+                errors.len(),
+                errors
+            );
+        }
+    }
 }
 
 // ─── step-35: TOTSShaper param shape ─────────────────────────────────────────
