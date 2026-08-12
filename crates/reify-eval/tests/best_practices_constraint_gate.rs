@@ -504,3 +504,78 @@ fn expected_indeterminate_entries_are_well_formed() {
         );
     }
 }
+
+// ── run_corpus_gate: headline end-to-end corpus sweep (steps 9/10) ──────────
+
+/// The headline gate: sweeps every file `corpus_files()` returns, checking
+/// each constraint via `constraint_statuses` and auditing it via
+/// `audit_file` against `EXPECTED_INDETERMINATE`. Asserts ZERO
+/// `GateFailure`s on the live corpus.
+///
+/// This is expected GREEN on the measured baseline (16 Satisfied / 3
+/// Indeterminate / 0 Violated, with all 3 Indeterminate listed in
+/// `EXPECTED_INDETERMINATE` above) — its RED-ness right now is only that
+/// `run_corpus_gate` does not exist yet. Note for a future reader: in-flight
+/// task #6181 will add `examples/best_practices/angle_crossings.ri`; the
+/// directory walk (`corpus_files`) picks it up with no edit needed here, and
+/// #6181's own recorded evidence is 12/12 OK, so this gate stays green.
+///
+/// RED until `run_corpus_gate` exists.
+#[test]
+fn best_practices_corpus_satisfies_every_constraint() {
+    let failures = run_corpus_gate();
+    if failures.is_empty() {
+        return;
+    }
+
+    let mut violated = Vec::new();
+    let mut unexpected_indeterminate = Vec::new();
+    let mut stale = Vec::new();
+    for failure in &failures {
+        match failure {
+            GateFailure::Violated { file, id } => violated.push(format!("    {file}: {id}")),
+            GateFailure::UnexpectedIndeterminate { file, id } => {
+                unexpected_indeterminate.push(format!("    {file}: {id}"))
+            }
+            GateFailure::StaleExpectedIndeterminate { file, id } => {
+                stale.push(format!("    {file}: {id}"))
+            }
+        }
+    }
+
+    let mut report = String::new();
+    if !violated.is_empty() {
+        report.push_str(&format!(
+            "  VIOLATED ({} constraint(s)) — a real regression. Reproduce with \
+             `reify check examples/best_practices/<file>`:\n{}\n",
+            violated.len(),
+            violated.join("\n")
+        ));
+    }
+    if !unexpected_indeterminate.is_empty() {
+        report.push_str(&format!(
+            "  UNEXPECTED INDETERMINATE ({} constraint(s)) — a constraint's inputs went \
+             undefined (lost coverage). Reproduce with \
+             `reify check examples/best_practices/<file>`. If this Indeterminate is \
+             genuinely intentional, add a reasoned entry to EXPECTED_INDETERMINATE; \
+             otherwise it is a regression to fix:\n{}\n",
+            unexpected_indeterminate.len(),
+            unexpected_indeterminate.join("\n")
+        ));
+    }
+    if !stale.is_empty() {
+        report.push_str(&format!(
+            "  STALE EXPECTED_INDETERMINATE ({} entr(ies)) — now Satisfied. DELETE the \
+             corresponding entry from EXPECTED_INDETERMINATE so it stops masking the \
+             recovered coverage:\n{}\n",
+            stale.len(),
+            stale.join("\n")
+        ));
+    }
+
+    panic!(
+        "best_practices constraint gate: {} failure(s) across examples/best_practices/:\n{}",
+        failures.len(),
+        report
+    );
+}
