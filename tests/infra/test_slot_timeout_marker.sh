@@ -1004,4 +1004,99 @@ F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_S
 assert "F1: the DERIVED deadline-capable roster over tests/infra/ equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
     test "$F_DERIVED" = "$F_DECLARED_SORTED"
 
+echo ""
+echo "--- F4: every roster entry declares a MODE; the behavioural subset must equal D_MEMBERS ---"
+
+# set -u-safe local copy of a not-yet-declared D_ROSTER_MODE (same idiom as
+# _HOLDERS/_TMPDIRS, :77-81): materialized into a plain local array FIRST,
+# so ${#...} and indexed access below read as empty/0 rather than aborting
+# the whole file under `set -euo pipefail` -- a hard abort would be red for
+# the wrong reason and would skip every assertion after it. `${#ARR[@]}` on
+# a truly-undeclared array aborts even alone (measured), so the length
+# check below reads THIS copy, never `${#D_ROSTER_MODE[@]}` directly.
+_F4_MODE=("${D_ROSTER_MODE[@]+${D_ROSTER_MODE[@]}}")
+
+F4_BEHAVIOURAL=()
+for _f4_i in "${!D_ROSTER[@]}"; do
+    if [ "${_F4_MODE[_f4_i]:-}" = "behavioural" ]; then
+        F4_BEHAVIOURAL+=("${D_ROSTER[_f4_i]}")
+    fi
+done
+
+# Bidirectional equality is the actual anti-drift mechanism: it is what
+# stops D_MEMBERS (Section D's concurrent behavioural arm) and the
+# roster's own mode table from silently diverging again, which is the
+# failure mode that produced this task. Two asserts, each naming ITS OWN
+# direction, rather than one bundling both: a D_MEMBERS entry can go
+# missing from the roster independently of the roster gaining an
+# undeclared extra, and collapsing them into one pass/fail would hide
+# which direction actually broke.
+F4_MISSING=()
+for _f4_m in "${D_MEMBERS[@]}"; do
+    _f4_found=0
+    for _f4_b in "${F4_BEHAVIOURAL[@]+${F4_BEHAVIOURAL[@]}}"; do
+        [ "$_f4_b" = "$_f4_m" ] && { _f4_found=1; break; }
+    done
+    [ "$_f4_found" -eq 0 ] && F4_MISSING+=("$_f4_m")
+done
+F4_EXTRA=()
+for _f4_b in "${F4_BEHAVIOURAL[@]+${F4_BEHAVIOURAL[@]}}"; do
+    _f4_found=0
+    for _f4_m in "${D_MEMBERS[@]}"; do
+        [ "$_f4_b" = "$_f4_m" ] && { _f4_found=1; break; }
+    done
+    [ "$_f4_found" -eq 0 ] && F4_EXTRA+=("$_f4_b")
+done
+# "${ARR[*]}" (IFS-joined into ONE string), not `printf '%s '`: printf with
+# zero array elements still runs its format ONCE, emitting a bare space
+# that is non-empty and defeats the ":-<none>" fallback below. Both arrays
+# are always DECLARED (never unset) by this point, so no [@]+[@] guard
+# is needed for this join.
+F4_MISSING_LIST="${F4_MISSING[*]}"
+F4_EXTRA_LIST="${F4_EXTRA[*]}"
+
+assert "F4a: every D_MEMBERS entry is declared behavioural in D_ROSTER_MODE (missing: ${F4_MISSING_LIST:-<none>})" \
+    test "${#F4_MISSING[@]}" -eq 0
+assert "F4b: every roster entry declared behavioural is in D_MEMBERS (extra: ${F4_EXTRA_LIST:-<none>})" \
+    test "${#F4_EXTRA[@]}" -eq 0
+
+# Index alignment and vocabulary: a misaligned or typo'd table would
+# silently attribute the wrong mode to the wrong member. Index-aligned
+# parallel arrays are this file's established pattern (D_MEMBERS/D_HEADERS/
+# D_INVOKE/D_ALWAYS_DEADLINES, :526-544).
+assert "F4c: D_ROSTER_MODE is index-aligned with D_ROSTER (got ${#_F4_MODE[@]}, want ${#D_ROSTER[@]})" \
+    test "${#_F4_MODE[@]}" -eq "${#D_ROSTER[@]}"
+
+F4_BADMODE=()
+for _f4_v in "${_F4_MODE[@]+${_F4_MODE[@]}}"; do
+    case "$_f4_v" in
+        behavioural|static-only) ;;
+        *) F4_BADMODE+=("$_f4_v") ;;
+    esac
+done
+assert "F4d: every declared mode is exactly 'behavioural' or 'static-only' (got ${#F4_BADMODE[@]} bad entries)" \
+    test "${#F4_BADMODE[@]}" -eq 0
+
+echo ""
+echo "--- F5: every declared roster member still matches the derivation (non-vacuity) ---"
+
+# GREEN FROM THE START (a control, mirroring D4a's -ge 1 at :693-695):
+# without this, a predicate that quietly stopped matching one member could
+# still leave F1 green by coincidence of the roster being edited to match.
+# F5 independently re-checks every DECLARED member against its own source
+# file. Reports the COUNT and the MEMBER NAME only, like D1 -- never the
+# matched line.
+F5_BAD=()
+for _f5_m in "${D_ROSTER[@]}"; do
+    _f5_n="$(grep -vE '^[[:blank:]]*#' "$SCRIPT_DIR/$_f5_m" \
+        | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
+    if [ "${_f5_n:-0}" -lt 1 ]; then
+        F5_BAD+=("$_f5_m")
+    fi
+done
+F5_BAD_LIST="${F5_BAD[*]}"
+
+assert "F5: every declared roster member matches >=1 derivation line (non-vacuity; offenders: ${F5_BAD_LIST:-<none>})" \
+    test "${#F5_BAD[@]}" -eq 0
+
 test_summary
