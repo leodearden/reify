@@ -884,12 +884,18 @@ mod cli {
     /// The adversary here is the real one: `spawn_mock_mcp_on` is the same
     /// in-suite responder whose ephemeral-port recycling closed the failure
     /// chain in the observed flake. It answers `initialize` with a
-    /// well-formed JSON-RPC result, so `RealJCodemunchOps::new` returns
-    /// `Ok`, the fail-soft `Err(e)` breadcrumb arm never runs, and
+    /// well-formed JSON-RPC result AND an assigned `Mcp-Session-Id`, so
+    /// `RealJCodemunchOps::new` returns `Ok`, the fail-soft `Err(e)`
+    /// breadcrumb arm never runs, and
     /// `default_sweep_survives_unreachable_jcodemunch`'s breadcrumb
     /// assertion blows up. Same fixture and argv as that test, and the same
     /// assertion set, so this lock is strictly stronger than the test it
     /// shadows; the only difference is the deliberate hijack.
+    ///
+    /// The session header is load-bearing for THIS lock's adversary, not
+    /// incidental: without it the client now rejects the handshake, the
+    /// hijacker stops being a convincing jcodemunch, and the lock quietly
+    /// degrades into a duplicate of the test it is meant to shadow.
     #[test]
     fn unreachable_jcodemunch_url_cannot_be_hijacked_by_a_racing_mcp_responder() {
         let url = common::net::unreachable_mcp_url();
@@ -2049,6 +2055,13 @@ mod cli {
 // blocking HTTP server stands in for fused-memory; it speaks just enough of
 // MCP streamable-HTTP to answer `initialize`, `notifications/initialized`,
 // and a single `tools/call get_task` per session.
+//
+// "Just enough" now includes assigning a session id: the `initialize`
+// response carries an `Mcp-Session-Id` header (see [`MOCK_SESSION_ID`]),
+// because `JcodemunchClient` treats an initialize response with no
+// server-assigned session as a hard `Protocol` failure. The mock answers
+// the header but does not police it — see
+// [`write_response_with_session`] for why enforcement is off the table.
 
 /// Read a complete HTTP/1.1 request from `stream` and return its body as a
 /// JSON Value. Assumes Content-Length is present (which `ureq` always sets
@@ -2076,16 +2089,50 @@ fn read_request_body(stream: &mut TcpStream) -> Option<serde_json::Value> {
     serde_json::from_slice(&buf).ok()
 }
 
+/// The session id this mock assigns on `initialize`.
+///
+/// `JcodemunchClient` requires the server to assign one — an `initialize`
+/// response with no `Mcp-Session-Id` header is a hard `Protocol` failure —
+/// so without this the mock would no longer stand in for a live seam at
+/// all. Deliberately not 32 lowercase hex, so it can never be confused
+/// with a client-minted id.
+const MOCK_SESSION_ID: &str = "mock-mcp-session";
+
 fn write_response(stream: &mut TcpStream, status: u16, body: &[u8]) {
+    write_response_with_session(stream, status, None, body)
+}
+
+/// As [`write_response`], but additionally emits an `Mcp-Session-Id`
+/// response header when `session` is `Some`.
+///
+/// Only the `initialize` arm needs it: assigning the session is the
+/// server's job, and every later request carries the id back on the
+/// request side. The mock deliberately does NOT *enforce* the contract
+/// (no 404 on an inbound id, no 400 on a missing one) — the same responder
+/// backs the `--fused-memory-url` loader tests, and `fused_memory_client`
+/// still mints its own id and sends it on `initialize`, so enforcement
+/// would turn all of those red. The jcodemunch-side contract is locked
+/// gate-resident by the hermetic unit tests in `jcodemunch_client.rs`,
+/// which assert the request headers directly.
+fn write_response_with_session(
+    stream: &mut TcpStream,
+    status: u16,
+    session: Option<&str>,
+    body: &[u8],
+) {
     let status_text = match status {
         200 => "OK",
         202 => "Accepted",
         _ => "OK",
     };
-    let header = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut header = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
         body.len()
     );
+    if let Some(session) = session {
+        header.push_str(&format!("Mcp-Session-Id: {session}\r\n"));
+    }
+    header.push_str("\r\n");
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(body);
 }
@@ -2187,7 +2234,12 @@ where
                             "serverInfo": {"name": "mock-mcp", "version": "0.1"}
                         }
                     });
-                    write_response(&mut stream, 200, resp.to_string().as_bytes());
+                    write_response_with_session(
+                        &mut stream,
+                        200,
+                        Some(MOCK_SESSION_ID),
+                        resp.to_string().as_bytes(),
+                    );
                 }
                 "notifications/initialized" => {
                     write_response(&mut stream, 202, b"");
