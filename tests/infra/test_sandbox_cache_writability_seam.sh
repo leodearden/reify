@@ -74,8 +74,11 @@
 # redirects CARGO_HOME and npm_config_cache to /tmp paths for each
 # sandboxed role. /tmp is the one host-global writable root in the write
 # set that a static yaml value can name. `verify_env` (elsewhere in this
-# file) is the WRONG surface: it feeds VERIFY subprocesses, which are not
-# sandboxed.
+# file) is the WRONG surface FOR THIS problem: it feeds VERIFY subprocesses,
+# which are not sandboxed, so setting CARGO_HOME there would not keep a
+# sandboxed AGENT alive. (verify_env does now carry the same CARGO_HOME, for
+# the unrelated reason in THIRD COUPLING below: fingerprint agreement over a
+# shared warm target/, not write access.)
 #
 # This guard pins the reify-owned leaf of the contract only.
 # compute_write_set itself is entirely DF-owned and not reify-observable
@@ -119,10 +122,79 @@
 #   a DF-side author flipping sandboxed=True on any of them needs a
 #   breadcrumb back to this file and to dark-factory-orchestrator.yaml's
 #   role_env_overrides comment.
-#   merger is EXCLUDED ON PURPOSE, not merely un-added: redirecting the
-#   merge agent's CARGO_HOME to a cold /tmp cache would diverge it from the
-#   verify subprocess cache path on the one gate that lands everything. Do
-#   NOT "close the gap" by blanket-adding every role in DF's ROLES registry.
+#   merger was EXCLUDED ON PURPOSE, not merely un-added -- but its stated
+#   rationale ("redirecting the merge agent's CARGO_HOME to a cold /tmp
+#   cache would diverge it from the verify subprocess cache path on the one
+#   gate that lands everything") was INVERTED by task 5836, which moved
+#   verify_env.CARGO_HOME onto that same /tmp path. merger carries no
+#   override, so it still resolves the DEFAULT ~/.cargo while the merge
+#   verify it shares the _merge-verify lane's target/ with uses /tmp: the
+#   divergence the exclusion existed to prevent now exists in the other
+#   direction. Reachable, not theoretical -- merger is not sandboxed
+#   (roles.py:45 defaults sandboxed=False; merger does not set it) yet holds
+#   unrestricted Bash (roles.py:1161), and its system prompt directs it to
+#   run tests after resolving a conflict. Left uncovered here deliberately:
+#   adding it must also extend CACHE_REDIRECT_ROLES (changing (A)/(C)/(D)
+#   coverage) and should carry its own measurement, since the exposure is
+#   bounded to the conflict-resolution path rather than every merge. Filed
+#   as a 5836 follow-up. Even so, do NOT "close the gap" by blanket-adding
+#   every role in DF's ROLES registry.
+#
+# THIRD COUPLING -- CARGO_HOME AGREEMENT ACROSS A SHARED target/ (task 5836,
+# guarded by (D)+(E) below). Distinct from the two above: those are about
+# WRITE ACCESS (a sandboxed agent dying on an unwritable ~/.cargo). This one
+# is about FINGERPRINT IDENTITY, and its failure mode is silent slowness
+# rather than an error, which is why it needs a test rather than review.
+#   THREE CONSUMERS write and re-read one warm lane's target/, and all three
+#   must agree on CARGO_HOME:
+#     1. the base-warming merge-verify build, whose target/
+#        scripts/refresh-warm-base.sh promotes to the pool base;
+#     2. the landlock-sandboxed agent roles, during their TDD turns;
+#     3. verify subprocesses, which are NOT sandboxed.
+#   Cargo's per-unit Fingerprint embeds `path = hash_u64(path_args(...))`,
+#   and for a REGISTRY package that is the absolute
+#   $CARGO_HOME/registry/src/index.crates.io-<hash>/<crate>/src/... path. So
+#   two consumers disagreeing on CARGO_HOME invalidate each other's units --
+#   cargo's own words, "Dirty <crate>: the path to the source changed",
+#   cascading into "Dirty <workspace crate>: info of dependency <crate>
+#   changed". Reify's Cargo.lock carries 685 registry entries.
+#   WHY /tmp AND NOT ~/.cargo: the agent side cannot move. DF's
+#   compute_write_set grants no ~/.cargo carve-out and /tmp is the one
+#   host-global writable root a static yaml value can name, so agents are
+#   PINNED there; verify and merge-verify are unsandboxed and are therefore
+#   the movable side. The upstream change that would retire the redirect and
+#   let all three sit on ~/.cargo is dark_factory:3162, UNLANDED (reify 5724
+#   was cancelled and refiled there).
+#   WHY SEEDING CANNOT SUBSTITUTE FOR AGREEMENT -- the tempting wrong fix:
+#     - It was never an mtime problem. Cargo stamps extracted sources with a
+#       canonical fixed mtime; crates present in BOTH homes read the
+#       identical stamp (1153704088) on either side, different inodes.
+#       Freshness here never turned on mtime, so pre-seeding registry/src
+#       (task 5729) fixes cold START and leaves fingerprint IDENTITY exactly
+#       as split as before.
+#     - "Just warm two caches" is structurally impossible, not merely
+#       expensive: `-C metadata` is CARGO_HOME-INDEPENDENT, so both homes
+#       write the SAME .fingerprint/<pkg>-<hash> file and each overwrites
+#       the other. One target/ holds exactly one fingerprint set per unit.
+#       Measured bidirectional: home-a (all Fresh) -> home-b (Dirty) ->
+#       home-a again (Dirty again).
+#   WHAT (D)+(E) STILL CANNOT OBSERVE -- limits, stated so this guard's
+#   green is not read as more coverage than it has. It reads the YAML, not
+#   the running orchestrator, so it CANNOT:
+#     - prove the activating restart happened. The yaml is restart-tier
+#       (loaded once at startup), so (D) goes green the moment the file is
+#       edited while the live orchestrator may still be running the old
+#       split config, for an unbounded time.
+#     - prove merge-verify actually BUILT the promoted warm base under this
+#       CARGO_HOME. refresh-warm-base.sh promotes whatever target/ it is
+#       given; nothing here inspects the promoted base's dep-info paths.
+#     - detect a target/ that is ALREADY split from before the flip. Lanes
+#       carrying pre-flip fingerprints keep paying one rebuild until they
+#       are re-seeded, and that shows up as slowness, never as a red test.
+#   To observe any of those three you must inspect the artifacts, not the
+#   config -- e.g. count target/debug/deps/*.d dep-info files referencing
+#   each home in a live lane, which is how the original split was found
+#   (105 under /tmp alongside 1176 under ~/.cargo, in one pool lane).
 #
 # Pins, against dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE (python3+PyYAML, SKIP-guarded): IF sandbox.enabled is
@@ -183,6 +255,9 @@
 # reviewer_comprehensive and judge are required by CACHE_REDIRECT_ROLES but
 # absent from role_env_overrides, so the per-role loop reports 8 FAILs for
 # each of the three.
+# RED when (D) was added (task 5836): verify_env carried no CARGO_HOME at
+# all, so (D) reported 9 FAILs -- 3 shape plus one equality per redirected
+# role -- against a green 63-assertion baseline.
 
 set -euo pipefail
 
