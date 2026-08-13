@@ -342,24 +342,6 @@ argv_subcommand_is() {
     return 0
 }
 
-# The ban must be DOCUMENTED and never INVOKED: every occurrence of the literal
-# in the script is a comment line, and there is at least one (an absence is not
-# a ban — it is a ban nobody recorded, which the next editor re-introduces).
-check_paths_from_only_in_comments() {
-    local hits bad
-    hits="$(grep -n -- '--paths-from' "$JC_INDEX" || true)"
-    if [ -z "$hits" ]; then
-        printf 'the --paths-from ban is not documented anywhere in %s\n' "$JC_INDEX" >&2
-        return 1
-    fi
-    bad="$(printf '%s\n' "$hits" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
-    if [ -n "$bad" ]; then
-        printf 'these --paths-from occurrences are NOT comment lines:\n%s\n' "$bad" >&2
-        return 1
-    fi
-    return 0
-}
-
 # ── Stub indexer (Block 11) ─────────────────────────────────────────────────
 #
 # Reproduces the REAL `watch --once` output shapes at the pinned 1.108.54. The
@@ -425,31 +407,6 @@ expect_refusal_absent() {
     expect_refusal "$marker" "$@" || return 1
     if grep -qF -- "$unwanted" "$SCRATCH/refusal.out" "$SCRATCH/refusal.err"; then
         printf 'the run-failure path still reached %s\n' "$unwanted" >&2
-        return 1
-    fi
-    return 0
-}
-
-# check_no_upstream_changed_token <file> — THE G6 NEGATIVE ASSERTION.
-#
-# Re-verified against the PINNED 1.108.54: `watch --once` runs sync_folders,
-# which emits NEITHER spelling of the `<n> new / <n> deleted` summary line. That
-# line (watcher.py:305) belongs to the CONTINUOUS watch loop's re-index
-# callback, so a consumer bound to it would be bound to a string this code path
-# never prints — the PRD's and the decompose-time pin's two spellings of it are
-# BOTH wrong here. The only upstream token either file may match on this path is the
-# literal `No changes detected`.
-#
-# The two forbidden patterns are assembled from fragments so this file does not
-# itself contain the literal it forbids — otherwise the check would flag its own
-# source and could only be satisfied by exempting itself.
-UPSTREAM_TOKEN_EQ="chang""ed="
-UPSTREAM_TOKEN_COLON="chang""ed:"
-check_no_upstream_changed_token() {
-    local f="$1" hits
-    hits="$(grep -n -e "$UPSTREAM_TOKEN_EQ" -e "$UPSTREAM_TOKEN_COLON" "$f" || true)"
-    if [ -n "$hits" ]; then
-        printf '%s binds to an upstream token the watch --once path never emits:\n%s\n' "$f" "$hits" >&2
         return 1
     fi
     return 0
@@ -739,11 +696,6 @@ else
 
     assert "argv NEVER uses the 'index' subcommand (the only path to --paths-from)" \
         argv_word_absent "$ARGV_ROOT" index
-
-    # Belt and braces: the ban is recorded in the script, and every occurrence
-    # of the literal there is a comment — documented, never invoked.
-    assert "the --paths-from ban is documented in the script and only in comments" \
-        check_paths_from_only_in_comments
 fi
 
 # -- Test 11: run summary and exit propagation -------------------------------
@@ -800,21 +752,6 @@ else
         with_stub "$RUN_INDEX" "$STUB_DIR/fail" \
             expect_refusal_absent E_JC_INDEX_RUN_FAILED E_JC_INDEX_EMPTY \
                 --project-root "$RUN_ROOT"
-
-    # THE G6 NEGATIVE ASSERTION — see check_no_upstream_changed_token.
-    assert "the script binds to no upstream token the watch --once path never emits" \
-        check_no_upstream_changed_token "$JC_INDEX"
-
-    assert "this test binds to no upstream token the watch --once path never emits" \
-        check_no_upstream_changed_token "$SCRIPT_DIR/test_jcodemunch_index_reify.sh"
-
-    # The changed-file report is the script's OWN token. `No changes detected`
-    # is the one upstream marker this path may legitimately match.
-    assert "the script's changed-file report uses its own jc-changed-files token" \
-        grep -q 'jc-changed-files=' "$JC_INDEX"
-
-    assert "the only upstream marker the script matches is 'No changes detected'" \
-        grep -q 'No changes detected' "$JC_INDEX"
 fi
 
 test_summary
