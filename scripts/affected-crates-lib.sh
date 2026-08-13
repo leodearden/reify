@@ -116,8 +116,23 @@ _reverse_closure() {
     [ -n "$seeds" ] || return 0
 
     # Collect metadata once; guard failure -> ALL.
+    #
+    # --locked stops cargo from REWRITING Cargo.lock: it refuses to resolve a
+    # stale/missing lock instead of silently updating it (the tracked-file
+    # mid-commit-mutation risk this task closes). It does NOT imply
+    # --offline: on a cold registry/index cache, cargo can still perform
+    # network I/O to read dependency manifests even against a valid,
+    # unchanged lock. Fully closing that (--frozen/--offline) is deliberately
+    # out of scope for this change — it trades a cold-cache network hit for
+    # cold-cache closures unconditionally widening to ALL, a separate
+    # tradeoff left to a follow-up rather than folded into this single-flag
+    # change.
     local meta
-    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || { echo ALL; return 0; }
+    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || {
+        echo "affected-crates-lib.sh: cargo metadata --locked failed (stale/missing Cargo.lock?) — falling back to ALL" >&2
+        echo ALL
+        return 0
+    }
     [ -n "$meta" ] || { echo ALL; return 0; }
 
     # Convert the newline-separated seeds into a bash array for safe argv
