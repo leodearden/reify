@@ -8,13 +8,28 @@ description = "Test builders, fixtures, and mock implementations for Reify"
 [dependencies]
 reify-ast.workspace = true
 reify-core.workspace = true
-# Normal (not dev, not feature-gated) dependency: `mocks.rs`'s shared
+# Needed by the library body (not just this crate's tests): `mocks.rs`'s shared
 # `ContainmentQuery` doubles (`NoContainment`/`AlwaysInside`) implement
 # `reify_expr::ContainmentQuery` — the geometry-free trait that `EvalContext`
-# carries — so the library body itself needs it, not just this crate's tests.
-# Kept off `eval-helpers` so `reify-expr`'s own tests (which dev-depend on this
-# crate without enabling that feature) can consume the doubles too.
-reify-expr.workspace = true
+# carries. Hence a [dependencies] entry rather than a [dev-dependencies] one.
+#
+# Gated behind `eval-helpers` (see [features]) rather than left ungated, because
+# `crates/reify-audit` carries reify-test-support as a NORMAL dependency: an
+# ungated edge here drags reify-expr's whole closure (reify-stdlib → faer /
+# nalgebra / gemm) into the audit binary's PRODUCTION build graph. Measured with
+# `cargo tree -p reify-audit --edges normal`: 130 crates gated vs 185 ungated,
+# i.e. 55 crates of pure compile cost for two three-line trait stubs. That is
+# precisely the re-evaluation reify-audit's own manifest comment asks for
+# ("Re-evaluate if reify-test-support's deps grow significantly").
+#
+# The gate costs the real consumers nothing. Every crate that uses the doubles
+# today — only reify-eval's `cell_eval_ctx`/`engine_edit` test modules — already
+# dev-depends on this crate with `features = ["eval-helpers"]`, and
+# `eval-helpers` pulls `reify-eval`, which itself normal-deps `reify-expr`. So
+# under the feature reify-expr was already in the graph; ungating bought only
+# reach for a hypothetical `reify-expr`-side consumer that does not exist. If one
+# appears, move this back to an unconditional entry then, not speculatively now.
+reify-expr = { workspace = true, optional = true }
 reify-ir.workspace = true
 reify-syntax.workspace = true
 reify-compiler.workspace = true
@@ -33,4 +48,4 @@ reify-core.workspace = true
 reify-ir.workspace = true
 
 [features]
-eval-helpers = ["dep:reify-eval", "dep:reify-constraints"]
+eval-helpers = ["dep:reify-eval", "dep:reify-constraints", "dep:reify-expr"]
