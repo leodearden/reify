@@ -10,33 +10,63 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 ///
 /// # Why this exists
 ///
-/// `tracing` caches each callsite's `Interest` in a process-global atomic
-/// keyed on first-hit-wins. `tracing::subscriber::with_default` installs only
-/// a thread-local default and does NOT trigger `rebuild_interest_cache`. If
-/// any sibling test thread hits a counted callsite first with no subscriber
-/// active, `NoSubscriber::register_callsite` returns `Interest::never` and
-/// the callsite is permanently dead in this process — every later
-/// `with_default` is silently bypassed at the macro level, and the
-/// per-test subscriber receives nothing.
+/// `tracing` caches each callsite's `Interest` in a process-global,
+/// first-hit-wins atomic. The poisoning vector is
+/// `callsite::DefaultCallsite::register` (`callsite.rs:308`), which runs on a
+/// callsite's FIRST hit in the process and computes the cached `Interest` via
+/// `rebuild_callsite_interest(self, &DISPATCHERS.rebuilder())`.
 ///
-/// `set_global_default` calls `tracing-core::callsite::register_dispatch`,
-/// which forces `rebuild_interest_cache`. This helper installs a no-op
-/// subscriber that returns `Interest::sometimes` from `register_callsite`
-/// so that:
+/// `Dispatchers::rebuilder()` returns `Rebuilder::JustOne` whenever
+/// `has_just_one == true` — i.e. at most one live dispatcher, which is the
+/// normal state in a test binary. `Rebuilder::JustOne::for_each` consults
+/// **only `dispatcher::get_default(f)`, the REGISTERING THREAD's own default
+/// dispatcher**. A sibling test thread with no thread-local subscriber, in a
+/// process with no global default, resolves that to `NoSubscriber`, whose
+/// `register_callsite` returns `Interest::never` (`subscriber.rs:676`). The
+/// callsite is then permanently dead for *every* thread in this process: the
+/// `tracing::warn!` macro elides it at the gate, so a later `with_default` /
+/// `set_default` subscriber never sees the event and the assertion reads
+/// `before=0, after=0`.
 ///
-/// - The cache is no longer poisoned to `never` by unsubscribed threads.
-/// - Per-event routing is decided by `enabled()` on the *current thread's*
-///   default (the per-test `with_default` subscriber when one is active,
-///   the no-op global otherwise).
+/// Two corollaries worth stating, because the obvious guesses are wrong:
+///
+/// - It is **not** `set_global_default` that rebuilds the cache.
+///   `Dispatch::new` does (`dispatcher.rs:479` calls
+///   `callsite::register_dispatch`), and `set_global_default`, `set_default`
+///   and `with_default` all construct a `Dispatch` — so all three rebuild.
+///   A rebuild only fixes callsites already registered; it cannot help a
+///   callsite whose first hit is still in the future.
+/// - Adding a *second* live dispatcher is enough to make the bug
+///   inexpressible, which is why it is intermittent: with `has_just_one ==
+///   false` the rebuilder `and`s every live dispatcher's interest, and
+///   `Interest::and` (`subscriber.rs:658`) returns `sometimes` whenever the
+///   two differ — so `never.and(always) == sometimes`, i.e. healthy.
+///
+/// This helper closes the hole by installing a global whose
+/// `register_callsite` returns `Interest::sometimes`, which removes
+/// `NoSubscriber` from that path entirely: a subscriber-less thread's
+/// `get_default` now resolves to the `Priming` global rather than
+/// `NoSubscriber`, so no callsite can ever be cached as `never`. Per-event
+/// routing is still decided by `enabled()` on the *current thread's* default
+/// (the per-test subscriber when one is active, the no-op global otherwise),
+/// so priming widens nothing — it only prevents elision at the macro gate.
 ///
 /// # Usage
 ///
-/// Call this at the top of any test that asserts the exact count of
-/// `tracing::*` events captured via `tracing::subscriber::with_default` or
-/// `set_default`. `Once`-gated; safe and cheap to call from every such test.
+/// The three leaf constructors — [`warn_counting_subscriber`],
+/// [`CountingSubscriberBuilder::build`] and
+/// [`CapturingSubscriberBuilder::build`] — now call this themselves, so tests
+/// that obtain their subscriber from one of those (directly or via
+/// [`warn_counting_guard`] / [`warn_capturing_subscriber`]) need no explicit
+/// call. An explicit call is only needed for a test that asserts event counts
+/// **without** using them, e.g. one that hand-rolls its own `Subscriber`.
 ///
-/// (See `tracing-core` 0.1.x: `callsite.rs::register_dispatch`,
-/// `dispatcher.rs::set_default`, and `NoSubscriber::register_callsite`.)
+/// `Once`-gated, so it stays safe and cheap to call from anywhere; the
+/// pre-existing explicit call sites across the workspace remain correct
+/// no-ops and are deliberately left in place.
+///
+/// (Line numbers above are `tracing-core` 0.1.36, the version pinned in
+/// `Cargo.lock`.)
 pub fn prime_tracing_callsite_cache() {
     use std::sync::Once;
     use tracing::span::{Attributes, Id, Record};
