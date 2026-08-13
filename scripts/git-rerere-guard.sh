@@ -295,8 +295,63 @@ cmd_arm() {
     return 0
 }
 
+# cmd_scan_locks — read-only census of MERGE_RR.lock across the store's linked
+# worktrees, classifying each hit.
+#
+# MATCHES ONLY THE .lock SUFFIX, never a bare MERGE_RR.  A bare MERGE_RR is
+# ORDINARY rerere state — 41 of the live store's worktrees carry one right now —
+# and reporting it would make this census read as "the corruption is fleet-wide"
+# when nothing is wrong.  Only MERGE_RR.lock indicates the stuck condition.
+#
+# NEVER MUTATES.  Deletion stays manual and operator-driven: this script must not
+# reach into another lane's git dir, and a lock is only safe to remove once it is
+# established that no operation is in progress there — a judgement an unattended
+# script should not act on.  It prints the exact command instead.
 cmd_scan_locks() {
-    echo "ERROR: scan-locks is not implemented yet" >&2
+    local found=0 lock wt_dir wt_name marker in_progress
+
+    if [ ! -d "$WORKTREES_DIR" ]; then
+        echo "clean: no linked worktrees under $WORKTREES_DIR" >&2
+        return 0
+    fi
+
+    for lock in "$WORKTREES_DIR"/*/MERGE_RR.lock; do
+        [ -e "$lock" ] || continue
+        found=1
+        wt_dir="$(dirname "$lock")"
+        wt_name="$(basename "$wt_dir")"
+
+        # An in-flight merge/rebase/cherry-pick/revert makes the lock LIVE, not
+        # stale.  Removing it would destroy that operation's state.
+        in_progress=""
+        for marker in MERGE_HEAD MERGE_MSG CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+            if [ -e "$wt_dir/$marker" ]; then
+                in_progress="$marker"
+                break
+            fi
+        done
+
+        if [ -n "$in_progress" ]; then
+            echo "OPERATION-IN-PROGRESS: $wt_name holds MERGE_RR.lock alongside $in_progress." >&2
+            echo "  Path: $lock" >&2
+            echo "  NOT safe to clean — an operation is live in that worktree.  Let it finish or" >&2
+            echo "  abort it from inside that worktree first, then re-run scan-locks." >&2
+        else
+            echo "STALE: $wt_name holds a MERGE_RR.lock with no operation in progress." >&2
+            echo "  Path: $lock" >&2
+            echo "  Every git commit in that worktree exits 128 until it is removed — but the" >&2
+            echo "  commit object is still written and the ref still moves, so ALWAYS run" >&2
+            echo "  'git log --oneline -1' there before retrying, or you will double-commit." >&2
+            echo "  Remediation (run manually, this script never deletes):" >&2
+            echo "    rm -f $lock" >&2
+        fi
+    done
+
+    if [ "$found" -eq 0 ]; then
+        echo "clean: no MERGE_RR.lock found under $WORKTREES_DIR" >&2
+        return 0
+    fi
+
     return 1
 }
 
