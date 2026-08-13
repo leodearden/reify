@@ -66,9 +66,32 @@ export const CHANNEL_ROW_SCAN_RE = /\|\s*`[a-z0-9-]+`\s*\|/;
  * sits at index N. Consumer is the 4th data cell in BOTH table shapes —
  * §1 is `Channel | Payload | Producer | Consumer | Notes` and §2 is
  * `Channel | Payload | Producer | Consumer | Upstream prereq | Owning slice |
- * Spec` — so one index serves both and no per-section header parse is needed.
+ * Spec` — so one index serves both.
+ *
+ * That coincidence is CHECKED, not assumed: `parseEventChannelRows` reads a
+ * table's rows only after seeing a header whose cell at this index is literally
+ * `Consumer` (see `CONSUMER_HEADING`). Inserting a column ahead of Consumer
+ * would otherwise silently repoint this guard at the Producer column. Today that
+ * happens to fail loudly — every live Producer cell is either a `::`-bearing
+ * path or a snake_case name, so it degrades to `needs-allowlist` — but that is
+ * incidental to the current doc content: a future producer written
+ * `` `emitStatus` `` is a real bridge-shaped lowercase identifier and would sail
+ * through as if it were the consumer.
  */
 const CONSUMER_CELL_INDEX = 4;
+
+/** The literal heading text that must sit at `CONSUMER_CELL_INDEX`. */
+const CONSUMER_HEADING = 'Consumer';
+
+/**
+ * A markdown table's `|---|---|` alignment row.
+ *
+ * Used as the STRUCTURAL marker of a table's shape: markdown puts it directly
+ * below the header row, so the line above one is the header and everything else
+ * starting with `|` is a data row. That is a name-class-independent way to find
+ * both, which matters — see `tableDataRows`.
+ */
+const TABLE_SEPARATOR_RE = /^\|[\s:|-]+\|\s*$/;
 
 /**
  * Split one markdown table row into cells on UNESCAPED pipes, trimming each
@@ -144,24 +167,45 @@ function sectionOf(line: string): EventChannelRow['section'] | null {
  * yield nothing. An empty document yields `[]` rather than throwing, so a
  * mis-targeted read trips the consumer's non-vacuity checks with a clear
  * message rather than an opaque parser error.
+ *
+ * Rows are emitted only from a table whose header puts `Consumer` at
+ * `CONSUMER_CELL_INDEX`; a table whose columns have been reordered or extended
+ * on the left yields nothing rather than the wrong column. Fail-CLOSED rather
+ * than throwing, again: the dropped rows surface through the consumer suite's
+ * row-count equality and non-vacuity checks, and `eventChannelTableHeaders`
+ * lets that suite name the offending header directly.
  */
 export function parseEventChannelRows(markdown: string): EventChannelRow[] {
   const rows: EventChannelRow[] = [];
   let section: EventChannelRow['section'] | null = null;
+  // Cells of the last `|` line that was neither a separator nor a channel row —
+  // i.e. the header candidate — and whether the separator below it confirmed a
+  // `Consumer` column at the expected index.
+  let headerCandidate: string[] | null = null;
+  let consumerColumnConfirmed = false;
 
   for (const line of markdown.split('\n')) {
-    if (line.startsWith('### ')) {
-      section = null;
+    if (line.startsWith('### ') || line.startsWith('## ')) {
+      section = line.startsWith('## ') ? sectionOf(line) : null;
+      headerCandidate = null;
+      consumerColumnConfirmed = false;
       continue;
     }
-    if (line.startsWith('## ')) {
-      section = sectionOf(line);
+    if (section === null || !line.startsWith('|')) continue;
+
+    if (TABLE_SEPARATOR_RE.test(line)) {
+      consumerColumnConfirmed =
+        headerCandidate !== null && headerCandidate[CONSUMER_CELL_INDEX] === CONSUMER_HEADING;
+      headerCandidate = null;
       continue;
     }
-    if (section === null) continue;
 
     const match = CHANNEL_ROW_RE.exec(line);
-    if (match === null) continue;
+    if (match === null) {
+      headerCandidate = splitTableCells(line);
+      continue;
+    }
+    if (!consumerColumnConfirmed) continue;
 
     const cells = splitTableCells(line);
     rows.push({
@@ -172,6 +216,67 @@ export function parseEventChannelRows(markdown: string): EventChannelRow[] {
   }
 
   return rows;
+}
+
+/**
+ * The cells of every markdown table header inside a §1/§2 section, in document
+ * order — the header being, structurally, the `|` line directly above a
+ * `|---|` separator.
+ *
+ * Exported so the consumer suite can assert the Consumer column's POSITION with
+ * a message that names the header it found. `parseEventChannelRows` enforces the
+ * same condition by refusing rows, which is the fail-safe half; this is the
+ * legible half. A count mismatch alone would say "expected 0 to be 40" and leave
+ * a maintainer to guess.
+ */
+export function eventChannelTableHeaders(markdown: string): { section: EventChannelRow['section']; cells: string[] }[] {
+  const headers: { section: EventChannelRow['section']; cells: string[] }[] = [];
+  const lines = markdown.split('\n');
+  let section: EventChannelRow['section'] | null = null;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.startsWith('### ') || line.startsWith('## ')) {
+      section = line.startsWith('## ') ? sectionOf(line) : null;
+      continue;
+    }
+    if (section === null || !line.startsWith('|')) continue;
+    if (TABLE_SEPARATOR_RE.test(line)) continue;
+    if (i + 1 < lines.length && TABLE_SEPARATOR_RE.test(lines[i + 1])) {
+      headers.push({ section, cells: splitTableCells(line) });
+    }
+  }
+
+  return headers;
+}
+
+/**
+ * Every markdown table DATA row in `markdown` — each line starting with `|` that
+ * is neither a `|---|` separator nor the header directly above one.
+ *
+ * Deliberately knows nothing about channel names. It is the independent recount
+ * the consumer suite compares `parseEventChannelRows` against, and an
+ * independence that stopped at the section walk would be worth little: reusing
+ * the same `[a-z0-9-]+` name class on both sides means a row the name class
+ * fails to recognise — a channel added in snake_case, as §3 already uses, or
+ * with any uppercase letter — is missed by BOTH counts, the equality still
+ * holds, and the row is silently unguarded. Counting by table STRUCTURE instead
+ * has no name class to share, so such a row shows up as a surplus data row and
+ * fails.
+ */
+export function tableDataRows(markdown: string): string[] {
+  const lines = markdown.split('\n');
+  const dataRows: string[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.startsWith('|')) continue;
+    if (TABLE_SEPARATOR_RE.test(line)) continue;
+    if (i + 1 < lines.length && TABLE_SEPARATOR_RE.test(lines[i + 1])) continue;
+    dataRows.push(line);
+  }
+
+  return dataRows;
 }
 
 /** Every backtick-delimited span in a cell, in source order. */
@@ -261,12 +366,18 @@ const INHERIT_SENTINEL = 'same';
  * The literal Consumer cell meaning "this channel deliberately has no consumer".
  *
  * Recognised for two reasons. A channel documented as consumer-less is a
- * legitimate recurring state that should not need an allowlist entry naming an
- * absence. And it decouples this guard from task 6227's merge order: 6227
- * deletes `bridge.ts::onDiagnostics` and sets the `diagnostics` row's Consumer
- * to `*(none)*`, so without this sentinel whichever of the two branches landed
- * second would turn the other's tree RED and force a cross-task allowlist edit.
- * With it, both merge orders are green with no coordination.
+ * legitimate recurring state that should not need an ALLOWLIST entry naming an
+ * absence — the allowlist's signal is "this row has an unusual non-bridge
+ * consumer", which is a different claim. And it decouples this guard from task
+ * 6227's merge order: 6227 deletes `bridge.ts::onDiagnostics` and sets the
+ * `diagnostics` row's Consumer to `*(none)*`, so without this sentinel whichever
+ * of the two branches landed second would turn the other's tree RED and force a
+ * cross-task allowlist edit. With it, both merge orders are green.
+ *
+ * Recognised is NOT unaudited: an `explicit-none` row still has to be named in
+ * the consumer suite's deliberately-consumer-less register, or
+ * `unregisteredConsumerlessRows` fails it. Otherwise this sentinel would be a
+ * weaker escape hatch than the allowlist it exists to keep uncluttered.
  */
 const EXPLICIT_NONE_SENTINEL = '*(none)*';
 
@@ -297,48 +408,67 @@ export interface ClassifiedRow {
 /**
  * Resolve every parsed row's Consumer cell, in document order.
  *
- * A single forward walk tracking, PER SECTION, the identifiers of the last row
- * whose own cell yielded any. Two properties of that tracker are deliberate and
- * pinned by unit tests:
+ * A single forward walk tracking, PER SECTION, the resolution of the IMMEDIATELY
+ * PRECEDING row. Two properties of that tracker are deliberate and pinned by
+ * unit tests:
  *
  *  - It is keyed by section, so inheritance never crosses the §1/§2 boundary.
  *    §2 is a separate table with its own authorship; a `same` at the top of §2
  *    does not mean "same as the last §1 row", and inheriting there would invent
  *    a consumer nobody wrote.
- *  - It only advances on a `named` row, so an `*(none)*` row cannot become an
- *    inheritance source — it asserts an absence, and there is nothing to inherit.
+ *  - It tracks the previous row WHATEVER its kind, not the last row that
+ *    happened to name a consumer. `same` means literally "same as the row
+ *    above", so a `same` below an `*(none)*` row resolves to `explicit-none` and
+ *    a `same` below an unresolved row stays `needs-allowlist`. Skipping over the
+ *    predecessor to a `named` row two-or-more positions up would hand the row a
+ *    consumer nobody wrote for it, and — because that inherited name is a real
+ *    export — it would then pass BOTH `unknownConsumers` and `uncoveredRows`,
+ *    reporting as guarded while guarding the wrong symbol. That false green is
+ *    the one failure direction this module is built to exclude.
  *
- * Degradation is safe rather than clever: a `same` with no eligible predecessor
- * yields `needs-allowlist` with no identifiers, NOT a throw. Any spelling other
- * than the two exact sentinels falls through to `needs-allowlist` too, so a
- * variant like `Same` or `(none)` cannot silently excuse a row.
+ * Degradation is safe rather than clever: a `same` with no predecessor in its
+ * section yields `needs-allowlist` with no identifiers, NOT a throw. Any
+ * spelling other than the two exact sentinels falls through to `needs-allowlist`
+ * too, so a variant like `Same` or `(none)` cannot silently excuse a row.
  */
 export function classifyEventChannelRows(rows: EventChannelRow[]): ClassifiedRow[] {
-  const lastNamedBySection = new Map<EventChannelRow['section'], string[]>();
+  const previousBySection = new Map<EventChannelRow['section'], ClassifiedRow>();
+  const resolved: ClassifiedRow[] = [];
 
-  return rows.map(({ section, channel, consumerCell }) => {
+  for (const { section, channel, consumerCell } of rows) {
     const own = extractConsumerIdentifiers(consumerCell);
-    if (own.length > 0) {
-      lastNamedBySection.set(section, own);
-      return { section, channel, identifiers: own, kind: 'named' };
-    }
-
     const cell = consumerCell.trim();
+    let row: ClassifiedRow;
 
-    if (cell === INHERIT_SENTINEL) {
-      const inherited = lastNamedBySection.get(section);
-      if (inherited !== undefined) {
-        return { section, channel, identifiers: [...inherited], kind: 'inherited' };
+    if (own.length > 0) {
+      row = { section, channel, identifiers: own, kind: 'named' };
+    } else if (cell === INHERIT_SENTINEL) {
+      const previous = previousBySection.get(section);
+      if (previous === undefined) {
+        row = { section, channel, identifiers: [], kind: 'needs-allowlist' };
+      } else if (previous.kind === 'named' || previous.kind === 'inherited') {
+        // Chains: a run of `same` rows all resolve to the identifiers of the
+        // last row that spelled them out, one hop at a time.
+        row = { section, channel, identifiers: [...previous.identifiers], kind: 'inherited' };
+      } else {
+        // `explicit-none` and `needs-allowlist` propagate verbatim: "same as
+        // above" of an asserted absence is an asserted absence, and of an
+        // unresolved cell is still unresolved. Neither carries identifiers, so
+        // an inheriting row is held to exactly the accountability its
+        // predecessor is — a register entry or an allowlist entry.
+        row = { section, channel, identifiers: [], kind: previous.kind };
       }
-      return { section, channel, identifiers: [], kind: 'needs-allowlist' };
+    } else if (cell === EXPLICIT_NONE_SENTINEL) {
+      row = { section, channel, identifiers: [], kind: 'explicit-none' };
+    } else {
+      row = { section, channel, identifiers: [], kind: 'needs-allowlist' };
     }
 
-    if (cell === EXPLICIT_NONE_SENTINEL) {
-      return { section, channel, identifiers: [], kind: 'explicit-none' };
-    }
+    previousBySection.set(section, row);
+    resolved.push(row);
+  }
 
-    return { section, channel, identifiers: [], kind: 'needs-allowlist' };
-  });
+  return resolved;
 }
 
 /**
@@ -383,6 +513,28 @@ export function unknownConsumers(
 }
 
 /**
+ * Channels of every row of `kind` that has no entry in `register`, sorted.
+ *
+ * `Object.hasOwn`, never the `in` operator: `in` walks the prototype chain, and
+ * these registers are plain object literals, so `in` would report a channel
+ * named `constructor` as registered against `Object.prototype.constructor` with
+ * nobody having written an entry. `CHANNEL_ROW_RE`'s `[a-z0-9-]+` name class
+ * rules out `toString`/`valueOf`/`hasOwnProperty`, but `constructor` matches it
+ * exactly — and this is the one place where a language detail could defeat the
+ * safe-default discipline the rest of the module is built on.
+ */
+function channelsMissingFromRegister(
+  rows: ClassifiedRow[],
+  kind: ConsumerRowKind,
+  register: Record<string, string>,
+): string[] {
+  return rows
+    .filter((r) => r.kind === kind && !Object.hasOwn(register, r.channel))
+    .map((r) => r.channel)
+    .sort();
+}
+
+/**
  * THE NON-VACUITY FLOOR: rows this parser could not resolve to a consumer and
  * which carry no allowlist entry either, sorted.
  *
@@ -393,10 +545,32 @@ export function unknownConsumers(
  * fails, rather than silently shrinking the checked set.
  */
 export function uncoveredRows(rows: ClassifiedRow[], allowlist: Record<string, string>): string[] {
-  return rows
-    .filter((r) => r.kind === 'needs-allowlist' && !(r.channel in allowlist))
-    .map((r) => r.channel)
-    .sort();
+  return channelsMissingFromRegister(rows, 'needs-allowlist', allowlist);
+}
+
+/**
+ * THE `*(none)*` ACCOUNTABILITY CHECK: `explicit-none` rows with no entry in the
+ * deliberately-consumer-less register, sorted.
+ *
+ * Without this, `*(none)*` would be a strictly weaker escape hatch than the
+ * allowlist it sits beside: an `explicit-none` row contributes nothing to
+ * `unknownConsumers`, is excluded from `uncoveredRows`, and is invisible to
+ * `staleAllowlistEntries`. A maintainer wanting to silence this guard for a row
+ * could simply write `*(none)*` in the Consumer cell — no reason, no self-check,
+ * no reviewer signal — and, because a docs-only edit does not run the gui suite,
+ * do it without ever tripping the gate. Requiring a register entry puts an
+ * `*(none)*` row behind the same reviewed, prose-carrying edit the allowlist
+ * demands, and restores the "every row lands in one of four accounted-for
+ * buckets" claim the consumer suite makes.
+ *
+ * The register is a PRE-COMMITMENT list, not a post-hoc excuse list — see
+ * `staleConsumerlessEntries` for why that direction is the one that works.
+ */
+export function unregisteredConsumerlessRows(
+  rows: ClassifiedRow[],
+  register: Record<string, string>,
+): string[] {
+  return channelsMissingFromRegister(rows, 'explicit-none', register);
 }
 
 /**
@@ -417,5 +591,40 @@ export function staleAllowlistEntries(
   const needing = new Set(rows.filter((r) => r.kind === 'needs-allowlist').map((r) => r.channel));
   return Object.keys(allowlist)
     .filter((channel) => !needing.has(channel))
+    .sort();
+}
+
+/**
+ * THE CONSUMER-LESS REGISTER SELF-CHECK: entries naming a channel that no §1/§2
+ * row carries any more, sorted.
+ *
+ * Deliberately ONE-directional, unlike `staleAllowlistEntries` — an entry whose
+ * row is not (yet) `explicit-none` is NOT reported, and that asymmetry is the
+ * whole reason the register works:
+ *
+ *  - The register SUPPRESSES NOTHING. What excuses an `explicit-none` row is the
+ *    doc cell itself; the entry is a co-signature that forces the doc edit to be
+ *    accompanied by a reviewed, reasoned edit here. So an entry that has gone
+ *    ahead of (or behind) its row hides no checkable row — it is dead weight,
+ *    not a hole. `staleAllowlistEntries` must flag both directions precisely
+ *    because an allowlist entry DOES suppress a check.
+ *  - Pre-registration is therefore the correct usage, and the only usage that
+ *    keeps this guard decoupled from another task's merge order. A task that
+ *    turns a row's Consumer cell into `*(none)*` (task 6227 does exactly this to
+ *    the `diagnostics` row) holds no lock on this file; requiring it to add an
+ *    entry AS it lands would turn a cross-task doc edit into a red tree here.
+ *    Writing the entry ahead of time — with the reason and the task number —
+ *    is the review, and it lands in whichever order.
+ *
+ * A key naming no parsed row at all is still rot worth reporting: the channel
+ * was renamed or deleted, so the entry now documents nothing.
+ */
+export function staleConsumerlessEntries(
+  rows: ClassifiedRow[],
+  register: Record<string, string>,
+): string[] {
+  const parsed = new Set(rows.map((r) => r.channel));
+  return Object.keys(register)
+    .filter((channel) => !parsed.has(channel))
     .sort();
 }

@@ -20,13 +20,18 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  CHANNEL_ROW_SCAN_RE,
   splitTableCells,
+  tableDataRows,
+  eventChannelTableHeaders,
   parseEventChannelRows,
   extractConsumerIdentifiers,
   classifyEventChannelRows,
   unknownConsumers,
   uncoveredRows,
   staleAllowlistEntries,
+  unregisteredConsumerlessRows,
+  staleConsumerlessEntries,
   type ClassifiedRow,
   type EventChannelRow,
 } from './eventChannelConsumerContract';
@@ -88,6 +93,77 @@ describe('splitTableCells', () => {
 
   it('returns a single cell for a line with no pipes at all', () => {
     expect(splitTableCells('just prose')).toStrictEqual(['just prose']);
+  });
+});
+
+describe('CHANNEL_ROW_SCAN_RE', () => {
+  // The published grep contract from docs/gui-event-channels.md §preamble, in
+  // its unanchored (awk) form — the same notion of "channel row" that
+  // scripts/check_event_inventory.sh scans with.
+
+  it('matches a backticked kebab-case first column', () => {
+    expect(CHANNEL_ROW_SCAN_RE.test('| `mesh-update` | `MeshData` | p | c |')).toBe(true);
+    expect(CHANNEL_ROW_SCAN_RE.test('| `warm-pool-event` | x | y | z |')).toBe(true);
+  });
+
+  it('rejects header rows, separators and prose', () => {
+    expect(CHANNEL_ROW_SCAN_RE.test('| Channel | Payload | Producer | Consumer | Notes |')).toBe(false);
+    expect(CHANNEL_ROW_SCAN_RE.test('|---|---|---|---|---|')).toBe(false);
+    expect(CHANNEL_ROW_SCAN_RE.test('Prose mentioning `mesh-update` in passing.')).toBe(false);
+  });
+
+  it('rejects the forms deliberately outside the grep contract', () => {
+    // §2a bold-first-column commands and §3 snake_case RPC names. Both are
+    // excluded BY CONSTRUCTION per the doc, which is what lets this pattern and
+    // the section walk agree on one row set.
+    expect(CHANNEL_ROW_SCAN_RE.test('| **solver-cancel-request** | `{run_id}` | f → b |')).toBe(false);
+    expect(CHANNEL_ROW_SCAN_RE.test('| `morph_stats` | `()` | `MorphStats` | accessor |')).toBe(false);
+    expect(CHANNEL_ROW_SCAN_RE.test('| `Mesh-Update` | x | y |')).toBe(false);
+  });
+});
+
+describe('tableDataRows', () => {
+  // The name-class-INDEPENDENT recount. It exists because an "independent"
+  // count that reused the `[a-z0-9-]+` name class would be blind in exactly the
+  // same place the parser is: a row the class fails to recognise is missed by
+  // both, the equality still holds, and the row goes silently unguarded.
+
+  const TABLE = [
+    'Some prose.',
+    '',
+    '| Channel | Payload | Consumer |',
+    '|---|---|---|',
+    '| `mesh-update` | `MeshData` | `bridge.ts::onMeshUpdate` |',
+    '| `mesh_update_v2` | `MeshData` | `bridge.ts::onMeshUpdateV2` |',
+    '| **solver-cancel-request** | `{run_id}` | n/a |',
+    '',
+  ].join('\n');
+
+  it('returns data rows only — not the header, the separator, or prose', () => {
+    expect(tableDataRows(TABLE)).toStrictEqual([
+      '| `mesh-update` | `MeshData` | `bridge.ts::onMeshUpdate` |',
+      '| `mesh_update_v2` | `MeshData` | `bridge.ts::onMeshUpdateV2` |',
+      '| **solver-cancel-request** | `{run_id}` | n/a |',
+    ]);
+  });
+
+  it('counts rows the channel-name class does NOT recognise', () => {
+    // The whole point. `mesh_update_v2` (snake_case) and the bold-first-column
+    // command row are invisible to CHANNEL_ROW_SCAN_RE, so a recount built on
+    // that pattern would agree with a parser that dropped them. This one does
+    // not: it sees 3 where the grep contract sees 1.
+    const grepContractCount = TABLE.split('\n').filter((l) => CHANNEL_ROW_SCAN_RE.test(l)).length;
+    expect(grepContractCount).toBe(1);
+    expect(tableDataRows(TABLE).length).toBe(3);
+  });
+
+  it('handles several tables in one document', () => {
+    const two = ['| A | B |', '|---|---|', '| 1 | 2 |', '', '| C | D |', '|---|---|', '| 3 | 4 |'].join('\n');
+    expect(tableDataRows(two)).toStrictEqual(['| 1 | 2 |', '| 3 | 4 |']);
+  });
+
+  it('returns [] for markdown with no tables', () => {
+    expect(tableDataRows('# Title\n\nJust prose.\n')).toStrictEqual([]);
   });
 });
 
@@ -192,6 +268,99 @@ describe('parseEventChannelRows', () => {
   it('returns [] for a table that appears before any §-heading', () => {
     const orphan = '| `mesh-update` | `MeshData` | `delta_to_events` | `bridge.ts::onMeshUpdate` | |';
     expect(parseEventChannelRows(orphan)).toStrictEqual([]);
+  });
+
+  it('refuses a table whose header does not put Consumer at the read index', () => {
+    // `CONSUMER_CELL_INDEX` is a positional assumption, so it is CHECKED rather
+    // than assumed. Here an `Owner` column is inserted ahead of Consumer, which
+    // shifts the Producer cell into the read position. Reading it would be
+    // silently wrong — and a producer written as a bare lowercase identifier
+    // (`emitStatus` below) is bridge-SHAPED, so it would sail through the
+    // extraction rule as if it were the consumer. Fail closed instead.
+    const shifted = [
+      '## §1 — Wired channels (production today)',
+      '',
+      '| Channel | Payload | Owner | Producer | Consumer | Notes |',
+      '|---|---|---|---|---|---|',
+      '| `evaluation-status` | `{}` | gui | `emitStatus` | `bridge.ts::onEvaluationStatus` | |',
+    ].join('\n');
+
+    expect(parseEventChannelRows(shifted)).toStrictEqual([]);
+  });
+
+  it('refuses channel rows in a section with no header/separator above them', () => {
+    const headerless = [
+      '## §1 — Wired channels (production today)',
+      '',
+      '| `mesh-update` | `MeshData` | `delta_to_events` | `bridge.ts::onMeshUpdate` | |',
+    ].join('\n');
+
+    expect(parseEventChannelRows(headerless)).toStrictEqual([]);
+  });
+
+  it('re-validates the header per table, so §2 is not trusted because §1 was', () => {
+    // Confirmation must not leak across a heading: §1 is well-formed here, §2 is
+    // not, and only §1's row may survive.
+    const mixed = [
+      '## §1 — Wired',
+      '| Channel | Payload | Producer | Consumer | Notes |',
+      '|---|---|---|---|---|',
+      '| `mesh-update` | `MeshData` | `delta_to_events` | `bridge.ts::onMeshUpdate` | |',
+      '',
+      '## §2 — Added',
+      '| Channel | Payload | Producer | Owner | Consumer |',
+      '|---|---|---|---|---|',
+      '| `mode-shape-frame` | `{}` | solver | gui | `bridge.ts::onModeShapeFrame` |',
+    ].join('\n');
+
+    expect(parseEventChannelRows(mixed).map((r) => r.channel)).toStrictEqual(['mesh-update']);
+  });
+});
+
+describe('eventChannelTableHeaders', () => {
+  // The legible half of the same positional check. `parseEventChannelRows` fails
+  // CLOSED on a bad header, which shows up downstream as "expected 0 to be 40";
+  // this lets the consumer suite name the header it actually found.
+
+  const HEADERS_DOC = [
+    '## §1 — Wired',
+    '| Channel | Payload | Producer | Consumer | Notes |',
+    '|---|---|---|---|---|',
+    '| `mesh-update` | `MeshData` | `delta_to_events` | `bridge.ts::onMeshUpdate` | |',
+    '',
+    '## §2 — Added',
+    '| Channel | Payload | Producer | Consumer | Upstream prereq | Owning slice | Spec |',
+    '|---|---|---|---|---|---|---|',
+    '| `mode-shape-frame` | `{}` | solver | (new) `BucklingPanel` animator | GR-024 | Phase 9 | spec |',
+    '',
+    '### §2a — Tauri commands (lint-exempt)',
+    '| Command | Payload | Direction | Backend handler |',
+    '|---|---|---|---|',
+    '| **solver-cancel-request** | `{run_id}` | frontend → backend | `cancel_solve_impl` |',
+    '',
+    '## §3 — Debug-MCP RPCs',
+    '| RPC | Request shape | Response shape | Producer | Consumer | Upstream prereq |',
+    '|---|---|---|---|---|---|',
+    '| `morph_stats` | `()` | `MorphStats` | accessor | `mcp__reify-debug__morph_stats` | task 2949 |',
+  ].join('\n');
+
+  it('returns the header cells of each §1/§2 table, tagged by section', () => {
+    const headers = eventChannelTableHeaders(HEADERS_DOC);
+
+    expect(headers.map((h) => h.section)).toStrictEqual(['§1', '§2']);
+    expect(headers[0].cells[4]).toBe('Consumer');
+    expect(headers[1].cells[4]).toBe('Consumer');
+  });
+
+  it('ignores tables outside §1/§2, including §2a and §3', () => {
+    // §3's header ALSO has `Consumer` at index 4, so returning it would let a
+    // consumer-suite assertion over these headers pass on the strength of a
+    // table this guard does not read.
+    expect(eventChannelTableHeaders(HEADERS_DOC).length).toBe(2);
+  });
+
+  it('returns [] for markdown with no §1/§2 table', () => {
+    expect(eventChannelTableHeaders('# Title\n\nProse.\n')).toStrictEqual([]);
   });
 });
 
@@ -322,7 +491,7 @@ describe('classifyEventChannelRows', () => {
     }
   });
 
-  it('inherits from the nearest preceding named row, not the first one in the section', () => {
+  it('inherits from the immediately preceding row, not the first one in the section', () => {
     const classified = classifyEventChannelRows([
       row('§1', 'a', '`onA`'),
       row('§1', 'b', '`onB`'),
@@ -337,7 +506,7 @@ describe('classifyEventChannelRows', () => {
     });
   });
 
-  it('degrades a `same` row with no preceding named row to needs-allowlist rather than throwing', () => {
+  it('degrades a `same` row with no preceding row to needs-allowlist rather than throwing', () => {
     const classified = classifyEventChannelRows([row('§1', 'orphan', 'same')]);
 
     expect(classified).toStrictEqual([
@@ -369,18 +538,56 @@ describe('classifyEventChannelRows', () => {
     ]);
   });
 
-  it('does not let an `*(none)*` row become the inheritance source for a later `same`', () => {
-    // `*(none)*` asserts "no consumer", so a following `same` must not resolve
-    // to it — there is nothing to inherit. It falls back to the last row that
-    // actually named a consumer.
+  it('resolves a `same` below an `*(none)*` row to explicit-none, not to an earlier consumer', () => {
+    // `same` means literally "same as the row above". Skipping over the
+    // `*(none)*` predecessor to `onA` two rows up would hand `c` a consumer
+    // nobody wrote for it — and because `onA` is a REAL export, the misattributed
+    // row would then pass both `unknownConsumers` and `uncoveredRows` and report
+    // as guarded while guarding the wrong symbol. Inheriting the absence instead
+    // keeps `c` accountable to the deliberately-consumer-less register.
     const classified = classifyEventChannelRows([
       row('§1', 'a', '`onA`'),
       row('§1', 'diagnostics', '*(none)*'),
       row('§1', 'c', 'same'),
     ]);
 
-    expect(classified[2].identifiers).toStrictEqual(['onA']);
-    expect(classified[2].kind).toBe('inherited');
+    expect(classified.map((r) => [r.channel, r.kind, r.identifiers])).toStrictEqual([
+      ['a', 'named', ['onA']],
+      ['diagnostics', 'explicit-none', []],
+      ['c', 'explicit-none', []],
+    ]);
+  });
+
+  it('resolves a `same` below an unresolved row to needs-allowlist, not to an earlier consumer', () => {
+    // Same rule, the other unresolved kind: inheriting "I could not be parsed"
+    // keeps the row demanding a deliberate allowlist entry instead of silently
+    // acquiring `onA`.
+    const classified = classifyEventChannelRows([
+      row('§1', 'a', '`onA`'),
+      row('§1', 'debug-request', '`gui/src` debug-bridge'),
+      row('§1', 'c', 'same'),
+    ]);
+
+    expect(classified.map((r) => [r.channel, r.kind, r.identifiers])).toStrictEqual([
+      ['a', 'named', ['onA']],
+      ['debug-request', 'needs-allowlist', []],
+      ['c', 'needs-allowlist', []],
+    ]);
+  });
+
+  it('chains `same` rows one hop at a time through an inherited predecessor', () => {
+    // The live claude-* run relies on this: only the first row spells the
+    // consumer out, and each `same` below it inherits from the `inherited` row
+    // directly above rather than reaching back to the `named` one.
+    const classified = classifyEventChannelRows([
+      row('§1', 'a', '`onA`'),
+      row('§1', 'b', 'same'),
+      row('§1', 'c', 'same'),
+      row('§1', 'd', 'same'),
+    ]);
+
+    expect(classified.map((r) => r.kind)).toStrictEqual(['named', 'inherited', 'inherited', 'inherited']);
+    for (const r of classified) expect(r.identifiers).toStrictEqual(['onA']);
   });
 
   it('classifies any other identifier-free prose cell as needs-allowlist', () => {
@@ -555,6 +762,25 @@ describe('uncoveredRows', () => {
     ).toStrictEqual(['alpha', 'mike', 'zulu']);
   });
 
+  it('does not treat an inherited Object.prototype key as an allowlist entry', () => {
+    // Membership is tested with `Object.hasOwn`, never `in`. `in` walks the
+    // prototype chain, and the live allowlist is a plain object literal, so a
+    // channel named `constructor` would report as allowlisted against
+    // `Object.prototype.constructor` with nobody having written an entry — and
+    // `staleAllowlistEntries` (which iterates `Object.keys`) would not notice
+    // either. `constructor` is spelled entirely within CHANNEL_ROW_RE's
+    // `[a-z0-9-]+` name class, so it is a reachable channel name, not a
+    // hypothetical.
+    expect('constructor' in {}).toBe(true); // …which is exactly the trap.
+    expect(uncoveredRows([classified('constructor', [], 'needs-allowlist')], {})).toStrictEqual([
+      'constructor',
+    ]);
+    // An OWN entry of course still registers.
+    expect(
+      uncoveredRows([classified('constructor', [], 'needs-allowlist')], { constructor: 'reason' }),
+    ).toStrictEqual([]);
+  });
+
   it('returns [] for no rows', () => {
     expect(uncoveredRows([], ALLOWLIST)).toStrictEqual([]);
   });
@@ -615,6 +841,114 @@ describe('staleAllowlistEntries', () => {
 
   it('returns [] for an empty allowlist', () => {
     expect(staleAllowlistEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], {})).toStrictEqual(
+      [],
+    );
+  });
+});
+
+describe('unregisteredConsumerlessRows', () => {
+  // `*(none)*` must not be a weaker escape hatch than the allowlist beside it.
+  // An explicit-none row contributes nothing to `unknownConsumers`, is excluded
+  // from `uncoveredRows`, and is invisible to `staleAllowlistEntries` — so
+  // without this check, writing `*(none)*` in a Consumer cell would silence the
+  // guard for that row with no reason, no self-check and (docs-only edits not
+  // running the gui suite) no gate failure either.
+
+  const REGISTER = { diagnostics: 'LSP diagnostics are routed by the notification sink, not a bridge subscriber.' };
+
+  it('reports nothing when every explicit-none row is registered', () => {
+    expect(
+      unregisteredConsumerlessRows(
+        [
+          classified('mesh-update', ['onMeshUpdate'], 'named'),
+          classified('diagnostics', [], 'explicit-none'),
+          classified('debug-request', [], 'needs-allowlist'),
+        ],
+        REGISTER,
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it('reports an unregistered `*(none)*` row — the silencing edit this exists to catch', () => {
+    expect(
+      unregisteredConsumerlessRows(
+        [
+          classified('diagnostics', [], 'explicit-none'),
+          classified('kernel-status', [], 'explicit-none'),
+        ],
+        REGISTER,
+      ),
+    ).toStrictEqual(['kernel-status']);
+  });
+
+  it('reports a row that inherited explicit-none through `same`', () => {
+    // A `same` row below an `*(none)*` row resolves to explicit-none, so it is
+    // held to the same accountability rather than riding its predecessor's entry.
+    expect(unregisteredConsumerlessRows([classified('follower', [], 'explicit-none')], REGISTER)).toStrictEqual(
+      ['follower'],
+    );
+  });
+
+  it('does not treat an inherited Object.prototype key as a register entry', () => {
+    expect(unregisteredConsumerlessRows([classified('constructor', [], 'explicit-none')], {})).toStrictEqual([
+      'constructor',
+    ]);
+  });
+
+  it('sorts its findings and returns [] for no rows', () => {
+    expect(
+      unregisteredConsumerlessRows(
+        [
+          classified('zulu', [], 'explicit-none'),
+          classified('alpha', [], 'explicit-none'),
+        ],
+        {},
+      ),
+    ).toStrictEqual(['alpha', 'zulu']);
+    expect(unregisteredConsumerlessRows([], REGISTER)).toStrictEqual([]);
+  });
+});
+
+describe('staleConsumerlessEntries', () => {
+  it('reports an entry naming a channel that no §1/§2 row carries any more', () => {
+    // The channel was renamed or deleted, so the entry documents nothing.
+    expect(
+      staleConsumerlessEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], {
+        'deleted-channel': 'was consumer-less',
+      }),
+    ).toStrictEqual(['deleted-channel']);
+  });
+
+  it('tolerates an entry whose row is not (yet) explicit-none — pre-registration is the point', () => {
+    // Deliberately one-directional, unlike `staleAllowlistEntries`. This register
+    // SUPPRESSES nothing: the doc cell is what excuses the row, and the entry is
+    // the reviewed co-signature. So an entry ahead of its row hides no checkable
+    // row — and pre-registering is the only usage that keeps this guard decoupled
+    // from another task's merge order. Task 6227 turns the `diagnostics` row's
+    // Consumer cell into `*(none)*` while holding no lock on this file; demanding
+    // the entry only AS that lands would make a cross-task doc edit red here.
+    expect(
+      staleConsumerlessEntries([classified('diagnostics', ['onDiagnostics'], 'named')], {
+        diagnostics: 'pre-registered ahead of #6227',
+      }),
+    ).toStrictEqual([]);
+  });
+
+  it('reports nothing when every entry names a parsed row', () => {
+    expect(
+      staleConsumerlessEntries(
+        [
+          classified('diagnostics', [], 'explicit-none'),
+          classified('mesh-update', ['onMeshUpdate'], 'named'),
+        ],
+        { diagnostics: 'reason' },
+      ),
+    ).toStrictEqual([]);
+  });
+
+  it('sorts its findings and returns [] for an empty register', () => {
+    expect(staleConsumerlessEntries([], { zulu: 'r', alpha: 'r' })).toStrictEqual(['alpha', 'zulu']);
+    expect(staleConsumerlessEntries([classified('mesh-update', ['onMeshUpdate'], 'named')], {})).toStrictEqual(
       [],
     );
   });

@@ -29,10 +29,13 @@
  *
  * ── Standing rule for docs/gui-event-channels.md ─────────────────────────────
  * A §1/§2 row's Consumer cell either names a real bridge.ts export, or writes
- * `same` (inherit the row above), or writes `*(none)*` (deliberately no
- * consumer), or its channel gets an entry in `NON_BRIDGE_CONSUMERS` with the
- * reason. Check (c) makes that exhaustive: a row matching none of the four
- * fails, so a parse miss cannot quietly shrink the guarded set.
+ * `same` (inherit the row directly above), or writes `*(none)*` (deliberately no
+ * consumer, and then its channel needs an entry in `DELIBERATELY_CONSUMERLESS`),
+ * or its channel gets an entry in `NON_BRIDGE_CONSUMERS` with the reason. Check
+ * (c) makes that exhaustive — a row matching none of the four fails, so a parse
+ * miss cannot quietly shrink the guarded set — and check (e) keeps the
+ * `*(none)*` bucket from being self-certifying, since a docs-only edit does not
+ * run this suite.
  *
  * Shape mirrors `bridgeMockCoverage.test.ts` and `debugParity.test.ts` — the
  * house pattern for "two artifacts must stay in lockstep, with documented
@@ -64,11 +67,15 @@ import * as bridge from '../bridge';
 import {
   CHANNEL_ROW_SCAN_RE,
   readEventChannelInventory,
+  tableDataRows,
+  eventChannelTableHeaders,
   parseEventChannelRows,
   classifyEventChannelRows,
   unknownConsumers,
   uncoveredRows,
   staleAllowlistEntries,
+  unregisteredConsumerlessRows,
+  staleConsumerlessEntries,
 } from './eventChannelConsumerContract';
 
 /**
@@ -114,25 +121,78 @@ const NON_BRIDGE_CONSUMERS: Record<string, string> = {
     'Unwired §2 channel; its consumer is the BucklingPanel Solid component animator, owned by docs/prds/v0_5/buckling-eigensolver.md §13 task ι (#3458). Becomes checkable when the channel is wired to a bridge.ts subscriber.',
 };
 
+/**
+ * Channels whose Consumer cell is `*(none)*` — documented as deliberately having
+ * no consumer — each with the reason. Check (e) requires an entry for every such
+ * row, so `*(none)*` is not a weaker escape hatch than `NON_BRIDGE_CONSUMERS`
+ * above: an `explicit-none` row contributes nothing to check (b), is excluded
+ * from check (c), and is invisible to check (d), so without this a maintainer
+ * could silence this guard for a row by editing markdown alone — with no reason,
+ * no self-check, and (docs-only edits do not run the gui suite) no gate failure.
+ *
+ * This is a PRE-COMMITMENT list, not a post-hoc excuse list, and the direction
+ * matters. `staleConsumerlessEntries` deliberately does not flag an entry whose
+ * row is not yet `*(none)*`, because the entry suppresses nothing on its own —
+ * the doc cell does — and because pre-registering is what keeps this guard
+ * decoupled from another task's merge order. Task 6227 deletes
+ * `bridge.ts::onDiagnostics` and rewrites that row's Consumer cell; it holds no
+ * lock on this file, so requiring the entry only as it lands would turn a
+ * cross-task doc edit into a red tree here. The reason is written once, now.
+ */
+const DELIBERATELY_CONSUMERLESS: Record<string, string> = {
+  diagnostics:
+    'Task 6227 deletes bridge.ts::onDiagnostics and sets this row to *(none)*: LSP diagnostics are routed by main.rs::TauriNotificationSink, with no bridge.ts subscriber left. Pre-registered so 6227 lands in either merge order without editing this file. Until it lands the row still names onDiagnostics and is checked normally by (b).',
+};
+
 describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
   it('(a) extraction sanity — neither side is vacuously empty or over-captured', () => {
     // Without this, a parser that silently returned [] would make (b) pass.
     expect(RUNTIME_EXPORTS.length).toBeGreaterThanOrEqual(60);
 
+    // The Consumer column's POSITION, asserted rather than assumed. The parser
+    // reads a fixed cell index; if a column were inserted ahead of Consumer it
+    // would start reading Producer instead. Today that would degrade to
+    // needs-allowlist by luck of the current producer spellings, not by design —
+    // a producer written `emitStatus` is bridge-shaped and would pass. The parser
+    // fails closed on a bad header; this names the header that went bad.
+    const headers = eventChannelTableHeaders(INVENTORY);
+    expect(headers.map((h) => h.section), 'one table each in §1 and §2').toStrictEqual(['§1', '§2']);
+    for (const { section, cells } of headers) {
+      expect(cells[4], `${section} column 4 is "${cells[4]}", not Consumer`).toBe('Consumer');
+    }
+
     // Independent recount of the same row set, by a DIFFERENT mechanism: slice
-    // the document between the §1 and §2a headings by string index, then apply
-    // the published grep contract line by line — no section state machine. An
-    // EQUALITY rather than a `>=` floor, so a row `parseEventChannelRows` drops
-    // surfaces as a mismatch instead of being masked (debugParity.test.ts's
-    // `expectedNameCount` reasoning).
+    // the document between the §1 and §2a headings by string index, then count
+    // rows line by line with no section state machine. An EQUALITY rather than a
+    // `>=` floor, so a row `parseEventChannelRows` drops surfaces as a mismatch
+    // instead of being masked (debugParity.test.ts's `expectedNameCount`
+    // reasoning).
     const start = INVENTORY.indexOf('## §1 ');
     const end = INVENTORY.indexOf('### §2a');
     expect(start, 'the §1 heading must be findable — is the doc path right?').toBeGreaterThanOrEqual(0);
     expect(end, 'the §2a heading must be findable — is the doc path right?').toBeGreaterThan(start);
-    const rawRowCount = INVENTORY.slice(start, end)
-      .split('\n')
-      .filter((line) => CHANNEL_ROW_SCAN_RE.test(line)).length;
-    expect(ROWS.length).toBe(rawRowCount);
+    const slice = INVENTORY.slice(start, end);
+
+    // (i) STRUCTURAL recount — every table data row in the slice, found by
+    // markdown shape alone (a `|` line that is neither a `|---|` separator nor
+    // the header above one). This one shares no name class with the parser,
+    // which is what makes it independent in the direction that matters: a row
+    // added as `mode_shape_frame` (snake_case, as §3 already uses) or with any
+    // uppercase letter is invisible to `[a-z0-9-]+` on BOTH sides, so a recount
+    // built on that class would agree with a parser that silently dropped it.
+    expect(ROWS.length, 'a §1/§2 table row the channel-name class does not recognise').toBe(
+      tableDataRows(slice).length,
+    );
+
+    // (ii) GREP-CONTRACT recount — the same rows via the doc's own published
+    // pattern, which is also what scripts/check_event_inventory.sh scans with.
+    // Equal to (i) only if every §1/§2 row honours that contract, so this pins
+    // the doc invariant the other lint depends on, not just this guard's parse.
+    const grepContractRowCount = slice.split('\n').filter((line) => CHANNEL_ROW_SCAN_RE.test(line)).length;
+    expect(ROWS.length, 'a §1/§2 row outside the published backtick grep contract').toBe(
+      grepContractRowCount,
+    );
+
     expect(ROWS.length).toBeGreaterThanOrEqual(30);
 
     // A doubled channel is a merge artefact, not a second row to guard.
@@ -177,5 +237,17 @@ describe('event-channel Consumer column ↔ bridge.ts runtime exports', () => {
 
   it('(d) the allowlist is self-checking — no entry has rotted', () => {
     expect(staleAllowlistEntries(CLASSIFIED, NON_BRIDGE_CONSUMERS)).toStrictEqual([]);
+  });
+
+  it('(e) every `*(none)*` row is a pre-registered, reasoned absence', () => {
+    // Closes the one bucket in (c) that would otherwise be self-certifying: a
+    // row can declare itself consumer-less in markdown, but only if this file
+    // already says why. A finding here means someone wrote `*(none)*` without a
+    // register entry — which is the doc-only silencing edit (c) cannot see.
+    expect(unregisteredConsumerlessRows(CLASSIFIED, DELIBERATELY_CONSUMERLESS)).toStrictEqual([]);
+    // And an entry naming a channel no §1/§2 row carries any more documents
+    // nothing. See the constant's docblock for why the other rot direction is
+    // deliberately tolerated.
+    expect(staleConsumerlessEntries(CLASSIFIED, DELIBERATELY_CONSUMERLESS)).toStrictEqual([]);
   });
 });
