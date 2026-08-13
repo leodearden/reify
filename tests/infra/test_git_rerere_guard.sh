@@ -200,4 +200,95 @@ for _r in "$REPO_ON" "$REPO_OFF" "$REPO_AU"; do
 done
 unset _ro_snap _i _r _cd
 
+# ==============================================================================
+# (f) M4 — THE IMPLICIT RE-ARM.  git's default for rerere.enabled is -1, meaning
+#     "enabled iff rr-cache/ exists".  With the key UNSET and the residual
+#     rr-cache/ still on disk, rerere is silently ON for the whole fleet — so
+#     `git config --unset rerere.enabled` is a silent RE-ARM, not a no-op.
+#     This is the subtlest behaviour in the guard and the reason it ships as a
+#     re-runnable check rather than a one-shot config write.
+# ==============================================================================
+echo ""
+echo "--- (f) unset rerere.enabled + residual rr-cache/ = silently armed ---"
+
+# make_conflict DIR — build a two-commit conflict on a side branch and leave DIR
+# ready for `git merge side` to conflict.  Used both as fixture scaffolding and
+# as the behavioural oracle below.
+make_conflict() {
+    local dir="$1"
+    git -C "$dir" checkout -q -b side
+    printf 'side\n' > "$dir/file.txt"
+    git -C "$dir" add file.txt
+    git -C "$dir" commit -q -m side
+    git -C "$dir" checkout -q main
+    printf 'main\n' > "$dir/file.txt"
+    git -C "$dir" add file.txt
+    git -C "$dir" commit -q -m mainside
+}
+
+# count_rr_entries DIR — number of rr-cache/<id>/ entries in DIR's common store.
+count_rr_entries() {
+    local cd_path
+    cd_path="$(common_dir "$1")"
+    find "$cd_path/rr-cache" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l
+}
+
+# (f-a) unset + rr-cache/ present -> armed
+REPO_IMPLICIT="$(make_repo)"
+mkdir -p "$(common_dir "$REPO_IMPLICIT")/rr-cache"
+
+assert "(f-a) rerere.enabled unset is genuinely unset in the fixture" \
+    bash -c "! git -C '$REPO_IMPLICIT' config --get rerere.enabled >/dev/null 2>&1"
+
+assert "(f-a) unset + rr-cache/ present -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$REPO_IMPLICIT' >/dev/null 2>&1"
+
+assert "(f-a) check stderr explains the rr-cache-implies-enabled default" \
+    bash -c "bash '$GUARD' check '$REPO_IMPLICIT' 2>&1 >/dev/null | grep -q 'rr-cache'"
+
+assert "(f-a) check stderr names git's -1 default explicitly" \
+    bash -c "bash '$GUARD' check '$REPO_IMPLICIT' 2>&1 >/dev/null | grep -q -- '-1'"
+
+# (f-b) unset + NO rr-cache/ -> safe
+REPO_NORR="$(make_repo)"
+
+assert "(f-b) fixture really has no rr-cache/ directory" \
+    bash -c "! test -d '$(common_dir "$REPO_NORR")/rr-cache'"
+
+assert "(f-b) unset + no rr-cache/ -> check exits 0" \
+    bash "$GUARD" check "$REPO_NORR"
+
+# (f-c) EXPLICIT false + rr-cache/ present -> safe.  This is the load-bearing
+# scenario: it is what lets `arm` leave the residual 241-entry cache in place
+# instead of pruning it, and pruning is precisely the operation that reproduces
+# the segfault + stale-lock signature across live lanes.
+REPO_EXPLICIT="$(make_repo)"
+mkdir -p "$(common_dir "$REPO_EXPLICIT")/rr-cache"
+git -C "$REPO_EXPLICIT" config rerere.enabled false
+
+assert "(f-c) explicit false + rr-cache/ present -> check exits 0" \
+    bash "$GUARD" check "$REPO_EXPLICIT"
+
+# ── (f-d) BEHAVIOURAL ORACLE ──────────────────────────────────────────────────
+# Measures git's ACTUAL behaviour rather than trusting the config read: with the
+# explicit false and a residual rr-cache/ present, a real conflicted merge must
+# record ZERO new rr-cache/<id>/ entries.  Without this, the whole suite would
+# only be asserting that the guard agrees with itself.
+echo ""
+echo "--- (f-d) behavioural oracle: explicit false records no rr-cache entries ---"
+
+make_conflict "$REPO_EXPLICIT"
+_rr_before="$(count_rr_entries "$REPO_EXPLICIT")"
+git -C "$REPO_EXPLICIT" merge side >/dev/null 2>&1 || true
+_rr_after="$(count_rr_entries "$REPO_EXPLICIT")"
+
+assert "(f-d) the merge really did conflict (fixture is live, not vacuous)" \
+    bash -c "git -C '$REPO_EXPLICIT' ls-files -u | grep -q ."
+
+assert "(f-d) explicit false -> conflicted merge records ZERO new rr-cache entries" \
+    test "$_rr_before" -eq "$_rr_after"
+
+git -C "$REPO_EXPLICIT" merge --abort >/dev/null 2>&1 || true
+unset _rr_before _rr_after
+
 test_summary
