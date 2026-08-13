@@ -1,0 +1,76 @@
+================================================================================
+Destructured import with two items
+================================================================================
+
+import std.mech.{Bolt, Nut}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    path: (import_path
+      (identifier)
+      (identifier))
+    items: (import_items
+      (identifier)
+      (identifier))))
+
+================================================================================
+Destructured import with a single item
+================================================================================
+
+import a.{Foo}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    path: (import_path
+      (identifier))
+    items: (import_items
+      (identifier))))
+
+================================================================================
+Destructured import composes with pub
+================================================================================
+
+pub import a.b.{C, D}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    path: (import_path
+      (identifier)
+      (identifier))
+    items: (import_items
+      (identifier)
+      (identifier))))
+
+================================================================================
+Bare and aliased imports alongside a destructured one
+================================================================================
+
+import std.units
+import a.b as c
+import std.mech.{Bolt, Nut}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_declaration
+    path: (import_path
+      (identifier)
+      (identifier)))
+  (import_declaration
+    path: (import_path
+      (identifier)
+      (identifier))
+    alias: (identifier))
+  (import_declaration
+    path: (import_path
+      (identifier)
+      (identifier))
+    items: (import_items
+      (identifier)
+      (identifier))))
