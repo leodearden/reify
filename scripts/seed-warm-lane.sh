@@ -83,11 +83,16 @@
 #   (§9.5 inv.13 "Caller obligation on the fail-closed path" is the ruling.)
 #
 #   PIPE-SAFE (task #6219): every DETACHED child this script forks (the
-#   orphan-trash sweep and the reseed-trash rm) redirects its own fd 1 and
-#   fd 2 away from the caller's descriptors, so a caller may capture this
-#   stdout through a pipe -- `$(...)`, `| consumer`, or the
-#   `2>&1 | while read` shape warm-lane-gc.sh:648-649 uses -- without
-#   blocking on that background rm of a possibly large tree.
+#   orphan-trash sweep and the reseed-trash rm) holds NO descriptor of the
+#   caller's: its stdin is /dev/null (bash's own async-list default), fd 1
+#   and fd 2 are redirected away, and BOTH lock FDs this pool's callers use
+#   are closed in the child -- FD 9 (seed's own --lane-lock acquire and
+#   thin-warm-lane.sh's --reseed) and FD 8 (warm-lane-gc.sh's reclaim). So a
+#   caller may capture this stdout through a pipe -- `$(...)`, `| consumer`,
+#   or the `2>&1 | while read` shape warm-lane-gc.sh:648-649 uses -- without
+#   blocking on that background rm of a possibly large tree, and without the
+#   rm silently outliving the caller's own lock release. A future caller
+#   that holds a lock on some other descriptor must be added to both closes.
 #
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
@@ -864,8 +869,9 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     #
     # THIS BLOCK IS THE SINGLE SOURCE OF TRUTH for the mechanism and for the
     # measured rates. Every other site that touches FD 9 -- the --lane-lock
-    # header note, _usage(), the two `{ rm -rf ...; } 9<&- &` call sites below,
-    # tests/infra/test_seed_lane_lock_release_soak.sh, tests/infra/README.md --
+    # header note, _usage(), the two `{ rm -rf ...; } 8<&- 9<&- >/dev/null 2>&1 &`
+    # call sites below, tests/infra/test_seed_lane_lock_release_soak.sh,
+    # tests/infra/README.md --
     # carries a ONE-LINE POINTER here, never a copy of the argument or of the
     # numbers. Re-measuring (which is exactly what the soak harness exists to
     # make easy) must then edit one place, not six; the house G7
@@ -874,7 +880,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     #
     # WHY AN EXPLICIT LOCK_UN AND NOT JUST PROCESS EXIT / `exec 9>&-`:
     # a flock is attached to the OPEN FILE DESCRIPTION, not to the descriptor.
-    # The detached background jobs below (`{ rm -rf ...; } 9<&- &`, the orphan
+    # The detached background jobs below (`{ rm -rf ...; } 8<&- 9<&- >/dev/null 2>&1 &`, the orphan
     # sweep and the reseed-trash rm) perform their `9<&-` in the forked CHILD,
     # AFTER the fork -- so between fork() and that close the child holds a dup
     # of this very OFD and the exclusive lock is STILL HELD, even once this
@@ -1072,6 +1078,9 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # was never opened (--lane-lock not passed). It only NARROWS the
         # fork-to-close window and cannot close it -- see the LANE-LOCK RELEASE
         # CONTRACT block at the flock acquire above (#5705).
+        # 8<&- (task #6219): closes the OTHER caller lock convention (gc's
+        # FD-8 lane-lock reclaim) -- see the reseed-trash rm below for the
+        # full argument; not restated here (G7).
         # >/dev/null 2>&1 (task #6219): same rationale as the reseed-trash rm
         # below (see its comment for the full fd-1/fd-2 argument) -- this
         # detached child must not hold a descriptor of a pipe-capturing
@@ -1080,7 +1089,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan"; } 9<&- >/dev/null 2>&1 &
+            { rm -rf "$_rp_orphan"; } 8<&- 9<&- >/dev/null 2>&1 &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -1443,6 +1452,24 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # no change -- it completes before seed exits either way. As at the orphan
     # sweep above, 9<&- only NARROWS the fork-to-close window -- see the
     # LANE-LOCK RELEASE CONTRACT block at the flock acquire above (#5705).
+    # 8<&- (task #6219): closes the OTHER caller lock convention this script
+    # already documents at :765-766 ("thin --reseed on FD 9, gc reclaim on FD
+    # 8") -- warm-lane-gc.sh holds an EXCLUSIVE flock on ${lane}.lock on FD 8
+    # across its whole seed invocation (warm-lane-gc.sh:559-565, :645-649). A
+    # flock is attached to the OPEN FILE DESCRIPTION, not the descriptor, so a
+    # detached child that inherits a dup of FD 8 keeps that lock held for its
+    # entire orphaned rm -rf, even after gc's own `exec 8>&-`
+    # (warm-lane-gc.sh:716) -- making the lane read as locked
+    # (`preserving <name>: live consumer (flock held)`, gc :562; an ACQUIRE
+    # via --fresh-checkout --lane-lock refusing/queuing per §9.5 inv.11)
+    # against a process that is not a consumer at all. This script's earlier
+    # >/dev/null 2>&1 redirect below (also task #6219) is what made this live
+    # rather than latent: before it, the old `2>&1 | while read` pipeline
+    # blocked gc from reaching its own `exec 8>&-` until this rm exited,
+    # which accidentally masked the leak. seed itself opens no FD 8, so this
+    # close is a verified no-op for every caller that holds none. A future
+    # caller that locks on some other descriptor must be added to both
+    # closes here and at the orphan sweep above.
     # >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
     # machine-readable result channel -- exactly one echo "$LANE_TARGET" at
     # the very end (see the Stdout contract in the header) -- so a detached
@@ -1450,18 +1477,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # caller that captures stdout through a PIPE rather than a file (e.g.
     # scripts/warm-lane-gc.sh:648-649's `2>&1 | while IFS= read -r line; do
     # ...; done`) blocks until this background rm of a possibly large tree
-    # ALSO exits, defeating the point of detaching it. Applied after 9<&- so
-    # the lane-lock close still happens first; a failed rm here is no longer
-    # observable on this fd, but a leaked entry is still reported by two
-    # other mechanisms: the orphan-trash sweep above re-finds and re-warns
-    # about it on this lane's next seed, and warm-lane-gc-sweep.sh's
-    # _reap_stale_trash reaps it pool-wide.
+    # ALSO exits, defeating the point of detaching it. Applied after 9<&- and
+    # 8<&- so both lock closes still happen first; a failed rm here is no
+    # longer observable on this fd, but a leaked entry is still reported by
+    # two other mechanisms: the orphan-trash sweep above re-finds and
+    # re-warns about it on this lane's next seed, and
+    # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH"; } 9<&- >/dev/null 2>&1 &
+            { rm -rf "$RESEED_TRASH"; } 8<&- 9<&- >/dev/null 2>&1 &
         fi
     fi
 fi
