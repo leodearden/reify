@@ -851,6 +851,7 @@ role_env_overrides:
   architect: *sandbox_cache_env
   reviewer_comprehensive: *sandbox_cache_env
   judge: *sandbox_cache_env
+  merger: *sandbox_cache_env
 
 # Escalation
 escalation:
