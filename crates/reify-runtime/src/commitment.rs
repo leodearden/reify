@@ -120,17 +120,10 @@ impl NodePolicyOverrides {
     /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
     ///
     /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
-    /// The single-arg [`resolve`](Self::resolve) is **left unchanged** and now retains
-    /// only this module's unit-test coverage: its sole production consumer was the
-    /// concurrent scheduler's dirty-node dispatch loop (`concurrent.rs:358`, an
-    /// `OnlyRunOnFinalInputs` skip check), deleted with `concurrent.rs` in c1b8dba3f7
-    /// (task ο, #5065).  `CommitmentTracker::should_continue` survives in this module
-    /// but never consulted `NodePolicyOverrides` — it reads the P0/P1 never-cancel
-    /// guard, the dirty-cone flag, and `is_committed`.  The older "not wired until task
-    /// η/3581 (B4) lands" caveat is obsolete — #3581 landed, and the scheduler it
-    /// referred to no longer exists.  `resolve_with_traits` is reached today through
-    /// `reify_cli::dev::render_inspection`, the delta step of its alpha/beta/gamma/delta
-    /// inspection chain.
+    /// Reached today only through `reify_cli::dev::render_inspection` (δ step); the
+    /// single-arg [`resolve`](Self::resolve) has no production consumer since the
+    /// concurrent scheduler was deleted with `concurrent.rs` in c1b8dba3f7
+    /// (task ο, #5065).
     pub fn resolve_with_traits(
         &self,
         node_id: &NodeId,

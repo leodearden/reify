@@ -10,8 +10,12 @@
 //! accepts a pre-built candidate gated set and does NOT import
 //! `NodePolicyOverrides` from `reify-runtime`.  The dependency arrow is
 //! `reify-runtime → reify-eval → reify-types`, so importing from `reify-runtime`
-//! would introduce a cycle.  The runtime layer computes the candidate gated set
-//! via `NodePolicyOverrides::resolve()` and feeds it to these helpers.
+//! would introduce a cycle.  A runtime-layer scheduler would compute the
+//! candidate gated set via `NodePolicyOverrides::resolve()` and feed it to
+//! these helpers; no such consumer exists today — the concurrent scheduler
+//! was deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  The
+//! end-to-end witness is
+//! `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
 
 use std::collections::HashSet;
 
