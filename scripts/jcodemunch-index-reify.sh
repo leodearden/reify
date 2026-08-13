@@ -357,6 +357,22 @@ require_indexer() {
 # run AND the only place the no-op marker can be read. It is therefore tee'd:
 # passed through live, and kept for the marker test below.
 #
+# THE TEE MUST BE A PIPELINE MEMBER, NOT A PROCESS SUBSTITUTION (esc-6107-5).
+# A `2> >(tee "$out" >&2)` procsub child is NOT reaped by the following bare
+# argument-less `wait` — bash 5.2.21 does not track it as a job — so the marker
+# `grep` below raced `tee`'s flush and read a not-yet-written file, silently
+# downgrading a genuine no-op run to `jc-changed-files=some`. Measured on this
+# host: procsub form 188/200 correct even UNLOADED (and ~5% wrong under load);
+# the `$!`-after-procsub variant was WORSE at 169/200; this pipeline form is
+# 250/250 because bash always waits for every member of a pipeline before
+# running the next command. Live passthrough is fully preserved.
+#
+# The `1>&3` inside `{ ...; } 3>&1` keeps the child's STDOUT on the script's
+# stdout (only stderr is diverted into the pipe); fd 3 is used nowhere else in
+# this script. The `if ...; then :; fi` wrapper exempts the group from `set -e`
+# so a non-zero indexer reaches the `refuse` below instead of killing the shell,
+# and `${PIPESTATUS[0]}` reads the INDEXER's status, not `tee`'s.
+#
 # THE ONLY UPSTREAM MARKER THIS PATH MAY BE READ FOR is the literal
 # "No changes detected" (index_folder.py:1303/:1372/:1755). The
 # `<n> new / <n> deleted` style summary line at watcher.py:305 belongs to the
@@ -365,10 +381,7 @@ require_indexer() {
 JC_CHANGED="n/a"
 run_indexer() {
     local out="$SCRATCH_ERR.run" rc=0
-    if ! "${INDEXER_ARGV[@]}" 2> >(tee "$out" >&2); then
-        rc=1
-    fi
-    wait 2>/dev/null || true
+    if { "${INDEXER_ARGV[@]}" 2>&1 1>&3 | tee "$out" >&2; rc="${PIPESTATUS[0]}"; } 3>&1; then :; fi
 
     [ "$rc" -eq 0 ] || refuse E_JC_INDEX_RUN_FAILED \
         "the indexer exited non-zero for $REPO_ID (see its output above). Command: $(printf '%q ' "${INDEXER_ARGV[@]}")"
