@@ -215,10 +215,11 @@ C-as-integration-gate leaf that Phase 1's foundation tasks unlock.
 - **β — `scripts/jcodemunch-index-reify.sh`.**
   Bare `watch --once`, `--no-ai-summaries`, never `--paths-from`; fails non-zero if the resulting
   symbol count is 0.
-  *Signal:* running it prints the resolved identity and `N sym` with N>0; an immediate second run's
-  stderr line reads `No changes detected` — `watch --once` runs `sync_folders()`, not the continuous
-  watch loop's `changed={changed} new={new} deleted={deleted}` callback (watcher.py:305), so neither
-  `changed: 0` nor `changed=0` is ever emitted on this path. *Prereqs:* none.
+  *Signal:* running it prints the resolved identity and `N sym` with N>0; an immediate second run
+  reports 0 changed files on β's own summary line — a token β derives and owns, not an upstream
+  stderr literal that can drift between pins. (The upstream `watch --once` stderr shapes are recorded
+  as evidence in the capability manifest's β/`upstream-summary-token` binding, not asserted on here.)
+  *Prereqs:* none.
 
 - **γ — Identity resolution + freshness gate in reify-audit.**
   Implements §4.2 and §4.3.
@@ -352,8 +353,11 @@ adjacent response-validation hole — see §4.1 item 5.
    `tests/infra/run-all-classification.manifest` in the **same diff** (per the overlay's gate-test
    drift-guard rule; the esc-4914-162 precedent). A `cargo test` avoids that but needs an env flag to
    escape `#[ignore]`. Decide during ε.
-4. **`max_folder_files: 10000`** currently exceeds reify's 3,829 tracked files with headroom, but it
-   truncates with a warning rather than erroring if crossed. Worth a guard in β? Decide during β. Note:
-   `10000` is host state from `~/.code-index/config.jsonc`, not an intrinsic jcodemunch default — the
-   package default is `2000` (config.py:284). If that host config is ever reset, reify's tracked files
-   would be silently truncated.
+4. **`max_folder_files: 10000`** currently exceeds reify's 3,829 tracked files with headroom, but if
+   crossed, truncation emits a warning into the tool result rather than an error — and that warning
+   never reaches the operator on `watch --once`: `sync_folders()` prints only `message`/symbol_count
+   and drops `result['warnings']` entirely (watcher.py:919-923), so the truncation is invisible on
+   this path. Worth a guard in β? Decide during β. Note: `10000` is host state from
+   `~/.code-index/config.jsonc`, not an intrinsic jcodemunch default — the package default is `2000`
+   (config.py:284). If that host config is ever reset, reify's tracked files would be truncated with
+   no visible signal on `watch --once`.
