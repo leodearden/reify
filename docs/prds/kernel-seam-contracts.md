@@ -177,10 +177,13 @@ re-validate**. cfg-gated `has_occt`/`has_gmsh` like the existing cross-kernel te
 
 **Handle-stability property tests** (would have caught 4262): repeated `extract_faces`/`extract_edges`
 on the same parent return **stable ids** within a session, per real kernel. The **Manifold
-`extract_edges` arm is red today** (un-memoized, §8) and becomes §8's acceptance test.
+`extract_edges` arm was red** (un-memoized, §8) until task #5108 landed the mirrored
+`extracted_edges` cache (`kernel.rs:152`); it is **green on current main**, meeting §8's acceptance
+test.
 
-**The gmsh-attributed arm** starts `#[ignore = "blocked on #<ξ> — attribution-aware repair"]` and
-becomes the acceptance test for the 4876 real fix (§9 ξ).
+**The gmsh-attributed arm** started `#[ignore = "blocked on #<ξ> — attribution-aware repair"]`, but
+since task #5116 ("task ξ", §9) landed the correspondence-map weld it is **un-ignored and green on
+current main** — the acceptance test for the 4876 real fix (§9 ξ) is met.
 
 ## §6 — Warm-start drift guards (INV-GEO-3)
 
@@ -249,11 +252,14 @@ back to the plain producer with a visible diagnostic. Converts the SIGSEGV to a 
 #4876's stale `metadata.files`: the cited `mesh_surface_to_volume_attributed.rs` does not exist →
 `mesh_boundary.rs` + `repair.rs`.)
 
-**ξ — Real fix: attribution-aware repair.** Thread a vertex-merge **correspondence map** through
-`repair_surface_mesh` (`repair.rs:71`) so per-node attribution survives welding, replacing the
-outright rejection at `mesh_boundary.rs:219-227`. The attributed producer then works on OCCT
-tessellations; acceptance = §5's ignored gmsh-attributed conformance arm is un-ignored and green
-(real attributed volume mesh, attribution preserved).
+**ξ — Real fix: attribution-aware repair — DONE (task #5116).** Threads a vertex-merge
+**correspondence map** through `repair_surface_mesh_with_correspondence` (`repair.rs:118`) so
+per-node attribution survives welding, replacing the prior outright rejection. Wired into the
+attributed producer at `mesh_boundary.rs::mesh_surface_to_volume_with_attribution` ("# Repair /
+welding (task ξ, #5116)", as of `:361-390`, weld call `:479-481`). The attributed producer now
+works on real OCCT tessellations; acceptance met — §5's gmsh-attributed conformance arm
+(`crates/reify-kernel-conformance/tests/occt_gmsh_attributed_conformance.rs`) is un-ignored and
+green (real attributed volume mesh, attribution preserved).
 
 ## §10 — Cross-PRD seams and ownership (G4)
 
