@@ -548,6 +548,41 @@ docs-truth does not get to assert a task state it did not measure; the same
 re-measure-before-asserting rule that produced the table above applies to its own
 prose. (#6246 was re-measured too — `pending`, and "already filed" was accurate.)
 
+## Sixth pass — #6215 landed; the honest-scope residual is now stale
+
+#6215 landed on `main` at `ef2c7dd875` (merge of `task/6215`; the gate itself
+was authored at `77e6670d02` and consolidated at `cd4a3b06be` into
+`crates/reify-eval/tests/harness_corpus_gates.rs` as a `#[path]`-included
+module — not the standalone `tests/best_practices_constraint_gate.rs` this
+note and #6215's own filing described. The consolidation's own doc comment
+explains why: the standalone form was flagged `reason=unregistered-standalone`
+by `scripts/check-harness-baseline-registration.sh`). The real path is
+`crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`.
+
+The landed gate's measured baseline matches the one #6215's architect
+recorded: 6 `.ri` files, 19 constraints, 16 Satisfied / 3 Indeterminate / 0
+Violated, with all 3 Indeterminate entries pinned in its
+`EXPECTED_INDETERMINATE` allowlist — `clearance_oracle.ri` constraints [0] and
+[1] (the `intersects`/`distance` geometry-consumer builtins, which need a
+realized kernel and resolve only on the build()/tessellate() path, not the
+pure value-eval surface this gate and `reify check` run on) and
+`discrete_choice.ri` constraint [0] (the `auto(free)` solved-root sharp edge:
+the root is only approximately ±1, and `==` is exact). Each entry is checked
+bidirectionally — a new non-listed Indeterminate fails as lost coverage, a
+listed entry that turns Satisfied fails as stale — which is why the gate's own
+doc comment insists `EXPECTED_INDETERMINATE` is **not** a `SKIP_SET`: it
+exempts no file from anything, it just asserts a different expected status.
+
+This closes the expiry the fourth pass flagged: **"No CI gate runs `reify
+check` over this corpus" is now false** — a gate does, covering constraint
+satisfaction specifically, with the geometry-consumer residual above pinned
+rather than silently dropped. `INDEX.md` is updated in the same commit as
+this note (both are #6246's file list). The third site the fourth pass named —
+the exemplar's own *Bands, not sign guards* comment in
+`examples/best_practices/angle_crossings.ri` — remains out of #6246's declared
+scope and is unrefreshed here; whoever next touches that file should update
+it.
+
 ## Scope note
 
 No automated test greps these docs for prose. The PRD records this
@@ -556,11 +591,14 @@ documentation meta-test — no runtime signal, and it would make the doc
 expensive to edit. The executable pin for this leaf is
 `examples/best_practices/angle_crossings.ri`, which rides the pre-existing
 corpus gates (`examples_smoke.rs` compile + INDEX↔dir bidirectionality, and
-the two 24-way `reify-eval` corpus sweeps). Those gates assert compilation
-and structure, **not** constraint satisfaction — the file's twelve bands are
-enforced by the per-file `reify check` that `SKILL.md` mandates before
-shipping, and closing that gap is ticket `tkt_0RSC4D0TRN61DMWKB71V1NZ83J`
-(third amendment pass, item 1), now task **#6215**, status `pending`. That
-sentence is dated: when #6215 lands it is false here, in `INDEX.md` and in
-the exemplar's constraint comment — see the fourth pass above for why the
-third of those is not in #6246's file list.
+the two 24-way `reify-eval` corpus sweeps) plus, since #6215 landed, a
+constraint-satisfaction gate
+(`crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`
+— see the sixth pass above). Those first two gates assert compilation and
+structure, **not** constraint satisfaction; the constraint gate is the one
+that does, asserting the file's twelve bands are Satisfied (zero Violated,
+zero unpinned Indeterminate) — no longer only the per-file `reify check` that
+`SKILL.md` mandates before shipping, though that remains the author-facing
+command for the same check. `angle_crossings.ri` carries no
+`EXPECTED_INDETERMINATE` entry of its own, so all twelve of its constraints
+are asserted `Satisfied` by the corpus gate.
