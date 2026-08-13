@@ -76,7 +76,22 @@
 //! (`conformance/mod.rs`, fn-call path, `Severity::Error`) and
 //! `vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch`
 //! (`crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs`, ctor
-//! path, `Severity::Warning`).
+//! path, `Severity::Warning`).  The other two arms sharing the rule are pinned
+//! to reach the STRICT param-side predicate as well, alongside the first:
+//! `dimensionless_quantity_point_param_rejects_dimensioned_point_arg` and
+//! `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`.
+//!
+//! **Measured reach, and what that measurement does NOT cover.**  The tightening
+//! landed with zero new diagnostics: every constructor-arg site at a
+//! `Dimensionless`-quantity param in `stdlib/` and `examples/` passes a
+//! dimensionless `vec3(…)`, and `no_example_emits_ctor_field_conformance_diagnostics`
+//! stayed green.  That gate discovers files under `EXAMPLES_DIR` only, so `prj/`
+//! and `designs/` are outside the measurement.  The nearest LATENT instance
+//! there is `prj/printer_v01/printer.ri:563-565` — cardinal-axis `let`s spelled
+//! `vec3(1m, 0mm, 0mm)` and siblings under a "unit-magnitude convention: 1 m"
+//! comment, i.e. genuinely `Length`-dimensioned direction vectors.  They are
+//! referenced nowhere today, so they trip nothing; they are exactly the shape
+//! this rule rejects if anyone ever wires one into a `Vec3<Dimensionless>` slot.
 //!
 //! **The asymmetry is a RULING, not an inconsistency — do not "fix" it by
 //! symmetry.**  It tracks a real difference in what the two sides know: erasure
@@ -149,8 +164,11 @@
 //! `[0][0]` disagrees with the declaration, and, dually, a genuinely wrong matrix
 //! whose `[0][0]` happens to agree sails through.  That inference weakness
 //! pre-dates this rule and was cosmetic while the quantity was never compared;
-//! this ruling makes it load-bearing for a diagnostic.  No corpus site trips it
-//! today (`no_example_emits_ctor_field_conformance_diagnostics` is green).
+//! this ruling makes it load-bearing for a diagnostic.  No site under
+//! `examples/` trips it today (`no_example_emits_ctor_field_conformance_diagnostics`
+//! is green) — that gate discovers files under `EXAMPLES_DIR` ONLY, so `prj/`,
+//! `designs/` and the prd-gate fixtures are NOT evidence either way, and the
+//! claim must not be widened to "the corpus".
 //!
 //! Task 6159's param-side tightening ADDS AN INSTANCE of that same failure
 //! shape: a heterogeneous `matrix(…)` at a `Matrix<M, N, Dimensionless>` param
