@@ -291,4 +291,72 @@ assert "(f-d) explicit false -> conflicted merge records ZERO new rr-cache entri
 git -C "$REPO_EXPLICIT" merge --abort >/dev/null 2>&1 || true
 unset _rr_before _rr_after
 
+# ==============================================================================
+# (g) M6 — PER-WORKTREE OVERRIDES BEAT SHARED CONFIG.  extensions.worktreeConfig
+#     is already true on the live repo and every worktree carries a
+#     config.worktree, and git reads config.worktree FIRST.  So a single lane can
+#     re-arm rerere for itself while the shared .git/config still reads false —
+#     `check` must sweep the linked worktrees, not just the shared file.
+# ==============================================================================
+echo ""
+echo "--- (g) check sweeps per-worktree config.worktree overrides ---"
+
+# make_wt_repo — a repo with extensions.worktreeConfig on, shared rerere off, and
+# two linked worktrees.  Prints "<repo> <wtA> <wtB>".
+make_wt_repo() {
+    local dir wt_a wt_b
+    dir="$(make_repo)"
+    git -C "$dir" config extensions.worktreeConfig true
+    git -C "$dir" config rerere.enabled false
+    git -C "$dir" config rerere.autoupdate false
+    wt_a="$dir-wtA"; wt_b="$dir-wtB"
+    _TMPDIRS+=("$wt_a" "$wt_b")
+    git -C "$dir" worktree add -q -b wtA "$wt_a" >/dev/null 2>&1
+    git -C "$dir" worktree add -q -b wtB "$wt_b" >/dev/null 2>&1
+    echo "$dir $wt_a $wt_b"
+}
+
+read -r WT_REPO WT_A WT_B <<< "$(make_wt_repo)"
+
+assert "(g) fixture: extensions.worktreeConfig is on" \
+    bash -c "[ \"\$(git -C '$WT_REPO' config --bool --get extensions.worktreeConfig)\" = true ]"
+
+assert "(g) fixture: both linked worktrees exist" \
+    bash -c "test -d '$WT_A' && test -d '$WT_B'"
+
+# (g-b) no override anywhere -> clean.  Asserted BEFORE planting the override so
+# it cannot pass merely because the sweep is a no-op on this fixture shape.
+assert "(g-b) shared false + no per-worktree override -> check exits 0" \
+    bash "$GUARD" check "$WT_REPO"
+
+# Prove config.worktree really does beat the shared false, so the scenario below
+# is a genuine hazard and not an artefact of the fixture.
+git -C "$WT_A" config --worktree rerere.enabled true
+
+assert "(g) config.worktree BEATS shared config (effective value is true in wtA)" \
+    bash -c "[ \"\$(git -C '$WT_A' config --bool --get rerere.enabled)\" = true ]"
+
+assert "(g) ...while the shared config still reads false" \
+    bash -c "[ \"\$(git -C '$WT_REPO' config --bool --get rerere.enabled)\" = false ]"
+
+# (g-a) the override is detected, and the offending worktree is named.
+assert "(g-a) per-worktree override -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$WT_REPO' >/dev/null 2>&1"
+
+assert "(g-a) check stderr names the offending worktree" \
+    bash -c "bash '$GUARD' check '$WT_REPO' 2>&1 >/dev/null | grep -q 'wtA'"
+
+assert "(g-a) check stderr does NOT name the innocent worktree" \
+    bash -c "! bash '$GUARD' check '$WT_REPO' 2>&1 >/dev/null | grep -q 'wtB'"
+
+# (g-c) same verdict from INSIDE a linked worktree — guards the
+# --git-common-dir resolution.  Run from wtB (the INNOCENT lane): the offending
+# override lives in wtA, so a guard that inspected only its own worktree's
+# config would wrongly report clean here.
+assert "(g-c) check from inside a linked worktree reaches the same verdict" \
+    bash -c "! bash '$GUARD' check '$WT_B' >/dev/null 2>&1"
+
+assert "(g-c) ...and still names the offending worktree" \
+    bash -c "bash '$GUARD' check '$WT_B' 2>&1 >/dev/null | grep -q 'wtA'"
+
 test_summary
