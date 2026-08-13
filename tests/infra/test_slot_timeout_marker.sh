@@ -853,6 +853,23 @@ D_ROSTER=(
     test_verify_semaphore_e2e.sh
 )
 
+# Index-aligned with D_ROSTER: is this member run behaviourally (a real
+# contended acquire, inside Section D's concurrent arm) or only proven
+# static-only (its deadline-forcing site is checked for evidence-
+# preservation via source inspection, never actually contended here)? The
+# `behavioural` entries are exactly today's D_MEMBERS -- D_MEMBERS itself
+# is UNCHANGED by this task, so Section D's concurrent arm keeps its
+# current wall clock. Trailing comment on every entry names the member so
+# a reader never has to count array positions.
+D_ROSTER_MODE=(
+    behavioural   # test_lane_x_flock.sh
+    behavioural   # test_occt_flock_gate.sh
+    static-only   # test_run_all.sh
+    static-only   # test_slot_event_log.sh
+    behavioural   # test_test_run_semaphore.sh
+    static-only   # test_verify_semaphore_e2e.sh
+)
+
 TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
 
 # Four separately-named EREs, each covering one grammar shape a deadline-
