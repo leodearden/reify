@@ -32,8 +32,8 @@
 //!
 //! This section is the single normative home of the quantity-slot conformance
 //! rule.  `crates/reify-compiler/src/conformance/mod.rs` implements it as
-//! `param_quantity_slot_dimension` / `arg_quantity_slot_dimension` /
-//! `quantity_slots_conflict`; PRD
+//! `param_quantity_slot_dimension` / `arg_quantity_slot_dimension`, compared in
+//! `emit_if_quantity_conflict`; PRD
 //! `docs/prds/v0_6/dimensioned-construction-strictness.md` §12 points here rather
 //! than restating it.
 //!
