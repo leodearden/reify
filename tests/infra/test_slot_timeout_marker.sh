@@ -836,6 +836,23 @@ echo "=== F: the deadline-capable roster is DERIVED, not hardcoded ==="
 # derivation, kept live as a standing drift guard: F1 below is what stops
 # the declared list from silently falling out of step with reality again.
 
+# The declared roster: every suite this file currently knows to be
+# deadline-capable, sorted (load-bearing -- F1 compares sorted lists, so a
+# sorted declaration needs no re-sort and a human reading a RED sees the
+# same ordering the derivation produced). Declared HERE, at the head of
+# Section F, rather than beside D_MEMBERS/D_HEADERS/D_INVOKE/
+# D_ALWAYS_DEADLINES in Section D: F1 below is what re-derives and checks
+# this list, so it lives next to the check rather than next to Section D's
+# unrelated behavioural machinery.
+D_ROSTER=(
+    test_lane_x_flock.sh
+    test_occt_flock_gate.sh
+    test_run_all.sh
+    test_slot_event_log.sh
+    test_test_run_semaphore.sh
+    test_verify_semaphore_e2e.sh
+)
+
 TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
 
 # Four separately-named EREs, each covering one grammar shape a deadline-
@@ -972,7 +989,7 @@ echo ""
 echo "--- F1: the declared deadline-capable roster must equal the derived one ---"
 
 F_DERIVED="$(_f_deadline_capable "$SCRIPT_DIR")"
-F_DECLARED_SORTED="$(printf '%s\n' "${D_MEMBERS[@]}" | sort)"
+F_DECLARED_SORTED="$(printf '%s\n' "${D_ROSTER[@]}" | sort)"
 F_UNLISTED="$(comm -23 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
 F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
 
