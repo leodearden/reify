@@ -355,9 +355,29 @@ ok "main-gate worktree config seeded (config.worktree core.hooksPath=hooks)"
 # explicit false silently re-arms the whole fleet.  Idempotent; never prunes
 # rr-cache.  See docs/notes/git-rerere-shared-worktree-hazard.md.
 
+# The shared-config write is the success criterion here, NOT a globally clean
+# verdict.  `arm` re-verifies with `check`, which sweeps every lane's
+# config.worktree — and `arm` writes --local only, so a FOREIGN lane that armed
+# itself is a condition it can never clear.  Under this script's `set -e`, one
+# self-armed lane out of ~239 would otherwise abort everything after this point
+# (the build-accelerator systemd units, npm, the smoke test) for every
+# developer, with no remediation the script could offer.  Exit 2 is that
+# advisory case; only a genuine failure (1) is fatal.
+
 info "Disabling git rerere repo-wide (shared rr-cache hazard)..."
-"$(dirname "${BASH_SOURCE[0]}")/git-rerere-guard.sh" arm
-ok "git rerere disarmed (rerere.enabled=false, rerere.autoupdate=false)"
+_rerere_arm_rc=0
+"$(dirname "${BASH_SOURCE[0]}")/git-rerere-guard.sh" arm || _rerere_arm_rc=$?
+if [ "$_rerere_arm_rc" -eq 0 ]; then
+    ok "git rerere disarmed (rerere.enabled=false, rerere.autoupdate=false)"
+elif [ "$_rerere_arm_rc" -eq 2 ]; then
+    warn "shared config pinned, but a per-worktree config.worktree still arms rerere"
+    warn "  run 'scripts/git-rerere-guard.sh check' — it names the offending worktree"
+    warn "  see docs/notes/git-rerere-shared-worktree-hazard.md"
+else
+    err "git-rerere-guard.sh arm failed (exit $_rerere_arm_rc)"
+    exit 1
+fi
+unset _rerere_arm_rc
 
 # ---------- build-accelerator systemd --user services ----------
 #

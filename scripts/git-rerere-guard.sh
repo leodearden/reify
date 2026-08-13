@@ -31,8 +31,16 @@
 #   arm         Idempotently write rerere.enabled=false and rerere.autoupdate=false
 #               to the SHARED local config, then re-verify via `check`.
 #               NEVER deletes or prunes rr-cache — see below.
-#   scan-locks  Read-only census of stale MERGE_RR.lock files across the store's
-#               linked worktrees.  Prints the remediation command; never runs it.
+#               Exit 0 = disarmed and verified;
+#                    2 = shared config pinned, but an override this run cannot
+#                        reach still wins (another lane's config.worktree, or
+#                        the user's global gitconfig) — advisory, not fatal;
+#                    1 = a genuine failure of this run.
+#   scan-locks  Read-only census of stale MERGE_RR.lock files across the WHOLE
+#               store — the main checkout's own git dir (where git dir == common
+#               dir, so its lock lands at <common>/MERGE_RR.lock rather than
+#               under worktrees/) AND every linked worktree.  Prints the
+#               remediation command; never runs it.
 #               Exit 0 = clean, 1 = at least one lock found.
 #
 #   target_dir  Optional path to a git work tree inside the store to operate on.
@@ -66,9 +74,11 @@ Subcommands:
   check       Report whether git rerere is effectively armed for the target
               store (read-only).  Exit 0 = safe, 1 = armed.
   arm         Idempotently disable rerere in the shared local config, then
-              re-verify.  Never deletes rr-cache.
-  scan-locks  Read-only census of stale MERGE_RR.lock files across the store's
-              linked worktrees.  Exit 0 = clean, 1 = lock(s) found.
+              re-verify.  Never deletes rr-cache.  Exit 0 = disarmed,
+              2 = pinned but an out-of-reach override survives, 1 = failed.
+  scan-locks  Read-only census of stale MERGE_RR.lock files across the whole
+              store — the main checkout and every linked worktree.
+              Exit 0 = clean, 1 = lock(s) found.
 
   target_dir  Optional git work tree inside the store; defaults to the repo
               root (one level up from this script).
@@ -213,6 +223,18 @@ cmd_check() {
 _sweep_worktree_configs() {
     local armed=0 wt_config wt_name key value
 
+    # config.worktree is DEAD BYTES unless extensions.worktreeConfig is true —
+    # git does not read those files at all, so a rerere.enabled=true sitting in
+    # one is inert and reporting it would be a FALSE armed verdict.  A uniquely
+    # damaging one, too: `arm` writes --local only and cannot clear a
+    # per-worktree file, so the false verdict would make `arm` fail permanently
+    # on a store where nothing is actually wrong.  Reify's store has the
+    # extension on (setup-main-gate-worktree-config.sh enables it), but the
+    # guard must not silently depend on a precondition it never checks.
+    if [ "$(git -C "$TARGET" config --bool --get extensions.worktreeConfig 2>/dev/null || true)" != "true" ]; then
+        return 0
+    fi
+
     # A repo with no linked worktrees has no worktrees/ dir at all — normal, not
     # an error.
     [ -d "$WORKTREES_DIR" ] || return 0
@@ -286,10 +308,18 @@ cmd_arm() {
     # success while a per-worktree override or an inherited global value still
     # wins over the shared write just made.
     if ! cmd_check; then
-        echo "ERROR: rerere is STILL armed after writing the shared config." >&2
-        echo "  A per-worktree config.worktree or the user's global gitconfig is overriding it;" >&2
-        echo "  see the ARMED lines above for which." >&2
-        return 1
+        echo "WARNING: rerere is STILL armed after writing the shared config." >&2
+        echo "  The shared write above SUCCEEDED — what survives is an override this run" >&2
+        echo "  cannot reach: another lane's config.worktree, or the user's global gitconfig." >&2
+        echo "  See the ARMED lines above for which, and clear it at that scope." >&2
+        # Exit 2, NOT 1.  setup-dev.sh runs `arm` under `set -e` on every
+        # developer setup, and this branch is dominated by a FOREIGN lane's
+        # config.worktree — something `arm` (a --local writer) has no ability to
+        # fix.  One self-armed lane out of ~239 must not abort everything after
+        # this point in setup.  So: 2 = "shared config pinned, an out-of-reach
+        # override survives" (advisory, actionable by an operator); 1 stays
+        # reserved for a genuine failure of this run.
+        return 2
     fi
 
     return 0
@@ -308,51 +338,69 @@ cmd_arm() {
 # established that no operation is in progress there — a judgement an unattended
 # script should not act on.  It prints the exact command instead.
 cmd_scan_locks() {
-    local found=0 lock wt_dir wt_name marker in_progress
+    local found=0 lock wt_dir
 
-    if [ ! -d "$WORKTREES_DIR" ]; then
-        echo "clean: no linked worktrees under $WORKTREES_DIR" >&2
-        return 0
+    # The MAIN checkout first.  For it, git dir == common dir, so its lock lands
+    # at <common>/MERGE_RR.lock and NEVER under worktrees/ — a glob over the
+    # linked worktrees alone is blind to it.  The main checkout is an ACTIVE
+    # merge site: the sanctioned landing path (scripts/land.sh) runs a real
+    # `git merge --no-ff` there, so it is a live candidate for this very
+    # signature, and a census that skipped it would report "clean" while every
+    # `git commit` on main exits 128.
+    if [ -e "$COMMON_DIR/MERGE_RR.lock" ]; then
+        found=1
+        _classify_lock "$COMMON_DIR/MERGE_RR.lock" "$COMMON_DIR" "<main checkout>"
     fi
 
-    for lock in "$WORKTREES_DIR"/*/MERGE_RR.lock; do
-        [ -e "$lock" ] || continue
-        found=1
-        wt_dir="$(dirname "$lock")"
-        wt_name="$(basename "$wt_dir")"
-
-        # An in-flight merge/rebase/cherry-pick/revert makes the lock LIVE, not
-        # stale.  Removing it would destroy that operation's state.
-        in_progress=""
-        for marker in MERGE_HEAD MERGE_MSG CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
-            if [ -e "$wt_dir/$marker" ]; then
-                in_progress="$marker"
-                break
-            fi
+    # Then every linked worktree.  A store with no linked worktrees has no
+    # worktrees/ dir at all — a normal shape, and NOT a reason to skip the
+    # verdict below, which is why this is a plain guard rather than the early
+    # return it used to be.
+    if [ -d "$WORKTREES_DIR" ]; then
+        for lock in "$WORKTREES_DIR"/*/MERGE_RR.lock; do
+            [ -e "$lock" ] || continue
+            found=1
+            wt_dir="$(dirname "$lock")"
+            _classify_lock "$lock" "$wt_dir" "$(basename "$wt_dir")"
         done
-
-        if [ -n "$in_progress" ]; then
-            echo "OPERATION-IN-PROGRESS: $wt_name holds MERGE_RR.lock alongside $in_progress." >&2
-            echo "  Path: $lock" >&2
-            echo "  NOT safe to clean — an operation is live in that worktree.  Let it finish or" >&2
-            echo "  abort it from inside that worktree first, then re-run scan-locks." >&2
-        else
-            echo "STALE: $wt_name holds a MERGE_RR.lock with no operation in progress." >&2
-            echo "  Path: $lock" >&2
-            echo "  Every git commit in that worktree exits 128 until it is removed — but the" >&2
-            echo "  commit object is still written and the ref still moves, so ALWAYS run" >&2
-            echo "  'git log --oneline -1' there before retrying, or you will double-commit." >&2
-            echo "  Remediation (run manually, this script never deletes):" >&2
-            echo "    rm -f $lock" >&2
-        fi
-    done
+    fi
 
     if [ "$found" -eq 0 ]; then
-        echo "clean: no MERGE_RR.lock found under $WORKTREES_DIR" >&2
+        echo "clean: no MERGE_RR.lock in $COMMON_DIR or under $WORKTREES_DIR" >&2
         return 0
     fi
 
     return 1
+}
+
+# _classify_lock LOCK WT_DIR LABEL — report one MERGE_RR.lock hit as STALE or
+# OPERATION-IN-PROGRESS.  Read-only; prints to stderr only.
+_classify_lock() {
+    local lock="$1" wt_dir="$2" label="$3" marker in_progress=""
+
+    # An in-flight merge/rebase/cherry-pick/revert makes the lock LIVE, not
+    # stale.  Removing it would destroy that operation's state.
+    for marker in MERGE_HEAD MERGE_MSG CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+        if [ -e "$wt_dir/$marker" ]; then
+            in_progress="$marker"
+            break
+        fi
+    done
+
+    if [ -n "$in_progress" ]; then
+        echo "OPERATION-IN-PROGRESS: $label holds MERGE_RR.lock alongside $in_progress." >&2
+        echo "  Path: $lock" >&2
+        echo "  NOT safe to clean — an operation is live in that worktree.  Let it finish or" >&2
+        echo "  abort it from inside that worktree first, then re-run scan-locks." >&2
+    else
+        echo "STALE: $label holds a MERGE_RR.lock with no operation in progress." >&2
+        echo "  Path: $lock" >&2
+        echo "  Every git commit in that worktree exits 128 until it is removed — but the" >&2
+        echo "  commit object is still written and the ref still moves, so ALWAYS run" >&2
+        echo "  'git log --oneline -1' there before retrying, or you will double-commit." >&2
+        echo "  Remediation (run manually, this script never deletes):" >&2
+        echo "    rm -f $lock" >&2
+    fi
 }
 
 case "$SUBCOMMAND" in

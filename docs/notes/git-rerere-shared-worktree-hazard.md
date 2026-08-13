@@ -57,7 +57,8 @@ guard reports it independently of `rerere.enabled`.
 ### 2b. The stale `MERGE_RR.lock` signature
 
 A failed rr-cache preimage write leaves a stale **zero-byte `MERGE_RR.lock`** in
-`.git/worktrees/<lane>/`. Every subsequent `git commit` in that lane then exits 128:
+`.git/worktrees/<lane>/` — or, for the **main checkout** (whose git dir *is* the common dir), at
+`.git/MERGE_RR.lock`. Every subsequent `git commit` in that work tree then exits 128:
 
 ```
 Unable to create '.../MERGE_RR.lock': File exists.
@@ -110,6 +111,10 @@ you will wrongly conclude the corruption is fleet-wide. `scan-locks` never match
    rm -f <common-git-dir>/worktrees/<lane>/MERGE_RR.lock
    ```
 
+   A finding labelled `<main checkout>` sits one level up — `<common-git-dir>/MERGE_RR.lock`, with no
+   `worktrees/<lane>/` component — because the main checkout's git dir *is* the common dir. Trust the
+   printed path over this shape.
+
 **NEVER delete `rr-cache/<id>/` while another lane may hold it.** That is precisely the operation
 that reproduces the segfault + stale-lock signature — the "cleanup" would re-cause the disease across
 239 live lanes. It is also unnecessary: an explicit `rerere.enabled=false` neutralises the residual
@@ -129,15 +134,32 @@ scripts/git-rerere-guard.sh <check|arm|scan-locks> [target_dir]
 resolves — via `rev-parse --git-common-dir` — to the same shared config and the same `rr-cache`, so
 the main checkout and any lane are interchangeable.
 
-| Subcommand | Effect | Exit 0 | Exit 1 |
+| Subcommand | Effect | Exit 0 | Non-zero |
 |---|---|---|---|
-| `check` | Read-only. Never writes config anywhere. | safe | rerere effectively armed |
-| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config, then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | still armed after the write |
-| `scan-locks` | Read-only census of `MERGE_RR.lock`, classified STALE vs OPERATION-IN-PROGRESS. Never deletes. | clean | lock(s) found |
+| `check` | Read-only. Never writes config anywhere. | safe | **1** — rerere effectively armed |
+| `arm` | Idempotently writes `rerere.enabled=false` + `rerere.autoupdate=false` to shared local config, then re-verifies via `check`. Never prunes `rr-cache`. | disarmed | **2** — shared config pinned, but an out-of-reach override survives; **1** — genuine failure of this run |
+| `scan-locks` | Read-only census of `MERGE_RR.lock` across the **main checkout and every linked worktree**, classified STALE vs OPERATION-IN-PROGRESS. Never deletes. | clean | **1** — lock(s) found |
 
 All diagnostics go to **stderr**; stdout stays empty so the exit code is the machine-readable signal.
 
-`setup-dev.sh` runs `arm` on every invocation (beside the main-gate worktree config block).
+`scan-locks` covers the main checkout deliberately: for it, git dir == common dir, so its lock lands
+at `<common-git-dir>/MERGE_RR.lock` and never under `worktrees/`. The main checkout is an active
+merge site — `scripts/land.sh` runs a real `git merge --no-ff` there — so a census that only globbed
+`worktrees/*/` would report `clean` while every `git commit` on `main` exits 128.
+
+### `arm` exit 2 — why it is advisory, not fatal
+
+`arm` writes `--local` only, so it can never clear **another lane's** `config.worktree` — and that is
+the dominant way its post-write re-verify still reports armed. Exit **2** says "the shared write
+succeeded; an override this run cannot reach still wins", and names it. `setup-dev.sh` runs `arm` on
+every invocation (beside the main-gate worktree config block) under `set -e`, and treats only exit 1
+as fatal: one self-armed lane out of ~239 must not abort everything after that point (the
+build-accelerator systemd units, npm, the smoke test) for every developer, with no remediation the
+script could offer. On exit 2 it warns and points here.
+
+The `config.worktree` sweep is itself gated on `extensions.worktreeConfig` being true, because git
+does not read those files at all while the extension is off — an inert plant would otherwise produce
+a false ARMED that `arm` could never clear.
 
 ### Why a guard, and not a one-time `git config` write
 
