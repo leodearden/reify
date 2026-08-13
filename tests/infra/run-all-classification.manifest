@@ -92,6 +92,7 @@ test_fea_e2e_crate_occt_free.sh pool
 test_find_uses_smoke_runner.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
 test_gui_dist_gitignored.sh pool
 test_gui_test_script.sh pool
