@@ -4316,33 +4316,13 @@ mod tests {
         ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type,
         ValueCellId,
     };
-    use reify_expr::ContainmentQuery;
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
+    use reify_test_support::mocks::NoContainment;
 
     use std::cell::RefCell;
     use std::collections::HashMap;
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
-
-    /// Trivial `ContainmentQuery` impl for `reelaborate_guarded_group` tests
-    /// below (task δ #5056): none of them exercise `restrict`/`sample`
-    /// containment resolution, so a no-op stub suffices — mirrors
-    /// `cell_eval_ctx.rs`'s own `NoContainment` test double. That
-    /// duplication (reviewer amend, round 3) is a known, drift-prone wart:
-    /// hoisting one shared `NoContainment`/`AlwaysInside` pair into
-    /// `reify_test_support::mocks` would remove it, but doing so requires
-    /// editing `cell_eval_ctx.rs` and the `reify-test-support` crate, both
-    /// outside δ's locked scope (`engine_edit.rs` +
-    /// `edit_param_cell_commit_migration.rs` only) — left for a follow-up
-    /// task or whichever migration leaf (ε/ι) next needs to touch both
-    /// files.
-    struct NoContainment;
-
-    impl ContainmentQuery for NoContainment {
-        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-            None
-        }
-    }
 
     use super::{
         deactivate_if_not_auto, dedup_diagnostics_preserve_order, guard_value_unchanged,
