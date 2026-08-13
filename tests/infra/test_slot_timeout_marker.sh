@@ -825,4 +825,166 @@ E1_HIT_LIST="$(tr '\n' ' ' < "$E_HITS")"
 assert "E1: no assert description DUMPS a whole capture file (cat/tail/head/\$(< f) of a *_ERR/*_STDERR/*_OUT/*_STDOUT var) into its text (got $E1_COUNT: $E1_HIT_LIST)" \
     test "$E1_COUNT" -eq 0
 
+echo ""
+echo "=== F: the deadline-capable roster is DERIVED, not hardcoded ==="
+
+# Section D's D_MEMBERS is a hand-maintained list of suites that force a
+# finite-WAIT slot_acquire deadline. Task 6255: that list silently missed
+# three real deadline-capable suites (test_run_all.sh, test_slot_event_log.sh,
+# test_verify_semaphore_e2e.sh) -- discovered only by deriving the set fresh
+# from source and diffing it against the declaration. This section is that
+# derivation, kept live as a standing drift guard: F1 below is what stops
+# the declared list from silently falling out of step with reality again.
+
+TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
+
+# Four separately-named EREs, each covering one grammar shape a deadline-
+# capable call site can take. Held apart (not inlined) so each stays
+# independently greppable/editable and its own rationale stays attached.
+#
+# VALUE-AGNOSTIC ON PURPOSE: a digits-only `_WAIT=[0-9]+` form was measured
+# to MISS test_verify_semaphore_e2e.sh, which assigns
+# `export REIFY_TEST_SEMAPHORE_WAIT="$wait"` (a variable, :528).
+F_WAIT_RE='REIFY_(TEST_SEMAPHORE|OCCT_LOCK|LANE_X_FLOCK|RUN_ALL_POOL)_WAIT='
+# A variable bound to one of the four acquire-wrapper paths.
+F_BIND_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh"?$'
+# One of the four wrappers exec'd or sourced by path.
+F_EXEC_RE='(bash|source)[[:blank:]]+"?[^"]*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh'
+# A bare call to one of the three acquire functions.
+# BIND/EXEC/CALL exist because the wrapper defaults are FINITE
+# (REIFY_TEST_SEMAPHORE_WAIT=1800 at lib_test_semaphore.sh:100,
+# REIFY_OCCT_LOCK_WAIT=1800 at cargo-test-occt-gated.sh:112): a call site
+# carrying no explicit knob at all is still deadline-capable, and that is
+# the only route by which test_slot_event_log.sh is in scope.
+F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquire)([[:blank:]]|$)'
+
+# _f_deadline_capable <dir> -> prints one BASENAME per deadline-capable
+# member of <dir>, sorted, one per line. NAMES ONLY -- never a matched
+# line (same discipline as _e_scan, :756-767, and D1, :611-613): this
+# file's own output is re-emitted into the merge-gate verify log.
+# Comment-stripped first (grep -vE '^[[:blank:]]*#'): a token mentioned
+# only in a comment does not make a file deadline-capable.
+# Parameterized on <dir> so the SAME function drives both the synthetic
+# controls below (F2/F3) and the real repo-wide sweep (F1).
+#
+# `grep -c` on the second (matching) grep, NOT `grep -q`: `-q` exits the
+# instant it sees a match, which can race the still-writing upstream
+# `grep -v` into SIGPIPE on a large file with an early match -- this file's
+# `pipefail` then promotes that SIGPIPE to the pipeline's reported status,
+# silently dropping a real positive (measured directly: with `-q`,
+# test_verify_semaphore_e2e.sh and test_run_all.sh flake between MATCH/MISS
+# across repeated runs of the identical command). `-c` must drain its whole
+# input to produce a count, so it can never race the producer that way --
+# the same reason D4's `_d_unredirected` (:670-674) already uses `-c`
+# rather than `-q`/`-l` here.
+_f_deadline_capable() {
+    local _d="$1" _f _base _n
+    for _f in "$_d"/test_*.sh; do
+        [ -e "$_f" ] || continue
+        _base="${_f##*/}"
+        # test_helpers.sh matches the glob but is excluded by run_all's own
+        # discovery. test_slot_timeout_marker.sh is RECURSION -- this file
+        # is itself 17+ P3 hits and 4 knob hits of its own (the same
+        # exclusion D_MEMBERS documents at :523-525).
+        case "$_base" in
+            test_helpers.sh|test_slot_timeout_marker.sh) continue ;;
+        esac
+        _n="$(grep -vE '^[[:blank:]]*#' "$_f" \
+            | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
+        if [ "${_n:-0}" -ge 1 ]; then
+            printf '%s\n' "$_base"
+        fi
+    done | sort
+}
+
+echo ""
+echo "--- F2/F3: controls on the derivation predicate, before it drives anything ---"
+
+# CONTROLS FIRST, this file's established discipline for every absence/
+# equality assert (D2, D4c, E2/E3): F1 asserts an EQUALITY, and a typo'd
+# regex on either side of it would be green forever without these.
+F_POS_DIR="$TMPF/fx-pos"; mkdir -p "$F_POS_DIR"
+F_NEG_DIR="$TMPF/fx-neg"; mkdir -p "$F_NEG_DIR"
+
+# F2 POSITIVE -- one runtime-built fixture per grammar variant, each in ITS
+# OWN file so a narrowing edit that stops matching exactly one variant shows
+# up as a basename-COUNT drop naming how many variants it stopped seeing
+# (the E_POS_VARIANTS idiom, :797), not swallowed by the other four.
+cat > "$F_POS_DIR/test_f_pos_wait_literal.sh" <<'WAITLITEOF'
+#!/usr/bin/env bash
+export REIFY_TEST_SEMAPHORE_WAIT=30
+WAITLITEOF
+cat > "$F_POS_DIR/test_f_pos_wait_var.sh" <<'WAITVAREOF'
+#!/usr/bin/env bash
+wait_secs=5
+export REIFY_OCCT_LOCK_WAIT="$wait_secs"
+WAITVAREOF
+cat > "$F_POS_DIR/test_f_pos_bind.sh" <<'BINDEOF'
+#!/usr/bin/env bash
+LIB="$REPO_ROOT/scripts/lib_slot_acquire.sh"
+BINDEOF
+cat > "$F_POS_DIR/test_f_pos_exec.sh" <<'EXECEOF'
+#!/usr/bin/env bash
+bash "$SCRIPTS_DIR/cargo-test-occt-gated.sh" true
+EXECEOF
+cat > "$F_POS_DIR/test_f_pos_call.sh" <<'CALLEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+CALLEOF
+F_POS_VARIANTS=5
+
+# F3 NEGATIVE -- fixtures that must NOT be detected. The second shape is
+# load-bearing: a naive whole-file token-mention grep was measured to return
+# 24 in-tree files on exactly it (closure fixtures in
+# test_copy_list_preflight.sh, test_compute_trampoline_registration_wired.sh).
+cat > "$F_NEG_DIR/test_f_neg_comment_only.sh" <<'CMTEOF'
+#!/usr/bin/env bash
+# Historical note (do not resurrect): this suite used to do
+#   export REIFY_TEST_SEMAPHORE_WAIT=5
+#   LIB="$REPO_ROOT/scripts/lib_slot_acquire.sh"
+#   bash "$SCRIPTS_DIR/cargo-test-occt-gated.sh" true
+#   slot_acquire "$LOCK" 1 1
+# None of that runs anymore -- replaced by a hermetic stub below.
+echo "stubbed, no real acquire call"
+CMTEOF
+cat > "$F_NEG_DIR/test_f_neg_closure_data.sh" <<'DATAEOF'
+#!/usr/bin/env bash
+# Closure fixture: wrapper basenames appear only as comparison DATA (bare,
+# no directory prefix, never invoked) -- the copy-list/closure shape that
+# trips a naive token-mention grep but must not trip this derivation.
+for _f in verify.sh lib_test_semaphore.sh lib_slot_acquire.sh \
+          cargo-test-occt-gated.sh lib_lane_x_flock.sh; do
+    cp "$SRC/scripts/$_f" "$DST/scripts/$_f"
+done
+assert "closure contains lib_slot_acquire.sh" \
+    closure_has "$ROOT" verify.sh lib_slot_acquire.sh
+DATAEOF
+
+F2_COUNT="$(_f_deadline_capable "$F_POS_DIR" | wc -l | tr -d ' ')"
+F3_COUNT="$(_f_deadline_capable "$F_NEG_DIR" | wc -l | tr -d ' ')"
+
+assert "F2: positive control -- the derivation flags all $F_POS_VARIANTS grammar variants (WAIT= literal, WAIT= var, bind, exec, bare call; got $F2_COUNT)" \
+    test "$F2_COUNT" -eq "$F_POS_VARIANTS"
+assert "F3: comment-only mentions and closure/copy-list DATA are NOT flagged (got $F3_COUNT)" \
+    test "$F3_COUNT" -eq 0
+
+echo ""
+echo "--- F1: the declared deadline-capable roster must equal the derived one ---"
+
+F_DERIVED="$(_f_deadline_capable "$SCRIPT_DIR")"
+F_DECLARED_SORTED="$(printf '%s\n' "${D_MEMBERS[@]}" | sort)"
+F_UNLISTED="$(comm -23 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
+F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
+
+# unlisted: a new deadline-capable suite appeared but was never declared.
+# stale: a declared entry stopped matching the derivation. Basenames are
+# safe to print (matched file CONTENT is not); both are precomputed into
+# plain variables above, never a $(...) inside the description itself, so
+# this assert can never become an instance of what Section E forbids
+# (:820-823). A RED here means "a human must classify a newly deadline-
+# capable suite", not that a leak occurred -- Section D above is the leak
+# guard; this is the guard that keeps its own membership list honest.
+assert "F1: the DERIVED deadline-capable roster over tests/infra/ equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
+    test "$F_DERIVED" = "$F_DECLARED_SORTED"
+
 test_summary
