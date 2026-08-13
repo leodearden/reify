@@ -91,7 +91,7 @@ Honest scope: this bites at annotated bindings over expressions, not universally
 
 No field or tensor operator manufactures `rad` from a derivative — gradient, divergence, curl and laplacian stay pure quotient (`INV-AD-2 quotient-pure-derivative-algebra`). The catalogue of sites where `rad` legitimately enters is in `docs/legibility/design-invariants.md`, under `INV-AD-1 angle-crossings-explicit`.
 
-**Angular frequency is a different crossing** — this is the one to reach for to get from a frequency in `Hz` to an angular velocity in `rad/s`. `omega = 2*pi * f * 1rad` carries 2π rad/cycle, a distinct constant from the η = 1 rad above — see "The 2π rad/cycle distinction (D4)". There is no `cycle` unit to write; the typed layer forces the distinction, because `Frequency` and `AngularVelocity` are different types and neither silently stands in for the other.
+**Angular frequency is a different crossing**: `omega = 2*pi * f * 1rad` carries 2π rad/cycle, not the η = 1 rad above, and there is no `cycle` unit to write — see "The 2π rad/cycle distinction (D4)" in the same file.
 
 **Why torque is N·m/rad**: the same crossing. Work is `tau * theta` and `theta` carries `rad`, so `tau` must carry `rad^-1` for the product to close on Energy — `INV-AD-1` in `docs/legibility/design-invariants.md` carries the argument. That is the *why*; how to spell a torque literal is not taught here.
 
