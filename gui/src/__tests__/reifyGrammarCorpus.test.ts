@@ -4256,9 +4256,18 @@ describe('reifyLanguage — fold and indent coverage', () => {
 
   /**
    * Every capitalised production in reify.grammar whose own body contains a
-   * literal `"{"` token. Scans line by line, tracking the most recent
+   * literal brace-OPENING token. Scans line by line, tracking the most recent
    * production header, and stops at `@tokens` — inside that block `"{"` is a
    * token declaration, not a body.
+   *
+   * Two spellings count as an opener. The plain `"{"` is the common one;
+   * `".{"` is the combined token `ImportItems` uses for the canonical
+   * destructured import `import a.b.{C, D}` (#5931), where the dot had to be
+   * folded into the literal to keep lezer-generator conflict-free — see the
+   * ImportDeclaration comment in reify.grammar. Such a body is still a
+   * brace-delimited body and still needs its fold and indent entries, so the
+   * extraction must not miss it merely because the `{` is not the first
+   * character of the token.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
     const found = new Set<string>();
@@ -4269,7 +4278,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
       const line = rawLine.replace(/\/\/.*$/, '');
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
-      if (current && line.includes('"{"')) found.add(current);
+      if (current && (line.includes('"{"') || line.includes('".{"'))) found.add(current);
     }
     return [...found].sort();
   }

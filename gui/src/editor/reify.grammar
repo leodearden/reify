@@ -199,27 +199,37 @@ ModulePath {
 // Mirrors tree-sitter-reify/grammar.js:258-282. The `String` alternative is
 // retained for the legacy `import "foo.ri"` form.
 //
-// UNSETTLED — the destructured form's separator. This port follows the
-// tree-sitter RULE, which sequences import_path then import_items with NO
-// separator (`import a.b {C, D}`). But grammar.js's own doc comment on that
-// rule (:263) and the lowering at crates/reify-syntax/src/ts_parser.rs:538
-// both spell it `import a.b.{C, D}`, with a dot. The rule and the two comments
-// therefore disagree, and nothing settles it: `import_items` has no
-// tree-sitter corpus test, no committed `.ri` uses it (every import under
-// examples/ and tests/prd-gate/fixtures/ is a bare `import x.y` or
-// `import x as y`), and no Rust code matches on the node name. The corpus test
-// deliberately does NOT pin either spelling — asserting one would cement an
-// unverified shape as an intentional GUI contract. Filed as #5931, which
-// decides the canonical form against the authoritative surface first; until it
-// lands, `ImportItems` is live grammar surface with no test coverage by
-// design, and that is the one thing here a reader should not mistake for an
-// intentional contract.
+// SETTLED by #5931 — the destructured form's separator is a DOT:
+// `import a.b.{C, D}`, per docs/reify-language-spec.md:2616-2618 §15
+// (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`). The
+// tree-sitter RULE, which this port previously followed, sequenced path and
+// items with NO separator; that rule was the transcription slip and has been
+// corrected to match the spec. grammar.js's doc comment (:263) and the lowering
+// at crates/reify-syntax/src/ts_parser.rs were right all along.
+//
+// DELIBERATE DIVERGENCE from the otherwise-faithful port — read this before
+// "fixing" it. The dot is folded into `ImportItems` as a single `".{"` literal
+// token rather than written as `ModulePath ("." ImportItems | ...)` in
+// ImportDeclaration. The faithful transcription does NOT work here: it fails
+// lezer-generator with a shift/reduce conflict between `("." Identifier)+` and
+// `ModulePath -> Identifier`, exactly as tree-sitter reported, but Lezer has no
+// `conflicts` escape hatch (tree-sitter resolves it with a `[$.import_path]`
+// entry). `~ambig` markers on ModulePath and its ImportDeclaration reference
+// were also tried and also fail. Folding `".{"` into one literal moves the
+// decision into the LEXER, so no LR conflict arises.
+//
+// The cost, which is real and intended: this grammar rejects whitespace between
+// the `.` and the `{` (`import a . { B }`), where tree-sitter accepts it as two
+// separate anonymous tokens. That narrowing is harmless for a highlighting
+// grammar — the canonical spelling has no interior space, and no committed `.ri`
+// uses a braced import at all — but it is a genuine divergence, not accidental
+// drift.
 ImportDeclaration {
   kw<"pub">? kw<"import"> (ModulePath (ImportItems | kw<"as"> Identifier)? | String)
 }
 
 ImportItems {
-  "{" (Identifier ("," Identifier)* ","?)? "}"
+  ".{" (Identifier ("," Identifier)* ","?)? "}"
 }
 
 // ── Structure ───────────────────────────────────────────
