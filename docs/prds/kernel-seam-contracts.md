@@ -83,9 +83,21 @@ directed-edge invariant). **Weldedness of the raw indices is a *capability axis*
 **Consumer-declared capabilities:**
 - `requires_welded` — the consumer needs already-welded indices (shared vertices), not per-face
   blocks. Manifold ingest declares this and satisfies it **defensively itself** (bit-exact weld,
-  `kernel.rs:229-268`). The **gmsh attributed producer** declares it and **cannot** repair without
-  destroying attribution (`mesh_boundary.rs:219-227` forbids vertex-merging repair) — which is the
-  4876 SIGSEGV.
+  `kernel.rs:229-268`). The **gmsh attributed producer** declares it and, since task #5116 ("task
+  ξ"), **repairs on demand**: `repair_cfg` selects the weld/repair configuration (`None` uses
+  `RepairConfig::default()`, gated by `surface_needs_weld` so an already-watertight raw surface is
+  used as-is; an explicit `Some(cfg)` always welds) —
+  `mesh_boundary.rs::mesh_surface_to_volume_with_attribution` ("# Repair / welding", as of
+  `:361-390`/`:479`), predicate `mesh_boundary.rs::surface_needs_weld` (as of `:561`). This does
+  **not** destroy attribution: the caller-supplied per-entity anchors
+  (`EntityAttribution.faces`/`edges`/`vertices`, OCCT-derived positions) are metadata the weld
+  never touches; the gmsh-side anchor (mean node position) is computed *after* `mesh_generate` on
+  the welded surface. A default-epsilon weld only collapses OCCT's bit-identical duplicate
+  corners, so surviving coordinates are unchanged — a caller-supplied coarse epsilon can instead
+  perturb geometry (same function, "# Weld-epsilon assumption") — and gmsh's
+  `classify_surfaces`/`create_geometry` re-mesh from scratch, discarding input-node identity
+  regardless of welding (same function, "Attribution model"). Historically, the pre-ξ producer's
+  inability to weld unwelded (per-face-block) input **was** the cause of the 4876 SIGSEGV.
 
 The contract is documented on the trait surface — real rustdoc on `GeometryKernel::tessellate`
 (`geometry.rs:3488`, currently the single line "Tessellate a handle into a mesh.") and on
