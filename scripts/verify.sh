@@ -1348,18 +1348,29 @@ select_harness_kloc_guard
 # (condition never true).
 #
 # AFFECTED_CLOSURE — the raw reverse-dependency closure, COMPUTED whenever
-# RUN_RUST=1 AND SCOPE != all. That is deliberately WIDER than narrowing
-# eligibility above: it lets a consumer make a membership test against the
-# closure WITHOUT activating narrowing. `--scope staged` without `--narrow` —
-# exactly what hooks/project-checks execs on every commit — is that case, and it
-# is why the gui-feature test pass consults AFFECTED_CLOSURE rather than
-# inferring "merge gate" from NARROW_ACTIVE=0 (which also holds for staged and
-# for both fail-wide resets). Splitting COMPUTATION from ACTIVATION is
-# value-preserving: AFFECTED, NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with
-# the same values on every path, so the --workspace coupling that
-# tests/infra/test_verify_scope.sh's B9-default scenario pins is untouched.
-# affected_crates() is invoked at most ONCE per run (one `cargo metadata`, 0.53s
-# warm), and RUN_RUST=0 — a docs-only hook-gated commit — skips it entirely.
+# RUN_RUST=1 AND SCOPE != all, i.e. deliberately WIDER than narrowing
+# eligibility above, so a consumer can make a membership test against the
+# closure WITHOUT activating narrowing. Its one consumer, and the full rationale
+# for reading SCOPE/AFFECTED_CLOSURE instead of inferring from NARROW_ACTIVE,
+# live on the decision itself: see the "NARROWED on the same affected-crate
+# axis" bullet in add_test_passes. Not restated here.
+#
+# Splitting COMPUTATION from ACTIVATION is value-preserving: AFFECTED,
+# NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with the same values on every
+# path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
+# B9-default scenario pins is untouched.
+#
+# COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
+# here rather than adding a second call site), and RUN_RUST=0 (a docs-only
+# hook-gated commit) skips it entirely. The call shells out to an UNGUARDED
+# `cargo metadata --format-version 1` in affected-crates-lib.sh's
+# _reverse_closure: 0.53s warm, but on a cold cache or a stale Cargo.lock it
+# performs dependency resolution, can reach the network, and can rewrite
+# Cargo.lock — now on the pre-commit-hook tier and under --print-plan, neither
+# of which previously shelled out to cargo on the staged path. Mitigated because
+# a RUN_RUST=1 hook run goes on to invoke cargo clippy/check anyway. Passing
+# --locked/--offline there is the real fix and is filed as follow-up; the
+# existing `|| { echo ALL; return 0; }` already fails wide if it errors.
 #
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
 # separated crate names). When set AND the closure is eligible, used verbatim in
@@ -1379,10 +1390,8 @@ elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; th
     _narrowing_eligible=1
 fi
 
-# Closure eligibility is deliberately WIDER than narrowing eligibility: the
-# reverse-dependency closure is COMPUTED whenever there is a changed-file list to
-# compute it from, which lets a consumer make a membership test without
-# ACTIVATING narrowing.  scope=staged WITHOUT --narrow is exactly that case.
+# Wider than _narrowing_eligible by design — see the AFFECTED_CLOSURE note in
+# this block's header.
 _closure_eligible=0
 if [ "$RUN_RUST" -eq 1 ] && { [ "$SCOPE" = "branch" ] || [ "$SCOPE" = "staged" ]; }; then
     _closure_eligible=1
@@ -2051,8 +2060,14 @@ add_test_passes() {
     #                                  ALL sentinel (a C4 workspace-global file, a
     #                                  C5 cargo-metadata failure, an unmappable
     #                                  path), an empty CHANGED_FILES_RAW, and a
-    #                                  REIFY_AFFECTED_CRATES_OVERRIDE that
-    #                                  word-splits to nothing.
+    #                                  malformed REIFY_AFFECTED_CRATES_OVERRIDE.
+    #                                  The empty case is genuinely OVERLOADED —
+    #                                  decide_scope's git-failure fail-wide paths
+    #                                  also return RUN_RUST=1 with
+    #                                  CHANGED_FILES_RAW="" — so conflating it
+    #                                  with "provably no crates" is CORRECT here
+    #                                  and cannot be tightened without a separate
+    #                                  closure-available sentinel.
     #       3. otherwise            -> emit iff reify-gui ∈ AFFECTED_CLOSURE.
     #     This is NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-
     #     ACTIVATION flag, not a scope oracle: NARROW_ACTIVE=0 ALSO holds for
@@ -2061,11 +2076,18 @@ add_test_passes() {
     #     gate)" reading was a false equivalence.  Its cost was concrete and
     #     measured: `hooks/project-checks` execs
     #     `verify.sh all --profile debug --scope staged --include-infra`, and a
-    #     staged crates/reify-doc/src/lib.rs emitted 1 gui-feature pass — i.e. every
-    #     per-commit hook run paid the full `--features gui` link for a closure that
-    #     cannot reach reify-gui.  Arm 3 now covers that shape too.  Arm 1 keeps the
-    #     merge gate unconditional, so a hook-tier miss can only ever be LATENCY,
-    #     never a coverage hole.
+    #     staged crates/reify-doc/src/lib.rs emitted 1 gui-feature pass — the
+    #     per-commit hook paying the full `--features gui` link for a closure that
+    #     cannot reach reify-gui.  Arm 3 now covers that shape too.
+    #     WHAT ACTUALLY BENEFITS is narrower than "every hook run", and the
+    #     difference is measured, not assumed: only a staged diff whose paths ALL
+    #     map to crates AND whose reverse closure excludes reify-gui takes arm 3.
+    #     A scripts-only staged diff yields the ALL sentinel (C5/unmappable) and a
+    #     tests/infra-only one yields an EMPTY closure (affected-crates-lib treats
+    #     tests/infra/* as non-crate, while decide_scope's conservative arm still
+    #     sets RUN_RUST=1) — both take arm 2 and keep paying the link.
+    #     Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only
+    #     ever be LATENCY, never a coverage hole.
     #     affected_crates() is a REVERSE-dependency closure, so a change anywhere in
     #     reify-gui's dependency graph puts reify-gui in the set — measured on this
     #     tree: crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs
@@ -2122,33 +2144,53 @@ add_test_passes() {
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
     local _emit_gui_feature_pass=0 _gui_ac
-    # Normalize the closure ONCE: word-split and rejoin, so a whitespace-only
-    # value collapses to "".  Without this, a malformed
-    # REIFY_AFFECTED_CRATES_OVERRIDE ("   ") is non-empty and is not the ALL
-    # sentinel, so it reaches the membership loop, word-splits to nothing, the
-    # loop body never runs, and the pass is silently narrowed away.  Same guard,
-    # same rationale, as the AFFECTED_ALL_FLAGS-empty reset in the Phase-2
-    # narrowing block: a malformed knob must fail WIDE, never narrow.
-    local _gui_closure_norm=""
+    # Normalize the closure ONCE, into a word ARRAY, so that arm 2 below sees
+    # every malformed-knob shape as "unavailable" rather than as a crate list.
+    # A malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow —
+    # the same invariant, for the same reason, as the AFFECTED_ALL_FLAGS-empty
+    # reset in the Phase-2 narrowing block.  Three shapes, each measured to
+    # narrow the pass AWAY before this normalization existed:
+    #   * whitespace-only ("   ") — non-empty and not the ALL sentinel, so it
+    #     reached the membership loop, split to NOTHING, and never ran the loop
+    #     body.  Closed by the EMPTY-array test.
+    #   * glob-bearing ("*") — the split is an UNQUOTED expansion, so with
+    #     pathname expansion live it expanded against the CWD into directory
+    #     entries ("crates scripts") instead of collapsing; measured on a
+    #     hermetic fixture, `*` on --scope staged printed `closure=*` and
+    #     emitted ZERO gui-feature passes.  Closed by `set -f` ACROSS the split
+    #     (the caller's -f state is saved and restored — verify.sh does not
+    #     otherwise run with noglob).
+    #   * any token outside cargo's package-name grammar — a surviving glob
+    #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
+    #     closure only ever holds crate names, so a token that cannot BE one
+    #     means the knob is malformed, not that the closure excludes reify-gui.
+    #     Closed by the grammar check, which routes to arm 2 rather than arm 3.
+    local -a _gui_closure_words=()
+    local _gui_closure_malformed=0 _gui_noglob_was=1
+    case "$-" in *f*) ;; *) _gui_noglob_was=0 ;; esac
+    set -f
     # shellcheck disable=SC2086
     for _gui_ac in $AFFECTED_CLOSURE; do
-        _gui_closure_norm="${_gui_closure_norm:+$_gui_closure_norm }$_gui_ac"
+        _gui_closure_words+=("$_gui_ac")
+        case "$_gui_ac" in
+            *[!A-Za-z0-9_.-]*) _gui_closure_malformed=1 ;;
+        esac
     done
+    if [ "$_gui_noglob_was" -eq 0 ]; then set +f; fi
     if [ "$DF_VERIFY_ROLE" != "offline" ]; then
         if [ "$SCOPE" = "all" ]; then
             # Merge gate: unconditional BY CONTRACT, not as a side effect of
             # narrowing happening to be inactive.
             _emit_gui_feature_pass=1
-        elif [ -z "$_gui_closure_norm" ] || [ "$_gui_closure_norm" = "ALL" ]; then
+        elif [ "${#_gui_closure_words[@]}" -eq 0 ] \
+            || [ "$_gui_closure_malformed" -eq 1 ] \
+            || { [ "${#_gui_closure_words[@]}" -eq 1 ] && [ "${_gui_closure_words[0]}" = "ALL" ]; }; then
             # Closure unavailable — the ALL sentinel from a C4 global file / C5
             # metadata failure / unmappable path, an empty CHANGED_FILES_RAW, or
-            # a malformed knob that word-splits to nothing.  Fail WIDE.
+            # a malformed knob (see the normalization above).  Fail WIDE.
             _emit_gui_feature_pass=1
         else
-            # Word-split $_gui_closure_norm (safe: Rust crate names never contain
-            # spaces), matching the AFFECTED_ALL_FLAGS loop above.
-            # shellcheck disable=SC2086
-            for _gui_ac in $_gui_closure_norm; do
+            for _gui_ac in "${_gui_closure_words[@]}"; do
                 if [ "$_gui_ac" = "reify-gui" ]; then
                     _emit_gui_feature_pass=1
                     break

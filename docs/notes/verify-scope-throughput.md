@@ -168,29 +168,36 @@ stays 3 (`RUN_RUST=0`). The table and the sentinel move in lockstep._
 
 _Counts UNCHANGED 2026-08-13 (task 6030): the amendment above described the
 gui-feature pass's unconditional arm as `NARROW_ACTIVE=0`, i.e. as the merge
-gate. That equivalence was never true. `NARROW_ACTIVE` is a narrowing-ACTIVATION
-flag, not a scope oracle: narrowing is eligible only for `scope=branch` or
-`scope=staged` **with** `--narrow`, so `NARROW_ACTIVE=0` also holds for
-`--scope staged` WITHOUT `--narrow` — which is exactly what `hooks/project-checks`
-execs on every commit (`verify.sh all --profile debug --scope staged
---include-infra`) — and for the two fail-wide resets. Measured on a hermetic
-fixture whose only staged path was `crates/reify-doc/src/lib.rs`: the
-`--features gui` pass WAS emitted, so every per-commit hook run was paying that
-tauri + webkit2gtk + OCCT feature-unification link for a reverse-dependency
-closure that provably cannot reach `reify-gui`. The closure was computable on
-that path all along — `decide_scope` already fills `CHANGED_FILES_RAW` from
-`git diff --cached` for `scope=staged` — it was simply never asked for. It is
-now, via a separate `AFFECTED_CLOSURE` computed whenever `RUN_RUST=1` and
-`SCOPE != all`: strictly wider than narrowing eligibility, so a membership test
-can consult the closure without ACTIVATING narrowing. `NARROW_ACTIVE`,
-`AFFECTED`, `AFFECTED_ALL_FLAGS` and the `--workspace` coupling on
-staged-without-`--narrow` are all value-identical to before. **The
-THROUGHPUT-COUNTS sentinel does NOT move**, and no cell of the table above
-changes: all four shapes are captured only at `--scope all` and `--scope branch`,
-and this change is confined to `--scope staged` while being value-preserving for
-the other two — confirmed by running `tests/infra/test_verify_throughput.sh`
-green rather than by asserting it. The merge gate remains unconditional by
-contract, so a hook-tier skip is LATENCY, never a coverage hole._
+gate. That equivalence was never true — `NARROW_ACTIVE` is a
+narrowing-ACTIVATION flag, not a scope oracle, and it is also 0 on the
+`--scope staged` per-commit-hook tier (`hooks/project-checks` execs
+`verify.sh all --profile debug --scope staged --include-infra`), which was
+therefore paying the `--features gui` link for closures that cannot reach
+`reify-gui`. The emission condition now reads `SCOPE` and a separate
+`AFFECTED_CLOSURE` directly. The three arms, their fail-wide taxonomy and the
+measurements behind them are documented ONCE, on the decision itself — the
+"NARROWED on the same affected-crate axis" bullet in `scripts/verify.sh`'s
+`add_test_passes` — and are deliberately not restated here._
+
+_What matters for THIS note. First, `NARROW_ACTIVE`, `AFFECTED`,
+`AFFECTED_ALL_FLAGS` and the `--workspace` coupling on
+staged-without-`--narrow` are all value-identical to before, so **the
+THROUGHPUT-COUNTS sentinel does NOT move** and no cell of the table above
+changes: all four shapes are captured only at `--scope all` and `--scope
+branch`, and this change is confined to `--scope staged`. Confirmed by running
+`tests/infra/test_verify_throughput.sh` green rather than by asserting it.
+Second, the saving is NARROWER than "every commit" — only a staged diff whose
+paths ALL map to crates and whose reverse closure excludes `reify-gui` takes the
+narrowed arm. Measured on a hermetic fixture at `--scope staged` with no
+override: a scripts-only staged diff yields the `ALL` sentinel and a
+`tests/infra`-only one yields an EMPTY closure, and both still fail wide and keep
+paying the link. Reclaiming the `tests/infra`-only shape is NOT a one-line
+change: an empty closure is genuinely overloaded, since `decide_scope`'s
+git-failure fail-wide paths also return `RUN_RUST=1` with an empty
+`CHANGED_FILES_RAW`, so "provably no crates" would first need a distinct
+closure-available sentinel to tell it apart from "the diff could not be read".
+The merge gate remains unconditional by contract, so a hook-tier skip is
+LATENCY, never a coverage hole._
 
 ## Heavy-Work Narrowed Markers
 
@@ -261,11 +268,13 @@ only WHAT each shape drops, which is the qualitative half of the evidence.
   unaffected crate compilation.
 - **staged per-commit-hook tier (`--scope staged`, no `--narrow`):** since
   2026-08-13 (task 6030) the `--features gui` drop applies here too, on the same
-  closure-membership test — this tier is `hooks/project-checks`' own invocation,
-  so a staged diff that cannot reach `reify-gui` no longer pays that link on
-  every commit.  Nothing ELSE narrows on this tier: clippy and the workspace
-  nextest pass keep `--workspace`, so this shape is absent from the table above
-  and its plan-step counts are untouched.
+  closure-membership test — this tier is `hooks/project-checks`' own invocation.
+  It drops for a staged diff whose paths ALL map to crates and whose closure
+  excludes `reify-gui`; a scripts-only or `tests/infra`-only staged diff still
+  pays it, because its closure comes back unavailable and fails wide.  Nothing
+  ELSE narrows on this tier: clippy and the workspace nextest pass keep
+  `--workspace`, so this shape is absent from the table above and its plan-step
+  counts are untouched.
 - **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
   to `-p reify-eval` (task 4451: gated pass folded into the nextest pool), and
   the `--features gui` pass likewise dropped — the fixture drives `AFFECTED`
