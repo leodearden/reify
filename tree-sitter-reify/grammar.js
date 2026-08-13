@@ -120,6 +120,17 @@ module.exports = grammar({
     //   `_primary_expression`, `variant_construction`".
     // PRD §4.4 / task α (data-carrying-enums, step-6).
     [$._primary_expression, $.variant_construction],
+    // import_path must stay live across a `.` so the parser can decide, on the
+    // token AFTER it, whether the dot continues the path (`a.b.c`, `a.b.C`) or
+    // introduces the destructured item list (`a.b.{C, D}`).  That is a
+    // 2-token-lookahead decision an LR(1) table cannot make, so without this
+    // entry `tree-sitter generate` aborts with:
+    //   "Unresolved conflict for symbol sequence:  'import'  identifier  •  '.'
+    //    …  Add a conflict for these rules: `import_path`".
+    // Required by the `.`-before-`{` terminal in import_declaration below; per
+    // the convention noted at the foot of this file, it is present only because
+    // generate reported the conflict and named this rule.  Task #5931.
+    [$.import_path],
   ],
 
   rules: {
@@ -261,7 +272,28 @@ module.exports = grammar({
       field('path', $.import_path),
       optional(choice(
         // Destructured: import a.b.{C, D}
-        field('items', $.import_items),
+        //
+        // The `.` before the brace list is NORMATIVE, per
+        // docs/reify-language-spec.md:2616-2618 §15:
+        //   import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?
+        // (corroborated by the spec syntax table at :1656 and by identical EBNF
+        // in docs/initial-design/syntax-design-decisions.md:921-922).
+        //
+        // The COMMENT above was always right; the RULE was the transcription
+        // slip — born without the `.` in c3d42aa84b (2026-03-20) and masked for
+        // ~5 months because tree-sitter error-recovered the stray dot into a
+        // nested (ERROR) node while leaving `path`/`items` intact, so the
+        // dotted form still lowered correctly and its tests stayed green.
+        // Corrected by task #5931; see tests/import_items_grammar_tests.rs.
+        //
+        // The braces deliberately stay a SEPARATE `items` field on
+        // import_declaration rather than being folded into import_path the way
+        // the spec EBNF nests them: lower_import (crates/reify-syntax/src/
+        // ts_parser.rs) distinguishes Destructured from Aliased/Entity/Module
+        // by which optional FIELD is present.  Only the surface `.` terminal is
+        // normative here, so adding it settles the spelling without disturbing
+        // the CST shape or the lowering.
+        seq('.', field('items', $.import_items)),
         // Aliased: import a.b as x  OR  import a.b.C as X
         seq('as', field('alias', $.identifier)),
       )),
