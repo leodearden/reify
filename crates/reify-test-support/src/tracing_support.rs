@@ -244,12 +244,28 @@ impl CountingSubscriberBuilder {
     /// Build the subscriber and return it alongside a map of counters keyed by
     /// level.  The returned `Arc<AtomicUsize>` values are shared with the
     /// subscriber so external reads observe internal increments.
+    ///
+    /// # Callsite priming is automatic
+    ///
+    /// This calls [`prime_tracing_callsite_cache`] as its first statement, so
+    /// callers do **not** need an explicit priming call: a subscriber-less
+    /// sibling test thread can no longer poison a counted callsite's cached
+    /// `Interest` to `never`.  Ordering holds because the caller's
+    /// `Dispatch::new` happens at `with_default`/`set_default` time, strictly
+    /// after this method returns.
+    ///
+    /// Priming does not widen what gets counted: the global `Priming`
+    /// subscriber returns `Interest::sometimes()` from `register_callsite`,
+    /// which defers the per-event decision to `enabled()` on the *current
+    /// thread's* default — i.e. this subscriber's own level/target filter.
     pub fn build(
         self,
     ) -> (
         impl tracing::Subscriber + Send + Sync,
         HashMap<tracing::Level, Arc<AtomicUsize>>,
     ) {
+        prime_tracing_callsite_cache();
+
         let counters: HashMap<tracing::Level, Arc<AtomicUsize>> = self
             .levels
             .into_iter()
