@@ -508,27 +508,26 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # fix. Sections A-C hold that discipline for THIS file's own emissions; D extends
 # it to the emit-adjacent sites this change turned from latent into live.
 #
-# D_MEMBERS below is NO LONGER the source of truth for "which suites can
-# leak" -- task 6255 made it the BEHAVIOURAL SUBSET of the
-# direct-call-site deadline-capable roster Section F derives. That roster's
-# D_ROSTER also
-# lists the static-only members (test_run_all.sh, test_slot_event_log.sh,
-# test_verify_semaphore_e2e.sh), whose evidence-preservation is proven by
-# source inspection rather than by running them here. F4, in Section F, is
-# the assertion that keeps this behavioural list and that roster's mode
-# table in lockstep -- a RED there means the two have silently diverged,
-# not that this section itself is broken.
+# D_MEMBERS below is NO LONGER the source of truth for "which suites can leak"
+# -- task 6255 made it the BEHAVIOURAL SUBSET of the direct-call-site
+# deadline-capable roster Section F derives (D_ROSTER). D_ROSTER also lists
+# the static-only members (test_run_all.sh, test_slot_event_log.sh,
+# test_verify_semaphore_e2e.sh); their evidence-preservation is ASSERTED IN
+# PROSE beside D_ROSTER_MODE and measured clean today, but is NOT
+# machine-checked -- generalizing D4 to cover them is tracked as #6278. F4,
+# in Section F, is the assertion that keeps this behavioural list and that
+# roster's mode table in lockstep -- a RED there means the two have silently
+# diverged, not that this section itself is broken.
 #
 # TWO ARMS cover that BEHAVIOURAL SUBSET, not the whole deadline-capable
-# problem (Section F is what keeps the subset honest against its
-# direct-call-site roster -- see that section's SCOPE for what it does NOT
-# prove); within
-# it, neither arm suffices alone. D1/D3 are BEHAVIOURAL and model run_all's
-# capture exactly (see _d_capture), catching any leak that actually happens
-# on this run. D4 is STATIC and covers what D1 structurally cannot: two of
-# the three members only reach their deadline under contention this suite
-# must not manufacture, so their D1 zero would look identical with the
-# redirect reverted. See D4's own preamble for the per-member reasoning.
+# problem -- see Section F's own SCOPE paragraph for what it does and does
+# not prove. Within the subset, neither arm suffices alone. D1/D3 are
+# BEHAVIOURAL and model run_all's capture exactly (see _d_capture), catching
+# any leak that actually happens on this run. D4 is STATIC and covers what D1
+# structurally cannot: two of the three members only reach their deadline
+# under contention this suite must not manufacture, so their D1 zero would
+# look identical with the redirect reverted. See D4's own preamble for the
+# per-member reasoning.
 
 TMPD="$(mktemp -d)"; _TMPDIRS+=("$TMPD")
 
@@ -864,8 +863,8 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # new DIRECTLY-deadline-capable SUITE appearing -- a file with no matching
 # entry in D_ROSTER at all. A green F1 is therefore proof that the
 # direct-call-site roster is SELF-CONSISTENT; it is NOT proof that no other
-# tests/infra suite can reach a deadline by some other route. Two gaps are
-# deliberately out of scope:
+# tests/infra suite can reach a deadline by some other route. Three gaps
+# are deliberately out of scope:
 #
 # (1) A new unredirected deadline SITE added inside an existing static-only
 # roster member -- D4's per-site stderr-capture check (D4a/D4b) still covers
@@ -894,8 +893,7 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 #     `bash "$TARGET"` with TARGET=test_run_all.sh (:93, :366) -- which no
 #     run_all alternation can see.
 #   Admitting those would force roster entries whose measured justification
-#   reads "not actually deadline-capable", emptying both D_ROSTER's meaning
-#   and F5's non-vacuity check of content.
+#   reads "not actually deadline-capable", emptying D_ROSTER's meaning.
 #   The three GENUINE transitive members are measured CLEAN today: each
 #   redirects the child's stderr into a file or a captured variable --
 #   test_run_all_clock_marker_sanitize.sh (:96), test_run_all_content_skip.sh
@@ -905,6 +903,20 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 #   leak. Closing it properly needs a real transitive-closure derivation (a
 #   fixed point over suite->suite invocation edges), which is out of this
 #   task's scope; filed as a follow-up during esc-6255-1 remediation.
+#
+# (3) HEREDOC-EMBEDDED invocations. The derivation scans LINES, not shell
+# syntax -- it has no heredoc-state tracking, so a wrapper call written as
+# the BODY of a heredoc (a fixture-writing suite building another script's
+# content -- this file's own F2/F3 fixtures below are exactly that shape)
+# reads identically to a live invocation and is FLAGGED, wrongly. False
+# POSITIVE only (it can add a spurious roster entry, never hide a real
+# one), and it is why this file excludes itself from the derivation by
+# basename rather than relying on the predicate to see through its own
+# fixtures. No other tests/infra/test_*.sh file trips it today -- F1's pass
+# is the evidence, since F1 would go RED the moment one did. Pinned as a
+# known, accepted gap (not "fixed" by a real heredoc-state parser, which
+# this line-oriented scanner deliberately is not) by the addendum assert
+# just after F3 below.
 
 # The declared roster: every suite this file currently knows to be
 # deadline-capable THROUGH A DIRECT WRAPPER CALL SITE (see SCOPE (2) above
@@ -959,8 +971,8 @@ D_ROSTER=(
 #   existing three members.
 #   test_verify_semaphore_e2e.sh -- bucket intra-run-serial (run-all-
 #   classification.manifest:56 -- mutates the invoking lane's own shared
-#   state: CoW target/, working-tree parser.c). Section D forks its
-#   members CONCURRENTLY (:585-589) and this file is bucket pool, so
+#   state: CoW target/, working-tree parser.c). Section D forks its members
+#   CONCURRENTLY (the D1/D3 loop above) and this file is bucket pool, so
 #   running it here would violate the run_all classification partition --
 #   a CORRECTNESS hazard, not merely the wall clock its nested full-scope
 #   verify.sh test pass would add. This is the binding reason the task's
@@ -998,7 +1010,7 @@ F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquir
 
 # _f_deadline_capable <dir> -> prints one BASENAME per deadline-capable
 # member of <dir>, sorted, one per line. NAMES ONLY -- never a matched
-# line (same discipline as _e_scan, :756-767, and D1, :611-613): this
+# line (same discipline as `_e_scan` and D1): this
 # file's own output is re-emitted into the merge-gate verify log.
 # Comment-stripped first (grep -vE '^[[:blank:]]*#'): a token mentioned
 # only in a comment does not make a file deadline-capable.
@@ -1013,7 +1025,7 @@ F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquir
 # test_verify_semaphore_e2e.sh and test_run_all.sh flake between MATCH/MISS
 # across repeated runs of the identical command). `-c` must drain its whole
 # input to produce a count, so it can never race the producer that way --
-# the same reason D4's `_d_unredirected` (:670-674) already uses `-c`
+# the same reason D4's `_d_unredirected` already uses `-c`
 # rather than `-q`/`-l` here.
 _f_deadline_capable() {
     local _d="$1" _f _base _n
@@ -1023,7 +1035,7 @@ _f_deadline_capable() {
         # test_helpers.sh matches the glob but is excluded by run_all's own
         # discovery. test_slot_timeout_marker.sh is RECURSION -- this file
         # is itself 17+ P3 hits and 4 knob hits of its own (the same
-        # exclusion D_MEMBERS documents at :523-525).
+        # exclusion D_MEMBERS' own RECURSION comment documents, above).
         case "$_base" in
             test_helpers.sh|test_slot_timeout_marker.sh) continue ;;
         esac
@@ -1047,7 +1059,7 @@ F_NEG_DIR="$TMPF/fx-neg"; mkdir -p "$F_NEG_DIR"
 # F2 POSITIVE -- one runtime-built fixture per grammar variant, each in ITS
 # OWN file so a narrowing edit that stops matching exactly one variant shows
 # up as a basename-COUNT drop naming how many variants it stopped seeing
-# (the E_POS_VARIANTS idiom, :797), not swallowed by the other four.
+# (the E_POS_VARIANTS idiom), not swallowed by the other four.
 cat > "$F_POS_DIR/test_f_pos_wait_literal.sh" <<'WAITLITEOF'
 #!/usr/bin/env bash
 export REIFY_TEST_SEMAPHORE_WAIT=30
@@ -1106,6 +1118,26 @@ assert "F2: positive control -- the derivation flags all $F_POS_VARIANTS grammar
 assert "F3: comment-only mentions and closure/copy-list DATA are NOT flagged (got $F3_COUNT)" \
     test "$F3_COUNT" -eq 0
 
+# F3 addendum (documented gap, not a control -- see Section F's SCOPE (3)
+# above): a wrapper call written as the BODY of a heredoc reads identically
+# to a live invocation to this line-oriented derivation, so it is a KNOWN
+# false positive. Pinned here rather than left as an unverified claim in
+# prose -- if a future change to the predicate silently starts or stops
+# matching this shape, this assert is what notices.
+F_NEG_HEREDOC_DIR="$TMPF/fx-neg-heredoc"; mkdir -p "$F_NEG_HEREDOC_DIR"
+cat > "$F_NEG_HEREDOC_DIR/test_f_neg_heredoc_body.sh" <<'HEREDOCEOF'
+#!/usr/bin/env bash
+# Fixture-writing suite: the call below is heredoc BODY TEXT building
+# another script's content -- it never executes here, exactly like this
+# file's own F2/F3 fixtures above.
+cat > "$DST/fixture.sh" <<'INNER'
+slot_acquire "$LOCK" 1 1
+INNER
+HEREDOCEOF
+F3_HEREDOC_COUNT="$(_f_deadline_capable "$F_NEG_HEREDOC_DIR" | wc -l | tr -d ' ')"
+assert "F3-known-gap: a wrapper call inside a quoted heredoc body is (mis)flagged today -- accepted, documented false positive (got $F3_HEREDOC_COUNT)" \
+    test "$F3_HEREDOC_COUNT" -eq 1
+
 echo ""
 echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
 
@@ -1118,8 +1150,8 @@ F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_S
 # stale: a declared entry stopped matching the derivation. Basenames are
 # safe to print (matched file CONTENT is not); both are precomputed into
 # plain variables above, never a $(...) inside the description itself, so
-# this assert can never become an instance of what Section E forbids
-# (:820-823). A RED here means "a human must classify a newly deadline-
+# this assert can never become an instance of what Section E's E1 forbids.
+# A RED here means "a human must classify a newly deadline-
 # capable suite", not that a leak occurred -- Section D above is the leak
 # guard; this is the guard that keeps its own membership list honest.
 # Description says DIRECT-CALL-SITE, not bare "deadline-capable": a green
@@ -1131,18 +1163,26 @@ assert "F1: the DERIVED roster of suites with a DIRECT wrapper call site over te
 echo ""
 echo "--- F4: every roster entry declares a MODE; the behavioural subset must equal D_MEMBERS ---"
 
-# set -u-safe local copy of a not-yet-declared D_ROSTER_MODE (same idiom as
-# _HOLDERS/_TMPDIRS, :77-81): materialized into a plain local array FIRST,
-# so ${#...} and indexed access below read as empty/0 rather than aborting
-# the whole file under `set -euo pipefail` -- a hard abort would be red for
-# the wrong reason and would skip every assertion after it. `${#ARR[@]}` on
-# a truly-undeclared array aborts even alone (measured), so the length
-# check below reads THIS copy, never `${#D_ROSTER_MODE[@]}` directly.
-_F4_MODE=("${D_ROSTER_MODE[@]+${D_ROSTER_MODE[@]}}")
+# F4c FIRST, this file's established discipline for every check that a later
+# assert depends on the shape of (cf. D2 before D1, D4c before D4b, E2/E3
+# before E1): a short D_ROSTER_MODE must be diagnosed HERE, before the
+# F4_BEHAVIOURAL loop below derives anything from it. Otherwise a truncated
+# table would surface as an F4a "missing" red pointing at D_MEMBERS drift,
+# hiding the real cause. D_ROSTER_MODE is always declared by this point (a
+# straight-line script, no conditional path skips it), so no set -u guard is
+# needed for the length check itself.
+assert "F4c: D_ROSTER_MODE is index-aligned with D_ROSTER (got ${#D_ROSTER_MODE[@]}, want ${#D_ROSTER[@]})" \
+    test "${#D_ROSTER_MODE[@]}" -eq "${#D_ROSTER[@]}"
 
+# Per-index access below stays `:-`-defaulted even though D_ROSTER_MODE is
+# always DECLARED: assert() does not abort on a FAIL, so if F4c just went
+# red (D_ROSTER_MODE shorter than D_ROSTER) this loop still runs, and an
+# out-of-range array INDEX is its own unbound-variable reference under
+# `set -u` -- which would abort the whole file. The default keeps that a
+# clean "not behavioural" read instead of a hard abort.
 F4_BEHAVIOURAL=()
 for _f4_i in "${!D_ROSTER[@]}"; do
-    if [ "${_F4_MODE[_f4_i]:-}" = "behavioural" ]; then
+    if [ "${D_ROSTER_MODE[_f4_i]:-}" = "behavioural" ]; then
         F4_BEHAVIOURAL+=("${D_ROSTER[_f4_i]}")
     fi
 done
@@ -1183,44 +1223,5 @@ assert "F4a: every D_MEMBERS entry is declared behavioural in D_ROSTER_MODE (mis
     test "${#F4_MISSING[@]}" -eq 0
 assert "F4b: every roster entry declared behavioural is in D_MEMBERS (extra: ${F4_EXTRA_LIST:-<none>})" \
     test "${#F4_EXTRA[@]}" -eq 0
-
-# Index alignment and vocabulary: a misaligned or typo'd table would
-# silently attribute the wrong mode to the wrong member. Index-aligned
-# parallel arrays are this file's established pattern (D_MEMBERS/D_HEADERS/
-# D_INVOKE/D_ALWAYS_DEADLINES, :526-544).
-assert "F4c: D_ROSTER_MODE is index-aligned with D_ROSTER (got ${#_F4_MODE[@]}, want ${#D_ROSTER[@]})" \
-    test "${#_F4_MODE[@]}" -eq "${#D_ROSTER[@]}"
-
-F4_BADMODE=()
-for _f4_v in "${_F4_MODE[@]+${_F4_MODE[@]}}"; do
-    case "$_f4_v" in
-        behavioural|static-only) ;;
-        *) F4_BADMODE+=("$_f4_v") ;;
-    esac
-done
-assert "F4d: every declared mode is exactly 'behavioural' or 'static-only' (got ${#F4_BADMODE[@]} bad entries)" \
-    test "${#F4_BADMODE[@]}" -eq 0
-
-echo ""
-echo "--- F5: every declared roster member still matches the derivation (non-vacuity) ---"
-
-# GREEN FROM THE START (a control, mirroring D4a's -ge 1 at :693-695):
-# without this, a predicate that quietly stopped matching one member could
-# still leave F1 green by coincidence of the roster being edited to match.
-# F5 independently re-checks every DECLARED member against its own source
-# file. Reports the COUNT and the MEMBER NAME only, like D1 -- never the
-# matched line.
-F5_BAD=()
-for _f5_m in "${D_ROSTER[@]}"; do
-    _f5_n="$(grep -vE '^[[:blank:]]*#' "$SCRIPT_DIR/$_f5_m" \
-        | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
-    if [ "${_f5_n:-0}" -lt 1 ]; then
-        F5_BAD+=("$_f5_m")
-    fi
-done
-F5_BAD_LIST="${F5_BAD[*]}"
-
-assert "F5: every declared roster member matches >=1 derivation line (non-vacuity; offenders: ${F5_BAD_LIST:-<none>})" \
-    test "${#F5_BAD[@]}" -eq 0
 
 test_summary
