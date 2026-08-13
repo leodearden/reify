@@ -1116,4 +1116,31 @@ F5_BAD_LIST="${F5_BAD[*]}"
 assert "F5: every declared roster member matches >=1 derivation line (non-vacuity; offenders: ${F5_BAD_LIST:-<none>})" \
     test "${#F5_BAD[@]}" -eq 0
 
+echo ""
+echo "--- F6: every static-only roster entry carries a NON-EMPTY exclusion reason ---"
+
+# set -u-safe local copy of a not-yet-declared D_ROSTER_REASON (same idiom
+# as F4's _F4_MODE): materialized FIRST so the alignment/per-entry checks
+# below fail cleanly instead of aborting the file.
+_F6_REASON=("${D_ROSTER_REASON[@]+${D_ROSTER_REASON[@]}}")
+
+assert "F6a: D_ROSTER_REASON is index-aligned with D_ROSTER (got ${#_F6_REASON[@]}, want ${#D_ROSTER[@]})" \
+    test "${#_F6_REASON[@]}" -eq "${#D_ROSTER[@]}"
+
+# A member must not be parked static-only unexplained: the reason is the
+# artifact a future reader needs in order to decide whether the exclusion
+# still holds -- the missing half of exactly the kind of declared-list
+# drift that produced this task. `behavioural` entries are deliberately
+# allowed an empty reason here (their justification is that they ARE run).
+F6_UNEXPLAINED=()
+for _f6_i in "${!D_ROSTER[@]}"; do
+    if [ "${D_ROSTER_MODE[_f6_i]:-}" = "static-only" ] && [ -z "${_F6_REASON[_f6_i]:-}" ]; then
+        F6_UNEXPLAINED+=("${D_ROSTER[_f6_i]}")
+    fi
+done
+F6_UNEXPLAINED_LIST="${F6_UNEXPLAINED[*]}"
+
+assert "F6b: every static-only roster entry carries a non-empty D_ROSTER_REASON (unexplained: ${F6_UNEXPLAINED_LIST:-<none>})" \
+    test "${#F6_UNEXPLAINED[@]}" -eq 0
+
 test_summary
