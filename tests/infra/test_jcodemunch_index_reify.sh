@@ -246,6 +246,120 @@ expect_truncation() {
     return 0
 }
 
+# ── Invocation-contract helpers (Block 9) ───────────────────────────────────
+#
+# These bind to the CONSTRUCTED argv, not to grepped prose. A script whose
+# header documented `--once` while its command omitted it would pass a prose
+# grep and fail every assertion here — which is the whole point (PRD §2.4).
+#
+# dry_run_argv <root> — the argv from the single --dry-run exec line.
+dry_run_argv() {
+    "$JC_INDEX" --dry-run --project-root "$1" 2>/dev/null \
+        | sed -n 's/^jcodemunch-index-reify: exec[[:space:]]\{1,\}//p'
+}
+
+check_dry_run_shape() {
+    local root="$1" o="$SCRATCH/dry.out" e="$SCRATCH/dry.err" rc=0 n
+    "$JC_INDEX" --dry-run --project-root "$root" >"$o" 2>"$e" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf -- '--dry-run exited %d (expected 0)\n' "$rc" >&2
+        cat "$e" >&2
+        return 1
+    fi
+    n="$(grep -c '^jcodemunch-index-reify: exec ' "$o" || true)"
+    if [ "$n" -ne 1 ]; then
+        printf -- 'expected exactly ONE exec line, got %s\n' "$n" >&2
+        cat "$o" >&2
+        return 1
+    fi
+    # --dry-run must print the command and stop — never reach the index gates.
+    if grep -q -- "$SUCCESS_MARKER" "$o"; then
+        printf -- '--dry-run printed %s; it must not run the index gates\n' "$SUCCESS_MARKER" >&2
+        return 1
+    fi
+    return 0
+}
+
+argv_has() {
+    local argv; argv="$(dry_run_argv "$1")"
+    case "$argv" in
+        *"$2"*) return 0 ;;
+        *) printf 'constructed argv lacks %s:\n  %s\n' "$2" "${argv:-<no exec line>}" >&2; return 1 ;;
+    esac
+}
+
+# The two BAN checkers below must refuse an EMPTY argv rather than pass on it.
+# A negative assertion over nothing is satisfied by nothing: without this, a
+# --dry-run that stopped emitting an exec line at all would leave both bans
+# reporting green forever — the dead-instrument shape this suite exists to
+# avoid. (check_dry_run_shape also catches that, but a guard that depends on a
+# sibling assert to not be vacuous is one refactor away from being vacuous.)
+argv_lacks() {
+    local argv; argv="$(dry_run_argv "$1")"
+    if [ -z "$argv" ]; then
+        printf 'no exec line to check the %s ban against (the assertion would be vacuous)\n' "$2" >&2
+        return 1
+    fi
+    case "$argv" in
+        *"$2"*) printf 'constructed argv CONTAINS the banned %s:\n  %s\n' "$2" "$argv" >&2; return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# argv_word_absent <root> <word> — no argv WORD equals <word>. Word-wise, not
+# substring: the fixture root is a /tmp/jc-index-reify-XXXXXX path that
+# CONTAINS "index" as a substring, so a substring test for the banned `index`
+# subcommand would false-fire on the very path being indexed.
+argv_word_absent() {
+    local root="$1" word="$2" w argv
+    argv="$(dry_run_argv "$root")"
+    if [ -z "$argv" ]; then
+        printf 'no exec line to check the %s ban against (the assertion would be vacuous)\n' "$word" >&2
+        return 1
+    fi
+    for w in $argv; do
+        if [ "$w" = "$word" ]; then
+            printf 'constructed argv uses the banned word %s:\n  %s\n' "$word" "$(dry_run_argv "$root")" >&2
+            return 1
+        fi
+    done
+    return 0
+}
+
+# argv_subcommand_is <root> <expected> — the token immediately after the
+# `jcodemunch-mcp` entry point is the subcommand.
+argv_subcommand_is() {
+    local root="$1" expected="$2" prev="" w got=""
+    for w in $(dry_run_argv "$root"); do
+        if [ "$prev" = "jcodemunch-mcp" ]; then got="$w"; break; fi
+        prev="$w"
+    done
+    if [ "$got" != "$expected" ]; then
+        printf 'subcommand after jcodemunch-mcp: expected %s, got %s\n  %s\n' \
+            "$expected" "${got:-<none>}" "$(dry_run_argv "$root")" >&2
+        return 1
+    fi
+    return 0
+}
+
+# The ban must be DOCUMENTED and never INVOKED: every occurrence of the literal
+# in the script is a comment line, and there is at least one (an absence is not
+# a ban — it is a ban nobody recorded, which the next editor re-introduces).
+check_paths_from_only_in_comments() {
+    local hits bad
+    hits="$(grep -n -- '--paths-from' "$JC_INDEX" || true)"
+    if [ -z "$hits" ]; then
+        printf 'the --paths-from ban is not documented anywhere in %s\n' "$JC_INDEX" >&2
+        return 1
+    fi
+    bad="$(printf '%s\n' "$hits" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+    if [ -n "$bad" ]; then
+        printf 'these --paths-from occurrences are NOT comment lines:\n%s\n' "$bad" >&2
+        return 1
+    fi
+    return 0
+}
+
 # expect_ok [args...] — the script must exit 0 and print the success summary.
 expect_ok() {
     local o e rc=0
@@ -481,6 +595,60 @@ else
     assert "12 indexed files under a cap of 10 refuses, naming indexed=12 and cap=10" \
         with_cap "$CAP_INDEX" 10 \
             expect_truncation 12 10 --check-only --project-root "$CAP_ROOT"
+fi
+
+# -- Test 9: the invocation contract, bound to the CONSTRUCTED argv -----------
+# Every assertion here reads the command the script would actually exec, not
+# its prose. A header that documented `--once` while the command omitted it
+# would sail through a grep-the-script guard and fail every check below.
+echo ""
+echo "--- Test 9: constructed indexer argv (pin / watch --once, and the bans) ---"
+
+ARGV_ROOT="$(mk_tmpdir)"
+
+if [ -z "$ARGV_ROOT" ]; then
+    echo "  FAIL: could not mktemp -d the invocation-contract fixture"
+    FAIL=$((FAIL + 1))
+else
+    assert "--dry-run exits 0 and prints exactly ONE exec line, running no gates" \
+        check_dry_run_shape "$ARGV_ROOT"
+
+    # PRD §8: 1.108.27 is no longer on PyPI, so the pin is 1.108.54. An
+    # unpinned invocation would silently follow upstream into a version whose
+    # flags and schema this script has not been verified against.
+    assert "argv pins jcodemunch-mcp==1.108.54" \
+        argv_has "$ARGV_ROOT" "jcodemunch-mcp==1.108.54"
+
+    # All three flags re-verified on the `watch` subparser at 1.108.54
+    # (server.py:6326-6369).
+    assert "argv uses the 'watch' subcommand" \
+        argv_subcommand_is "$ARGV_ROOT" watch
+
+    assert "argv carries --once (one bounded pass, not a daemon)" \
+        argv_has "$ARGV_ROOT" --once
+
+    assert "argv carries --no-ai-summaries" \
+        argv_has "$ARGV_ROOT" --no-ai-summaries
+
+    assert "argv names the resolved project root" \
+        argv_has "$ARGV_ROOT" "$ARGV_ROOT"
+
+    # THE NEGATIVE HALF. PRD §4.4: --paths-from short-circuits discovery
+    # (index_folder.py:1505-1511) and then DELETEs every previously-indexed file
+    # absent from the list (sqlite_store.py:1698, :1480-1483) — with no warning.
+    # It is only reachable on the `index` subparser (server.py:6505), never on
+    # `watch`, so banning the subcommand and the flag are two halves of one
+    # guarantee and both are asserted.
+    assert "argv NEVER contains --paths-from (PRD §4.4: it silently deletes rows)" \
+        argv_lacks "$ARGV_ROOT" --paths-from
+
+    assert "argv NEVER uses the 'index' subcommand (the only path to --paths-from)" \
+        argv_word_absent "$ARGV_ROOT" index
+
+    # Belt and braces: the ban is recorded in the script, and every occurrence
+    # of the literal there is a comment — documented, never invoked.
+    assert "the --paths-from ban is documented in the script and only in comments" \
+        check_paths_from_only_in_comments
 fi
 
 test_summary
