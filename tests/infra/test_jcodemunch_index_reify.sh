@@ -360,6 +360,101 @@ check_paths_from_only_in_comments() {
     return 0
 }
 
+# ── Stub indexer (Block 11) ─────────────────────────────────────────────────
+#
+# Reproduces the REAL `watch --once` output shapes at the pinned 1.108.54. The
+# one-shot path is watcher.py::sync_folders (:878-935), which prints to STDERR:
+#
+#     Syncing <folder>...
+#       <folder>: <msg> (<duration>s)
+#
+# where msg = result.get("message", f"{result.get('symbol_count','?')} symbols").
+# index_folder sets "message": "No changes detected" on a no-op (:1303, :1372,
+# :1755) and OMITS "message" entirely on both changed branches (:1456-1466,
+# :1859-1870), so those two lines are the only two real shapes.
+#
+# mk_stub_indexer <path> <no-changes|changed|fail>
+mk_stub_indexer() {
+    local path="$1" mode="$2"
+    cat > "$path" <<'STUB'
+#!/usr/bin/env bash
+# Test stub: argv is `watch <root> --once --no-ai-summaries`.
+root="$2"
+echo "Syncing $root..." >&2
+STUB
+    case "$mode" in
+        no-changes) echo 'echo "  $root: No changes detected (0.4s)" >&2; exit 0' >> "$path" ;;
+        changed)    echo 'echo "  $root: 54233 symbols (77.8s)" >&2; exit 0' >> "$path" ;;
+        fail)       echo 'echo "  $root: boom" >&2; exit 3' >> "$path" ;;
+        *) echo "mk_stub_indexer: bad mode $mode" >&2; return 1 ;;
+    esac
+    chmod +x "$path"
+}
+
+# with_stub <index_dir> <stub> <checker> [args...]
+with_stub() {
+    local dir="$1" stub="$2" rc=0; shift 2
+    local had="${REIFY_JC_INDEXER_CMD+set}" prev="${REIFY_JC_INDEXER_CMD:-}"
+    export REIFY_JC_INDEXER_CMD="$stub"
+    with_index_path "$dir" "$@" || rc=$?
+    if [ "$had" = "set" ]; then
+        export REIFY_JC_INDEXER_CMD="$prev"
+    else
+        unset REIFY_JC_INDEXER_CMD
+    fi
+    return "$rc"
+}
+
+# expect_ok_stderr <substring> [args...] — expect_ok, plus a substring that must
+# appear on STDERR (where all of upstream's --once output goes).
+expect_ok_stderr() {
+    local want="$1"; shift
+    expect_ok "$@" || return 1
+    if ! grep -qF -- "$want" "$SCRATCH/ok.err"; then
+        printf 'stderr did not contain %s (the indexer output was swallowed)\n' "$want" >&2
+        cat "$SCRATCH/ok.err" >&2
+        return 1
+    fi
+    return 0
+}
+
+# expect_refusal_absent <marker> <unwanted> [args...] — a refusal that must NOT
+# also carry <unwanted>, used to prove a later gate was never reached.
+expect_refusal_absent() {
+    local marker="$1" unwanted="$2"; shift 2
+    expect_refusal "$marker" "$@" || return 1
+    if grep -qF -- "$unwanted" "$SCRATCH/refusal.out" "$SCRATCH/refusal.err"; then
+        printf 'the run-failure path still reached %s\n' "$unwanted" >&2
+        return 1
+    fi
+    return 0
+}
+
+# check_no_upstream_changed_token <file> — THE G6 NEGATIVE ASSERTION.
+#
+# Re-verified against the PINNED 1.108.54: `watch --once` runs sync_folders,
+# which emits NEITHER `changed=N` NOR `changed: N`. That summary line
+# (watcher.py:305) belongs to the CONTINUOUS watch loop's re-index callback, so
+# a consumer bound to it would be bound to a string this code path never prints
+# — the PRD's `changed: 0` and the decompose-time pin's `changed=0` are BOTH
+# wrong here. The only upstream token either file may match on this path is the
+# literal `No changes detected`.
+#
+# The two forbidden patterns are assembled from fragments so this file does not
+# itself contain the literal it forbids — otherwise the check would flag its own
+# source and could only be satisfied by exempting itself.
+UPSTREAM_TOKEN_EQ="chang""ed="
+UPSTREAM_TOKEN_COLON="chang""ed:"
+check_no_upstream_changed_token() {
+    local f="$1" hits
+    hits="$(grep -n -e "$UPSTREAM_TOKEN_EQ" -e "$UPSTREAM_TOKEN_COLON" "$f" || true)"
+    if [ -n "$hits" ]; then
+        printf '%s binds to an upstream token the watch --once path never emits:\n%s\n' "$f" "$hits" >&2
+        return 1
+    fi
+    return 0
+}
+
 # expect_ok [args...] — the script must exit 0 and print the success summary.
 expect_ok() {
     local o e rc=0
@@ -649,6 +744,77 @@ else
     # of the literal there is a comment — documented, never invoked.
     assert "the --paths-from ban is documented in the script and only in comments" \
         check_paths_from_only_in_comments
+fi
+
+# -- Test 11: run summary and exit propagation -------------------------------
+# Driven by a stub indexer through the REIFY_JC_INDEXER_CMD seam, so the two
+# REAL 1.108.54 `watch --once` stderr shapes are exercised offline.
+echo ""
+echo "--- Test 11: run summary, changed-file report, exit propagation ---"
+
+RUN_ROOT="$(mk_tmpdir)"
+RUN_INDEX="$(mk_tmpdir)"
+STUB_DIR="$(mk_tmpdir)"
+
+if [ -z "$RUN_ROOT" ] || [ -z "$RUN_INDEX" ] || [ -z "$STUB_DIR" ]; then
+    echo "  FAIL: could not mktemp -d the run-summary fixtures"
+    FAIL=$((FAIL + 1))
+else
+    mk_stub_indexer "$STUB_DIR/no-changes" no-changes
+    mk_stub_indexer "$STUB_DIR/changed"    changed
+    mk_stub_indexer "$STUB_DIR/fail"       fail
+
+    # (a) The no-op shape. This is the task's user-observable signal: an
+    # immediate SECOND run reports zero changed files.
+    mk_index_db "$RUN_INDEX" "$RUN_ROOT" 12 3 >/dev/null
+    assert "a 'No changes detected' run exits 0 and reports jc-changed-files=0" \
+        with_stub "$RUN_INDEX" "$STUB_DIR/no-changes" \
+            expect_ok_stdout "jc-changed-files=0" --project-root "$RUN_ROOT"
+
+    # The child's stderr is the ONLY place upstream says anything on this path,
+    # so it must reach the operator rather than being swallowed by the capture.
+    assert "the indexer's stderr is passed through to the operator" \
+        with_stub "$RUN_INDEX" "$STUB_DIR/no-changes" \
+            expect_ok_stderr "No changes detected" --project-root "$RUN_ROOT"
+
+    # (b) The changed shape. `message` is omitted on both changed branches, so
+    # msg falls back to "<symbol_count> symbols" — no "No changes detected".
+    assert "a '54233 symbols' run exits 0 and reports jc-changed-files=some" \
+        with_stub "$RUN_INDEX" "$STUB_DIR/changed" \
+            expect_ok_stdout "jc-changed-files=some" --project-root "$RUN_ROOT"
+
+    # A successful run does NOT excuse the DB gate: the count still decides.
+    assert "the changed run still reports the DB's true symbol count (12 sym)" \
+        with_stub "$RUN_INDEX" "$STUB_DIR/changed" \
+            expect_ok_stdout "12 sym" --project-root "$RUN_ROOT"
+
+    mk_index_db "$RUN_INDEX" "$RUN_ROOT" 0 3 >/dev/null
+    assert "a successful run over an EMPTY index still refuses E_JC_INDEX_EMPTY" \
+        with_stub "$RUN_INDEX" "$STUB_DIR/changed" \
+            expect_refusal E_JC_INDEX_EMPTY --project-root "$RUN_ROOT"
+
+    # (c) Exit propagation. The DB here is deliberately EMPTY, so if the script
+    # fell through to the symbol gate it would emit E_JC_INDEX_EMPTY — its
+    # absence is what proves the run failure returned BEFORE that gate.
+    assert "a failing indexer refuses E_JC_INDEX_RUN_FAILED without reaching the symbol gate" \
+        with_stub "$RUN_INDEX" "$STUB_DIR/fail" \
+            expect_refusal_absent E_JC_INDEX_RUN_FAILED E_JC_INDEX_EMPTY \
+                --project-root "$RUN_ROOT"
+
+    # THE G6 NEGATIVE ASSERTION — see check_no_upstream_changed_token.
+    assert "the script binds to no upstream token the watch --once path never emits" \
+        check_no_upstream_changed_token "$JC_INDEX"
+
+    assert "this test binds to no upstream token the watch --once path never emits" \
+        check_no_upstream_changed_token "$SCRIPT_DIR/test_jcodemunch_index_reify.sh"
+
+    # The changed-file report is the script's OWN token. `No changes detected`
+    # is the one upstream marker this path may legitimately match.
+    assert "the script's changed-file report uses its own jc-changed-files token" \
+        grep -q 'jc-changed-files=' "$JC_INDEX"
+
+    assert "the only upstream marker the script matches is 'No changes detected'" \
+        grep -q 'No changes detected' "$JC_INDEX"
 fi
 
 test_summary
