@@ -307,8 +307,53 @@ headroom_note() {
     return 0
 }
 
+# ── The indexer command ──────────────────────────────────────────────────────
+#
+# The BARE one-shot form and nothing more. All three flags re-verified on the
+# `watch` subparser at the pinned 1.108.54 (server.py:6326-6369):
+#
+#     uvx --from jcodemunch-mcp==1.108.54 jcodemunch-mcp watch <root> --once --no-ai-summaries
+#
+# The pin is 1.108.54 because PRD §8 records that 1.108.27 is no longer on
+# PyPI. An unpinned invocation would silently follow upstream into a version
+# whose flags and schema this script has not been verified against.
+#
+# NOTHING is ever appended to this array — see the `--paths-from` ban in the
+# header (PRD §4.4). In particular the `index` subcommand is never used: it is
+# the only subparser that accepts --paths-from at all (server.py:6505).
+JC_PIN="jcodemunch-mcp==1.108.54"
+
+INDEXER_CMD=(uvx --from "$JC_PIN" jcodemunch-mcp)
+if [ -n "${REIFY_JC_INDEXER_CMD:-}" ]; then
+    # TEST-ONLY SEAM. Replaces the `uvx …` prefix so the guard can drive the
+    # summary/exit contract against the two real 1.108.54 stderr shapes offline.
+    # Never set in production use; word-split deliberately, so a caller can pass
+    # a multi-word command.
+    # shellcheck disable=SC2206
+    INDEXER_CMD=(${REIFY_JC_INDEXER_CMD})
+fi
+INDEXER_ARGV=("${INDEXER_CMD[@]}" watch "$PROJECT_ROOT" --once --no-ai-summaries)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "exec  $(printf '%q ' "${INDEXER_ARGV[@]}")"
+    exit 0
+fi
+
+# Resolve the indexer entry point before the ~5-10 minute run rather than
+# failing partway into it. Only on the real path: --dry-run prints a command it
+# does not run, and --check-only never invokes one, so neither needs uvx present
+# (which is what keeps this script's guard hermetic in a task worktree, where
+# jcodemunch is legitimately absent — PRD §9).
+require_indexer() {
+    command -v "${INDEXER_CMD[0]}" >/dev/null 2>&1 && return 0
+    die "'${INDEXER_CMD[0]}' is not on PATH. Install uv (https://docs.astral.sh/uv/) or add its bin dir — on this host uvx lives at /home/leo/.local/bin/uvx. Use --dry-run to see the exact command, or --check-only to assert an existing index without running one."
+}
+
 indexed_files=""
-[ "$CHECK_ONLY" -eq 1 ] || headroom_note
+if [ "$CHECK_ONLY" -eq 0 ]; then
+    require_indexer
+    headroom_note
+fi
 check_index
 check_truncation
 
