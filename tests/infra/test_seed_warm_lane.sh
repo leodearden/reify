@@ -4262,7 +4262,7 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
 # ─────────────────────────────────────────────────────────────────────────────
 # Block V: detached trash-rm holds no caller FD (task #6219) — the two
 # backgrounded trash-rm jobs in scripts/seed-warm-lane.sh (the orphan sweep at
-# :1070, the reseed-trash rm at :1438) close the lane-lock FD (9<&-) but do
+# :1083, the reseed-trash rm at :1464) close the lane-lock FD (9<&-) but do
 # NOT redirect fd 1/fd 2. A caller that captures the script's stdout through a
 # PIPE rather than a file — scripts/warm-lane-gc.sh:648-649's
 # `2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done` is the live
@@ -4308,14 +4308,39 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
 # `_wait_until` rather than a bare read, so the block is deterministic in
 # BOTH the RED and the GREEN state, with no upper-bound timing assertion.
 #
-# Non-vacuity is the load-bearing part of the design — two independent
-# guards, both required, because a `pipe:*` mismatch would otherwise pass
-# trivially if the fixture never connected a pipe or the site never fired:
+# Non-vacuity is the load-bearing part of the design — independent guards are
+# required throughout, because a "does not hold a descriptor onto X" assert
+# would otherwise pass trivially if the fixture never connected the resource
+# or the site never fired:
 #   V3/V7 (site-fired):  the shim log really carries an entry for the path.
 #   V4    (pipe-wired):  REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 forces the
-#         reseed-trash rm (only, :1436) into the FOREGROUND, where inheriting
-#         the pipe is CORRECT — asserting THAT invocation's fd 1 IS `pipe:*`
-#         proves, in the same harness, that a pipe was genuinely connected.
+#         reseed-trash rm (only, :1461-1462) into the FOREGROUND, where
+#         inheriting the pipe is CORRECT — asserting THAT invocation's fd 1
+#         IS `pipe:*` proves, in the same harness, that a pipe was genuinely
+#         connected.
+#   V12   (FD-8-wired): the same SYNC knob, wrapped in the gc-mirroring
+#         exec-8/exec-9 lock harness (see V9-V13 below), proves the harness
+#         genuinely holds FD 8 open across the (now-foreground) reseed-trash
+#         rm — the FD-8 analogue of V4's role for the pipe.
+#
+# V9-V13 EXTEND this block with a SECOND caller descriptor: warm-lane-gc.sh's
+# own EXCLUSIVE lane-lock FD (8, ${lane}.lock — scripts/warm-lane-gc.sh:559-
+# 565 the FD-8 acquire, :645-649 the seed subshell + pipe, :716 the later
+# release). A flock is attached to the OPEN FILE DESCRIPTION, not the
+# descriptor (LANE-LOCK RELEASE CONTRACT block, scripts/seed-warm-lane.sh
+# :863-891), so a detached child that inherits a dup of FD 8 keeps gc's
+# exclusive lane lock held for its entire orphaned rm -rf, even after gc's
+# own `exec 8>&-` — making the lane read as locked to every later consumer
+# against a process that is not a consumer at all. The rm shim below now
+# records a FOURTH tab field: the child's full /proc/$BASHPID/fd inventory
+# (space-joined `<n>=><target>` items), so V9-V13 can target a SPECIFIC lock
+# path rather than fd 1/fd 2 alone — a "no fd >= 3" assert would be flaky, a
+# healthy inventory legitimately carries a transient pipe: entry from the
+# probe's own $(readlink ...) plus 255=><shim path> and 0/1/2=>/dev/null. The
+# V8 structural detector gains a matching second criterion (a DETACH line
+# must carry both `8<&-` and `9<&-`, not just a stdout redirect), asserted
+# separately as V13 so V8's own original, narrower assertion is unaffected
+# and stays green throughout.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block V: detached trash-rm holds no caller FD (task #6219) ---"
@@ -4378,15 +4403,32 @@ cp "$STUB_DIR/git" "$V_STUB/git"
 # for why $BASHPID (captured into a plain variable before the command
 # substitution) stands in for /proc/self here. Written as a quoted heredoc
 # into a mktemp'd dir, matching every other stub in this file.
+#
+# Fourth field (task #6219 FD-8 arm): the child's full fd inventory, built
+# into a plain variable BEFORE the printf so the log write itself is never
+# what gets measured -- space-joined "<n>=><target>" items read via
+# /proc/$_v_mypid/fd (BASHPID, never /proc/self, same reason as fd 1/fd 2
+# above). MEASURED while building this: each $(readlink ...) below --
+# including the fd1/fd2 reads themselves -- transiently occupies a
+# descriptor in THIS shim's own table, so a HEALTHY inventory legitimately
+# contains a pipe: entry (observed at fd 3) plus 255=><this shim's path> and
+# 0/1/2=>/dev/null (bash's own async-list stdin default) even post-fix.
+# Callers must therefore target a SPECIFIC path, never assert "no fd >= 3" --
+# that would be flaky by construction.
 cat > "$V_STUB/rm" << 'V_RM_STUB_EOF'
 #!/usr/bin/env bash
 for arg in "$@"; do
     case "$arg" in
         */.reseed-trash/*)
             _v_mypid="$BASHPID"
-            printf '%s\t%s\t%s\n' "$arg" \
+            _v_fdset=""
+            for _v_fdpath in "/proc/$_v_mypid/fd/"*; do
+                _v_fdset="$_v_fdset ${_v_fdpath##*/}=>$(readlink "$_v_fdpath" 2>/dev/null || true)"
+            done
+            printf '%s\t%s\t%s\t%s\n' "$arg" \
                 "$(readlink "/proc/$_v_mypid/fd/1")" \
                 "$(readlink "/proc/$_v_mypid/fd/2")" \
+                "${_v_fdset# }" \
                 >> "$REIFY_TEST_FDLOG"
             exit 0
             ;;
@@ -4398,13 +4440,24 @@ chmod +x "$V_STUB/rm"
 
 V_TRASH_GLOB="*/.reseed-trash/$(basename "$V_LANE").*"
 
-# _v_fdlog_has_entry <fdlog> <path-glob> -- _wait_until predicate: true once
-# <fdlog> carries a line whose path (tab-separated field 1) matches <glob>.
-# Mirrors _calls_file_has_trash_rm's line-match shape (:560-569).
+# _v_fdlog_has_entry <fdlog> <path-glob> [exclude-exact-path] -- _wait_until
+# predicate: true once <fdlog> carries a line whose path (tab-separated
+# field 1) matches <glob>, other than a line whose path is EXACTLY
+# [exclude-exact-path] if given. Mirrors _calls_file_has_trash_rm's
+# line-match shape (:560-569). The optional exclusion exists only for the
+# V9-V13 arm below (task #6219 FD-8 arm): one seed invocation there fires
+# BOTH detach sites into a SHARED fdlog, and the reseed-trash rename entry's
+# PID suffix is unknown ahead of time and not safely distinguishable from
+# the orphan-sweep entry's suffix by a glob (both are plain digit strings),
+# so it is identified by eliminating the orphan's exact, test-planted path
+# rather than by pattern or by log-write order (log-write order is never
+# assumed in this file -- see the V4 comment above on the ambiguity that
+# once flaked because of it).
 _v_fdlog_has_entry() {
-    local fdlog="$1" glob="$2" path
+    local fdlog="$1" glob="$2" exclude="${3:-}" path
     [ -f "$fdlog" ] || return 1
-    while IFS=$'\t' read -r path _ _; do
+    while IFS=$'\t' read -r path _ _ _; do
+        [ -n "$exclude" ] && [ "$path" = "$exclude" ] && continue
         case "$path" in
             $glob) return 0 ;;
         esac
@@ -4412,18 +4465,22 @@ _v_fdlog_has_entry() {
     return 1
 }
 
-# _v_fdlog_field <fdlog> <path-glob> <1|2> -- prints the fd1 (field 2) or fd2
-# (field 3) recorded for the FIRST line whose path matches <glob>. Callers
-# only invoke this after _v_fdlog_has_entry has already proven the line
-# exists.
+# _v_fdlog_field <fdlog> <path-glob> <1|2|4> [exclude-exact-path] -- prints
+# the fd1 (field 2), fd2 (field 3) or fd-inventory (field 4, task #6219 FD-8
+# arm -- the space-joined "<n>=><target>" list) recorded for the FIRST line
+# whose path matches <glob>, honouring the same optional exact-path
+# exclusion as _v_fdlog_has_entry. Callers only invoke this after
+# _v_fdlog_has_entry has already proven a matching line exists.
 _v_fdlog_field() {
-    local fdlog="$1" glob="$2" field="$3" path fd1 fd2
-    while IFS=$'\t' read -r path fd1 fd2; do
+    local fdlog="$1" glob="$2" field="$3" exclude="${4:-}" path fd1 fd2 fdset
+    while IFS=$'\t' read -r path fd1 fd2 fdset; do
+        [ -n "$exclude" ] && [ "$path" = "$exclude" ] && continue
         case "$path" in
             $glob)
                 case "$field" in
                     1) printf '%s' "$fd1" ;;
                     2) printf '%s' "$fd2" ;;
+                    4) printf '%s' "$fdset" ;;
                 esac
                 return 0
                 ;;
@@ -4454,6 +4511,41 @@ _v_field_is_pipe() {
         pipe:*) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# _v_fdset_has_target <fdlog> <path-glob> <target-path> [exclude-exact-path]
+# (task #6219 FD-8 arm) -- wait for the entry (bounded, deterministic -- see
+# TIMING above), then return 0 iff its fd inventory (field 4) contains an
+# "<n>=><target-path>" item whose target is EXACTLY <target-path>. A missing
+# log entry is a FAILURE (return 1) -- same no-vacuous-pass discipline as
+# _v_field_not_pipe/_v_field_is_pipe. Deliberately targeted at one specific
+# path rather than "does the child hold any fd >= 3": see the fourth-field
+# comment on the rm shim above for why a fd-count-based assertion would be
+# flaky by construction.
+_v_fdset_has_target() {
+    local fdlog="$1" glob="$2" target="$3" exclude="${4:-}" fdset item
+    _wait_until 10 _v_fdlog_has_entry "$fdlog" "$glob" "$exclude" || return 1
+    fdset="$(_v_fdlog_field "$fdlog" "$glob" 4 "$exclude")"
+    for item in $fdset; do
+        case "$item" in
+            *"=>$target") return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# _v_fdset_missing_target <fdlog> <path-glob> <target-path> [exclude-exact-path]
+# -- the "does NOT contain" polarity. Deliberately NOT a bare
+# `! _v_fdset_has_target ...`: negating would turn a missing log entry (site
+# never fired) into a spurious PASS, defeating the non-vacuity discipline
+# this whole block is built around. Both polarities independently gate on
+# _v_fdlog_has_entry first, exactly like _v_field_not_pipe/_v_field_is_pipe
+# do for fields 2/3.
+_v_fdset_missing_target() {
+    local fdlog="$1" glob="$2" target="$3" exclude="${4:-}"
+    _wait_until 10 _v_fdlog_has_entry "$fdlog" "$glob" "$exclude" || return 1
+    _v_fdset_has_target "$fdlog" "$glob" "$target" "$exclude" && return 1
+    return 0
 }
 
 # ── V0-V3: the async DEFAULT path (both trash-rm sites backgrounded) ────────
@@ -4509,7 +4601,7 @@ assert "V4-fixture: the SYNC control run exits 0" \
 assert "V4 (non-vacuity, pipe really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd 1 IS the caller's pipe, proving this harness genuinely connects one" \
     _v_field_is_pipe "$V_FDLOG_SYNC" "$V_TRASH_GLOB_SYNC" 1
 
-# ── V5-V7: the orphan-sweep arm (:1070) ─────────────────────────────────────
+# ── V5-V7: the orphan-sweep arm (:1083) ─────────────────────────────────────
 # Reuses the H4e orphan-trash plant recipe (:2553-2565) — a FRESH lane with a
 # non-empty target/ (a precondition: the orphan sweep lives inside the same
 # `if [ -d "$LANE_TARGET" ] && [ -n "$(ls -A ...)" ]` block as the
@@ -4554,26 +4646,41 @@ assert "V6 (RED, the defect): the detached orphan-sweep rm's fd 2 is NOT the cal
 # non-comment line whose final effective token is a bare `&`, i.e. not `&&`)
 # rather than inventing a competing one. ─────────────────────────────────────
 
-# _v8_detach_offenders <file> -- prints "<lineno>: <line>" for every DETACH
-# line in <file> that does NOT also carry an output redirect (no `>`
-# anywhere once a trailing `# comment` is stripped). Exits 1 if any such line
-# was printed, 0 if none -- mirrors _flock_fork_offenders' print+return-code
-# shape (tests/infra/test_flock_detached_fork_guard.sh).
+# _v8_detach_offenders <file> [required-substring]... -- prints
+# "<lineno>:<reasons>: <line>" for every DETACH line in <file> that does NOT
+# also carry an output redirect (no `>` anywhere once a trailing `# comment`
+# is stripped) OR is missing any of the given [required-substring] tokens
+# (task #6219 FD-8 arm's V13: pass `8<&-` and `9<&-` to additionally require
+# both caller-lock closes). <reasons> names which criterion/criteria fired
+# (no-stdout-redirect, missing-<token>), so an operator can tell a missing
+# redirect from a missing close. With no extra args this is exactly the
+# original V8 check. Exits 1 if any offender was printed, 0 if none --
+# mirrors _flock_fork_offenders' print+return-code shape
+# (tests/infra/test_flock_detached_fork_guard.sh).
 _v8_detach_offenders() {
     local f="$1"
-    awk '
+    shift
+    local reqs="$*"
+    awk -v reqs="$reqs" '
         function is_detach(s) {
             sub(/[[:space:]]+#.*$/, "", s)
             return (s ~ /[^&>|]&[[:space:]]*$/)
         }
+        BEGIN { nreq = split(reqs, req, " ") }
         {
             t = $0
             sub(/^[[:space:]]+/, "", t)
             if (t == "" || t ~ /^#/) next
             body = t
             sub(/[[:space:]]+#.*$/, "", body)
-            if (is_detach(t) && body !~ />/) {
-                printf "%d: %s\n", NR, t
+            if (!is_detach(t)) next
+            reasons = ""
+            if (body !~ />/) reasons = reasons " no-stdout-redirect"
+            for (i = 1; i <= nreq; i++) {
+                if (index(body, req[i]) == 0) reasons = reasons " missing-" req[i]
+            }
+            if (reasons != "") {
+                printf "%d:%s: %s\n", NR, reasons, t
                 bad = 1
             }
         }
@@ -4581,12 +4688,15 @@ _v8_detach_offenders() {
     ' "$f"
 }
 
-# _v8_assert_no_offenders <file> -- the assert-shaped wrapper: prints any
-# offenders (captured by assert's own on-FAIL dump, per its tmpfile
-# mechanism) and returns non-zero iff at least one was found.
+# _v8_assert_no_offenders <file> [required-substring]... -- the assert-shaped
+# wrapper: prints any offenders (captured by assert's own on-FAIL dump, per
+# its tmpfile mechanism) and returns non-zero iff at least one was found.
+# Extra args forward to _v8_detach_offenders verbatim.
 _v8_assert_no_offenders() {
-    local f="$1" out rc=0
-    out="$(_v8_detach_offenders "$f")" || rc=$?
+    local f="$1"
+    shift
+    local out rc=0
+    out="$(_v8_detach_offenders "$f" "$@")" || rc=$?
     if [ "$rc" -ne 0 ]; then
         printf '%s\n' "$out"
         return 1
@@ -4621,6 +4731,147 @@ assert "V8-sensitivity: the detector does NOT flag the redirected twin (>/dev/nu
 
 assert "V8: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs lacking a stdout redirect (structural regression guard)" \
     _v8_assert_no_offenders "$SCRIPT"
+
+# ── V9-V13: the FD-8 lane-lock arm — replicates warm-lane-gc.sh's production
+# invocation EXACTLY: an EXCLUSIVE flock on the per-lane mutex (FD 8,
+# ${lane}.lock) held in the PARENT, a SHARED flock on the gen lock (FD 9)
+# held in an inner subshell, and seed invoked with --assume-lane-lock-held so
+# it never opens its own FD 9 (scripts/warm-lane-gc.sh:559-565 the FD-8
+# acquire, :645-649 the seed subshell + pipe; scripts/seed-warm-lane.sh
+# :765-766 names the convention: "thin --reseed on FD 9, gc reclaim on FD
+# 8"). One lane with a NON-EMPTY target/ AND a pre-planted `<lane>.999999`
+# orphan (H4e recipe, :2553-2565) fires BOTH detach sites in ONE run,
+# mirroring the real caller shape rather than two synthetic ones.
+#
+# Disambiguating the two entries in the SHARED fdlog: the orphan's suffix is
+# the known literal `.999999`, but the reseed-trash rename entry's suffix is
+# seed's own $$ at runtime — unknown ahead of time and not safely
+# distinguishable from `.999999` by a numeric-range glob (both are plain
+# digit strings). It is identified instead by eliminating the orphan's
+# exact, test-planted path (the `exclude` parameter threaded through
+# _v_fdlog_has_entry/_v_fdlog_field above), never by log-write order: this
+# file already caught one flake from assuming order (see the V4 comment).
+V_LANE3="$(make_isolated_lane V-lane3)"
+mkdir -p "$V_LANE3/target"
+echo "stale" > "$V_LANE3/target/stale.a"
+
+V_ORPHAN_PATH3="$(dirname "$V_LANE3")/.reseed-trash/$(basename "$V_LANE3").999999"
+mkdir -p "$V_ORPHAN_PATH3"
+echo "orphan artifact" > "$V_ORPHAN_PATH3/orphan.a"
+
+V_ORPHAN_GLOB3="*/.reseed-trash/$(basename "$V_LANE3").999999"
+V_TRASH_GLOB3="*/.reseed-trash/$(basename "$V_LANE3").*"
+
+# gc's ${WORKTREES_DIR}/${name}.lock == seed's own ${LANE_DIR}.lock
+# (scripts/seed-warm-lane.sh:774) -- the SAME file, minted fresh here exactly
+# as make_isolated_lane's own docstring anticipates ("its sibling
+# ${lane}.lock ... files"), reclaimed by the suite's one EXIT trap with no
+# new _TMPDIRS registration.
+V_LOCK3="${V_LANE3}.lock"
+: > "$V_LOCK3"
+V_GENLOCK3="$_LANE_ROOT/.v-genlock3"
+: > "$V_GENLOCK3"
+
+V_FDLOG3="$_LANE_ROOT/.v-fdlog3"
+: > "$V_FDLOG3"
+V_SINK4="$_LANE_ROOT/.v-sink4"
+
+set +e
+( exec 8>"$V_LOCK3"
+  flock -n 8 || exit 90
+  exec 9>"$V_GENLOCK3"
+  flock -s 9
+  PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG3" \
+      bash "$SCRIPT" "$V_BASE" "$V_LANE3" --fresh-checkout --assume-lane-lock-held
+) 2>&1 | cat > "$V_SINK4"
+V9_RC="${PIPESTATUS[0]}"
+set -e
+
+assert "V9-fixture: seed exits 0 under the gc-mirroring FD-8/FD-9 lock harness" \
+    test "$V9_RC" -eq 0
+assert "V9-fixture (site fired): the reseed-trash rename entry was logged" \
+    _wait_until 10 _v_fdlog_has_entry "$V_FDLOG3" "$V_TRASH_GLOB3" "$V_ORPHAN_PATH3"
+assert "V9-fixture (site fired): the orphan-sweep entry was logged" \
+    _wait_until 10 _v_fdlog_has_entry "$V_FDLOG3" "$V_ORPHAN_GLOB3"
+assert "V9-fixture (non-vacuity, sweep really fired): captured output names the swept orphan entry (mirrors H4e's assert at :2571)" \
+    grep -q "Sweeping orphaned trash entry" "$V_SINK4"
+
+assert "V9 (RED, the defect): the detached RESEED-TRASH rm's fd inventory holds no descriptor onto the caller's lane-lock file" \
+    _v_fdset_missing_target "$V_FDLOG3" "$V_TRASH_GLOB3" "$V_LOCK3" "$V_ORPHAN_PATH3"
+assert "V10 (RED, the defect): the detached ORPHAN-SWEEP rm's fd inventory holds no descriptor onto the caller's lane-lock file" \
+    _v_fdset_missing_target "$V_FDLOG3" "$V_ORPHAN_GLOB3" "$V_LOCK3"
+
+assert "V11 (regression pin): the detached RESEED-TRASH rm's fd inventory holds no descriptor onto the gen-lock file" \
+    _v_fdset_missing_target "$V_FDLOG3" "$V_TRASH_GLOB3" "$V_GENLOCK3" "$V_ORPHAN_PATH3"
+assert "V11 (regression pin): the detached ORPHAN-SWEEP rm's fd inventory holds no descriptor onto the gen-lock file" \
+    _v_fdset_missing_target "$V_FDLOG3" "$V_ORPHAN_GLOB3" "$V_GENLOCK3"
+
+# ── V12: the SYNC control arm — proves FD 8 was genuinely wired ────────────
+# Same reasoning as V4: a FRESH, never-before-seeded lane (no orphan
+# planted), wrapped in the SAME gc-mirroring exec-8/exec-9 harness, with
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 so the reseed-trash rm runs in the
+# FOREGROUND and therefore legitimately inherits FD 8. Without this arm,
+# every "does not contain" assert above (V9, V10, V11) would pass trivially
+# if the harness never opened FD 8 at all.
+V_LANE3_SYNC="$(make_isolated_lane V-lane3-sync)"
+mkdir -p "$V_LANE3_SYNC/target"
+echo "stale" > "$V_LANE3_SYNC/target/stale.a"
+V_TRASH_GLOB3_SYNC="*/.reseed-trash/$(basename "$V_LANE3_SYNC").*"
+
+V_LOCK3_SYNC="${V_LANE3_SYNC}.lock"
+: > "$V_LOCK3_SYNC"
+V_GENLOCK3_SYNC="$_LANE_ROOT/.v-genlock3-sync"
+: > "$V_GENLOCK3_SYNC"
+
+V_FDLOG3_SYNC="$_LANE_ROOT/.v-fdlog3-sync"
+: > "$V_FDLOG3_SYNC"
+V_SINK5="$_LANE_ROOT/.v-sink5"
+
+set +e
+( exec 8>"$V_LOCK3_SYNC"
+  flock -n 8 || exit 90
+  exec 9>"$V_GENLOCK3_SYNC"
+  flock -s 9
+  PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG3_SYNC" \
+      REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
+      bash "$SCRIPT" "$V_BASE" "$V_LANE3_SYNC" --fresh-checkout --assume-lane-lock-held
+) 2>&1 | cat > "$V_SINK5"
+V12_RC="${PIPESTATUS[0]}"
+set -e
+
+assert "V12-fixture: the SYNC control run exits 0 under the gc-mirroring lock harness" \
+    test "$V12_RC" -eq 0
+assert "V12 (non-vacuity, FD 8 really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd inventory DOES hold a descriptor onto the caller's lane-lock file, proving this harness genuinely wires FD 8" \
+    _v_fdset_has_target "$V_FDLOG3_SYNC" "$V_TRASH_GLOB3_SYNC" "$V_LOCK3_SYNC"
+
+# ── V13: structural regression guard, FD-8 criterion ────────────────────────
+# Extends the V8 detector (above) with a second criterion via
+# _v8_detach_offenders's optional [required-substring] args: a DETACH line
+# must ALSO carry both `8<&-` and `9<&-`, not just a stdout redirect. Kept as
+# a SEPARATE assertion (not a rewrite of V8's own call) so V8's original,
+# narrower check is untouched and stays green throughout this task.
+#
+# Sensitivity pins reuse $V8_FIXTURE_DIR (same self-match-safety convention
+# noted above): $V8_CLEAN is already exactly "stdout-redirected, closes only
+# 9<&-" -- the offender THIS criterion must flag -- so it is reused rather
+# than duplicated; a new twin closing BOTH fds is added for the "does NOT
+# flag" pin.
+_v8_close8='8<&-'
+V13_CLEAN="$V8_FIXTURE_DIR/both-closes-twin.sh"
+printf '{ rm -rf "$X"; } %s %s >/dev/null 2>&1 %s\n' "$_v8_close8" "$_v8_close" "$_v8_amp" > "$V13_CLEAN"
+
+V13_OFF_RC=0
+_v8_detach_offenders "$V8_CLEAN" '8<&-' '9<&-' >/dev/null || V13_OFF_RC=$?
+assert "V13-sensitivity: the extended detector FLAGS a synthetic offender that redirects stdout and closes only 9<&- (missing 8<&-) -- proves the new criterion is not vacuously green" \
+    test "$V13_OFF_RC" -ne 0
+
+V13_CLEAN_RC=0
+_v8_detach_offenders "$V13_CLEAN" '8<&-' '9<&-' >/dev/null || V13_CLEAN_RC=$?
+assert "V13-sensitivity: the extended detector does NOT flag the full 8<&- 9<&- >/dev/null 2>&1 & twin" \
+    test "$V13_CLEAN_RC" -eq 0
+
+assert "V13: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs failing EITHER criterion (stdout redirect, 8<&-, 9<&-) -- structural regression guard for the FD-8 lane-lock leak" \
+    _v8_assert_no_offenders "$SCRIPT" '8<&-' '9<&-'
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
