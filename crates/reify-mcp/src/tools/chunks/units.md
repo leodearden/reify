@@ -89,7 +89,7 @@ Drop the annotation and the error becomes silence instead: `let arc = r * theta`
 
 Honest scope: this bites at annotated bindings over expressions, not universally. A bare *literal* still widens silently (`param theta : Angle = 2.5` evaluates to `2.5`, dimension erased; `sin(2.5)` is accepted). See "Enforcement honesty (D7)" in `docs/legibility/design-invariants.md`.
 
-No field or tensor operator manufactures `rad` from a derivative — gradient, divergence, curl and laplacian stay pure quotient (`INV-AD-2 quotient-pure-derivative-algebra`). The catalogue of sites where `rad` legitimately enters is in `docs/legibility/design-invariants.md`, under `INV-AD-1 angle-crossings-explicit`.
+No field or tensor operator manufactures `rad` from a derivative — gradient, divergence, curl and laplacian stay pure quotient (`INV-AD-2 quotient-pure-derivative-algebra`). The catalogue of sites where `rad` legitimately enters is in `docs/legibility/design-invariants.md` under "Crossing catalogue and identities"; the governing rule is `INV-AD-1 angle-crossings-explicit`.
 
 **Angular frequency is a different crossing**: `omega = 2*pi * f * 1rad` carries 2π rad/cycle, not the η = 1 rad above, and there is no `cycle` unit to write — see "The 2π rad/cycle distinction (D4)" in the same file.
 
