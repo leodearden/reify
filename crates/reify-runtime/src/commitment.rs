@@ -120,9 +120,14 @@ impl NodePolicyOverrides {
     /// 5. (Future) **Global fallback** — unconditional project default (not yet implemented)
     ///
     /// Level 4 subsumes the old hard `CommitIfSlow` default when `traits` are known.
-    /// The existing single-arg [`resolve`](Self::resolve) (consumed by the scheduler at
-    /// `concurrent.rs:358`) is **left unchanged** — level-4 is NOT wired into the
-    /// scheduler until task η/3581 (B4) lands the IMMEDIATE→never-cancelled short-circuit.
+    /// The single-arg [`resolve`](Self::resolve) is **left unchanged** and now retains
+    /// only this module's unit-test coverage: its production consumer was the
+    /// concurrent scheduler's `CommitmentTracker::should_continue`, deleted with
+    /// `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  The older "not wired until task
+    /// η/3581 (B4) lands" caveat is obsolete — #3581 landed, and the scheduler it
+    /// referred to no longer exists.  `resolve_with_traits` is reached today through
+    /// `reify_cli::dev::render_inspection`, the delta step of its alpha/beta/gamma/delta
+    /// inspection chain.
     pub fn resolve_with_traits(
         &self,
         node_id: &NodeId,
@@ -261,9 +266,10 @@ fn kind_from_name(pat: &str) -> Option<NodeKind> {
 ///
 /// **Q-3 note (PRD §12):** `default_overrides(Value, IMMEDIATE)` returns
 /// `AlwaysCancelWhenStale` because `IMMEDIATE` does not include `COMMITTABLE`.
-/// This is intentional: task η/3581 (B4) will add an IMMEDIATE→never-cancelled
-/// short-circuit at the scheduler before `resolve_with_traits` is wired into
-/// scheduler dispatch, making the cosmetic mismatch moot.
+/// This is intentional, and the mismatch stays cosmetic: the
+/// IMMEDIATE→never-cancelled guard was task η (#3581, B4), and the scheduler
+/// that would have consumed it was deleted with `concurrent.rs` in c1b8dba3f7
+/// (task ο, #5065), so no dispatch path observes the mismatch today.
 // G-allow: same-file caller only; audit counts cross-file refs
 pub fn default_overrides(_kind: NodeKind, traits: NodeTraits) -> NodeCommitmentOverride {
     if !traits.contains(NodeTraits::COMMITTABLE) {

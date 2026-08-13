@@ -59,8 +59,7 @@ fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
 /// robustness: in practice a gated node downstream of a Failed cell will see
 /// Pending (via the §9.2 chain), but treating Failed as blocking is
 /// consistent with the "Final is the only safe-to-run state" principle and
-/// keeps this helper aligned with the scheduler's single `bool` predicate
-/// (see `reify-runtime/src/concurrent.rs`).
+/// keeps this helper a single `bool` predicate.
 ///
 /// The canonical end-to-end witness is
 /// `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
