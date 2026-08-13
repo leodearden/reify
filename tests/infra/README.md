@@ -13,19 +13,20 @@ on the next `run_all.sh` invocation and in CI.
 It is excluded from discovery by exact name.
 
 **Mandatory, mechanically-gated: a `run-all-classification.manifest` row.**
-Every `test_*.sh` here also needs a `<test_basename> <bucket>` row in
+Every `test_*.sh` discovered by the rule above (i.e. excluding
+`test_helpers.sh`) also needs a `<test_basename> <bucket>` row in
 [`run-all-classification.manifest`](run-all-classification.manifest) —
 `bucket` is one of `pool`, `intra-run-serial`, or `host-exclusive`; see that
-file's header comment for the definition of each. `scripts/check-infra-
-classification-manifest.sh` runs as `scripts/verify.sh`'s **first** plan
-entry whenever `RUN_RUST=1` and fails the build in *both* directions: a
-`test_*.sh` on disk with no manifest row, or a manifest row with no backing
-file. **Add the test file and its manifest row in the same commit** — because
-the gate fails both ways, splitting them across commits leaves an
-intermediate commit red, and the failure surfaces at that first gate entry,
-far from this README. The executable bit is *not* required: every runner
-path invokes the file via `bash <file>`, and the repo is a genuine mix today
-(131 tracked files at mode `100755`, 41 at `100644`).
+file's header comment for the definition of each.
+`scripts/check-infra-classification-manifest.sh` runs as
+`scripts/verify.sh`'s **first** plan entry whenever `RUN_RUST=1` and fails
+the build in *both* directions: a `test_*.sh` on disk with no manifest row,
+or a manifest row with no backing file. **Add the test file and its
+manifest row in the same commit** — because the gate fails both ways,
+splitting them across commits leaves an intermediate commit red, and the
+failure surfaces at that first gate entry, far from this README. The
+executable bit is *not* required: every runner path invokes the file via
+`bash <file>`.
 
 ## Shared test helpers
 
