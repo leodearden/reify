@@ -28,6 +28,17 @@ _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
+# ONE root for every fixture this suite creates, registered here in the PARENT
+# shell. The factories below are called as `$(make_repo)` — a COMMAND
+# SUBSTITUTION, i.e. a SUBSHELL — so a `_TMPDIRS+=(...)` executed inside them is
+# discarded when that subshell exits and the directory leaks forever. Measured:
+# repeated runs had accreted ~100 abandoned git repos and worktrees under /tmp,
+# which is exactly the wrong behaviour for a `pool`-classified test that the
+# merge gate re-runs constantly on a disk-pressured host. Rooting every fixture
+# under one parent-registered directory sidesteps the subshell problem entirely:
+# cleanup removes the root, so nothing needs per-path registration.
+_SUITE_TMP="$(mktemp -d)"; _TMPDIRS+=("$_SUITE_TMP")
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 # make_repo — create a fresh throwaway git repo with one commit; prints its path.
@@ -38,7 +49,9 @@ trap cleanup EXIT
 # unset-vs-explicit-false distinction, so the factory must not pre-decide it.
 make_repo() {
     local dir
-    dir="$(mktemp -d)"; _TMPDIRS+=("$dir")
+    # Under $_SUITE_TMP, NOT a bare `mktemp -d`: see the note above — this runs
+    # in a subshell, so registering the path for cleanup here would be a no-op.
+    dir="$(mktemp -d "$_SUITE_TMP/repo.XXXXXX")"
     git -C "$dir" init -q -b main
     git -C "$dir" config user.email test@test.com
     git -C "$dir" config user.name Test
@@ -139,7 +152,7 @@ _dflt_guard="$_dflt_repo/scripts/git-rerere-guard.sh"
 # because it happened to inspect nothing.
 git -C "$_dflt_repo" config rerere.enabled true
 _dflt_cd="$(common_dir "$_dflt_repo")"
-_dflt_snap="$(mktemp -d)"; _TMPDIRS+=("$_dflt_snap")
+_dflt_snap="$(mktemp -d "$_SUITE_TMP/snap.XXXXXX")"
 cp "$_dflt_cd/config" "$_dflt_snap/before"
 
 assert "(d) a bare no-arg invocation exits non-zero" \
@@ -206,7 +219,7 @@ assert "(e-c) check stderr names rerere.autoupdate" \
 echo ""
 echo "--- (e-d) check never writes config ---"
 
-_ro_snap="$(mktemp -d)"; _TMPDIRS+=("$_ro_snap")
+_ro_snap="$(mktemp -d "$_SUITE_TMP/snap.XXXXXX")"
 _i=0
 for _r in "$REPO_ON" "$REPO_OFF" "$REPO_AU"; do
     _i=$((_i + 1))
@@ -373,8 +386,10 @@ make_wt_repo() {
     git -C "$dir" config extensions.worktreeConfig true
     git -C "$dir" config rerere.enabled false
     git -C "$dir" config rerere.autoupdate false
+    # Siblings of $dir, so they land under $_SUITE_TMP and the root sweep in
+    # cleanup reclaims them. Registering them here would not work: this factory
+    # is called via command substitution and runs in a subshell.
     wt_a="$dir-wtA"; wt_b="$dir-wtB"
-    _TMPDIRS+=("$wt_a" "$wt_b")
     git -C "$dir" worktree add -q -b wtA "$wt_a" >/dev/null 2>&1
     git -C "$dir" worktree add -q -b wtB "$wt_b" >/dev/null 2>&1
     echo "$dir $wt_a $wt_b"
@@ -503,7 +518,7 @@ assert "(h-a) ...and inherits rerere.autoupdate=false (write was --local, not --
 # (h-b) idempotence — a second run must be a byte-level no-op, since setup-dev.sh
 # runs this on every invocation.
 _arm_cd="$(common_dir "$REPO_ARM")"
-_arm_snap="$(mktemp -d)"; _TMPDIRS+=("$_arm_snap")
+_arm_snap="$(mktemp -d "$_SUITE_TMP/snap.XXXXXX")"
 cp "$_arm_cd/config" "$_arm_snap/before2"
 
 assert "(h-b) a second arm run also exits 0" \
