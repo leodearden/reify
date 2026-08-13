@@ -244,9 +244,55 @@ _sweep_worktree_configs() {
     return "$armed"
 }
 
+# cmd_arm — idempotently pin rerere off in the SHARED local config, then
+# re-verify via the full check logic.
+#
+# --local, NEVER --worktree: the entire point is that all ~238 lanes inherit one
+# shared default with zero per-lane wiring.  A --worktree write would leave every
+# other lane armed while this one reads clean.
+#
+# MUST NOT delete or prune rr-cache.  Deleting an entry another live worktree
+# still holds is precisely the operation that reproduces the segfault + stale
+# MERGE_RR.lock signature, so the cure would re-cause the disease across the
+# fleet.  The explicit `false` neutralises the residual cache in place — that is
+# measured behaviour, not an assumption (see the suite's behavioural oracles).
 cmd_arm() {
-    echo "ERROR: arm is not implemented yet" >&2
-    return 1
+    local changed=0 key before
+
+    for key in rerere.enabled rerere.autoupdate; do
+        # Compare against the current LOCAL value and skip a redundant write, so
+        # a re-run is a byte-level no-op on .git/config.  setup-dev.sh invokes
+        # this every time; a rewrite would churn the shared file for nothing.
+        before="$(git -C "$TARGET" config --local --get "$key" 2>/dev/null || true)"
+        if [ "$before" = "false" ]; then
+            continue
+        fi
+        git -C "$TARGET" config --local "$key" false
+        echo "SET: $key=false (was ${before:-<unset>}) in $COMMON_DIR/config" >&2
+        changed=1
+    done
+
+    if [ "$changed" -eq 0 ]; then
+        echo "already armed: rerere.enabled=false, rerere.autoupdate=false in $COMMON_DIR/config" >&2
+    fi
+
+    if [ -d "$RR_CACHE" ]; then
+        echo "note: $RR_CACHE left intact by design — the explicit 'false' neutralises it in place." >&2
+        echo "  Deleting an entry another live worktree still holds is what reproduces the" >&2
+        echo "  segfault + stale MERGE_RR.lock signature; never prune it to 'clean up'." >&2
+    fi
+
+    # Re-verify through the SAME logic `check` uses, so `arm` can never report
+    # success while a per-worktree override or an inherited global value still
+    # wins over the shared write just made.
+    if ! cmd_check; then
+        echo "ERROR: rerere is STILL armed after writing the shared config." >&2
+        echo "  A per-worktree config.worktree or the user's global gitconfig is overriding it;" >&2
+        echo "  see the ARMED lines above for which." >&2
+        return 1
+    fi
+
+    return 0
 }
 
 cmd_scan_locks() {
