@@ -162,6 +162,15 @@
 #       is present, absolute, under /tmp, and byte-equal to
 #       role_env_overrides.<role>.CARGO_HOME for EVERY member of
 #       CACHE_REDIRECT_ROLES.
+#   (E) FLIP PRECONDITIONS (task 5836; same sandbox.enabled gate as (D)):
+#       (a) `cargo nextest --version` succeeds under the CONFIGURED
+#           verify_env.CARGO_HOME (parsed from the yaml, not hardcoded).
+#           That home has no bin/ of its own, so this passes only via the
+#           ~/.cargo/bin PATH fallthrough. Control arm: if nextest also
+#           fails under the default (unset) CARGO_HOME it is absent from
+#           the host, reported SKIP rather than misattributed to the
+#           redirect. (b) verify_env does NOT carry npm_config_cache --
+#           a deliberate asymmetry, pinned so it stays deliberate.
 #
 # (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the SKIP
 #     idiom used by test_merge_role_lint_first_seam.sh /
@@ -300,6 +309,18 @@ under role_env_overrides[<role>]" to "a key under a named top-level mapping":
                                                (same strict-descendant rule,
                                                same rationale, as
                                                role_key_under_tmp above)
+  top_key_absent <section> <key>           -- d[section] has NO <key> at all.
+                                               Pins a DELIBERATE asymmetry, not
+                                               an oversight (see the
+                                               npm_config_cache assertion in
+                                               the caller)
+  top_key_print <section> <key>            -- PRINT the value to stdout instead
+                                               of asserting on it (exit 1 with
+                                               no output if absent/empty), so a
+                                               bash caller can drive a real
+                                               subprocess with the configured
+                                               value rather than a second
+                                               hardcoded copy of it
   cross_section_key_equals <section> <key> <role> <rolekey>
                                            -- d[section][key] is EQUAL to
                                                role_env_overrides[role][rolekey].
@@ -474,6 +495,30 @@ if check == "top_key_under_tmp":
     # spelled out under role_key_under_tmp above.
     sys.exit(0 if Path("/tmp") in Path(val).parents else 1)
 
+if check == "top_key_absent":
+    section, key = rest
+    section_map = d.get(section)
+    if not isinstance(section_map, dict):
+        # Trivially absent. Every other assertion against this section already
+        # fails loudly in that state, so passing here is honest, not masking.
+        sys.exit(0)
+    if key in section_map:
+        print(
+            f"{section} carries the key {key!r}, whose ABSENCE is deliberate "
+            "-- see the caller's rationale before adding it",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "top_key_print":
+    section, key = rest
+    val = _top_value(section, key)
+    if val is None:
+        sys.exit(1)
+    print(val)
+    sys.exit(0)
+
 if check == "cross_section_key_equals":
     section, key, role, rolekey = rest
     section_val = _top_value(section, key)
@@ -569,8 +614,52 @@ PYEOF
             assert "verify_env.CARGO_HOME == role_env_overrides.${role}.CARGO_HOME (anti-split invariant: they share one warm target/, and a divergence has NO symptom except every sandboxed task rebuilding the whole registry dep tree twice -- agent, then verify)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" cross_section_key_equals verify_env CARGO_HOME "$role" CARGO_HOME
         done
+
+        # -------------------------------------------------------------------
+        # (E) PRECONDITIONS THAT MAKE THE (D) FLIP SAFE AND BOUNDED (task 5836)
+        # -------------------------------------------------------------------
+        echo "--- (E) verify_env flip preconditions (toolchain resolution; deliberate asymmetry) ---"
+
+        # (E)(a) TOOLCHAIN-RESOLUTION PRECONDITION.
+        # Non-obvious and load-bearing. The redirect destination has NO bin/ at
+        # all -- it holds registry/ plus cargo's lock files, nothing else -- so
+        # `cargo nextest` under it resolves ONLY because ~/.cargo/bin is on PATH
+        # and cargo's subcommand lookup falls through from $CARGO_HOME/bin to
+        # PATH. (RUSTC_WRAPPER=sccache in verify_env resolves the same way.) If
+        # PATH ever loses ~/.cargo/bin, verify breaks confusingly at nextest
+        # rather than here, at the seam that caused it. Driven off the value
+        # PARSED from the yaml, never a second hardcoded copy, so the probe
+        # cannot silently test a path the config no longer names.
+        _VERIFY_CARGO_HOME="$(python3 "$_PARSE_PY" "$ORCH_YAML" top_key_print verify_env CARGO_HOME || true)"
+
+        if [ -z "$_VERIFY_CARGO_HOME" ]; then
+            echo "SKIP: verify_env.CARGO_HOME is absent/empty, so there is no configured value to probe (the (D) assertions above already report that as FAIL -- not re-reported here as a second failure for one cause)"
+        elif ! env -u CARGO_HOME cargo nextest --version >/dev/null 2>&1; then
+            # CONTROL ARM. Deliberately `env -u CARGO_HOME` rather than the
+            # AMBIENT env: this suite is itself run by a sandboxed agent whose
+            # ambient CARGO_HOME is already the redirect value, which would make
+            # the control and the probe the same measurement. Unsetting it tests
+            # cargo's genuine default (~/.cargo) whoever invokes the suite. A
+            # host where nextest is simply not installed must report SKIP, not a
+            # FAIL misattributed to the redirect.
+            echo "SKIP: 'cargo nextest --version' also fails under the DEFAULT (unset) CARGO_HOME, so nextest is genuinely unavailable on this host rather than broken by the redirect (control arm)"
+        else
+            assert "cargo nextest resolves under the configured verify_env.CARGO_HOME ($_VERIFY_CARGO_HOME), which has no bin/ of its own -- it works only via the ~/.cargo/bin PATH fallthrough, and the control arm above has already established nextest IS available on this host" \
+                env CARGO_HOME="$_VERIFY_CARGO_HOME" cargo nextest --version
+        fi
+
+        # (E)(b) DELIBERATE-ASYMMETRY PIN.
+        # Mirroring npm_config_cache too would be the obvious symmetric move and
+        # is deliberately NOT done: the measured defect is specific to cargo's
+        # path-keyed per-unit fingerprint, npm has no equivalent, and widening
+        # the merge gate's cache path buys nothing measured. Pinning the ABSENCE
+        # (same shape and same rationale as the collapsed-'reviewer' assertion
+        # above) forces any future npm mirroring to arrive as a deliberate edit
+        # carrying its own evidence, rather than as a symmetry-driven drive-by.
+        assert "verify_env does NOT carry npm_config_cache -- its absence is DELIBERATE (cargo's fingerprint embeds the registry source path; npm has no path-keyed equivalent, so mirroring it would widen the merge gate's blast radius for no measured gain)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_absent verify_env npm_config_cache
     else
-        echo "SKIP: sandbox.enabled is not true; neither the (A) cache-redirect contract nor the (D) CARGO_HOME-agreement contract applies (guard is conditional, see header)"
+        echo "SKIP: sandbox.enabled is not true; none of the (A) cache-redirect, (D) CARGO_HOME-agreement or (E) flip-precondition contracts apply (guard is conditional, see header)"
     fi
 fi
 
