@@ -537,4 +537,29 @@ assert "(i-e) the in-progress lane is NOT offered an rm command" \
 assert "(i-e) scan-locks still exits non-zero when a lock exists at all" \
     bash -c "! bash '$GUARD' scan-locks '$LK_REPO' >/dev/null 2>&1"
 
+# ==============================================================================
+# (wiring) setup-dev.sh must have an UNCOMMENTED call to the guard.
+#
+# This is a BEHAVIOURAL pin, not a documentation assertion: without it the guard
+# is dead code, and the invariant it enforces would silently revert the first
+# time anything rewrote the shared .git/config.  Mirrors the (wiring) block in
+# tests/infra/test_main_gate_worktree_config.sh.
+# ==============================================================================
+echo ""
+echo "--- (wiring) setup-dev.sh calls git-rerere-guard.sh ---"
+
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+
+assert "(wiring) scripts/setup-dev.sh exists" \
+    test -f "$SETUP_DEV"
+
+assert "(wiring) setup-dev.sh calls git-rerere-guard.sh (uncommented)" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -q 'git-rerere-guard.sh'"
+
+# The call must be `arm`, not `check`: setup-dev's job is to make the invariant
+# self-healing on the existing setup path, and a bare `check` would merely
+# report the drift while leaving the fleet armed.
+assert "(wiring) setup-dev.sh invokes the 'arm' subcommand" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -E 'git-rerere-guard\.sh[\"'\''[:space:]]+arm'"
+
 test_summary
