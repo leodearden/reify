@@ -13,6 +13,14 @@ A file that cannot reach a clean compile does **not** belong here — an exempla
 that does not work is worse than no exemplar. Do not add a `SKIP_SET` entry to
 exempt one.
 
+**It is constraint-gated too.** `crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`
+(task #6215) walks every `.ri` file here: each constraint must be `Satisfied`,
+or pinned `Indeterminate` with a documented reason — never `Violated`. See
+that file's module doc for the full contract (bidirectional allowlist
+checking; why this is not a `SKIP_SET`). E.g. `clearance_oracle.ri`'s two
+geometry-consumer constraints are pinned Indeterminate on this gate's pure
+value-eval surface by design — see its row below.
+
 ## How to use this index
 
 **Before probing the language, grep this file.** The corpus exists because
