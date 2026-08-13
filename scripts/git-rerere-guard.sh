@@ -141,9 +141,37 @@ WORKTREES_DIR="$COMMON_DIR/worktrees"
 
 # ── subcommand implementations ────────────────────────────────────────────────
 
+# cmd_check — report whether rerere is effectively armed for the target store.
+#
+# Reads the EFFECTIVE value via `git config --bool --get <key>` (no --local), so
+# the full precedence chain is honoured: a value inherited from the user's global
+# gitconfig, or set in a worktree's config.worktree, is just as armed as one in
+# the shared .git/config, and reading only --local would silently miss it.
+#
+# Exit code is the machine-readable signal (0 = safe, 1 = armed); stdout stays
+# empty so a caller can use this in a pipeline without parsing prose.
 cmd_check() {
-    echo "ERROR: check is not implemented yet" >&2
-    return 1
+    local armed=0 value
+
+    # rerere.enabled — the master switch.
+    value="$(git -C "$TARGET" config --bool --get rerere.enabled 2>/dev/null || true)"
+    if [ "$value" = "true" ]; then
+        echo "ARMED: rerere.enabled=true for $COMMON_DIR" >&2
+        echo "  A resolution recorded by any lane can be replayed into an unrelated lane's merge." >&2
+        armed=1
+    fi
+
+    # rerere.autoupdate — reported independently of rerere.enabled, not folded
+    # into it.  autoupdate is what auto-STAGES a replayed resolution, turning a
+    # visible conflict into a clean `git status` an agent will commit blind.
+    value="$(git -C "$TARGET" config --bool --get rerere.autoupdate 2>/dev/null || true)"
+    if [ "$value" = "true" ]; then
+        echo "ARMED: rerere.autoupdate=true for $COMMON_DIR" >&2
+        echo "  A replayed resolution is auto-staged, leaving no conflict markers and a clean git status." >&2
+        armed=1
+    fi
+
+    return "$armed"
 }
 
 cmd_arm() {
