@@ -349,10 +349,46 @@ require_indexer() {
     die "'${INDEXER_CMD[0]}' is not on PATH. Install uv (https://docs.astral.sh/uv/) or add its bin dir — on this host uvx lives at /home/leo/.local/bin/uvx. Use --dry-run to see the exact command, or --check-only to assert an existing index without running one."
 }
 
+# ── Running the indexer ──────────────────────────────────────────────────────
+#
+# ALL of upstream's `--once` output goes to STDERR (watcher.py::sync_folders
+# prints `Syncing <folder>...` then `  <folder>: <msg> (<duration>s)` there and
+# nowhere else), so the child's stderr is both the operator's only view of the
+# run AND the only place the no-op marker can be read. It is therefore tee'd:
+# passed through live, and kept for the marker test below.
+#
+# THE ONLY UPSTREAM MARKER THIS PATH MAY BE READ FOR is the literal
+# "No changes detected" (index_folder.py:1303/:1372/:1755). The
+# `<n> new / <n> deleted` style summary line at watcher.py:305 belongs to the
+# CONTINUOUS watch loop's re-index callback and is NEVER printed by the one-shot
+# path, so nothing here may key on it — see the changed-file token below.
+JC_CHANGED="n/a"
+run_indexer() {
+    local out="$SCRATCH_ERR.run" rc=0
+    if ! "${INDEXER_ARGV[@]}" 2> >(tee "$out" >&2); then
+        rc=1
+    fi
+    wait 2>/dev/null || true
+
+    [ "$rc" -eq 0 ] || refuse E_JC_INDEX_RUN_FAILED \
+        "the indexer exited non-zero for $REPO_ID (see its output above). Command: $(printf '%q ' "${INDEXER_ARGV[@]}")"
+
+    # The script's OWN report, derived from that one sanctioned marker. Its
+    # token is deliberately distinct from any upstream one, so a consumer
+    # grepping for it can never be silently satisfied by upstream prose.
+    if grep -q 'No changes detected' "$out" 2>/dev/null; then
+        JC_CHANGED=0
+    else
+        JC_CHANGED=some
+    fi
+    rm -f "$out"
+}
+
 indexed_files=""
 if [ "$CHECK_ONLY" -eq 0 ]; then
     require_indexer
     headroom_note
+    run_indexer
 fi
 check_index
 check_truncation
@@ -361,7 +397,7 @@ check_truncation
 #
 # The script's OWN line, in a format this script owns. Deliberately NOT a
 # re-emission of an upstream token: `watch --once` runs watcher.py::sync_folders,
-# which emits neither `changed=N` nor `changed: N` (that line belongs to the
-# CONTINUOUS watch loop's re-index callback at watcher.py:305), so binding a
-# consumer to one would bind it to a string this code path never prints.
-say "INDEX-OK  repo=$REPO_ID  db=$DB_PATH  $symbol_count sym  indexed=$indexed_files cap=$FILE_CAP"
+# which emits NEITHER spelling of the `<n> new / <n> deleted` summary line (it
+# belongs to the CONTINUOUS watch loop's re-index callback, watcher.py:305), so
+# binding a consumer to it would bind it to a string this path never prints.
+say "INDEX-OK  repo=$REPO_ID  db=$DB_PATH  $symbol_count sym  indexed=$indexed_files cap=$FILE_CAP  jc-changed-files=$JC_CHANGED"

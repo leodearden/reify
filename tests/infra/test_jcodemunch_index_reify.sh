@@ -433,11 +433,11 @@ expect_refusal_absent() {
 # check_no_upstream_changed_token <file> — THE G6 NEGATIVE ASSERTION.
 #
 # Re-verified against the PINNED 1.108.54: `watch --once` runs sync_folders,
-# which emits NEITHER `changed=N` NOR `changed: N`. That summary line
-# (watcher.py:305) belongs to the CONTINUOUS watch loop's re-index callback, so
-# a consumer bound to it would be bound to a string this code path never prints
-# — the PRD's `changed: 0` and the decompose-time pin's `changed=0` are BOTH
-# wrong here. The only upstream token either file may match on this path is the
+# which emits NEITHER spelling of the `<n> new / <n> deleted` summary line. That
+# line (watcher.py:305) belongs to the CONTINUOUS watch loop's re-index
+# callback, so a consumer bound to it would be bound to a string this code path
+# never prints — the PRD's and the decompose-time pin's two spellings of it are
+# BOTH wrong here. The only upstream token either file may match on this path is the
 # literal `No changes detected`.
 #
 # The two forbidden patterns are assembled from fragments so this file does not
