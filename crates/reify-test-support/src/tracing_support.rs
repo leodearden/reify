@@ -148,6 +148,13 @@ pub fn assert_warn_count(counter: &AtomicUsize, expected: usize, context: &str) 
 /// - `counter` is the `Arc<AtomicUsize>` shared with the subscriber; loads
 ///   with `Ordering::Acquire` observe all WARN increments.
 ///
+/// # Callsite priming is automatic
+///
+/// [`warn_counting_subscriber`] calls [`prime_tracing_callsite_cache`]
+/// internally, so callers do **not** need an explicit priming call — a
+/// subscriber-less sibling test thread can no longer poison a counted
+/// callsite's cached `Interest` to `never`.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -167,12 +174,25 @@ pub fn warn_counting_guard() -> (tracing::subscriber::DefaultGuard, Arc<AtomicUs
 /// [`Arc`] so callers can read the count after the subscriber has been
 /// installed and removed.
 ///
+/// # Callsite priming is automatic
+///
+/// This constructor calls [`prime_tracing_callsite_cache`] as its first
+/// statement, so callers do **not** need an explicit priming call. That
+/// covers both usage shapes — `tracing::subscriber::with_default(subscriber,
+/// …)` and the [`warn_counting_guard`] / `set_default` shape — because the
+/// caller's `Dispatch::new` happens strictly *after* this constructor
+/// returns, by which time the global `Priming` dispatch is already installed
+/// and `NoSubscriber` (whose `register_callsite` returns `Interest::never`)
+/// is out of the callsite-registration path.
+///
 /// # Span ID uniqueness
 ///
 /// Unlike a naïve implementation that returns `Id::from_u64(1)` for every
 /// span, this subscriber uses an [`AtomicU64`] to issue monotonically
 /// increasing IDs, avoiding the "all spans share the same ID" bug.
 pub fn warn_counting_subscriber() -> (impl tracing::Subscriber + Send + Sync, Arc<AtomicUsize>) {
+    prime_tracing_callsite_cache();
+
     let warn_count = Arc::new(AtomicUsize::new(0));
     let warn_count_clone = Arc::clone(&warn_count);
     (WarnCountingSubscriber::new(warn_count_clone), warn_count)
