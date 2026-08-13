@@ -468,4 +468,73 @@ assert "(h-e) no MERGE_RR.lock was left behind in the lane" \
 git -C "$ARM_WT" merge --abort >/dev/null 2>&1 || true
 unset _arm_cd _arm_snap _arm_rr_before _arm_rr_after _arm_wt_gitdir _arm_side
 
+# ==============================================================================
+# (i) `scan-locks` — the M3 recurrence detector.  A failed rr-cache preimage
+#     write leaves a stale zero-byte MERGE_RR.lock in .git/worktrees/<lane>/,
+#     after which every `git commit` in that lane exits 128 while the commit
+#     object is still written and the ref still moves.
+# ==============================================================================
+echo ""
+echo "--- (i) scan-locks censuses stale MERGE_RR.lock files ---"
+
+read -r LK_REPO LK_A LK_B <<< "$(make_wt_repo)"
+LK_COMMON="$(common_dir "$LK_REPO")"
+LK_A_GITDIR="$(git -C "$LK_A" rev-parse --absolute-git-dir)"
+LK_B_GITDIR="$(git -C "$LK_B" rev-parse --absolute-git-dir)"
+
+# (i-b) clean store first, so a later PASS cannot be the detector never firing.
+assert "(i-b) no MERGE_RR.lock anywhere -> scan-locks exits 0" \
+    bash "$GUARD" scan-locks "$LK_REPO"
+
+# ── (i-c) NOISE FLOOR ─────────────────────────────────────────────────────────
+# A bare MERGE_RR with no .lock sibling is ORDINARY rerere state, present in 41
+# of the live store's worktrees today.  Reporting it would make the detector
+# read as "the corruption is fleet-wide" when nothing is wrong at all.
+: > "$LK_B_GITDIR/MERGE_RR"
+
+assert "(i-c) a bare MERGE_RR (no .lock) -> scan-locks still exits 0" \
+    bash "$GUARD" scan-locks "$LK_REPO"
+
+assert "(i-c) a bare MERGE_RR worktree is NOT named in the output" \
+    bash -c "! bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -q \"\$(basename '$LK_B_GITDIR')\""
+
+# (i-a) planted stale lock is reported, naming the worktree.
+: > "$LK_A_GITDIR/MERGE_RR.lock"
+
+assert "(i-a) planted MERGE_RR.lock -> scan-locks exits non-zero" \
+    bash -c "! bash '$GUARD' scan-locks '$LK_REPO' >/dev/null 2>&1"
+
+assert "(i-a) scan-locks names the offending worktree" \
+    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -q \"\$(basename '$LK_A_GITDIR')\""
+
+assert "(i-a) scan-locks classifies it STALE" \
+    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qi 'stale'"
+
+assert "(i-a) scan-locks prints the exact rm remediation command" \
+    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -q 'rm -f $LK_A_GITDIR/MERGE_RR.lock'"
+
+# ── (i-d) READ-ONLY ───────────────────────────────────────────────────────────
+# Deletion stays manual and operator-driven: this script must never mutate
+# another lane's git dir, so the planted files must survive the census.
+assert "(i-d) scan-locks did NOT delete the MERGE_RR.lock" \
+    test -e "$LK_A_GITDIR/MERGE_RR.lock"
+
+assert "(i-d) scan-locks did NOT delete the bare MERGE_RR" \
+    test -e "$LK_B_GITDIR/MERGE_RR"
+
+# ── (i-e) OPERATION IN PROGRESS ───────────────────────────────────────────────
+# A lock alongside a real in-flight merge is NOT stale — telling an operator to
+# rm it would destroy a live operation's state.  Classify, do not lump.
+: > "$LK_B_GITDIR/MERGE_RR.lock"
+git -C "$LK_B" rev-parse HEAD > "$LK_B_GITDIR/MERGE_HEAD"
+
+assert "(i-e) lock + MERGE_HEAD -> reported as operation-in-progress" \
+    bash -c "bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -qi 'in-progress\|in progress'"
+
+assert "(i-e) the in-progress lane is NOT offered an rm command" \
+    bash -c "! bash '$GUARD' scan-locks '$LK_REPO' 2>&1 | grep -q 'rm -f $LK_B_GITDIR/MERGE_RR.lock'"
+
+assert "(i-e) scan-locks still exits non-zero when a lock exists at all" \
+    bash -c "! bash '$GUARD' scan-locks '$LK_REPO' >/dev/null 2>&1"
+
 test_summary
