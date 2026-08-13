@@ -353,17 +353,29 @@ describe('reify.grammar snippets — module and import', () => {
     expect(countErrorNodes('import "foo.ri"')).toBe(0);
   });
 
-  // NOTE — the destructured import form (`import a.b {C, D}` vs
-  // `import a.b.{C, D}`) is deliberately NOT asserted here. The tree-sitter
-  // RULE at grammar.js:258-282 sequences the path and the items with no
-  // separator, but grammar.js's own doc comment on that rule (:263) and the
-  // lowering at crates/reify-syntax/src/ts_parser.rs:538 both spell it with a
-  // dot. Nothing settles the disagreement: `import_items` has no tree-sitter
-  // corpus test, no committed `.ri` uses the form, and no Rust code matches on
-  // the node name. Asserting either spelling here would cement an unverified
-  // shape as an intentional GUI contract, so the production stays (faithful to
-  // the rule) and the test does not pin it. See the ImportDeclaration comment
-  // in reify.grammar; #5931 resolves the canonical form.
+  /**
+   * The destructured import form is SETTLED: the canonical spelling is the
+   * DOTTED `import a.b.{C, D}`, per docs/reify-language-spec.md:2616-2618 §15
+   * (`import_path ::= module_path ('.' '{' IDENT (',' IDENT)* '}')?`), resolved
+   * by #5931. The tree-sitter rule, which previously sequenced path and items
+   * with no separator, was the transcription slip and has been corrected to
+   * match; the two doc comments were right all along.
+   *
+   * That is a normative claim, so it is pinned by assertion rather than left in
+   * a comment — per docs/legibility/design-invariants.md, as with the `module`
+   * placement rule below.
+   */
+  it('parses the canonical destructured import `import std.mech.{Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech.{Bolt, Nut}')).toBe(0);
+  });
+
+  it('parses a single-item destructured import `import a.{Foo}`', () => {
+    expect(countErrorNodes('import a.{Foo}')).toBe(0);
+  });
+
+  it('rejects the spaced destructured form `import std.mech {Bolt, Nut}`', () => {
+    expect(countErrorNodes('import std.mech {Bolt, Nut}')).toBeGreaterThan(0);
+  });
 
   /**
    * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
