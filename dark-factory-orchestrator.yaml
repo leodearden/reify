@@ -680,25 +680,18 @@ sandbox:
 # dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
 # debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
 # covered: merger, steward, deep_reviewer.
-#   merger's exclusion rationale was "redirecting the merge agent's
-#   CARGO_HOME to a cold /tmp cache would diverge it from the verify
-#   subprocess cache path on the one gate that lands everything" — which was
-#   explicitly the same reasoning as the verify_env deferral above. Task 5836
-#   REVERSED that deferral, so this rationale is now INVERTED, not merely
-#   stale: verify_env.CARGO_HOME is /tmp/reify-agent-cargo-home, while merger
-#   carries no override and so still resolves the DEFAULT ~/.cargo. The
-#   divergence the exclusion existed to prevent now exists in the opposite
-#   direction. It is reachable, not theoretical: merger is not sandboxed
-#   (roles.py:45 defaults sandboxed=False and merger does not set it) but
-#   holds unrestricted Bash (roles.py:1161), and its own system prompt
-#   directs it to "Run tests after resolving" a conflict.
-#   Deliberately NOT fixed by 5836, whose scope is the verify/agent seam:
-#   adding merger here would also have to extend CACHE_REDIRECT_ROLES in the
-#   seam guard (changing blocks (A)/(C) coverage), and it should carry its
-#   own measurement of how often the merge agent actually compiles — the
-#   exposure is bounded to the conflict-resolution path, not every merge.
-#   Filed as a follow-up; until it lands, merger is uncovered on a rationale
-#   that no longer holds.
+#   merger is uncovered on a rationale task 5836 INVERTED, not merely made
+#   stale: the exclusion turned on keeping the merge agent's CARGO_HOME equal
+#   to the verify subprocess cache path, and 5836 moved verify_env onto
+#   /tmp/reify-agent-cargo-home while merger, carrying no override, still
+#   resolves the DEFAULT ~/.cargo. Deliberately NOT fixed by 5836, whose scope
+#   is the verify/agent seam. Filed as #6275; until that lands the exclusion
+#   stands on a rationale that no longer holds.
+#   The full re-analysis — the roles.py cites showing the exposure is
+#   reachable rather than theoretical, why re-adding merger must also extend
+#   CACHE_REDIRECT_ROLES, and what measurement it owes — lives in ONE place,
+#   the header of tests/infra/test_sandbox_cache_writability_seam.sh (SECOND
+#   COUPLING). Do not restate it here; the two copies drifted once already.
 #   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
 #   sandboxed=True flip": workflow.py:_build_agent_env merges
 #   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or

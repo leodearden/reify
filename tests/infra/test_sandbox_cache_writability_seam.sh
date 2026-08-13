@@ -137,8 +137,12 @@
 #   adding it must also extend CACHE_REDIRECT_ROLES (changing (A)/(C)/(D)
 #   coverage) and should carry its own measurement, since the exposure is
 #   bounded to the conflict-resolution path rather than every merge. Filed
-#   as a 5836 follow-up. Even so, do NOT "close the gap" by blanket-adding
-#   every role in DF's ROLES registry.
+#   as #6275. Even so, do NOT "close the gap" by blanket-adding every role in
+#   DF's ROLES registry.
+#   This paragraph is the AUTHORITATIVE statement of the inverted rationale;
+#   dark-factory-orchestrator.yaml's role_env_overrides comment deliberately
+#   carries only the conclusion plus a pointer here, so #6275 does not have
+#   to edit two full copies in lockstep.
 #
 # THIRD COUPLING -- CARGO_HOME AGREEMENT ACROSS A SHARED target/ (task 5836,
 # guarded by (D)+(E) below). Distinct from the two above: those are about
@@ -191,10 +195,32 @@
 #     - detect a target/ that is ALREADY split from before the flip. Lanes
 #       carrying pre-flip fingerprints keep paying one rebuild until they
 #       are re-seeded, and that shows up as slowness, never as a red test.
-#   To observe any of those three you must inspect the artifacts, not the
+#     - cover a verify that dark-factory did not launch. verify_env is
+#       applied only when DF spawns the verify subprocess; scripts/verify.sh
+#       sets no CARGO_HOME of its own, and neither does hooks/pre-merge-commit
+#       nor scripts/land.sh (measured: no CARGO_HOME reference in any of the
+#       three). So a hand-run `bash scripts/verify.sh` in a warm lane — and
+#       the land.sh -> pre-merge-commit path — inherits the ambient value,
+#       normally unset = ~/.cargo, and re-splits exactly the fingerprint set
+#       this flip unified, leaving the target/ in the other state for the
+#       next agent turn. (D)'s invariant therefore holds for
+#       orchestrator-launched verifies only. Tracked as #5853.
+#     - see the .package-cache LOCK population the flip CONSOLIDATES. Before
+#       it, verifies contended on ~/.cargo/.package-cache and sandboxed
+#       agents on the /tmp one; after it, every warm-lane verify AND every
+#       agent take the single /tmp/reify-agent-cargo-home/.package-cache.
+#       Bounded rather than free: cargo BLOCKS on that lock instead of
+#       failing, and scripts/assert-crate-dag.sh:31-37 already retries 5x on
+#       the empty-`cargo metadata` stdout that a sibling lock holder produced
+#       in esc-4419-41. Watch for a resurgence of that exact shape after the
+#       activating restart -- the fingerprint win is expected to dominate,
+#       but nothing in this guard can observe the trade.
+#   To observe the first three you must inspect the artifacts, not the
 #   config -- e.g. count target/debug/deps/*.d dep-info files referencing
 #   each home in a live lane, which is how the original split was found
-#   (105 under /tmp alongside 1176 under ~/.cargo, in one pool lane).
+#   (105 under /tmp alongside 1176 under ~/.cargo, in one pool lane). The
+#   last two are runtime behaviours (whose shell launched verify; who holds
+#   the package-cache lock) and are outside any config-parsing guard.
 #
 # Pins, against dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE (python3+PyYAML, SKIP-guarded): IF sandbox.enabled is
