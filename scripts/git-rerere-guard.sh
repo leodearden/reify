@@ -154,11 +154,33 @@ cmd_check() {
     local armed=0 value
 
     # rerere.enabled — the master switch.
-    value="$(git -C "$TARGET" config --bool --get rerere.enabled 2>/dev/null || true)"
-    if [ "$value" = "true" ]; then
-        echo "ARMED: rerere.enabled=true for $COMMON_DIR" >&2
-        echo "  A resolution recorded by any lane can be replayed into an unrelated lane's merge." >&2
-        armed=1
+    #
+    # "explicitly false" and "unset" must be distinguished by the EXIT STATUS of
+    # `git config --get` (exit 1 = unset), not by the value: through --bool an
+    # unset key and an explicit false both read as empty/false, yet they behave
+    # oppositely.  git's default is -1 = "enabled iff rr-cache/ exists", so an
+    # unset key with the residual cache on disk is ARMED.
+    if ! git -C "$TARGET" config --get rerere.enabled >/dev/null 2>&1; then
+        if [ -d "$RR_CACHE" ]; then
+            echo "ARMED: rerere.enabled is UNSET and $RR_CACHE exists." >&2
+            echo "  git's default for rerere.enabled is -1, meaning 'enabled iff rr-cache/ exists'," >&2
+            echo "  so the residual rr-cache directory silently re-arms rerere for every worktree" >&2
+            echo "  sharing this store.  An explicit 'false' is required; --unset is a re-arm." >&2
+            armed=1
+        else
+            # Not armed today, but one conflicted merge in any lane creates
+            # rr-cache/ and flips the -1 default.  Recommend, do not fail.
+            echo "NOTE: rerere.enabled is UNSET and no rr-cache/ exists yet at $RR_CACHE." >&2
+            echo "  Safe right now, but git's -1 default means the first conflicted merge in any" >&2
+            echo "  worktree would create rr-cache/ and silently arm rerere.  Run 'arm' to pin it." >&2
+        fi
+    else
+        value="$(git -C "$TARGET" config --bool --get rerere.enabled 2>/dev/null || true)"
+        if [ "$value" = "true" ]; then
+            echo "ARMED: rerere.enabled=true for $COMMON_DIR" >&2
+            echo "  A resolution recorded by any lane can be replayed into an unrelated lane's merge." >&2
+            armed=1
+        fi
     fi
 
     # rerere.autoupdate — reported independently of rerere.enabled, not folded
