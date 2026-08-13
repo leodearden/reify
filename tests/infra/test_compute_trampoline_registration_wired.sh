@@ -1549,6 +1549,186 @@ assert "b11: reify-gui anywhere in a multi-crate affected set is enough (got $N_
 assert "b11: still emitted EXACTLY ONCE, not once per affected crate (got $N_MANY)" \
     test "$N_MANY" -eq 1
 
+# -- (b13): narrowed on --scope staged too, not just --scope branch ------------
+# b11 above drives the narrowed path through `--scope branch`, the only scope
+# where narrowing ACTIVATES by default.  b13 pins that the gui-feature pass is
+# ALSO narrowed on `--scope staged` WITHOUT `--narrow` — byte-for-byte what
+# hooks/project-checks execs on every commit — because the emission condition
+# reads SCOPE/AFFECTED_CLOSURE rather than inferring the merge gate from
+# NARROW_ACTIVE=0, which holds on that tier too.  Why that inference was wrong
+# and what it cost: the "NARROWED on the same affected-crate axis" bullet in
+# scripts/verify.sh's add_test_passes.  Not restated here.
+echo ""
+echo "--- (b13): narrowed on --scope staged (no --narrow) as well as --scope branch ---"
+
+# ST_FIX — a SECOND hermetic throwaway repo, built with b10's idiom.  BR_FIX is
+# deliberately NOT reused: its change is COMMITTED on task-branch, so its staged
+# diff is empty.  `--scope staged` reads `git diff --cached`, and an empty staged
+# diff yields RUN_RUST=0 and zero test passes, which would make every assertion
+# below vacuously green.  The reify-doc file is therefore left in the INDEX,
+# uncommitted.
+ST_FIX="$DET_TMP/staged-fixture"
+mkdir -p "$ST_FIX/scripts" "$ST_FIX/.config"
+for _f in verify.sh occt-scope-lib.sh occt-touching-crates.txt release-scope-lib.sh \
+          release-sensitive-crates.txt affected-crates-lib.sh lib_test_semaphore.sh \
+          lib_slot_acquire.sh lib_clock_stop.sh cpu-admit.sh lib_proc_reaper.sh \
+          gen-nextest-config.sh heavy-test-filter-lib.sh; do
+    cp "$REPO_ROOT/scripts/$_f" "$ST_FIX/scripts/$_f"
+done
+cp "$REPO_ROOT/.config/nextest.toml" "$ST_FIX/.config/nextest.toml"
+chmod +x "$ST_FIX/scripts/verify.sh"
+assert_source_closure_copied "$REPO_ROOT/scripts" "$ST_FIX/scripts" verify.sh || exit 1
+git -C "$ST_FIX" init -q
+git -C "$ST_FIX" config user.email test@invalid.local
+git -C "$ST_FIX" config user.name test
+git -C "$ST_FIX" add scripts .config
+git -C "$ST_FIX" commit -q -m base
+git -C "$ST_FIX" branch -M main
+# STAGED, never committed — this is what `git diff --cached` must see.
+mkdir -p "$ST_FIX/crates/reify-doc/src"
+printf 'pub fn touched() {}\n' > "$ST_FIX/crates/reify-doc/src/lib.rs"
+git -C "$ST_FIX" add crates
+
+# _staged_gui_plan <out_var> <override> — capture the plan for exactly the shape
+# hooks/project-checks execs: action `all` (not `test`), `--scope staged`, and NO
+# `--narrow`.  Mirrors _narrowed_gui_plan's capture_print_plan + `|| true`
+# discipline so the capture is proven complete before any count is derived.
+_staged_gui_plan() {
+    capture_print_plan "$1" "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'cd "$1" && REIFY_AFFECTED_CRATES_OVERRIDE="$2" exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$ST_FIX" "$2" || true
+}
+
+P_S_DOC=""; P_S_GUI=""
+_staged_gui_plan P_S_DOC "reify-doc"
+_staged_gui_plan P_S_GUI "reify-gui"
+
+# Capture integrity asserted SEPARATELY from the counts, for the reason b11's
+# header spells out: the headline assertion is a NEGATIVE and must not be
+# satisfiable by a fixture that produced nothing.
+assert "b13: staged-scope plan capture for closure='reify-doc' is complete" \
+    plan_capture_complete "$P_S_DOC"
+assert "b13: staged-scope plan capture for closure='reify-gui' is complete" \
+    plan_capture_complete "$P_S_GUI"
+
+S_DOC="$(_gui_pass_count "$P_S_DOC")"
+S_GUI="$(_gui_pass_count "$P_S_GUI")"
+
+# Anti-vacuity positive control, doubling as the B9-default coupling guard: a
+# staged plan WITHOUT --narrow must still be a full-workspace plan.  Its
+# presence proves RUN_RUST=1 (so test passes were emitted at all), and it pins
+# that computing the closure for scope=staged does NOT activate narrowing —
+# clippy and the workspace nextest pass keep --workspace, exactly as
+# tests/infra/test_verify_scope.sh's B9-default scenario requires.
+assert "b13: the staged plan is a real full-workspace plan (carries 'cargo clippy --workspace')" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "cargo clippy --workspace"' _ "$P_S_DOC"
+assert "b13: a --scope staged plan (no --narrow) whose closure is reify-doc does NOT emit the gui-feature pass (got $S_DOC)" \
+    test "$S_DOC" -eq 0
+assert "b13: a --scope staged plan whose closure contains reify-gui DOES emit it (got $S_GUI)" \
+    test "$S_GUI" -eq 1
+
+# -- (b14): a malformed or absent closure fails WIDE on every scope ------------
+# A malformed REIFY_AFFECTED_CRATES_OVERRIDE must never narrow the pass away —
+# a typo'd operator knob becoming a silent coverage gap is strictly worse than
+# an over-broad plan.  The shapes that violate it, and why each one does, are
+# enumerated once at the normalization loop in scripts/verify.sh's
+# add_test_passes; this block is the executable half of that list.
+#
+# Assertion → invariant map:
+#   W_STAGED / W_BRANCH  whitespace-only override fails wide on BOTH scopes
+#   N_STAGED             an UNCOMPUTABLE closure (ALL sentinel) still fails wide
+#                        …and its header assertion pins that the closure was
+#                        genuinely computed on the staged tier, which no count
+#                        assertion can distinguish
+#   G_STAGED / P_STAGED  a glob-bearing / non-crate-name override fails wide
+#   A_DOC                scope=all is unconditional BY CONTRACT and cannot be
+#                        defeated by a stray narrow override
+echo ""
+echo "--- (b14): a malformed/absent closure fails WIDE on every scope ---"
+
+# _staged_gui_plan_noenv <out_var> — as _staged_gui_plan but with NO
+# REIFY_AFFECTED_CRATES_OVERRIDE in the child env (`env -u` so a leaked export in
+# the parent cannot make this case silently identical to the override cases).
+# The workspace-less fixture makes `cargo metadata` fail, so affected_crates()
+# returns the ALL sentinel (affected-crates-lib.sh, C5).
+_staged_gui_plan_noenv() {
+    capture_print_plan "$1" "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        env -u REIFY_AFFECTED_CRATES_OVERRIDE \
+        bash -c 'cd "$1" && exec bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan' \
+        _ "$ST_FIX" || true
+}
+
+P_W_STAGED=""; P_W_BRANCH=""; P_N_STAGED=""; P_A_DOC=""
+_staged_gui_plan   P_W_STAGED "   "
+_narrowed_gui_plan P_W_BRANCH "   "
+_staged_gui_plan_noenv P_N_STAGED
+capture_print_plan P_A_DOC "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && REIFY_AFFECTED_CRATES_OVERRIDE="$2" exec bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan' \
+    _ "$ST_FIX" "reify-doc" || true
+
+assert "b14: whitespace-override staged-scope plan capture is complete" \
+    plan_capture_complete "$P_W_STAGED"
+W_STAGED="$(_gui_pass_count "$P_W_STAGED")"
+assert "b14: a whitespace-only affected-crates override fails WIDE on --scope staged (got $W_STAGED)" \
+    test "$W_STAGED" -eq 1
+
+assert "b14: whitespace-override branch-scope plan capture is complete" \
+    plan_capture_complete "$P_W_BRANCH"
+W_BRANCH="$(_gui_pass_count "$P_W_BRANCH")"
+assert "b14: a whitespace-only affected-crates override fails WIDE on --scope branch too (got $W_BRANCH)" \
+    test "$W_BRANCH" -eq 1
+
+assert "b14: no-override staged-scope plan capture is complete" \
+    plan_capture_complete "$P_N_STAGED"
+N_STAGED="$(_gui_pass_count "$P_N_STAGED")"
+assert "b14: closure unavailable (ALL sentinel) on --scope staged still emits — C5 fail-wide (got $N_STAGED)" \
+    test "$N_STAGED" -eq 1
+# The count alone cannot tell "the closure was COMPUTED and came back ALL" apart
+# from "the closure was never computed on this tier at all": both take arm 2 and
+# both yield 1.  Every other staged case here is driven through
+# REIFY_AFFECTED_CRATES_OVERRIDE, which short-circuits the
+# CHANGED_FILES_RAW -> affected_crates() branch entirely, so this is the ONLY
+# capture that exercises that wiring on the staged tier — an implementation that
+# restricted it to scope=branch would print `closure=` here and still pass every
+# count assertion above.  Asserting the header's exact `affected= closure=ALL`
+# tail therefore pins two things at once: the staged-tier wiring, and the
+# APPEND-ONLY shape of the narrowing header (test_verify_scope.sh greps
+# `NARROW_ACTIVE=0 affected=ALL` as an unanchored substring and
+# plan_capture_lib.sh matches `NARROW_ACTIVE=([0-9]+)`; both survive a trailing
+# append and neither survives a reordering).
+assert "b14: the staged closure is actually COMPUTED (header carries closure=ALL, not an empty closure)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "NARROW_ACTIVE=0 affected= closure=ALL"' _ "$P_N_STAGED"
+
+# Glob-bearing override: the split is an UNQUOTED expansion, so with pathname
+# expansion live `*` expands against the fixture CWD into its directory entries
+# (`crates scripts`) rather than collapsing — neither is reify-gui, so arm 3
+# silently narrowed the pass AWAY.  Measured at 0 emitted passes with
+# `closure=*` in the header before the `set -f` + crate-name-grammar guard.  A
+# malformed knob must fail WIDE on this shape exactly as it does on "   ".
+P_G_STAGED=""
+_staged_gui_plan P_G_STAGED '*'
+assert "b14: glob-override staged-scope plan capture is complete" \
+    plan_capture_complete "$P_G_STAGED"
+G_STAGED="$(_gui_pass_count "$P_G_STAGED")"
+assert "b14: a glob-bearing affected-crates override fails WIDE, never globs against the CWD (got $G_STAGED)" \
+    test "$G_STAGED" -eq 1
+
+# A token that cannot BE a cargo package name (here a path fragment) means the
+# knob is malformed, not that the closure excludes reify-gui — arm 2, not arm 3.
+P_P_STAGED=""
+_staged_gui_plan P_P_STAGED 'crates/reify-doc'
+assert "b14: path-fragment override staged-scope plan capture is complete" \
+    plan_capture_complete "$P_P_STAGED"
+P_STAGED="$(_gui_pass_count "$P_P_STAGED")"
+assert "b14: an override token outside cargo's package-name grammar fails WIDE (got $P_STAGED)" \
+    test "$P_STAGED" -eq 1
+
+assert "b14: scope=all plan capture is complete" \
+    plan_capture_complete "$P_A_DOC"
+A_DOC="$(_gui_pass_count "$P_A_DOC")"
+assert "b14: the merge gate (scope=all) emits it unconditionally, even under a reify-doc-only override (got $A_DOC)" \
+    test "$A_DOC" -eq 1
+
 # -- (b12): --test-threads reaches the gui-feature pass ------------------------
 # `verify.sh --test-threads=N` caps test-execution parallelism.  The cargo-test
 # fallback arm always honoured it; the nextest arm did not, so an explicit

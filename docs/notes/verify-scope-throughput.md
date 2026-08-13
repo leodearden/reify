@@ -144,8 +144,10 @@ so neither of those shapes sees the +1._
 _Counts corrected 2026-08-05 (task 5076, review amendment): the gui-feature
 TEST-EXECUTION pass above is no longer emitted unconditionally. It is now
 narrowed on the same affected-crate axis every other narrowed pass uses —
-emitted whenever `NARROW_ACTIVE=0` (`scope=all`, i.e. the merge gate) and, under
-`NARROW_ACTIVE=1`, only when `reify-gui` is in `AFFECTED`. A `--features gui`
+emitted unconditionally for `scope=all` (the merge gate never narrows), emitted
+whenever the affected-crate closure is unavailable (the `ALL` sentinel, an empty
+changed-file list, or a malformed override — fail wide), and otherwise emitted
+only when `reify-gui` is in that closure. A `--features gui`
 build is a distinct feature-unification of the dependency graph, so it shares
 artifacts with no other pass and costs 20m42s cold / ~137s warm on its own; a
 `-p reify-doc` branch plan was paying that for code no reify-doc change can
@@ -163,6 +165,39 @@ through `REIFY_AFFECTED_CRATES_OVERRIDE` with a literal single-crate list
 `reify-eval` and lacks `reify-gui`. Every `scope=all` cell stays 18 (narrowing
 is structurally unreachable there), docs-only branch stays 0 and gui-only branch
 stays 3 (`RUN_RUST=0`). The table and the sentinel move in lockstep._
+
+_Counts UNCHANGED 2026-08-13 (task 6030): the amendment above described the
+gui-feature pass's unconditional arm as `NARROW_ACTIVE=0`, i.e. as the merge
+gate. That equivalence was never true — `NARROW_ACTIVE` is a
+narrowing-ACTIVATION flag, not a scope oracle, and it is also 0 on the
+`--scope staged` per-commit-hook tier (`hooks/project-checks` execs
+`verify.sh all --profile debug --scope staged --include-infra`), which was
+therefore paying the `--features gui` link for closures that cannot reach
+`reify-gui`. The emission condition now reads `SCOPE` and a separate
+`AFFECTED_CLOSURE` directly. The three arms, their fail-wide taxonomy and the
+measurements behind them are documented ONCE, on the decision itself — the
+"NARROWED on the same affected-crate axis" bullet in `scripts/verify.sh`'s
+`add_test_passes` — and are deliberately not restated here._
+
+_What matters for THIS note. First, `NARROW_ACTIVE`, `AFFECTED`,
+`AFFECTED_ALL_FLAGS` and the `--workspace` coupling on
+staged-without-`--narrow` are all value-identical to before, so **the
+THROUGHPUT-COUNTS sentinel does NOT move** and no cell of the table above
+changes: all four shapes are captured only at `--scope all` and `--scope
+branch`, and this change is confined to `--scope staged`. Confirmed by running
+`tests/infra/test_verify_throughput.sh` green rather than by asserting it.
+Second, the saving is NARROWER than "every commit" — only a staged diff whose
+paths ALL map to crates and whose reverse closure excludes `reify-gui` takes the
+narrowed arm. Measured on a hermetic fixture at `--scope staged` with no
+override: a scripts-only staged diff yields the `ALL` sentinel and a
+`tests/infra`-only one yields an EMPTY closure, and both still fail wide and keep
+paying the link. Reclaiming the `tests/infra`-only shape is NOT a one-line
+change: an empty closure is genuinely overloaded, since `decide_scope`'s
+git-failure fail-wide paths also return `RUN_RUST=1` with an empty
+`CHANGED_FILES_RAW`, so "provably no crates" would first need a distinct
+closure-available sentinel to tell it apart from "the diff could not be read".
+The merge gate remains unconditional by contract, so a hook-tier skip is
+LATENCY, never a coverage hole._
 
 ## Heavy-Work Narrowed Markers
 
@@ -231,6 +266,15 @@ only WHAT each shape drops, which is the qualitative half of the evidence.
   `--features gui` test-execution pass, whose affected-crate closure does not
   reach `reify-gui`.  The remaining savings are wall-clock, from skipping
   unaffected crate compilation.
+- **staged per-commit-hook tier (`--scope staged`, no `--narrow`):** since
+  2026-08-13 (task 6030) the `--features gui` drop applies here too, on the same
+  closure-membership test — this tier is `hooks/project-checks`' own invocation.
+  It drops for a staged diff whose paths ALL map to crates and whose closure
+  excludes `reify-gui`; a scripts-only or `tests/infra`-only staged diff still
+  pays it, because its closure comes back unavailable and fails wide.  Nothing
+  ELSE narrows on this tier: clippy and the workspace nextest pass keep
+  `--workspace`, so this shape is absent from the table above and its plan-step
+  counts are untouched.
 - **OCCT-touching crate branch (reify-eval):** clippy and nextest narrowed
   to `-p reify-eval` (task 4451: gated pass folded into the nextest pool), and
   the `--features gui` pass likewise dropped — the fixture drives `AFFECTED`

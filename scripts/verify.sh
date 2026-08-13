@@ -1347,13 +1347,39 @@ select_harness_kloc_guard
 # --narrow is a no-op for scope=branch (already narrowing) and scope=all
 # (condition never true).
 #
+# AFFECTED_CLOSURE — the raw reverse-dependency closure, COMPUTED whenever
+# RUN_RUST=1 AND SCOPE != all, i.e. deliberately WIDER than narrowing
+# eligibility above, so a consumer can make a membership test against the
+# closure WITHOUT activating narrowing. Its one consumer, and the full rationale
+# for reading SCOPE/AFFECTED_CLOSURE instead of inferring from NARROW_ACTIVE,
+# live on the decision itself: see the "NARROWED on the same affected-crate
+# axis" bullet in add_test_passes. Not restated here.
+#
+# Splitting COMPUTATION from ACTIVATION is value-preserving: AFFECTED,
+# NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with the same values on every
+# path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
+# B9-default scenario pins is untouched.
+#
+# COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
+# here rather than adding a second call site), and RUN_RUST=0 (a docs-only
+# hook-gated commit) skips it entirely. The call shells out to an UNGUARDED
+# `cargo metadata --format-version 1` in affected-crates-lib.sh's
+# _reverse_closure: 0.53s warm, but on a cold cache or a stale Cargo.lock it
+# performs dependency resolution, can reach the network, and can rewrite
+# Cargo.lock — now on the pre-commit-hook tier and under --print-plan, neither
+# of which previously shelled out to cargo on the staged path. Mitigated because
+# a RUN_RUST=1 hook run goes on to invoke cargo clippy/check anyway. Passing
+# --locked/--offline there is the real fix and is filed as follow-up; the
+# existing `|| { echo ALL; return 0; }` already fails wide if it errors.
+#
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
-# separated crate names). When set AND narrowing is eligible, used verbatim in
+# separated crate names). When set AND the closure is eligible, used verbatim in
 # place of calling affected_crates(). This mirrors the REIFY_PSI_GATE_PROC_PATH
 # knob idiom and allows hermetic --print-plan assertions in the workspace-less
 # fixture (where cargo metadata fails and affected_crates() always returns ALL).
 # ---------------------------------------------------------------------------
 AFFECTED=""
+AFFECTED_CLOSURE=""
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -1364,10 +1390,17 @@ elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; th
     _narrowing_eligible=1
 fi
 
-if [ "$_narrowing_eligible" -eq 1 ]; then
+# Wider than _narrowing_eligible by design — see the AFFECTED_CLOSURE note in
+# this block's header.
+_closure_eligible=0
+if [ "$RUN_RUST" -eq 1 ] && { [ "$SCOPE" = "branch" ] || [ "$SCOPE" = "staged" ]; }; then
+    _closure_eligible=1
+fi
+
+if [ "$_closure_eligible" -eq 1 ]; then
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
         # Operator/testability override: use verbatim crate list.
-        AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
+        AFFECTED_CLOSURE="${REIFY_AFFECTED_CRATES_OVERRIDE}"
     elif [ -n "$CHANGED_FILES_RAW" ]; then
         # Real run: compute reverse-closure from the captured changed-file list.
         _af_args=()
@@ -1375,9 +1408,16 @@ if [ "$_narrowing_eligible" -eq 1 ]; then
             [ -n "$_af_f" ] && _af_args+=("$_af_f")
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
-            AFFECTED="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
         fi
     fi
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
+    # Narrowing eligibility ⊂ closure eligibility, so AFFECTED_CLOSURE is already
+    # computed here — consumed, never recomputed (one affected_crates() call, one
+    # `cargo metadata`, per run).
+    AFFECTED="$AFFECTED_CLOSURE"
     # NARROW_ACTIVE iff AFFECTED is non-empty and is NOT the sentinel "ALL".
     if [ -n "$AFFECTED" ] && [ "$AFFECTED" != "ALL" ]; then
         NARROW_ACTIVE=1
@@ -2012,13 +2052,46 @@ add_test_passes() {
     #     copy would cost another cold link for zero added coverage.
     #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
     #     partition only.
-    #   * NARROWED on the same affected-crate axis every other narrowed pass uses:
-    #     emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge gate), and
-    #     under NARROW_ACTIVE=1 only when reify-gui is in AFFECTED.  affected_crates()
-    #     is a REVERSE-dependency closure, so a change anywhere in reify-gui's
-    #     dependency graph puts reify-gui in the set — measured on this tree:
-    #     crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs both
-    #     yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses.
+    #     THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
+    #       1. SCOPE=all            -> emit.  The merge gate never narrows; that is
+    #                                  a CONTRACT, not a side effect.
+    #       2. closure unavailable  -> emit.  FAIL WIDE.  "Unavailable" covers the
+    #                                  ALL sentinel (a C4 workspace-global file, a
+    #                                  C5 cargo-metadata failure, an unmappable
+    #                                  path), an empty CHANGED_FILES_RAW, and a
+    #                                  malformed REIFY_AFFECTED_CRATES_OVERRIDE.
+    #                                  The empty case is genuinely OVERLOADED —
+    #                                  decide_scope's git-failure fail-wide paths
+    #                                  also return RUN_RUST=1 with
+    #                                  CHANGED_FILES_RAW="" — so conflating it
+    #                                  with "provably no crates" is CORRECT here
+    #                                  and cannot be tightened without a separate
+    #                                  closure-available sentinel.
+    #       3. otherwise            -> emit iff reify-gui ∈ AFFECTED_CLOSURE.
+    #     This is NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-
+    #     ACTIVATION flag, not a scope oracle: NARROW_ACTIVE=0 ALSO holds for
+    #     `--scope staged` without `--narrow` and for the two fail-wide resets, so
+    #     the old "emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge
+    #     gate)" reading was a false equivalence.  Its cost was concrete and
+    #     measured: `hooks/project-checks` execs
+    #     `verify.sh all --profile debug --scope staged --include-infra`, and a
+    #     staged crates/reify-doc/src/lib.rs emitted 1 gui-feature pass — the
+    #     per-commit hook paying the full `--features gui` link for a closure that
+    #     cannot reach reify-gui.  Arm 3 now covers that shape too.
+    #     WHAT ACTUALLY BENEFITS is narrower than "every hook run", and the
+    #     difference is measured, not assumed: only a staged diff whose paths ALL
+    #     map to crates AND whose reverse closure excludes reify-gui takes arm 3.
+    #     A scripts-only staged diff yields the ALL sentinel (C5/unmappable) and a
+    #     tests/infra-only one yields an EMPTY closure (affected-crates-lib treats
+    #     tests/infra/* as non-crate, while decide_scope's conservative arm still
+    #     sets RUN_RUST=1) — both take arm 2 and keep paying the link.
+    #     Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only
+    #     ever be LATENCY, never a coverage hole.
+    #     affected_crates() is a REVERSE-dependency closure, so a change anywhere in
+    #     reify-gui's dependency graph puts reify-gui in the set — measured on this
+    #     tree: crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs
+    #     both yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
     #     Emitting unconditionally made a `-p reify-doc` branch plan pay a full
     #     tauri + webkit2gtk + OCCT feature-unification build (20m42s cold / ~137s
     #     warm, and NOT shareable with any other pass's artifacts) that no reify-doc
@@ -2070,15 +2143,54 @@ add_test_passes() {
     # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
     # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
     # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
-    local _emit_gui_feature_pass=0
+    local _emit_gui_feature_pass=0 _gui_ac
+    # Normalize the closure ONCE, into a word ARRAY, so that arm 2 below sees
+    # every malformed-knob shape as "unavailable" rather than as a crate list.
+    # A malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow —
+    # the same invariant, for the same reason, as the AFFECTED_ALL_FLAGS-empty
+    # reset in the Phase-2 narrowing block.  Three shapes, each measured to
+    # narrow the pass AWAY before this normalization existed:
+    #   * whitespace-only ("   ") — non-empty and not the ALL sentinel, so it
+    #     reached the membership loop, split to NOTHING, and never ran the loop
+    #     body.  Closed by the EMPTY-array test.
+    #   * glob-bearing ("*") — the split is an UNQUOTED expansion, so with
+    #     pathname expansion live it expanded against the CWD into directory
+    #     entries ("crates scripts") instead of collapsing; measured on a
+    #     hermetic fixture, `*` on --scope staged printed `closure=*` and
+    #     emitted ZERO gui-feature passes.  Closed by `set -f` ACROSS the split
+    #     (the caller's -f state is saved and restored — verify.sh does not
+    #     otherwise run with noglob).
+    #   * any token outside cargo's package-name grammar — a surviving glob
+    #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
+    #     closure only ever holds crate names, so a token that cannot BE one
+    #     means the knob is malformed, not that the closure excludes reify-gui.
+    #     Closed by the grammar check, which routes to arm 2 rather than arm 3.
+    local -a _gui_closure_words=()
+    local _gui_closure_malformed=0 _gui_noglob_was=1
+    case "$-" in *f*) ;; *) _gui_noglob_was=0 ;; esac
+    set -f
+    # shellcheck disable=SC2086
+    for _gui_ac in $AFFECTED_CLOSURE; do
+        _gui_closure_words+=("$_gui_ac")
+        case "$_gui_ac" in
+            *[!A-Za-z0-9_.-]*) _gui_closure_malformed=1 ;;
+        esac
+    done
+    if [ "$_gui_noglob_was" -eq 0 ]; then set +f; fi
     if [ "$DF_VERIFY_ROLE" != "offline" ]; then
-        if [ "$NARROW_ACTIVE" -eq 0 ]; then
+        if [ "$SCOPE" = "all" ]; then
+            # Merge gate: unconditional BY CONTRACT, not as a side effect of
+            # narrowing happening to be inactive.
+            _emit_gui_feature_pass=1
+        elif [ "${#_gui_closure_words[@]}" -eq 0 ] \
+            || [ "$_gui_closure_malformed" -eq 1 ] \
+            || { [ "${#_gui_closure_words[@]}" -eq 1 ] && [ "${_gui_closure_words[0]}" = "ALL" ]; }; then
+            # Closure unavailable — the ALL sentinel from a C4 global file / C5
+            # metadata failure / unmappable path, an empty CHANGED_FILES_RAW, or
+            # a malformed knob (see the normalization above).  Fail WIDE.
             _emit_gui_feature_pass=1
         else
-            # Word-split $AFFECTED (safe: Rust crate names never contain spaces),
-            # matching the AFFECTED_ALL_FLAGS loop above.
-            # shellcheck disable=SC2086
-            for _gui_ac in $AFFECTED; do
+            for _gui_ac in "${_gui_closure_words[@]}"; do
                 if [ "$_gui_ac" = "reify-gui" ]; then
                     _emit_gui_feature_pass=1
                     break
@@ -2744,7 +2856,13 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
+    # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
+    # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
+    # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
+    # matches NARROW_ACTIVE=([0-9]+); all three survive a trailing append and none
+    # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
+    # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
