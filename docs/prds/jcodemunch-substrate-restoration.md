@@ -215,8 +215,10 @@ C-as-integration-gate leaf that Phase 1's foundation tasks unlock.
 - **β — `scripts/jcodemunch-index-reify.sh`.**
   Bare `watch --once`, `--no-ai-summaries`, never `--paths-from`; fails non-zero if the resulting
   symbol count is 0.
-  *Signal:* running it prints the resolved identity and `N sym` with N>0; an immediate second run
-  reports `changed: 0`. *Prereqs:* none.
+  *Signal:* running it prints the resolved identity and `N sym` with N>0; an immediate second run's
+  stderr line reads `No changes detected` — `watch --once` runs `sync_folders()`, not the continuous
+  watch loop's `changed={changed} new={new} deleted={deleted}` callback (watcher.py:305), so neither
+  `changed: 0` nor `changed=0` is ever emitted on this path. *Prereqs:* none.
 
 - **γ — Identity resolution + freshness gate in reify-audit.**
   Implements §4.2 and §4.3.
@@ -351,4 +353,7 @@ adjacent response-validation hole — see §4.1 item 5.
    drift-guard rule; the esc-4914-162 precedent). A `cargo test` avoids that but needs an env flag to
    escape `#[ignore]`. Decide during ε.
 4. **`max_folder_files: 10000`** currently exceeds reify's 3,829 tracked files with headroom, but it
-   truncates with a warning rather than erroring if crossed. Worth a guard in β? Decide during β.
+   truncates with a warning rather than erroring if crossed. Worth a guard in β? Decide during β. Note:
+   `10000` is host state from `~/.code-index/config.jsonc`, not an intrinsic jcodemunch default — the
+   package default is `2000` (config.py:284). If that host config is ever reset, reify's tracked files
+   would be silently truncated.
