@@ -301,7 +301,7 @@ ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 # contract lands AHEAD of the DF-side sandboxed=True flip (see the file
 # header). Not reify-observable to keep in sync automatically; a DF-side role
 # addition needs a manual update here.
-CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge"
+CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge merger"
 
 # Hand-mirrored copy of DF's ROLES dispatch registry (roles.py:1512) -- the
 # exact set of names _build_agent_env can ever look up via

@@ -892,7 +892,7 @@ G_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 # reviewer_comprehensive and judge are redirected pre-emptively per the
 # sibling suite's header. Not reify-observable, so a change to either side's
 # copy needs a manual update in both places.
-G_CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge"
+G_CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge merger"
 
 # REIFY_AGENT_CACHE_ROOT is UNSET here, unlike in run_redirect: observing the
 # `/tmp` default is the entire point of these assertions.
