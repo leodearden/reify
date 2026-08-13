@@ -144,7 +144,7 @@ workaround.
 
 Constructors that build a geometric-tolerance zone as a real `Solid`, so a zone can be
 intersected, differenced and measured like any other body. Every one takes its zone extent
-as a **width**, and every one centres the zone on the feature it is given (`±width/2`):
+as a **width**, and every one centres the zone on the geometry it is given (`±width/2`):
 
 ```
 zone_slab(face, width)                                 -> Solid   // face offset ±width/2, capped into a slab
@@ -160,15 +160,16 @@ zone_profile(solid, width)                             -> Solid   // surface-pro
 `radius = width * 0.5`. There is deliberately **no length argument** — the axis wire's own length
 sets the cylinder extent, so control the zone's length by controlling the wire.
 
-`zone_annulus` lowers to `Difference(Pipe(axis, R + width/2), Pipe(axis, R − width/2))`. Its
+`zone_annulus` lowers to the difference of two pipe sweeps along the axis: an outer sweep of
+radius `nominal_radius + width/2` minus an inner one of radius `nominal_radius − width/2`. Its
 fourth argument, `length`, is accepted and validated but does **not** drive the result: as with
 `zone_cylinder`, the swept extent comes from the axis wire. Pass it for signature completeness,
 and size the wire to size the zone.
 
-`zone_profile` lowers to `Difference(Thicken(solid, +width/2), Thicken(solid, −width/2))` via the
-OCCT thicken operation, giving a shell that straddles the input solid's surface. It has no
-closed-form volume — expect roughly `surface_area × width`, and query the realized solid rather
-than computing it by hand.
+`zone_profile` lowers to the difference of two OCCT thicken results — the solid thickened by
+`+width/2` minus the same solid thickened by `−width/2` — giving a shell that straddles the input
+solid's surface. It has no closed-form volume; expect roughly `surface_area × width`, and query
+the realized solid rather than computing it by hand.
 
 Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
 
