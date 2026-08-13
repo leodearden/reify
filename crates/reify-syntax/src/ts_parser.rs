@@ -536,6 +536,32 @@ impl<'a> Lowering<'a> {
 
         let (path, kind) = if let Some(items) = items_node {
             // Destructured: `import a.b.{C, D}`
+            //
+            // This spelling is the canonical one, per
+            // `docs/reify-language-spec.md:2616-2618` §15, and this comment
+            // always matched it — it was the tree-sitter RULE that disagreed,
+            // having been transcribed without the `.` (see the note on
+            // `import_declaration` in tree-sitter-reify/grammar.js).
+            //
+            // Since #5931 corrected that rule, the form reaches this code with
+            // a CLEAN CST. Before then it arrived only via tree-sitter error
+            // recovery: the stray `.` became a sibling `(ERROR)` node inside
+            // the `import_declaration`, leaving `path` and `items` intact, so
+            // the lowering below — which reads the two fields and keeps only
+            // their `identifier` children — produced a correct AST regardless.
+            // That is why the destructured-import tests passed for ~5 months
+            // against a grammar that never described the form they used.
+            //
+            // The nested ERROR never surfaced as a diagnostic because the
+            // `"import_declaration"` arm of the source_file dispatch loop calls
+            // `lower_import` DIRECTLY instead of routing through the
+            // `check_and_lower!` macro, as essentially every other declaration
+            // does; that macro is what turns `is_error() || has_error()` into a
+            // pushed parse error. That bypass is a KNOWN latent gap, left as-is
+            // here deliberately — closing it changes error reporting for other
+            // malformed-import inputs (the `cfg_import_attachment_tests` paths
+            // among them), which is a different defect from the one #5931 was
+            // opened to settle. Tracked by #6286; it is not intentional design.
             let path = segments.join(".");
             let mut names = Vec::new();
             let mut items_cursor = items.walk();
