@@ -193,6 +193,54 @@ cmd_check() {
         armed=1
     fi
 
+    # Per-worktree overrides.  Reading the effective value above only sees
+    # $TARGET's own config.worktree, so a DIFFERENT lane's override would be
+    # invisible from here — and it is precisely a foreign lane's armed rerere
+    # that bleeds a resolution into this one.  Sweep them all.
+    if ! _sweep_worktree_configs; then
+        armed=1
+    fi
+
+    return "$armed"
+}
+
+# _sweep_worktree_configs — report any linked worktree whose config.worktree sets
+# rerere.enabled or rerere.autoupdate to true.  Returns 1 if any is armed.
+#
+# Values are read with `git config --file ... --bool --get`, never grepped:
+# comments, whitespace variations and section-header spellings would all produce
+# a false verdict from a grep, in either direction.
+_sweep_worktree_configs() {
+    local armed=0 wt_config wt_name key value
+
+    # A repo with no linked worktrees has no worktrees/ dir at all — normal, not
+    # an error.
+    [ -d "$WORKTREES_DIR" ] || return 0
+
+    for wt_config in "$WORKTREES_DIR"/*/config.worktree; do
+        # Unmatched glob under a worktrees/ dir with no config.worktree files.
+        [ -e "$wt_config" ] || continue
+        wt_name="$(basename "$(dirname "$wt_config")")"
+
+        # One unreadable config.worktree must not abort the sweep and mask every
+        # other lane — report it and keep going.
+        if [ ! -r "$wt_config" ]; then
+            echo "WARNING: cannot read $wt_config — skipping worktree '$wt_name'." >&2
+            echo "  This lane's rerere state is UNKNOWN, not verified safe." >&2
+            continue
+        fi
+
+        for key in rerere.enabled rerere.autoupdate; do
+            value="$(git config --file "$wt_config" --bool --get "$key" 2>/dev/null || true)"
+            if [ "$value" = "true" ]; then
+                echo "ARMED: worktree '$wt_name' overrides $key=true in its config.worktree." >&2
+                echo "  Path: $wt_config" >&2
+                echo "  git reads config.worktree FIRST, so this beats the shared .git/config." >&2
+                armed=1
+            fi
+        done
+    done
+
     return "$armed"
 }
 
