@@ -56,33 +56,10 @@ mod tests {
         CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
         DeterminacyState, FieldSourceKind, PersistentMap, ResolvedFunction, Value, ValueMap,
     };
-    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_test_support::mocks::{AlwaysInside, MockConstraintChecker, NoContainment};
 
     use super::cell_eval_ctx;
     use crate::Engine;
-
-    /// Trivial `ContainmentQuery` impl so the test doesn't need a full
-    /// `Engine`/geometry-kernel to exercise the constructor.
-    struct NoContainment;
-
-    impl ContainmentQuery for NoContainment {
-        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-            None
-        }
-    }
-
-    /// A `ContainmentQuery` that reports every point as inside the region —
-    /// the complement of `NoContainment` above, used to drive the
-    /// `sample(restrict(field, region), point)` dispatch arm down its
-    /// "inside" branch so a behavioral test can observe the wired
-    /// `containment` capability actually taking effect.
-    struct AlwaysInside;
-
-    impl ContainmentQuery for AlwaysInside {
-        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-            Some(true)
-        }
-    }
 
     /// Return type of [`empty_inputs`] — named so the tuple's shape doesn't
     /// trip `clippy::type_complexity`; unlike the fn-pointer guard below,
