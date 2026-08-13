@@ -93,6 +93,6 @@ No field or tensor operator manufactures `rad` from a derivative — gradient, d
 
 **Angular frequency is a different crossing**: `omega = 2*pi * f * 1rad` carries 2π rad/cycle, not the η = 1 rad above, and there is no `cycle` unit to write — see "The 2π rad/cycle distinction (D4)" in the same file.
 
-**Why torque is N·m/rad**: the same crossing. Work is `tau * theta` and `theta` carries `rad`, so `tau` must carry `rad^-1` for the product to close on Energy — `INV-AD-1` in `docs/legibility/design-invariants.md` carries the argument. That is the *why*; how to spell a torque literal is not taught here.
+**Torque is `N·m/rad`** by the same crossing — `INV-AD-1` carries the argument. How to *spell* a torque literal is not taught here.
 
 Worked, compile-gated exemplar: `examples/best_practices/angle_crossings.ri`.
