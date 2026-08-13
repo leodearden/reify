@@ -52,9 +52,11 @@
 # fixtures, private lock paths, no cargo and no CPU burn).
 #
 # Section F, near the end of this file, is a separate standing guard: the
-# roster of deadline-capable suites is DERIVED from tests/infra/test_*.sh,
-# not hand-maintained, and Section F proves the DECLARATION still matches
-# that derivation.
+# roster of suites that are deadline-capable through a DIRECT wrapper call
+# site is DERIVED from tests/infra/test_*.sh, not hand-maintained, and
+# Section F proves the DECLARATION still matches that derivation. Its scope
+# boundary -- notably the TRANSITIVE route it does not see -- is stated in
+# full in that section's own preamble.
 
 set -euo pipefail
 
@@ -507,8 +509,9 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # it to the emit-adjacent sites this change turned from latent into live.
 #
 # D_MEMBERS below is NO LONGER the source of truth for "which suites can
-# leak" -- task 6255 made it the BEHAVIOURAL SUBSET of the full
-# deadline-capable roster Section F derives. That roster's D_ROSTER also
+# leak" -- task 6255 made it the BEHAVIOURAL SUBSET of the
+# direct-call-site deadline-capable roster Section F derives. That roster's
+# D_ROSTER also
 # lists the static-only members (test_run_all.sh, test_slot_event_log.sh,
 # test_verify_semaphore_e2e.sh), whose evidence-preservation is proven by
 # source inspection rather than by running them here. F4, in Section F, is
@@ -517,7 +520,9 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # not that this section itself is broken.
 #
 # TWO ARMS cover that BEHAVIOURAL SUBSET, not the whole deadline-capable
-# problem (Section F is what proves the subset is still complete); within
+# problem (Section F is what keeps the subset honest against its
+# direct-call-site roster -- see that section's SCOPE for what it does NOT
+# prove); within
 # it, neither arm suffices alone. D1/D3 are BEHAVIOURAL and model run_all's
 # capture exactly (see _d_capture), catching any leak that actually happens
 # on this run. D4 is STATIC and covers what D1 structurally cannot: two of
@@ -843,7 +848,7 @@ assert "E1: no assert description DUMPS a whole capture file (cat/tail/head/\$(<
     test "$E1_COUNT" -eq 0
 
 echo ""
-echo "=== F: the deadline-capable roster is DERIVED, not hardcoded ==="
+echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardcoded ==="
 
 # Section D's D_MEMBERS is a hand-maintained list of suites that force a
 # finite-WAIT slot_acquire deadline. Task 6255: that list silently missed
@@ -854,20 +859,57 @@ echo "=== F: the deadline-capable roster is DERIVED, not hardcoded ==="
 # the declared list from silently falling out of step with reality again.
 #
 # SCOPE, stated rather than left implied (D1's own convention, see its
-# description above): Section F catches a new deadline-capable SUITE
-# appearing -- a file with no matching entry in D_ROSTER at all. It does
-# NOT catch a new unredirected deadline SITE added inside an existing
-# static-only roster member -- D4's per-site stderr-capture check (D4a/D4b)
-# still covers only the three behavioural D_MEMBERS. Generalizing D4 to the
-# static-only members was declined here because it needs subshell-block
-# analysis D4's line-oriented section slicer (_d_section_cmds) cannot do:
+# description above). The derivation is over DIRECT call sites ONLY: a file
+# that itself names one of the four acquire wrappers. Section F catches a
+# new DIRECTLY-deadline-capable SUITE appearing -- a file with no matching
+# entry in D_ROSTER at all. A green F1 is therefore proof that the
+# direct-call-site roster is SELF-CONSISTENT; it is NOT proof that no other
+# tests/infra suite can reach a deadline by some other route. Two gaps are
+# deliberately out of scope:
+#
+# (1) A new unredirected deadline SITE added inside an existing static-only
+# roster member -- D4's per-site stderr-capture check (D4a/D4b) still covers
+# only the three behavioural D_MEMBERS. Generalizing D4 to the static-only
+# members was declined here because it needs subshell-block analysis D4's
+# line-oriented section slicer (_d_section_cmds) cannot do:
 # test_verify_semaphore_e2e.sh captures at `) 2>"$C_ERR"`, on the subshell's
 # closing line, several lines after the invocation it guards -- not on the
 # invoking line itself, which is the only shape D4's slicer can see.
 # Generalizing D4 to cover it is tracked as #6278.
+#
+# (2) TRANSITIVE capability -- a suite that reaches a deadline only by
+# invoking tests/infra/run_all.sh (whose pool worker calls slot_acquire with
+# the finite default REIFY_RUN_ALL_POOL_WAIT=1800, run_all.sh:1361), or by
+# invoking another suite that does. Adding `run_all` to F_BIND_RE/F_EXEC_RE
+# was MEASURED and REJECTED: against the real tree it is a path-MENTION
+# predicate, not a capability predicate, and it gets BOTH directions wrong.
+#   - It ADMITS a file that is not deadline-capable at all:
+#     test_verify_release_delta_skip.sh binds ACT_RUN_ALL (:521) purely as a
+#     grep TARGET -- used only by `test -f` (:523) and two source-inspection
+#     greps (:530, :536) -- and never invokes it. That is exactly the "path
+#     appears only as DATA" class F3's negative control exists to reject.
+#   - It still MISSES the real route for a file that IS capable:
+#     test_run_all_ambient_isolation.sh matches only a `case`-pattern
+#     comparison line (:160), while its actual capability is second-order --
+#     `bash "$TARGET"` with TARGET=test_run_all.sh (:93, :366) -- which no
+#     run_all alternation can see.
+#   Admitting those would force roster entries whose measured justification
+#   reads "not actually deadline-capable", emptying both D_ROSTER's meaning
+#   and F5's non-vacuity check of content.
+#   The three GENUINE transitive members are measured CLEAN today: each
+#   redirects the child's stderr into a file or a captured variable --
+#   test_run_all_clock_marker_sanitize.sh (:96), test_run_all_content_skip.sh
+#   (:86, :387), test_run_all_pool_lock_host_global.sh (:122, :126) -- and
+#   Section E's repo-wide scanner already covers the assert-description
+#   channel for all of them. So this is a drift-coverage gap, not a live
+#   leak. Closing it properly needs a real transitive-closure derivation (a
+#   fixed point over suite->suite invocation edges), which is out of this
+#   task's scope; filed as a follow-up during esc-6255-1 remediation.
 
 # The declared roster: every suite this file currently knows to be
-# deadline-capable, sorted (load-bearing -- F1 compares sorted lists, so a
+# deadline-capable THROUGH A DIRECT WRAPPER CALL SITE (see SCOPE (2) above
+# for the transitive route this deliberately excludes), sorted
+# (load-bearing -- F1 compares sorted lists, so a
 # sorted declaration needs no re-sort and a human reading a RED sees the
 # same ordering the derivation produced). Declared HERE, at the head of
 # Section F, rather than beside D_MEMBERS/D_HEADERS/D_INVOKE/
@@ -1065,7 +1107,7 @@ assert "F3: comment-only mentions and closure/copy-list DATA are NOT flagged (go
     test "$F3_COUNT" -eq 0
 
 echo ""
-echo "--- F1: the declared deadline-capable roster must equal the derived one ---"
+echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
 
 F_DERIVED="$(_f_deadline_capable "$SCRIPT_DIR")"
 F_DECLARED_SORTED="$(printf '%s\n' "${D_ROSTER[@]}" | sort)"
@@ -1080,7 +1122,10 @@ F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_S
 # (:820-823). A RED here means "a human must classify a newly deadline-
 # capable suite", not that a leak occurred -- Section D above is the leak
 # guard; this is the guard that keeps its own membership list honest.
-assert "F1: the DERIVED deadline-capable roster over tests/infra/ equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
+# Description says DIRECT-CALL-SITE, not bare "deadline-capable": a green
+# here must not be misread as completeness over the transitive route this
+# derivation cannot see (SCOPE (2) above).
+assert "F1: the DERIVED roster of suites with a DIRECT wrapper call site over tests/infra/ equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
     test "$F_DERIVED" = "$F_DECLARED_SORTED"
 
 echo ""
