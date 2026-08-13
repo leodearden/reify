@@ -211,19 +211,29 @@ unset _ro_snap _i _r _cd
 echo ""
 echo "--- (f) unset rerere.enabled + residual rr-cache/ = silently armed ---"
 
-# make_conflict DIR — build a two-commit conflict on a side branch and leave DIR
-# ready for `git merge side` to conflict.  Used both as fixture scaffolding and
-# as the behavioural oracle below.
+# make_conflict DIR — build a conflicting side branch and leave DIR back on its
+# ORIGINAL branch, ready for `git merge <side>` to conflict.  Prints the side
+# branch's name.
+#
+# BRANCH-AGNOSTIC ON PURPOSE.  This is called both on a main-checkout fixture and
+# inside a LINKED WORKTREE, and a hardcoded `git checkout main` fails there with
+# "fatal: 'main' is already used by worktree at ..." — which under this suite's
+# `set -e` aborts the whole run rather than failing one assert.  Deriving the
+# base branch from HEAD, and naming the side branch after it, also keeps two
+# worktrees of the SAME store from colliding on one branch name.
 make_conflict() {
-    local dir="$1"
-    git -C "$dir" checkout -q -b side
+    local dir="$1" base side
+    base="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
+    side="side-$base"
+    git -C "$dir" checkout -q -b "$side"
     printf 'side\n' > "$dir/file.txt"
     git -C "$dir" add file.txt
     git -C "$dir" commit -q -m side
-    git -C "$dir" checkout -q main
-    printf 'main\n' > "$dir/file.txt"
+    git -C "$dir" checkout -q "$base"
+    printf 'ours\n' > "$dir/file.txt"
     git -C "$dir" add file.txt
-    git -C "$dir" commit -q -m mainside
+    git -C "$dir" commit -q -m ours
+    printf '%s\n' "$side"
 }
 
 # count_rr_entries DIR — number of rr-cache/<id>/ entries in DIR's common store.
@@ -277,9 +287,9 @@ assert "(f-c) explicit false + rr-cache/ present -> check exits 0" \
 echo ""
 echo "--- (f-d) behavioural oracle: explicit false records no rr-cache entries ---"
 
-make_conflict "$REPO_EXPLICIT"
+_side="$(make_conflict "$REPO_EXPLICIT")"
 _rr_before="$(count_rr_entries "$REPO_EXPLICIT")"
-git -C "$REPO_EXPLICIT" merge side >/dev/null 2>&1 || true
+git -C "$REPO_EXPLICIT" merge "$_side" >/dev/null 2>&1 || true
 _rr_after="$(count_rr_entries "$REPO_EXPLICIT")"
 
 assert "(f-d) the merge really did conflict (fixture is live, not vacuous)" \
@@ -289,7 +299,7 @@ assert "(f-d) explicit false -> conflicted merge records ZERO new rr-cache entri
     test "$_rr_before" -eq "$_rr_after"
 
 git -C "$REPO_EXPLICIT" merge --abort >/dev/null 2>&1 || true
-unset _rr_before _rr_after
+unset _rr_before _rr_after _side
 
 # ==============================================================================
 # (g) M6 — PER-WORKTREE OVERRIDES BEAT SHARED CONFIG.  extensions.worktreeConfig
@@ -358,5 +368,104 @@ assert "(g-c) check from inside a linked worktree reaches the same verdict" \
 
 assert "(g-c) ...and still names the offending worktree" \
     bash -c "bash '$GUARD' check '$WT_B' 2>&1 >/dev/null | grep -q 'wtA'"
+
+# ==============================================================================
+# (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
+#     rr-cache.  The whole point is that all ~238 lanes inherit one shared
+#     default with zero per-lane wiring, so the write must be --local and must
+#     be visible from a freshly added linked worktree.
+# ==============================================================================
+echo ""
+echo "--- (h) arm disables rerere in shared config ---"
+
+REPO_ARM="$(make_repo)"
+git -C "$REPO_ARM" config rerere.enabled true
+git -C "$REPO_ARM" config rerere.autoupdate true
+
+# Populate rr-cache with sentinel entries so (h-c) can prove they survive.
+ARM_RR="$(common_dir "$REPO_ARM")/rr-cache"
+mkdir -p "$ARM_RR/aaaa1111" "$ARM_RR/bbbb2222"
+printf 'preimage\n' > "$ARM_RR/aaaa1111/preimage"
+
+assert "(h-a) arm exits 0" \
+    bash "$GUARD" arm "$REPO_ARM"
+
+assert "(h-a) rerere.enabled is false in the LOCAL (shared) config afterwards" \
+    bash -c "[ \"\$(git -C '$REPO_ARM' config --local --bool --get rerere.enabled)\" = false ]"
+
+assert "(h-a) rerere.autoupdate is false in the LOCAL (shared) config afterwards" \
+    bash -c "[ \"\$(git -C '$REPO_ARM' config --local --bool --get rerere.autoupdate)\" = false ]"
+
+# The values must be SHARED, not per-worktree: a --worktree write would leave
+# every one of the other ~238 lanes armed while this one reads clean.  A freshly
+# added worktree inheriting them is the direct evidence.
+ARM_WT="$REPO_ARM-armwt"; _TMPDIRS+=("$ARM_WT")
+git -C "$REPO_ARM" worktree add -q -b armwt "$ARM_WT" >/dev/null 2>&1
+
+assert "(h-a) a FRESHLY added linked worktree inherits rerere.enabled=false" \
+    bash -c "[ \"\$(git -C '$ARM_WT' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(h-a) ...and inherits rerere.autoupdate=false (write was --local, not --worktree)" \
+    bash -c "[ \"\$(git -C '$ARM_WT' config --bool --get rerere.autoupdate)\" = false ]"
+
+# (h-b) idempotence — a second run must be a byte-level no-op, since setup-dev.sh
+# runs this on every invocation.
+_arm_cd="$(common_dir "$REPO_ARM")"
+_arm_snap="$(mktemp -d)"; _TMPDIRS+=("$_arm_snap")
+cp "$_arm_cd/config" "$_arm_snap/before2"
+
+assert "(h-b) a second arm run also exits 0" \
+    bash "$GUARD" arm "$REPO_ARM"
+
+cp "$_arm_cd/config" "$_arm_snap/after2"
+
+assert "(h-b) the second arm run leaves .git/config byte-identical" \
+    cmp -s "$_arm_snap/before2" "$_arm_snap/after2"
+
+# (h-c) arm PRESERVES rr-cache.  Deleting an rr-cache entry another live worktree
+# still holds is exactly the operation that reproduces the segfault + stale-lock
+# signature — the cure would re-cause the disease across the fleet.  step-5(f-c)
+# already proved the explicit false neutralises the residual cache in place.
+assert "(h-c) rr-cache/ still exists after arm" \
+    test -d "$ARM_RR"
+
+assert "(h-c) rr-cache entries are unchanged after arm" \
+    bash -c "[ \"\$(ls -A '$ARM_RR' | sort | tr '\n' ' ')\" = 'aaaa1111 bbbb2222 ' ]"
+
+assert "(h-c) an rr-cache entry's payload survives arm" \
+    test -f "$ARM_RR/aaaa1111/preimage"
+
+# (h-d) arm's own verdict agrees with check.
+assert "(h-d) check exits 0 after arm" \
+    bash "$GUARD" check "$REPO_ARM"
+
+# ── (h-e) BEHAVIOURAL ORACLE, inside a LINKED WORKTREE ─────────────────────────
+# The live hazard is a lane, not the main checkout: measure that a conflicted
+# merge in a linked worktree of the armed repo records zero rr-cache entries and
+# leaves no MERGE_RR behind.
+echo ""
+echo "--- (h-e) behavioural oracle: armed repo records nothing from a lane ---"
+
+_arm_side="$(make_conflict "$ARM_WT")"
+_arm_rr_before="$(count_rr_entries "$ARM_WT")"
+git -C "$ARM_WT" merge "$_arm_side" >/dev/null 2>&1 || true
+_arm_rr_after="$(count_rr_entries "$ARM_WT")"
+
+assert "(h-e) the lane's merge really did conflict (oracle is live)" \
+    bash -c "git -C '$ARM_WT' ls-files -u | grep -q ."
+
+assert "(h-e) armed repo: a lane's conflicted merge records ZERO new rr-cache entries" \
+    test "$_arm_rr_before" -eq "$_arm_rr_after"
+
+_arm_wt_gitdir="$(git -C "$ARM_WT" rev-parse --absolute-git-dir)"
+
+assert "(h-e) the lane's MERGE_RR is absent or empty" \
+    bash -c "! test -s '$_arm_wt_gitdir/MERGE_RR'"
+
+assert "(h-e) no MERGE_RR.lock was left behind in the lane" \
+    bash -c "! test -e '$_arm_wt_gitdir/MERGE_RR.lock'"
+
+git -C "$ARM_WT" merge --abort >/dev/null 2>&1 || true
+unset _arm_cd _arm_snap _arm_rr_before _arm_rr_after _arm_wt_gitdir _arm_side
 
 test_summary
