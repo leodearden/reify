@@ -325,8 +325,9 @@ cmd_arm() {
     return 0
 }
 
-# cmd_scan_locks — read-only census of MERGE_RR.lock across the store's linked
-# worktrees, classifying each hit.
+# cmd_scan_locks — read-only census of MERGE_RR.lock across the WHOLE store —
+# the main checkout's own git dir AND every linked worktree — classifying each
+# hit.
 #
 # MATCHES ONLY THE .lock SUFFIX, never a bare MERGE_RR.  A bare MERGE_RR is
 # ORDINARY rerere state — 41 of the live store's worktrees carry one right now —
