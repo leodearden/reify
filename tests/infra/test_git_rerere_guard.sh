@@ -423,6 +423,44 @@ assert "(g-c) check from inside a linked worktree reaches the same verdict" \
 assert "(g-c) ...and still names the offending worktree" \
     bash -c "bash '$GUARD' check '$WT_B' 2>&1 >/dev/null | grep -q 'wtA'"
 
+# ── (g-d) EXTENSION OFF: git ignores config.worktree ENTIRELY ─────────────────
+# The sweep's premise — "config.worktree beats shared config" — holds only while
+# extensions.worktreeConfig is true. With the extension off (or removed), git
+# never reads config.worktree at all, so a planted rerere.enabled=true is dead
+# bytes. Reporting it ARMED is a FALSE verdict, and a uniquely bad one: `arm`
+# writes --local only and cannot clear a per-worktree file, so the false ARMED
+# would make `arm` fail permanently, and setup-dev.sh's `set -e` would abort the
+# rest of the developer setup over a store where nothing is wrong. Every other
+# fixture here sets the extension on, so this precondition was never exercised.
+echo ""
+echo "--- (g-d) config.worktree with extensions.worktreeConfig OFF is inert ---"
+
+NOEXT_REPO="$(make_repo)"
+git -C "$NOEXT_REPO" config rerere.enabled false
+git -C "$NOEXT_REPO" config rerere.autoupdate false
+NOEXT_WT="$NOEXT_REPO-noextwt"; _TMPDIRS+=("$NOEXT_WT")
+git -C "$NOEXT_REPO" worktree add -q -b noextwt "$NOEXT_WT" >/dev/null 2>&1
+# Planted with `git config --file`, never `--worktree`: git REFUSES the latter
+# outright while the extension is off, which is itself the point being pinned.
+NOEXT_WT_GITDIR="$(git -C "$NOEXT_WT" rev-parse --absolute-git-dir)"
+git config --file "$NOEXT_WT_GITDIR/config.worktree" rerere.enabled true
+
+assert "(g-d) fixture: extensions.worktreeConfig is NOT enabled" \
+    bash -c "[ \"\$(git -C '$NOEXT_REPO' config --bool --get extensions.worktreeConfig 2>/dev/null || true)\" != true ]"
+
+assert "(g-d) fixture: the config.worktree really was planted" \
+    bash -c "[ \"\$(git config --file '$NOEXT_WT_GITDIR/config.worktree' --bool --get rerere.enabled)\" = true ]"
+
+# The behavioural fact the guard must agree with, measured rather than assumed.
+assert "(g-d) git IGNORES the plant — effective rerere.enabled in that worktree is false" \
+    bash -c "[ \"\$(git -C '$NOEXT_WT' config --bool --get rerere.enabled)\" = false ]"
+
+assert "(g-d) check does NOT report an inert config.worktree as armed" \
+    bash "$GUARD" check "$NOEXT_REPO"
+
+assert "(g-d) ...and arm therefore succeeds on such a store" \
+    bash "$GUARD" arm "$NOEXT_REPO"
+
 # ==============================================================================
 # (h) `arm` — idempotently disable rerere in the SHARED local config, preserving
 #     rr-cache.  The whole point is that all ~238 lanes inherit one shared
@@ -522,6 +560,42 @@ assert "(h-e) no MERGE_RR.lock was left behind in the lane" \
 git -C "$ARM_WT" merge --abort >/dev/null 2>&1 || true
 unset _arm_cd _arm_snap _arm_rr_before _arm_rr_after _arm_wt_gitdir _arm_side
 
+# ── (h-f) arm's FAILURE branch: a foreign per-worktree override survives ──────
+# `arm` writes --local only, so it can never clear ANOTHER lane's config.worktree
+# — the dominant way its post-write re-verify still reports armed. That case must
+# be distinguishable by exit code from "the shared write itself failed", because
+# setup-dev.sh runs `arm` under `set -e` on every developer setup: one self-armed
+# lane out of ~239 must not abort everything after it. Contract:
+#   0 = disarmed and verified
+#   2 = shared config pinned, but an override this run cannot reach survives
+#   1 = a genuine failure of this run
+# This branch had no test at all, despite deciding whether setup-dev.sh aborts.
+echo ""
+echo "--- (h-f) arm reports a surviving foreign override as exit 2 ---"
+
+read -r AF_REPO AF_A AF_B <<< "$(make_wt_repo)"
+git -C "$AF_REPO" config rerere.enabled true
+git -C "$AF_REPO" config rerere.autoupdate true
+git -C "$AF_A" config --worktree rerere.enabled true
+
+bash "$GUARD" arm "$AF_REPO" >/dev/null 2>&1 && _af_status=0 || _af_status=$?
+
+assert "(h-f) arm exits 2 (not 0, not 1) when a foreign override survives" \
+    test "$_af_status" -eq 2
+
+# arm must still have done its half of the job: the fleet-wide default is pinned
+# even though this one lane overrides it for itself.
+assert "(h-f) arm still wrote rerere.enabled=false to the shared config" \
+    bash -c "[ \"\$(git -C '$AF_REPO' config --local --bool --get rerere.enabled)\" = false ]"
+
+assert "(h-f) arm still wrote rerere.autoupdate=false to the shared config" \
+    bash -c "[ \"\$(git -C '$AF_REPO' config --local --bool --get rerere.autoupdate)\" = false ]"
+
+assert "(h-f) arm names the offending worktree so an operator can act" \
+    bash -c "bash '$GUARD' arm '$AF_REPO' 2>&1 >/dev/null | grep -q 'wtA'"
+
+unset _af_status
+
 # ==============================================================================
 # (i) `scan-locks` — the M3 recurrence detector.  A failed rr-cache preimage
 #     write leaves a stale zero-byte MERGE_RR.lock in .git/worktrees/<lane>/,
@@ -590,6 +664,66 @@ assert "(i-e) the in-progress lane is NOT offered an rm command" \
 
 assert "(i-e) scan-locks still exits non-zero when a lock exists at all" \
     bash -c "! bash '$GUARD' scan-locks '$LK_REPO' >/dev/null 2>&1"
+
+# ── (i-f) THE MAIN CHECKOUT is a scan target too ──────────────────────────────
+# For the main checkout, git dir == common dir, so its stale lock lands at
+# <common>/MERGE_RR.lock and NEVER under worktrees/. That is not a hypothetical
+# location: the sanctioned landing path (scripts/land.sh, CLAUDE.md "Landing on
+# main") runs a real `git merge --no-ff` in the main checkout, making it an
+# active merge site and therefore an active candidate for this very signature. A
+# census blind to it reports "clean" while every `git commit` on main exits 128.
+echo ""
+echo "--- (i-f) scan-locks covers the main checkout's own git dir ---"
+
+read -r MC_REPO MC_A MC_B <<< "$(make_wt_repo)"
+MC_COMMON="$(common_dir "$MC_REPO")"
+
+# Clean baseline first, so a later PASS cannot be the detector never firing.
+assert "(i-f) baseline: a clean store exits 0" \
+    bash "$GUARD" scan-locks "$MC_REPO"
+
+: > "$MC_COMMON/MERGE_RR.lock"
+
+assert "(i-f) a lock in the MAIN checkout's git dir -> scan-locks exits non-zero" \
+    bash -c "! bash '$GUARD' scan-locks '$MC_REPO' >/dev/null 2>&1"
+
+assert "(i-f) ...classified STALE with the exact rm remediation" \
+    bash -c "bash '$GUARD' scan-locks '$MC_REPO' 2>&1 | grep -q 'rm -f $MC_COMMON/MERGE_RR.lock'"
+
+assert "(i-f) ...and read-only: the lock survives the census" \
+    test -e "$MC_COMMON/MERGE_RR.lock"
+
+# The in-progress classification must apply to the main checkout as well —
+# land.sh's merge is exactly when a live MERGE_HEAD sits beside the lock.
+git -C "$MC_REPO" rev-parse HEAD > "$MC_COMMON/MERGE_HEAD"
+
+assert "(i-f) main-checkout lock + MERGE_HEAD -> reported as operation-in-progress" \
+    bash -c "bash '$GUARD' scan-locks '$MC_REPO' 2>&1 | grep -qi 'in-progress\|in progress'"
+
+assert "(i-f) ...and is NOT offered an rm command" \
+    bash -c "! bash '$GUARD' scan-locks '$MC_REPO' 2>&1 | grep -q 'rm -f $MC_COMMON/MERGE_RR.lock'"
+
+rm -f "$MC_COMMON/MERGE_HEAD" "$MC_COMMON/MERGE_RR.lock"
+
+# A store with NO linked worktrees must still have its main dir scanned: the
+# missing worktrees/ dir is a normal shape, not a reason to skip the census.
+NOWT_REPO="$(make_repo)"
+NOWT_COMMON="$(common_dir "$NOWT_REPO")"
+
+assert "(i-f) fixture: the no-worktree store really has no worktrees/ dir" \
+    bash -c "! test -d '$NOWT_COMMON/worktrees'"
+
+: > "$NOWT_COMMON/MERGE_RR.lock"
+
+assert "(i-f) a store with no linked worktrees still reports its main-dir lock" \
+    bash -c "! bash '$GUARD' scan-locks '$NOWT_REPO' >/dev/null 2>&1"
+
+# The noise floor applies to the main dir too: a bare MERGE_RR is ordinary state.
+rm -f "$NOWT_COMMON/MERGE_RR.lock"
+: > "$NOWT_COMMON/MERGE_RR"
+
+assert "(i-f) a bare MERGE_RR in the main dir is NOT reported (noise floor)" \
+    bash "$GUARD" scan-locks "$NOWT_REPO"
 
 # ==============================================================================
 # (wiring) setup-dev.sh must have an UNCOMMENTED call to the guard.
