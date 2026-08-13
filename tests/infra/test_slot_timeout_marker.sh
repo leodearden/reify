@@ -870,6 +870,21 @@ D_ROSTER_MODE=(
     static-only   # test_verify_semaphore_e2e.sh
 )
 
+# Index-aligned with D_ROSTER: the MEASURED justification for every
+# static-only entry -- the artifact a future reader needs in order to
+# decide whether the exclusion still holds. Empty for the three
+# behavioural entries (their justification is that they ARE run, inside
+# Section D's concurrent arm). Kept as prose, not restated line references
+# to code that can move -- the measurements themselves are what matter.
+D_ROSTER_REASON=(
+    ""   # test_lane_x_flock.sh (behavioural)
+    ""   # test_occt_flock_gate.sh (behavioural)
+    "bucket pool; DOES force a deadline every green run (Test 24, test_run_all.sh:2235-2320: a 30s holder on slot-1 against REIFY_RUN_ALL_POOL_WAIT=2), but measured clean on both leak channels: its invocation captures stdout/stderr to separate files (T24_STDOUT/T24_STDERR, never 2>&1 or 2>/dev/null), and its assert descriptions route captured output through the sanctioned prefix-filter Section E blesses. Kept static-only to hold Section D's concurrent wall clock flat -- it is a 238-assertion suite. Absence from task 6024's closing sweep is the evidence a hand-maintained roster drifts."   # test_run_all.sh (static-only)
+    "bucket pool; cheap (measured 4.1s, 35 assertions, zero sentinel lines), but never REACHES a deadline on a green run -- it relies on the finite wrapper DEFAULTS (REIFY_TEST_SEMAPHORE_WAIT/REIFY_OCCT_LOCK_WAIT=1800) and its longest holder is 0.2s. A behavioural D1 zero from it would be structurally vacuous, exactly the hole D4's own preamble names. Six of its seven invocation sites also route stderr to /dev/null, which D4's deliberately file-only capture grammar (D_CAPTURE_RE) excludes -- including it behaviourally would force weakening that grammar for the existing three members."   # test_slot_event_log.sh (static-only)
+    ""   # test_test_run_semaphore.sh (behavioural)
+    "bucket intra-run-serial (run-all-classification.manifest:56 -- mutates the invoking lane's own shared state: CoW target/, working-tree parser.c). Section D forks its members CONCURRENTLY (:585-589) and this file is bucket pool, so running it here would violate the run_all classification partition -- a CORRECTNESS hazard, not merely the wall clock its nested full-scope verify.sh test pass would add. This is the binding reason the task's option (a), adding it to Section D, was rejected."   # test_verify_semaphore_e2e.sh (static-only)
+)
+
 TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
 
 # Four separately-named EREs, each covering one grammar shape a deadline-
