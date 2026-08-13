@@ -81,3 +81,24 @@ REIFY_RUN_ALL_SKIP_STATE
 # knob alone trips the live-var-not-in-ledger check; this row alone trips the
 # ledger-var-not-live check).
 REIFY_RELEASE_DELTA_SKIP
+
+# Toolchain-cache unification with the sandboxed agent roles (task 5836):
+# verify_env now carries CARGO_HOME so the merge-gate build, the landlock-
+# sandboxed agents and verify all resolve the SAME registry source paths — cargo's
+# per-unit fingerprint embeds that absolute path, so a split made each side dirty
+# the other's units in a warm lane's shared target/. Its live source is the yaml
+# verify_env block (like FLAKY_LEDGER / SKIP_STATE above); this row co-lands with
+# that yaml line in the SAME commit to keep test_run_all_ambient_isolation.sh's
+# set-equality guard balanced (the yaml line alone trips the live-var-not-in-ledger
+# check; this row alone trips the ledger-var-not-live check). Full coupling
+# analysis: the header of tests/infra/test_sandbox_cache_writability_seam.sh.
+#
+# Coverage caveat, same shape as REIFY_AUDIT_NO_COLD_BUILD's above: this row buys
+# LEDGER-DRIFT coverage only and adds NO hostile-ambient sub-case. The re-run loop
+# is driven off HOSTILE_LOOP_KEYS (test_run_all_ambient_isolation.sh:322), an
+# explicit allow-list whose sole member is REIFY_RUN_ALL_EXCLUDE_HOST_INFRA —
+# a deliberate SUBSET of this ledger since task 5152's reviewer follow-up (a
+# full-ledger loop paid ~8x wall-clock for no additional isolation-bug coverage).
+# Adding this key here does not enrol it in that loop, and must not be read as
+# proving test_run_all.sh is isolated against an ambient CARGO_HOME.
+CARGO_HOME
