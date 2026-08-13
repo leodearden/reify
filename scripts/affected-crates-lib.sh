@@ -117,7 +117,7 @@ _reverse_closure() {
 
     # Collect metadata once; guard failure -> ALL.
     local meta
-    meta="$(cargo metadata --format-version 1 2>/dev/null)" || { echo ALL; return 0; }
+    meta="$(cargo metadata --format-version 1 --locked 2>/dev/null)" || { echo ALL; return 0; }
     [ -n "$meta" ] || { echo ALL; return 0; }
 
     # Convert the newline-separated seeds into a bash array for safe argv
