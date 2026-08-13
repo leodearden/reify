@@ -147,6 +147,39 @@ fn parse_destructured_import_single_item() {
     );
 }
 
+/// The SPACED form `import a.b {C, D}` is NOT Reify and must be a parse error.
+///
+/// Task 5931. The canonical destructured form is the DOTTED
+/// `import a.b.{C, D}`, per `docs/reify-language-spec.md:2616-2618` §15, which
+/// makes the `'.'` an explicit terminal before the brace list.
+///
+/// Read the two tests above with care: they were passing on main for ~5 months
+/// only because tree-sitter ERROR-RECOVERED the stray `.` into a nested
+/// `(ERROR)` node while leaving the `path`/`items` fields intact, and the
+/// `"import_declaration"` dispatch arm in `ts_parser.rs` calls `lower_import`
+/// directly rather than routing through the `check_and_lower!` macro, so that
+/// nested ERROR never became a diagnostic (see the note at that call site).
+/// Their greenness is therefore NOT evidence that the grammar was ever correct.
+///
+/// Conversely, before #5931 the spaced form below parsed CLEANLY and lowered to
+/// `ImportKind::Destructured(["Bolt", "Nut"])` — so without this assertion
+/// nothing at the AST level would ever notice the wrong spelling being
+/// accepted. After the grammar fix the stray `{...}` becomes a sibling ERROR at
+/// `source_file` level, which the `"ERROR"` arm of the source_file dispatch
+/// loop does surface, making `parsed.errors` non-empty.
+#[test]
+fn spaced_destructured_import_is_rejected() {
+    let source = "import std.mech {Bolt, Nut}";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    assert!(
+        !parsed.errors.is_empty(),
+        "`{source}` (space instead of `.`) must be a parse error — the canonical \
+         destructured form is `import a.b.{{C, D}}` per \
+         docs/reify-language-spec.md:2616-2618 §15; got declarations: {:?}",
+        parsed.declarations
+    );
+}
+
 // ── Step 7: Aliased module import ─────────────────────────────────
 
 #[test]
