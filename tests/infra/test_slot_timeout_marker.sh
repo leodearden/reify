@@ -50,6 +50,11 @@
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob; declared
 # `pool` in tests/infra/run-all-classification.manifest (hermetic mktemp
 # fixtures, private lock paths, no cargo and no CPU burn).
+#
+# Section F, near the end of this file, is a separate standing guard: the
+# roster of deadline-capable suites is DERIVED from tests/infra/test_*.sh,
+# not hand-maintained, and Section F proves the DECLARATION still matches
+# that derivation.
 
 set -euo pipefail
 
@@ -501,12 +506,24 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # fix. Sections A-C hold that discipline for THIS file's own emissions; D extends
 # it to the emit-adjacent sites this change turned from latent into live.
 #
-# TWO ARMS, because neither suffices alone. D1/D3 are BEHAVIOURAL and model
-# run_all's capture exactly (see _d_capture), catching any leak that actually
-# happens on this run. D4 is STATIC and covers what D1 structurally cannot: two
-# of the three members only reach their deadline under contention this suite
-# must not manufacture, so their D1 zero would look identical with the redirect
-# reverted. See D4's own preamble for the per-member reasoning.
+# D_MEMBERS below is NO LONGER the source of truth for "which suites can
+# leak" -- task 6255 made it the BEHAVIOURAL SUBSET of the full
+# deadline-capable roster Section F derives. That roster's D_ROSTER also
+# lists the static-only members (test_run_all.sh, test_slot_event_log.sh,
+# test_verify_semaphore_e2e.sh), whose evidence-preservation is proven by
+# source inspection rather than by running them here. F4, in Section F, is
+# the assertion that keeps this behavioural list and that roster's mode
+# table in lockstep -- a RED there means the two have silently diverged,
+# not that this section itself is broken.
+#
+# TWO ARMS cover that BEHAVIOURAL SUBSET, not the whole deadline-capable
+# problem (Section F is what proves the subset is still complete); within
+# it, neither arm suffices alone. D1/D3 are BEHAVIOURAL and model run_all's
+# capture exactly (see _d_capture), catching any leak that actually happens
+# on this run. D4 is STATIC and covers what D1 structurally cannot: two of
+# the three members only reach their deadline under contention this suite
+# must not manufacture, so their D1 zero would look identical with the
+# redirect reverted. See D4's own preamble for the per-member reasoning.
 
 TMPD="$(mktemp -d)"; _TMPDIRS+=("$TMPD")
 
@@ -835,6 +852,19 @@ echo "=== F: the deadline-capable roster is DERIVED, not hardcoded ==="
 # from source and diffing it against the declaration. This section is that
 # derivation, kept live as a standing drift guard: F1 below is what stops
 # the declared list from silently falling out of step with reality again.
+#
+# SCOPE, stated rather than left implied (D1's own convention, see its
+# description above): Section F catches a new deadline-capable SUITE
+# appearing -- a file with no matching entry in D_ROSTER at all. It does
+# NOT catch a new unredirected deadline SITE added inside an existing
+# static-only roster member -- D4's per-site stderr-capture check (D4a/D4b)
+# still covers only the three behavioural D_MEMBERS. Generalizing D4 to the
+# static-only members was declined here because it needs subshell-block
+# analysis D4's line-oriented section slicer (_d_section_cmds) cannot do:
+# test_verify_semaphore_e2e.sh captures at `) 2>"$C_ERR"`, on the subshell's
+# closing line, several lines after the invocation it guards -- not on the
+# invoking line itself, which is the only shape D4's slicer can see. A
+# follow-up will be filed to cover that gap.
 
 # The declared roster: every suite this file currently knows to be
 # deadline-capable, sorted (load-bearing -- F1 compares sorted lists, so a
