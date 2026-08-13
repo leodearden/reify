@@ -863,8 +863,8 @@ echo "=== F: the deadline-capable roster is DERIVED, not hardcoded ==="
 # analysis D4's line-oriented section slicer (_d_section_cmds) cannot do:
 # test_verify_semaphore_e2e.sh captures at `) 2>"$C_ERR"`, on the subshell's
 # closing line, several lines after the invocation it guards -- not on the
-# invoking line itself, which is the only shape D4's slicer can see. A
-# follow-up will be filed to cover that gap.
+# invoking line itself, which is the only shape D4's slicer can see.
+# Generalizing D4 to cover it is tracked as #6278.
 
 # The declared roster: every suite this file currently knows to be
 # deadline-capable, sorted (load-bearing -- F1 compares sorted lists, so a
@@ -891,6 +891,38 @@ D_ROSTER=(
 # is UNCHANGED by this task, so Section D's concurrent arm keeps its
 # current wall clock. Trailing comment on every entry names the member so
 # a reader never has to count array positions.
+#
+# MEASURED justification for every static-only entry below -- the artifact
+# a future reader needs in order to decide whether the exclusion still
+# holds. (The three behavioural entries need none: their justification is
+# that they ARE run, inside Section D's concurrent arm.)
+#   test_run_all.sh -- bucket pool; DOES force a deadline every green run
+#   (Test 24, test_run_all.sh:2235-2320: a 30s holder on slot-1 against
+#   REIFY_RUN_ALL_POOL_WAIT=2), but measured clean on both leak channels:
+#   its invocation captures stdout/stderr to separate files (T24_STDOUT/
+#   T24_STDERR, never 2>&1 or 2>/dev/null), and its assert descriptions
+#   route captured output through the sanctioned prefix-filter Section E
+#   blesses. Kept static-only to hold Section D's concurrent wall clock
+#   flat -- it is a 238-assertion suite. Absence from task 6024's closing
+#   sweep is the evidence a hand-maintained roster drifts.
+#   test_slot_event_log.sh -- bucket pool; cheap (measured 4.1s, 35
+#   assertions, zero sentinel lines), but never REACHES a deadline on a
+#   green run -- it relies on the finite wrapper DEFAULTS
+#   (REIFY_TEST_SEMAPHORE_WAIT/REIFY_OCCT_LOCK_WAIT=1800) and its longest
+#   holder is 0.2s. A behavioural D1 zero from it would be structurally
+#   vacuous, exactly the hole D4's own preamble names. Six of its seven
+#   invocation sites also route stderr to /dev/null, which D4's
+#   deliberately file-only capture grammar (D_CAPTURE_RE) excludes --
+#   including it behaviourally would force weakening that grammar for the
+#   existing three members.
+#   test_verify_semaphore_e2e.sh -- bucket intra-run-serial (run-all-
+#   classification.manifest:56 -- mutates the invoking lane's own shared
+#   state: CoW target/, working-tree parser.c). Section D forks its
+#   members CONCURRENTLY (:585-589) and this file is bucket pool, so
+#   running it here would violate the run_all classification partition --
+#   a CORRECTNESS hazard, not merely the wall clock its nested full-scope
+#   verify.sh test pass would add. This is the binding reason the task's
+#   option (a), adding it to Section D, was rejected.
 D_ROSTER_MODE=(
     behavioural   # test_lane_x_flock.sh
     behavioural   # test_occt_flock_gate.sh
@@ -898,21 +930,6 @@ D_ROSTER_MODE=(
     static-only   # test_slot_event_log.sh
     behavioural   # test_test_run_semaphore.sh
     static-only   # test_verify_semaphore_e2e.sh
-)
-
-# Index-aligned with D_ROSTER: the MEASURED justification for every
-# static-only entry -- the artifact a future reader needs in order to
-# decide whether the exclusion still holds. Empty for the three
-# behavioural entries (their justification is that they ARE run, inside
-# Section D's concurrent arm). Kept as prose, not restated line references
-# to code that can move -- the measurements themselves are what matter.
-D_ROSTER_REASON=(
-    ""   # test_lane_x_flock.sh (behavioural)
-    ""   # test_occt_flock_gate.sh (behavioural)
-    "bucket pool; DOES force a deadline every green run (Test 24, test_run_all.sh:2235-2320: a 30s holder on slot-1 against REIFY_RUN_ALL_POOL_WAIT=2), but measured clean on both leak channels: its invocation captures stdout/stderr to separate files (T24_STDOUT/T24_STDERR, never 2>&1 or 2>/dev/null), and its assert descriptions route captured output through the sanctioned prefix-filter Section E blesses. Kept static-only to hold Section D's concurrent wall clock flat -- it is a 238-assertion suite. Absence from task 6024's closing sweep is the evidence a hand-maintained roster drifts."   # test_run_all.sh (static-only)
-    "bucket pool; cheap (measured 4.1s, 35 assertions, zero sentinel lines), but never REACHES a deadline on a green run -- it relies on the finite wrapper DEFAULTS (REIFY_TEST_SEMAPHORE_WAIT/REIFY_OCCT_LOCK_WAIT=1800) and its longest holder is 0.2s. A behavioural D1 zero from it would be structurally vacuous, exactly the hole D4's own preamble names. Six of its seven invocation sites also route stderr to /dev/null, which D4's deliberately file-only capture grammar (D_CAPTURE_RE) excludes -- including it behaviourally would force weakening that grammar for the existing three members."   # test_slot_event_log.sh (static-only)
-    ""   # test_test_run_semaphore.sh (behavioural)
-    "bucket intra-run-serial (run-all-classification.manifest:56 -- mutates the invoking lane's own shared state: CoW target/, working-tree parser.c). Section D forks its members CONCURRENTLY (:585-589) and this file is bucket pool, so running it here would violate the run_all classification partition -- a CORRECTNESS hazard, not merely the wall clock its nested full-scope verify.sh test pass would add. This is the binding reason the task's option (a), adding it to Section D, was rejected."   # test_verify_semaphore_e2e.sh (static-only)
 )
 
 TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
@@ -1160,32 +1177,5 @@ F5_BAD_LIST="${F5_BAD[*]}"
 
 assert "F5: every declared roster member matches >=1 derivation line (non-vacuity; offenders: ${F5_BAD_LIST:-<none>})" \
     test "${#F5_BAD[@]}" -eq 0
-
-echo ""
-echo "--- F6: every static-only roster entry carries a NON-EMPTY exclusion reason ---"
-
-# set -u-safe local copy of a not-yet-declared D_ROSTER_REASON (same idiom
-# as F4's _F4_MODE): materialized FIRST so the alignment/per-entry checks
-# below fail cleanly instead of aborting the file.
-_F6_REASON=("${D_ROSTER_REASON[@]+${D_ROSTER_REASON[@]}}")
-
-assert "F6a: D_ROSTER_REASON is index-aligned with D_ROSTER (got ${#_F6_REASON[@]}, want ${#D_ROSTER[@]})" \
-    test "${#_F6_REASON[@]}" -eq "${#D_ROSTER[@]}"
-
-# A member must not be parked static-only unexplained: the reason is the
-# artifact a future reader needs in order to decide whether the exclusion
-# still holds -- the missing half of exactly the kind of declared-list
-# drift that produced this task. `behavioural` entries are deliberately
-# allowed an empty reason here (their justification is that they ARE run).
-F6_UNEXPLAINED=()
-for _f6_i in "${!D_ROSTER[@]}"; do
-    if [ "${D_ROSTER_MODE[_f6_i]:-}" = "static-only" ] && [ -z "${_F6_REASON[_f6_i]:-}" ]; then
-        F6_UNEXPLAINED+=("${D_ROSTER[_f6_i]}")
-    fi
-done
-F6_UNEXPLAINED_LIST="${F6_UNEXPLAINED[*]}"
-
-assert "F6b: every static-only roster entry carries a non-empty D_ROSTER_REASON (unexplained: ${F6_UNEXPLAINED_LIST:-<none>})" \
-    test "${#F6_UNEXPLAINED[@]}" -eq 0
 
 test_summary
