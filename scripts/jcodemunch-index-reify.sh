@@ -323,7 +323,22 @@ headroom_note() {
 # the only subparser that accepts --paths-from at all (server.py:6505).
 JC_PIN="jcodemunch-mcp==1.108.54"
 
-INDEXER_CMD=(uvx --from "$JC_PIN" jcodemunch-mcp)
+# THE INTERPRETER IS PART OF THE PIN (esc-6107-4). `--from jcodemunch-mcp==…`
+# alone is only HALF a pin: it fixes the package and leaves the interpreter
+# floating, and uvx defaults to the newest interpreter uv manages — on this host
+# cpython-3.14.0+freethreaded. Measured 2026-08-13, the bare form fails outright:
+#
+#   × Failed to download and build `tree-sitter-embedded-template==0.25.0`
+#   ╰─▶ The built wheel … is not compatible with the current Python 3.14t
+#
+# i.e. a transitive dep of the PINNED jcodemunch-mcp publishes no 3.14t-compatible
+# wheel, so the primitive could not run AT ALL on the canonical checkout. Pinning
+# the minor keeps resolution reproducible as newer interpreters land on the host.
+# 3.13 is chosen because it is what `python3` already resolves to here (3.13.9)
+# and it resolved and ran clean at this exact package pin.
+JC_PYTHON="3.13"
+
+INDEXER_CMD=(uvx --python "$JC_PYTHON" --from "$JC_PIN" jcodemunch-mcp)
 if [ -n "${REIFY_JC_INDEXER_CMD:-}" ]; then
     # TEST-ONLY SEAM. Replaces the `uvx …` prefix so the guard can drive the
     # summary/exit contract against the two real 1.108.54 stderr shapes offline.
