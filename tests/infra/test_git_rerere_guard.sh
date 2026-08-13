@@ -111,35 +111,54 @@ assert "(c) unknown subcommand names the offending word" \
     bash -c "bash '$GUARD' bogus-subcommand 2>&1 >/dev/null | grep -q 'bogus-subcommand'"
 
 # ==============================================================================
-# (d) A bare no-arg invocation is NON-DESTRUCTIVE
+# (d) The DEFAULT-TARGET path is non-destructive
 #
 # The guard's whole point is that it can be run anywhere without side effects
-# until `arm` is asked for explicitly. A bare invocation must never write config
-# — not to the repo it is invoked from, and not to the user's global config.
-# Asserted by byte-comparing the real repo's shared .git/config before and after;
-# the guard defaults its target to the repo root one level up from the script, so
-# this bare run is exactly the case that would clobber the live store.
+# until `arm` is asked for explicitly. Exercised against a COPY of the guard
+# installed at <throwaway>/scripts/, so that the default target (the repo root
+# one level up from the script) resolves to a store this suite owns.
+#
+# HERMETIC ON PURPOSE. An earlier version snapshotted the LIVE shared
+# .git/config here, which was wrong twice over. (1) Non-hermetic: this suite is
+# classified `pool` (run-all-classification.manifest) — sibling lanes run
+# setup-dev.sh concurrently and Claude Code rewrites that shared file on every
+# worktree enter, so a foreign write landing between the two snapshots was a
+# spurious merge-gate FAIL. (2) Vacuous: a bare no-arg run exits at the
+# missing-subcommand branch BEFORE target resolution or any git call, so the
+# byte compare could never fail from guard behaviour. Drive `check` — the code
+# path that actually resolves a target — and keep the real store out of it.
 # ==============================================================================
 echo ""
-echo "--- (d) bare no-arg invocation writes no config ---"
+echo "--- (d) default-target resolution writes no config ---"
 
-_bare_dir="$(mktemp -d)"; _TMPDIRS+=("$_bare_dir")
-_cfg_before="$_bare_dir/config.before"
-_cfg_after="$_bare_dir/config.after"
-_real_common="$(git -C "$REPO_ROOT" rev-parse --git-common-dir)"
-case "$_real_common" in
-    /*) ;;
-    *) _real_common="$REPO_ROOT/$_real_common" ;;
-esac
+_dflt_repo="$(make_repo)"
+mkdir -p "$_dflt_repo/scripts"
+cp "$GUARD" "$_dflt_repo/scripts/git-rerere-guard.sh"
+_dflt_guard="$_dflt_repo/scripts/git-rerere-guard.sh"
+# Armed, so the default-target run reaches a real verdict instead of passing
+# because it happened to inspect nothing.
+git -C "$_dflt_repo" config rerere.enabled true
+_dflt_cd="$(common_dir "$_dflt_repo")"
+_dflt_snap="$(mktemp -d)"; _TMPDIRS+=("$_dflt_snap")
+cp "$_dflt_cd/config" "$_dflt_snap/before"
 
-cp "$_real_common/config" "$_cfg_before"
-bash "$GUARD" >/dev/null 2>&1 || true
-cp "$_real_common/config" "$_cfg_after"
+assert "(d) a bare no-arg invocation exits non-zero" \
+    bash -c "! bash '$_dflt_guard' >/dev/null 2>&1"
 
-assert "(d) bare invocation leaves shared .git/config byte-identical" \
-    cmp -s "$_cfg_before" "$_cfg_after"
+assert "(d) check with NO target_dir still reaches a verdict (default target resolved)" \
+    bash -c "! bash '$_dflt_guard' check >/dev/null 2>&1"
 
-unset _bare_dir _cfg_before _cfg_after _real_common
+# Proves WHICH store the default resolved to: the guard prints the common dir it
+# judged, so this fails if the default ever drifts to some other repo.
+assert "(d) ...and the verdict names the store one level up from the script" \
+    bash -c "bash '$_dflt_guard' check 2>&1 >/dev/null | grep -q '$_dflt_cd'"
+
+cp "$_dflt_cd/config" "$_dflt_snap/after"
+
+assert "(d) neither invocation wrote to the defaulted store's config" \
+    cmp -s "$_dflt_snap/before" "$_dflt_snap/after"
+
+unset _dflt_repo _dflt_guard _dflt_cd _dflt_snap
 
 # ==============================================================================
 # (e) `check` core — reads the EFFECTIVE rerere.enabled / rerere.autoupdate and
@@ -253,11 +272,16 @@ assert "(f-a) rerere.enabled unset is genuinely unset in the fixture" \
 assert "(f-a) unset + rr-cache/ present -> check exits non-zero" \
     bash -c "! bash '$GUARD' check '$REPO_IMPLICIT' >/dev/null 2>&1"
 
-assert "(f-a) check stderr explains the rr-cache-implies-enabled default" \
-    bash -c "bash '$GUARD' check '$REPO_IMPLICIT' 2>&1 >/dev/null | grep -q 'rr-cache'"
-
-assert "(f-a) check stderr names git's -1 default explicitly" \
-    bash -c "bash '$GUARD' check '$REPO_IMPLICIT' 2>&1 >/dev/null | grep -q -- '-1'"
+# Pins WHICH branch fired — the implicit re-arm (unset key + residual cache),
+# not the plain enabled=true branch — since only the former justifies leaving the
+# cache in place. 'UNSET' is a token the guard's interpolated paths cannot
+# supply. Two earlier assertions here were tautological and are deliberately
+# gone: `grep -q 'rr-cache'` held because the ARMED line interpolates $RR_CACHE,
+# whose path always ends in /rr-cache, and `grep -q -- '-1'` was a bare substring
+# pin on prose that the same interpolated path could satisfy. The exit-code
+# assertion above is the behavioural contract.
+assert "(f-a) check stderr identifies the UNSET-key branch, not plain enabled=true" \
+    bash -c "bash '$GUARD' check '$REPO_IMPLICIT' 2>&1 >/dev/null | grep -q 'UNSET'"
 
 # (f-b) unset + NO rr-cache/ -> safe
 REPO_NORR="$(make_repo)"
@@ -300,6 +324,36 @@ assert "(f-d) explicit false -> conflicted merge records ZERO new rr-cache entri
 
 git -C "$REPO_EXPLICIT" merge --abort >/dev/null 2>&1 || true
 unset _rr_before _rr_after _side
+
+# ── (f-e) POSITIVE CONTROL for the oracles ────────────────────────────────────
+# (f-d) above and (h-e) below measure only the NEGATIVE direction — "with rerere
+# off, zero new rr-cache entries". If count_rr_entries or make_conflict ever
+# regressed into observing nothing at all (wrong common dir, a merge that never
+# reaches rerere, a fixture that stopped conflicting), BOTH would pass vacuously
+# and the suite would report green while measuring nothing. So prove the
+# instrument can register a non-zero delta: the same fixture shape with rerere
+# left implicitly ON must record exactly one entry. Same intent as
+# assert_shared_trash_litter_detector_live in test_helpers.sh — a checker has to
+# be shown to fire before its silence means anything.
+echo ""
+echo "--- (f-e) positive control: the oracle CAN observe a non-zero delta ---"
+
+REPO_POS="$(make_repo)"
+mkdir -p "$(common_dir "$REPO_POS")/rr-cache"   # unset + rr-cache present = ON
+
+_pos_side="$(make_conflict "$REPO_POS")"
+_pos_before="$(count_rr_entries "$REPO_POS")"
+git -C "$REPO_POS" merge "$_pos_side" >/dev/null 2>&1 || true
+_pos_after="$(count_rr_entries "$REPO_POS")"
+
+assert "(f-e) the control merge really did conflict (control is live)" \
+    bash -c "git -C '$REPO_POS' ls-files -u | grep -q ."
+
+assert "(f-e) implicitly-armed rerere records EXACTLY ONE new rr-cache entry" \
+    test "$_pos_after" -eq "$((_pos_before + 1))"
+
+git -C "$REPO_POS" merge --abort >/dev/null 2>&1 || true
+unset _pos_before _pos_after _pos_side
 
 # ==============================================================================
 # (g) M6 — PER-WORKTREE OVERRIDES BEAT SHARED CONFIG.  extensions.worktreeConfig
