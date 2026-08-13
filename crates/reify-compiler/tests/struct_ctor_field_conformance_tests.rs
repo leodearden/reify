@@ -1467,8 +1467,24 @@ fn family_dimensioned_scalar_given_unit_literal_arg_is_silent() {
 /// Shared by the four value-floor guards below so each stays a one-liner and the
 /// four cases cannot drift apart in what they check.
 fn assert_single_arg_type_mismatch_warning(source: &str, param_name: &str, label: &str) {
-    let module = compile_source_with_stdlib(source);
-    let diags = ctor_conformance_diags(&module);
+    assert_single_arg_type_mismatch_warning_in(
+        &compile_source_with_stdlib(source),
+        param_name,
+        label,
+    );
+}
+
+/// `&CompiledModule`-taking half of [`assert_single_arg_type_mismatch_warning`],
+/// for a probe that has ALREADY compiled its fixture — e.g. to run the
+/// non-vacuity guard `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
+/// documents — so the guard and the assertion share ONE compile of the source
+/// plus the whole stdlib instead of doing it twice.
+fn assert_single_arg_type_mismatch_warning_in(
+    module: &CompiledModule,
+    param_name: &str,
+    label: &str,
+) {
+    let diags = ctor_conformance_diags(module);
     assert_eq!(
         diags.len(),
         1,
@@ -2362,8 +2378,10 @@ fn vec3_dimensioned_at_dimensionless_vector_param_warns_arg_type_mismatch() {
         "fixture must compile cleanly, got: {:?}",
         errors_only(&module)
     );
-    assert_single_arg_type_mismatch_warning(
-        SRC_VEC3_DIMENSIONED_AT_DIMENSIONLESS,
+    // The `_in` variant so the guard above and the assertion share that one
+    // compile, as the two sibling fences directly above do.
+    assert_single_arg_type_mismatch_warning_in(
+        &module,
         "dir",
         "Vector3<Dimensionless> ← Vector3<Length>",
     );
