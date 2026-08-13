@@ -618,6 +618,12 @@ impl WarnCapture {
 /// Returns a `(subscriber, capture)` pair.  The [`WarnCapture`] is shared via
 /// [`Arc`] so callers can inspect results after the subscriber has been
 /// installed and removed.
+///
+/// # Callsite priming is automatic
+///
+/// This delegates to [`CapturingSubscriberBuilder::build`], which calls
+/// [`prime_tracing_callsite_cache`] internally, so callers do **not** need an
+/// explicit priming call.
 pub fn warn_capturing_subscriber() -> (impl tracing::Subscriber + Send + Sync, WarnCapture) {
     let (subscriber, inner) = CapturingSubscriberBuilder::new(tracing::Level::WARN).build();
     (subscriber, WarnCapture { inner })
@@ -704,7 +710,23 @@ impl CapturingSubscriberBuilder {
     }
 
     /// Build the subscriber and return it alongside a [`Capture`] handle.
+    ///
+    /// # Callsite priming is automatic
+    ///
+    /// This calls [`prime_tracing_callsite_cache`] as its first statement, so
+    /// callers do **not** need an explicit priming call: a subscriber-less
+    /// sibling test thread can no longer poison a captured callsite's cached
+    /// `Interest` to `never`.  Ordering holds because the caller's
+    /// `Dispatch::new` happens at `with_default`/`set_default` time, strictly
+    /// after this method returns.
+    ///
+    /// Priming does not widen what gets captured: the global `Priming`
+    /// subscriber returns `Interest::sometimes()` from `register_callsite`,
+    /// which defers the per-event decision to `enabled()` on the *current
+    /// thread's* default — i.e. this subscriber's own level/target filter.
     pub fn build(self) -> (impl tracing::Subscriber + Send + Sync, Capture) {
+        prime_tracing_callsite_cache();
+
         let count = Arc::new(AtomicUsize::new(0));
         let messages = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let fields = Arc::new(std::sync::Mutex::new(Vec::<HashMap<String, String>>::new()));
