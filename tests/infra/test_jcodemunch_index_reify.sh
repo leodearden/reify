@@ -202,6 +202,50 @@ expect_refusal() {
     return 0
 }
 
+# mk_config_jsonc <index_dir> <cap|-> — write a jcodemunch config.jsonc, with
+# `//` comments present. The live ~/.code-index/config.jsonc is a .jsonc file,
+# so the cap parse must tolerate them; a `-` cap omits the max_folder_files key
+# entirely, exercising the key-absent fallback.
+mk_config_jsonc() {
+    local dir="$1" cap="$2"
+    mkdir -p "$dir"
+    {
+        echo '// jcodemunch index config (JSONC — line comments are legal here)'
+        echo '{'
+        [ "$cap" = "-" ] || echo "  \"max_folder_files\": $cap,   // the walker's per-folder cap"
+        echo '  "staleness_days": 3'
+        echo '}'
+    } > "$dir/config.jsonc"
+}
+
+# with_cap <index_dir> <cap> <checker> [args...] — with_index_path plus an
+# exported JCODEMUNCH_MAX_FOLDER_FILES (the real env mapping at config.py:26).
+with_cap() {
+    local dir="$1" cap="$2" rc=0; shift 2
+    local had="${JCODEMUNCH_MAX_FOLDER_FILES+set}" prev="${JCODEMUNCH_MAX_FOLDER_FILES:-}"
+    export JCODEMUNCH_MAX_FOLDER_FILES="$cap"
+    with_index_path "$dir" "$@" || rc=$?
+    if [ "$had" = "set" ]; then
+        export JCODEMUNCH_MAX_FOLDER_FILES="$prev"
+    else
+        unset JCODEMUNCH_MAX_FOLDER_FILES
+    fi
+    return "$rc"
+}
+
+# expect_truncation <indexed> <cap> [args...] — an E_JC_INDEX_TRUNCATED refusal
+# whose message names BOTH numbers, so an operator reading it can tell how far
+# over the cap the repo is without re-deriving anything.
+expect_truncation() {
+    local indexed="$1" cap="$2"; shift 2
+    expect_refusal E_JC_INDEX_TRUNCATED "$@" || return 1
+    local e="$SCRATCH/refusal.err" bad=0
+    grep -qF -- "indexed=$indexed" "$e" || { printf 'stderr did not name indexed=%s\n' "$indexed" >&2; bad=1; }
+    grep -qF -- "cap=$cap"         "$e" || { printf 'stderr did not name cap=%s\n' "$cap" >&2; bad=1; }
+    [ "$bad" -eq 0 ] || { cat "$e" >&2; return 1; }
+    return 0
+}
+
 # expect_ok [args...] — the script must exit 0 and print the success summary.
 expect_ok() {
     local o e rc=0
@@ -364,6 +408,79 @@ else
     assert "reports '41 sym' for a 41-symbol fixture (the count is read, not fixed)" \
         with_index_path "$GATE_INDEX" \
             expect_ok_stdout "41 sym" --check-only --project-root "$GATE_ROOT"
+fi
+
+# -- Test 7: max_folder_files truncation guard -------------------------------
+# G7 INV-SF-3: declared intent (index the repo) silently going unconsumed (most
+# of it dropped). At the pinned 1.108.54 the walker truncates when
+# len(files) > max_files (index_folder.py:856-857) and then keeps EXACTLY
+# max_files of them — and the cap warning it raises is written into
+# index_folder's RESULT DICT (:2220-2230), which watcher.py::sync_folders never
+# prints. So on the `watch --once` path the truncation is COMPLETELY SILENT: no
+# stdout/stderr scrape can detect it, and the guard must be a post-run DB
+# assertion. `indexed >= cap` is the exact signature and cannot false-fire below
+# the cap.
+#
+# The stakes are not hypothetical: the package DEFAULT is 2000 (config.py:284).
+# The 10000 that makes reify fit is host state in ~/.code-index/config.jsonc,
+# outside this repo — if that file were ever reset, reify's ~3,870 tracked files
+# (plus untracked non-ignored ones) would be silently truncated, which is
+# precisely the failure this guard exists to catch.
+echo ""
+echo "--- Test 7: effective-cap resolution and the truncation guard ---"
+
+CAP_ROOT="$(mk_tmpdir)"
+CAP_INDEX="$(mk_tmpdir)"
+
+if [ -z "$CAP_ROOT" ] || [ -z "$CAP_INDEX" ]; then
+    echo "  FAIL: could not mktemp -d the truncation-guard fixtures"
+    FAIL=$((FAIL + 1))
+else
+    # (i) Effective-cap precedence: env > config.jsonc > package default.
+    rm -f "$CAP_INDEX/config.jsonc"
+    assert "cap falls back to the package default 2000 when nothing sets it" \
+        with_index_path "$CAP_INDEX" \
+            assert_field file-cap "2000 (package default)" --check-only --project-root "$CAP_ROOT"
+
+    mk_config_jsonc "$CAP_INDEX" 4321
+    assert "cap reads max_folder_files from config.jsonc, tolerating // comments" \
+        with_index_path "$CAP_INDEX" \
+            assert_field file-cap "4321 (config.jsonc)" --check-only --project-root "$CAP_ROOT"
+
+    assert "env JCODEMUNCH_MAX_FOLDER_FILES OVERRIDES config.jsonc" \
+        with_cap "$CAP_INDEX" 10 \
+            assert_field file-cap "10 (env JCODEMUNCH_MAX_FOLDER_FILES)" \
+                --check-only --project-root "$CAP_ROOT"
+
+    # A config.jsonc that exists but omits the key is not a cap of 0 — it falls
+    # through to the package default, per jq's `// empty`.
+    mk_config_jsonc "$CAP_INDEX" -
+    assert "a config.jsonc WITHOUT max_folder_files falls through to the default" \
+        with_index_path "$CAP_INDEX" \
+            assert_field file-cap "2000 (package default)" --check-only --project-root "$CAP_ROOT"
+
+    rm -f "$CAP_INDEX/config.jsonc"
+
+    # (ii) The post-run DB assertion itself, at the exact >= boundary.
+    mk_index_db "$CAP_INDEX" "$CAP_ROOT" 5 9 >/dev/null
+    assert "9 indexed files under a cap of 10 is accepted (no false fire below the cap)" \
+        with_cap "$CAP_INDEX" 10 \
+            expect_ok --check-only --project-root "$CAP_ROOT"
+
+    # indexed == cap is the precise truncation signature: the walker keeps
+    # exactly max_files, so landing ON the cap means files were dropped.
+    mk_index_db "$CAP_INDEX" "$CAP_ROOT" 5 10 >/dev/null
+    assert "10 indexed files under a cap of 10 refuses E_JC_INDEX_TRUNCATED" \
+        with_cap "$CAP_INDEX" 10 \
+            expect_truncation 10 10 --check-only --project-root "$CAP_ROOT"
+
+    # Over the cap: the two numbers now DIFFER, so this is what proves the
+    # message names the real indexed count and the real cap rather than one
+    # value twice — and that the comparison is >=, not ==.
+    mk_index_db "$CAP_INDEX" "$CAP_ROOT" 5 12 >/dev/null
+    assert "12 indexed files under a cap of 10 refuses, naming indexed=12 and cap=10" \
+        with_cap "$CAP_INDEX" 10 \
+            expect_truncation 12 10 --check-only --project-root "$CAP_ROOT"
 fi
 
 test_summary
