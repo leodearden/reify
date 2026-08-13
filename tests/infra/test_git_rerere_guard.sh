@@ -28,6 +28,37 @@ _TMPDIRS=()
 cleanup() { for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done; }
 trap cleanup EXIT
 
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+# make_repo — create a fresh throwaway git repo with one commit; prints its path.
+# -b main so refs/heads/main exists, matching test_main_gate_worktree_config.sh.
+#
+# rerere.enabled is deliberately NOT set here: git's default is -1 ("enabled iff
+# rr-cache/ exists"), and several scenarios below depend on observing that
+# unset-vs-explicit-false distinction, so the factory must not pre-decide it.
+make_repo() {
+    local dir
+    dir="$(mktemp -d)"; _TMPDIRS+=("$dir")
+    git -C "$dir" init -q -b main
+    git -C "$dir" config user.email test@test.com
+    git -C "$dir" config user.name Test
+    printf 'base\n' > "$dir/file.txt"
+    git -C "$dir" add file.txt
+    git -C "$dir" commit -q -m base
+    echo "$dir"
+}
+
+# common_dir DIR — absolute path of DIR's COMMON git dir (where shared config
+# and rr-cache live), resolving git's possibly-relative answer.
+common_dir() {
+    local dir="$1" cd_out
+    cd_out="$(git -C "$dir" rev-parse --git-common-dir)"
+    case "$cd_out" in
+        /*) printf '%s\n' "$cd_out" ;;
+        *)  (cd "$dir" && cd "$cd_out" && pwd) ;;
+    esac
+}
+
 echo "=== git rerere shared-worktree guard ==="
 
 # ==============================================================================
@@ -109,5 +140,64 @@ assert "(d) bare invocation leaves shared .git/config byte-identical" \
     cmp -s "$_cfg_before" "$_cfg_after"
 
 unset _bare_dir _cfg_before _cfg_after _real_common
+
+# ==============================================================================
+# (e) `check` core — reads the EFFECTIVE rerere.enabled / rerere.autoupdate and
+#     exits non-zero when either is armed, naming the offending key.
+# ==============================================================================
+echo ""
+echo "--- (e) check reports effectively-armed rerere ---"
+
+REPO_ON="$(make_repo)"
+git -C "$REPO_ON" config rerere.enabled true
+git -C "$REPO_ON" config rerere.autoupdate true
+
+assert "(e-a) rerere.enabled=true -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$REPO_ON' >/dev/null 2>&1"
+
+assert "(e-a) check stderr names rerere.enabled" \
+    bash -c "bash '$GUARD' check '$REPO_ON' 2>&1 >/dev/null | grep -q 'rerere.enabled'"
+
+REPO_OFF="$(make_repo)"
+git -C "$REPO_OFF" config rerere.enabled false
+git -C "$REPO_OFF" config rerere.autoupdate false
+
+assert "(e-b) explicit false/false -> check exits 0" \
+    bash "$GUARD" check "$REPO_OFF"
+
+assert "(e-b) check emits NOTHING on stdout when clean" \
+    bash -c "[ -z \"\$(bash '$GUARD' check '$REPO_OFF' 2>/dev/null)\" ]"
+
+# autoupdate is the half that turns a bled-in resolution from "visible conflict"
+# into "already staged, clean git status", so it must be reported independently
+# of rerere.enabled rather than folded into it.
+REPO_AU="$(make_repo)"
+git -C "$REPO_AU" config rerere.enabled false
+git -C "$REPO_AU" config rerere.autoupdate true
+
+assert "(e-c) enabled=false but autoupdate=true -> check exits non-zero" \
+    bash -c "! bash '$GUARD' check '$REPO_AU' >/dev/null 2>&1"
+
+assert "(e-c) check stderr names rerere.autoupdate" \
+    bash -c "bash '$GUARD' check '$REPO_AU' 2>&1 >/dev/null | grep -q 'rerere.autoupdate'"
+
+# ── (e-d) check is READ-ONLY, including on the failing paths ──────────────────
+# A detector that mutates the state it inspects cannot be run safely across 238
+# live lanes, so this is asserted on the armed repos too, not just the clean one.
+echo ""
+echo "--- (e-d) check never writes config ---"
+
+_ro_snap="$(mktemp -d)"; _TMPDIRS+=("$_ro_snap")
+_i=0
+for _r in "$REPO_ON" "$REPO_OFF" "$REPO_AU"; do
+    _i=$((_i + 1))
+    _cd="$(common_dir "$_r")"
+    cp "$_cd/config" "$_ro_snap/before.$_i"
+    bash "$GUARD" check "$_r" >/dev/null 2>&1 || true
+    cp "$_cd/config" "$_ro_snap/after.$_i"
+    assert "(e-d) check leaves .git/config byte-identical (repo $_i)" \
+        cmp -s "$_ro_snap/before.$_i" "$_ro_snap/after.$_i"
+done
+unset _ro_snap _i _r _cd
 
 test_summary
