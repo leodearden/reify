@@ -563,9 +563,10 @@ The landed gate's measured baseline is 7 `.ri` files, 31 constraints, 28
 Satisfied / 3 Indeterminate / 0 Violated — it does **not** match the 6
 files, 19 constraints, 16 Satisfied figure #6215's architect recorded,
 because that figure predates `angle_crossings.ri` (#6181) joining the
-corpus. The divergence is not speculative: the gate's own doc comment,
-still unedited at `best_practices_constraint_gate.rs:614-621`, says "This
-is expected GREEN on the measured baseline (16 Satisfied / 3 Indeterminate
+corpus. The divergence is not speculative: the gate's own doc comment on
+`best_practices_corpus_satisfies_every_constraint` (tracked stale as
+#6280), still unedited, says "This is expected GREEN on the measured
+baseline (16 Satisfied / 3 Indeterminate
 / 0 Violated, with all 3 Indeterminate listed in `EXPECTED_INDETERMINATE`
 above)" and, one sentence later, "in-flight task #6181 will add
 `examples/best_practices/angle_crossings.ri`" — proof the figure was
@@ -574,8 +575,8 @@ the seventh file with no gate edit at all, which is exactly why the gate
 stayed green straight through #6181 landing — that is the interesting
 fact here, not a spurious "matches" (the stale doc comment itself is
 tracked as follow-up task #6280, out of this docs-only step's scope).
-With all 3 Indeterminate entries pinned in its
-`EXPECTED_INDETERMINATE` allowlist — `clearance_oracle.ri` constraints [0] and
+All 3 Indeterminate entries are pinned in its
+`EXPECTED_INDETERMINATE` allowlist: `clearance_oracle.ri` constraints [0] and
 [1] (the `intersects`/`distance` geometry-consumer builtins, which need a
 realized kernel and resolve only on the build()/tessellate() path, not the
 pure value-eval surface this gate and `reify check` run on) and
@@ -587,9 +588,11 @@ doc comment insists `EXPECTED_INDETERMINATE` is **not** a `SKIP_SET`: it
 exempts no file from anything, it just asserts a different expected status.
 
 This closes the expiry the fourth pass flagged: **"No CI gate runs `reify
-check` over this corpus" is now false** — a gate does, covering constraint
-satisfaction specifically, with the geometry-consumer residual above pinned
-rather than silently dropped. `INDEX.md` is updated in the same commit as
+check` over this corpus" is now false** — a gate does (hard-failing unless
+`REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS` is set, which downgrades all
+failures to warnings), covering constraint satisfaction specifically, with
+the geometry-consumer residual above pinned rather than silently dropped.
+`INDEX.md` is updated in the same commit as
 this note (both are #6246's file list). The third site the fourth pass named —
 the exemplar's own *Bands, not sign guards* comment in
 `examples/best_practices/angle_crossings.ri` — remains out of #6246's declared
