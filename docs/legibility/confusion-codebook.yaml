@@ -129,6 +129,12 @@ entries:
     origin_phase: architect
     manifested_phase: ops
     note: Supervisor briefing at turn 3 injects ROTATION_ESCALATIONS and ROTATION_HOURS but omits DARK_FACTORY_ROOT required by watcher-rearm.sh. This blocks all subsequent watcher invocations when running as cross-project escalation-watcher for /home/leo/src/reify.
+  - date: '2026-08-14'
+    project: reify
+    session: 68ce85c4-b96b-4580-bb85-880cd87ea5eb
+    origin_phase: ops
+    manifested_phase: ops
+    note: Escalation-watcher spawned as autonomous agent for /home/leo/src/reify (non-dark-factory project), but task briefing injected only Project root and Escalation queue, omitting DARK_FACTORY_ROOT. Script invocation in turn 135 fails with 'DARK_FACTORY_ROOT must be set'.
 - id: entry-cand-20260722-1
   title: Symlinked plan.json indirection triggers expensive tree-wide search instead of direct resolution
   severity: medium
@@ -441,6 +447,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Turns 205 and 213: watcher-rearm.sh hit CEILING timeout (exit 124) twice. Second attempt reduced timeout from 3600s to 1830s (cosmetic change only), same CEILING result. Pattern suggests retry loop with only parameter tweaks rather than strategy change.'
+  - date: '2026-08-14'
+    project: reify
+    session: 68ce85c4-b96b-4580-bb85-880cd87ea5eb
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh invoked with DARK_FACTORY_ROOT set, but hits its own CEILING timeout (exit 124) in turns 138, 146, 154, 162. Agent retries identically 4 times; only cosmetic change is timeout parameter reduction from 3600→3428 in final attempt (turn 162). Bash retry loop shows x3 additional attempts.
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -740,6 +752,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Turn 112: Escalation-watcher session for cross-project target (/home/leo/src/reify) invokes watcher-rearm.sh without DARK_FACTORY_ROOT set, despite project-root being injected. Error: ''watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory'''
+  - date: '2026-08-14'
+    project: reify
+    session: 68ce85c4-b96b-4580-bb85-880cd87ea5eb
+    origin_phase: ops
+    manifested_phase: ops
+    note: Cross-project target escalation-watcher session lacks DARK_FACTORY_ROOT environment variable required by watcher-rearm.sh, causing initial execution failure (turn 135).
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -753,6 +771,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124'
+  - date: '2026-08-14'
+    project: reify
+    session: 68ce85c4-b96b-4580-bb85-880cd87ea5eb
+    origin_phase: ops
+    manifested_phase: ops
+    note: After watcher-rearm.sh hits CEILING (exit 124) in turn 138, agent re-issues identical command in turns 146, 154, 162 without varying invocation parameters (only timeout value nudged in last attempt), receiving CEILING outcome each time.
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -936,6 +960,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Escalation-watcher session working cross-project (reify + dark-factory losses) hits multiple resolve_ticket timeouts (turns 239-243, 419). Pattern matches a filesystem-wide search fallback when DARK_FACTORY_ROOT is unset in a spawned cross-project escalation session.
+  - date: '2026-08-14'
+    project: reify
+    session: 68ce85c4-b96b-4580-bb85-880cd87ea5eb
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'With DARK_FACTORY_ROOT unset, agent resorts to filesystem-wide find in turn 120: `find / -maxdepth 6 -iname watcher-rearm.sh` returns 432 entries from .code-index caches before agent locates /home/leo/src/dark-factory via secondary search.'
 - id: entry-cand-20260728-7
   title: Warm-lane .task-meta path assumed at warm-lanes root instead of under worktrees/
   severity: medium
