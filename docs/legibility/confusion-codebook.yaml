@@ -76,6 +76,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Escalation-watcher deployed to non-dark-factory project (/home/leo/src/reify) requires explicit user injection of Escalation queue path at turn 3; unable to auto-discover, manifests as 'not_found' at turn 73
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: escalation-watcher skill invoked from non-dark-factory project (reify); cross-project target queue paths and script location must be discovered/hardcoded
 - id: entry-cand-20260728-1
   title: Gitignored-file deliverable can never satisfy confirm_plan / TDD pipeline
   severity: medium
@@ -135,6 +141,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Escalation-watcher spawned as autonomous agent for /home/leo/src/reify (non-dark-factory project), but task briefing injected only Project root and Escalation queue, omitting DARK_FACTORY_ROOT. Script invocation in turn 135 fails with 'DARK_FACTORY_ROOT must be set'.
+  - date: '2026-08-15'
+    project: reify
+    session: 386cf2f4-0ca5-4fb3-b935-6197895a7df8
+    origin_phase: ops
+    manifested_phase: ops
+    note: Escalation-watcher session spawned without DARK_FACTORY_ROOT. Turn 86 shows DARK_FACTORY_ROOT empty in environment; turn 95 watcher-rearm.sh fails with exit code 2 requiring it. Briefing provides project_root (/home/leo/src/reify) but not DARK_FACTORY_ROOT.
 - id: entry-cand-20260722-1
   title: Symlinked plan.json indirection triggers expensive tree-wide search instead of direct resolution
   severity: medium
@@ -352,6 +364,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: After sleep+tail guard block at turn 112, agent fell back to repeated Read retries (×5) on same output file
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: guard trip at turn 324 blocks sleep+poll; agent then retries manual polling 14 more times rather than switching strategy
 - id: entry-cand-20260729-3
   title: Warm-lane task-meta iteration state assumed present but absent
   severity: medium
@@ -391,6 +409,12 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'Blocked: sleep 45 followed by: echo "=== interim tail ===" tail -6 ... To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.'
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: turn 324 guard blocks sleep+tail poll fallback attempting to check watcher status, directs to Monitor with until-loop instead
 - id: entry-cand-20260728-5
   title: grep with 2>/dev/null conflates 'no matches' with a real path/argument error
   severity: medium
@@ -453,6 +477,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: watcher-rearm.sh invoked with DARK_FACTORY_ROOT set, but hits its own CEILING timeout (exit 124) in turns 138, 146, 154, 162. Agent retries identically 4 times; only cosmetic change is timeout parameter reduction from 3600→3428 in final attempt (turn 162). Bash retry loop shows x3 additional attempts.
+  - date: '2026-08-15'
+    project: reify
+    session: 386cf2f4-0ca5-4fb3-b935-6197895a7df8
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh CEILING timeout (exit 124) retried 3+ times with cosmetic changes (timeout 3600 → 3118). Agent persists despite identical failure mode; session ends with user interrupt at turn 142 before rotation digest could emit.
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh times out with exit 124 and is retried 17 times instead of once; self-correction at turn 345 explicitly identifies the CEILING timeout issue
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -466,6 +502,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'WATCHER_REARM_OUTCOME: CEILING exit=124 (x3) alongside mcp__escalation__get_pending_escalations x4 for level 1 and x4 for level 2, and Bash x8 re-invoking watcher-rearm.sh with shrinking timeouts'
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: after repeated watcher-rearm timeouts, agent falls back to manual redundant polling with pgrep/lease-heartbeat/reap-decisions (14x retry loop)
 - id: entry-cand-20260730-5
   title: Cross-repo escalation adjudicated together but attribution diverged, needing later correction
   severity: medium
@@ -530,6 +572,12 @@ entries:
     manifested_phase: verify
     invariant_violated: Agent must use Monitor/run_in_background instead of sleep+tail for background task polling
     note: Agent polled /tmp/t6098_rest.log with grep+tail chains (5x/3x/6x/8x/7x retries), iterating grep patterns and process inspection methods (pgrep→ps) after guard block on turn 3. Classic anti-pattern escalation trying to work around the guard.
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: turn 324 guard blocks sleep+pgrep+python chain, explicitly directing to Monitor instead of chained sleep+poll
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -650,6 +698,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     evidence_quote: '/bin/bash: line 1: scripts/watcher-rearm.sh: No such file or directory ... DARK_FACTORY_ROOT= ... ls: cannot access ''/scripts/watcher-rearm.sh'': No such file or directory'
+  - date: '2026-08-15'
+    project: reify
+    session: 20b1c094-ef5a-416b-be5e-640cb5b90d74
+    origin_phase: architect
+    manifested_phase: ops
+    note: 'Agent in target project cwd (/home/leo/src/reify) attempted relative-path access to ''scripts/watcher-rearm.sh'' instead of resolving to dark-factory tooling root. Turn 54: exit code 2, file not found in target cwd.'
 - id: entry-cand-20260723-3
   title: Ad-hoc sleep+tail polling for background task output blocked by guard
   severity: medium
@@ -715,6 +769,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Turn 231: After DARK_FACTORY_ROOT is set, watcher-rearm.sh hits bounded timeout with exit 124 and CEILING outcome. Manifests as tool_error. Signal counts show 2 tool_errors total (exit 2 at turn 112, exit 124 at turn 231).'
+  - date: '2026-08-15'
+    project: reify
+    session: 386cf2f4-0ca5-4fb3-b935-6197895a7df8
+    origin_phase: implement
+    manifested_phase: ops
+    note: Bounded-wait watcher-rearm.sh timeout (exit 124) recurs repeatedly. Turns 110, 120, 128, 137 all hit CEILING despite agent setting DARK_FACTORY_ROOT explicitly and varying only timeout parameter values.
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: exit 124 timeout recurs across 16 consecutive background task failures for watcher-rearm invocations
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -758,6 +824,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: Cross-project target escalation-watcher session lacks DARK_FACTORY_ROOT environment variable required by watcher-rearm.sh, causing initial execution failure (turn 135).
+  - date: '2026-08-15'
+    project: reify
+    session: 20b1c094-ef5a-416b-be5e-640cb5b90d74
+    origin_phase: architect
+    manifested_phase: ops
+    note: 'Autonomous escalation-watcher for cross-project target (/home/leo/src/reify) launched without DARK_FACTORY_ROOT in task briefing/environment. Turn 68: watcher-rearm.sh rejected execution with explicit ''DARK_FACTORY_ROOT must be set to a valid directory'' error.'
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -966,6 +1038,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'With DARK_FACTORY_ROOT unset, agent resorts to filesystem-wide find in turn 120: `find / -maxdepth 6 -iname watcher-rearm.sh` returns 432 entries from .code-index caches before agent locates /home/leo/src/dark-factory via secondary search.'
+  - date: '2026-08-15'
+    project: reify
+    session: 20b1c094-ef5a-416b-be5e-640cb5b90d74
+    origin_phase: architect
+    manifested_phase: ops
+    note: 'Escalation-watcher session spawned without DARK_FACTORY_ROOT set, forcing filesystem-wide discovery. Turn 59: agent ran find / to locate both dark-factory root and watcher-rearm.sh, recovering partial results from .code-index caches instead of live tooling.'
 - id: entry-cand-20260728-7
   title: Warm-lane .task-meta path assumed at warm-lanes root instead of under worktrees/
   severity: medium
@@ -1252,6 +1330,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Turn 64: agent attempted ''scripts/watcher-rearm.sh'' from /home/leo/src/reify cwd (exit 127, no such file). Script is only discoverable from dark-factory root and requires DARK_FACTORY_ROOT env var. Agent then switched to dark-factory cwd (turn 73+) but DARK_FACTORY_ROOT was still unset.'
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    note: session at /home/leo/src/reify invokes watcher-rearm for cross-project escalations, must cd to dark-factory and specify reify queue path explicitly
 - id: entry-cand-20260726-10
   title: Fragile grep-into-sed line-range construction
   severity: medium
@@ -9136,3 +9220,16 @@ candidates:
     origin_phase: unknown
     manifested_phase: review
     evidence_quote: 'check_paths_from_only_in_comments is a source-text meta-test: it greps scripts/jcodemunch-index-reify.sh for the literal `--paths-from`, REQUIRES at least one occurrence, and requires every occurrence to be on a line matching `^[0-9]+:\s*#`. It pins prose, not behaviour. check_no_upstream_changed_token greps FILE SOURCE TEXT for substrings `changed=/changed:`. The check has to assemble its own patterns from split fragments purely so it does not flag its own source — a self-exemption tell that this is a text pin rather than a behavioral guarantee.'
+- id: cand-20260815-1
+  title: Watcher-exclude file uninitialized in cross-project escalation queue
+  cause: watcher-rearm.sh creates .watcher-rearm-exclude-l2 in its local escalations dir; when invoked on a separate project's queue (/home/leo/src/reify/data/escalations/), the file doesn't exist yet, causing subsequent polling commands (sed, grep on exclude file) to fail
+  area: escalation-watcher cross-project integration
+  first_seen: '2026-08-15'
+  disposition: pending
+  sightings:
+  - date: '2026-08-15'
+    project: reify
+    session: d291a45b-6bb9-4520-9934-71cbbb1203b9
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: Five 'no such file or directory' errors (turns 84, 89, 114, 138, 148); retry loop includes sed of .watcher-rearm-exclude-l2 which must be initialized on first run of watcher-rearm.sh for that project
