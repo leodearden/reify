@@ -2166,4 +2166,117 @@ mod tests {
             "absent version → StepSchema::Ap214 (DSL default)"
         );
     }
+
+    // ── C-BOUND: shared subject→realization predicate (task β, #6167) ─────────
+
+    /// `realization_belongs_to`'s truth table — the match is PREFIX-ANCHORED on
+    /// the `"{struct_name}#realization["` marker, byte-equivalent to the
+    /// `k.starts_with(&format!("{struct_name}#realization["))` test it was
+    /// extracted from.
+    ///
+    /// The prefix-collision row (`"CurvedBall#realization[0]"` vs `"Curved"`) is
+    /// the load-bearing one: the `#realization[` marker is what makes the prefix
+    /// unambiguous, and a bare `starts_with(struct_name)` would wrongly say
+    /// `true`.
+    ///
+    /// The sub-scoped row (`"Asm.part#realization[0]"` vs `"part"` → `false`)
+    /// documents C-BOUND-2's accepted under-coverage: such an occurrence is
+    /// simply not refined, which can never produce a false pass.
+    #[test]
+    fn realization_belongs_to_matches_only_marker_anchored_prefix() {
+        assert!(
+            realization_belongs_to("Curved#realization[0]", "Curved"),
+            "exact struct name + marker → belongs"
+        );
+        assert!(
+            realization_belongs_to("Curved#realization[12]", "Curved"),
+            "multi-digit realization index → belongs (index is not parsed)"
+        );
+        assert!(
+            !realization_belongs_to("CurvedBall#realization[0]", "Curved"),
+            "prefix collision: 'CurvedBall' must NOT belong to 'Curved' — the \
+             '#realization[' marker anchors the prefix"
+        );
+        assert!(
+            !realization_belongs_to("Other#realization[0]", "Curved"),
+            "unrelated struct name → does not belong"
+        );
+        assert!(
+            !realization_belongs_to("Asm.part#realization[0]", "part"),
+            "sub-scoped entity path does NOT belong to the bare member name — \
+             C-BOUND-2's accepted under-coverage (not refined, never a false pass)"
+        );
+        assert!(
+            !realization_belongs_to("Curved", "Curved"),
+            "no '#realization[' marker at all → does not belong"
+        );
+        assert!(
+            realization_belongs_to("#realization[0]", ""),
+            "degenerate empty struct_name matches today's format!(\"{{}}#realization[\", \"\") \
+             behaviour verbatim"
+        );
+    }
+
+    /// C-BOUND-1 no-drift lock: `resolve_repr_tol_key`'s type-name scan and
+    /// `realization_belongs_to` are ONE predicate, not two copies.
+    ///
+    /// The expectation is computed IN THE TEST as the argmax over
+    /// `{k : realization_belongs_to(k, "Curved")}` — deriving it from the shared
+    /// predicate is what makes the property observable rather than a
+    /// spelling check. The map plants a HIGHER-valued prefix collider
+    /// (`"CurvedBall#realization[0]" → 9e-3`): any divergent, looser copy of the
+    /// predicate (e.g. a bare `starts_with(struct_name)`) selects the collider
+    /// and this test fails.
+    ///
+    /// The `ValueMap` is empty so the value-based path cannot fire and the
+    /// type-name scan is the path under test.
+    ///
+    /// The paired `eval_representation_within` assertion locks the same property
+    /// at the layer a user observes: with bound 1e-5 the verdict is `Satisfied`
+    /// (max achieved among belonging keys is 5e-6), which holds only while the
+    /// 9e-3 collider stays out of the scan. This is β's "no behaviour change"
+    /// half and must hold both before and after the predicate extraction.
+    #[test]
+    fn resolve_repr_tol_key_type_name_scan_agrees_with_realization_belongs_to() {
+        let mut achieved = BTreeMap::new();
+        achieved.insert("Curved#realization[0]".to_string(), 1e-6);
+        achieved.insert("Curved#realization[1]".to_string(), 5e-6); // true max among belonging keys
+        achieved.insert("CurvedBall#realization[0]".to_string(), 9e-3); // higher-valued collider
+        achieved.insert("Other#realization[0]".to_string(), 2e-3);
+
+        // Empty value map → value-based resolution cannot fire.
+        let values = ValueMap::new();
+        let vcid = ValueCellId::new("subject", "self");
+
+        // Expectation derived FROM the shared predicate (argmax over belonging keys).
+        let expected = achieved
+            .iter()
+            .filter(|(k, _)| realization_belongs_to(k, "Curved"))
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|(k, _)| k.clone());
+        assert_eq!(
+            expected,
+            Some("Curved#realization[1]".to_string()),
+            "sanity: the predicate-derived argmax is the 5e-6 key, not the 9e-3 collider"
+        );
+
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &achieved),
+            expected,
+            "resolve_repr_tol_key's type-name scan must select exactly the \
+             predicate-derived argmax — one predicate, no drift (C-BOUND-1)"
+        );
+
+        // End-to-end verdict lock: the 9e-3 collider must not leak into the result.
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-5);
+        let (sat, _) = eval_representation_within(&id, &expr, &values, &achieved)
+            .expect("RepresentationWithin shape must be recognised");
+        assert_eq!(
+            sat,
+            Satisfaction::Satisfied,
+            "max achieved among 'Curved' realizations (5e-6) ≤ bound (1e-5) → Satisfied; \
+             a looser predicate would pick the 9e-3 collider and report Violated"
+        );
+    }
 }
