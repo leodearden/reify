@@ -138,6 +138,112 @@ pub fn resolve_repo_id(project_root: &Path) -> String {
     repo_id_for_abs_path(target)
 }
 
+// -----------------------------------------------------------------------
+// §4.3 — index state, read read-only off disk
+// -----------------------------------------------------------------------
+
+/// What the on-disk jcodemunch index claims about itself.
+///
+/// The three fields are deliberately independent so no probe can mask
+/// another: a missing `git_head` row must not suppress a readable symbol
+/// count, and neither must be conflated with the file being unreadable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexState {
+    /// `meta.git_head` — the commit the corpus was indexed at. `None` means
+    /// the index is absent, has no such row, or could not be read.
+    pub index_head: Option<String>,
+    /// `select count(*) from symbols`. Zero for an absent or husk index.
+    pub symbol_count: i64,
+    /// `Some(msg)` when the DB file EXISTS but could not be opened or
+    /// queried — a corrupt file, a permissions problem, or jcodemunch having
+    /// changed its schema. Stays `None` for a plainly-absent index, which is
+    /// the distinction that keeps a schema change from being reported as a
+    /// routine empty index.
+    pub unreadable: Option<String>,
+}
+
+impl IndexState {
+    /// The state of an index that simply is not there.
+    fn absent() -> Self {
+        Self { index_head: None, symbol_count: 0, unreadable: None }
+    }
+}
+
+/// Where jcodemunch stores the index for `repo_id`.
+///
+/// The filename is the repo id with `/` flattened to `-`, plus `.db` —
+/// measured live: `local/1074-352ad3a3` ⇒ `~/.code-index/local-1074-352ad3a3.db`.
+pub fn index_db_path(index_dir: &Path, repo_id: &str) -> std::path::PathBuf {
+    index_dir.join(format!("{}.db", repo_id.replace('/', "-")))
+}
+
+/// Probe the on-disk index for `repo_id` **without modifying it**.
+///
+/// Opened `SQLITE_OPEN_READ_ONLY` with no `SQLITE_OPEN_CREATE`:
+/// `rusqlite::Connection::open` would CREATE a missing file, and against a
+/// derived path under the operator's real `~/.code-index` that would litter a
+/// phantom zero-symbol index which jcodemunch then registers as an empty
+/// repo — manufacturing the exact empty-husk condition this gate exists to
+/// detect, so the next run would legitimately refuse against our own
+/// artifact. A read-only open errors on a missing file instead, which is the
+/// "index absent" arm.
+///
+/// Never panics: every failure becomes a field on the returned state.
+pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
+    let path = index_db_path(index_dir, repo_id);
+    if !path.exists() {
+        return IndexState::absent();
+    }
+
+    let conn = match rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(conn) => conn,
+        // The file exists but will not open: corrupt, unreadable, or not a
+        // SQLite database. That is a diagnostic, not an empty index.
+        Err(e) => {
+            return IndexState { unreadable: Some(e.to_string()), ..IndexState::absent() };
+        }
+    };
+
+    // Two independent probes. Each records its own failure so a missing
+    // `meta` row cannot hide a readable `symbols` count, and a dropped
+    // `symbols` table cannot hide a readable head.
+    let mut unreadable: Option<String> = None;
+    let mut note = |e: rusqlite::Error| {
+        if unreadable.is_none() {
+            unreadable = Some(e.to_string());
+        }
+    };
+
+    let index_head = match conn.query_row(
+        "select value from meta where key = 'git_head'",
+        [],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(sha) => Some(sha),
+        // No `git_head` row is an expected shape, not a fault.
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => {
+            note(e);
+            None
+        }
+    };
+
+    let symbol_count = match conn.query_row("select count(*) from symbols", [], |row| {
+        row.get::<_, i64>(0)
+    }) {
+        Ok(n) => n,
+        Err(e) => {
+            note(e);
+            0
+        }
+    };
+
+    IndexState { index_head, symbol_count, unreadable }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
