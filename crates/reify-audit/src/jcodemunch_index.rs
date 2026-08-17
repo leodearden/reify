@@ -43,6 +43,7 @@ use std::path::Path;
 /// workspace-wide `Cargo.lock` churn. The workspace's `sha2` is the wrong
 /// primitive. Byte-identity is pinned by NIST vectors plus two measured
 /// ground-truth repo ids in this module's tests.
+// G-allow: public for the integration-test fixture `tests/common/index_fixture.rs`, which derives the expected repo id with this *verified* primitive rather than re-implementing SHA-1 a second time; in-crate production callers reach it via repo_id_for_abs_path; byte-identity pinned by NIST vectors plus two measured ground-truth repo ids in this module's unit tests.
 pub fn sha1_hex(bytes: &[u8]) -> String {
     // RFC 3174 §6.1. State is five 32-bit words, big-endian throughout.
     let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
@@ -109,7 +110,11 @@ pub fn sha1_hex(bytes: &[u8]) -> String {
 /// derivation can be pinned against measured ground truths on a host where
 /// neither path exists. Callers holding a possibly-relative or
 /// possibly-uncanonical path want [`resolve_repo_id`] instead.
-pub fn repo_id_for_abs_path(abs: &Path) -> String {
+///
+/// Crate-private: [`resolve_repo_id`] is the only production entry point, and
+/// this module's unit tests reach the pure form directly. Nothing outside the
+/// crate consumes it, so it stays off the public surface.
+fn repo_id_for_abs_path(abs: &Path) -> String {
     let path_str = abs.to_string_lossy();
     let basename = abs
         .file_name()
@@ -173,7 +178,13 @@ impl IndexState {
 ///
 /// The filename is the repo id with `/` flattened to `-`, plus `.db` —
 /// measured live: `local/1074-352ad3a3` ⇒ `~/.code-index/local-1074-352ad3a3.db`.
-pub fn index_db_path(index_dir: &Path, repo_id: &str) -> std::path::PathBuf {
+///
+/// Crate-private: [`read_index_state`] is the only consumer. The integration
+/// fixture deliberately re-derives this filename by hand instead of calling it,
+/// so the tests hold an independent opinion about the path the operator would
+/// predict — calling the function under test to compute its own expected value
+/// would let a wrong-but-self-consistent derivation pass.
+fn index_db_path(index_dir: &Path, repo_id: &str) -> std::path::PathBuf {
     index_dir.join(format!("{}.db", repo_id.replace('/', "-")))
 }
 

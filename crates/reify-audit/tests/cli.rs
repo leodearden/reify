@@ -91,19 +91,48 @@ fn insert_completed_event(db_path: &Path, task_id: &str) {
 /// This keeps tests robust to git failures in temp dirs (which aren't real
 /// git repositories).
 fn parse_findings_from_stderr(stderr: &str) -> Vec<serde_json::Value> {
-    let json_start = stderr
-        .rfind("\n[")
-        .map(|pos| pos + 1) // skip the '\n', keep the '['
-        .or_else(|| {
-            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
-            if stderr.starts_with('[') { Some(0) } else { None }
-        })
+    let json_start = find_findings_array_start(stderr)
         .unwrap_or_else(|| panic!("no JSON array found in stderr; full stderr:\n{stderr}"));
     serde_json::from_str(&stderr[json_start..]).unwrap_or_else(|e| {
         panic!(
             "stderr does not contain valid JSON after '[': {e}\nstderr:\n{stderr}"
         )
     })
+}
+
+/// Byte offset where the findings array begins, or `None` if there is none.
+///
+/// Factored out of [`parse_findings_from_stderr`] so the positive direction
+/// ("an array was emitted") and the negative direction
+/// ([`stderr_has_parseable_findings_array`], "no array was emitted") share ONE
+/// definition of the parse boundary and cannot drift apart.
+fn find_findings_array_start(stderr: &str) -> Option<usize> {
+    stderr
+        .rfind("\n[")
+        .map(|pos| pos + 1) // skip the '\n', keep the '['
+        .or_else(|| {
+            // Fallback: JSON starts at position 0 (no preceding diagnostic lines).
+            if stderr.starts_with('[') { Some(0) } else { None }
+        })
+}
+
+/// Whether stderr carries a parseable findings array — non-panicking, for
+/// asserting the ABSENCE of one.
+///
+/// This models the `/audit` skill's exit-125 disambiguator, which separates an
+/// infrastructure error from "125 High-severity findings" on exactly this
+/// property: successful runs always emit a JSON array on stderr, while error
+/// paths emit human-readable text and never produce parseable JSON. Tests that
+/// assert a refusal emits no array must therefore ask the same question the
+/// skill asks, rather than assuming a panic means absence.
+#[allow(dead_code)]
+fn stderr_has_parseable_findings_array(stderr: &str) -> bool {
+    match find_findings_array_start(stderr) {
+        Some(start) => {
+            serde_json::from_str::<Vec<serde_json::Value>>(&stderr[start..]).is_ok()
+        }
+        None => false,
+    }
 }
 
 /// Recursively copy the directory tree at `src` into `dst` (creating `dst`).
@@ -1240,6 +1269,21 @@ mod cli {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
+        // PLAYER is jcodemunch-backed, so this run now passes through the §4.3
+        // freshness gate. Give it a real one-commit repo and a fresh index so
+        // the precondition holds and the dispatch path under test is actually
+        // reached — a bare non-git tempdir leaves `live_head` unverifiable,
+        // which the gate refuses. Making the project root real is a strict
+        // improvement to this test rather than an accommodation.
+        let live_head = common::index_fixture::init_git_repo_with_one_commit(dir);
+        let index_dir = tmp.path().join("code-index");
+        common::index_fixture::write_index_db(
+            &index_dir,
+            &common::index_fixture::expected_repo_id(dir),
+            Some(&live_head),
+            2,
+        );
+
         let tasks_file = write_tasks_json(dir, &[]);
         let runs_db = write_empty_runs_db(dir);
 
@@ -1269,6 +1313,8 @@ mod cli {
                 runs_db.to_str().unwrap(),
                 "--project-root",
                 dir.to_str().unwrap(),
+                "--jcodemunch-index-dir",
+                index_dir.to_str().unwrap(),
             ])
             .output()
             .expect("invoke reify-audit --pattern PLAYER with mock jcodemunch");
@@ -2813,7 +2859,7 @@ mod freshness_gate {
         // any findings are serialized, it emits no array and the EXISTING
         // disambiguator classifies it correctly with no skill-side change.
         assert!(
-            parse_findings_from_stderr(&stderr).is_empty(),
+            !stderr_has_parseable_findings_array(&stderr),
             "a refusal must emit NO findings array; stderr:\n{stderr}"
         );
     }
@@ -2846,7 +2892,7 @@ mod freshness_gate {
             "refusal must name the symbol count; stderr:\n{stderr}"
         );
         assert!(
-            parse_findings_from_stderr(&stderr).is_empty(),
+            !stderr_has_parseable_findings_array(&stderr),
             "a refusal must emit NO findings array; stderr:\n{stderr}"
         );
     }
@@ -2878,7 +2924,7 @@ mod freshness_gate {
             "refusal must carry the machine-readable marker; stderr:\n{stderr}"
         );
         assert!(
-            parse_findings_from_stderr(&stderr).is_empty(),
+            !stderr_has_parseable_findings_array(&stderr),
             "a refusal must emit NO findings array; stderr:\n{stderr}"
         );
         assert!(

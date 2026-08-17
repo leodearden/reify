@@ -54,6 +54,7 @@ use reify_audit::{
     AuditContext, ChangedSymbol, DeadSymbol, Finding, JCodemunchOps, LayerViolation, RealGitOps,
     Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
     fused_memory_client::FusedMemoryClient,
+    git_env,
     jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index,
 };
@@ -136,6 +137,80 @@ fn print_usage(out: &mut dyn Write) {
 
 // Use std::io::Write trait alias to accept both stdout and stderr.
 use std::io::Write;
+
+// -----------------------------------------------------------------------
+// §4.3 — jcodemunch index freshness precondition
+// -----------------------------------------------------------------------
+
+/// Read the working tree's HEAD sha, for the §4.3 freshness comparison.
+///
+/// Built through [`git_env::command`] rather than a bare
+/// `Command::new("git")`: that module exists because an inherited `GIT_DIR` /
+/// `GIT_WORK_TREE` makes `git -C <root>` report a DIFFERENT repository, and a
+/// `live_head` read from the wrong repo would make the whole freshness
+/// comparison silently meaningless — the exact class of vacuity this gate
+/// exists to close.
+fn live_head_sha(project_root: &Path) -> Result<String, String> {
+    let out = git_env::command(project_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|e| {
+            format!(
+                "could not run `git rev-parse HEAD` in '{}': {e}",
+                project_root.display()
+            )
+        })?;
+    if !out.status.success() {
+        return Err(format!(
+            "`git rev-parse HEAD` failed in '{}' (exit {:?}): {}",
+            project_root.display(),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Err(format!(
+            "`git rev-parse HEAD` produced no sha in '{}'",
+            project_root.display()
+        ));
+    }
+    Ok(sha)
+}
+
+/// Refuse to query a jcodemunch corpus that cannot be shown fresh and
+/// non-empty. Returns the already-rendered refusal message on `Err`.
+///
+/// Called ONLY once a live serve is genuinely about to be queried — see the
+/// call site — and always before any detector `check()`.
+fn enforce_index_freshness(args: &Args, repo_id: &str) -> Result<(), String> {
+    let project_root = Path::new(&args.project_root);
+
+    // A freshness claim we cannot verify is worth no more than a stale one, so
+    // an unreadable HEAD refuses rather than proceeding. The breadcrumb is
+    // deliberately distinct from both marker tokens: neither "stale" nor
+    // "empty" has been established here, and mislabelling this as either would
+    // send an operator to re-index when the real fault is the git invocation.
+    let live_head = live_head_sha(project_root).map_err(|e| {
+        format!(
+            "cannot verify jcodemunch index freshness for {repo_id} — {e}; refusing \
+             rather than querying a corpus of unknown vintage (pass --no-jcodemunch \
+             to skip the jcodemunch-backed detectors)"
+        )
+    })?;
+
+    let state =
+        jcodemunch_index::read_index_state(Path::new(&args.jcodemunch_index_dir), repo_id);
+    jcodemunch_index::evaluate_freshness(&state, &live_head).map_err(|refusal| {
+        refusal
+            .with_repo_id(repo_id)
+            // Surface a schema-drift diagnostic when there is one, so a future
+            // jcodemunch schema change is debuggable instead of masquerading
+            // as a routine empty index.
+            .with_unreadable(state.unreadable.clone())
+            .to_string()
+    })
+}
 
 // -----------------------------------------------------------------------
 // Exit-code convention
@@ -638,7 +713,37 @@ fn main() -> ExitCode {
                 jcodemunch_repo_id.clone(),
                 PathBuf::from(&args.project_root),
             ) {
-                Ok(r) => Box::new(r),
+                Ok(r) => {
+                    // §4.3 freshness precondition. This is the ONLY place the
+                    // gate fires, and the placement is the load-bearing part:
+                    // a jcodemunch-backed detector is in the run set,
+                    // --no-jcodemunch was absent, AND the handshake actually
+                    // succeeded — so a live serve is genuinely about to be
+                    // queried. It runs before `ctx` is built and therefore
+                    // before any detector `check()`.
+                    //
+                    // Deliberately NOT earlier. §4.3's harm model is false
+                    // orphans produced FROM a stale corpus; with the serve
+                    // down there is no corpus to be misled by (the Err arm
+                    // below already fail-softs to zero findings), so there is
+                    // nothing to refuse. Gating before the connection attempt
+                    // would convert that documented fail-soft into a hard exit
+                    // 125 on every machine where jcodemunch is legitimately
+                    // absent — an outage on a healthy path. Constructing the
+                    // client is not "a detector query", so gating a successful
+                    // construction satisfies §4.3 literally while preserving
+                    // the fail-soft.
+                    if let Err(msg) = enforce_index_freshness(&args, &jcodemunch_repo_id) {
+                        // Returns BEFORE any findings array is serialized, so
+                        // the refusal emits no parseable JSON on stderr. That
+                        // is what lets the /audit skill's existing
+                        // exit-125 disambiguator classify this as an infra
+                        // error rather than 125 High findings.
+                        eprintln!("reify-audit: {msg}");
+                        return ExitCode::from(ERROR_EXIT);
+                    }
+                    Box::new(r)
+                }
                 Err(e) => {
                     eprintln!(
                         "reify-audit: jcodemunch unreachable at '{}': {} — \
