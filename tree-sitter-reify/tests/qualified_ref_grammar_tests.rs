@@ -284,7 +284,7 @@ fn sub_specialization_arm_accepts_namespaced_structure_name() {
 /// Specialization arm WITH a type-argument tail: `sub h : pp.Pulley<T>`.
 ///
 /// THREE-SURFACE PARITY PIN. The specialization arm's `optional(field(
-/// 'type_args', …))` slot (grammar.js:895) sits AFTER `structure_name`, so
+/// 'type_args', …))` slot (grammar.js:896) sits AFTER `structure_name` (:895), so
 /// widening `structure_name` to `namespaced_name` made this form parse —
 /// `structure_name` and `type_args` come out as SIBLING fields, not as a
 /// `parameterized_type`. `lower_sub` accordingly builds

@@ -750,9 +750,10 @@ subInstanceName {
 // supplies for the unqualified case — `sub h : pp.Pulley<T>`.
 //
 // MEASURED THREE-SURFACE PARITY, not a speculative widening. Upstream's
-// specialization arm keeps its own `optional(field('type_args', …))` slot AFTER
-// the widened `structure_name` (grammar.js:895), so `sub h : pp.Pulley<T>`
-// parses there with zero ERROR nodes and `lower_sub` builds a valid
+// specialization arm keeps its own `optional(field('type_args', …))` slot
+// (grammar.js:896) AFTER the widened `structure_name` (grammar.js:895), so
+// `sub h : pp.Pulley<T>` parses there with zero ERROR nodes and `lower_sub`
+// builds a valid
 // `SubDecl { structure_name: "pp.Pulley", type_args: [T] }` with no diagnostic.
 // Without the tail here this grammar produced 2 error nodes on that source —
 // the editor STRICTER than the compiler, which is precisely the silent

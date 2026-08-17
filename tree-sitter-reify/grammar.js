@@ -1173,7 +1173,7 @@ module.exports = grammar({
     // two positions cannot drift.  Expression position deliberately does NOT
     // get a node of this kind: bare `pp.Pulley` is indistinguishable from
     // `self.width` at parse time (a single case-agnostic `identifier` regex,
-    // grammar.js:1683), so it keeps parsing as `member_access` and the
+    // grammar.js:1755), so it keeps parsing as `member_access` and the
     // resolution phase (task ν) performs the fixup — the same deferral the
     // `Foo.Bar` enum-access form already relies on (resolution-unification D-9).
     // The call form is handled separately by `namespaced_call`.
@@ -1623,11 +1623,11 @@ module.exports = grammar({
     // `prec(12)` sits exactly one level above `member_access`'s `prec.left(11)`
     // so that on `pp.Pulley` followed by `(` the parser SHIFTS the `(` into
     // this rule instead of reducing to a bare `member_access` — see the
-    // precedence table above (grammar.js:1178-1202), level 12.
+    // precedence table above (grammar.js:1218-1244), level 12.
     //
     // The callee is a full `$.member_access`, mirroring the shape
-    // `trait_method_call` uses for its `qualified_access` callee (grammar.js
-    // ~1607).  Two reasons: (1) restricting it to an inline
+    // `trait_method_call` uses for its `qualified_access` callee
+    // (grammar.js:1679).  Two reasons: (1) restricting it to an inline
     // `identifier '.' identifier` collides with `member_access` as a
     // reduce-reduce ambiguity, whereas this generates conflict-free; (2) the
     // callee node is then IDENTICAL to the call-less form, so ν's
