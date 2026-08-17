@@ -49,6 +49,7 @@ pub mod pdssentinel;
 pub mod pdoccover;
 pub mod fused_memory_client;
 pub mod jcodemunch_client;
+pub mod jcodemunch_index;
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
