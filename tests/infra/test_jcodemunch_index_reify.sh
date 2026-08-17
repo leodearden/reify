@@ -355,7 +355,7 @@ argv_subcommand_is() {
 # :1755) and OMITS "message" entirely on both changed branches (:1456-1466,
 # :1859-1870), so those two lines are the only two real shapes.
 #
-# mk_stub_indexer <path> <no-changes|changed|fail>
+# mk_stub_indexer <path> <no-changes|changed|fail|env-echo>
 mk_stub_indexer() {
     local path="$1" mode="$2"
     cat > "$path" <<'STUB'
@@ -368,9 +368,35 @@ STUB
         no-changes) echo 'echo "  $root: No changes detected (0.4s)" >&2; exit 0' >> "$path" ;;
         changed)    echo 'echo "  $root: 54233 symbols (77.8s)" >&2; exit 0' >> "$path" ;;
         fail)       echo 'echo "  $root: boom" >&2; exit 3' >> "$path" ;;
+        # Reports the identity lever AS THE CHILD ACTUALLY RECEIVED IT, then
+        # behaves like `no-changes`. The only mode that can tell "the argv
+        # string mentions the var" apart from "the indexer process is really
+        # running under it" — the distinction esc-6107-6 turned on.
+        env-echo)   echo 'echo "  $root: identity-env=[${JCODEMUNCH_GIT_ROOT_IDENTITY-<unset>}]" >&2; echo "  $root: No changes detected (0.1s)" >&2; exit 0' >> "$path" ;;
         *) echo "mk_stub_indexer: bad mode $mode" >&2; return 1 ;;
     esac
     chmod +x "$path"
+}
+
+# mk_foreign_index_db <index_dir> <slug> <source_root> — a DB at a DIFFERENT
+# identity than the one this script predicts, carrying `meta.source_root` for
+# <source_root>. Reproduces the esc-6107-6 shape: the indexer ran, succeeded,
+# and wrote under the identity JCODEMUNCH resolved rather than the one this
+# script derived.
+mk_foreign_index_db() {
+    local index_dir="$1" slug="$2" root="$3" db
+    db="$index_dir/$slug.db"
+    mkdir -p "$index_dir"
+    rm -f "$db"
+    {
+        echo 'create table symbols(id text primary key, file text, name text);'
+        echo 'create table files(path text primary key);'
+        echo 'create table meta(key text primary key, value text);'
+        echo "insert into meta values('source_root','$root');"
+        echo "insert into symbols values('s0','f0.rs','sym0');"
+        echo "insert into files values('f0.rs');"
+    } | sqlite3 "$db" || return 1
+    printf '%s\n' "$db"
 }
 
 # with_stub <index_dir> <stub> <checker> [args...]
@@ -395,6 +421,34 @@ expect_ok_stderr() {
     if ! grep -qF -- "$want" "$SCRATCH/ok.err"; then
         printf 'stderr did not contain %s (the indexer output was swallowed)\n' "$want" >&2
         cat "$SCRATCH/ok.err" >&2
+        return 1
+    fi
+    return 0
+}
+
+# expect_refusal_names <substring> [args...] — an E_JC_INDEX_MISSING refusal
+# whose message also carries <substring>. Kept separate from the marker
+# assertion so a refusal that is correct but UNDIAGNOSTIC fails loudly rather
+# than passing on the marker alone.
+expect_refusal_names() {
+    local want="$1"; shift
+    expect_refusal E_JC_INDEX_MISSING "$@" || return 1
+    if ! grep -qF -- "$want" "$SCRATCH/refusal.err"; then
+        printf 'the refusal did not name %s\n' "$want" >&2
+        cat "$SCRATCH/refusal.err" >&2
+        return 1
+    fi
+    return 0
+}
+
+# expect_refusal_lacks <substring> [args...] — the negative control for the
+# above: an E_JC_INDEX_MISSING refusal that must NOT carry <substring>.
+expect_refusal_lacks() {
+    local unwanted="$1"; shift
+    expect_refusal E_JC_INDEX_MISSING "$@" || return 1
+    if grep -qF -- "$unwanted" "$SCRATCH/refusal.err"; then
+        printf 'the refusal carried %s when it should not have\n' "$unwanted" >&2
+        cat "$SCRATCH/refusal.err" >&2
         return 1
     fi
     return 0
@@ -685,6 +739,15 @@ else
     assert "argv names the resolved project root" \
         argv_has "$ARGV_ROOT" "$ARGV_ROOT"
 
+    # THE IDENTITY LEVER (esc-6107-6/-7). At 1.108.54 `git_root_identity`
+    # DEFAULTS TO TRUE (config.py:384), so without this var jcodemunch resolves
+    # the canonical checkout to the git identity `leodearden/reify` and every
+    # gate below interrogates a per-path DB nothing will ever write. Asserted on
+    # the CONSTRUCTED argv so --dry-run stays a faithful reproduction; Test 12
+    # asserts the child process actually receives it.
+    assert "argv carries JCODEMUNCH_GIT_ROOT_IDENTITY=0 (forces the per-path identity)" \
+        argv_has "$ARGV_ROOT" "JCODEMUNCH_GIT_ROOT_IDENTITY=0"
+
     # THE NEGATIVE HALF. PRD §4.4: --paths-from short-circuits discovery
     # (index_folder.py:1505-1511) and then DELETEs every previously-indexed file
     # absent from the list (sqlite_store.py:1698, :1480-1483) — with no warning.
@@ -752,6 +815,72 @@ else
         with_stub "$RUN_INDEX" "$STUB_DIR/fail" \
             expect_refusal_absent E_JC_INDEX_RUN_FAILED E_JC_INDEX_EMPTY \
                 --project-root "$RUN_ROOT"
+fi
+
+# -- Test 12: identity lever and the hijack diagnostic -----------------------
+#
+# THE HOLE THIS CLOSES. Every other DB gate in this suite drives a SYNTHETIC db
+# the suite itself creates at the predicted path, so the suite was green while
+# the identity premise was false — it could not, by construction, observe which
+# identity jcodemunch actually resolves. Both assertions here are about that
+# seam: one that the lever reaches the real child process, one that a refusal
+# caused by the identity landing elsewhere says so instead of reading as
+# "nothing has ever indexed this repo".
+echo ""
+echo "--- Test 12: identity lever reaches the child; hijack refusal is diagnostic ---"
+
+ID_ROOT="$(mk_tmpdir)"
+ID_INDEX="$(mk_tmpdir)"
+
+if [ -z "$ID_ROOT" ] || [ -z "$ID_INDEX" ]; then
+    echo "  FAIL: could not mktemp -d the identity fixtures"
+    FAIL=$((FAIL + 1))
+else
+    mk_stub_indexer "$STUB_DIR/env-echo" env-echo
+    mk_index_db "$ID_INDEX" "$ID_ROOT" 7 2 >/dev/null
+
+    # The behavioural half: the value is read out of the CHILD's environment,
+    # not out of the argv string the parent printed.
+    assert "the indexer child actually runs with JCODEMUNCH_GIT_ROOT_IDENTITY=0" \
+        with_stub "$ID_INDEX" "$STUB_DIR/env-echo" \
+            expect_ok_stderr "identity-env=[0]" --project-root "$ID_ROOT"
+
+    # The diagnostic half. No DB at the predicted path, but a foreign-identity
+    # DB claiming this exact source_root — precisely the state the canonical
+    # checkout was left in on 2026-08-13. --check-only so no indexer runs.
+    HIJACK_INDEX="$(mk_tmpdir)"
+    if [ -z "$HIJACK_INDEX" ]; then
+        echo "  FAIL: could not mktemp -d the hijack fixture"
+        FAIL=$((FAIL + 1))
+    else
+        mk_foreign_index_db "$HIJACK_INDEX" "leodearden-reify" "$ID_ROOT" >/dev/null
+
+        assert "a hijacked identity still refuses E_JC_INDEX_MISSING (never retargets)" \
+            with_index_path "$HIJACK_INDEX" \
+                expect_refusal E_JC_INDEX_MISSING --check-only --project-root "$ID_ROOT"
+
+        # …and the refusal NAMES the index that stole the identity. Without
+        # this, the operator sees "nothing has indexed this identity" moments
+        # after the indexer reported success — the exact ambiguity that cost a
+        # task cycle.
+        assert "the hijack refusal names the foreign index holding this source_root" \
+            with_index_path "$HIJACK_INDEX" \
+                expect_refusal_names "leodearden-reify.db" \
+                    --check-only --project-root "$ID_ROOT"
+
+        # The negative control: with NO foreign index, the note must NOT appear.
+        # A diagnostic that fires unconditionally is not a diagnostic.
+        CLEAN_INDEX="$(mk_tmpdir)"
+        if [ -z "$CLEAN_INDEX" ]; then
+            echo "  FAIL: could not mktemp -d the clean-store control"
+            FAIL=$((FAIL + 1))
+        else
+            assert "with no foreign index, the refusal carries NO hijack note" \
+                with_index_path "$CLEAN_INDEX" \
+                    expect_refusal_lacks "NOTE:" \
+                        --check-only --project-root "$ID_ROOT"
+        fi
+    fi
 fi
 
 test_summary

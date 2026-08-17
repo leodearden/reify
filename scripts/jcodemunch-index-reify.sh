@@ -230,10 +230,38 @@ db_query() {
     sqlite3 "file:${DB_PATH}?mode=ro" "$1"
 }
 
+# ── The identity-hijack diagnostic (esc-6107-6/-7) ───────────────────────────
+#
+# Consulted ONLY on the E_JC_INDEX_MISSING path, and ONLY to sharpen the
+# message. §4.4's stance is unchanged — identity is PREDICTED, never discovered:
+# nothing below is allowed to retarget $REPO_ID or $DB_PATH, and a match here
+# still refuses. It exists because the bare "nothing has indexed this identity"
+# is indistinguishable between the two causes that produce it — a genuinely
+# unindexed repo, and an indexer that ran, succeeded, and wrote somewhere else.
+# Telling those apart from the message cost a full task cycle once (the indexer
+# reported `56004 symbols` and this script then refused in the same breath).
+#
+# The probe is read-only, bounded to the store dir, and best-effort: any failure
+# leaves the original message intact rather than masking the refusal.
+hijack_note() {
+    local db meta_root
+    for db in "$CODE_INDEX_DIR"/*.db; do
+        [ -f "$db" ] || continue
+        case "$db" in "$DB_PATH") continue ;; esac
+        meta_root="$(sqlite3 "file:${db}?mode=ro" \
+            "select value from meta where key='source_root'" 2>/dev/null)" || continue
+        [ "$meta_root" = "$PROJECT_ROOT" ] || continue
+        printf ' NOTE: %s already indexes this exact source_root, i.e. identity resolution landed on %s instead. Almost always one of: (a) JCODEMUNCH_GIT_ROOT_IDENTITY=0 did not reach the indexer, or (b) that pre-existing index short-circuits git_root.py:174-178 ahead of the configured mode — delete it and re-run.' \
+            "$db" "$(basename -- "${db%.db}" | sed 's/-/\//')"
+        return 0
+    done
+    return 0
+}
+
 symbol_count=""
 check_index() {
     [ -f "$DB_PATH" ] || refuse E_JC_INDEX_MISSING \
-        "no index DB at $DB_PATH for $REPO_ID — nothing has indexed this identity. Run this script without --check-only."
+        "no index DB at $DB_PATH for $REPO_ID — nothing has indexed this identity. Run this script without --check-only.$(hijack_note)"
 
     local err
     if ! symbol_count="$(db_query 'select count(*) from symbols' 2>"$SCRATCH_ERR")"; then
@@ -338,6 +366,61 @@ JC_PIN="jcodemunch-mcp==1.108.54"
 # and it resolved and ran clean at this exact package pin.
 JC_PYTHON="3.13"
 
+# ── THE IDENTITY LEVER IS PART OF THE INVOCATION (esc-6107-6/-7) ─────────────
+#
+# `local/<basename>-<sha1>` is NOT what jcodemunch resolves by default. At the
+# pinned 1.108.54 `config.py:384` ships `"git_root_identity": True`, so
+# `git_root.py::_configured_identity_mode` answers "git" and
+# `resolve_index_identity(mode="config")` takes the git branch for ANY checkout
+# with a `.git` and a parseable `origin`. /home/leo/src/reify has
+# `origin = https://github.com/leodearden/reify.git`, so it resolved to
+# `leodearden/reify` — the per-path branch was never reached.
+#
+# The decompose-time premise read `_local_repo_name`'s FORMULA correctly and
+# never checked WHICH BRANCH reaches it. Measured against the pinned wheel with
+# a clean store: default config -> `git leodearden/reify`; with this env var ->
+# `local/reify-4ae45bbd`, exactly the identity derived above.
+#
+# WHY PER-PATH IS WORTH FORCING (PRD §4.2, both legs re-measured):
+#   1. Incremental survives. Under a git identity the collision resolver sets
+#      `_merge_with_existing` whenever the stored `git_root == source_root`
+#      (index_folder.py:1616) — true for a root-level index — and the
+#      incremental branch is gated on `_merge_with_existing is None` (:1745).
+#      Every run would be a full ~110 s reindex, and the "second run reports 0
+#      changed" signal would be UNREACHABLE, not merely unmeasured. Under the
+#      local branch `git_root` is "" and that guard never arms.
+#   2. Worktrees stay isolated. Every reify worktree resolves to the SAME
+#      `leodearden/reify` with a DIFFERENT git_root, and index_folder's
+#      collision guard then hard-refuses — its own error text names this very
+#      env var as the fix. PRD §4.2's "collides across reify's 239 worktrees"
+#      is a LIVE hazard, not the stale one §3 calls it.
+#
+# PIN-BUMP CHECKLIST: this env var is accepted but DEPRECATED upstream — the
+# package logs "will be removed in v2.0. Use config.jsonc instead." A bump past
+# v2.0 must re-establish the lever (`"identity_mode": "local"`) before landing,
+# or the identity silently reverts to `leodearden/reify` and every gate below
+# starts interrogating a path nothing writes.
+#
+# NOT SUFFICIENT ON ITS OWN: `resolve_index_identity` returns an ALREADY-EXISTING
+# git-identity index (git_root.py:174-178) BEFORE it ever consults the configured
+# mode, so a stray `leodearden/reify` index in the store overrides this var. That
+# is what `E_JC_INDEX_MISSING`'s hijack diagnostic exists to name.
+#
+# EXPECTED AND BENIGN: every run re-creates an EMPTY `~/.code-index/
+# leodearden-reify.db` husk as a side effect (0 symbols, 0 files, meta carries
+# only `index_version`/`call_refs_missing`). Measured 2026-08-17: deleting it and
+# re-running recreates it, so do not treat its presence as this lever having
+# failed. It is inert for identity resolution precisely BECAUSE it is empty —
+# `_existing_git_identity` skips any entry whose stored `git_root` does not
+# contain the path, and the husk stores none, so resolution stays on
+# `local/reify-4ae45bbd` (verified with the husk in place). If it ever stops
+# being inert it will carry a `source_root`, which is exactly what the hijack
+# diagnostic keys on.
+#
+# Carried as an explicit `env` prefix rather than an `export` so that --dry-run
+# prints a command that actually reproduces this behaviour when pasted.
+JC_IDENTITY_ENV=(env JCODEMUNCH_GIT_ROOT_IDENTITY=0)
+
 INDEXER_CMD=(uvx --python "$JC_PYTHON" --from "$JC_PIN" jcodemunch-mcp)
 if [ -n "${REIFY_JC_INDEXER_CMD:-}" ]; then
     # TEST-ONLY SEAM. Replaces the `uvx …` prefix so the guard can drive the
@@ -347,7 +430,7 @@ if [ -n "${REIFY_JC_INDEXER_CMD:-}" ]; then
     # shellcheck disable=SC2206
     INDEXER_CMD=(${REIFY_JC_INDEXER_CMD})
 fi
-INDEXER_ARGV=("${INDEXER_CMD[@]}" watch "$PROJECT_ROOT" --once --no-ai-summaries)
+INDEXER_ARGV=("${JC_IDENTITY_ENV[@]}" "${INDEXER_CMD[@]}" watch "$PROJECT_ROOT" --once --no-ai-summaries)
 
 if [ "$DRY_RUN" -eq 1 ]; then
     say "exec  $(printf '%q ' "${INDEXER_ARGV[@]}")"
