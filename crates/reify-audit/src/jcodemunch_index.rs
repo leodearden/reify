@@ -18,6 +18,126 @@
 //! itself derives from a filesystem path, and (b) refusing to run when the
 //! index at that identity cannot be shown to be fresh and non-empty.
 
+use std::path::Path;
+
+// -----------------------------------------------------------------------
+// §4.2 — repo-identity derivation
+// -----------------------------------------------------------------------
+
+/// SHA-1 over `bytes`, lowercase hex.
+///
+/// **This is a NAMING hash, never a security primitive.** SHA-1 is
+/// cryptographically broken and must not be used here for anything but
+/// reproducing a name. It exists solely to be byte-identical to Python's
+/// `hashlib.sha1` as consumed by jcodemunch's `storage/git_root.py`
+/// `_local_repo_name`, which derives a local repo id as
+/// `f"{folder_path.name}-{sha1(str(folder_path)).hexdigest()[:8]}"`. If we
+/// computed a *different* digest we would gate a *different* index than the
+/// one the detector actually queries — the precise vacuity this module exists
+/// to close — so exact agreement with that one function is the whole
+/// requirement.
+///
+/// Implemented inline (RFC 3174) rather than via a `sha1` crate: no such
+/// crate is in `Cargo.lock` or the local registry cache, so adding one needs
+/// a network fetch a sandboxed task worktree is not guaranteed to have, plus
+/// workspace-wide `Cargo.lock` churn. The workspace's `sha2` is the wrong
+/// primitive. Byte-identity is pinned by NIST vectors plus two measured
+/// ground-truth repo ids in this module's tests.
+pub fn sha1_hex(bytes: &[u8]) -> String {
+    // RFC 3174 §6.1. State is five 32-bit words, big-endian throughout.
+    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+
+    // Message + padding: 0x80, then zeros, then the 64-bit big-endian bit
+    // length, sized so the total is a multiple of 64 bytes. A 56-byte
+    // message therefore needs a whole second block (1 + 8 > 64 - 56).
+    let mut padded = Vec::with_capacity(bytes.len() + 72);
+    padded.extend_from_slice(bytes);
+    padded.push(0x80);
+    while padded.len() % 64 != 56 {
+        padded.push(0);
+    }
+    let bit_len = (bytes.len() as u64).wrapping_mul(8);
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in padded.chunks_exact(64) {
+        // Expand the 16 input words to 80 (RFC 3174 §6.1 step (b)).
+        let mut w = [0u32; 80];
+        for (i, word) in chunk.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+
+    h.iter().map(|word| format!("{word:08x}")).collect()
+}
+
+/// Derive jcodemunch's local repo id for an **already-absolute** path.
+///
+/// Mirrors jcodemunch's `_local_repo_name`:
+/// `local/` + final path component + `-` + first 8 hex chars of
+/// `sha1(path_string)`.
+///
+/// Deliberately PURE — no filesystem access, no canonicalization — so the
+/// derivation can be pinned against measured ground truths on a host where
+/// neither path exists. Callers holding a possibly-relative or
+/// possibly-uncanonical path want [`resolve_repo_id`] instead.
+pub fn repo_id_for_abs_path(abs: &Path) -> String {
+    let path_str = abs.to_string_lossy();
+    let basename = abs
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        // A path with no final component (e.g. `/`) has no basename;
+        // jcodemunch's `Path.name` is likewise empty there.
+        .unwrap_or_default();
+    let digest = sha1_hex(path_str.as_bytes());
+    format!("local/{}-{}", basename, &digest[..8])
+}
+
+/// Derive the repo id for a project root as supplied on the command line.
+///
+/// Canonicalizes first so `.` (the default `--project-root`), a trailing
+/// slash, a `/./` segment and a symlinked path all resolve to ONE identity —
+/// the same normalization `load_tasks_from_fused_memory` already applies to
+/// the project root. Three cosmetic spellings of one directory yielding three
+/// index identities would silently gate the wrong index.
+///
+/// Falls back to the path as given when canonicalize fails (e.g. the root
+/// does not exist); the caller's downstream freshness check will then refuse
+/// on the absent index rather than this function panicking.
+pub fn resolve_repo_id(project_root: &Path) -> String {
+    let canonical = std::fs::canonicalize(project_root);
+    let target = canonical.as_deref().unwrap_or(project_root);
+    repo_id_for_abs_path(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
