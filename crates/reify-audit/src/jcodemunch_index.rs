@@ -244,6 +244,121 @@ pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
     IndexState { index_head, symbol_count, unreadable }
 }
 
+// -----------------------------------------------------------------------
+// §4.3 — the freshness decision
+// -----------------------------------------------------------------------
+
+/// The index was built at a different commit than the working tree.
+///
+/// Stable, greppable machine token. Consumers must branch on this rather
+/// than on message prose.
+pub const E_JC_INDEX_STALE: &str = "E_JC_INDEX_STALE";
+
+/// The index carries no symbols, or does not exist at all.
+pub const E_JC_INDEX_EMPTY: &str = "E_JC_INDEX_EMPTY";
+
+/// Why a jcodemunch-backed run was refused before querying any detector.
+///
+/// Carries §4.3's three quantities so the rendered message is actionable:
+/// which commit the corpus was built at, which commit the tree is at now,
+/// and how big the corpus was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexRefusal {
+    code: &'static str,
+    /// The repo identity that was probed — the operator needs it to know
+    /// *which* index to rebuild.
+    pub repo_id: String,
+    pub index_head: Option<String>,
+    pub live_head: String,
+    pub symbol_count: i64,
+    /// Propagated from [`IndexState::unreadable`] so a jcodemunch schema
+    /// change is diagnosable rather than silently reported as an empty index.
+    pub unreadable: Option<String>,
+}
+
+impl IndexRefusal {
+    /// The machine-readable marker token: [`E_JC_INDEX_STALE`] or
+    /// [`E_JC_INDEX_EMPTY`].
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// Attach the probed repo identity to a refusal built by
+    /// [`evaluate_freshness`], which is identity-agnostic by design.
+    pub fn with_repo_id(mut self, repo_id: &str) -> Self {
+        self.repo_id = repo_id.to_string();
+        self
+    }
+
+    /// Attach the reader's schema-drift diagnostic, if any.
+    pub fn with_unreadable(mut self, unreadable: Option<String>) -> Self {
+        self.unreadable = unreadable;
+        self
+    }
+}
+
+impl std::fmt::Display for IndexRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = if self.code == E_JC_INDEX_STALE {
+            "is stale"
+        } else {
+            "is empty or absent"
+        };
+        // An absent head gets an explicit marker: printing nothing would read
+        // as a truncated message and would not distinguish "no index at all"
+        // from "index at head <blank>".
+        let head = self.index_head.as_deref().unwrap_or("<absent>");
+        write!(
+            f,
+            "{}: jcodemunch index for {} {} — index_head={} live_head={} symbol_count={}",
+            self.code, self.repo_id, what, head, self.live_head, self.symbol_count
+        )?;
+        if let Some(diag) = &self.unreadable {
+            write!(f, " (index unreadable: {diag})")?;
+        }
+        write!(
+            f,
+            "; re-index this checkout before querying, or pass --no-jcodemunch \
+             to skip the jcodemunch-backed detectors"
+        )
+    }
+}
+
+/// Decide whether `state` is a corpus worth querying, per §4.3.
+///
+/// Three-arm ladder, in this order — the order is the contract, pinned by
+/// tests, not an artifact of statement sequence:
+///
+/// 1. no `index_head` ⇒ [`E_JC_INDEX_EMPTY`]. An absent index is the limiting
+///    case of an empty one; it is classified EMPTY rather than STALE because
+///    there is no head to name and the refusal is required to name it.
+/// 2. `index_head != live_head` ⇒ [`E_JC_INDEX_STALE`]. Queries answer about
+///    a different commit's code, so P1 reports symbols as orphaned that the
+///    current tree references.
+/// 3. `symbol_count == 0` ⇒ [`E_JC_INDEX_EMPTY`]. The mirror image: every
+///    query returns nothing, so every producer looks orphaned.
+///
+/// Identity-agnostic — the caller attaches the probed `repo_id` via
+/// [`IndexRefusal::with_repo_id`] — so the decision stays a pure function of
+/// the three §4.3 quantities.
+pub fn evaluate_freshness(state: &IndexState, live_head: &str) -> Result<(), IndexRefusal> {
+    let refuse = |code: &'static str| IndexRefusal {
+        code,
+        repo_id: String::new(),
+        index_head: state.index_head.clone(),
+        live_head: live_head.to_string(),
+        symbol_count: state.symbol_count,
+        unreadable: None,
+    };
+
+    match &state.index_head {
+        None => Err(refuse(E_JC_INDEX_EMPTY)),
+        Some(head) if head != live_head => Err(refuse(E_JC_INDEX_STALE)),
+        Some(_) if state.symbol_count == 0 => Err(refuse(E_JC_INDEX_EMPTY)),
+        Some(_) => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
