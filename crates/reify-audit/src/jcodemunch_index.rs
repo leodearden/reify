@@ -249,6 +249,162 @@ mod tests {
         assert_eq!(id.len(), "local/proj-".len() + 8, "8 hex chars of sha1");
     }
 
+    // -------------------------------------------------------------------
+    // Index-state reader — path derivation and read-only probing
+    //
+    // The schema below is verbatim from a live jcodemunch index re-probed
+    // this session: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)`
+    // with a `git_head` row, alongside a `symbols` table.
+    // -------------------------------------------------------------------
+
+    /// Write a synthetic index DB for `repo_id` under `dir`.
+    ///
+    /// `git_head`: `Some(sha)` writes the `meta.git_head` row; `None` omits it
+    /// (the row-missing shape). `symbol_rows` seeds that many `symbols` rows —
+    /// zero leaves the empty-husk shape a `delete-index` leaves behind.
+    fn write_index_db(
+        dir: &Path,
+        repo_id: &str,
+        git_head: Option<&str>,
+        symbol_rows: usize,
+    ) -> std::path::PathBuf {
+        let path = index_db_path(dir, repo_id);
+        let conn = rusqlite::Connection::open(&path).expect("open synthetic index db");
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);\
+             CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT, path TEXT);",
+        )
+        .expect("create index schema");
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('index_version', '16')",
+            [],
+        )
+        .expect("insert index_version");
+        if let Some(sha) = git_head {
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('git_head', ?)",
+                rusqlite::params![sha],
+            )
+            .expect("insert git_head");
+        }
+        for i in 0..symbol_rows {
+            conn.execute(
+                "INSERT INTO symbols (name, path) VALUES (?, 'src/lib.rs')",
+                rusqlite::params![format!("sym_{i}")],
+            )
+            .expect("insert symbol");
+        }
+        path
+    }
+
+    #[test]
+    fn index_db_path_maps_repo_id_to_flattened_db_filename() {
+        let dir = Path::new("/tmp/ix");
+        // Measured live: `local/1074-352ad3a3` is stored as
+        // `~/.code-index/local-1074-352ad3a3.db`.
+        assert_eq!(
+            index_db_path(dir, "local/reify-4ae45bbd"),
+            dir.join("local-reify-4ae45bbd.db")
+        );
+        // The `--jcodemunch-repo` override can carry any slash form, so the
+        // flattening must apply there too — otherwise the gate would probe a
+        // different file than the override selects.
+        assert_eq!(
+            index_db_path(dir, "leodearden/reify"),
+            dir.join("leodearden-reify.db")
+        );
+    }
+
+    #[test]
+    fn read_index_state_reads_populated_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_index_db(tmp.path(), "local/proj-deadbeef", Some("abc123"), 3);
+
+        let state = read_index_state(tmp.path(), "local/proj-deadbeef");
+        assert_eq!(state.index_head.as_deref(), Some("abc123"));
+        assert_eq!(state.symbol_count, 3);
+        assert_eq!(state.unreadable, None, "a healthy index is not unreadable");
+    }
+
+    #[test]
+    fn read_index_state_reads_empty_husk_index() {
+        // The shape `delete-index` leaves behind: the index EXISTS and knows
+        // its commit, but carries no symbols. Presence proving nothing is the
+        // entire reason §4.3 needs a symbol_count conjunct as well as a head
+        // comparison.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_index_db(tmp.path(), "local/proj-deadbeef", Some("abc123"), 0);
+
+        let state = read_index_state(tmp.path(), "local/proj-deadbeef");
+        assert_eq!(state.index_head.as_deref(), Some("abc123"));
+        assert_eq!(state.symbol_count, 0, "empty husk carries zero symbols");
+        assert_eq!(state.unreadable, None, "a husk is readable, just empty");
+    }
+
+    #[test]
+    fn read_index_state_on_absent_db_reports_absence_without_creating_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let expected = index_db_path(tmp.path(), "local/proj-deadbeef");
+        assert!(!expected.exists(), "precondition: no index db yet");
+
+        let state = read_index_state(tmp.path(), "local/proj-deadbeef");
+        assert_eq!(state.index_head, None);
+        assert_eq!(state.symbol_count, 0);
+        assert_eq!(
+            state.unreadable, None,
+            "a plainly-absent index is not a schema-drift diagnostic — that \
+             distinction is what keeps a future jcodemunch schema change from \
+             masquerading as a routine empty index"
+        );
+
+        // Load-bearing: `Connection::open` CREATES a missing file. Against a
+        // derived path under the operator's real ~/.code-index that would
+        // litter a phantom zero-symbol index, which jcodemunch would then
+        // register as an empty repo — manufacturing the exact husk this gate
+        // exists to detect. The read-only open must leave no trace.
+        assert!(
+            !expected.exists(),
+            "read_index_state must NOT create the index db it fails to find"
+        );
+    }
+
+    #[test]
+    fn read_index_state_tolerates_missing_git_head_row() {
+        // A populated corpus whose provenance row is absent: the symbol count
+        // must still be read, so the two probes cannot suppress each other.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_index_db(tmp.path(), "local/proj-deadbeef", None, 7);
+
+        let state = read_index_state(tmp.path(), "local/proj-deadbeef");
+        assert_eq!(state.index_head, None, "no git_head row to read");
+        assert_eq!(state.symbol_count, 7, "symbol count is read independently");
+        assert_eq!(state.unreadable, None);
+    }
+
+    #[test]
+    fn read_index_state_reports_schema_drift_as_a_distinguishable_diagnostic() {
+        // A valid SQLite file carrying NEITHER expected table — what a future
+        // jcodemunch schema change looks like from here. It must not panic,
+        // and it must NOT be indistinguishable from a routine empty index:
+        // the `unreadable` diagnostic is what makes a schema change surface as
+        // its own message instead of a silent "index is empty".
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = index_db_path(tmp.path(), "local/proj-deadbeef");
+        let conn = rusqlite::Connection::open(&path).expect("open drifted db");
+        conn.execute_batch("CREATE TABLE something_else (x INTEGER);")
+            .expect("create unrelated table");
+        drop(conn);
+
+        let state = read_index_state(tmp.path(), "local/proj-deadbeef");
+        assert_eq!(state.index_head, None);
+        assert_eq!(state.symbol_count, 0);
+        let diag = state
+            .unreadable
+            .as_deref()
+            .expect("schema drift must carry a diagnostic, not read as empty");
+        assert!(!diag.is_empty(), "the diagnostic must actually say something");
+    }
+
     #[test]
     fn resolve_repo_id_normalizes_cosmetic_path_variants() {
         // The default `--project-root` is `.`, and callers splice paths
