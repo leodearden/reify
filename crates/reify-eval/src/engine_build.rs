@@ -12972,6 +12972,19 @@ mod post_process_cross_sub_value_cells_tests;
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
 
+// ── compute_representation_bounds unit tests (task β, #6167 — C-BOUND) ───────
+//
+// The C-BOUND bound pre-pass: tightest declared `RepresentationWithin` bound
+// per SUBJECT structure name. Fixtures are real compiled IR via
+// `reify_test_support::parse_and_compile`; the assertions cover the key
+// (subject struct, not declaring template), the min-fold, the silent-skip
+// posture, the stdlib-resolved IR variant, and — load-bearing — that
+// `bounds.is_empty()` is exactly F's scoping predicate.
+// No OCCT kernel is required: compiled IR plus plain BTreeMaps only.
+
+#[cfg(test)]
+mod compute_representation_bounds_tests;
+
 // ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
 //
 // White-box pin (direct private-field access from this submodule of the crate
