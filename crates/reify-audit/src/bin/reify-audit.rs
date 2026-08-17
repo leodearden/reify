@@ -47,7 +47,7 @@
 //! into `reify-audit`. See design §12 (minimal deps).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use reify_audit::{
@@ -55,6 +55,7 @@ use reify_audit::{
     Severity, SymbolReference, TaskMetadata, TimeWindow, UntestedSymbol,
     fused_memory_client::FusedMemoryClient,
     jcodemunch_client::RealJCodemunchOps,
+    jcodemunch_index,
 };
 
 // -----------------------------------------------------------------------
@@ -108,7 +109,8 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
     let _ = writeln!(out, "  --jcodemunch-url <url>   jcodemunch MCP endpoint for P1 (default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp)");
-    let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: leodearden/reify)");
+    let _ = writeln!(out, "  --jcodemunch-repo <id>   jcodemunch repo identifier (default: derived per-path, e.g. local/<basename>-<sha1[..8]>)");
+    let _ = writeln!(out, "  --jcodemunch-index-dir <path> jcodemunch index directory for the freshness gate (default: $JCODEMUNCH_INDEX_DIR or $HOME/.code-index)");
     let _ = writeln!(out, "  --no-jcodemunch          Use inert stub (offline/test); P1 yields nothing, no connection");
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
@@ -186,9 +188,26 @@ struct Args {
     /// or `http://127.0.0.1:8901/mcp` (no trailing slash — `/mcp/` triggers
     /// a 307 redirect that drops `mcp-session-id`).
     jcodemunch_url: String,
-    /// Repo identifier passed to `RealJCodemunchOps::new`. Default is the
-    /// smoke-verified slash form `leodearden/reify`.
-    jcodemunch_repo: String,
+    /// Repo identifier passed to `RealJCodemunchOps::new`, and the identity
+    /// whose index the freshness gate probes.
+    ///
+    /// `None` — the default — means DERIVE it from `project_root` per §4.2,
+    /// reproducing jcodemunch's own `storage/git_root.py` `_local_repo_name`:
+    /// `local/<basename>-<sha1(abs_path)[..8]>`. `Some(id)` is an explicit
+    /// operator override.
+    ///
+    /// There is deliberately no hardcoded default. A `<owner>/<project>`
+    /// git-identity index names the *project*, not the *checkout*, so every
+    /// one of reify's worktrees would share one index and continuously
+    /// invalidate each other's; such an index is also never GC'd. Deriving
+    /// per-path gives each checkout its own corpus, which is what makes the
+    /// §4.3 freshness comparison meaningful at all.
+    jcodemunch_repo: Option<String>,
+    /// Directory holding jcodemunch's per-repo index databases, probed by the
+    /// §4.3 freshness gate. Falls back to `JCODEMUNCH_INDEX_DIR` env then
+    /// `$HOME/.code-index` — the same flag+env+default shape as
+    /// `jcodemunch_url`, so there is one CLI convention rather than two.
+    jcodemunch_index_dir: String,
     /// When true, bind `NoopJCodemunchOps` even for P1 runs. Preserves
     /// hermetic test behaviour and provides an offline escape hatch.
     no_jcodemunch: bool,
@@ -212,7 +231,19 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     // rationale as fused_memory_url above.
     let mut jcodemunch_url = std::env::var("JCODEMUNCH_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8901/mcp".to_string());
-    let mut jcodemunch_repo = "leodearden/reify".to_string();
+    // No default: `None` means derive per §4.2 from the project root. See the
+    // `Args::jcodemunch_repo` doc for why a hardcoded git-identity default is
+    // wrong rather than merely unnecessary.
+    let mut jcodemunch_repo: Option<String> = None;
+    let mut jcodemunch_index_dir = std::env::var("JCODEMUNCH_INDEX_DIR").unwrap_or_else(|_| {
+        // $HOME is present in every sanctioned invocation; the bare relative
+        // fallback keeps parse_args infallible rather than adding a second
+        // failure mode to arg parsing.
+        match std::env::var("HOME") {
+            Ok(home) => format!("{home}/.code-index"),
+            Err(_) => ".code-index".to_string(),
+        }
+    });
     let mut no_jcodemunch = false;
 
     // NOTE: Last-wins semantics for duplicate flags.
@@ -310,9 +341,17 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
             "--jcodemunch-repo" => {
                 i += 1;
-                jcodemunch_repo = argv
+                jcodemunch_repo = Some(
+                    argv.get(i)
+                        .ok_or("--jcodemunch-repo requires a value")?
+                        .clone(),
+                );
+            }
+            "--jcodemunch-index-dir" => {
+                i += 1;
+                jcodemunch_index_dir = argv
                     .get(i)
-                    .ok_or("--jcodemunch-repo requires a value")?
+                    .ok_or("--jcodemunch-index-dir requires a value")?
                     .clone();
             }
             "--no-jcodemunch" => {
@@ -336,6 +375,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         project_root,
         jcodemunch_url,
         jcodemunch_repo,
+        jcodemunch_index_dir,
         no_jcodemunch,
     })
 }
@@ -576,6 +616,14 @@ fn main() -> ExitCode {
     // Construct seam impls.
     let git = RealGitOps::new(PathBuf::from(&args.project_root));
 
+    // Resolve the jcodemunch repo identity ONCE, before the seam is
+    // constructed, so the identity queried and the identity gated cannot
+    // diverge. `--jcodemunch-repo` overrides; otherwise derive per §4.2.
+    let jcodemunch_repo_id = args
+        .jcodemunch_repo
+        .clone()
+        .unwrap_or_else(|| jcodemunch_index::resolve_repo_id(Path::new(&args.project_root)));
+
     // Construct jcodemunch seam:
     // - Noop for --no-jcodemunch, P5/pre-done, and P2-only runs (never connects).
     // - Real for P1/PDEAD runs; if the serve is unreachable, fail-soft to Noop
@@ -587,7 +635,7 @@ fn main() -> ExitCode {
         } else {
             match RealJCodemunchOps::new(
                 args.jcodemunch_url.clone(),
-                args.jcodemunch_repo.clone(),
+                jcodemunch_repo_id.clone(),
                 PathBuf::from(&args.project_root),
             ) {
                 Ok(r) => Box::new(r),
@@ -932,8 +980,12 @@ mod tests {
     /// `--help` must not advertise a default index that does not exist.
     ///
     /// Same CLI-surface contract as [`usage_text_lists_pdoccover`]: help text
-    /// naming `leodearden/reify` as the default would send an operator to
-    /// build an index this binary never probes.
+    /// naming a `<owner>/<project>` git-identity default would send an
+    /// operator to build an index this binary never probes.
+    ///
+    /// The needle below is the ONLY remaining occurrence of that token in this
+    /// file — it is the guard proving the absence, so it cannot be spelled any
+    /// other way without weakening the test.
     #[test]
     fn usage_text_has_no_legacy_repo_default() {
         let mut buf: Vec<u8> = Vec::new();
