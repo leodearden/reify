@@ -3046,3 +3046,187 @@ mod freshness_gate {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// §4.2 — the derived identity must reach the wire
+// -----------------------------------------------------------------------
+
+/// Close the loop between §4.2 and the detector query.
+///
+/// It is not enough that `resolve_repo_id` returns the right string in a unit
+/// test: the id the detector actually SENDS as `"repo"` must be that same
+/// derived value, and the id the gate PROBES must be that same value too. A
+/// plausible wiring slip is for an override to reach the ops constructor while
+/// the gate silently keeps checking the derived path — which would gate one
+/// index and query another, re-opening exactly the vacuity the gate closes.
+mod wire_identity {
+    use super::*;
+    use crate::common::index_fixture::{
+        expected_repo_id, index_db_path, init_git_repo_with_one_commit, write_index_db,
+    };
+
+    /// Spawn a jcodemunch mock that RECORDS every `tools/call` arguments
+    /// object it is handed, returning the shared log alongside the server.
+    ///
+    /// `spawn_mock_mcp`'s responder is bounded `Fn(&Value) -> Option<Value> +
+    /// Send + Sync + 'static`, so it can close over shared state. There is no
+    /// existing recorder helper in this file to reuse — the other mock call
+    /// sites merely INSPECT their args — so the capture is written here.
+    fn spawn_recording_mock() -> (MockServer, Arc<std::sync::Mutex<Vec<serde_json::Value>>>) {
+        let calls: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&calls);
+        let mock = spawn_mock_mcp(move |args| {
+            sink.lock().expect("record call args").push(args.clone());
+            // A canned layer violation keeps PLAYER's dispatch path alive, so
+            // the wire call this test observes is a real detector query.
+            Some(serde_json::json!({
+                "violations": [{
+                    "from": "crates/reify-cli",
+                    "to": "crates/reify-kernel",
+                    "from_symbol": "reify_cli::main",
+                    "to_symbol": "reify_kernel::solver::Solver::solve",
+                    "allowed": false,
+                    "rule_index": 0
+                }]
+            }))
+        });
+        (mock, calls)
+    }
+
+    /// Every recorded call that carries a `repo` field, as strings.
+    fn recorded_repos(calls: &Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Vec<String> {
+        calls
+            .lock()
+            .expect("read recorded calls")
+            .iter()
+            .filter_map(|args| args.get("repo").and_then(|r| r.as_str()).map(str::to_string))
+            .collect()
+    }
+
+    struct Fixture {
+        _tmp: tempfile::TempDir,
+        repo: std::path::PathBuf,
+        index_dir: std::path::PathBuf,
+        tasks_file: std::path::PathBuf,
+        runs_db: std::path::PathBuf,
+        live_head: String,
+    }
+
+    fn fixture() -> Fixture {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("create repo dir");
+        let index_dir = tmp.path().join("code-index");
+        std::fs::create_dir_all(&index_dir).expect("create index dir");
+        let live_head = init_git_repo_with_one_commit(&repo);
+        let tasks_file = write_tasks_json(tmp.path(), &[]);
+        let runs_db = write_empty_runs_db(tmp.path());
+        Fixture { _tmp: tmp, repo, index_dir, tasks_file, runs_db, live_head }
+    }
+
+    impl Fixture {
+        fn run(&self, url: &str, extra: &[&str]) -> std::process::Output {
+            let bin = env!("CARGO_BIN_EXE_reify-audit");
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--pattern", "PLAYER",
+                "--jcodemunch-url", url,
+                "--tasks-file", self.tasks_file.to_str().unwrap(),
+                "--runs-db", self.runs_db.to_str().unwrap(),
+                "--project-root", self.repo.to_str().unwrap(),
+                "--jcodemunch-index-dir", self.index_dir.to_str().unwrap(),
+            ]);
+            cmd.args(extra);
+            cmd.output().expect("invoke reify-audit")
+        }
+    }
+
+    /// With no `--jcodemunch-repo`, the id on the wire must be the §4.2 derived
+    /// identity for the project root — and specifically NOT the legacy
+    /// git-identity default this task removed.
+    #[test]
+    fn derived_repo_id_reaches_the_wire() {
+        let f = fixture();
+        let derived = expected_repo_id(&f.repo);
+        write_index_db(&f.index_dir, &derived, Some(&f.live_head), 2);
+
+        let (mock, calls) = spawn_recording_mock();
+        let out = f.run(mock.url(), &[]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "fresh index must admit the run; stderr:\n{stderr}"
+        );
+
+        let repos = recorded_repos(&calls);
+        assert!(
+            !repos.is_empty(),
+            "no jcodemunch call carrying a `repo` was observed — the detector \
+             never queried, so this test would be vacuous; stderr:\n{stderr}"
+        );
+        for repo in &repos {
+            assert_eq!(
+                repo, &derived,
+                "the wire must carry the §4.2 derived identity; recorded {repos:?}"
+            );
+            assert_ne!(
+                repo, "leodearden/reify",
+                "the removed legacy git-identity default must never reach the wire"
+            );
+        }
+    }
+
+    /// `--jcodemunch-repo` must reach BOTH consumers: the wire AND the gate.
+    ///
+    /// The index is written ONLY at the override's flattened filename and
+    /// deliberately NOT at the derived path, so admission is itself the proof
+    /// that the gate probed the override — had it kept checking the derived
+    /// path it would have found no index and refused with E_JC_INDEX_EMPTY.
+    #[test]
+    fn override_repo_id_reaches_both_the_wire_and_the_gate() {
+        let f = fixture();
+        let override_id = "my/custom-repo";
+        let override_db = index_db_path(&f.index_dir, override_id);
+        write_index_db(&f.index_dir, override_id, Some(&f.live_head), 2);
+        assert_eq!(
+            override_db.file_name().unwrap().to_str().unwrap(),
+            "my-custom-repo.db",
+            "the override's slash must be flattened for the on-disk filename"
+        );
+        assert!(
+            !index_db_path(&f.index_dir, &expected_repo_id(&f.repo)).exists(),
+            "no index at the DERIVED path: admission must be attributable to \
+             the gate probing the override"
+        );
+
+        let (mock, calls) = spawn_recording_mock();
+        let out = f.run(mock.url(), &["--jcodemunch-repo", override_id]);
+        mock.stop();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the gate must probe the OVERRIDE's index, not the derived path; \
+             stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("E_JC_INDEX_EMPTY") && !stderr.contains("E_JC_INDEX_STALE"),
+            "the override's index is fresh, so neither marker may appear; \
+             stderr:\n{stderr}"
+        );
+
+        let repos = recorded_repos(&calls);
+        assert!(!repos.is_empty(), "the detector never queried; stderr:\n{stderr}");
+        for repo in &repos {
+            assert_eq!(
+                repo, override_id,
+                "the override must reach the wire verbatim; recorded {repos:?}"
+            );
+        }
+    }
+}
