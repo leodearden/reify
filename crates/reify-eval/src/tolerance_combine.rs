@@ -312,6 +312,43 @@ pub fn eval_representation_within(
     }
 }
 
+/// C-BOUND's shared subject → realization predicate: does `entity_path` name a
+/// realization of the structure `struct_name`?
+///
+/// Extracted verbatim (semantically) from [`resolve_repr_tol_key`]'s type-name
+/// fallback, which now CALLS it. Both that fallback and — from #6171 (γ1) and
+/// #6168 (δ) — the refine/measure site use this one predicate, so the set the
+/// refine loop refines and the set the assertion reads can never drift
+/// (C-BOUND-1, INV-SF-5). See
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §5.
+///
+/// # Grammar
+///
+/// The match is **prefix-anchored** on the `"{struct_name}#realization["`
+/// marker — byte-equivalent to the
+/// `k.starts_with(&format!("{struct_name}#realization["))` test it replaces,
+/// but allocation-free (it drops the one `format!` per resolve call rather
+/// than adding one per map key).
+///
+/// It is deliberately **not** the [`reify_core::RealizationNodeId`] `FromStr`
+/// grammar (reify-core/src/identity.rs), which splits on the LAST occurrence of
+/// the marker (`rsplit_once`). Adopting last-occurrence semantics would change
+/// which key `resolve_repr_tol_key` selects for entity names containing the
+/// marker — i.e. change assertion verdicts — and β is a no-behaviour-change
+/// task.
+///
+/// # Accepted under-coverage (C-BOUND-2)
+///
+/// A sub-scoped `entity_path` such as `"Asm.part#realization[0]"` does NOT
+/// belong to `"part"`. That is the safe direction: an occurrence the static
+/// scan misses is simply not refined, so the assertion evaluates an unrefined
+/// mesh and reports today's verdict — never a false pass.
+pub(crate) fn realization_belongs_to(entity_path: &str, struct_name: &str) -> bool {
+    entity_path
+        .strip_prefix(struct_name)
+        .is_some_and(|rest| rest.starts_with("#realization["))
+}
+
 /// Resolve the `RepresentationWithin` subject `vcid` to an
 /// `achieved_repr_tol` map key (a `"{entity}#realization[{idx}]"` string).
 ///
@@ -340,15 +377,19 @@ fn resolve_repr_tol_key(
     }
 
     // — Type-name scan fallback (hydration-independent) ————————————————————
-    // Scan achieved_repr_tol keys for the prefix "{struct_name}#realization[".
+    // Scan achieved_repr_tol keys for realizations belonging to `struct_name`,
+    // via the shared `realization_belongs_to` predicate (C-BOUND-1: one
+    // predicate, no lock-step copy — the refine site in #6171/#6168 calls the
+    // same function).
     // If multiple keys match, take the one with the MAXIMUM achieved value
     // (conservative — guards against a false Satisfied when a module has
-    // multiple realizations of the same type with varying quality).
-    let prefix = format!("{}#realization[", struct_name);
+    // multiple realizations of the same type with varying quality). The
+    // NEG_INFINITY seed with a strict `v > best_val` is also what keeps a NaN
+    // achieved value from ever being selected.
     let mut best_key: Option<String> = None;
     let mut best_val: f64 = f64::NEG_INFINITY;
     for (k, &v) in achieved_repr_tol.iter() {
-        if k.starts_with(&prefix) && v > best_val {
+        if realization_belongs_to(k, struct_name) && v > best_val {
             best_val = v;
             best_key = Some(k.clone());
         }
