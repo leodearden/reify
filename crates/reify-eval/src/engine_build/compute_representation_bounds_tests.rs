@@ -225,3 +225,66 @@ structure Checker {
          recognised exactly like the plain-compiled one"
     );
 }
+
+/// A `RepresentationWithin` declared inside a guarded group contributes a bound
+/// from BOTH branches, and min-folds against a direct constraint on the same
+/// subject.
+///
+/// Both branches are scanned **unconditionally and WITHOUT evaluating the
+/// guard**, exactly as reify-cli's `module_has_representation_within` does
+/// (main.rs chains `g.constraints` with `g.else_constraints`). The guard is a
+/// runtime condition; the bound table is a static pre-pass computed before any
+/// guard cell is evaluated, so the union over both branches is the only
+/// conservative reading. An implementation that evaluated or filtered on the
+/// guard would be wrong in a way no other test here catches.
+///
+/// This test is what pins the equivalence with F's scoping predicate. Without
+/// guarded-group coverage, a module whose ONLY bound sits inside a `where` block
+/// routes into the kernel-backed check path (the CLI gate says `true`) while the
+/// bound table is empty — and under δ (#6168) an empty table means that
+/// realization is never measured, silently degrading a real Satisfied/Violated
+/// verdict to Indeterminate. The case is therefore not redundant coverage of the
+/// direct-constraint path.
+///
+/// Fixture shape confirmed by task β's pre-1 probe: `where <guard> { ... } else
+/// { ... }` lowers to `CompiledGuardedGroup { constraints, else_constraints }`
+/// with both vectors non-empty, and the shared matcher recognises both.
+#[test]
+fn bounds_cover_guarded_group_true_and_else_branches() {
+    let module = parse_and_compile(
+        r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Other {
+    param y : Real = 2.0
+}
+
+structure Guarded {
+    param subject : MyGeom
+    param other : Other
+    param enabled : Bool = true
+    where enabled {
+        constraint RepresentationWithin(subject, 1mm)
+    } else {
+        constraint RepresentationWithin(other, 3mm)
+    }
+}
+
+structure DirectChecker {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 2mm)
+}
+"#,
+    );
+    let bounds = compute_representation_bounds(&module);
+
+    assert_eq!(
+        bounds,
+        BTreeMap::from([("MyGeom".to_string(), 1e-3), ("Other".to_string(), 3e-3)]),
+        "true branch contributes 1e-3 for MyGeom, else branch contributes 3e-3 for \
+         Other, and the guarded 1e-3 min-folds against DirectChecker's direct 2e-3 \
+         — both branches unioned, guard never evaluated"
+    );
+}
