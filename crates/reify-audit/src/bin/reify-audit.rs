@@ -790,11 +790,18 @@ mod tests {
         assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
         assert_eq!(args.project_root, ".");
-        // New jcodemunch flags: no_jcodemunch and jcodemunch_repo have
-        // deterministic defaults; jcodemunch_url is env-dependent (JCODEMUNCH_URL
-        // fallback) so we do not assert its exact value here.
+        // New jcodemunch flags: no_jcodemunch has a deterministic default;
+        // jcodemunch_url and jcodemunch_index_dir are env-dependent
+        // (JCODEMUNCH_URL / JCODEMUNCH_INDEX_DIR fallbacks) so we do not
+        // assert their exact values here.
         assert!(!args.no_jcodemunch);
-        assert_eq!(args.jcodemunch_repo, "leodearden/reify");
+        assert!(
+            args.jcodemunch_repo.is_none(),
+            "no --jcodemunch-repo must leave the id UNSET so it is derived \
+             per §4.2 from the project root; a hardcoded default index does \
+             not and must not exist — a git-identity index would collide \
+             across reify's many worktrees and is never GC'd"
+        );
     }
 
     #[test]
@@ -819,6 +826,7 @@ mod tests {
             "--project-root",
             "--jcodemunch-url",
             "--jcodemunch-repo",
+            "--jcodemunch-index-dir",
         ] {
             let err = unwrap_err(parse_args(&[flag.to_string()]));
             assert!(
@@ -905,8 +913,48 @@ mod tests {
         assert_eq!(args.runs_db, "/tmp/runs.db");
         assert_eq!(args.project_root, "/tmp/repo");
         assert_eq!(args.jcodemunch_url, "http://127.0.0.1:9/mcp");
-        assert_eq!(args.jcodemunch_repo, "my/repo");
+        // The --jcodemunch-repo OVERRIDE is retained; only the hardcoded
+        // default is gone.
+        assert_eq!(args.jcodemunch_repo.as_deref(), Some("my/repo"));
         assert!(args.no_jcodemunch);
+    }
+
+    #[test]
+    fn parse_args_accepts_jcodemunch_index_dir() {
+        let argv: Vec<String> = ["--jcodemunch-index-dir", "/tmp/ix"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let args = parse_args(&argv).unwrap_or_else(|e| panic!("must parse: {e}"));
+        assert_eq!(args.jcodemunch_index_dir, "/tmp/ix");
+    }
+
+    /// `--help` must not advertise a default index that does not exist.
+    ///
+    /// Same CLI-surface contract as [`usage_text_lists_pdoccover`]: help text
+    /// naming `leodearden/reify` as the default would send an operator to
+    /// build an index this binary never probes.
+    #[test]
+    fn usage_text_has_no_legacy_repo_default() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            !usage.contains("leodearden"),
+            "--help must not advertise the legacy git-identity default; got:\n{usage}"
+        );
+    }
+
+    /// An accepted-but-undiscoverable flag is a usability bug.
+    #[test]
+    fn usage_text_lists_jcodemunch_index_dir() {
+        let mut buf: Vec<u8> = Vec::new();
+        print_usage(&mut buf);
+        let usage = String::from_utf8(buf).expect("usage text is UTF-8");
+        assert!(
+            usage.contains("--jcodemunch-index-dir"),
+            "--help must list --jcodemunch-index-dir; got:\n{usage}"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -925,7 +973,8 @@ mod tests {
             runs_db: String::new(),
             project_root: String::new(),
             jcodemunch_url: String::new(),
-            jcodemunch_repo: String::new(),
+            jcodemunch_repo: None,
+            jcodemunch_index_dir: String::new(),
             no_jcodemunch: false,
         }
     }
