@@ -82,6 +82,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: escalation-watcher skill invoked from non-dark-factory project (reify); cross-project target queue paths and script location must be discovered/hardcoded
+  - date: '2026-08-16'
+    project: reify
+    session: 167d3512-9dd5-4d37-a591-a81447bd1af0
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Autonomous escalation watcher in /home/leo/src/reify attempted hardcoded /home/leo/src/dark-factory/scripts/watcher-rearm.sh path; exit 2 (file not found) at turns 165, 181, 216
 - id: entry-cand-20260728-1
   title: Gitignored-file deliverable can never satisfy confirm_plan / TDD pipeline
   severity: medium
@@ -489,6 +495,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: watcher-rearm.sh times out with exit 124 and is retried 17 times instead of once; self-correction at turn 345 explicitly identifies the CEILING timeout issue
+  - date: '2026-08-16'
+    project: reify
+    session: 76f146a6-9ea9-463d-9bac-932007933ffc
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh invoked identically 3 times (turns 177, 186, 193), all hitting CEILING timeout (exit 124), followed by user interrupt at turn 202; no parameter variation despite repeated failures
 - id: entry-cand-20260720-5
   title: watcher-rearm.sh CEILING outcome forces redundant manual polling
   severity: medium
@@ -830,6 +842,12 @@ entries:
     origin_phase: architect
     manifested_phase: ops
     note: 'Autonomous escalation-watcher for cross-project target (/home/leo/src/reify) launched without DARK_FACTORY_ROOT in task briefing/environment. Turn 68: watcher-rearm.sh rejected execution with explicit ''DARK_FACTORY_ROOT must be set to a valid directory'' error.'
+  - date: '2026-08-16'
+    project: reify
+    session: 167d3512-9dd5-4d37-a591-a81447bd1af0
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Escalation watcher session for non-dark-factory project (/home/leo/src/reify) missing DARK_FACTORY_ROOT in rotation limits/briefing; unable to locate cross-project watcher-rearm script
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -1336,6 +1354,18 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: session at /home/leo/src/reify invokes watcher-rearm for cross-project escalations, must cd to dark-factory and specify reify queue path explicitly
+  - date: '2026-08-16'
+    project: reify
+    session: 167d3512-9dd5-4d37-a591-a81447bd1af0
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Watcher-rearm.sh invocation requires dark-factory cwd and DARK_FACTORY_ROOT, undiscoverable from target-project context when DARK_FACTORY_ROOT not explicitly provided
+  - date: '2026-08-16'
+    project: reify
+    session: 76f146a6-9ea9-463d-9bac-932007933ffc
+    origin_phase: ops
+    manifested_phase: ops
+    note: Agent spawned in target project (/home/leo/src/reify) attempted relative path scripts/watcher-rearm.sh (not found turns 33/115/151/156), then resolved via absolute path /home/leo/src/dark-factory/scripts/watcher-rearm.sh with DARK_FACTORY_ROOT injected
 - id: entry-cand-20260726-10
   title: Fragile grep-into-sed line-range construction
   severity: medium
