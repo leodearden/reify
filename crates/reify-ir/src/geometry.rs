@@ -3127,6 +3127,29 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 ///
 /// The STL writers deliberately do NOT use this — see the contract comments on
 /// [`write_stl_binary`] / [`write_stl_ascii`].
+///
+/// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
+/// the scaling is deliberately done in the source precision. Promoting to f64
+/// first (`f64::from(v) * 1000.0`) is exact — a 24-bit significand times
+/// `1000 = 2^3·125` needs 31 bits — but exactness here is a MISFEATURE: it
+/// preserves, and then prints, all 17 digits of the f32 input's binary
+/// representation error. Multiplying in f32 instead re-rounds onto the f32
+/// grid at the millimetre magnitude, whose ulp (1.9e-6 at 30) is COARSER than
+/// the scaled input's deviation from the round decimal (6.7e-7 at 30), so the
+/// product lands back exactly on the decimal the author wrote. Measured, with
+/// `{}` (shortest round-trip) formatting:
+///
+/// | input (m) | `v * MM_PER_METRE_F32` | `f64::from(v) * 1000.0` |
+/// |---|---|---|
+/// | `0.030`  | `30`   | `29.999999329447746` |
+/// | `0.0335` | `33.5` | `33.50000083446503`  |
+/// | `0.1`    | `100`  | `100.00000149011612` |
+///
+/// The f32 route is therefore the one that emits round, diffable coordinates
+/// and keeps every value exactly f32-round-trippable (the mesh's own
+/// precision); the f64 route emits false precision and ~3× longer files. The
+/// accuracy given up is bounded by 2^-23 relative — worst case ~3.6e-6 mm on a
+/// 30 mm part, i.e. nanometres, and far below the f32 mesh's own 2^-24.
 const MM_PER_METRE_F32: f32 = 1000.0;
 
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
@@ -3491,6 +3514,13 @@ pub fn write_3mf(
             line_buf.clear();
             // Metres → millimetres, so the emitted coordinates match the
             // `unit="millimeter"` declared above. See `MM_PER_METRE_F32`.
+            //
+            // Multiply in f32, NOT via an `f64::from(v) * 1000.0` promotion:
+            // the f32 re-rounding is what lands `0.030 m` back on `30` instead
+            // of printing `29.999999329447746`. That is measured, and the
+            // reasoning is written out on `MM_PER_METRE_F32` — do not "fix" it
+            // to f64 without re-reading it.
+            //
             // Using std::fmt::Write on String is infallible.
             let _ = std::fmt::write(
                 &mut line_buf,
@@ -10678,11 +10708,16 @@ mod tests {
     /// cube is written as 0.030 and read by any 3MF consumer as 30 µm — a
     /// 1000× shrink, the same mislabel as the STEP half of this bug.
     ///
-    /// The 1e-3 mm bound is derived, not guessed: `Mesh::vertices` is
-    /// `Vec<f32>`, whose ulp at 30.0 is 2^-23·2^4 ≈ 1.9e-6 mm, so the 1e-6
-    /// bound used for the f64 STEP path would be unsatisfiable here. 1e-3
-    /// clears f32 representation error ~500× and still sits ~4 orders below
-    /// the 0.030-vs-30.0 gap it guards, so it cannot pass while the bug lives.
+    /// The 1e-5 mm bound is derived, not guessed. `Mesh::vertices` is
+    /// `Vec<f32>` and the conversion is done in f32 (see `MM_PER_METRE_F32`),
+    /// so each emitted coordinate carries at most 2^-23 relative error — the
+    /// input's own representation error plus one re-rounding at the millimetre
+    /// magnitude. Across the two AABB endpoints that is 2·30·2^-23 ≈ 7.2e-6 mm
+    /// worst case, so 1e-5 is the tightest honest bound; 1e-6 (the f64 STEP
+    /// path's bound) is NOT derivable here. In practice the error is 0.0: the
+    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0`.
+    /// 1e-5 still sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it
+    /// cannot pass while the bug lives.
     #[test]
     fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
         use std::io::Cursor;
@@ -10715,25 +10750,32 @@ mod tests {
 
         // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
         // folded into a per-axis AABB.
-        fn attr(tail: &str, name: &str) -> Option<f64> {
+        fn attr_raw<'a>(tail: &'a str, name: &str) -> Option<&'a str> {
             // Attributes appear in x, y, z order inside one element, and this
             // element's three attributes all precede the next element's, so
             // the FIRST match after the split point is the right one.
             let key = format!("{name}=\"");
             let start = tail.find(&key)? + key.len();
             let end = tail[start..].find('"')? + start;
-            tail[start..end].parse::<f64>().ok()
+            Some(&tail[start..end])
+        }
+        fn attr(tail: &str, name: &str) -> Option<f64> {
+            attr_raw(tail, name)?.parse::<f64>().ok()
         }
 
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
         let mut n_verts = 0usize;
+        let mut literals: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for tail in model_xml.split("<vertex ").skip(1) {
             let coords = [
                 attr(tail, "x").expect("vertex must carry a parsable x"),
                 attr(tail, "y").expect("vertex must carry a parsable y"),
                 attr(tail, "z").expect("vertex must carry a parsable z"),
             ];
+            for name in ["x", "y", "z"] {
+                literals.insert(attr_raw(tail, name).expect("attr present").to_string());
+            }
             n_verts += 1;
             for axis in 0..3 {
                 min[axis] = min[axis].min(coords[axis]);
@@ -10742,10 +10784,26 @@ mod tests {
         }
         assert_eq!(n_verts, 8, "a cube should emit 8 <vertex> elements");
 
+        // (3) NO REPRESENTATION NOISE — the emitted decimals must be the round
+        // numbers the author wrote, not 17 digits of f32 binary artifact. This
+        // is what makes the f32-vs-f64 choice at the emit site a tested
+        // behaviour rather than a comment: doing the multiply as
+        // `f64::from(v) * 1000.0` instead emits `29.999999329447746` and fails
+        // here, while still passing the AABB check above. See the rationale on
+        // `MM_PER_METRE_F32`.
+        let want: std::collections::BTreeSet<String> =
+            ["0".to_string(), "30".to_string()].into_iter().collect();
+        assert_eq!(
+            literals, want,
+            "a 0.030 m cube should emit exactly the round literals {{\"0\", \"30\"}} in \
+             millimetres; got {literals:?} — the metre→millimetre conversion is introducing \
+             avoidable representation noise"
+        );
+
         for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
             let extent = max[axis] - min[axis];
             assert!(
-                (extent - 30.0).abs() < 1e-3,
+                (extent - 30.0).abs() < 1e-5,
                 "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
                  millimetre-declared 3MF package, but the vertex AABB extent is {extent} \
                  (min {}, max {}) — declaration and payload disagree",
