@@ -46,7 +46,13 @@ use std::path::Path;
 // G-allow: public for the integration-test fixture `tests/common/index_fixture.rs`, which derives the expected repo id with this *verified* primitive rather than re-implementing SHA-1 a second time; in-crate production callers reach it via repo_id_for_abs_path; byte-identity pinned by NIST vectors plus two measured ground-truth repo ids in this module's unit tests.
 pub fn sha1_hex(bytes: &[u8]) -> String {
     // RFC 3174 §6.1. State is five 32-bit words, big-endian throughout.
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
 
     // Message + padding: 0x80, then zeros, then the 64-bit big-endian bit
     // length, sized so the total is a multiple of 64 bytes. A 56-byte
@@ -170,7 +176,11 @@ pub struct IndexState {
 impl IndexState {
     /// The state of an index that simply is not there.
     fn absent() -> Self {
-        Self { index_head: None, symbol_count: 0, unreadable: None }
+        Self {
+            index_head: None,
+            symbol_count: 0,
+            unreadable: None,
+        }
     }
 }
 
@@ -214,7 +224,10 @@ pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
         // The file exists but will not open: corrupt, unreadable, or not a
         // SQLite database. That is a diagnostic, not an empty index.
         Err(e) => {
-            return IndexState { unreadable: Some(e.to_string()), ..IndexState::absent() };
+            return IndexState {
+                unreadable: Some(e.to_string()),
+                ..IndexState::absent()
+            };
         }
     };
 
@@ -228,19 +241,18 @@ pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
         }
     };
 
-    let index_head = match conn.query_row(
-        "select value from meta where key = 'git_head'",
-        [],
-        |row| row.get::<_, String>(0),
-    ) {
-        Ok(sha) => Some(sha),
-        // No `git_head` row is an expected shape, not a fault.
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(e) => {
-            note(e);
-            None
-        }
-    };
+    let index_head =
+        match conn.query_row("select value from meta where key = 'git_head'", [], |row| {
+            row.get::<_, String>(0)
+        }) {
+            Ok(sha) => Some(sha),
+            // No `git_head` row is an expected shape, not a fault.
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                note(e);
+                None
+            }
+        };
 
     let symbol_count = match conn.query_row("select count(*) from symbols", [], |row| {
         row.get::<_, i64>(0)
@@ -252,7 +264,11 @@ pub fn read_index_state(index_dir: &Path, repo_id: &str) -> IndexState {
         }
     };
 
-    IndexState { index_head, symbol_count, unreadable }
+    IndexState {
+        index_head,
+        symbol_count,
+        unreadable,
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -634,7 +650,10 @@ mod tests {
             .unreadable
             .as_deref()
             .expect("schema drift must carry a diagnostic, not read as empty");
-        assert!(!diag.is_empty(), "the diagnostic must actually say something");
+        assert!(
+            !diag.is_empty(),
+            "the diagnostic must actually say something"
+        );
     }
 
     // -------------------------------------------------------------------
@@ -690,8 +709,8 @@ mod tests {
         // Precedence arm 1. Classified EMPTY, not STALE: there is no
         // index_head to name, and §4.3 requires the refusal to name it —
         // calling a nonexistent head "stale" would be nonsense.
-        let refusal = evaluate_freshness(&state(None, 0), LIVE)
-            .expect_err("an absent index must be refused");
+        let refusal =
+            evaluate_freshness(&state(None, 0), LIVE).expect_err("an absent index must be refused");
         assert_eq!(refusal.code(), E_JC_INDEX_EMPTY);
     }
 
@@ -716,14 +735,20 @@ mod tests {
         // disagreed and how big the corpus was, or the refusal is unactionable.
         let stale = evaluate_freshness(&state(Some(OTHER), 42), LIVE).unwrap_err();
         let msg = stale.to_string();
-        assert!(msg.contains(E_JC_INDEX_STALE), "code token missing from {msg}");
+        assert!(
+            msg.contains(E_JC_INDEX_STALE),
+            "code token missing from {msg}"
+        );
         assert!(msg.contains(OTHER), "index_head missing from {msg}");
         assert!(msg.contains(LIVE), "live_head missing from {msg}");
         assert!(msg.contains("42"), "symbol_count missing from {msg}");
 
         let empty = evaluate_freshness(&state(Some(LIVE), 0), LIVE).unwrap_err();
         let msg = empty.to_string();
-        assert!(msg.contains(E_JC_INDEX_EMPTY), "code token missing from {msg}");
+        assert!(
+            msg.contains(E_JC_INDEX_EMPTY),
+            "code token missing from {msg}"
+        );
         assert!(msg.contains(LIVE), "heads missing from {msg}");
         assert!(msg.contains('0'), "symbol_count missing from {msg}");
     }
@@ -735,7 +760,10 @@ mod tests {
         // "no index at all" distinguishable from "index at head <blank>".
         let refusal = evaluate_freshness(&state(None, 0), LIVE).unwrap_err();
         let msg = refusal.to_string();
-        assert!(msg.contains(E_JC_INDEX_EMPTY), "code token missing from {msg}");
+        assert!(
+            msg.contains(E_JC_INDEX_EMPTY),
+            "code token missing from {msg}"
+        );
         assert!(msg.contains(LIVE), "live_head missing from {msg}");
         assert!(
             msg.contains("<absent>"),
@@ -765,7 +793,10 @@ mod tests {
         let trailing_slash = resolve_repo_id(Path::new(&format!("{base}/")));
         let dot_segment = resolve_repo_id(Path::new(&format!("{base}/./")));
 
-        assert_eq!(plain, trailing_slash, "trailing slash must not change identity");
+        assert_eq!(
+            plain, trailing_slash,
+            "trailing slash must not change identity"
+        );
         assert_eq!(plain, dot_segment, "a /./ segment must not change identity");
         assert!(
             plain.starts_with("local/"),
