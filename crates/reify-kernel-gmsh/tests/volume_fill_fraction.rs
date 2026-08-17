@@ -318,6 +318,60 @@ fn production_composition_unwelded_plus_repair_is_completely_tetrahedralized() {
     assert_complete_prismatic_fill(&fill, &surface, "unwelded box 1.0x0.1x0.1 m + repair");
 }
 
+/// The production entry point must SURFACE the fill report, not merely permit
+/// one to be computed after the fact.
+///
+/// `fill_metrics`' module docs state that
+/// `mesh_surface_to_volume_with_diagnostics` "surfaces the report non-fatally
+/// through `MeshSurfaceToVolumeReport::fill`". This test is what makes that
+/// sentence checkable. A doc asserting a property the code does not have is
+/// precisely the failure mode that CAUSED #6200 — the old `classify_surfaces`
+/// comment claimed a B-rep split that never happened, and nothing tested it —
+/// so the claim is closed by pinning it, not by deleting it.
+///
+/// Asserts only that the field is POPULATED and CONSISTENT. No threshold is
+/// asserted against production code: per the module docs, no fill floor is
+/// simultaneously scale-free and shape-free, so a guessed constant would reject
+/// legitimate curved geometry. The 1.0 check below is a property of *this
+/// prismatic fixture*, not a contract the producer enforces.
+#[test]
+fn production_report_surfaces_the_fill_measurement() {
+    let surface = unwelded_prismatic_box_mesh(1.0, 0.1, 0.1);
+
+    let report = mesh_surface_to_volume_with_diagnostics(
+        &surface,
+        &MeshingOptions::default(),
+        ElementOrderTag::P1,
+        Some(RepairConfig::default()),
+        None,
+        None,
+    )
+    .expect("mesh_surface_to_volume_with_diagnostics failed");
+
+    // (1) Populated for a well-formed tet mesh.
+    let fill = report
+        .fill
+        .expect("MeshSurfaceToVolumeReport::fill must be Some(_) for a well-formed tet mesh");
+
+    // (2) It is the report for the mesh actually handed back — not a stale
+    //     value, and not recomputed from some other intermediate.
+    let recomputed =
+        tet_fill_report(&report.volume).expect("produced mesh is not measurable as tets");
+    assert_eq!(
+        fill, recomputed,
+        "report.fill must equal tet_fill_report(&report.volume); \
+         a mismatch means the plumbed value describes a different mesh than the \
+         one returned"
+    );
+
+    // (3) On this prismatic fixture the plumbed value reads a complete fill.
+    assert_rel(
+        fill.aabb_fill_fraction(),
+        1.0,
+        "production report fill.aabb_fill_fraction()",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Interior nodes — resolution-driven, NOT a completeness signal
 // ---------------------------------------------------------------------------
