@@ -6209,7 +6209,88 @@ impl Engine {
             })
             .collect()
     }
+}
 
+// ── C-BOUND bound pre-pass (task β, #6167) ───────────────────────────────────
+//
+// `compute_representation_bounds` is a module-level FREE function (C-BOUND
+// specifies a free-function signature — unlike `compute_tessellation_budgets`
+// above it needs nothing from `self`), so the `impl Engine` block is closed
+// here and resumed immediately below. It is sited between the two so the two
+// per-build pre-passes read together.
+
+/// C-BOUND (PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+/// §5): the **tightest declared `RepresentationWithin` bound per SUBJECT
+/// structure name**, in SI metres.
+///
+/// # How the table is built
+///
+/// Scans the module's constraints and delegates every candidate expression to
+/// the shared [`crate::tolerance_combine::match_representation_within_shape`]
+/// gate — the same recognizer used by `recognize_representation_within`,
+/// `eval_representation_within` and `extract_output_tolerance_bound`, so the
+/// recognition half cannot drift. The key is the returned `struct_name` (the
+/// SUBJECT's declared `StructureRef` type, statically available pre-tessellation
+/// — *not* the template that declares the constraint); the subject vcid is
+/// discarded.
+///
+/// Duplicate bounds on one subject **min-fold**: tighter satisfies looser, the
+/// same partial order as [`crate::tolerance_combine::combine_demanded_tolerance`]
+/// and `tolerance_scope::merge_with_min`.
+///
+/// # Emptiness is F's scoping predicate
+///
+/// The table is empty **exactly when** the module declares no bound — which is
+/// the negation of reify-cli's `module_has_representation_within`
+/// (crates/reify-cli/src/main.rs:2462), F's routing gate. Both delegate to the
+/// same matcher and must keep the **same traversal**: a change to one is a
+/// change to the other. Hence ALL of `module.templates` is iterated (including
+/// `@test` templates — *not* `non_test_templates()`), matching that gate term
+/// for term.
+///
+/// The equivalence is load-bearing, not tidiness: a narrower scan would let a
+/// module route into the kernel-backed check path (the CLI gate says `true`)
+/// while carrying an empty bound table, and under δ (#6168) an empty table means
+/// that realization is never measured — silently degrading a real
+/// Satisfied/Violated verdict to Indeterminate.
+///
+/// # Silent-skip posture
+///
+/// Inherited wholesale from the matcher: malformed, non-LENGTH, negative and
+/// non-`StructureRef` shapes contribute no key, with no panic and no diagnostic.
+///
+/// # Independence from the demanded-tolerance budget
+///
+/// This table is an **independent static scan** of the module's declared
+/// constraints. It is never sourced from, and never written back into, the
+/// demanded-tolerance budget — see PRD §4.8; do not couple it to
+/// [`crate::tolerance_combine::extract_output_tolerance_bound`], which is owned
+/// by `docs/prds/v0_2/per-purpose-tolerance.md`.
+// TODO(#6171): first production consumer — the measure-and-refine loop threads
+// this table into the tessellate callback; #6168 (δ) reuses it to narrow
+// measurement. Until one of those lands there is no non-`cfg(test)` caller, and
+// `scripts/verify.sh` runs `cargo clippy --workspace --all-targets -- -D
+// warnings`, which builds the lib WITHOUT `cfg(test)` — so the unit tests in
+// `engine_build/compute_representation_bounds_tests.rs` do not keep this alive.
+#[allow(dead_code)]
+pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
+    let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
+    for template in &module.templates {
+        for constraint in &template.constraints {
+            if let Some((_subject_vcid, struct_name, si_value)) =
+                crate::tolerance_combine::match_representation_within_shape(&constraint.expr)
+            {
+                bounds
+                    .entry(struct_name)
+                    .and_modify(|b| *b = b.min(si_value))
+                    .or_insert(si_value);
+            }
+        }
+    }
+    bounds
+}
+
+impl Engine {
     /// Shared helper: execute geometry operations and tessellate each realization.
     ///
     /// Used by both `tessellate_realizations()` and `tessellate_snapshot()`.
