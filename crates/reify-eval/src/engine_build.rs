@@ -6244,9 +6244,22 @@ impl Engine {
 /// the negation of reify-cli's `module_has_representation_within`
 /// (crates/reify-cli/src/main.rs:2462), F's routing gate. Both delegate to the
 /// same matcher and must keep the **same traversal**: a change to one is a
-/// change to the other. Hence ALL of `module.templates` is iterated (including
-/// `@test` templates — *not* `non_test_templates()`), matching that gate term
-/// for term.
+/// change to the other. Keeping the mirror is a **lockstep requirement of
+/// C-BOUND, not a coincidence**.
+///
+/// The traversal, term for term with that gate, is
+///
+/// ```text
+/// module.templates × ( t.constraints
+///                    ∪ t.guarded_groups[*].constraints
+///                    ∪ t.guarded_groups[*].else_constraints )
+/// ```
+///
+/// ALL of `module.templates` is iterated (including `@test` templates — *not*
+/// `non_test_templates()`), and **both** guarded-group branches are scanned with
+/// the guard neither evaluated nor filtered on: this table is computed before
+/// any guard cell is evaluated, so the union over both branches is the static,
+/// conservative reading.
 ///
 /// The equivalence is load-bearing, not tidiness: a narrower scan would let a
 /// module route into the kernel-backed check path (the CLI gate says `true`)
@@ -6276,7 +6289,15 @@ impl Engine {
 pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
     let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
     for template in &module.templates {
-        for constraint in &template.constraints {
+        // Guards are NEITHER evaluated NOR filtered on: the table is a static
+        // pre-pass computed before any guard cell exists, so both branches are
+        // unioned. Same containers, same order, as the CLI gate.
+        let guarded = template.guarded_groups.iter().flat_map(|g| {
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+        });
+        for constraint in template.constraints.iter().chain(guarded) {
             if let Some((_subject_vcid, struct_name, si_value)) =
                 crate::tolerance_combine::match_representation_within_shape(&constraint.expr)
             {
