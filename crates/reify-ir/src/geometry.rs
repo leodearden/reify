@@ -3147,9 +3147,14 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 ///
 /// The f32 route is therefore the one that emits round, diffable coordinates
 /// and keeps every value exactly f32-round-trippable (the mesh's own
-/// precision); the f64 route emits false precision and ~3× longer files. The
-/// accuracy given up is bounded by 2^-23 relative — worst case ~3.6e-6 mm on a
-/// 30 mm part, i.e. nanometres, and far below the f32 mesh's own 2^-24.
+/// precision); the f64 route emits false precision, and in the measured cases
+/// above it grows each coordinate literal from 2 to 18 characters.
+///
+/// The accuracy given up is bounded by 2^-23 relative — the input's own
+/// ≤2^-24 plus one re-rounding of ≤2^-24 — so it is within a FACTOR OF TWO of
+/// the precision the `Vec<f32>` buffer already has, and cannot meaningfully
+/// degrade data that is f32 to begin with. Worst case on a 30 mm part is
+/// ~3.6e-6 mm, i.e. nanometres.
 const MM_PER_METRE_F32: f32 = 1000.0;
 
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
