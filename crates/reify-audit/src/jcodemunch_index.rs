@@ -511,6 +511,123 @@ mod tests {
         assert!(!diag.is_empty(), "the diagnostic must actually say something");
     }
 
+    // -------------------------------------------------------------------
+    // §4.3 — the freshness decision
+    //
+    // Assertions bind to CODE IDENTITY (`refusal.code()` vs the public
+    // constants), never to message substrings: a diagnostic's machine
+    // contract is its code, and a prose-substring assertion would both
+    // break on rewording and fail to distinguish the two refusal kinds.
+    // Rendered prose is asserted separately, and only for §4.3's three
+    // quantities.
+    // -------------------------------------------------------------------
+
+    /// An `IndexState` with the three §4.3 quantities set explicitly.
+    fn state(index_head: Option<&str>, symbol_count: i64) -> IndexState {
+        IndexState {
+            index_head: index_head.map(str::to_string),
+            symbol_count,
+            unreadable: None,
+        }
+    }
+
+    const LIVE: &str = "1111111111111111111111111111111111111111";
+    const OTHER: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn evaluate_freshness_admits_a_fresh_populated_index() {
+        assert!(
+            evaluate_freshness(&state(Some(LIVE), 42), LIVE).is_ok(),
+            "an index at the live commit with symbols in it must be admitted"
+        );
+    }
+
+    #[test]
+    fn evaluate_freshness_refuses_a_stale_index() {
+        let refusal = evaluate_freshness(&state(Some(OTHER), 42), LIVE)
+            .expect_err("an index at a different commit must be refused");
+        assert_eq!(refusal.code(), E_JC_INDEX_STALE);
+    }
+
+    #[test]
+    fn evaluate_freshness_refuses_an_empty_husk_index() {
+        // Fresh head, zero symbols: the mirror-image failure. Every query
+        // returns nothing, so P1 reports every producer as an orphan while
+        // the head comparison alone would have said "all good".
+        let refusal = evaluate_freshness(&state(Some(LIVE), 0), LIVE)
+            .expect_err("an index with zero symbols must be refused");
+        assert_eq!(refusal.code(), E_JC_INDEX_EMPTY);
+    }
+
+    #[test]
+    fn evaluate_freshness_refuses_an_absent_index_as_empty() {
+        // Precedence arm 1. Classified EMPTY, not STALE: there is no
+        // index_head to name, and §4.3 requires the refusal to name it —
+        // calling a nonexistent head "stale" would be nonsense.
+        let refusal = evaluate_freshness(&state(None, 0), LIVE)
+            .expect_err("an absent index must be refused");
+        assert_eq!(refusal.code(), E_JC_INDEX_EMPTY);
+    }
+
+    #[test]
+    fn evaluate_freshness_resolves_both_degenerate_to_stale() {
+        // Heads differ AND the corpus is empty. Pinning STALE here fixes
+        // §4.3's left-to-right conjunct order, so the outcome is deterministic
+        // rather than an incidental consequence of statement order.
+        let refusal = evaluate_freshness(&state(Some(OTHER), 0), LIVE)
+            .expect_err("a stale AND empty index must be refused");
+        assert_eq!(
+            refusal.code(),
+            E_JC_INDEX_STALE,
+            "staleness is evaluated before emptiness"
+        );
+    }
+
+    #[test]
+    fn refusal_message_names_all_three_freshness_quantities() {
+        // §4.3's prose requirement coexists with the code rather than being
+        // replaced by it: an operator reading stderr needs to see WHICH heads
+        // disagreed and how big the corpus was, or the refusal is unactionable.
+        let stale = evaluate_freshness(&state(Some(OTHER), 42), LIVE).unwrap_err();
+        let msg = stale.to_string();
+        assert!(msg.contains(E_JC_INDEX_STALE), "code token missing from {msg}");
+        assert!(msg.contains(OTHER), "index_head missing from {msg}");
+        assert!(msg.contains(LIVE), "live_head missing from {msg}");
+        assert!(msg.contains("42"), "symbol_count missing from {msg}");
+
+        let empty = evaluate_freshness(&state(Some(LIVE), 0), LIVE).unwrap_err();
+        let msg = empty.to_string();
+        assert!(msg.contains(E_JC_INDEX_EMPTY), "code token missing from {msg}");
+        assert!(msg.contains(LIVE), "heads missing from {msg}");
+        assert!(msg.contains('0'), "symbol_count missing from {msg}");
+    }
+
+    #[test]
+    fn absent_index_refusal_marks_the_head_explicitly_absent() {
+        // With no index_head there is nothing to print, but printing NOTHING
+        // would read as a truncated message. An explicit absent-marker keeps
+        // "no index at all" distinguishable from "index at head <blank>".
+        let refusal = evaluate_freshness(&state(None, 0), LIVE).unwrap_err();
+        let msg = refusal.to_string();
+        assert!(msg.contains(E_JC_INDEX_EMPTY), "code token missing from {msg}");
+        assert!(msg.contains(LIVE), "live_head missing from {msg}");
+        assert!(
+            msg.contains("<absent>"),
+            "an absent index_head needs an explicit marker, got {msg}"
+        );
+    }
+
+    #[test]
+    fn the_two_marker_codes_are_distinct_non_empty_tokens() {
+        // A refactor that collapsed these to one token, or emptied either,
+        // would silently destroy every machine consumer's ability to tell a
+        // stale corpus from an absent one while all the code() assertions
+        // above still passed.
+        assert_ne!(E_JC_INDEX_STALE, E_JC_INDEX_EMPTY);
+        assert!(!E_JC_INDEX_STALE.is_empty());
+        assert!(!E_JC_INDEX_EMPTY.is_empty());
+    }
+
     #[test]
     fn resolve_repo_id_normalizes_cosmetic_path_variants() {
         // The default `--project-root` is `.`, and callers splice paths
