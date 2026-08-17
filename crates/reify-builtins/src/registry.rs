@@ -57,43 +57,67 @@ crate::macros::registry! {
 
         // von_mises -> scalar_or_real(tensor_quantity(arg0)).
         // Legacy: crates/reify-compiler/src/analysis_signatures.rs:73.
-        // #2884's text explicitly rules `von_mises -> Pressure`; the ArgAware
-        // form generalises that to the tensor's own quantity, which is what
-        // the legacy arm already computed.
+        //
+        // ARTIFACT (ratified 2026-08-17, Leo, unblock of #6001). #2884 rules
+        // BOTH halves of this signature: `von_mises(stress: Tensor<2,3,Pressure>)
+        // -> Pressure` — a constrained input slot AND a fixed Pressure result.
+        // This row implements NEITHER: `arg_slots: [Any]` accepts any argument,
+        // and the ArgAware form generalises the result to the tensor's own
+        // quantity. That generalisation exists only to keep accepting inputs
+        // #2884 says should be rejected, so it cannot cite #2884 — nor the
+        // Q7/#6165 restatement of #2884's output half, which drops the input
+        // half and would fabricate a PRESSURE result for a dimensionless
+        // argument. Left unresolved here because the end-state needs machinery α
+        // does not have: an `ArgSlot` vocabulary richer than `Any` and
+        // `ResultSpec::ArgAware`'s `None` wired to an `E_BuiltinArgShape`
+        // diagnostic (both τ-numeric, PRD §3 decision 5), plus the corpus
+        // migration of examples/fields_analysis.ri owned by leaf θ of
+        // docs/prds/v0_6/dimension-checked-readers.md.
         VonMises {
             name: "von_mises",
             family: Analysis,
             arity: Exact(1),
             arg_slots: [Any],
             result: ArgAware(tensor_scalar_reduction),
-            basis: Ruling("#2884")
+            basis: Artifact
         },
 
         // max_shear -> the same reduction as von_mises.
         // Legacy: crates/reify-compiler/src/analysis_signatures.rs:73 (shared arm).
-        // NOT ruled by #2884 — that task's text names von_mises,
-        // principal_stresses and stress_invariants only. The derivation is
-        // what fixes the signature, so the basis is Physics, not a Ruling
-        // cite that would not survive being read.
+        //
+        // ARTIFACT (ratified 2026-08-17, Leo, unblock of #6001). NOT ruled by
+        // #2884 — that task's text names von_mises, principal_stresses and
+        // stress_invariants only. The former Physics cite ("max shear =
+        // (σ₁−σ₃)/2 is a stress, so it carries the tensor's quantity") justifies
+        // the ArgAware GENERALISATION, not the signature: max shear is a stress,
+        // so under #2884's family-wide input discipline the argument is always a
+        // Pressure tensor and the arg-aware form collapses to Const(Pressure).
+        // The generalisation therefore earns its keep only from inputs that
+        // should be rejected — which is what Artifact declares. Same unresolved
+        // dependencies as von_mises above.
         MaxShear {
             name: "max_shear",
             family: Analysis,
             arity: Exact(1),
             arg_slots: [Any],
             result: ArgAware(tensor_scalar_reduction),
-            basis: Physics("max shear = (σ₁−σ₃)/2 is a stress, so it carries the tensor's quantity")
+            basis: Artifact
         },
 
         // principal_stresses -> List(scalar_or_real(tensor_quantity(arg0))).
         // Legacy: crates/reify-compiler/src/analysis_signatures.rs:78.
-        // #2884 rules `-> List<Pressure>`; mirrors the `eigenvalues` arm.
+        //
+        // ARTIFACT (ratified 2026-08-17, Leo, unblock of #6001). #2884 rules
+        // `principal_stresses(stress: Tensor<2,3,Pressure>) -> List<Pressure>`;
+        // as with von_mises this row implements neither the input slot nor the
+        // fixed element type. Same unresolved dependencies as von_mises above.
         PrincipalStresses {
             name: "principal_stresses",
             family: Analysis,
             arity: Exact(1),
             arg_slots: [Any],
             result: ArgAware(tensor_scalar_reduction_list),
-            basis: Ruling("#2884")
+            basis: Artifact
         },
 
         // safety_factor -> dimensionless, whatever the args.
@@ -135,7 +159,11 @@ crate::macros::registry! {
 /// and PRD §7.3(7) requires each τ task text to enumerate its Artifact rows
 /// with one sentence each on why they were left unresolved.
 ///
-/// α returns an EMPTY ledger: all seven seed rows traced to a Ruling or a
+/// α returns a THREE-row ledger — `von_mises`, `max_shear`,
+/// `principal_stresses` (ratified 2026-08-17, Leo, unblock of #6001). Each
+/// reproduces the legacy arg-aware reduction rather than the constrained-input,
+/// Pressure-fixed signature #2884 actually rules; see the per-row comments for
+/// why each was left unresolved. The other four seed rows trace to a Ruling or a
 /// Physics derivation.
 pub fn artifact_basis_rows() -> Vec<&'static str> {
     rows()
@@ -502,10 +530,17 @@ mod lint {
     /// τ that adds one sees the number move rather than a silent pass.
     #[test]
     fn artifact_basis_ledger_matches_the_reviewed_set() {
-        /// α's traced basis assignments leave ZERO unjustified rows. Per PRD
-        /// §7.3(7), an empty ledger ASSERTS zero Artifact rows across the parse
-        /// and analysis families — it is a claim, not an omission.
-        const EXPECTED_ARTIFACT_ROWS: &[&str] = &[];
+        /// α's reviewed ledger, in `rows()` order. The three analysis
+        /// reductions reproduce the legacy arg-aware form instead of the
+        /// constrained-input, Pressure-fixed signature #2884 rules; ratified as
+        /// Artifact 2026-08-17 (Leo, unblock of #6001) so the gap is COUNTED
+        /// rather than hidden behind a Ruling cite the rows do not honour.
+        /// Zeroing this ledger is the analysis family's end-state migration —
+        /// it needs τ-numeric's ArgSlot vocabulary + `E_BuiltinArgShape` wiring
+        /// and leaf θ's corpus migration, and must land as one diff.
+        /// Per PRD §7.3(7) this set is a claim, not an omission: parse's two
+        /// rows and analysis's other two assert an independent basis.
+        const EXPECTED_ARTIFACT_ROWS: &[&str] = &["von_mises", "max_shear", "principal_stresses"];
 
         let actual = artifact_basis_rows();
         assert_eq!(
