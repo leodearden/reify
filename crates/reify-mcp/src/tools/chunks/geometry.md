@@ -206,10 +206,19 @@ A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid p
 
 `isosurface` extracts a surface by marching cubes from a Voxel-repr `grid` operand; a BRep or Mesh
 operand is voxelized first (Mesh→Voxel on OpenVDB) and surfaced back Voxel→Mesh. `iso` and
-`adaptive` are **optional named** arguments — spell them `iso:` and `adaptive:`, not positionally —
-and at most 3 arguments are accepted. Omitting them is not the same as passing a default at the
-call site: they are left unset and resolved during evaluation lowering to `iso = 0.0` and
-`adaptive = false`.
+`adaptive` are **optional** trailing arguments, and at most 3 arguments are accepted. Omitting them
+is not the same as passing a default at the call site: they are left unset and resolved during
+evaluation lowering to `iso = 0.0` and `adaptive = false`.
+
+The `iso:`/`adaptive:` labels written above are the **recommended spelling** — they name the slot at
+the call site and keep a bare `true` from reading as a mystery flag — but they are **not checked**.
+Like every geometry constructor, `isosurface` binds its arguments **positionally**, in source order:
+2nd argument → `iso`, 3rd → `adaptive`. Two consequences:
+
+- `isosurface(grid, level)` compiles to exactly the same thing as `isosurface(grid, iso: level)`.
+- **`adaptive` cannot be passed without `iso`.** `isosurface(grid, adaptive: flag)` is accepted, and
+  silently binds `flag` into the **iso** slot. Pass the iso level explicitly —
+  `isosurface(grid, iso: level, adaptive: flag)` — whenever you want the adaptive flag.
 
 Worked examples: `examples/multi_kernel/voxel_to_mesh.ri` and
 `examples/multi_kernel/voxel_to_mesh_iso.ri`.
