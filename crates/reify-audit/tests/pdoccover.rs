@@ -1161,43 +1161,79 @@ fn chunk_call_mention_floor_guard_against_real_chunks() {
 // #5647 step-3(d): keyword-vs-builtin collision guard
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// `RI_KEYWORDS` must never intersect the real registered-builtin census. A
-/// token that is BOTH a reserved word and a registered builtin name would be
-/// silently dropped from every chunk claim by `chunk_call_mentions`'s keyword
-/// filter, blinding the fabrication lane to that builtin — a false negative
-/// with no bound, which is exactly the risk of widening the mention-side
-/// filter from `RI_DECL_KEYWORDS` to the full reserved-word set. Measured
-/// empty today (46 spec keywords against the real `units.rs` registry
-/// census). If this ever fails, remove the colliding token from
+/// Every `*_NAMES` registry file this guard reads. Not the fabrication lane's
+/// full oracle — see the guard's doc comment for why that is deliberate.
+///
+/// `units.rs` is the omission census's own source. `math_signatures.rs` is the
+/// other half of the registered-builtin population and is NOT in the omission
+/// census at all: `clamp`, `lerp` and `dot` are real, documented builtins
+/// declared only there (module header, "The existence oracle is deliberately
+/// asymmetric"), so a keyword colliding with one of them would be invisible to
+/// a units.rs-only guard.
+const REGISTRY_CENSUS_SOURCES: &[&str] = &[
+    "crates/reify-compiler/src/units.rs",
+    "crates/reify-compiler/src/math_signatures.rs",
+];
+
+/// `RI_KEYWORDS` must never intersect the registered-builtin census drawn from
+/// [`REGISTRY_CENSUS_SOURCES`]. A token that is BOTH a reserved word and a
+/// registered builtin name would be silently dropped from every chunk claim by
+/// `chunk_call_mentions`'s keyword filter, blinding the fabrication lane to
+/// that builtin — a false negative with no bound, which is exactly the risk of
+/// widening the mention-side filter from `RI_DECL_KEYWORDS` to the full
+/// reserved-word set. Measured empty today (47 keywords against both files'
+/// `*_NAMES` registries). If this ever fails, remove the colliding token from
 /// `RI_KEYWORDS` — do NOT delete this guard.
+///
+/// ## Scope: the `*_NAMES` registries, deliberately NOT the whole oracle
+///
+/// This is a REGISTRY census, not `known_name_index` over
+/// `load_oracle_sources`. Widening it to the latter was measured and rejected:
+/// the oracle deliberately harvests every identifier-shaped quoted literal
+/// under `crates/reify-compiler/src/**` and `crates/reify-stdlib/src/**`, so
+/// keyword STRINGS in the parser's own tables register as "builtins" and the
+/// guard reports ~29 spurious collisions — noise that would get the guard
+/// deleted rather than a keyword removed. The `*_NAMES` registries are the
+/// population where a collision is genuinely actionable, so they are what this
+/// guard covers; a builtin declared outside them is out of its reach and is
+/// covered instead by `ri_keywords_excludes_the_spec_carve_outs` on the
+/// spec-facing side.
 #[test]
 fn ri_keywords_never_collides_with_the_real_registry_census() {
-    let units_path = repo_root().join("crates/reify-compiler/src/units.rs");
-    let src = std::fs::read_to_string(&units_path).unwrap_or_else(|e| {
-        panic!(
-            "the real units.rs must be readable at {}; got: {e}.",
-            units_path.display()
-        )
-    });
-    let regs = reify_audit::pdoccover::extract_registries(&src);
-    let census: std::collections::BTreeSet<&str> = regs
-        .iter()
-        .flat_map(|r| r.entries.iter())
-        .map(|e| e.name.as_str())
-        .collect();
+    let mut census: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for rel in REGISTRY_CENSUS_SOURCES {
+        let path = repo_root().join(rel);
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "the real {rel} must be readable at {}; got: {e}. (If it moved, \
+                 the registered-builtin population moved with it and this \
+                 guard's source list needs updating — do not just drop the \
+                 file from the list.)",
+                path.display()
+            )
+        });
+        let regs = reify_audit::pdoccover::extract_registries(&src);
+        assert!(
+            !regs.is_empty(),
+            "no `*_NAMES` registry was parsed out of {rel}. This guard would \
+             then pass vacuously for that file, so a keyword/builtin collision \
+             in it would go unnoticed. Fix the parse; do not relax this."
+        );
+        census.extend(regs.iter().flat_map(|r| r.entries.iter()).map(|e| e.name.clone()));
+    }
 
     let collisions: Vec<&str> = reify_audit::pdoccover::RI_KEYWORDS
         .iter()
         .copied()
-        .filter(|kw| census.contains(kw))
+        .filter(|kw| census.contains(*kw))
         .collect();
     assert!(
         collisions.is_empty(),
         "{collisions:?} are BOTH RI_KEYWORDS members AND registered builtin \
-         names in the real units.rs census. Every chunk claim naming one of \
-         them is silently dropped by the mention-side keyword filter, \
-         blinding the fabrication lane to that builtin. Remove the colliding \
-         token(s) from RI_KEYWORDS — do NOT delete this guard."
+         names in the real {REGISTRY_CENSUS_SOURCES:?} census. Every chunk \
+         claim naming one of them is silently dropped by the mention-side \
+         keyword filter, blinding the fabrication lane to that builtin. Remove \
+         the colliding token(s) from RI_KEYWORDS — do NOT delete this guard."
     );
 }
 

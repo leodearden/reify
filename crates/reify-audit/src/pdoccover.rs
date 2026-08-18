@@ -3304,6 +3304,20 @@ connect pipe@region(outer_surface, z = 0mm..50mm) -> clamp@region(inner_surface)
             vec![("translate".to_string(), 1)],
             "only the real call survives; got {mixed:?}"
         );
+
+        // The BARE, line-initial designator — `docs/reify-language-spec.md:1488`
+        // §D5 states the form as `@region(surface, predicate)`, with no value
+        // to the left of the `@`. It works only because the walk-back leaves
+        // `start == 1` and the `start > 0` guard then admits `bytes[0] == b'@'`
+        // to the delimiter test; nothing else would catch a regression that
+        // reordered those two conditions, so pin it directly.
+        let bare_designator = chunk_call_mentions("@region(surface, predicate)\n");
+        assert!(
+            bare_designator.is_empty(),
+            "a line-initial `@` designator is still a designator — spec §D5's \
+             own spelling of the form must not read as a call to `region`; \
+             got {bare_designator:?}"
+        );
     }
 
     /// A declaration KEYWORD is never a builtin. `Trait::fn(args)` is the real
@@ -3329,7 +3343,7 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
     /// `Option` constructor intercepted before general function resolution
     /// (crates/reify-compiler/src/expr.rs:2222-2223, "some() is a
     /// language-level constructor, not a user-defined function" — `none` gets
-    /// the same treatment at :1522-1525). Neither is ever a builtin the
+    /// the same treatment at :1522-1523). Neither is ever a builtin the
     /// compiler could fail to provide.
     #[test]
     fn mentions_ignore_grammar_value_literal_forms() {
