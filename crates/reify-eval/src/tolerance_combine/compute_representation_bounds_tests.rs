@@ -14,6 +14,26 @@ use reify_test_support::{parse_and_compile, parse_and_compile_with_stdlib};
 
 use super::compute_representation_bounds;
 
+/// The canonical one-bound fixture: a geometry structure `MyGeom` and a
+/// SEPARATE `Checker` structure asserting `RepresentationWithin(subject, 1mm)`
+/// on it (the canonical idiom, PRD task κ).
+///
+/// Shared by cases (a), (c) and (e), which differ only in what they assert
+/// about it — keying, non-emptiness, and the stdlib-resolved IR variant
+/// respectively — so the DSL surface for `param` / `RepresentationWithin` is
+/// spelled once rather than three times. Cases with a divergent fixture keep
+/// their source inline.
+const CHECKER_SRC: &str = r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#;
+
 /// Case (a): the table keys on the SUBJECT's declared struct name.
 ///
 /// `Checker` declares `RepresentationWithin(subject, 1mm)` where
@@ -23,18 +43,7 @@ use super::compute_representation_bounds;
 /// explicitly.
 #[test]
 fn bounds_single_direct_constraint_keys_on_subject_struct_name() {
-    let module = parse_and_compile(
-        r#"
-structure MyGeom {
-    param x : Real = 1.0
-}
-
-structure Checker {
-    param subject : MyGeom
-    constraint RepresentationWithin(subject, 1mm)
-}
-"#,
-    );
+    let module = parse_and_compile(CHECKER_SRC);
     let bounds = compute_representation_bounds(&module);
 
     assert_eq!(
@@ -49,13 +58,24 @@ structure Checker {
     );
 }
 
-/// Case (b): duplicates on the same subject min-fold (tighter satisfies looser);
-/// distinct subjects get distinct keys.
+/// Case (b): duplicates on the same subject min-fold (tighter satisfies looser)
+/// in BOTH visit orders; distinct subjects get distinct keys.
 ///
-/// `CheckerA` bounds `MyGeom` at 1mm and `CheckerB` bounds the same `MyGeom` at
-/// 0.2mm → the tighter 2e-4 wins. `CheckerC` bounds a different geometry
-/// structure `Other` at 5mm → its own key. Same partial order as
-/// `combine_demanded_tolerance` and `tolerance_scope::merge_with_min`.
+/// The fold direction is the property under test, so the fixture declares one
+/// subject looser-then-tighter and another tighter-then-looser:
+///
+/// * `MyGeom` — `LooseFirst` 1mm, then `TightSecond` 0.2mm → 2e-4.
+///   A **first-wins** fold (`or_insert` with no `and_modify`) keeps 1e-3 and fails.
+/// * `Coarse` — `TightFirst` 0.4mm, then `LooseSecond` 6mm → 4e-4.
+///   A **last-wins** fold (`and_modify(|b| *b = si_value)`) keeps 6e-3 and fails.
+///
+/// Covering only the first direction would let a last-wins implementation pass
+/// this case outright; covering only the second would let first-wins pass. With
+/// both present, every fold other than `min` fails on at least one key. Same
+/// partial order as `combine_demanded_tolerance` and
+/// `tolerance_scope::merge_with_min`.
+///
+/// `CheckerC` bounds a different geometry structure `Other` at 5mm → its own key.
 #[test]
 fn bounds_min_fold_duplicates_and_separate_keys_per_struct() {
     let module = parse_and_compile(
@@ -64,18 +84,32 @@ structure MyGeom {
     param x : Real = 1.0
 }
 
+structure Coarse {
+    param z : Real = 3.0
+}
+
 structure Other {
     param y : Real = 2.0
 }
 
-structure CheckerA {
+structure LooseFirst {
     param subject : MyGeom
     constraint RepresentationWithin(subject, 1mm)
 }
 
-structure CheckerB {
+structure TightSecond {
     param subject : MyGeom
     constraint RepresentationWithin(subject, 0.2mm)
+}
+
+structure TightFirst {
+    param subject : Coarse
+    constraint RepresentationWithin(subject, 0.4mm)
+}
+
+structure LooseSecond {
+    param subject : Coarse
+    constraint RepresentationWithin(subject, 6mm)
 }
 
 structure CheckerC {
@@ -84,13 +118,40 @@ structure CheckerC {
 }
 "#,
     );
+
+    // The premise the two directions rest on: templates are visited in
+    // DECLARATION order. Asserted rather than assumed — were the compiler ever
+    // to reorder templates, both subjects could end up in the same visit order
+    // and this case would silently stop covering both fold directions.
+    let order: Vec<&str> = module.templates.iter().map(|t| t.name.as_str()).collect();
+    let pos = |name: &str| {
+        order
+            .iter()
+            .position(|t| *t == name)
+            .unwrap_or_else(|| panic!("fixture template {name} missing from {order:?}"))
+    };
+    assert!(
+        pos("LooseFirst") < pos("TightSecond"),
+        "MyGeom must be visited looser-then-tighter; got {order:?}"
+    );
+    assert!(
+        pos("TightFirst") < pos("LooseSecond"),
+        "Coarse must be visited tighter-then-looser; got {order:?}"
+    );
+
     let bounds = compute_representation_bounds(&module);
 
     assert_eq!(
         bounds,
-        BTreeMap::from([("MyGeom".to_string(), 2e-4), ("Other".to_string(), 5e-3)]),
-        "duplicate bounds on one subject min-fold to the tightest (2e-4, not 1e-3); \
-         a second subject structure gets its own key"
+        BTreeMap::from([
+            ("Coarse".to_string(), 4e-4),
+            ("MyGeom".to_string(), 2e-4),
+            ("Other".to_string(), 5e-3),
+        ]),
+        "duplicate bounds on one subject min-fold to the tightest regardless of \
+         declaration order — MyGeom 2e-4 (tighter declared SECOND, so first-wins \
+         fails), Coarse 4e-4 (tighter declared FIRST, so last-wins fails); \
+         a third subject structure gets its own key"
     );
 }
 
@@ -120,18 +181,7 @@ structure Plain {
          emptiness is F's scoping predicate"
     );
 
-    let assertion = parse_and_compile(
-        r#"
-structure MyGeom {
-    param x : Real = 1.0
-}
-
-structure Checker {
-    param subject : MyGeom
-    constraint RepresentationWithin(subject, 1mm)
-}
-"#,
-    );
+    let assertion = parse_and_compile(CHECKER_SRC);
     assert!(
         !compute_representation_bounds(&assertion).is_empty(),
         "the other direction: a module that DOES declare a bound must yield a \
@@ -206,23 +256,63 @@ structure BadTol {
 /// tolerance_combine's own recognizer tests, which build that IR shape directly.
 #[test]
 fn bounds_recognize_stdlib_resolved_function_call_variant() {
-    let module = parse_and_compile_with_stdlib(
-        r#"
-structure MyGeom {
-    param x : Real = 1.0
-}
-
-structure Checker {
-    param subject : MyGeom
-    constraint RepresentationWithin(subject, 1mm)
-}
-"#,
-    );
+    let module = parse_and_compile_with_stdlib(CHECKER_SRC);
     assert_eq!(
         compute_representation_bounds(&module),
         BTreeMap::from([("MyGeom".to_string(), 1e-3)]),
         "the stdlib-resolved FunctionCall{{ResolvedFunction}} variant must be \
          recognised exactly like the plain-compiled one"
+    );
+}
+
+/// Case (f): the MEMBER-ACCESS subject shape (`IndexAccess` arm of
+/// `match_representation_within_shape`, task #3467).
+///
+/// `RepresentationWithin(bracket.fea_subject, 1mm)` lowers to
+/// `IndexAccess { object: ValueRef(bracket): StructureRef("Bracket"),
+/// index: Literal(String("fea_subject")) }` whose OUTER `result_type` is
+/// `StructureRef("FeaFace")`. The key therefore comes from the MEMBER's declared
+/// struct (`"FeaFace"`), not from the base param's struct (`"Bracket"`) — the
+/// one shape where the table's key derivation is least obvious, and the one
+/// where getting it wrong would key the bound under the wrong structure and
+/// silently mis-scope refinement under δ (#6168). Both halves are asserted.
+///
+/// The matcher's own unit tests (`tolerance_combine::tests`, task #3467) pin the
+/// *recognizer* for this shape; nothing pinned what KEY the bound table derives
+/// from it until this case. The fixture mirrors
+/// `examples/fea_bracket_member_access.ri` (FeaFace + Bracket + FeaCheck), which
+/// the member-access e2e suite uses, but is inlined here so the unit test owns
+/// its fixture and stays independent of that example file.
+#[test]
+fn bounds_member_access_subject_keys_on_member_struct_not_base() {
+    let module = parse_and_compile(
+        r#"
+structure FeaFace {
+    param area : Real = 1.0
+}
+
+structure Bracket {
+    param fea_subject : FeaFace
+}
+
+structure FeaCheck {
+    param bracket : Bracket
+    constraint RepresentationWithin(bracket.fea_subject, 1mm)
+}
+"#,
+    );
+    let bounds = compute_representation_bounds(&module);
+
+    assert_eq!(
+        bounds,
+        BTreeMap::from([("FeaFace".to_string(), 1e-3)]),
+        "member-access subject: the key is the MEMBER's declared struct \
+         ('FeaFace', from the IndexAccess node's outer result_type)"
+    );
+    assert!(
+        !bounds.contains_key("Bracket"),
+        "the BASE param's struct must never be the key — keying on 'Bracket' \
+         would mis-scope refinement under δ (#6168)"
     );
 }
 
