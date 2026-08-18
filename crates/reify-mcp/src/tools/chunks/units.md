@@ -93,6 +93,6 @@ No operator over fields or tensors manufactures `rad` from a derivative — grad
 
 **Angular frequency is a different crossing** — this is the one to reach for to get from a frequency in `Hz` to an angular velocity in `rad/s`. `omega = 2*pi * f * 1rad` carries 2π rad/cycle, a distinct constant from the η = 1 rad above — see "The 2π rad/cycle distinction (D4)". There is no `cycle` unit to write; the typed layer forces the distinction, because `Frequency` and `AngularVelocity` are different types and neither silently stands in for the other.
 
-**Why torque is N·m/rad**: the same crossing. Work is `tau * theta` and `theta` carries `rad`, so `tau` must carry `rad^-1` for the product to close on Energy — `INV-AD-1` in `docs/legibility/design-invariants.md` carries the argument. That is the *why*; how to spell a torque literal is not taught here.
+**Why torque is N·m/rad**: the same crossing. Work is `tau * theta` and `theta` carries `rad`, so `tau` must carry `rad^-1` for the product to close on Energy — see "Angle-crossing family (INV-AD-1..4)" in `docs/legibility/design-invariants.md`. That is the *why*; how to spell a torque literal is not taught here.
 
 Worked, compile-gated exemplar: `examples/best_practices/angle_crossings.ri`.
