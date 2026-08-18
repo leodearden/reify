@@ -22,6 +22,38 @@
 //! plain module (no `RepresentationWithin` constraints) is byte-for-byte
 //! unaffected by the new routing: it must still exit 0 on the
 //! `Engine::new(None)+check()` path.
+//!
+//! ## Export refusal (task η, #6170)
+//!
+//! PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+//! C-SURFACE (2): a design declaring a `RepresentationWithin` bound the export
+//! path cannot demonstrate it honours must REFUSE to write the artifact rather
+//! than write it and report success. Measured on this branch before the refusal
+//! landed, BOTH export modes reproduced §1.1 verbatim on
+//! `repr_within_with_stl_output.ri` — exit 0, a file written, and the bound
+//! reported INDETERMINATE:
+//!
+//! ```text
+//! $ reify build f.ri -o out.step   → exit 0, "Wrote out.step (15542 bytes)"
+//! $ reify build f.ri               → exit 0, "Wrote ./o.stl (684 bytes)"
+//! ```
+//!
+//! The two modes are structurally distinct and each needs its own guard:
+//!
+//! * **Mode A (`-o <file>`)** — `cmd_build` calls `std::fs::write` BEFORE it
+//!   evaluates `has_error_diagnostic`, so an Error diagnostic alone cannot
+//!   withhold the file. The refusal must gate the WRITE itself, which is what
+//!   `build_dash_o_refusal_does_not_overwrite_an_existing_file` pins.
+//! * **Mode B (no `-o`)** — the engine withholds the file by emitting an
+//!   empty-bytes artifact, which the CLI writer skips.
+//!
+//! All four tests use the cheap `repr_within_with_stl_output.ri` fixture (a
+//! `box`, not a sphere), so none imports the 5-20 s OCCT tessellation cost PRD
+//! §6's gate-cost rule warns about. They are deliberately NOT OCCT-gated: η's
+//! refusal is a static module-shape decision taken before any measurement, so it
+//! fires identically in stub and OCCT builds — unlike
+//! `check_representation_within_violated_under_occt` above, which needs a real
+//! measured deviation.
 
 use crate::common;
 
@@ -104,5 +136,173 @@ fn check_non_representation_within_module_is_unaffected() {
         stdout.contains("All constraints satisfied"),
         "C2: stdout should contain 'All constraints satisfied' for bracket.ri.\n\
          stdout: {stdout}"
+    );
+}
+// ── Export refusal (task η, #6170) ───────────────────────────────────────────
+
+/// Run `reify <args...>` with the child's working directory pinned to `cwd`.
+///
+/// Mirrors `cli_build_outputs.rs`'s local `run_in` (that helper is private to
+/// its own module). Mode B needs it because the fixture's `path: "o.stl"` is
+/// DESIGN-FILE-relative (io-export B7): pinning the child cwd to the tempdir
+/// that holds the copied design keeps every artifact — or, once η lands, its
+/// absence — inside the tempdir, and guarantees a stray write can never land in
+/// `tests/fixtures/` or the crate root.
+fn run_in(cwd: &std::path::Path, args: &[&str]) -> (bool, String, String) {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_reify"))
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("failed to execute reify binary");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// MODE A — the §1.1 headline. `reify build <bounded design> -o <tempdir>/out.step`
+/// must exit non-zero, name the refusal on stderr, and create NO file.
+///
+/// `!output_path.exists()` is the negative-assertion idiom the parse-error and
+/// compile-error tests in `cli_build.rs` already use. The `-o` target format is
+/// irrelevant to the refusal (it is decided before any serializer is chosen), so
+/// the helper's default `.step` target is fine. With `-o` present the
+/// declarative driver does not fire (io-export B10), so the fixture's own
+/// `o.stl` is not written into `tests/fixtures/` either.
+#[test]
+fn build_dash_o_refuses_to_write_for_a_bounded_module() {
+    let result = common::run_build("repr_within_with_stl_output.ri");
+
+    assert!(
+        !result.status.success(),
+        "reify build -o on a design declaring a RepresentationWithin bound must exit \
+         non-zero.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("E_REPR_BOUND_UNENFORCED_ON_EXPORT"),
+        "stderr must name the refusal with the stable E_* token; got: {}",
+        result.stderr
+    );
+    assert!(
+        !result.output_path.exists(),
+        "NO file may be created at the -o target for a refused build (§1.1: the \
+         artifact must be refused, not written-and-reported-successful)"
+    );
+}
+
+/// MODE A — the refusal gates the WRITE, not merely the exit code.
+///
+/// `cmd_build` calls `std::fs::write(path, &data)` BEFORE it evaluates
+/// `has_error_diagnostic`, so a refusal implemented purely as an Error
+/// diagnostic would still truncate and overwrite whatever sits at the `-o`
+/// target — exiting non-zero while having already destroyed the user's file.
+/// Seeding the target with sentinel bytes and requiring them back byte-for-byte
+/// is what distinguishes a real write-gate from a diagnostic bolt-on.
+#[test]
+fn build_dash_o_refusal_does_not_overwrite_an_existing_file() {
+    const SENTINEL: &[u8] = b"pre-existing bytes that must survive a refused build";
+
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let target = dir.path().join("out.step");
+    std::fs::write(&target, SENTINEL).expect("failed to seed the -o target");
+
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "build",
+        &common::fixture_path("repr_within_with_stl_output.ri"),
+        "-o",
+        target.to_str().expect("temp path is not valid UTF-8"),
+    ]);
+
+    assert!(
+        !status.success(),
+        "a refused build must exit non-zero.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("the -o target must still exist"),
+        SENTINEL,
+        "a refused build must NOT truncate or overwrite a pre-existing file at the -o \
+         target — the refusal has to gate the write itself, not ride the diagnostic \
+         stream after `std::fs::write` has already run"
+    );
+}
+
+/// MODE B — `reify build <bounded design>` with NO `-o` must refuse the declared
+/// `: Output` occurrence.
+///
+/// The fixture is copied into a tempdir first because its `path: "o.stl"` is
+/// design-file-relative (io-export B7): running in place would write `o.stl`
+/// into `tests/fixtures/`. `!o.stl.exists()` plus the absence of `"Wrote "` on
+/// stdout is what proves the occurrence produced no file and the CLI did not
+/// claim otherwise.
+#[test]
+fn build_without_dash_o_refuses_the_declared_output_occurrence() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let ri = dir.path().join("f.ri");
+    std::fs::copy(common::fixture_path("repr_within_with_stl_output.ri"), &ri)
+        .expect("failed to copy the bounded fixture");
+
+    let (ok, stdout, stderr) = run_in(
+        dir.path(),
+        &["build", ri.to_str().expect("temp path is not valid UTF-8")],
+    );
+
+    assert!(
+        !ok,
+        "reify build (no -o) on a bounded design must exit non-zero.\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !dir.path().join("o.stl").exists(),
+        "the refused STLOutput occurrence must write no file.\nstdout: {stdout}\n\
+         stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("E_REPR_BOUND_UNENFORCED_ON_EXPORT"),
+        "stderr must name the refusal with the stable E_* token; got: {stderr}"
+    );
+    assert!(
+        !stdout.contains("Wrote "),
+        "stdout must NOT claim an artifact was written for a refused occurrence; \
+         got: {stdout}"
+    );
+}
+
+/// The C2 negative at the CLI boundary: a design with NO bound still exports
+/// exactly as before.
+///
+/// Reuses `bracket.ri` — the geometry-bearing unbounded fixture
+/// `cli_build.rs`'s `build_valid_bracket_exits_success` already builds — so this
+/// asserts the same success path that test does, plus the absence of the refusal
+/// token. GREEN before and after η, and it is what bounds the refusal's blast
+/// radius (PRD C2 / §3.1(f)).
+#[test]
+fn build_dash_o_still_exports_a_module_without_a_bound() {
+    let result = common::run_build("bracket.ri");
+
+    assert!(
+        result.status.success(),
+        "an UNBOUNDED design must still exit 0.\nstdout: {}\nstderr: {}",
+        result.stdout,
+        result.stderr
+    );
+    assert!(
+        result.stdout.contains("Wrote "),
+        "an unbounded design must still report the written artifact; got: {}",
+        result.stdout
+    );
+    assert!(
+        result.output_path.exists(),
+        "an unbounded design must still write its -o target"
+    );
+    assert!(
+        !result.stderr.contains("E_REPR_BOUND_UNENFORCED_ON_EXPORT"),
+        "the refusal must NOT fire for a design that declares no bound; got: {}",
+        result.stderr
     );
 }
