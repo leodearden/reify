@@ -84,8 +84,6 @@ crates/reify-compiler/tests/chained_comparison_tests.rs
 crates/reify-compiler/tests/collection_compile_tests.rs
 crates/reify-compiler/tests/collection_sub_tests.rs
 crates/reify-compiler/tests/comparison_operand_guard_tests.rs
-crates/reify-compiler/tests/compile_api_tests.rs
-crates/reify-compiler/tests/compile_builder_smoke_tests.rs
 crates/reify-compiler/tests/compound_unit_resolution_tests.rs
 crates/reify-compiler/tests/constant_compile_tests.rs
 crates/reify-compiler/tests/constants_example_tests.rs
@@ -102,9 +100,7 @@ crates/reify-compiler/tests/determinacy_compile_tests.rs
 crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs
 crates/reify-compiler/tests/display_annotation_tests.rs
 crates/reify-compiler/tests/display_style_appearance_tests.rs
-crates/reify-compiler/tests/doc_propagation_tests.rs
 crates/reify-compiler/tests/dynamics_stdlib_compile.rs
-crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-compiler/tests/expr_error_sentinel_tests.rs
 crates/reify-compiler/tests/fea_supertrait_conformance_tests.rs
 crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
@@ -138,7 +134,6 @@ crates/reify-compiler/tests/math_construction_signatures_tests.rs
 crates/reify-compiler/tests/math_signatures.rs
 crates/reify-compiler/tests/math_transcendental_signatures.rs
 crates/reify-compiler/tests/mechanism_nondriving_joint_compile.rs
-crates/reify-compiler/tests/meta_compile_tests.rs
 crates/reify-compiler/tests/modal_mechanism_compile.rs
 crates/reify-compiler/tests/modal_options_validation_tests.rs
 crates/reify-compiler/tests/modify_kind_public_api.rs
@@ -157,11 +152,9 @@ crates/reify-compiler/tests/parse_length_signatures.rs
 crates/reify-compiler/tests/parse_with_stdlib_tests.rs
 crates/reify-compiler/tests/physical_constants_tests.rs
 crates/reify-compiler/tests/polymorphic_zero_tests.rs
-crates/reify-compiler/tests/pragma_compile_tests.rs
 crates/reify-compiler/tests/prepass_consolidation_tests.rs
 crates/reify-compiler/tests/printer_print_envelope_example_tests.rs
 crates/reify-compiler/tests/process_stdlib_compile.rs
-crates/reify-compiler/tests/purpose_compile_tests.rs
 crates/reify-compiler/tests/quantifier_compile_tests.rs
 crates/reify-compiler/tests/real_dimensionless_unification_tests.rs
 crates/reify-compiler/tests/recursive_detection_tests.rs
@@ -187,7 +180,6 @@ crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs
 crates/reify-compiler/tests/structure_in_purpose_ambient_tests.rs
 crates/reify-compiler/tests/tensegrity_stdlib_tests.rs
 crates/reify-compiler/tests/termination_check_tests.rs
-crates/reify-compiler/tests/test_marker_compile_tests.rs
 crates/reify-compiler/tests/tolerancing_tests.rs
 crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
 crates/reify-compiler/tests/trajectory_stdlib_compile.rs
