@@ -216,8 +216,9 @@ helper that asserts an arc measure). It generalizes rulings already
 made in this territory: #6164 (A+ — `ElasticResult.rotation` = curl/2
 is the designated crossing), #6080 (`orient_log` is a genuine
 arc-measure primitive, not a quotient), #6126/#6089 (translation stays
-Length, never swept into angle), #5799 (TORQUE = N·m/rad), and
-#5825→#5844 (moment of inertia carries rad⁻²).
+Length, never swept into angle), #5785 (η — TORQUE = N·m/rad), #5799
+(rotational stiffness re-dimensioned to rad⁻²), and #5825→#5844 (moment
+of inertia carries rad⁻²).
 
 **Registry alias.** `docs/invariants.md` rolls this family up under a
 single row, INV-DIM-1 (Enforcement `doc+test`) — an id-keyed audit
