@@ -221,6 +221,58 @@ pub fn recognize_representation_within(expr: &CompiledExpr) -> Option<(ValueCell
     match_representation_within_shape(expr)
 }
 
+/// Returns `true` when any template in `module` declares at least one
+/// `RepresentationWithin(subject, bound)` constraint — directly on the template
+/// or inside a guarded group's true/else branch.
+///
+/// This is a STATIC, PRE-EVAL predicate on *declarations*: it reads compiled IR
+/// only, evaluates nothing, and so is available at routing time, before any
+/// realization or measurement has happened. It says the design *declares* a
+/// representation bound; it says nothing about whether that bound is met.
+///
+/// Reuses [`recognize_representation_within`] — the one canonical matcher (UFC
+/// name + arity + arg0 `ValueRef`/member-access typed `StructureRef` + arg1
+/// `Literal Scalar` LENGTH finite ≥ 0) that the engine's dispatch interception
+/// and the budget extractor also share — so the recognition gate has a single
+/// implementation and cannot drift between consumers.
+///
+/// # Consumers
+///
+/// * `reify check` routing (`crates/reify-cli/src/main.rs`'s
+///   `module_has_representation_within`, now a one-line delegation to this
+///   function): decides whether to take the kernel-backed
+///   `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path.
+/// * Both export refusal sites (task #6170, PRD
+///   `docs/prds/v0_6/precision-nominal-representation-guarantee.md` task eta /
+///   C-SURFACE (2)): `reify build -o <file>` and
+///   [`crate::Engine::build_outputs_with_result`] refuse to write an artifact
+///   for a module that declares a bound the export path cannot demonstrate it
+///   honours.
+///
+/// A module for which this returns `false` is untouched by every one of those
+/// paths — that is what keeps existing unbounded designs byte-identical.
+pub fn module_declares_representation_within(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        // Check direct template constraints first (the common case).
+        let direct = t
+            .constraints
+            .iter()
+            .any(|c| recognize_representation_within(&c.expr).is_some());
+        if direct {
+            return true;
+        }
+        // Also check guarded-group constraints (true-branch + else-branch)
+        // so a RepresentationWithin inside a `where … { constraint … }` block
+        // is also detected.
+        t.guarded_groups.iter().any(|g| {
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+                .any(|c| recognize_representation_within(&c.expr).is_some())
+        })
+    })
+}
+
 // ── Pure assertion eval helper ────────────────────────────────────────────────
 
 /// Planar quantization floor for the C4 zero-bound comparator (SI metres).

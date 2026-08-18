@@ -2449,38 +2449,26 @@ fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
 /// populated `achieved_repr_tol` map) or to stay on the existing lightweight
 /// `Engine::new(None)+check()` path for modules with no such assertion.
 ///
-/// Reuses [`reify_eval::tolerance_combine::recognize_representation_within`]
+/// # Delegation (task #6170)
+///
+/// The walk itself now lives in
+/// [`reify_eval::tolerance_combine::module_declares_representation_within`],
+/// hoisted there so that `cmd_check`'s routing and BOTH export-refusal sites
+/// (`cmd_build`'s `-o` arm here, and `Engine::build_outputs_with_result` in the
+/// engine) consult ONE implementation that cannot drift. That function in turn
+/// reuses [`reify_eval::tolerance_combine::recognize_representation_within`],
 /// so the recognition gate (UFC name + arity + arg0 ValueRef:StructureRef +
-/// arg1 Literal Scalar LENGTH finite≥0) is the same canonical matcher used by
-/// the engine's dispatch interception — a single gate implementation that
-/// cannot drift (retiring the drift risk that lived in the extractor's TODO
-/// before task 4199 γ).
+/// arg1 Literal Scalar LENGTH finite≥0) is the same canonical matcher the
+/// engine's dispatch interception uses.
+///
+/// This CLI-local name is retained (rather than inlining the call at each site)
+/// so `cmd_check`'s routing reads unchanged.
 ///
 /// Non-assertion modules: this function returns `false` and `cmd_check` keeps
 /// the existing path verbatim (C2 — byte-identical behavior for all existing
 /// `reify check` inputs).
 fn module_has_representation_within(module: &reify_compiler::CompiledModule) -> bool {
-    module.templates.iter().any(|t| {
-        // Check direct template constraints first (the common case).
-        let direct = t.constraints.iter().any(|c| {
-            reify_eval::tolerance_combine::recognize_representation_within(&c.expr).is_some()
-        });
-        if direct {
-            return true;
-        }
-        // Also check guarded-group constraints (true-branch + else-branch)
-        // so a RepresentationWithin inside a `when ... { constraint ... }` block
-        // is also detected.
-        t.guarded_groups.iter().any(|g| {
-            g.constraints
-                .iter()
-                .chain(g.else_constraints.iter())
-                .any(|c| {
-                    reify_eval::tolerance_combine::recognize_representation_within(&c.expr)
-                        .is_some()
-                })
-        })
-    })
+    reify_eval::tolerance_combine::module_declares_representation_within(module)
 }
 
 /// Returns `true` when `module` contains at least one template whose
