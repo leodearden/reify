@@ -648,6 +648,14 @@ fn build_combined_param_let_graph(
 /// read-set, so a cell unflagged today stays unflagged; a cell becomes unflagged
 /// only when a constraint or objective genuinely reaches it, which is the fix.
 ///
+/// What MAKES it a superset is that [`CellReadIndex::read_closure`] carries BOTH
+/// namespaces of every id it walks (task #5467 step-17): the old read-set was
+/// the RAW, un-normalised `extract_dependency_trace(...).reads`, so a raw
+/// declaration id is matched here by the raw spelling and a template-keyed one
+/// by the normalised spelling.  Normalising DESTRUCTIVELY would falsify the
+/// claim above and false-positive on every instance-path-keyed auto, because
+/// the membership test below uses the RAW `cell.id`.
+///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
 /// `has_active_solver` gate so the warning surfaces on `reify check` even
 /// when no constraint solver is attached (exactly as `detect_scope_coupling`
@@ -1685,6 +1693,10 @@ impl<'t> CellReadIndex<'t> {
     /// cell's `default_expr` reads DOWNWARD. The seeds' own direct reads are
     /// included; the seed expressions themselves are not ids and so are not.
     ///
+    /// BOTH SPELLINGS of every id walked are returned — the raw one and its
+    /// normalised form — so the result is a genuine SUPERSET of the raw
+    /// `extract_value_deps` reads. See the insert sites for why.
+    ///
     /// The seed lifetime `'e` is deliberately INDEPENDENT of the index's own
     /// `'t`: seeds are typically borrowed from a caller-local `filtered_constraints`
     /// / `ObjectiveSet`, not from the `all_templates` slice the index borrows, so
@@ -1696,21 +1708,59 @@ impl<'t> CellReadIndex<'t> {
     {
         let mut closure: HashSet<ValueCellId> = HashSet::new();
         let mut frontier: Vec<ValueCellId> = Vec::new();
+
+        // ADDITIVE normalisation, at BOTH insert sites (task #5467 step-17).
+        //
+        // Normalising DESTRUCTIVELY (`let id = self.normalize(id)`) drops the
+        // raw spelling, and LAYER 4 (`detect_underdetermined`) matches the RAW
+        // declaration id against this closure. The compiler mints instance-path
+        // keyed auto decls at `reify-compiler/src/entity.rs:3025` (construction
+        // named-arg) and `:3130` (sub-override), e.g. `Parent.b.bore`, while a
+        // constraint's read of that same cell normalises to `Bearing.bore` — so
+        // a normalise-only closure can NEVER match such a declaration and
+        // reports every instance-path auto free.
+        //
+        // The alternative — normalising `cell.id` at layer 4's membership test
+        // — is WRONG: `normalize_cell_id` is MANY-TO-ONE (`Parent.b1`/`Parent.b2`
+        // both collapse to `Bearing`; `strip_collection_indices` collapses
+        // `Rig.bolts[3]`/`Rig.bolts[7]`), so a pin on one sibling would MASK a
+        // genuinely free auto on another, trading a false positive for a false
+        // negative.
+        //
+        // WHY THIS CANNOT PERTURB `build_dependent_cells`, the other consumer
+        // (the PRD2 D1 obligation — its node set must not move): `cell_map` is
+        // populated ONLY from `value_cells` that are non-auto AND carry a
+        // `default_expr`, and every instance-path-keyed `ValueCellDecl` the
+        // compiler mints is an `Auto` with `default_expr: None`. So `cell_map`
+        // keys — hence `cells_reaching`'s reverse-map keys — are always
+        // template-keyed. The ids this adds are exactly those whose
+        // normalisation DIFFERS, i.e. instance-path ones, which therefore always
+        // miss `cell_map.get(id)` at stage (e) and always miss `reaches_auto`.
+        // `dependent_cells` is unchanged by CONSTRUCTION, not by luck.
+        //
+        // `normalize` is the identity for an already-template-keyed id, so the
+        // second `insert` is a no-op in the common case and costs one hash probe.
+        let push = |closure: &mut HashSet<ValueCellId>,
+                        frontier: &mut Vec<ValueCellId>,
+                        id: ValueCellId| {
+            let norm = self.normalize(id.clone());
+            if closure.insert(id.clone()) {
+                frontier.push(id);
+            }
+            if closure.insert(norm.clone()) {
+                frontier.push(norm);
+            }
+        };
+
         for expr in seeds {
             for id in crate::deps::extract_value_deps(expr) {
-                let id = self.normalize(id);
-                if closure.insert(id.clone()) {
-                    frontier.push(id);
-                }
+                push(&mut closure, &mut frontier, id);
             }
         }
         while let Some(id) = frontier.pop() {
             if let Some(expr) = self.cell_map.get(&id) {
                 for dep in crate::deps::extract_value_deps(expr) {
-                    let dep = self.normalize(dep);
-                    if closure.insert(dep.clone()) {
-                        frontier.push(dep);
-                    }
+                    push(&mut closure, &mut frontier, dep);
                 }
             }
         }
