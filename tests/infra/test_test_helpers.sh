@@ -1615,7 +1615,41 @@ check "WL-j7: assert_shared_trash_litter_detector_live returns 0 and never reads
 # could ever create is "<stem>-lane-XXXX.<pid>"; anything else new is another
 # process's and is reported informationally instead of failing.
 _WL_SELFTEST_STEM="selftest-stem"
-ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-before"
+
+# _WL_REAL_TRASH_DIR: the machine-shared trash dir this block observes.
+# Defaults to the real path; the override hook exists solely so this file's
+# own absent-dir regression guard (WL-j13 below) can point it at a path
+# guaranteed not to exist, making that branch reachable deterministically on
+# any host (#6299). Under override, WL-j9 degrades to a vacuous pass (nothing
+# can litter a dir that does not exist), while WL-j8 keeps its full meaning
+# because assert_shared_trash_litter_detector_live is hermetic and mktemps
+# its own scratch dir — the default (non-overridden) run retains both checks'
+# full meaning.
+_WL_REAL_TRASH_DIR="${_WL_REAL_TRASH_DIR:-/tmp/.reseed-trash}"
+
+# _wl_snapshot_real_trash <dir> <outfile>: mirrors the already-correct
+# _list_trash_entries contract documented in tests/infra/test_helpers.sh ("An
+# absent or unreadable dir emits nothing and is NOT an error"). Duplicated
+# here rather than called there, to keep this suite's own observation
+# scaffolding independent of the module under test — see the file header's
+# no-circular-dependency note (#6299). Before this helper existed, this block
+# read the dir with a bare `ls -A ... | sort` under errexit+pipefail:
+# `2>/dev/null` suppresses only ls's diagnostic, not its exit 2 on an absent
+# dir, which pipefail then propagates into errexit, aborting the whole suite.
+# An empty before/after pair is the semantically correct reading of an absent
+# dir: this block only diffs before-vs-after for NEW litter, and an absent
+# dir has none. The trailing `|| : > "$_out"` also closes a TOCTOU window —
+# /tmp/.reseed-trash is machine-shared and another worktree may remove it
+# between the `[ -d ]` check and the read.
+_wl_snapshot_real_trash() {
+    local _dir="$1" _out="$2"
+    : > "$_out"
+    [ -d "$_dir" ] || return 0
+    ls -A "$_dir" 2>/dev/null | sort > "$_out" || : > "$_out"
+    return 0
+}
+
+_wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-before"
 cat > "$_WL_DIR/litter-live-real.sh" <<'PROBE'
 set -uo pipefail
 source "$1"
@@ -1623,7 +1657,7 @@ source "$1"
 assert_shared_trash_litter_detector_live
 PROBE
 _wl_run "$_WL_DIR/litter-live-real.sh"
-ls -A /tmp/.reseed-trash 2>/dev/null | sort > "$_WL_DIR/real-trash-after"
+_wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-after"
 _wl_new_real=""
 _wl_new_other=""
 while IFS= read -r _wl_e; do
