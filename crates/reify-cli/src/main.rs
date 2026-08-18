@@ -1018,6 +1018,57 @@ fn cmd_build(args: &[String]) -> ExitCode {
         //       build() serializes the product bodies, and the bytes are written
         //       verbatim to the `-o` target. =====
         Some(path) => {
+            // Export refusal (task η, PRD
+            // `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+            // §1.1 / C-SURFACE (2)): a design declaring a `RepresentationWithin`
+            // bound this path cannot demonstrate it honours must REFUSE to write
+            // the artifact rather than write it and report success.
+            //
+            // WHY THE GATE PRECEDES THE WRITE RATHER THAN RIDING THE DIAGNOSTIC
+            // STREAM: `std::fs::write(path, &data)` below runs BEFORE
+            // `has_error_diagnostic` is evaluated, so an Error diagnostic ALONE
+            // cannot withhold the file — it would exit non-zero having already
+            // created (or truncated) the `-o` target. Returning here is what
+            // makes the refusal gate the WRITE itself. (Mode B needs no such
+            // care: the engine withholds the file by emitting an empty-bytes
+            // artifact, which the writer below skips.)
+            //
+            // Refusing BEFORE `engine.build()` also skips realization and OCCT
+            // tessellation entirely, honouring PRD §6's gate-cost rule: η's
+            // refusal is a static module-shape decision taken before any
+            // measurement. The same helper backs the engine-side Mode-B refusal,
+            // so the two surfaces cannot disagree about what counts as bounded.
+            //
+            // Follow-on task θ narrows this refusal to genuinely UNACHIEVABLE
+            // bounds once the export path gains a real measurement (hard-dep on
+            // task 6085); until then it fires for any declared bound.
+            if let Some(diag) =
+                reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic(&compiled)
+            {
+                // Report and exit through the EXISTING report_eval_output +
+                // build_is_success pair rather than a bespoke ExitCode::FAILURE:
+                // `build_is_success` is `!has_error_diagnostic && !SomeViolated`,
+                // so an Error diagnostic alone already yields non-zero, and
+                // `report_eval_output` puts the message on stderr in the same
+                // order as every other diagnostic (PRD INV-SF-2: "η rides
+                // `cmd_build`'s existing gate rather than adding a per-code
+                // bolt-on").
+                let diagnostics = [diag];
+                let outcome = report_eval_output(
+                    &[],
+                    &diagnostics,
+                    &mut std::io::stdout(),
+                    &mut std::io::stderr(),
+                );
+                let has_error_diagnostic =
+                    diagnostics.iter().any(|d| d.severity == Severity::Error);
+                return if build_is_success(&outcome, has_error_diagnostic) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                };
+            }
+
             let format = match path {
                 p if p.ends_with(".step") || p.ends_with(".stp") => ExportFormat::Step,
                 p if p.ends_with(".stl") => ExportFormat::Stl,
@@ -2451,18 +2502,26 @@ fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bool {
 ///
 /// # Delegation (task #6170)
 ///
-/// The walk itself now lives in
+/// The walk itself lives in
 /// [`reify_eval::tolerance_combine::module_declares_representation_within`],
-/// hoisted there so that `cmd_check`'s routing and BOTH export-refusal sites
-/// (`cmd_build`'s `-o` arm here, and `Engine::build_outputs_with_result` in the
-/// engine) consult ONE implementation that cannot drift. That function in turn
-/// reuses [`reify_eval::tolerance_combine::recognize_representation_within`],
-/// so the recognition gate (UFC name + arity + arg0 ValueRef:StructureRef +
-/// arg1 Literal Scalar LENGTH finite≥0) is the same canonical matcher the
-/// engine's dispatch interception uses.
+/// which is defined as `!compute_representation_bounds(module).is_empty()` — so
+/// this predicate and the C-BOUND bound table are the same traversal rather than
+/// two that must be kept in sync. It reaches the canonical recognition gate (UFC
+/// name + arity + arg0 ValueRef:StructureRef + arg1 Literal Scalar LENGTH
+/// finite≥0) that the engine's dispatch interception also uses.
 ///
-/// This CLI-local name is retained (rather than inlining the call at each site)
-/// so `cmd_check`'s routing reads unchanged.
+/// This CLI-local name is retained (rather than inlining the call) so
+/// `cmd_check`'s routing reads unchanged.
+///
+/// # Not the export-refusal gate
+///
+/// Both export-refusal sites — `cmd_build`'s `-o` arm above, and
+/// `Engine::build_outputs_with_result` in the engine — need the bound TABLE
+/// rather than a boolean, because the refusal names the unenforced bound. They
+/// therefore call
+/// [`reify_eval::tolerance_combine::unenforced_representation_bound_diagnostic`]
+/// instead of this predicate; its `None` case is exactly this function returning
+/// `false`, so all three sites still share one traversal.
 ///
 /// Non-assertion modules: this function returns `false` and `cmd_check` keeps
 /// the existing path verbatim (C2 — byte-identical behavior for all existing
