@@ -536,3 +536,136 @@ fn an_auto_free_cell_is_still_never_flagged_under_the_closure() {
         result.diagnostics,
     );
 }
+
+// ---------------------------------------------------------------------------
+// LAYER 4 — INSTANCE-PATH-keyed autos (task #5467 step-15, review finding 2)
+//
+// `detect_underdetermined` matches a RAW declaration id against the read
+// closure. The compiler mints instance-path-keyed auto decls at two sites —
+// `reify-compiler/src/entity.rs:3025` (construction named-arg) and `:3130`
+// (sub-override) — so `sub b : Bearing { bore = auto }` declares
+// `Parent.b.bore`, while the pinning constraint's read normalises to
+// `Bearing.bore`. If `CellReadIndex::read_closure` normalises DESTRUCTIVELY the
+// two can never meet and every such auto draws a false-positive warning.
+//
+// These assert the Underdetermined COUNT. Asserting only "no errors" is what
+// let the regression through: W_UNDERDETERMINED is a WARNING, so an
+// error-severity filter passes it silently.
+// ---------------------------------------------------------------------------
+
+/// (k) An instance-path-keyed auto (`sub b : Bearing { bore = auto }`, the shape
+/// `entity.rs:3130` mints) pinned by a constraint that reads the SAME
+/// instance-path spelling must NOT be flagged.
+///
+/// The constraint's read normalises to `Bearing.bore`; the declaration stays
+/// `Parent.b.bore`. Only a closure that carries BOTH spellings matches them up.
+///
+/// RED until step-17 makes `read_closure` a genuine superset.
+#[test]
+fn no_underdetermined_for_an_instance_path_auto_pinned_by_an_instance_path_constraint() {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .sub_component("b", "Bearing", vec![])
+        // The sub-override auto decl: entity is the INSTANCE PATH `Parent.b`.
+        .auto_param("Parent.b", "bore", Type::length())
+        // `constraint self.b.bore == 10mm` — the same instance-path spelling.
+        .constraint(
+            "Parent",
+            0,
+            None,
+            eq(value_ref("Parent.b", "bore"), literal(mm(10.0))),
+        )
+        .build();
+
+    // The declaring template, so `Parent.b` is a known instance path and
+    // normalisation genuinely rewrites the read (identity would make this test
+    // pass for the wrong reason).
+    let bearing = TopologyTemplateBuilder::new("Bearing")
+        .param("Bearing", "bore", Type::length(), Some(literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bearing)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let under_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect();
+
+    assert!(
+        under_diags.is_empty(),
+        "`Parent.b.bore` is pinned by `constraint self.b.bore == 10mm`, so it \
+         is NOT underdetermined. The declaration id is instance-path keyed \
+         (entity.rs:3130) while the constraint's read normalises to \
+         `Bearing.bore`; a read closure that keeps only the normalised spelling \
+         can never match the declaration and emits this false positive on \
+         every `reify check`. Got: {under_diags:?}",
+    );
+}
+
+/// (l) The FALSE-NEGATIVE guard, and the executable form of the design decision
+/// behind step-17: two sibling instances of ONE template, only one of them
+/// pinned. Exactly the unpinned sibling may be flagged.
+///
+/// This is why the fix must retain the raw spelling rather than normalise
+/// `cell.id` at the membership test: `normalize_cell_id` is MANY-TO-ONE
+/// (`Parent.b1` and `Parent.b2` both collapse to `Bearing`, and
+/// `strip_collection_indices` collapses `Rig.bolts[3]`/`Rig.bolts[7]` likewise),
+/// so normalising the declaration would let the pin on `b1` MASK the genuinely
+/// free `b2` — trading a false positive for a false negative. Under that
+/// alternative this test sees ZERO diagnostics and fails.
+#[test]
+fn two_sibling_instances_of_one_template_are_flagged_independently() {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .sub_component("b1", "Bearing", vec![])
+        .sub_component("b2", "Bearing", vec![])
+        .auto_param("Parent.b1", "bore", Type::length())
+        .auto_param("Parent.b2", "bore", Type::length())
+        // ONLY b1 is pinned.
+        .constraint(
+            "Parent",
+            0,
+            None,
+            eq(value_ref("Parent.b1", "bore"), literal(mm(10.0))),
+        )
+        .build();
+
+    let bearing = TopologyTemplateBuilder::new("Bearing")
+        .param("Bearing", "bore", Type::length(), Some(literal(mm(5.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(bearing)
+        .build();
+
+    let mut engine = no_solver_engine();
+    let result = engine.eval(&module);
+
+    let under_diags: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .collect();
+
+    assert_eq!(
+        under_diags.len(),
+        1,
+        "EXACTLY ONE auto is free here. Two diagnostics means the closure lost \
+         the raw spelling and `Parent.b1.bore` is a false positive; ZERO means \
+         the membership test normalised the DECLARATION id, letting b1's pin \
+         mask the genuinely free b2 — a false negative, which is strictly \
+         worse. Got: {under_diags:?}",
+    );
+    assert!(
+        under_diags[0].message.contains("Parent.b2.bore"),
+        "the surviving diagnostic must name the UNPINNED sibling \
+         `Parent.b2.bore`; got: {}",
+        under_diags[0].message,
+    );
+}

@@ -57,3 +57,7 @@ mod export_unit_regime_e2e;
 // anti-re-accretion reason as #5196's, #5045's and #5360's above.
 #[path = "harness_engine/let_tracing_transitive_e2e.rs"]
 mod let_tracing_transitive_e2e;
+// Task #5467's instance-path W_UNDERDETERMINED regression e2e lands here for the
+// same anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
+mod instance_path_underdetermined_e2e;
