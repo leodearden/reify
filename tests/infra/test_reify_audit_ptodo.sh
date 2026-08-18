@@ -130,6 +130,81 @@ _ratchet_check_subset() {
 }
 
 # -----------------------------------------------------------------------
+# Vacuity floor, scan-evidence form (task #6241).  _ratchet_check_subset above
+# can only ever report "no NEW fingerprints"; it says nothing about whether the
+# generator RAN at all, and the empty set is a subset of everything.  This is
+# the precondition that makes that subset assertion meaningful.
+# WHY it keys on run evidence rather than on the live finding count, and what
+# it does not cover: PRD 6.6, "Vacuity floor on the live set" — the single home
+# for that argument, not restated here.
+#
+# Local contract:
+#   _ratchet_check_scan_evidence <generator-stderr>, ONE newline-joined STRING
+#   (matching _ratchet_check_subset's argument convention) so it can be passed
+#   straight to assert() and land its diagnostic in the on-FAIL captured-output
+#   dump.  The committed baseline is NOT an input: the floor is independent of
+#   ptodo-baseline.txt content by construction.
+#
+#   rc0 + BYTE-FOR-BYTE SILENT iff the stderr carries a
+#   `@@PTODO_SCAN@@ files_scanned=<N> …` line whose N is a well-formed integer
+#   >= 1 (silence keeps an all-green suite unchanged — test_helpers.sh:48-51).
+#   Otherwise rc1 with a stderr diagnostic naming which of the three failure
+#   shapes fired: line ABSENT, files_scanned=0, or a MALFORMED count.  A
+#   matched-but-unparseable count falls to the firing branch DELIBERATELY —
+#   loud over silent-disarm, the discipline the retired kind list applied to an
+#   unrecognised kind.
+#
+#   @@RATCHET_VACUITY_FIRED@@ leads the failing diagnostic and is a MACHINE
+#   TOKEN — the deliberate contract with
+#   test_reify_audit_ptodo_ratchet_vacuity.sh, in the same idiom as the
+#   @@HARDGATE_*_PASSED@@ sentinels below.  Grep for the token, never for the
+#   prose; the prose is free to change.
+#
+# No fingerprints are re-derived here: this reads two fields off a line the
+# GENERATOR emitted, so the PRD 6.6 invariant in this file's header
+# (derivation lives ONLY in ptodo-baseline-gen) is preserved in full.
+# -----------------------------------------------------------------------
+_ratchet_check_scan_evidence() {
+    local _stderr="$1"
+    local _line _count _shape
+
+    _line="$(printf '%s\n' "$_stderr" | grep -m1 -F '@@PTODO_SCAN@@' || true)"
+    if [ -z "$_line" ]; then
+        _shape='the generator emitted NO @@PTODO_SCAN@@ line at all'
+    else
+        # Pure field read: take the files_scanned=<value> token verbatim, then
+        # test it for well-formedness.  Anything unparseable stays visible in
+        # the diagnostic rather than being coerced to a number.
+        _count="$(printf '%s\n' "$_line" | sed -n 's/.*files_scanned=\([^ ]*\).*/\1/p')"
+        if [ -z "$_count" ]; then
+            _shape='the @@PTODO_SCAN@@ line carries no files_scanned field'
+        elif ! printf '%s\n' "$_count" | grep -qE '^[0-9]+$'; then
+            _shape="the @@PTODO_SCAN@@ line carries a MALFORMED files_scanned count: '$_count'"
+        elif [ "$_count" -lt 1 ]; then
+            _shape="the detector ran but walked NOTHING (files_scanned=$_count)"
+        else
+            return 0
+        fi
+    fi
+
+    {
+        printf '@@RATCHET_VACUITY_FIRED@@\n'
+        printf 'RATCHET VACUITY — no usable scan evidence from ptodo-baseline-gen: %s.\n' "$_shape"
+        printf '  NOT a pass: the oracle below is subset-of and the empty set is a subset\n'
+        printf '  of everything, so without proof the detector RAN it would observe nothing.\n'
+        printf '  A generator that ran over a clean tree still emits the line (with\n'
+        printf '  files_scanned >= 1), so zero fingerprints alone is NOT this failure.\n'
+        printf '  Most likely cause: target/release/ptodo-baseline-gen is STALE or reverted\n'
+        printf '  — a binary predating the contract emits no scan line at all.  Rebuild with\n'
+        printf '  `cargo build --release -p reify-audit`, then re-run.\n'
+        printf '  Generator stderr as captured:\n'
+        printf '%s\n' "$_stderr" | sed 's/^/    | /'
+        printf '  Background and the emitted grammar: PRD 6.6, "Vacuity floor on the live set".\n'
+    } >&2
+    return 1
+}
+
+# -----------------------------------------------------------------------
 # Vacuity floor (task #6127, esc-6087-3).  _ratchet_check_subset above can
 # only ever report "no NEW fingerprints"; it says nothing about whether the
 # generator produced ANY, and the empty set is a subset of everything.  This
