@@ -1668,6 +1668,20 @@ _wl_classify_new_trash() {
     local _before="$1" _after="$2" _stem="$3" _wl_e
     _wl_new_real=""
     _wl_new_other=""
+    # Precondition: a missing/unreadable snapshot file must be an explicit
+    # failure, not a vacuous "no new litter" pass (#6299). Without this, a
+    # process substitution's failure never propagates under errexit: `comm
+    # -13` on a nonexistent file just prints to stderr, the loop reads
+    # nothing, and both globals come back empty — the same vacuous-pass shape
+    # WL-j4 exists to prevent elsewhere in this file. The globals are reset to
+    # "" above (never left unset) so a caller referencing them under `set -u`
+    # cannot hit an unbound-variable error on this early-return path either;
+    # callers MUST still check this function's return code — an empty global
+    # alone no longer means "clean".
+    [ -f "$_before" ] && [ -f "$_after" ] || {
+        echo "ERROR: _wl_classify_new_trash: missing snapshot file (before=$_before after=$_after)" >&2
+        return 1
+    }
     while IFS= read -r _wl_e; do
         [ -n "$_wl_e" ] || continue
         case "$_wl_e" in
@@ -1686,7 +1700,11 @@ assert_shared_trash_litter_detector_live
 PROBE
 _wl_run "$_WL_DIR/litter-live-real.sh"
 _wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-after"
-_wl_classify_new_trash "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" "$_WL_SELFTEST_STEM"
+# Plain-statement call (never $(...) — see the subshell-safety note above);
+# rc captured via `|| _wl_classify_rc=$?` so a precondition failure (#6299)
+# reports as a WL-j9 FAIL instead of aborting the whole suite under errexit.
+_wl_classify_rc=0
+_wl_classify_new_trash "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" "$_WL_SELFTEST_STEM" || _wl_classify_rc=$?
 if [ -n "${_wl_new_other// /}" ]; then
     echo "note: /tmp/.reseed-trash gained entries not attributable to $_WL_SELFTEST_STEM (other worktrees; not a failure): $_wl_new_other"
 fi
@@ -1694,8 +1712,8 @@ fi
 if [ "$_WL_RC" -eq 0 ]; then ok=true; else ok=false; fi
 check "WL-j8: the liveness control returns 0 against the real default _SHARED_TRASH_DIR (rc=$_WL_RC out: $(_wl_flat "$_WL_OUT$_WL_ERR"))" "$ok"
 
-if [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
-check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real])" "$ok"
+if [ "$_wl_classify_rc" -eq 0 ] && [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
+check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real] classify_rc=$_wl_classify_rc)" "$ok"
 
 echo ""
 echo "--- Warm-lane isolation: shared-trash read tolerates an absent real-trash dir (#6299) ---"
@@ -1789,15 +1807,26 @@ if [ -z "${_WL_ABSENT_TRASH_SELFTEST:-}" ]; then
     _WL_ABSENT_TRASH_SELFTEST=1 _WL_REAL_TRASH_DIR="$_WL_DIR/no-such-trash" TMPDIR="$_wl_j13_tmpdir" \
         bash "${BASH_SOURCE[0]}" > "$_wl_j13_log" 2>&1 || _wl_j13_rc=$?
     _wl_j13_summary_ok=false
-    if grep -qE '^Results: [0-9]+ passed, [0-9]+ failed' "$_wl_j13_log"; then
+    if grep -qE '^Results: [0-9]+ passed, 0 failed' "$_wl_j13_log"; then
         _wl_j13_summary_ok=true
     fi
-    if [ "$_wl_j13_summary_ok" = "true" ] && { [ "$_wl_j13_rc" -eq 0 ] || [ "$_wl_j13_rc" -eq 1 ]; }; then
+    # Require a CLEAN inner run, not merely "reached the summary" (#6299): the
+    # override only makes WL-j9 vacuous, it must never make any check actually
+    # FAIL, so rc must be exactly 0 — an inner rc=1 (some check failed) is a
+    # real regression that this guard must not wave through as acceptable.
+    if [ "$_wl_j13_summary_ok" = "true" ] && [ "$_wl_j13_rc" -eq 0 ]; then
         ok=true
     else
         ok=false
     fi
-    check "WL-j13: re-running this suite with _WL_REAL_TRASH_DIR pointed at a guaranteed-absent path still reaches its Results: summary, never aborting with rc=2 (#6299) (rc=$_wl_j13_rc)" "$ok"
+    if [ "$ok" = "false" ]; then
+        # The nested run's log lives under $_WL_DIR and is reclaimed by the
+        # suite's single EXIT trap — surface its tail now so the failure is
+        # diagnosable from this run's own output instead of vanishing with it.
+        echo "  WL-j13 nested run log (tail -20):"
+        tail -20 "$_wl_j13_log" 2>/dev/null | sed 's/^/    /' || true
+    fi
+    check "WL-j13: re-running this suite with _WL_REAL_TRASH_DIR pointed at a guaranteed-absent path still reaches a CLEAN Results: summary (0 failed, rc=0), never aborting or failing a check (#6299) (rc=$_wl_j13_rc)" "$ok"
 fi
 
 echo ""
@@ -1865,8 +1894,13 @@ _wl_j16_stem="wl16stem"
 printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_before"
 printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_after"
 if declare -F _wl_classify_new_trash >/dev/null; then
-    _wl_new_real=""
-    _wl_new_other=""
+    # Pre-seeded with a stale marker, not "" (#6299): otherwise a completely
+    # no-op or early-returning _wl_classify_new_trash would pass this check
+    # vacuously by merely leaving the globals untouched, rather than by
+    # actively producing emptiness. Matches the WL-j17 precedent below for
+    # the identical hazard.
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
     _wl_classify_new_trash "$_wl_j16_before" "$_wl_j16_after" "$_wl_j16_stem"
     if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
         ok=true
