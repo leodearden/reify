@@ -4,26 +4,39 @@
 # about a given var).
 #
 # Co-maintained with the two live injection sources:
-#   - scripts/verify.sh's run_all.sh plan line (verify.sh:1430): a prefix env
-#     hardcoded onto the `bash tests/infra/run_all.sh` command.
-#   - dark-factory-orchestrator.yaml's verify_env block (dark-factory-orchestrator.yaml:148-152):
-#     exported into the whole verify.sh process tree by the orchestrator.
+#   - scripts/verify.sh's run_all.sh plan line (grep for
+#     `tests/infra/run_all.sh` in scripts/verify.sh): a prefix env hardcoded
+#     onto the `bash tests/infra/run_all.sh` command.
+#   - dark-factory-orchestrator.yaml's verify_env block (grep for
+#     `verify_env:` in dark-factory-orchestrator.yaml): exported into the
+#     whole verify.sh process tree by the orchestrator.
+#
+# Line numbers are deliberately NOT cited above: both prior citations
+# (verify.sh:1430 and dark-factory-orchestrator.yaml:148-152, landed by task
+# 5152 on 2026-07-09) drifted stale within weeks. Use the grep anchors.
 #
 # tests/infra/test_run_all_ambient_isolation.sh derives the LIVE injected-var
 # set from both sources above and cross-checks it against this file's key set
 # for SET EQUALITY. A var newly added to either source without a matching
 # entry here (or a stale entry here for a var no longer injected) fails that
 # guard's drift assertion — so extending either injection source requires a
-# conscious edit to this ledger. The same guard also drives a per-var
+# conscious edit to this ledger. That same guard SEPARATELY drives a per-var
 # hostile-ambient sub-case (real test_run_all.sh run once per var, with every
-# other ledger var unset) off this file's key set.
+# other ledger var unset) — but that loop is driven off HOSTILE_LOOP_KEYS, an
+# explicit allow-list literal (grep for `HOSTILE_LOOP_KEYS=` in
+# test_run_all_ambient_isolation.sh) that is a deliberate SUBSET of this
+# ledger, not this file's full key set (task 5152 reviewer follow-up: a
+# full-ledger loop paid ~8x wall-clock for no additional isolation-bug
+# coverage). A row here buys ledger-drift coverage only, not automatically a
+# hostile-ambient sub-case; see test_run_all_ambient_isolation.sh's header
+# for the matching note.
 #
 # Format: one env-var name per line. `#`-comment and blank lines ignored.
 # Values are NOT recorded here (this is a keys-only ledger) — each guard run
 # looks up the live value from whichever injection source actually carries
 # that key.
 
-# --- run_all.sh plan-line prefix env (verify.sh:1430) -----------------------
+# --- run_all.sh plan-line prefix env (grep `tests/infra/run_all.sh` in scripts/verify.sh) ---
 # Coverage caveat (task 5152): REIFY_AUDIT_NO_COLD_BUILD's hostile-ambient
 # sub-case in test_run_all_ambient_isolation.sh passes vacuously regardless
 # of whether an isolation bug exists for it -- setting it to 1 makes the
@@ -45,7 +58,7 @@ REIFY_RUN_ALL_EXCLUDE_HOST_INFRA
 # is declared in the verify_env section below, next to REIFY_RUN_ALL_FLAKY_LEDGER.
 REIFY_RUN_ALL_CONTENT_SKIP
 
-# --- dark-factory-orchestrator.yaml verify_env block (dark-factory-orchestrator.yaml:148-152) ---------
+# --- dark-factory-orchestrator.yaml verify_env block (grep `verify_env:`) ---
 # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA already declared above (both sources carry
 # it). CARGO_MAKEFLAGS is deliberately excluded: owned solely by verify.sh's
 # apply_env() (contract C3 / task 4518 delta), not injected by verify_env.
