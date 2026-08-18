@@ -27,6 +27,7 @@
 //! by Gate 3 of `match_representation_within_shape` (widened in task #3467).
 
 use crate::graph::ConstraintNodeData;
+use reify_compiler::CompiledModule;
 use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_ir::value::GeometryHandleRef;
 use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
@@ -312,6 +313,13 @@ pub fn eval_representation_within(
     }
 }
 
+// ── C-BOUND (task β, #6167) ──────────────────────────────────────────────────
+//
+// The three halves of C-BOUND live together here, next to the shared
+// `match_representation_within_shape` gate they all delegate recognition to:
+// the subject→realization predicate, its in-module consumer
+// (`resolve_repr_tol_key`'s type-name scan), and the static bound pre-pass.
+
 /// C-BOUND's shared subject → realization predicate: does `entity_path` name a
 /// realization of the structure `struct_name`?
 ///
@@ -395,6 +403,97 @@ fn resolve_repr_tol_key(
         }
     }
     best_key
+}
+
+/// C-BOUND (PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+/// §5): the **tightest declared `RepresentationWithin` bound per SUBJECT
+/// structure name**, in SI metres.
+///
+/// # How the table is built
+///
+/// Scans the module's constraints and delegates every candidate expression to
+/// the shared [`match_representation_within_shape`] gate — the same recognizer
+/// used by `recognize_representation_within`, `eval_representation_within` and
+/// `extract_output_tolerance_bound`, so the recognition half cannot drift. The key is the returned `struct_name` (the
+/// SUBJECT's declared `StructureRef` type, statically available pre-tessellation
+/// — *not* the template that declares the constraint); the subject vcid is
+/// discarded.
+///
+/// Duplicate bounds on one subject **min-fold**: tighter satisfies looser, the
+/// same partial order as [`combine_demanded_tolerance`] and
+/// `tolerance_scope::merge_with_min`.
+///
+/// # Emptiness is F's scoping predicate
+///
+/// The table is empty **exactly when** the module declares no bound — which is
+/// the negation of reify-cli's `module_has_representation_within`
+/// (crates/reify-cli/src/main.rs:2462), F's routing gate. Both delegate to the
+/// same matcher and must keep the **same traversal**: a change to one is a
+/// change to the other. Keeping the mirror is a **lockstep requirement of
+/// C-BOUND, not a coincidence**.
+///
+/// The traversal, term for term with that gate, is
+///
+/// ```text
+/// module.templates × ( t.constraints
+///                    ∪ t.guarded_groups[*].constraints
+///                    ∪ t.guarded_groups[*].else_constraints )
+/// ```
+///
+/// ALL of `module.templates` is iterated (including `@test` templates — *not*
+/// `non_test_templates()`), and **both** guarded-group branches are scanned with
+/// the guard neither evaluated nor filtered on: this table is computed before
+/// any guard cell is evaluated, so the union over both branches is the static,
+/// conservative reading.
+///
+/// The equivalence is load-bearing, not tidiness: a narrower scan would let a
+/// module route into the kernel-backed check path (the CLI gate says `true`)
+/// while carrying an empty bound table, and under δ (#6168) an empty table means
+/// that realization is never measured — silently degrading a real
+/// Satisfied/Violated verdict to Indeterminate.
+///
+/// # Silent-skip posture
+///
+/// Inherited wholesale from the matcher: malformed, non-LENGTH, negative and
+/// non-`StructureRef` shapes contribute no key, with no panic and no diagnostic.
+///
+/// # Independence from the demanded-tolerance budget
+///
+/// This table is an **independent static scan** of the module's declared
+/// constraints. It is never sourced from, and never written back into, the
+/// demanded-tolerance budget — see PRD §4.8; do not couple it to
+/// [`extract_output_tolerance_bound`], which is owned by
+/// `docs/prds/v0_2/per-purpose-tolerance.md`.
+// TODO(#6171): first production consumer — the measure-and-refine loop threads
+// this table into the tessellate callback; #6168 (δ) reuses it to narrow
+// measurement. Until one of those lands there is no non-`cfg(test)` caller, and
+// `scripts/verify.sh` runs `cargo clippy --workspace --all-targets -- -D
+// warnings`, which builds the lib WITHOUT `cfg(test)` — so the unit tests in
+// `tolerance_combine/compute_representation_bounds_tests.rs` do not keep this alive.
+#[allow(dead_code)]
+pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
+    let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
+    for template in &module.templates {
+        // Guards are NEITHER evaluated NOR filtered on: the table is a static
+        // pre-pass computed before any guard cell exists, so both branches are
+        // unioned. Same containers, same order, as the CLI gate.
+        let guarded = template.guarded_groups.iter().flat_map(|g| {
+            g.constraints
+                .iter()
+                .chain(g.else_constraints.iter())
+        });
+        for constraint in template.constraints.iter().chain(guarded) {
+            if let Some((_subject_vcid, struct_name, si_value)) =
+                match_representation_within_shape(&constraint.expr)
+            {
+                bounds
+                    .entry(struct_name)
+                    .and_modify(|b| *b = b.min(si_value))
+                    .or_insert(si_value);
+            }
+        }
+    }
+    bounds
 }
 
 /// Extract the tightest `RepresentationWithin` tolerance bound declared on
@@ -696,6 +795,19 @@ pub fn extract_output_export_spec(instance: &Value) -> Option<OutputExportSpec> 
         step_schema,
     })
 }
+
+// ── compute_representation_bounds unit tests (task β, #6167 — C-BOUND) ───────
+//
+// The C-BOUND bound pre-pass: tightest declared `RepresentationWithin` bound
+// per SUBJECT structure name. Fixtures are real compiled IR via
+// `reify_test_support::parse_and_compile`; the assertions cover the key
+// (subject struct, not declaring template), the min-fold, the member-access
+// subject shape, the silent-skip posture, the stdlib-resolved IR variant, and
+// — load-bearing — that `bounds.is_empty()` is exactly F's scoping predicate.
+// No OCCT kernel is required: compiled IR plus plain BTreeMaps only.
+
+#[cfg(test)]
+mod compute_representation_bounds_tests;
 
 #[cfg(test)]
 mod tests {
