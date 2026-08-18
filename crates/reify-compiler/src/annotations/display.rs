@@ -46,29 +46,6 @@ fn display_label(ann: &reify_ir::Annotation) -> Option<&str> {
     }
 }
 
-/// ASCII-normalize a label's Unicode superscript exponents to the caret
-/// spelling the curated ladders adopted in task λ (#5788): `mm²` -> `mm^2`,
-/// `kg/m³` -> `kg/m^3`. Returns `None` for a label carrying neither glyph.
-///
-/// HINT PATH ONLY — this never widens the accept-set. It runs only after the
-/// exact-equality rung match has already failed, and its result is used solely
-/// to append a "did you mean" note to the Error. The relabel flips `@display`
-/// acceptance (`@display("mm^2")` starts working, `@display("mm²")` starts
-/// erroring); the GUI got an explicit migration seam for the same flip
-/// (`normalizeUnitLabel`, task #6028) and this is the compiler's equivalent, so
-/// a user whose file predates the flip is told the new spelling rather than
-/// just that the old one is invalid.
-///
-/// Only U+00B2/U+00B3 are mapped, because those are the only superscripts the
-/// curated ladders ever used — this is a migration aid for one specific
-/// relabel, not a general Unicode-exponent parser.
-fn ascii_superscript_spelling(label: &str) -> Option<String> {
-    if !label.contains(['\u{00B2}', '\u{00B3}']) {
-        return None;
-    }
-    Some(label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3"))
-}
-
 /// Validate that each well-formed `@display("<label>")` names a rung in the
 /// binding dimension's unit ladder (`reify_core::unit_ladders`).
 ///
@@ -79,8 +56,9 @@ fn ascii_superscript_spelling(label: &str) -> Option<String> {
 /// - if the label is not a rung in that ladder (or the dimension has no
 ///   ladder at all), push an Error naming both the label and the binding's
 ///   dimension, plus — when the label's ASCII-normalized spelling IS a rung —
-///   a "did you mean" hint for task λ's relabel (see
-///   [`ascii_superscript_spelling`]; the accept-set is unchanged).
+///   a "did you mean" hint for task λ's relabel (the normalizer is
+///   [`reify_core::display_units::ascii_label_spelling`], which lives beside
+///   the tables it describes; the accept-set is unchanged).
 ///
 /// Malformed `@display` shapes are skipped here (they have no well-formed label
 /// via `display_label`); their Warning is emitted by `check_display_args`.
@@ -126,9 +104,14 @@ pub(crate) fn validate_display_dimension(
             // Migration hint for task λ's ASCII relabel: suggest the caret
             // spelling ONLY when it is itself a rung of THIS dimension's
             // ladder, so the hint can never advertise a unit the binding could
-            // not display anyway. A label with no superscript, or one whose
-            // normalized form is still unknown here, gets the bare message.
-            let message = match ascii_superscript_spelling(label).filter(|a| is_rung(a)) {
+            // not display anyway. A label with no superscript, one whose
+            // normalized form is still unknown here, and a dimension with no
+            // ladder at all (`is_rung` is then always false) get the bare
+            // message. The mapping itself is stated once, next to the curated
+            // tables it normalizes, rather than restated here.
+            let message = match reify_core::display_units::ascii_label_spelling(label)
+                .filter(|a| is_rung(a))
+            {
                 Some(ascii) => format!(
                     "@display(\"{label}\") is not a valid display unit for dimension \
                      {dim_name}; did you mean \"{ascii}\"?"
@@ -273,8 +256,15 @@ mod tests {
     /// the addendum is explicit that it must not ship silently. Pinning it here
     /// is the part λ can own; the prose belongs to task ξ.
     ///
-    /// The superscript spelling is written as an escape so it survives an
-    /// editor or tool that normalizes source glyphs.
+    /// This test owns only the POSITIVE direction — that the caret spelling
+    /// starts working. The negative direction (the superscript spelling now
+    /// errors) is owned SOLELY by
+    /// `superscript_display_label_error_hints_the_ascii_spelling` case (a),
+    /// which drives the identical input through the identical dimension and
+    /// asserts strictly more: the error count AND the migration hint. Restating
+    /// it here would only make two tests fail together on every regression of
+    /// one path, and leave a reader diffing them to discover they are the same
+    /// case.
     #[test]
     fn display_label_vocabulary_is_ascii_after_the_curated_relabel() {
         // ASCII spelling: a real Area rung, so no diagnostic.
@@ -285,21 +275,6 @@ mod tests {
         assert!(
             diags.is_empty(),
             "@display(\"mm^2\") on an Area cell must be valid, got: {:?}",
-            diags
-        );
-
-        // Superscript spelling: no longer a rung, so exactly one error. This is
-        // the half that changes behaviour, and the half a reader is most likely
-        // to assume still works.
-        let diags = run(
-            std::slice::from_ref(&disp("mm\u{00B2}")),
-            &scalar(reify_core::DimensionVector::AREA),
-        );
-        let errs = errors(&diags);
-        assert_eq!(
-            errs.len(),
-            1,
-            "@display(\"mm\u{00B2}\") must now be rejected, got: {:?}",
             diags
         );
     }
@@ -376,6 +351,31 @@ mod tests {
         assert!(
             !errs[0].message.contains("did you mean"),
             "a non-superscript unknown label gets no hint: {}",
+            errs[0].message
+        );
+
+        // (c) the `ladder == None` branch: TORQUE is a named dimension with NO
+        // curated ladder at all (`unit_ladders()` covers Length/Area/Volume/
+        // Angle/Mass/Pressure/Density/Force/Energy/Power). `is_rung` is then
+        // false for EVERY candidate, so the accept check errors and the hint's
+        // `.filter(is_rung)` withholds — the two call sites of the shared
+        // closure agree, which is the whole reason it is shared. Cases (a)/(b)
+        // and every other test in this module use a dimension that HAS a
+        // ladder, so this arm is otherwise unexercised.
+        let diags = run(
+            std::slice::from_ref(&disp("mm\u{00B2}")),
+            &scalar(reify_core::DimensionVector::TORQUE),
+        );
+        let errs = errors(&diags);
+        assert_eq!(errs.len(), 1, "expected exactly 1 error, got: {:?}", diags);
+        assert!(
+            errs[0].message.contains("Torque"),
+            "message should name the dimension Torque via canonical_name: {}",
+            errs[0].message
+        );
+        assert!(
+            !errs[0].message.contains("did you mean"),
+            "a dimension with no ladder has no rung to suggest: {}",
             errs[0].message
         );
     }

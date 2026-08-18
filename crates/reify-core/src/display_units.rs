@@ -368,6 +368,40 @@ fn is_decimal_sibling(si_scale: f64, default_si_scale: f64) -> bool {
     log.is_finite() && (log - log.round()).abs() < 1e-9
 }
 
+/// ASCII-normalize a unit label's Unicode superscript exponents to the caret
+/// spelling [`unit_ladders`] adopted in task λ (#5788): `mm²` -> `mm^2`,
+/// `kg/m³` -> `kg/m^3`. Returns `None` for a label carrying neither glyph.
+///
+/// This is the CANONICAL Rust statement of contract C2's migration mapping,
+/// and it deliberately lives beside the tables it describes: the rule is only
+/// meaningful relative to which glyphs the curated ladders below actually
+/// used, so a future move of that alphabet (task κ's `·` separator half is
+/// still open) has one Rust site to edit rather than one per consumer crate.
+/// `curated_labels_are_already_ascii_normalized` in this module's tests keeps
+/// the two coupled.
+///
+/// Only U+00B2/U+00B3 are mapped, because those are the only superscripts the
+/// curated ladders ever used — this is a migration aid for one specific
+/// relabel, not a general Unicode-exponent parser. In particular it is NOT the
+/// inverse of `reify-ir`'s engineering-notation `×10ⁿ` exponent formatter,
+/// which spells the full superscript digit alphabet and is explicitly out of
+/// contract C2's scope (PRD `angle-units-surface-convergence.md` §10).
+///
+/// NEVER widens an accept-set on its own. Callers validating a label must
+/// still match rungs by exact equality and use this only to phrase a "did you
+/// mean" migration hint — see `validate_display_dimension` in
+/// `reify-compiler/src/annotations/display.rs`, the one in-tree consumer. The
+/// GUI restates the same mapping in TypeScript (`normalizeUnitLabel`,
+/// `gui/src/stores/unitLadder.ts`, task #6028) because it cannot call across
+/// the language boundary; that copy cites this function as its source of
+/// truth.
+pub fn ascii_label_spelling(label: &str) -> Option<String> {
+    if !label.contains(['\u{00B2}', '\u{00B3}']) {
+        return None;
+    }
+    Some(label.replace('\u{00B2}', "^2").replace('\u{00B3}', "^3"))
+}
+
 /// Return the full set of per-dimension unit ladders.
 ///
 /// Each dimension's `is_default` entry is numerically identical to the unit
@@ -1470,5 +1504,58 @@ mod tests {
             unit(density, label);
         }
         assert_eq!(density.derived_unit_name, "kg/m^3");
+    }
+
+    /// [`ascii_label_spelling`] and the tables it normalizes stay coupled.
+    ///
+    /// The normalizer is the rule; `unit_ladders()` is the data the rule was
+    /// written against. Keeping them in one module is only worth anything if
+    /// something fails when they drift, so this asserts both directions over
+    /// the LIVE tables rather than a hand-copied label list:
+    ///   * every curated label is already a fixed point (normalizing it yields
+    ///     `None`) — this is the same statement as the negative sweep above,
+    ///     but phrased through the normalizer, so re-introducing a superscript
+    ///     rung fails here too;
+    ///   * every relabelled rung is REACHED from its pre-λ superscript
+    ///     spelling — synthesized by inverting the mapping on the live label,
+    ///     so a rung renamed away from the caret spelling stops round-tripping
+    ///     instead of silently leaving the hint path pointing at nothing.
+    #[test]
+    fn curated_labels_are_already_ascii_normalized() {
+        let ladders = unit_ladders();
+        let mut round_tripped = 0usize;
+
+        for l in &ladders {
+            for label in
+                std::iter::once(&l.derived_unit_name).chain(l.units.iter().map(|u| &u.label))
+            {
+                assert_eq!(
+                    ascii_label_spelling(label),
+                    None,
+                    "ladder {:?} label {label:?} is not already ASCII-normalized",
+                    l.dimension
+                );
+
+                // Invert the mapping to reconstruct the pre-λ spelling; only
+                // labels that actually carry a caret exponent have one.
+                let superscript = label.replace("^2", "\u{00B2}").replace("^3", "\u{00B3}");
+                if superscript == *label {
+                    continue;
+                }
+                assert_eq!(
+                    ascii_label_spelling(&superscript).as_deref(),
+                    Some(label.as_str()),
+                    "ladder {:?}: {superscript:?} must normalize back to {label:?}",
+                    l.dimension
+                );
+                round_tripped += 1;
+            }
+        }
+
+        // Anti-vacuity: the loop above is trivially satisfied by empty tables.
+        assert!(
+            round_tripped > 0,
+            "no curated label carries a caret exponent — the round-trip half asserted nothing"
+        );
     }
 }
