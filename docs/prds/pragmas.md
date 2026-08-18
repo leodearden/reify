@@ -104,7 +104,7 @@ The auto-migration tool referenced in §14.2 is **explicitly v0.2 scope** — de
 
 ## Acceptance
 
-- `cargo test -p reify-compiler --test pragma_compile_tests` adds tests for each pragma covering: valid value stored on `CompiledModule`, every diagnostic path (multiple, malformed, unknown back-end, deferred-to-v0.2 kernel, etc.), and the `#kernel(brep_xyz)` error message text.
+- `cargo test -p reify-compiler --test harness_compilation_surface pragma_compile_tests::` adds tests for each pragma covering: valid value stored on `CompiledModule`, every diagnostic path (multiple, malformed, unknown back-end, deferred-to-v0.2 kernel, etc.), and the `#kernel(brep_xyz)` error message text.
 - `examples/integration_full_v01.ri` carries `#version(0.1)` and `#precision(0.001m)` at the top with no warnings.
 - `compile_with_stdlib` smoke test asserts the prelude modules all compile under `#no_prelude` (regression guard for the bootstrap path).
 

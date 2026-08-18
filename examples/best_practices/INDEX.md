@@ -38,7 +38,7 @@ probes".
 Verify both with:
 
 ```sh
-cargo test -p reify-compiler --test examples_smoke
+cargo test -p reify-compiler --test harness_compilation_surface examples_smoke::
 ```
 
 ## Idioms
