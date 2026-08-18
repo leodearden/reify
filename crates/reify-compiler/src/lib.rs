@@ -5,7 +5,6 @@
 #![allow(clippy::mutable_key_type)]
 
 mod ambient_defaults;
-mod analysis_signatures;
 mod annotations;
 mod arg_check;
 pub mod auto_type_param;
@@ -24,6 +23,7 @@ pub(crate) mod containment_graph;
 /// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
 /// can call it without knowing the private module layout.
 pub use containment_graph::sub_component_forward_adjacency;
+mod builtin_registry;
 mod builtin_signatures;
 mod datum_projection;
 mod diagnostics;
@@ -46,7 +46,6 @@ mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
 mod member_path;
-mod parse_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
 pub mod module_dag;
@@ -58,7 +57,6 @@ pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
-mod signatures_common;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
@@ -80,7 +78,6 @@ pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
-pub(crate) use analysis_signatures::*;
 pub(crate) use annotations::*;
 pub(crate) use arg_check::*;
 pub(crate) use conformance::*;
@@ -102,7 +99,6 @@ pub(crate) use joint_signatures::*;
 pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
 pub(crate) use orientation_signatures::*;
-pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
 #[allow(unused_imports)]
 pub(crate) use termination::*;
@@ -183,6 +179,27 @@ pub fn __infer_mul_div_result_for_parity_test(
     right: &reify_core::Type,
 ) -> Option<reify_core::Type> {
     type_compat::infer_mul_div_result(op, left, right)
+}
+
+/// Expose the compiler's single builtin-signature-registry entry point to the
+/// registry seam test without widening the compiler's public API.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #6001 (registry α) — test-support-gated registry-seam shim,
+// consumed by tests/registry_seed_result_types.rs (the §7.3(2) family-arm swap's
+// type-preservation pin).
+pub fn __registry_result_type_for_test(
+    name: &str,
+    args: &[reify_core::Type],
+) -> Option<reify_core::Type> {
+    builtin_registry::registry_result_type(name, args)
 }
 
 /// Compile a parsed module into a compiled module.
