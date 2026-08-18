@@ -223,3 +223,9 @@ scripts/check-compute-trampoline-registration.sh    tests/infra/test_compute_tra
 crates/reify-cli/src/main.rs                        tests/infra/test_compute_trampoline_registration_wired.sh
 gui/src-tauri/src/engine.rs                         tests/infra/test_compute_trampoline_registration_wired.sh
 crates/reify-eval/src/test_runner.rs                tests/infra/test_compute_trampoline_registration_wired.sh
+
+# Task 6243: scripts/check-nan-safe-ordering.sh (the INV-FEA-3 nan-safe-
+# ordering gate, task 5093) had NO row at all here, so a task-scope edit to
+# the gate script selected zero infra tests. Mirrors the
+# check-compute-trampoline-registration.sh row above.
+scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
