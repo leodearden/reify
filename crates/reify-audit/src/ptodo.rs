@@ -1576,6 +1576,43 @@ fn g_allow_finding_line(f: &Finding) -> usize {
     parsed.unwrap_or(0)
 }
 
+/// RUN evidence for one [`check_with_stats`] sweep — proof that the detector
+/// *executed and enumerated files*, independent of whether it *found* anything.
+///
+/// Counting boundary (pinned by `tests/ptodo.rs`):
+/// * `files_scanned` — tracked paths that survived `is_swept_ext(path) &&
+///   !is_allowlisted(path)` AND were read successfully. Paths skipped fail-safe
+///   because `read_to_string` errored are excluded by construction; a swept file
+///   carrying zero markers is INCLUDED.
+/// * `markers_examined` — [`scan_file`]-classified marker lines
+///   ([`LineClass::Structural`] and [`LineClass::Cited`] alike) across exactly
+///   those files. Deliberately EXCLUDES the separate [`scan_g_allow_markers`]
+///   advisory pass, so the number stays a property of the one structural sweep.
+///
+/// Both counters are derived inside the single existing walk — never a second
+/// traversal, which would be a second derivation and exactly the drift PRD §6.6
+/// exists to prevent.
+///
+/// These exist so the §6.6 vacuity floor can key on evidence the detector RAN
+/// rather than on the live finding count: `files_scanned` is debt-independent
+/// (a repo cannot have zero swept tracked files), so burning the debt down to
+/// zero can never make the floor fire. Rationale:
+/// `docs/prds/reify-audit-ptodo-detector.md` §6.6.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanStats {
+    /// Swept, non-allowlisted tracked paths that were read successfully.
+    pub files_scanned: usize,
+    /// [`scan_file`]-classified marker lines across those files.
+    pub markers_examined: usize,
+}
+
+/// PTODO sweep (§5/§8) — see [`check_with_stats`], of which this is the
+/// findings projection (`check_with_stats(ctx).0`). Callers that need the §6.6
+/// scan evidence alongside the findings use [`check_with_stats`] directly.
+pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    check_with_stats(ctx).0
+}
+
 /// PTODO sweep (§5/§8) — structural (α), liveness (β), inverse (ζ), and
 /// G-allow advisory (γ-advisory) lanes. Enumerates tracked files via the git
 /// seam ([`GitOps::ls_files`](crate::GitOps::ls_files)), keeps only swept
@@ -1601,7 +1638,15 @@ fn g_allow_finding_line(f: &Finding) -> usize {
 ///
 /// Findings are returned in deterministic `(path, line)` order across all
 /// path-keyed lanes; the ζ inverse lane appends as a trailing sorted block.
-pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+///
+/// Also returns [`ScanStats`] — RUN evidence counted inside this one walk (see
+/// that type for the exact counting boundary). [`check`] is the findings-only
+/// projection.
+// G-allow: pub for cross-crate test callers (tests/ptodo.rs pins the §6.6 scan-evidence counting contract); pub(crate) would break them. The in-file `check` delegation does not count as a caller (same-file callers are excluded by scripts/audit-orphan-producers.sh).
+pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
+    // §6.6 RUN evidence, accumulated inside the single sweep below — no second
+    // walk, no second derivation. See [`ScanStats`].
+    let mut stats = ScanStats::default();
     // Structural offenders (α) and cited markers (β) from the single scan_file
     // pass, kept separate so each feeds its own lane.
     let mut struct_hits: Vec<(String, usize, Kind, String)> = Vec::new();
@@ -1624,8 +1669,12 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             Ok(c) => c,
             Err(_) => continue,
         };
+        // Counted only after a successful read, so fail-safe skips above are
+        // excluded from the §6.6 scan evidence by construction.
+        stats.files_scanned += 1;
         let is_rust = path.ends_with(".rs");
         for (line_no, class, text) in scan_file(&content, is_rust) {
+            stats.markers_examined += 1;
             match class {
                 LineClass::Structural(kind) => struct_hits.push((path.clone(), line_no, kind, text)),
                 LineClass::Cited(ids) => cited.push((path.clone(), line_no, ids, text)),
@@ -1703,7 +1752,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     // deterministic trailing block. Deleted paths are absent from tracked_set
     // so they never share a (path,line) sort key with structural/liveness findings.
     out.extend(inverse_findings);
-    out
+    (out, stats)
 }
 
 #[cfg(test)]
