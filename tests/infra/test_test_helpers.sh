@@ -1780,6 +1780,132 @@ if [ -z "${_WL_ABSENT_TRASH_SELFTEST:-}" ]; then
     check "WL-j13: re-running this suite with _WL_REAL_TRASH_DIR pointed at a guaranteed-absent path still reaches its Results: summary, never aborting with rc=2 (#6299) (rc=$_wl_j13_rc)" "$ok"
 fi
 
+echo ""
+echo "--- Warm-lane isolation: shared-trash NEW-litter classification is unit-tested (#6299) ---"
+
+# WL-j14..j18 close the MUST-NOT-REGRESS gap this task also requires: the
+# comm -13 + stem-attribution classification that decides WL-j9's verdict is
+# exercised only end-to-end by WL-j8/WL-j9 today. WL-j3/WL-j6/WL-j7 cover the
+# LIBRARY functions in test_helpers.sh, not this suite's own driver-level
+# classification block. _wl_classify_new_trash names that classification so
+# it can be driven directly over synthetic before/after listings written
+# under $_WL_DIR — never the real trash path. Each check below guards its
+# call with declare -F so, while the function is undefined, it reports a
+# clean FAIL rather than an undefined-command abort under errexit.
+
+# (a) WL-j14: a NEW entry matching the stem, shaped "<stem>-lane-XXXX.<pid>",
+# must land in _wl_new_real and NOT in _wl_new_other.
+_wl_j14_before="$_WL_DIR/clsfy-j14-before"
+_wl_j14_after="$_WL_DIR/clsfy-j14-after"
+_wl_j14_stem="wl14stem"
+printf '%s\n' "other-preexisting-entry" | sort > "$_wl_j14_before"
+printf '%s\n' "other-preexisting-entry" "${_wl_j14_stem}-lane-0007.12345" | sort > "$_wl_j14_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j14_before" "$_wl_j14_after" "$_wl_j14_stem"
+    if [[ "$_wl_new_real" == *"${_wl_j14_stem}-lane-0007.12345"* ]] && [[ "$_wl_new_other" != *"${_wl_j14_stem}-lane-0007.12345"* ]]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j14: _wl_classify_new_trash puts a NEW stem-matching entry, shaped '<stem>-lane-XXXX.<pid>', in _wl_new_real and not in _wl_new_other (#6299)" "$ok"
+
+# (b) WL-j15: a NEW entry NOT matching the stem must land in _wl_new_other and
+# NOT in _wl_new_real — another worktree's concurrent litter stays
+# informational and never fails the suite.
+_wl_j15_before="$_WL_DIR/clsfy-j15-before"
+_wl_j15_after="$_WL_DIR/clsfy-j15-after"
+_wl_j15_stem="wl15stem"
+printf '%s\n' "other-preexisting-entry" | sort > "$_wl_j15_before"
+printf '%s\n' "other-preexisting-entry" "otherstem-lane-0009.54321" | sort > "$_wl_j15_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j15_before" "$_wl_j15_after" "$_wl_j15_stem"
+    if [[ "$_wl_new_other" == *"otherstem-lane-0009.54321"* ]] && [[ "$_wl_new_real" != *"otherstem-lane-0009.54321"* ]]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j15: _wl_classify_new_trash puts a NEW non-stem-matching entry in _wl_new_other and not in _wl_new_real, so other worktrees' litter stays informational (#6299)" "$ok"
+
+# (c) WL-j16: an entry present in BOTH before and after (pre-existing) lands
+# in neither global — including a stem-matching pre-existing entry, which
+# must not be misreported as new.
+_wl_j16_before="$_WL_DIR/clsfy-j16-before"
+_wl_j16_after="$_WL_DIR/clsfy-j16-after"
+_wl_j16_stem="wl16stem"
+printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_before"
+printf '%s\n' "other-preexisting-entry" "${_wl_j16_stem}-lane-0001.111" | sort > "$_wl_j16_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real=""
+    _wl_new_other=""
+    _wl_classify_new_trash "$_wl_j16_before" "$_wl_j16_after" "$_wl_j16_stem"
+    if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j16: _wl_classify_new_trash reports neither global for an entry present in BOTH before and after, stem-matching pre-existing entry included (#6299)" "$ok"
+
+# (d) WL-j17: the absent-dir composition. Two EMPTY before/after files (what
+# _wl_snapshot_real_trash writes for an absent dir) must yield both globals
+# empty — pinning that an absent dir reads as "no new litter", not as an
+# error or a false positive. Both globals are pre-seeded with a stale marker
+# so the check actually exercises the function producing emptiness, rather
+# than merely observing untouched globals.
+_wl_j17_before="$_WL_DIR/clsfy-j17-before"
+_wl_j17_after="$_WL_DIR/clsfy-j17-after"
+: > "$_wl_j17_before"
+: > "$_wl_j17_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j17_before" "$_wl_j17_after" "wl17stem"
+    if [ -z "${_wl_new_real// /}" ] && [ -z "${_wl_new_other// /}" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j17: _wl_classify_new_trash on two EMPTY before/after listings (the absent-dir composition) yields both globals empty (#6299)" "$ok"
+
+# (e) WL-j18: subshell safety. Called as a plain statement (never inside a
+# $( ) command substitution — see the make_isolated_lane precedent this file
+# already documents for the same hazard), the function must visibly mutate
+# _wl_new_real in the calling (main) shell, not merely appear to succeed
+# while leaving the caller's globals untouched.
+_wl_j18_before="$_WL_DIR/clsfy-j18-before"
+_wl_j18_after="$_WL_DIR/clsfy-j18-after"
+_wl_j18_stem="wl18stem"
+: > "$_wl_j18_before"
+printf '%s\n' "${_wl_j18_stem}-lane-0002.222" | sort > "$_wl_j18_after"
+if declare -F _wl_classify_new_trash >/dev/null; then
+    _wl_new_real="stale-marker"
+    _wl_new_other="stale-marker"
+    _wl_classify_new_trash "$_wl_j18_before" "$_wl_j18_after" "$_wl_j18_stem"
+    if [[ "$_wl_new_real" == *"${_wl_j18_stem}-lane-0002.222"* ]] && [ "$_wl_new_real" != "stale-marker" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j18: _wl_classify_new_trash called as a plain statement visibly mutates _wl_new_real in the caller's shell, not silently discarded as inside \$( ) (#6299)" "$ok"
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
