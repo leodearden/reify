@@ -6,10 +6,12 @@
 #
 # WHAT IT MEASURES
 #
-# seed's two detached background jobs are spelled `{ rm -rf ...; } 9<&- &`, and
-# that `9<&-` runs in the forked CHILD — so for a scheduling window the child
-# holds a dup of the open file description carrying seed's exclusive flock, and
-# the lane lock stays HELD past seed's own exit. This harness drives N real seed
+# seed's two detached background jobs are spelled
+# `{ _close_inherited_fds; rm -rf ...; } >/dev/null 2>&1 &` (task #6219
+# amendment), and that inherited-FD close runs in the forked CHILD — so for a
+# scheduling window the child still holds a dup of the open file description
+# carrying seed's exclusive flock, and the lane lock stays HELD past seed's own
+# exit. This harness drives N real seed
 # invocations under induced CPU contention and counts how many times the lock
 # reads back HELD immediately after seed exits, reporting one structured line:
 #
@@ -353,7 +355,8 @@ while [ "$_i" -lt "$SOAK_ITERS" ]; do
 
     _lane="$(make_isolated_lane soak-lane)"
     # A NON-EMPTY <lane>/target is what makes seed rename into .reseed-trash
-    # and therefore fork the detached `{ rm -rf ...; } 9<&- &` whose fork
+    # and therefore fork the detached
+    # `{ _close_inherited_fds; rm -rf ...; } >/dev/null 2>&1 &` whose fork
     # window is under test. REIFY_WARM_LANE_RESEED_TRASH_SYNC is left UNSET so
     # that rm really is backgrounded (the SYNC=1 path completes in-process and
     # has no fork window at all).
@@ -361,11 +364,15 @@ while [ "$_i" -lt "$SOAK_ITERS" ]; do
     echo "stale artifact" > "$_lane/target/stale.a"
     _lock="${_lane}.lock"
 
-    # STDOUT is captured via a real FILE, never `$(...)`. A command
-    # substitution's pipe stays open until EVERY descendant holding its write
-    # end exits — including the detached background rm — so `$(...)` would
-    # block until that child had already run, masking the exact race this soak
-    # measures. Same rationale as test_seed_warm_lane.sh's run_helper_real.
+    # STDOUT is captured via a real FILE, never `$(...)`. Since task #6219 the
+    # detached rm inherits no descriptor of its caller's at all (the PIPE-SAFE
+    # note in seed's own header states that property), so a `$(...)` here would
+    # no longer block on it. The file capture is kept anyway, on the stronger
+    # ground that it makes this harness INDEPENDENT of seed's pipe-safety
+    # property rather than dependent on its absence: what the soak measures is
+    # then identical whether that property holds or regresses, so a future
+    # change in either direction cannot silently move the instrument. Same
+    # capture discipline as test_seed_warm_lane.sh's run_helper_real.
     : > "$SOAK_OUT_FILE"
     : > "$SOAK_ERR_FILE"
     _rc=0
