@@ -175,14 +175,14 @@ Worked example of all four: `examples/tolerancing/gdt_zones.ri`.
 
 ## Free-form & Implicit Surfaces
 
-Two constructors that produce a surface from data rather than from a parametric shape —
-a NURBS patch from an explicit control net, and a marching-cubes mesh from a voxel grid:
+Two constructors that build geometry from data rather than from a parametric shape —
+a NURBS patch from an explicit control net, and a marching-cubes body from a voxel grid:
 
 ```
 nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)  -> Surface
-isosurface(grid)                                     -> Mesh   // marching cubes, iso = 0.0
-isosurface(grid, iso: level)                         -> Mesh
-isosurface(grid, iso: level, adaptive: flag)         -> Mesh
+isosurface(grid)                                     -> Solid  // marching cubes, iso = 0.0
+isosurface(grid, iso: level)                         -> Solid
+isosurface(grid, iso: level, adaptive: flag)         -> Solid
 ```
 
 `nurbs_surface`'s six arguments do **not** all have the same shape. `control_points` is a
@@ -205,10 +205,16 @@ A free-form NURBS patch is neither Closed nor Planar, so it is **not** a valid p
 `extrude`/`revolve`/`sweep`/`loft` — passing one inline emits `GeometryProfileRequired`.
 
 `isosurface` extracts a surface by marching cubes from a Voxel-repr `grid` operand; a BRep or Mesh
-operand is voxelized first (Mesh→Voxel on OpenVDB) and surfaced back Voxel→Mesh. `iso` and
-`adaptive` are **optional** trailing arguments, and at most 3 arguments are accepted. Omitting them
-is not the same as passing a default at the call site: they are left unset and resolved during
-evaluation lowering to `iso = 0.0` and `adaptive = false`.
+operand is voxelized first (Mesh→Voxel on OpenVDB) and surfaced back Voxel→Mesh.
+
+Its **type** is `Solid`, not a bare mesh handle: the compiler infers the result Bounded, Watertight
+and Connected, so it composes with the boolean operations and the export paths like any other solid
+body. A mesh is only its internal repr — the Voxel→Mesh step above is part of the lowering, not
+something you write.
+
+`iso` and `adaptive` are **optional** trailing arguments, and at most 3 arguments are accepted.
+Omitting them is not the same as passing a default at the call site: they are left unset and
+resolved during evaluation lowering to `iso = 0.0` and `adaptive = false`.
 
 The `iso:`/`adaptive:` labels written above are the **recommended spelling** — they name the slot at
 the call site and keep a bare `true` from reading as a mystery flag — but they are **not checked**.
