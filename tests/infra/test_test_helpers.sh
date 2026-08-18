@@ -1643,6 +1643,109 @@ check "WL-j8: the liveness control returns 0 against the real default _SHARED_TR
 if [ -z "${_wl_new_real// /}" ]; then ok=true; else ok=false; fi
 check "WL-j9: ... and adds no entry of its OWN stem ($_WL_SELFTEST_STEM) to the machine-shared /tmp/.reseed-trash it defends (new: [$_wl_new_real])" "$ok"
 
+echo ""
+echo "--- Warm-lane isolation: shared-trash read tolerates an absent real-trash dir (#6299) ---"
+
+# WL-j10..j13 close the gap this task exists to fix: before #6299, the two
+# real-trash reads above were a bare `ls -A /tmp/.reseed-trash | sort` under
+# errexit+pipefail, which abort this whole suite (exit 2, no Results: summary)
+# whenever /tmp/.reseed-trash happens to be absent on the host — mistaken by
+# the main-tip integrity sweep for main being broken. _wl_snapshot_real_trash
+# mirrors the already-correct _list_trash_entries contract documented in
+# tests/infra/test_helpers.sh ("An absent or unreadable dir emits nothing and
+# is NOT an error"). It is duplicated here rather than called there, to keep
+# this suite's own observation scaffolding independent of the module under
+# test — see the file header's no-circular-dependency note.
+
+# (a) WL-j10: an ABSENT dir must be tolerated, not aborted. declare -F guards
+# the call so that until _wl_snapshot_real_trash is defined, this reports a
+# clean FAIL instead of an undefined-command abort.
+_wl_j10_dir="$_WL_DIR/no-such-real-trash"
+_wl_j10_out="$_WL_DIR/absent-trash-snapshot"
+rm -f "$_wl_j10_out"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j10_rc=0
+    _wl_snapshot_real_trash "$_wl_j10_dir" "$_wl_j10_out" || _wl_j10_rc=$?
+    if [ "$_wl_j10_rc" -eq 0 ] && [ -f "$_wl_j10_out" ] && [ ! -s "$_wl_j10_out" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j10: _wl_snapshot_real_trash tolerates an absent dir — rc=0, outfile exists and is empty (#6299)" "$ok"
+
+# (b) WL-j11: a PRESENT dir with several entries, including a dotfile, pins
+# the exact 'ls -A ... | sort' format that the comm -13 classification below
+# depends on.
+_wl_j11_dir="$_WL_DIR/present-trash-with-entries"
+mkdir -p "$_wl_j11_dir"
+touch "$_wl_j11_dir/.dotfile-entry" "$_wl_j11_dir/zeta-entry" "$_wl_j11_dir/alpha-entry" "$_wl_j11_dir/mid-entry"
+_wl_j11_out="$_WL_DIR/present-trash-snapshot"
+_wl_j11_expected="$_WL_DIR/present-trash-expected"
+rm -f "$_wl_j11_out"
+ls -A "$_wl_j11_dir" | sort > "$_wl_j11_expected"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j11_rc=0
+    _wl_snapshot_real_trash "$_wl_j11_dir" "$_wl_j11_out" || _wl_j11_rc=$?
+    if [ "$_wl_j11_rc" -eq 0 ] && cmp -s "$_wl_j11_out" "$_wl_j11_expected"; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j11: _wl_snapshot_real_trash on a present dir with entries byte-matches an independently computed 'ls -A | sort', dotfiles included (#6299)" "$ok"
+
+# (c) WL-j12: a PRESENT but EMPTY dir must not be confused with the absent
+# case — both produce an empty outfile, but this path must not error either.
+_wl_j12_dir="$_WL_DIR/present-trash-empty"
+mkdir -p "$_wl_j12_dir"
+_wl_j12_out="$_WL_DIR/present-empty-trash-snapshot"
+rm -f "$_wl_j12_out"
+if declare -F _wl_snapshot_real_trash >/dev/null; then
+    _wl_j12_rc=0
+    _wl_snapshot_real_trash "$_wl_j12_dir" "$_wl_j12_out" || _wl_j12_rc=$?
+    if [ "$_wl_j12_rc" -eq 0 ] && [ -f "$_wl_j12_out" ] && [ ! -s "$_wl_j12_out" ]; then
+        ok=true
+    else
+        ok=false
+    fi
+else
+    ok=false
+fi
+check "WL-j12: _wl_snapshot_real_trash on a present-but-empty dir writes an empty outfile with rc=0 (#6299)" "$ok"
+
+# (d) WL-j13: the end-to-end regression barrier. The real /tmp/.reseed-trash
+# is a hardcoded machine-shared path no test may create or delete, so an
+# absent-dir check against it alone would pass vacuously on any host where the
+# dir happens to exist — exactly the intermittency that let this bug survive
+# four sweep failures. Re-running this whole suite with _WL_REAL_TRASH_DIR
+# pointed at a guaranteed-absent path makes the absent-dir branch reachable
+# deterministically on ANY host. Sentinel-gated so the inner run skips this
+# block entirely and recursion is bounded to one level. No EXIT trap is added
+# here: $_WL_DIR already sits under $_robust_tmpdir and is reclaimed by the
+# suite's single existing trap.
+if [ -z "${_WL_ABSENT_TRASH_SELFTEST:-}" ]; then
+    _wl_j13_tmpdir="$(mktemp -d "$_WL_DIR/selftest-tmp-XXXXXX")"
+    _wl_j13_log="$_WL_DIR/selftest.log"
+    _wl_j13_rc=0
+    _WL_ABSENT_TRASH_SELFTEST=1 _WL_REAL_TRASH_DIR="$_WL_DIR/no-such-trash" TMPDIR="$_wl_j13_tmpdir" \
+        bash "${BASH_SOURCE[0]}" > "$_wl_j13_log" 2>&1 || _wl_j13_rc=$?
+    _wl_j13_summary_ok=false
+    if grep -qE '^Results: [0-9]+ passed, [0-9]+ failed' "$_wl_j13_log"; then
+        _wl_j13_summary_ok=true
+    fi
+    if [ "$_wl_j13_summary_ok" = "true" ] && { [ "$_wl_j13_rc" -eq 0 ] || [ "$_wl_j13_rc" -eq 1 ]; }; then
+        ok=true
+    else
+        ok=false
+    fi
+    check "WL-j13: re-running this suite with _WL_REAL_TRASH_DIR pointed at a guaranteed-absent path still reaches its Results: summary, never aborting with rc=2 (#6299) (rc=$_wl_j13_rc)" "$ok"
+fi
+
 # -- Summary -------------------------------------------------------------------
 echo ""
 echo "Results: $T_PASS passed, $T_FAIL failed"
