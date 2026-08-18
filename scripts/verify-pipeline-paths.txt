@@ -93,3 +93,16 @@ tests/infra/run_all.sh
 #   guard actually re-runs against the change, mirroring the run_all.sh
 #   entry immediately above.
 tests/infra/run-all-ambient-vars.manifest
+#
+# scripts/check-nan-safe-ordering.sh / scripts/check-compute-trampoline-
+#   registration.sh (task 6243): the two INV-FEA lint gates. Both are
+#   emitted-not-sourced by verify.sh's lint plan (like
+#   scripts/check-manifold-deps.sh / scripts/check-infra-classification-
+#   manifest.sh above), so verify-pipeline-guard.sh's live 'source' derivation
+#   misses them. Without these entries an edit to either gate script is
+#   fast-path eligible instead of routing through the full --scope all gate
+#   (measured via `requires-full-gate` at HEAD 19f0307f30 — both exited 1,
+#   fast-path eligible, before this fix). Per-task fail-fast coverage for each
+#   is separately wired via scripts/verify-pipeline-infra-tests.txt.
+scripts/check-nan-safe-ordering.sh
+scripts/check-compute-trampoline-registration.sh
