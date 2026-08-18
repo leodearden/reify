@@ -3081,8 +3081,12 @@ fn format_engineering(mantissa: f64, exponent: i32) -> String {
 /// landed, so no real call site has yet exercised this signature: the
 /// `&DimensionVector -> Cow<'static, str>` shape is not settled and may change
 /// (or narrow back to `pub(crate)`) once μ shows what it actually needs.
-/// `crates/reify-ir/tests/api_surface.rs` pins only that both the flat and
-/// module-path spellings resolve — it is not a promise about the shape.
+/// `crates/reify-ir/tests/api_surface.rs` records this under its explicit
+/// `PROVISIONAL SURFACE` banner, NOT in the pinned contract: it records only
+/// that both the flat and module-path spellings resolve, and that file states
+/// outright that narrowing an item below the banner is a normal edit rather
+/// than an API break. Narrowing therefore means deleting that block, not
+/// arguing a contract change.
 /// In-crate callers wanting the rendered value should keep using
 /// [`Value::format_hover`] / `format_display_pair` / `resolve_display`, which
 /// remain the stable surface.

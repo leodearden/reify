@@ -9,6 +9,19 @@
 //!
 //! Compile-time guarantees that reify-ir's public API exposes the listed symbols
 //! via both flat and module-path spellings.
+//!
+//! # Two tiers — the contract, and the PROVISIONAL section
+//!
+//! Everything above the `PROVISIONAL SURFACE` banner near the end of this file
+//! is the contract: reify-ir MUST export it, and removing or narrowing one of
+//! those items is an API break that has to be argued as such.
+//!
+//! Items BELOW that banner are explicitly **not** part of the contract. They
+//! are surfaces widened ahead of a consumer that has not landed yet, recorded
+//! here so the widening is at least visible and its behavioural shape is
+//! not silently wrong. Narrowing one back is a normal private-helper edit, not
+//! an API break — the correct response is to DELETE its block here, not to
+//! treat this file's failure as a regression to be worked around.
 
 // ── annotation (flat form) ───────────────────────────────────────────────────
 use reify_ir::{Annotation, AnnotationArg, AnnotationArgValue, has_test_annotation};
@@ -198,7 +211,7 @@ use reify_ir::{
     DeterminacyState, ErrorRef, EvalError, FieldSourceKind, Freshness, InterpolationKind,
     MATERIALIZED_ANNOTATIONS_KEY, MaterializedAnnotation,
     RegionRef, ResultRef, SOURCE_SPAN_KEY, SampledField, SampledGridKind, Satisfaction, StructureInstanceData,
-    Value, ValueMap, dimension_unit_label, quaternion_is_finite,
+    Value, ValueMap, quaternion_is_finite,
 };
 
 // ── value (module-path form) ─────────────────────────────────────────────────
@@ -212,7 +225,6 @@ use reify_ir::value::{
     ResultRef as ResultRefMod, SOURCE_SPAN_KEY as SOURCE_SPAN_KEY_MOD, SampledField as SampledFieldMod,
     SampledGridKind as SampledGridKindMod, Satisfaction as SatisfactionMod,
     StructureInstanceData as StructureInstanceDataMod, Value as ValueMod, ValueMap as ValueMapMod,
-    dimension_unit_label as dimension_unit_label_mod,
     quaternion_is_finite as quaternion_is_finite_mod,
 };
 
@@ -668,37 +680,6 @@ fn value_types_in_scope() {
     assert!(quaternion_is_finite_mod(1.0, 0.0, 0.0, 0.0));
 }
 
-/// Task λ (#5788) §11 Q2: `dimension_unit_label` is reachable CROSS-CRATE, in
-/// both spellings, and returns contract C2's ASCII exponent alphabet.
-///
-/// WHY the pin has to live in an integration test. This is a *visibility*
-/// assertion, and visibility is only observable from OUTSIDE the crate — an
-/// in-crate `#[cfg(test)] mod tests` can call a private `fn` and would pass
-/// vacuously no matter what the item's visibility said. `tests/` compiles as a
-/// separate crate, so the two `use` lines above are the assertion: while
-/// `dimension_unit_label` was a private top-level `fn` in `value.rs`, neither
-/// resolved and this file failed to BUILD with E0603. That build failure was
-/// the RED.
-///
-/// Both spellings are pinned because this file's stated invariant is that
-/// lib.rs exports each module as `pub mod` AND re-exports its symbols at the
-/// crate root — pinning only one would let the other rot silently.
-///
-/// Task μ consumes this seam: its round-trip property test needs to observe S3
-/// directly, and without cross-crate reachability its assertion would degrade
-/// to a structural proxy.
-#[test]
-fn dimension_unit_label_reachable_cross_crate_with_ascii_labels() {
-    assert_eq!(dimension_unit_label(&DimensionVector::AREA), "m^2");
-    assert_eq!(dimension_unit_label(&DimensionVector::VOLUME), "m^3");
-
-    // Both spellings name the same function.
-    assert_eq!(
-        dimension_unit_label(&DimensionVector::AREA),
-        dimension_unit_label_mod(&DimensionVector::AREA)
-    );
-}
-
 #[test]
 fn warm_types_in_scope() {
     let _: fn() -> Option<OpaqueState> = || None;
@@ -843,5 +824,57 @@ fn ri_literal_flat_and_module_path() {
     assert_eq!(
         e,
         RiLiteralError::UnsupportedValueKind { kind: "Undef" }
+    );
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PROVISIONAL SURFACE — NOT part of the pinned contract above.
+//
+// Everything below is a surface widened ahead of a consumer that has not
+// landed. It is recorded here so the widening is visible and its behavioural
+// shape is not silently wrong — NOT to freeze it. Narrowing one of these items
+// back is a normal private-helper edit, not an API break: delete its `use`
+// lines and its test together and move on. Do not migrate an item up into the
+// contract without an explicit decision that its shape has settled.
+// ═════════════════════════════════════════════════════════════════════════════
+
+use reify_ir::dimension_unit_label;
+use reify_ir::value::dimension_unit_label as dimension_unit_label_mod;
+
+/// PROVISIONAL (see the banner above). Task λ (#5788) §11 Q2:
+/// `dimension_unit_label` is reachable CROSS-CRATE, in both spellings, and
+/// returns contract C2's ASCII exponent alphabet.
+///
+/// §11 Q2 offered two resolutions — widen to `pub` (its suggested one) or keep
+/// it private and assert S3 structurally — and delegated the choice to λ/μ. λ
+/// took the suggested one, so task μ can observe S3 directly instead of through
+/// a structural proxy. But μ has not landed, so NO real call site has exercised
+/// this signature yet; `value.rs`'s own doc comment says the
+/// `&DimensionVector -> Cow<'static, str>` shape may still change or narrow
+/// back to `pub(crate)`. That is exactly why this sits below the banner rather
+/// than in the contract: it is a visibility RECORD, not a stability promise.
+///
+/// WHY the record has to live in an integration test at all. This is a
+/// *visibility* assertion, and visibility is only observable from OUTSIDE the
+/// crate — an in-crate `#[cfg(test)] mod tests` can call a private `fn` and
+/// would pass vacuously no matter what the item's visibility said. `tests/`
+/// compiles as a separate crate, so the two `use` lines above are the
+/// assertion: while `dimension_unit_label` was a private top-level `fn` in
+/// `value.rs`, neither resolved and this file failed to BUILD with E0603. That
+/// build failure was the RED.
+///
+/// Both spellings are recorded because lib.rs exports each module as `pub mod`
+/// AND re-exports its symbols at the crate root — recording only one would let
+/// the other rot silently.
+#[test]
+fn dimension_unit_label_reachable_cross_crate_with_ascii_labels() {
+    assert_eq!(dimension_unit_label(&DimensionVector::AREA), "m^2");
+    assert_eq!(dimension_unit_label(&DimensionVector::VOLUME), "m^3");
+
+    // Both spellings name the same function.
+    assert_eq!(
+        dimension_unit_label(&DimensionVector::AREA),
+        dimension_unit_label_mod(&DimensionVector::AREA)
     );
 }
