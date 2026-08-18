@@ -1273,6 +1273,30 @@ pub const W_STEP_AP242_FALLBACK: &str = "W_STEP_AP242_FALLBACK";
 /// variant.
 pub const W_3MF_NO_MATERIALS: &str = "W_3MF_NO_MATERIALS";
 
+/// Machine-stable error code for the export refusal raised when a module
+/// declares a `RepresentationWithin` bound the export path cannot demonstrate it
+/// honours (task η, PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+/// C-SURFACE (2)). Built by
+/// [`crate::tolerance_combine::unenforced_representation_bound_diagnostic`] and
+/// emitted from BOTH export surfaces — `reify build -o <file>` and
+/// [`Engine::build_outputs_with_result`].
+///
+/// This is the message-embedded TWIN of the typed
+/// [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`], and
+/// both are needed: the typed code serves programmatic consumers and the unit
+/// tests (which match on `Diagnostic.code`, so rewording the message cannot
+/// break them), while this string serves the CLI integration tests, which spawn
+/// the binary as a subprocess and observe only captured stderr TEXT — they have
+/// no access to the typed code and would otherwise have to pin arbitrary prose.
+///
+/// Unlike [`I_DISPLAY_OUTPUT_DEFERRED`] / [`W_STEP_AP242_FALLBACK`] /
+/// [`W_3MF_NO_MATERIALS`] above, this code is NOT string-only: their stated
+/// reason for skipping a typed variant ("which would touch the out-of-scope
+/// `reify-core` crate") does not apply here, because `reify-core` is in η's
+/// scope and the variant was minted alongside this const.
+pub const E_REPR_BOUND_UNENFORCED_ON_EXPORT: &str = "E_REPR_BOUND_UNENFORCED_ON_EXPORT";
+
 /// One file artifact produced by the occurrence-driven export driver
 /// [`Engine::build_outputs`] (io-export δ).
 ///

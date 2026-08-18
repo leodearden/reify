@@ -28,7 +28,7 @@
 
 use crate::graph::ConstraintNodeData;
 use reify_compiler::CompiledModule;
-use reify_core::{ConstraintNodeId, Diagnostic, DimensionVector, Type, ValueCellId};
+use reify_core::{ConstraintNodeId, Diagnostic, DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::value::GeometryHandleRef;
 use reify_ir::{CompiledExpr, CompiledExprKind, PersistentMap, Satisfaction, Value, ValueMap};
 use std::collections::BTreeMap;
@@ -230,47 +230,111 @@ pub fn recognize_representation_within(expr: &CompiledExpr) -> Option<(ValueCell
 /// realization or measurement has happened. It says the design *declares* a
 /// representation bound; it says nothing about whether that bound is met.
 ///
-/// Reuses [`recognize_representation_within`] — the one canonical matcher (UFC
-/// name + arity + arg0 `ValueRef`/member-access typed `StructureRef` + arg1
-/// `Literal Scalar` LENGTH finite ≥ 0) that the engine's dispatch interception
-/// and the budget extractor also share — so the recognition gate has a single
-/// implementation and cannot drift between consumers.
+/// Defined as `!compute_representation_bounds(module).is_empty()` — the C-BOUND
+/// bound table is empty exactly when the module declares no bound, so this is
+/// that table's emptiness rather than a second traversal of the same IR. Both
+/// therefore reach the one canonical matcher
+/// ([`recognize_representation_within`]'s `match_representation_within_shape`:
+/// UFC name + arity + arg0 `ValueRef`/member-access typed `StructureRef` + arg1
+/// `Literal Scalar` LENGTH finite ≥ 0) through a single walk that cannot drift
+/// from itself. See [`compute_representation_bounds`] for the traversal and for
+/// why this mirror was retired in #6170.
 ///
 /// # Consumers
 ///
 /// * `reify check` routing (`crates/reify-cli/src/main.rs`'s
-///   `module_has_representation_within`, now a one-line delegation to this
+///   `module_has_representation_within`, a one-line delegation to this
 ///   function): decides whether to take the kernel-backed
 ///   `set_capture_repr_tol(true)` → `tessellate_realizations` → `check` path.
-/// * Both export refusal sites (task #6170, PRD
-///   `docs/prds/v0_6/precision-nominal-representation-guarantee.md` task eta /
-///   C-SURFACE (2)): `reify build -o <file>` and
-///   [`crate::Engine::build_outputs_with_result`] refuse to write an artifact
-///   for a module that declares a bound the export path cannot demonstrate it
-///   honours.
+///
+/// Both export refusal sites (task #6170, PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md` task eta /
+/// C-SURFACE (2)) need the bound TABLE rather than a boolean — the refusal names
+/// the unenforced bound — so they consume
+/// [`unenforced_representation_bound_diagnostic`] below instead of this
+/// predicate. Its `None` case is this predicate returning `false`.
 ///
 /// A module for which this returns `false` is untouched by every one of those
 /// paths — that is what keeps existing unbounded designs byte-identical.
 pub fn module_declares_representation_within(module: &reify_compiler::CompiledModule) -> bool {
-    module.templates.iter().any(|t| {
-        // Check direct template constraints first (the common case).
-        let direct = t
-            .constraints
-            .iter()
-            .any(|c| recognize_representation_within(&c.expr).is_some());
-        if direct {
-            return true;
-        }
-        // Also check guarded-group constraints (true-branch + else-branch)
-        // so a RepresentationWithin inside a `where … { constraint … }` block
-        // is also detected.
-        t.guarded_groups.iter().any(|g| {
-            g.constraints
-                .iter()
-                .chain(g.else_constraints.iter())
-                .any(|c| recognize_representation_within(&c.expr).is_some())
-        })
-    })
+    // The C-BOUND bound table is empty EXACTLY when the module declares no
+    // bound, so this predicate is that table's emptiness — not a second walk
+    // that happens to agree with it. Until #6170 the two WERE separate
+    // traversals kept term-for-term in sync by hand; making it one call turns
+    // that standing obligation into a compile-time identity.
+    !compute_representation_bounds(module).is_empty()
+}
+
+/// Build the export-refusal diagnostic for `module`, or `None` when the module
+/// declares no `RepresentationWithin` bound.
+///
+/// This is the ONE builder both export surfaces consult — `reify build -o <file>`
+/// (`cmd_build`'s `-o` arm in `crates/reify-cli/src/main.rs`) and
+/// [`crate::Engine::build_outputs_with_result`] — so the two refusals cannot
+/// word themselves differently or disagree about what counts as bounded (PRD
+/// `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, task η /
+/// C-SURFACE (2) §1.1).
+///
+/// # Contract
+///
+/// * `None` — the module declares no bound. THE LOAD-BEARING CASE: every
+///   existing unbounded design is untouched by both refusal sites and keeps
+///   exporting byte-identically (PRD C2 / §3.1(f)).
+/// * `Some(d)` — `d.severity == Severity::Error` and
+///   `d.code == Some(DiagnosticCode::RepresentationBoundUnenforcedOnExport)`.
+///   `Error` is load-bearing rather than cosmetic: `cmd_build`'s existing
+///   `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate is what
+///   turns the refusal into a non-zero exit, so no new CLI exit logic is
+///   needed (PRD INV-SF-2). The message embeds
+///   [`crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT`] for the CLI integration
+///   tests, which observe only captured stderr text.
+///
+/// # Built solely from the bound table
+///
+/// Everything — which subjects are named, in what order, and at what bound —
+/// comes from [`compute_representation_bounds`]; this function performs NO
+/// independent scan of `module.templates`. That is what gives the message its
+/// two non-decorative properties: per-subject **min-fold** (a subject bounded
+/// twice is reported once, at the tighter bound) and deterministic
+/// **`BTreeMap` (lexicographic-by-subject) order**, so the refusal text is
+/// reproducible across runs. A boolean `.any()` walk could produce neither.
+///
+/// Subjects are named by their declared `StructureRef` type — the table's key —
+/// not by the template that declares the constraint, because the type is what
+/// the user must go and look at.
+///
+/// # Static, pre-eval, pre-measurement
+///
+/// This reads compiled IR only. It evaluates nothing, realizes nothing and
+/// tessellates nothing, so it is available before `engine.build()` and costs no
+/// OCCT tessellation (PRD §6 gate-cost rule). The corollary is that it fires for
+/// ANY declared bound, achievable or not: narrowing the refusal to genuinely
+/// unachievable bounds is follow-on task θ, hard-blocked on task 6085 giving the
+/// export path a real measurement.
+pub fn unenforced_representation_bound_diagnostic(module: &CompiledModule) -> Option<Diagnostic> {
+    let bounds = compute_representation_bounds(module);
+    if bounds.is_empty() {
+        return None;
+    }
+    // `BTreeMap` iteration is lexicographic by subject struct name, so the
+    // rendered list is deterministic across runs. `{:.3e} m` matches the house
+    // convention already used by `eval_representation_within`'s Violated
+    // diagnostic above.
+    let named = bounds
+        .iter()
+        .map(|(subject, bound)| format!("{subject} (bound {bound:.3e} m)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(
+        Diagnostic::error(format!(
+            "{}: refusing to write the export artifact — this design declares a \
+             RepresentationWithin bound that the export path cannot demonstrate it \
+             honours: {named}. Run `reify check` on this design to evaluate the bound \
+             (it tessellates the realization and measures the achieved deviation).",
+            crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT
+        ))
+        .with_code(DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+    )
 }
 
 // ── Pure assertion eval helper ────────────────────────────────────────────────
@@ -477,14 +541,19 @@ fn resolve_repr_tol_key(
 ///
 /// # Emptiness is F's scoping predicate
 ///
-/// The table is empty **exactly when** the module declares no bound — which is
-/// the negation of reify-cli's `module_has_representation_within`
-/// (crates/reify-cli/src/main.rs:2462), F's routing gate. Both delegate to the
-/// same matcher and must keep the **same traversal**: a change to one is a
-/// change to the other. Keeping the mirror is a **lockstep requirement of
-/// C-BOUND, not a coincidence**.
+/// The table is empty **exactly when** the module declares no bound, so
+/// [`module_declares_representation_within`] — F's routing gate, and the
+/// predicate behind reify-cli's `module_has_representation_within` — is
+/// literally `!compute_representation_bounds(module).is_empty()`.
 ///
-/// The traversal, term for term with that gate, is
+/// This *used* to be a mirror: the gate ran its own hand-rolled `.any()` walk,
+/// term-for-term identical to the one below, and keeping the two in sync was a
+/// standing lockstep obligation of C-BOUND. Task #6170 retired it. The two are
+/// now the same call, so they structurally cannot drift and there is nothing
+/// left to keep in sync — the traversal is documented once, here, on the
+/// function that performs it.
+///
+/// The traversal is
 ///
 /// ```text
 /// module.templates × ( t.constraints
@@ -498,11 +567,11 @@ fn resolve_repr_tol_key(
 /// any guard cell is evaluated, so the union over both branches is the static,
 /// conservative reading.
 ///
-/// The equivalence is load-bearing, not tidiness: a narrower scan would let a
-/// module route into the kernel-backed check path (the CLI gate says `true`)
-/// while carrying an empty bound table, and under δ (#6168) an empty table means
-/// that realization is never measured — silently degrading a real
-/// Satisfied/Violated verdict to Indeterminate.
+/// The breadth is load-bearing, not tidiness: a narrower scan would report an
+/// empty table for a module that does declare a bound, and under δ (#6168) an
+/// empty table means that realization is never measured — silently degrading a
+/// real Satisfied/Violated verdict to Indeterminate. Since #6170 it would also
+/// let such a module export unrefused.
 ///
 /// # Silent-skip posture
 ///
@@ -516,14 +585,7 @@ fn resolve_repr_tol_key(
 /// demanded-tolerance budget — see PRD §4.8; do not couple it to
 /// [`extract_output_tolerance_bound`], which is owned by
 /// `docs/prds/v0_2/per-purpose-tolerance.md`.
-// TODO(#6171): first production consumer — the measure-and-refine loop threads
-// this table into the tessellate callback; #6168 (δ) reuses it to narrow
-// measurement. Until one of those lands there is no non-`cfg(test)` caller, and
-// `scripts/verify.sh` runs `cargo clippy --workspace --all-targets -- -D
-// warnings`, which builds the lib WITHOUT `cfg(test)` — so the unit tests in
-// `tolerance_combine/compute_representation_bounds_tests.rs` do not keep this alive.
-#[allow(dead_code)]
-pub(crate) fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
+pub fn compute_representation_bounds(module: &CompiledModule) -> BTreeMap<String, f64> {
     let mut bounds: BTreeMap<String, f64> = BTreeMap::new();
     for template in &module.templates {
         // Guards are NEITHER evaluated NOR filtered on: the table is a static
