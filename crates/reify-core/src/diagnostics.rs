@@ -6525,6 +6525,47 @@ mod tests {
         let s = serde_json::to_string(&DiagnosticCode::EnumTypeArgConflict).unwrap();
         assert_eq!(s, "\"EnumTypeArgConflict\"");
     }
+
+    // --- RepresentationBoundUnenforcedOnExport tests (task eta #6170 —
+    //     E_REPR_BOUND_UNENFORCED_ON_EXPORT) ---
+    // Pairs with the export refusal built by
+    // `crates/reify-eval/src/tolerance_combine.rs::unenforced_representation_bound_diagnostic`
+    // and emitted from both `reify build -o <file>` and
+    // `Engine::build_outputs_with_result`. Variant-agnostic
+    // Copy/Clone/PartialEq/Eq/Hash/Debug derives are already covered by
+    // `diagnostic_code_derives` above; only the variant-specific round-trip and
+    // serde wire-format tests are added here.
+
+    /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` round-trips
+    /// through `Diagnostic::error(...).with_code(...)` with `Severity::Error`.
+    ///
+    /// `Error` is load-bearing, not cosmetic: it is what the CLI's existing
+    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` exit gate
+    /// keys on, so the refusal produces a non-zero exit with no new CLI exit
+    /// logic.
+    #[test]
+    fn diagnostic_code_representation_bound_unenforced_on_export_with_code_round_trips() {
+        use super::Severity;
+        let d = Diagnostic::error("x")
+            .with_code(DiagnosticCode::RepresentationBoundUnenforcedOnExport);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::RepresentationBoundUnenforcedOnExport)
+        );
+        assert_eq!(d.severity, Severity::Error);
+    }
+
+    /// Under `feature = "serde"`,
+    /// `DiagnosticCode::RepresentationBoundUnenforcedOnExport` serializes as
+    /// `"RepresentationBoundUnenforcedOnExport"` (PascalCase, from
+    /// `rename_all = "PascalCase"`).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn diagnostic_code_representation_bound_unenforced_on_export_serde_pascal_case() {
+        let s =
+            serde_json::to_string(&DiagnosticCode::RepresentationBoundUnenforcedOnExport).unwrap();
+        assert_eq!(s, "\"RepresentationBoundUnenforcedOnExport\"");
+    }
 }
 
 /// A diagnostic (error/warning) projected to human-readable line/column positions.
