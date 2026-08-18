@@ -2508,4 +2508,126 @@ mod tests {
             "NaN seen second cannot displace an established best_val (NaN > 5e-6 is false)"
         );
     }
+
+    // ── task 6170 (precision-nominal η): shared bound-declaration detector ────
+    //
+    // `module_declares_representation_within` is the ONE static, pre-eval
+    // predicate both export modes consult before deciding whether an export may
+    // claim success (PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md`,
+    // task eta / C-SURFACE (2)). It is hoisted here — next to the canonical
+    // `recognize_representation_within` gate it delegates to — so the CLI's
+    // routing predicate and the engine's export refusal cannot drift apart.
+    //
+    // Assertion shape deliberately mirrors the CLI-side
+    // `module_has_representation_within_detects_assertion_vs_plain`
+    // (`crates/reify-cli/src/main.rs`), so the two read as the same contract.
+
+    /// A module whose template carries a DIRECT
+    /// `constraint RepresentationWithin(subject, 1mm)` is detected.
+    ///
+    /// This is the common case and the one both export modes hit today: every
+    /// bound-carrying fixture on main declares the constraint at template level.
+    #[test]
+    fn module_declares_representation_within_detects_direct_template_constraint() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    param w : Real = 5.0
+    constraint RepresentationWithin(subject, 1mm)
+    constraint w > 0.0
+}
+"#,
+        );
+        assert!(
+            module_declares_representation_within(&compiled),
+            "a template-level RepresentationWithin constraint must be detected"
+        );
+    }
+
+    /// A `RepresentationWithin` living inside a `where … { … }` guarded group's
+    /// TRUE branch is detected.
+    ///
+    /// The walk chains `guarded_groups[*].constraints` with
+    /// `guarded_groups[*].else_constraints`, so a bound is not smuggled past the
+    /// gate by wrapping it in a guard — an export that refuses only on
+    /// unguarded bounds would still silently ship the guarded case.
+    #[test]
+    fn module_declares_representation_within_detects_guarded_true_branch() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure GuardedTrue {
+    param subject : MyGeom
+    param w : Real = 5.0
+    where w > 0.0 {
+        constraint RepresentationWithin(subject, 1mm)
+    }
+}
+"#,
+        );
+        assert!(
+            module_declares_representation_within(&compiled),
+            "a RepresentationWithin inside a guarded group's true branch must be \
+             detected (guarded_groups[*].constraints)"
+        );
+    }
+
+    /// A `RepresentationWithin` living inside a guarded group's ELSE branch is
+    /// detected — the `else_constraints` half of the same chained walk.
+    #[test]
+    fn module_declares_representation_within_detects_guarded_else_branch() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure GuardedElse {
+    param subject : MyGeom
+    param z : Real = 5.0
+    where z > 0.0 {
+        constraint z > 0.0
+    } else {
+        constraint RepresentationWithin(subject, 1mm)
+    }
+}
+"#,
+        );
+        assert!(
+            module_declares_representation_within(&compiled),
+            "a RepresentationWithin inside a guarded group's else branch must be \
+             detected (guarded_groups[*].else_constraints)"
+        );
+    }
+
+    /// A plain module carrying only an ordinary numeric constraint is NOT
+    /// detected.
+    ///
+    /// This is the load-bearing negative: it is what keeps every existing
+    /// unbounded design exporting byte-identically after the refusal lands. A
+    /// detector that over-fires here would refuse every export in the repo.
+    #[test]
+    fn module_declares_representation_within_rejects_plain_module() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure Plain {
+    param x : Real = 1.0
+    constraint x > 0.0
+}
+"#,
+        );
+        assert!(
+            !module_declares_representation_within(&compiled),
+            "a module with no RepresentationWithin constraint must NOT be detected \
+             (unbounded designs keep exporting unchanged)"
+        );
+    }
 }
