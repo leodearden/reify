@@ -1,6 +1,6 @@
 //! Tests for module DAG: cycle detection, diamond dedup, topological ordering.
 
-mod common;
+use crate::common;
 
 use std::fs;
 
@@ -1278,7 +1278,7 @@ fn partial_stdlib_overlay_errors_when_fs_missing_later_module() {
     fs::create_dir_all(&stdlib_dir).unwrap();
     fs::write(
         stdlib_dir.join("units.ri"),
-        include_str!("../stdlib/units.ri"),
+        include_str!("../../stdlib/units.ri"),
     )
     .unwrap();
     // materials_mechanical.ri intentionally NOT written.
@@ -1361,7 +1361,7 @@ fn partial_stdlib_overlay_errors_when_embedded_first_then_fs() {
     fs::create_dir_all(&stdlib_dir).unwrap();
     fs::write(
         stdlib_dir.join("tolerancing.ri"),
-        include_str!("../stdlib/tolerancing.ri"),
+        include_str!("../../stdlib/tolerancing.ri"),
     )
     .unwrap();
     // units.ri intentionally NOT written — std.units must fall back to embedded.
