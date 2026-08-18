@@ -27,11 +27,11 @@ pub type Strain = Dimensionless
 // intended as a structural contract — it does not participate in dimension
 // checking and will not reject dimensioned conforming values.
 trait AnalysisResult {
-    param von_mises_stress : Real
-    param principal_stress_1 : Real
-    param principal_stress_2 : Real
-    param principal_stress_3 : Real
-    param max_shear_stress : Real
+    param von_mises_stress : Stress
+    param principal_stress_1 : Stress
+    param principal_stress_2 : Stress
+    param principal_stress_3 : Stress
+    param max_shear_stress : Stress
     param safety_factor_value : Real
     constraint von_mises_stress >= 0
     constraint max_shear_stress >= 0
