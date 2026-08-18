@@ -2432,4 +2432,80 @@ mod tests {
              a looser predicate would pick the 9e-3 collider and report Violated"
         );
     }
+
+    /// C-BOUND soundness pin: `resolve_repr_tol_key`'s type-name scan never
+    /// selects a NaN achieved value.
+    ///
+    /// The mechanism is the `NEG_INFINITY` seed plus the STRICT `v > best_val`
+    /// comparison: every comparison against NaN is false, so a NaN-valued key
+    /// can never displace the seed and never becomes `best_key`. The scan's
+    /// comment asserts this property; this test is what guards it (house norm —
+    /// normative claims are pinned in code and tests, not in comments).
+    ///
+    /// Why it matters: a selected NaN would flow into
+    /// `eval_representation_within`'s step 4, where `NaN <= eff` is false — so
+    /// the assertion would report **Violated** with a diagnostic printing
+    /// `NaN m exceeds bound`, a spurious failure attributed to a measurement
+    /// that never produced a number. Excluding it yields the honest
+    /// `Indeterminate` (C1: "no achieved value for this subject") instead.
+    ///
+    /// All three orderings are covered, because the guard has to hold whichever
+    /// side of the finite key the NaN is iterated on (`BTreeMap` iterates by key,
+    /// so `…realization[0]` precedes `…realization[1]`):
+    /// NaN alone, NaN before a finite key, and NaN after a finite key.
+    #[test]
+    fn resolve_repr_tol_key_never_selects_nan_achieved_value() {
+        // Empty value map → value-based resolution cannot fire; the type-name
+        // scan is the path under test (same setup as the no-drift lock above).
+        let values = ValueMap::new();
+        let vcid = ValueCellId::new("subject", "self");
+
+        // (1) NaN is the ONLY belonging key → no key resolves at all.
+        let mut nan_only = BTreeMap::new();
+        nan_only.insert("Curved#realization[0]".to_string(), f64::NAN);
+        nan_only.insert("Other#realization[0]".to_string(), 2e-3); // does not belong
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &nan_only),
+            None,
+            "NaN fails the strict `v > best_val` against the NEG_INFINITY seed, so it \
+             never becomes best_key; with no other belonging key the scan yields None"
+        );
+
+        // End-to-end verdict lock for (1): Indeterminate, not a spurious Violated.
+        let id = ConstraintNodeId::new("Curved", 0);
+        let expr = eval_test_expr("Curved", 1e-5);
+        let (sat, diag) = eval_representation_within(&id, &expr, &values, &nan_only)
+            .expect("RepresentationWithin shape must be recognised");
+        assert_eq!(
+            sat,
+            Satisfaction::Indeterminate,
+            "a NaN-only achieved map must read as 'not measured' (Indeterminate, C1); \
+             had the NaN been selected, `NaN <= eff` is false and the verdict would be \
+             a spurious Violated"
+        );
+        assert!(
+            diag.is_none(),
+            "Indeterminate carries no diagnostic — in particular not one printing NaN"
+        );
+
+        // (2) NaN iterated BEFORE a finite belonging key → the finite key wins.
+        let mut nan_first = BTreeMap::new();
+        nan_first.insert("Curved#realization[0]".to_string(), f64::NAN);
+        nan_first.insert("Curved#realization[1]".to_string(), 5e-6);
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &nan_first),
+            Some("Curved#realization[1]".to_string()),
+            "NaN seen first leaves best_key unset, so the finite 5e-6 key is selected"
+        );
+
+        // (3) NaN iterated AFTER a finite belonging key → the finite key still wins.
+        let mut nan_last = BTreeMap::new();
+        nan_last.insert("Curved#realization[0]".to_string(), 5e-6);
+        nan_last.insert("Curved#realization[1]".to_string(), f64::NAN);
+        assert_eq!(
+            resolve_repr_tol_key(&vcid, "Curved", &values, &nan_last),
+            Some("Curved#realization[0]".to_string()),
+            "NaN seen second cannot displace an established best_val (NaN > 5e-6 is false)"
+        );
+    }
 }
