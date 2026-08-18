@@ -49,8 +49,8 @@ fn entry_has_non_final_inputs(cache: &CacheStore, entry: &NodeCache) -> bool {
 ///
 /// - If `node` has **no cache entry**: returns `false` (vacuously runnable).
 ///   This matches [`CacheStore::freshness`]'s default-to-Final-on-absent
-///   contract (`cache.rs:611–620`) and avoids spurious skips for cold-start
-///   scenarios where the node has never been evaluated.
+///   contract and avoids spurious skips for cold-start scenarios where the
+///   node has never been evaluated.
 /// - If `node` has a cache entry but **empty `dependency_trace.reads`**
 ///   (param-like node with no upstream inputs): returns `false` — there are
 ///   no inputs to gate on.
