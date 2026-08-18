@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
 # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh
 #
-# Meta-test for task #6127 (esc-6087-3): the §6.6 ratchet's vacuity floor must
-# be WIRED INTO scenario (a) of test_reify_audit_ptodo.sh, not merely defined.
+# Meta-test for task #6127 (esc-6087-3), extended by #6241: the §6.6 ratchet's
+# vacuity floor must be WIRED INTO scenario (a) of test_reify_audit_ptodo.sh,
+# not merely defined.
 #
-# The in-file meta-test in test_reify_audit_ptodo.sh pins what
-# _ratchet_check_nonempty DOES; it cannot see whether scenario (a) ever calls
-# it.  A helper that is defined and unit-pinned but never invoked is exactly
-# the dead instrument this task exists to eliminate, so the call site gets its
-# own test — this one.
+# The in-file meta-test in test_reify_audit_ptodo.sh pins what the floor helper
+# DOES; it cannot see whether scenario (a) ever calls it.  A helper that is
+# defined and unit-pinned but never invoked is exactly the dead instrument this
+# task exists to eliminate, so the call site gets its own test — this one.
 #
-# THE GAP BEING PINNED: scenario (a)'s oracle is subset-of, which the empty
-# set satisfies trivially — see PRD 6.6, "Vacuity floor on the live set", for
-# the full argument.  This test drives the generator into that zero-fingerprint
-# state and requires a RED.
+# It pins BOTH DIRECTIONS of the floor, one invocation each:
+#   - FIRES when the generator produced no scan evidence (invocation 1);
+#   - stays SILENT when it did (invocation 2, the positive control).
+# A one-directional wiring test cannot tell a live floor from one wired to a
+# constant failure, and the second direction is the partition #6241 exists to
+# deliver.
+#
+# THE GAP BEING PINNED: scenario (a)'s oracle is subset-of, which the empty set
+# satisfies trivially, so it must be preconditioned on evidence the detector
+# RAN — the generator's `@@PTODO_SCAN@@ files_scanned=<N> …` stderr line — not
+# on what it FOUND.  See PRD 6.6, "Vacuity floor on the live set", for the full
+# argument.  Invocation 1 drives the generator into the no-scan-evidence state
+# and requires a RED; invocation 2 supplies valid scan evidence with ZERO
+# fingerprints and requires a GREEN.
 #
 # Design:
 #   - FRESHNESS INVERSION.  test_reify_audit_ptodo_orphan_hardgate.sh copies
@@ -34,7 +44,14 @@
 #     (b) down too, and a bare exit-code check could not then tell which
 #     assertion went red.
 #
-# Assertions:
+#   - HEALTHY STUB (#6241, invocation 2).  Same seam, same freshness
+#     inversion, but its repo-root branch ALSO emits a well-formed
+#     `@@PTODO_SCAN@@ files_scanned=<N>` line on stderr while still emitting
+#     ZERO fingerprints on stdout — a detector that demonstrably RAN over a
+#     clean tree.  That is the state a floor keyed on the live finding count
+#     could not tell apart from "the generator never ran".
+#
+# Assertions (invocation 1 — no scan evidence):
 #   (1) test_reify_audit_ptodo.sh exits 1 — a zero-fingerprint generator run
 #       must NOT report green.
 #   (2) it exits 1 for THAT reason: the floor's @@RATCHET_VACUITY_FIRED@@
@@ -47,6 +64,16 @@
 #       (b) through (f) green, this turns "the floor fired" into a positive,
 #       discriminating observation rather than an inference: the RED is the
 #       floor and not collateral damage from the stub.
+#
+# Assertions (invocation 2 — valid scan evidence, zero fingerprints):
+#   (4) test_reify_audit_ptodo.sh exits 0 — a detector that demonstrably RAN
+#       over a clean tree must report GREEN.
+#   (5) and for the right reason: the output matches
+#       `Results: <N> passed, 0 failed` AND carries no
+#       @@RATCHET_VACUITY_FIRED@@ token.  A bare exit-0 check would be
+#       satisfied by any wholesale skip; pairing the count with token-absence
+#       discriminates a real green from a vacuous one — the same discipline
+#       assertions (2)/(3) apply to the RED direction.
 #
 # SELF-MATCH SAFETY: this file must not contain any literal marker token the
 # PTODO structural lane sweeps for.  The stub's synthetic line assembles its
@@ -202,5 +229,80 @@ assert "the RED is the vacuity floor: its machine token is present in the output
 #     project-root-aware stub, so exactly one assert may have failed.
 assert "exactly one assert failed (the floor, not collateral damage from the stub)" \
     bash -c "grep -qE 'Results: [0-9]+ passed, 1 failed' '$RVM_OUTPUT_FILE'"
+
+# ---------------------------------------------------------------------------
+# INVOCATION 2 (task #6241) — THE POSITIVE CONTROL.
+#
+# Same seam and same freshness inversion, but the stub's repo-root branch now
+# emits valid scan evidence on stderr while still emitting ZERO fingerprints on
+# stdout: a detector that demonstrably RAN over a clean tree.  Under a floor
+# keyed on run evidence that must be GREEN.  Without this direction the wiring
+# test cannot distinguish a live floor from one wired to a constant failure.
+#
+# The scan line is emitted UNCONDITIONALLY, before the root branch, mirroring
+# the real generator's contract (`@@PTODO_SCAN@@` on every run).  Scenario (b)
+# discards generator stderr, so the extra line is inert there.
+# ---------------------------------------------------------------------------
+HEALTHY_GEN="$RVM_TMPDIR/ptodo-baseline-gen-healthy"
+cat > "$HEALTHY_GEN" <<EOF
+#!/usr/bin/env bash
+# Healthy stub ptodo-baseline-gen — generated at run time by
+# tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.  Never committed.
+set -u
+_root=""
+while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+        --project-root)
+            _root="\${2:-}"
+            shift
+            shift 2>/dev/null || true
+            ;;
+        *) shift ;;
+    esac
+done
+# Run evidence on stderr, every run — the §6.6 machine contract the floor reads.
+printf '@@PTODO_SCAN@@ files_scanned=1755 markers_examined=0\n' >&2
+if [ "\$_root" = "${REPO_ROOT}" ]; then
+    # Scenario (a): the real repo root — the detector RAN and the tree is
+    # clean, so zero fingerprints is the CORRECT end state, not a vacuous pass.
+    exit 0
+fi
+# Any other root is scenario (b)'s hermetic fixture — emit one synthetic
+# untracked fingerprint so (b)'s asserts still pass.
+printf 'src/fresh.rs :: untracked :: // %s: wire this into the real implementation\n' '${M}'
+exit 0
+EOF
+chmod +x "$HEALTHY_GEN"
+
+echo ""
+echo "--- Invoking test_reify_audit_ptodo.sh with a HEALTHY (scan-evidence) generator ---"
+
+RVM_HEALTHY_OUTPUT_FILE="$RVM_TMPDIR/ptodo-output-healthy"
+set +e
+REIFY_AUDIT_BIN="$FRESH_BIN" \
+REIFY_PTODO_GEN_BIN="$HEALTHY_GEN" \
+REIFY_AUDIT_NO_COLD_BUILD=1 \
+    bash "$PTODO_TEST" >"$RVM_HEALTHY_OUTPUT_FILE" 2>&1
+RVM_HEALTHY_EXIT=$?
+set -e
+
+echo "test_reify_audit_ptodo.sh (healthy generator) exited: $RVM_HEALTHY_EXIT"
+echo "--- Captured output (tail) ---"
+tail -20 "$RVM_HEALTHY_OUTPUT_FILE"
+echo "--- End captured output ---"
+
+echo ""
+echo "--- Assertions (positive control) ---"
+
+# (4) A detector that demonstrably RAN over a clean tree must report GREEN.
+assert "scan-evidence generator run makes test_reify_audit_ptodo.sh exit 0 (clean tree is a PASS)" \
+    bash -c '[ "$1" -eq 0 ]' -- "$RVM_HEALTHY_EXIT"
+
+# (5) ...and for the right reason.  A bare exit-0 check is satisfied by any
+#     wholesale skip, so pair the assert count with absence of the floor's
+#     machine token — the same discrimination discipline as (2)/(3).
+assert "the GREEN is real: 0 failed and the vacuity token is absent" \
+    bash -c "grep -qE 'Results: [0-9]+ passed, 0 failed' '$RVM_HEALTHY_OUTPUT_FILE' \
+             && ! grep -qF '@@RATCHET_VACUITY_FIRED@@' '$RVM_HEALTHY_OUTPUT_FILE'"
 
 test_summary
