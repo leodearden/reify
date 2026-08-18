@@ -85,8 +85,9 @@
 //!
 //! What survives all five needs prose-vs-example-source context that no
 //! syntactic rule can decide. Measured against the real corpus at
-//! HEAD=70f55eb5a0, exactly two SHAPES survive (not a count to hold onto —
-//! see below):
+//! HEAD=4fdfd18513 — an ancestor of this commit, so the run below is
+//! reproducible from branch history — exactly two SHAPES survive (not a
+//! count to hold onto — see below):
 //!
 //! - a user-defined name CALLED inside example source that the chunk never
 //!   DECLARES at all (`compute_moi(...)` in traits.md) — arguably a genuine
@@ -1094,10 +1095,16 @@ const RI_DECL_KEYWORDS: &[&str] = &[
 /// = docs/reify-language-spec.md §2.10 "Keywords (Complete Post-Review List)"
 /// (:191-219) / §17 alphabetical appendix (:2880-2897, "Total: 46 keywords" —
 /// the two forms agree exactly) UNION [`RI_DECL_KEYWORDS`]. `joint` is a
-/// grammar-only keyword that post-dates the spec table; the union keeps this
-/// const a superset of `RI_DECL_KEYWORDS` by construction, so widening the
-/// mention-side filter can never regress the narrower filter a63c892eea
-/// already shipped (`ri_keywords_is_a_superset_of_ri_decl_keywords`).
+/// grammar-only keyword that post-dates the spec table.
+///
+/// The superset-of-[`RI_DECL_KEYWORDS`] property is what makes widening the
+/// mention-side filter unable to regress the narrower filter a63c892eea
+/// already shipped — but it is ENFORCED BY TEST, not by construction. This
+/// is a hand-maintained flat literal in which the declaration keywords are
+/// re-typed inline rather than spliced in, so
+/// `ri_keywords_is_a_superset_of_ri_decl_keywords` is the only thing that
+/// will notice a new `RI_DECL_KEYWORDS` entry which was not also added here.
+/// Add to both; do not read the "UNION" above as a mechanism.
 ///
 /// DELIBERATELY EXCLUDED, both pinned by tests:
 /// - the spec's "Removed keywords (not part of v0.1)" (`derived`, `require`,
@@ -1131,7 +1138,9 @@ pub const RI_KEYWORDS: &[&str] = &[
     "port", "pub", "purpose", "self", "set", "some", "structure", "sub", "then", "trait", "true",
     "type", "undef", "unit", "where",
     // From RI_DECL_KEYWORDS only — a grammar-only keyword that post-dates
-    // the spec table (kept so this const is a superset by construction).
+    // the spec table (kept so this const stays a superset; the superset
+    // property is enforced by ri_keywords_is_a_superset_of_ri_decl_keywords,
+    // not by how this literal is written).
     "joint",
 ];
 
@@ -1256,51 +1265,52 @@ fn in_oracle_scope(path: &str) -> bool {
 /// stays visible so the caller can report the malformed marker rather than
 /// silently honour it (PRD design decision 7).
 ///
-/// ## Declaration sites are not claims
+/// ## The five filters
 ///
-/// Two filters, both syntactic, neither modelling context:
+/// The MODULE HEADER is canonical for the filter set, its numbering and its
+/// rationale ("Known imprecision — the mention side, not the oracle"). The
+/// same five numbers are used here, and only the implementation notes that
+/// do not belong in the header are spelled out — keep it that way rather
+/// than re-deriving the rationale in both places, which is how the two
+/// drifted to different counts once already.
 ///
-/// 1. a name that IS a [`RI_KEYWORDS`] member — the language's full
-///    reserved-word set (spec §2.10), not just declaration keywords.
-///    `Trait::fn(args)` in prose about static dispatch reads as a call to
-///    `fn`, and `auto(free)` reads as a call to `auto`; no keyword is ever a
-///    builtin;
-/// 2. the name a line DECLARES, per [`ri_declared_name`] — collected over
-///    EVERY line of `content` first (FILE-scoped, not declaration-site-
-///    scoped): a name this chunk's own example source declares anywhere in
-///    it (`fn lateral_area(self)`, `purpose manufacturing_ready(subject)`,
-///    or a trait body declaring `fn make_default()` a few lines above a
-///    call to it) is example-local, not a claim that the compiler provides
-///    it, however far from the declaration the call sits. A name the
-///    content never declares at all is untouched by this filter — `fn
-///    area(self) { rect_area(w, h) }` still yields `rect_area` as a claim,
-///    because `rect_area` is declared nowhere in that content.
+/// 1. **`.` left delimiter** and 2. **`@` left delimiter** — one rule with
+///    two delimiters, described above.
+/// 3. **[`RI_KEYWORDS`] membership** — the language's FULL reserved-word set
+///    (spec §2.10), not just the declaration keywords [`ri_declared_name`]
+///    parses with: `Trait::fn(args)` in prose about static dispatch reads as
+///    a call to `fn`, and `auto(free)` reads as a call to `auto`; no keyword
+///    is ever a builtin.
+/// 4. **file-scoped [`ri_declared_name`]** — collected over EVERY line of
+///    `content` in a first pass, so a trait body declaring
+///    `fn make_default()` also suppresses the call to it fifteen lines
+///    below. Reuses the ORACLE lane's own grammar rather than re-deriving
+///    one, so `pub fn`, `purpose` and the two-word `structure def` /
+///    `occurrence def` forms are all covered by a function that already has
+///    tests. A name the content never declares AT ALL is untouched — `fn
+///    area(self) { rect_area(w, h) }` still yields `rect_area` as a claim.
 ///
-/// Both can only REMOVE accusations, never add one, which is the safe
-/// direction for this lane (module header, "the existence oracle is
-/// deliberately asymmetric"). Filter 2 reuses `ri_declared_name` — the oracle
-/// lane's own grammar — rather than re-deriving one, so `pub fn`, `purpose`
-/// and the two-word `structure def` / `occurrence def` forms are all covered
-/// by a function that already has tests. FILE scope, not CORPUS scope: a
-/// name declared in chunk A and called in chunk B is a cross-chunk reference
-/// to a documented API, not an example-local definition, so `content` is the
-/// unit — corpus scope would let one chunk's throwaway example silently
-/// disarm every other chunk's claims about that name.
+///    FILE scope, not CORPUS scope: a name declared in chunk A and called in
+///    chunk B is a cross-chunk reference to a documented API, not an
+///    example-local definition, so `content` (one chunk) is the unit —
+///    corpus scope would let one chunk's throwaway example silently disarm
+///    every other chunk's claims about that name.
+/// 5. **elided `(...)` argument list** — a fixed five-byte compare: the list
+///    must be EXACTLY `(...)`, not `(..)` or `(..., x)`, with no scanning
+///    for a matching close paren and no nesting awareness. That fixed shape
+///    is exactly why geometry.md:126's `translate(primitive(...), 0, 0,
+///    -h/2)` resolves correctly — the outer `(` is followed by
+///    `primitive(...` so `translate` survives, the inner one by exactly
+///    `(...)` so `primitive` is dropped as the metavariable it is.
+///    Deliberately a false NEGATIVE: a real builtin documented only as
+///    `fillet(...)` stops being seen, accepted under this lane's stated
+///    asymmetry ("take the miss"), and backstopped by
+///    `CHUNK_MENTION_ANCHORS` in tests/pdoccover.rs, which goes RED if the
+///    corpus ever drifts wholesale to the elided form.
 ///
-/// ## The fourth #5647 filter — an elided argument list is not a claim
-///
-/// `(...)` — an argument list that is literally three dots — is a schematic
-/// placeholder, not a concrete call. geometry.md:126's
-/// `translate(primitive(...), 0, 0, -h/2)` names `primitive` as "any
-/// primitive constructor", not an accusation that the compiler provides a
-/// function literally named `primitive`. A fixed five-byte compare — the
-/// list must be EXACTLY `(...)`, not `(..)` or `(..., x)` — no scanning for
-/// a matching close paren, no nesting awareness. Deliberately a false
-/// NEGATIVE: a real builtin documented only as `fillet(...)` stops being
-/// seen, accepted under this lane's stated asymmetry ("take the miss" —
-/// module header, "the existence oracle is deliberately asymmetric"), and
-/// backstopped by `CHUNK_MENTION_ANCHORS` in tests/pdoccover.rs, which goes
-/// RED if the corpus ever drifts wholesale to the elided form.
+/// All five are syntactic, none models context, and every one can only
+/// REMOVE an accusation, never add one — the safe direction for this lane
+/// (module header, "the existence oracle is deliberately asymmetric").
 ///
 /// **Precision beyond that is deliberately deferred.** What remains needs
 /// prose-vs-example-source context that no syntactic rule — line-local or
@@ -3317,7 +3327,7 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
     /// not an API claim. `auto(free)` is the real `parameters.md:13` shape (a
     /// value literal/keyword, spec §2.10:207); `some(...)` is a language-level
     /// `Option` constructor intercepted before general function resolution
-    /// (crates/reify-compiler/src/expr.rs:2223-2224, "some() is a
+    /// (crates/reify-compiler/src/expr.rs:2222-2223, "some() is a
     /// language-level constructor, not a user-defined function" — `none` gets
     /// the same treatment at :1522-1525). Neither is ever a builtin the
     /// compiler could fail to provide.

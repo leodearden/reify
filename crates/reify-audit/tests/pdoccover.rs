@@ -1014,12 +1014,15 @@ fn registry_extraction_floor_guard_against_real_units_rs() {
 const CHUNK_MENTION_ANCHORS: &[&str] = &["union", "extrude", "fillet"];
 
 /// Conservative floor on the distinct call-shaped census over the real chunk
-/// corpus. 82 distinct names are extracted at HEAD=70f55eb5a0 (measured
-/// after #5647's four mention-side filters landed — the count moved from an
-/// earlier 72 as chunk content and detector precision both changed since);
-/// the floor sits far below that so ordinary chunk edits — including
-/// whole-file rewrites of the smaller chunks — never flip this RED. Only an
-/// extraction regression that collapses the census does.
+/// corpus. 93 distinct names, drawn from 12 of the 17 chunk files, are
+/// extracted at HEAD=4fdfd18513 — an ancestor of this commit, so the run is
+/// reproducible from branch history. That is a DATED MEASUREMENT, not an
+/// invariant, and nothing asserts it: the count moves whenever chunk content
+/// or mention-side precision changes, so cite a commit that is actually on
+/// this branch whenever it is re-taken, or state no number at all. The floor
+/// sits far below it, so ordinary chunk edits — including whole-file rewrites
+/// of the smaller chunks — never flip this RED. Only an extraction regression
+/// that collapses the census does.
 const CHUNK_MENTION_FLOOR: usize = 30;
 
 /// The census must span more than one chunk file. A single-file census is the
