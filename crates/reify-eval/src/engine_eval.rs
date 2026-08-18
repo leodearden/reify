@@ -11520,16 +11520,28 @@ mod cell_read_index_tests {
         );
     }
 
-    /// (d) The #5334 two-namespace bridge. A seed read keyed by INSTANCE PATH
-    /// (`RivetedPanel.rivets.line_cost` — the shape `apply_cost_aggregation`
-    /// produces) must normalise to its declaring template's id before the walk,
-    /// or it misses `cell_map` entirely and the closure stops dead at the seed.
+    /// The shared fixture for (d)–(f). A parent whose `total` let reads its sub
+    /// THROUGH an INSTANCE PATH, so the two `read_closure` insert sites — the
+    /// seed loop and the mid-walk hop — can each be pinned on their own:
+    ///
+    /// ```text
+    /// RivetedPanel.rivets : sub Rivet
+    /// RivetedPanel.total  = RivetedPanel.rivets.line_cost   ← instance-path READ
+    /// Rivet.line_cost     = Rivet.unit_cost * Rivet.quantity_produced
+    /// Rivet.quantity_produced : auto
+    /// ```
+    ///
     /// Fixture shape reused from
     /// `instance_path_alias_expr_is_rescoped_but_keeps_auto_reads_template_keyed`.
-    #[test]
-    fn read_closure_normalizes_an_instance_path_seed_to_its_template() {
+    fn instance_path_templates() -> Vec<reify_compiler::TopologyTemplate> {
         let parent = TopologyTemplateBuilder::new("RivetedPanel")
             .sub_component("rivets", "Rivet", vec![])
+            .let_binding(
+                "RivetedPanel",
+                "total",
+                Type::dimensionless_scalar(),
+                value_ref("RivetedPanel.rivets", "line_cost"),
+            )
             .build();
         let child = TopologyTemplateBuilder::new("Rivet")
             .auto_param("Rivet", "quantity_produced", Type::dimensionless_scalar())
@@ -11550,7 +11562,30 @@ mod cell_read_index_tests {
                 ),
             )
             .build();
-        let templates = vec![parent, child];
+        vec![parent, child]
+    }
+
+    /// (d) The #5334 two-namespace bridge, in BOTH directions (task #5467
+    /// step-14(a), review finding 1). A seed read keyed by INSTANCE PATH
+    /// (`RivetedPanel.rivets.line_cost` — the shape `apply_cost_aggregation`
+    /// produces) must normalise to its declaring template's id before the walk,
+    /// or it misses `cell_map` entirely and the closure stops dead at the seed.
+    ///
+    /// The normalisation must be ADDITIVE, never destructive: the RAW spelling
+    /// has to survive alongside the normalised one. `detect_underdetermined`
+    /// (LAYER 4) tests `!global_reads.contains(&cell.id)` against the RAW
+    /// declaration id, and the compiler mints instance-path-keyed auto decls at
+    /// `reify-compiler/src/entity.rs:3025` (construction named-arg) and `:3130`
+    /// (sub-override). If the seed loop REPLACES the raw id with its normalised
+    /// form, the declared id can never match and every instance-path auto draws
+    /// a false-positive `W_UNDERDETERMINED`.
+    ///
+    /// Asserting only the normalised ids — as this test did before step-14 —
+    /// leaves the raw insert untested in both directions: deleting it kept the
+    /// test green while breaking the user-visible signal.
+    #[test]
+    fn read_closure_keeps_both_spellings_of_an_instance_path_seed() {
+        let templates = instance_path_templates();
         let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
 
         // The seed is INSTANCE-PATH keyed, exactly as an aggregated objective
@@ -11570,6 +11605,101 @@ mod cell_read_index_tests {
             "having normalised, the walk must continue THROUGH the let to the \
              auto `Rivet.quantity_produced`; got {closure:?}",
         );
+        assert!(
+            closure.contains(&ValueCellId::new("RivetedPanel.rivets", "line_cost")),
+            "the RAW instance-path spelling of the seed must ALSO survive: \
+             normalisation is ADDITIVE, not a replacement. LAYER 4 matches a \
+             raw, instance-path-keyed auto DECLARATION id (entity.rs:3025 / \
+             :3130) against this closure, so dropping the raw spelling makes \
+             every such auto look untouched and draws a false-positive \
+             W_UNDERDETERMINED; got {closure:?}",
+        );
+    }
+
+    /// (e) The SECOND insert site — the mid-walk hop (`while let Some(id) =
+    /// frontier.pop()`) — pinned independently of the seed loop (task #5467
+    /// step-14(b)), so a partial fix that touches only the seed loop still
+    /// fails here.
+    ///
+    /// The seed is TEMPLATE-keyed (`RivetedPanel.total`), so the seed loop's
+    /// normalisation is the identity and cannot be what supplies either
+    /// spelling. The instance path appears only one hop DOWN, inside
+    /// `total`'s own `default_expr`.
+    #[test]
+    fn read_closure_keeps_both_spellings_of_a_mid_walk_hop() {
+        let templates = instance_path_templates();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let seed = value_ref("RivetedPanel", "total");
+        let closure = index.read_closure(std::iter::once(&seed));
+
+        assert!(
+            closure.contains(&ValueCellId::new("Rivet", "line_cost")),
+            "the mid-walk hop `RivetedPanel.total → RivetedPanel.rivets.line_cost` \
+             must NORMALISE to `Rivet.line_cost` or the walk stops there and \
+             never reaches the auto behind it; got {closure:?}",
+        );
+        assert!(
+            closure.contains(&ValueCellId::new("RivetedPanel.rivets", "line_cost")),
+            "the mid-walk hop must ALSO retain its RAW instance-path spelling \
+             `RivetedPanel.rivets.line_cost`. This site is separate from the \
+             seed loop, so a fix applied only there leaves LAYER 4 blind to \
+             every auto whose declaration id is minted one hop below a seed; \
+             got {closure:?}",
+        );
+    }
+
+    /// (f) The superset property stated as an INVARIANT rather than as two
+    /// examples (task #5467 step-14(c)). `detect_underdetermined`'s doc already
+    /// CLAIMS "the closure is a strict SUPERSET of the old read-set, so a cell
+    /// unflagged today stays unflagged" — and the old read-set was exactly the
+    /// RAW, un-normalised `extract_dependency_trace(...).reads` (verifiable at
+    /// `main:crates/reify-eval/src/engine_eval.rs`). Destructive normalisation
+    /// falsified that claim silently; pinning it directly is what stops the doc
+    /// and the code drifting apart again.
+    ///
+    /// Stated at the fixpoint, not just at the seeds: every id read by a seed,
+    /// AND every id read by any in-closure cell's `default_expr`, must appear
+    /// in the closure VERBATIM.
+    #[test]
+    fn read_closure_is_a_superset_of_the_unnormalised_reads() {
+        let templates = instance_path_templates();
+        let index = CellReadIndex::build(&templates, TEST_MAX_UNFOLD_DEPTH, TEST_MAX_UNFOLD_NODES);
+
+        let seeds = [
+            value_ref("RivetedPanel.rivets", "line_cost"),
+            value_ref("RivetedPanel", "total"),
+        ];
+        let closure = index.read_closure(seeds.iter());
+
+        for seed in &seeds {
+            for raw in crate::deps::extract_value_deps(seed) {
+                assert!(
+                    closure.contains(&raw),
+                    "SUPERSET violated at a SEED: `{raw}` is read verbatim by a \
+                     seed expression but is absent from the closure. LAYER 4 \
+                     matches raw declaration ids against this set, so any id \
+                     the closure drops becomes a false-positive \
+                     W_UNDERDETERMINED; got {closure:?}",
+                );
+            }
+        }
+
+        // Fixpoint form: the same must hold one hop down, for every cell the
+        // walk actually entered.
+        for id in &closure {
+            let Some(expr) = index.cell_map.get(id) else {
+                continue;
+            };
+            for raw in crate::deps::extract_value_deps(expr) {
+                assert!(
+                    closure.contains(&raw),
+                    "SUPERSET violated MID-WALK: `{raw}` is read verbatim by \
+                     `{id}`'s default_expr, which the closure entered, but is \
+                     absent from the closure; got {closure:?}",
+                );
+            }
+        }
     }
 }
 
