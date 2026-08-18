@@ -49,7 +49,7 @@ let bcs = [
 let modes = modal_analysis(gantry, ModalOptions(
     n_modes: 10,
     boundary_conditions: bcs,
-    damping: RayleighDamping(alpha: 0.0, beta: 1e-4),
+    damping: RayleighDamping(alpha: 0.0Hz, beta: 0.0001s),
 ));
 
 // modes : ModalResult — List<Mode> ordered by frequency
