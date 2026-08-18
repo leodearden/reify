@@ -1261,9 +1261,13 @@ fn in_oracle_scope(path: &str) -> bool {
 ///
 /// Chunk-side escape: a line carrying a well-formed `pdoccover:allow —
 /// <reason>` documents something deliberately ahead of the implementation, and
-/// its mentions are dropped. A REASONLESS marker drops nothing — the mention
-/// stays visible so the caller can report the malformed marker rather than
-/// silently honour it (PRD design decision 7).
+/// its mentions are dropped. A REASONLESS marker drops nothing here — but do
+/// not rely on that alone to keep it reportable, because the five filters
+/// below can still drop the only call-shaped token on the marked line.
+/// [`fabrication_findings`] therefore derives its `allow-missing-reason:`
+/// verdict from the RAW shapes ([`call_shape_sites`]) rather than from this
+/// function's output, so no filter added here can ever narrow that category
+/// (PRD design decision 7 — the escape hatch can never become un-reviewable).
 ///
 /// ## The five filters
 ///
@@ -1334,34 +1338,17 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
     let mut out = Vec::new();
     for (idx, line) in content.lines().enumerate() {
         // A well-formed allow marker suppresses the whole line; a reasonless
-        // one suppresses nothing.
+        // one suppresses nothing here, and is reported by
+        // `fabrication_findings` from the RAW sites instead — so none of the
+        // filters below can hide a malformed marker.
         if allow_marker_reason(line).is_some() {
             continue;
         }
         let bytes = line.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if bytes[i] != b'(' {
-                i += 1;
-                continue;
-            }
-            // Walk back over the identifier immediately preceding the paren.
-            let end = i;
-            let mut start = end;
-            while start > 0 && is_word_byte(bytes[start - 1]) {
-                start -= 1;
-            }
-            i += 1;
-            if start == end {
-                continue; // `(` not preceded by an identifier
-            }
+        for (name, start, end) in call_shape_sites(line) {
             // `.foo(` is member access, `@foo(` is an ad-hoc port/region
             // designator — neither is a builtin call.
             if start > 0 && matches!(bytes[start - 1], b'.' | b'@') {
-                continue;
-            }
-            let name = &line[start..end];
-            if !is_identifier_shaped(name) {
                 continue;
             }
             // A reserved word is never a builtin (`Trait::fn(args)`,
@@ -1385,6 +1372,56 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
             }
             out.push((name.to_string(), idx + 1));
         }
+    }
+    out
+}
+
+/// Every `ident(` site on one line: `(name, start, end)` byte offsets into
+/// `line`, where `start` is the first byte of the name and `end` the offset of
+/// the `(`.
+///
+/// The raw call SHAPE — the walk-back that finds a name at all, and nothing
+/// else. None of the five narrowing filters [`chunk_call_mentions`] layers on
+/// top is applied here; only [`is_identifier_shaped`], which decides whether
+/// there is a NAME, not whether that name is a claim.
+///
+/// Shared with the reasonless-marker pre-pass in [`fabrication_findings`],
+/// which must see this UNNARROWED view. A malformed `pdoccover:allow` marker
+/// has to stay reportable even when the only call-shaped token on its line is
+/// one the filters drop (`auto(free)`, `pipe@region(x)`,
+/// `translate(primitive(...))`, or a name the chunk declares elsewhere) —
+/// otherwise widening the filters silently shrinks coverage of a category
+/// #5480 hard-gates, and PRD design decision 7's guarantee that "the escape
+/// hatch can never become un-reviewable" quietly stops holding. One function
+/// rather than two walks, so the narrowed and raw views can never disagree
+/// about what a call site IS.
+///
+/// Format-agnostic, like everything else on this path: a byte walk, no
+/// markdown awareness.
+fn call_shape_sites(line: &str) -> Vec<(&str, usize, usize)> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'(' {
+            i += 1;
+            continue;
+        }
+        // Walk back over the identifier immediately preceding the paren.
+        let end = i;
+        let mut start = end;
+        while start > 0 && is_word_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        i += 1;
+        if start == end {
+            continue; // `(` not preceded by an identifier
+        }
+        let name = &line[start..end];
+        if !is_identifier_shaped(name) {
+            continue;
+        }
+        out.push((name, start, end));
     }
     out
 }
@@ -1783,47 +1820,81 @@ fn omission_findings(inputs: &Inputs) -> Vec<Keyed> {
 /// malformed marker entirely. That is a hole in PRD design decision 7's
 /// guarantee that the escape hatch can never become un-reviewable: the marker
 /// would be invisible to the detector purely because of its position.
+///
+/// It is also FILTER-INDEPENDENT, for the same reason. The pre-pass reads
+/// [`call_shape_sites`] — the raw `ident(` shapes — over the marker-carrying
+/// lines, NOT [`chunk_call_mentions`]' narrowed output. Sourcing it from the
+/// narrowed view would couple `allow-missing-reason:` coverage to the
+/// mention-side filters: each filter added there would silently stop reporting
+/// malformed markers on the lines it drops (`auto(free)`, `pipe@region(x)`,
+/// `translate(primitive(...))`, `solid.volume()`, or any name the chunk
+/// declares elsewhere), shrinking a category #5480 hard-gates without anything
+/// going RED. `reasonless_marker_survives_every_mention_side_filter` in
+/// tests/pdoccover.rs pins one case per filter.
+///
+/// Residual, and deliberately left: a reasonless marker on a line with NO
+/// call-shaped token at all still reports nothing, because a finding here is
+/// keyed by NAME and such a line offers none. Reporting it would need a
+/// path:line-keyed channel, which is #5480's baseline-format work, not this
+/// lane's.
 fn fabrication_findings(ctx: &AuditContext<'_>, inputs: &Inputs) -> Vec<Keyed> {
     let known = known_name_index(&load_oracle_sources(ctx, inputs));
 
     let mut out = Vec::new();
     for (path, content) in &inputs.chunk_sources {
-        let lines: Vec<&str> = content.lines().collect();
         let mentions = chunk_call_mentions(content);
 
         // Pre-pass: name -> FIRST line in this file carrying a reasonless
         // marker for it. Position-independent, so the marker always wins.
+        //
+        // Read from the RAW call shapes on marker-carrying lines
+        // (`call_shape_sites`), deliberately NOT from `mentions`: every
+        // mention-side filter is free to drop the only call-shaped token on a
+        // marked line (`auto(free)`, `pipe@region(x)`,
+        // `translate(primitive(...))`, or a name the chunk declares
+        // elsewhere), and sourcing this pass from the narrowed view would then
+        // make the malformed marker invisible — a false-clean on a category
+        // #5480 hard-gates, and precisely the hole in PRD design decision 7
+        // that the line-order independence below also exists to close.
         let mut reasonless: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
-        for (name, line_no) in &mentions {
-            let line = lines.get(line_no - 1).copied().unwrap_or("");
-            if allow_marker_present(line) && allow_marker_reason(line).is_none() {
-                reasonless.entry(name.clone()).or_insert(*line_no);
+        for (idx, line) in content.lines().enumerate() {
+            if !allow_marker_present(line) || allow_marker_reason(line).is_some() {
+                continue;
             }
+            for (name, _, _) in call_shape_sites(line) {
+                reasonless.entry(name.to_string()).or_insert(idx + 1);
+            }
+        }
+
+        // A reasonless marker suppresses nothing and is itself the defect —
+        // reported once per name per file (the map is keyed by name), and
+        // reported INSTEAD of any fabrication verdict, so one malformed marker
+        // costs one finding. Emitted independently of the mention walk below,
+        // because the name it is keyed on may not survive into `mentions` at
+        // all. `check()` sorts the whole list, so emitting here does not fix
+        // the reported order.
+        for (name, marker_line) in &reasonless {
+            out.push(keyed(
+                "allow-missing-reason",
+                name,
+                path,
+                format!(
+                    "— `{ALLOW_TOKEN}` at {path}:{marker_line} has no reason body, so it \
+                     grants no exemption; write `{ALLOW_TOKEN} — <reason>` or remove \
+                     the claim",
+                ),
+            ));
         }
 
         let mut seen: BTreeSet<String> = BTreeSet::new();
 
         for (name, line_no) in mentions {
-            // A reasonless marker suppresses nothing and is itself the defect —
-            // reported once per name per file, and reported INSTEAD of any
-            // fabrication verdict, so one malformed marker costs one finding.
-            if let Some(&marker_line) = reasonless.get(&name) {
-                if seen.insert(name.clone()) {
-                    out.push(keyed(
-                        "allow-missing-reason",
-                        &name,
-                        path,
-                        format!(
-                            "— `{ALLOW_TOKEN}` at {path}:{marker_line} has no reason body, so it \
-                             grants no exemption; write `{ALLOW_TOKEN} — <reason>` or remove \
-                             the claim",
-                        ),
-                    ));
-                }
+            // The malformed marker was reported instead, whatever line it sits
+            // on relative to this mention.
+            if reasonless.contains_key(&name) {
                 continue;
             }
-
             if known.contains(&name) {
                 continue;
             }

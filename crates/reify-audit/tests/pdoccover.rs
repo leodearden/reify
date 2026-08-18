@@ -503,6 +503,131 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
     );
 }
 
+/// The `allow-missing-reason:` verdict must not be narrowed by any
+/// MENTION-SIDE filter.
+///
+/// `fabrication_findings` reports a malformed marker keyed on a name, and the
+/// obvious way to find that name is to read `chunk_call_mentions`' output for
+/// the marked line. That coupling is a trap: every filter #5647 added there
+/// (`.`/`@` left delimiter, `RI_KEYWORDS`, file-scoped `ri_declared_name`,
+/// elided `(...)`) can drop the ONLY call-shaped token on a marked line, and a
+/// marker that yields no name yields no finding. The erosion is silent — the
+/// lane reports clean, nothing goes RED — and `allow-missing-reason:` is one of
+/// the four categories #5480 hard-gates, so PRD design decision 7's guarantee
+/// that "the escape hatch can never become un-reviewable" would quietly stop
+/// holding as the mention side got more precise.
+///
+/// One case per filter. Each chunk also documents `extrude`, which is the only
+/// name in the fixture's registry, so the omission lane stays quiet and the
+/// assertion below sees the marker verdict alone.
+#[test]
+fn reasonless_marker_survives_every_mention_side_filter() {
+    for (filter, chunk, expected_name) in [
+        (
+            "RI_KEYWORDS membership (`auto` is a value literal, spec §2.10:207)",
+            "# Params\n\n- `auto(free)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "auto",
+        ),
+        (
+            "`@` left delimiter (ad-hoc port/region designator, spec §D5)",
+            "# Connect\n\n- `pipe@region(outer)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "region",
+        ),
+        (
+            "`.` left delimiter (member access)",
+            "# Query\n\n- `solid.volume()` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "volume",
+        ),
+        (
+            "elided `(...)` argument list (metavariable)",
+            "# Geometry\n\n- `primitive(...)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "primitive",
+        ),
+        (
+            "file-scoped `ri_declared_name` (declared elsewhere in this chunk)",
+            "# Traits\n\n```\nfn make_default() -> Self\n```\n\
+             - `make_default(x)` <!-- pdoccover:allow -->\n\
+             - `extrude(profile, height)` — real.\n",
+            "make_default",
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(
+            root,
+            FIX_UNITS,
+            "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+        );
+        write_file(root, FIX_STDLIB_CHUNK, chunk);
+
+        let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+        let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+        let got: Vec<(&str, &str)> = findings
+            .iter()
+            .map(|f| (finding_category(f), finding_name(f)))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("allow-missing-reason", expected_name)],
+            "[{filter}] a reasonless marker must stay reportable even though \
+             this filter drops the only call-shaped token on its line. If this \
+             is RED, `fabrication_findings`' pre-pass has been re-coupled to \
+             `chunk_call_mentions`' narrowed output and the escape hatch is \
+             now un-reviewable on those lines. Got {findings:?}"
+        );
+    }
+}
+
+/// A reasonless marker on a line the mention side drops must still SUBSUME the
+/// fabrication verdict for that name elsewhere in the same file — the
+/// precedence rule and the filter-independence rule have to hold together, not
+/// just one at a time.
+#[test]
+fn reasonless_marker_on_a_filtered_line_still_subsumes_the_fabrication() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write_file(
+        root,
+        FIX_UNITS,
+        "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[\n    \"extrude\",\n];\n",
+    );
+    // `ghost_op(...)` is elided on the MARKED line (filter 5 drops it) and
+    // plain two lines below, where it is a live fabrication.
+    write_file(
+        root,
+        FIX_STDLIB_CHUNK,
+        "# Stdlib\n\n- `ghost_op(...)` <!-- pdoccover:allow -->\n\
+         - `ghost_op(x)` — plain mention, no marker.\n\
+         - `extrude(profile, height)` — real.\n",
+    );
+
+    let h = Harness::new(&[FIX_UNITS, FIX_STDLIB_CHUNK]);
+    let findings = reify_audit::pdoccover::check(&h.ctx(root));
+
+    let got: Vec<(&str, &str)> = findings
+        .iter()
+        .map(|f| (finding_category(f), finding_name(f)))
+        .collect();
+    assert_eq!(
+        got,
+        vec![("allow-missing-reason", "ghost_op")],
+        "exactly one finding, and it must be the malformed marker: the marker \
+         is the defect to fix, and reporting the fabrication as well would \
+         charge one mistake twice. Got {findings:?}"
+    );
+    assert!(
+        findings[0].summary.contains(&format!("{FIX_STDLIB_CHUNK}:3")),
+        "the summary must cite the MARKER's line (3), not the plain mention's \
+         (4) — line 3 is the one the reader has to edit; got {:?}",
+        findings[0].summary
+    );
+}
+
 /// The `allow-missing-reason:` verdict SUBSUMES the fabrication verdict for the
 /// same name in the same file REGARDLESS OF LINE ORDER.
 ///
