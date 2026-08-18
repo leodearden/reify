@@ -12,6 +12,26 @@
 
 use crate::common;
 
+// ── The needles, shared by the positive tests AND the over-narrowing guard ────────
+//
+// The guard below asserts the dimension Warning is ABSENT. A negative assertion
+// coupled to prose that nothing else pins is the classic silently-vacuous test: reword
+// the message and the positive tests (asserting on other tokens) still pass, while the
+// guard becomes vacuously true and stops guarding, with nothing going red. Routing all
+// three tests through these consts means a reword breaks them TOGETHER.
+//
+// `RULING_TAG` is the stable half — the prose may be rewritten freely, but the ruling
+// citation is the message's load-bearing identifier. The two prefixes carry the
+// trailing `:` so they match the diagnostic's own `"<builtin>: …"` opening and not a
+// bare mention of the builtin name elsewhere on stderr.
+
+/// The ruling citation every RULING #6126 dimension Warning carries.
+const RULING_TAG: &str = "RULING #6126";
+/// The opening of the `transform_log` dimension Warning.
+const LOG_DIAG_PREFIX: &str = "transform_log:";
+/// The opening of the `transform_exp` dimension Warning.
+const EXP_DIAG_PREFIX: &str = "transform_exp:";
+
 /// `reify eval` on a dimensionless Transform translation emits the
 /// Vector3<Length>-requirement Warning on stderr via the post-Undef geometry
 /// diagnose hook, and still exits 0.
@@ -25,8 +45,13 @@ fn eval_transform_log_dimensionless_warns_length_required() {
         "a dimension rejection is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains("transform_log"),
+        stderr.contains(LOG_DIAG_PREFIX),
         "stderr should name the builtin that rejected; got: {stderr}"
+    );
+    assert!(
+        stderr.contains(RULING_TAG),
+        "stderr should cite the ruling — the token the over-narrowing guard keys its \
+         ABSENCE off; got: {stderr}"
     );
     assert!(
         stderr.contains("Length"),
@@ -51,8 +76,13 @@ fn eval_transform_exp_dimensionless_warns_length_required() {
         "a dimension rejection is a Warning (not an Error), so reify eval should exit 0;\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains("transform_exp"),
+        stderr.contains(EXP_DIAG_PREFIX),
         "stderr should name the builtin that rejected; got: {stderr}"
+    );
+    assert!(
+        stderr.contains(RULING_TAG),
+        "stderr should cite the ruling — the token the over-narrowing guard keys its \
+         ABSENCE off; got: {stderr}"
     );
     assert!(
         stderr.contains("Length"),
@@ -84,8 +114,16 @@ fn eval_transform_twist_length_round_trip_emits_no_dimension_warning() {
         stdout.contains("0.001 m"),
         "stdout should show the metre-valued linear component;\nstdout: {stdout}\nstderr: {stderr}"
     );
+    // Keyed off the SAME needles the two positive tests require, so a reword cannot
+    // make this guard vacuously true while they keep passing.
     assert!(
-        !stderr.contains("must be Vector3<Length>"),
+        !stderr.contains(RULING_TAG),
         "a Length twist must NOT provoke the dimension warning (over-narrowing guard); got: {stderr}"
     );
+    for prefix in [LOG_DIAG_PREFIX, EXP_DIAG_PREFIX] {
+        assert!(
+            !stderr.contains(prefix),
+            "neither end of the seam may warn on a Length twist (expected no {prefix:?}); got: {stderr}"
+        );
+    }
 }
