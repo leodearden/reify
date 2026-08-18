@@ -190,6 +190,31 @@ fn normalize_quat_input(q: (f64, f64, f64, f64)) -> Option<(f64, f64, f64, f64)>
 /// structure).
 const TWIST_LINEAR_DIM: DimensionVector = DimensionVector::LENGTH;
 
+/// The dimension admitted on the ANGULAR half of a twist.
+///
+/// NOT ruled by #6126 — **#6080 owns the angular half**, including whether this value
+/// stays DIMENSIONLESS or widens (to ANGLE, or to a set). This const exists purely so
+/// that the value has ONE spelling instead of two, because two co-dependent sites read
+/// it and they are 1000 lines apart:
+///
+/// 1. the `transform_exp` EVAL gate, which rejects a non-admitted angular half; and
+/// 2. [`diagnose`]'s `transform_exp` arm, which DEFERS (stays silent) exactly when that
+///    eval gate is the one that owns the failure, so a twist wrong in both halves is
+///    not mis-attributed to `linear`.
+///
+/// The deferral is only correct while it agrees with the gate. Re-spelling the literal
+/// at both sites made that agreement unenforced, and the failure is SILENT in the
+/// dangerous direction: widen the eval gate alone and the classifier keeps requiring
+/// DIMENSIONLESS, so it stops emitting the #6126 linear Warning for every twist whose
+/// angular half is newly-valid — a diagnostic regression no test that hardcodes
+/// DIMENSIONLESS can see. `diagnose_transform_exp_deferral_tracks_evals_angular_gate`
+/// is the behavioural pin: it builds its angular half FROM this const, so it follows
+/// the gate wherever #6080 moves it and goes red if only one site moves.
+///
+/// #6080 therefore changes this ONE line (plus, if the gate becomes a set rather than a
+/// single dimension, both readers together — which the pin will force it to notice).
+const TWIST_ANGULAR_DIM: DimensionVector = DimensionVector::DIMENSIONLESS;
+
 /// Decompose one half of a twist — `Map { angular: Vector3<…>, linear: Vector3<…> }` —
 /// into its three finite components and their single shared dimension.
 ///
@@ -655,11 +680,16 @@ pub(crate) fn eval_geometry(name: &str, args: &[Value]) -> Option<Value> {
                 None => return Some(Value::Undef),
             };
             // Extract angular: must be Vector3<DIMENSIONLESS>.
+            //
+            // The gate is spelled via `TWIST_ANGULAR_DIM` — NOT because #6126 rules the
+            // angular half (it does not; #6080 does), but because `diagnose`'s
+            // transform_exp arm defers to THIS gate and must not drift from it. See
+            // that const's doc for the co-dependence.
             let (ang_comps, ang_dim) = match decompose_vec3(angular_val) {
                 Some(v) => v,
                 None => return Some(Value::Undef),
             };
-            if ang_dim != DimensionVector::DIMENSIONLESS {
+            if ang_dim != TWIST_ANGULAR_DIM {
                 return Some(Value::Undef);
             }
             let (wx, wy, wz) = (ang_comps[0], ang_comps[1], ang_comps[2]);
@@ -1636,14 +1666,16 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
             // This keeps the arm independent of #6080 (which owns the angular gate and
             // will add its own arm to explain it) in the only way that is actually
             // independent: by declining to speak for it, rather than by speaking over
-            // it. The DIMENSIONLESS literal below mirrors eval's angular gate, not this
-            // ruling's — #6126 governs the linear half only.
+            // it. `TWIST_ANGULAR_DIM` below is eval's angular gate, not this ruling's —
+            // #6126 governs the linear half only. It is read from the const rather than
+            // re-spelled so widening the gate cannot silently mute this arm; see that
+            // const's doc, and the `..._deferral_tracks_evals_angular_gate` pin.
             //
             // Shape failures on the angular half — a non-Map argument, a missing
             // `angular` key, a non-3-Vector — fold into `None` here for the same
             // no-mis-attribution reason they do on the linear half.
             let (_, ang_dim) = decompose_twist_component(&args[0], "angular")?;
-            if ang_dim != DimensionVector::DIMENSIONLESS {
+            if ang_dim != TWIST_ANGULAR_DIM {
                 return None;
             }
             // As on the transform_log arm, `decompose_twist_component` returning None
@@ -5710,6 +5742,37 @@ mod tests {
         );
     }
 
+    /// An UNNAMED composite dimension must still print its actual exponents, not a
+    /// generic label — the `dimension_label` fallback branch, which every other test
+    /// here bypasses by using a NAMED dimension (Length/Angle/Mass) or DIMENSIONLESS.
+    ///
+    /// That fallback is the documented divergence from the two `reify-eval` siblings
+    /// (`value_short_label` / `scalar_got_label`), which collapse this case to the
+    /// uninformative word "dimensioned". `MONEY / MASS` is the codebase's canonical
+    /// no-canonical-name example (see `canonical_name_composite_returns_none` in
+    /// reify-core), and `Display` renders it "USD·kg^-1" — so a regression that
+    /// re-collapsed the fallback to a generic string turns this red.
+    #[test]
+    fn diagnose_transform_exp_unnamed_composite_linear_prints_exponents() {
+        let cost_per_mass = DimensionVector::MONEY.div(&DimensionVector::MASS);
+        assert!(
+            cost_per_mass.canonical_name().is_none(),
+            "premise: MONEY/MASS has no canonical name, so the message must come from \
+             the Display fallback"
+        );
+        let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], cost_per_mass);
+        let diag = super::diagnose("transform_exp", &[twist])
+            .expect("an unnamed composite linear dimension must still produce a diagnostic");
+        for needle in ["USD", "kg^-1"] {
+            assert!(
+                diag.message.contains(needle),
+                "an unnamed dimension must print its EXPONENTS (expected {needle:?}) \
+                 rather than a generic label, got: {}",
+                diag.message
+            );
+        }
+    }
+
     #[test]
     fn diagnose_transform_exp_length_linear_returns_none() {
         let twist = make_twist([0.0, 0.0, 0.0], [1.0, 2.0, 3.0], DimensionVector::LENGTH);
@@ -5766,6 +5829,39 @@ mod tests {
             super::diagnose("transform_exp", &[twist]).is_none(),
             "the linear half is valid, so this arm has nothing to say; #6080's angular \
              arm owns explaining it"
+        );
+    }
+
+    /// The deferral must track eval's angular gate WHEREVER #6080 moves it.
+    ///
+    /// Every other test here builds a DIMENSIONLESS angular half by literal, so all of
+    /// them would keep passing if the gate widened (say, to ANGLE) while this
+    /// classifier kept requiring DIMENSIONLESS — and the regression is silent: the arm
+    /// would simply stop emitting the #6126 linear Warning for every twist whose
+    /// angular half is newly-valid. This test builds its angular half FROM
+    /// `TWIST_ANGULAR_DIM`, the const both sites now read, so it follows the gate and
+    /// goes red the moment only one of the two sites moves.
+    #[test]
+    fn diagnose_transform_exp_deferral_tracks_evals_angular_gate() {
+        let twist = make_twist_with_dims(
+            [0.0, 0.0, 0.0],
+            super::TWIST_ANGULAR_DIM,
+            [1.0, 2.0, 3.0],
+            DimensionVector::MASS,
+        );
+        assert!(
+            eval_builtin("transform_exp", std::slice::from_ref(&twist)).is_undef(),
+            "premise: an angular half eval ADMITS plus a non-Length linear is rejected \
+             by the LINEAR gate — the one this arm speaks for"
+        );
+        let diag = super::diagnose("transform_exp", &[twist]).expect(
+            "the linear gate owns this failure, so the arm must speak; if this panics, \
+             the classifier's angular deferral has drifted from eval's angular gate",
+        );
+        assert!(
+            diag.message.contains("linear"),
+            "the surviving message must still blame `linear`, got: {}",
+            diag.message
         );
     }
 
