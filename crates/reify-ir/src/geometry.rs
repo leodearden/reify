@@ -2474,13 +2474,17 @@ pub enum ExportWarning {
 
 /// Tessellated mesh for visualization.
 ///
-/// **Units:** `vertices` (and `normals`' origin) are in SI METRES — reify model
-/// space. Every kernel tessellation produces metres, and every consumer that
-/// needs another unit converts at its own boundary: [`write_3mf`] scales to
-/// millimetres to match the `unit="millimeter"` it declares, while the STL
-/// writers emit metres verbatim (see their contract comments). Leaving this
-/// unstated is the root ambiguity that produced the 1000× STEP/3MF unit
-/// mislabel, so state it here rather than at each use site.
+/// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
+/// tessellation produces metres, and every consumer that needs another unit
+/// converts at its own boundary: [`write_3mf`] scales vertices to millimetres
+/// to match the `unit="millimeter"` it declares, while the STL writers emit
+/// metres verbatim (see their contract comments). Leaving this unstated is the
+/// root ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it
+/// here rather than at each use site.
+///
+/// `normals` carry NO length unit: they are dimensionless unit direction
+/// vectors, invariant under the uniform positive metre→millimetre scale the
+/// export writers apply, so no writer converts them (and none must).
 #[derive(Debug, Clone)]
 pub struct Mesh {
     /// Vertex positions in SI metres, flat [x0, y0, z0, x1, y1, z1, ...].
@@ -10702,6 +10706,56 @@ mod tests {
         assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
     }
 
+    /// Write a 30 mm cube through [`write_3mf`] and read the package back:
+    /// returns the `3D/3dmodel.model` XML plus every `<vertex>`'s parsed
+    /// `[x, y, z]`.
+    ///
+    /// The mesh is the unit cube's `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — topology unchanged. Shared by
+    /// the two tests that pin the writer's length regime: one asserts the unit
+    /// DECLARATION and the coordinate MAGNITUDES agree, the other that the
+    /// metre→millimetre conversion adds no representation noise.
+    fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
+        use std::io::Cursor;
+
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // `write_3mf` stores entries with CompressionMethod::Stored, so the
+        // default-features-off `zip` dependency can read them back as-is.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+        drop(model_file);
+
+        fn attr(tail: &str, name: &str) -> f64 {
+            // Attributes appear in x, y, z order inside one element, and this
+            // element's three attributes all precede the next element's, so
+            // the FIRST match after the split point is the right one.
+            let key = format!("{name}=\"");
+            let start = tail.find(&key).expect("vertex must carry the attribute") + key.len();
+            let end = tail[start..].find('"').expect("attribute must be quoted") + start;
+            tail[start..end]
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("vertex {name} must be a parsable number"))
+        }
+
+        let coords = model_xml
+            .split("<vertex ")
+            .skip(1)
+            .map(|tail| [attr(tail, "x"), attr(tail, "y"), attr(tail, "z")])
+            .collect();
+        (model_xml, coords)
+    }
+
     /// 3MF export must keep its unit DECLARATION and its vertex PAYLOAD in
     /// agreement: reify model space is SI metres, the package declares
     /// `unit="millimeter"`, so the vertices it carries must be millimetres.
@@ -10719,32 +10773,17 @@ mod tests {
     /// input's own representation error plus one re-rounding at the millimetre
     /// magnitude. Across the two AABB endpoints that is 2·30·2^-23 ≈ 7.2e-6 mm
     /// worst case, so 1e-5 is the tightest honest bound; 1e-6 (the f64 STEP
-    /// path's bound) is NOT derivable here. In practice the error is 0.0: the
-    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0`.
-    /// 1e-5 still sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it
-    /// cannot pass while the bug lives.
+    /// path's bound) is NOT derivable here. In practice the error is 0.0 — the
+    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0` —
+    /// but that exactness is pinned by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// NOT here: this test stays about the unit regime alone, so a change to
+    /// how coordinates are formatted can never fail it as a unit regression.
+    /// 1e-5 sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it cannot
+    /// pass while the bug lives.
     #[test]
     fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
-        use std::io::Cursor;
-
-        // A 30 mm cube expressed in reify's SI-metre model space: the unit
-        // cube's [0,1]^3 corners scaled to [0,0.030]^3. Topology unchanged.
-        let mut mesh = unit_cube_mesh();
-        for v in &mut mesh.vertices {
-            *v *= 0.030_f32;
-        }
-
-        let mut buf = Vec::new();
-        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
-            .expect("write_3mf should succeed");
-
-        // `write_3mf` stores entries with CompressionMethod::Stored, so the
-        // default-features-off `zip` dependency can read them back as-is.
-        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
-            .expect("output should be a valid ZIP archive");
-        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
-        let mut model_xml = String::new();
-        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+        let (model_xml, coords) = read_back_30mm_cube_3mf();
 
         // (1) DECLARATION half — passes today, and is otherwise unasserted
         // anywhere in the tree.
@@ -10755,55 +10794,15 @@ mod tests {
 
         // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
         // folded into a per-axis AABB.
-        fn attr_raw<'a>(tail: &'a str, name: &str) -> Option<&'a str> {
-            // Attributes appear in x, y, z order inside one element, and this
-            // element's three attributes all precede the next element's, so
-            // the FIRST match after the split point is the right one.
-            let key = format!("{name}=\"");
-            let start = tail.find(&key)? + key.len();
-            let end = tail[start..].find('"')? + start;
-            Some(&tail[start..end])
-        }
-        fn attr(tail: &str, name: &str) -> Option<f64> {
-            attr_raw(tail, name)?.parse::<f64>().ok()
-        }
-
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
-        let mut n_verts = 0usize;
-        let mut literals: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for tail in model_xml.split("<vertex ").skip(1) {
-            let coords = [
-                attr(tail, "x").expect("vertex must carry a parsable x"),
-                attr(tail, "y").expect("vertex must carry a parsable y"),
-                attr(tail, "z").expect("vertex must carry a parsable z"),
-            ];
-            for name in ["x", "y", "z"] {
-                literals.insert(attr_raw(tail, name).expect("attr present").to_string());
-            }
-            n_verts += 1;
+        for c in &coords {
             for axis in 0..3 {
-                min[axis] = min[axis].min(coords[axis]);
-                max[axis] = max[axis].max(coords[axis]);
+                min[axis] = min[axis].min(c[axis]);
+                max[axis] = max[axis].max(c[axis]);
             }
         }
-        assert_eq!(n_verts, 8, "a cube should emit 8 <vertex> elements");
-
-        // (3) NO REPRESENTATION NOISE — the emitted decimals must be the round
-        // numbers the author wrote, not 17 digits of f32 binary artifact. This
-        // is what makes the f32-vs-f64 choice at the emit site a tested
-        // behaviour rather than a comment: doing the multiply as
-        // `f64::from(v) * 1000.0` instead emits `29.999999329447746` and fails
-        // here, while still passing the AABB check above. See the rationale on
-        // `MM_PER_METRE_F32`.
-        let want: std::collections::BTreeSet<String> =
-            ["0".to_string(), "30".to_string()].into_iter().collect();
-        assert_eq!(
-            literals, want,
-            "a 0.030 m cube should emit exactly the round literals {{\"0\", \"30\"}} in \
-             millimetres; got {literals:?} — the metre→millimetre conversion is introducing \
-             avoidable representation noise"
-        );
 
         for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
             let extent = max[axis] - min[axis];
@@ -10814,6 +10813,62 @@ mod tests {
                  (min {}, max {}) — declaration and payload disagree",
                 min[axis],
                 max[axis]
+            );
+        }
+    }
+
+    /// The metre→millimetre conversion must land EXACTLY on the millimetre
+    /// values the author wrote: the conversion arithmetic itself must add no
+    /// representation noise.
+    ///
+    /// This is what makes the f32-vs-f64 choice at the emit site a TESTED
+    /// behaviour rather than a comment. Doing the multiply as
+    /// `f64::from(v) * 1000.0` emits `29.999999329447746` for a `0.030 m`
+    /// coordinate — comfortably inside the sibling unit-regime test's 1e-5 mm
+    /// AABB tolerance, so that test stays green, while every emitted
+    /// coordinate grows from 2 to 18 characters of false precision. The
+    /// measured table and the full reasoning live on `MM_PER_METRE_F32`.
+    ///
+    /// Asserted on the PARSED values, not on the emitted decimal strings: the
+    /// property is exactness, and pinning the literal text would additionally
+    /// freeze the writer to f32 `{}` (shortest-round-trip) formatting, so a
+    /// legitimate formatting change — `{:.6}` for a picky consumer, a fixed
+    /// decimal count for byte-determinism — would fail here and read as a
+    /// precision regression when it is not.
+    ///
+    /// The `==` comparisons are exact ON PURPOSE. Both endpoints are exactly
+    /// representable in f32 and in f64, so exact equality is the correct
+    /// predicate here, and any epsilon loose enough to be worth writing would
+    /// also admit the `29.999999329447746` this test exists to reject.
+    #[test]
+    fn write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise() {
+        let (_model_xml, coords) = read_back_30mm_cube_3mf();
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+
+        // The cube's corners are [0, 0.030]^3 m, so in millimetres every
+        // emitted coordinate must be exactly 0 or exactly 30.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0 || v == 30.0,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-declared 3MF package; the metre→millimetre conversion is \
+                     introducing avoidable representation noise (see MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // ...and both values must actually OCCUR on every axis, so a collapsed
+        // or all-zero payload cannot satisfy the check above vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0),
+                "no vertex carries {name} = 30"
             );
         }
     }
