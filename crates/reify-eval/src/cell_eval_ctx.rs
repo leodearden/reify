@@ -56,7 +56,7 @@ mod tests {
         CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
         DeterminacyState, FieldSourceKind, PersistentMap, ResolvedFunction, Value, ValueMap,
     };
-    use reify_test_support::mocks::{AlwaysInside, MockConstraintChecker, NoContainment};
+    use reify_test_support::mocks::{MockConstraintChecker, MockContainmentQuery};
 
     use super::cell_eval_ctx;
     use crate::Engine;
@@ -75,11 +75,11 @@ mod tests {
     /// Shared empty fixtures for the tests below: an empty `ValueMap`,
     /// functions slice, meta map, determinacy map, and diagnostics sink.
     /// Only two axes actually vary between tests — determinacy-map contents
-    /// and the `containment` impl — so callers destructure this tuple and
+    /// and the `containment` answer — so callers destructure this tuple and
     /// then override just the field they exercise (e.g. `.insert(..)` into
-    /// the returned `determinacy`, or construct `AlwaysInside` instead of
-    /// `NoContainment`) rather than each re-declaring all five empty
-    /// fixtures inline.
+    /// the returned `determinacy`, or hand `MockContainmentQuery` a
+    /// `result: Some(true)` instead of `result: None`) rather than each
+    /// re-declaring all five empty fixtures inline.
     fn empty_inputs() -> EmptyCtxInputs {
         (
             ValueMap::new(),
@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn cell_eval_ctx_wires_all_required_capabilities() {
         let (values, functions, meta_map, determinacy, sink) = empty_inputs();
-        let containment = NoContainment;
+        let containment = MockContainmentQuery { result: None };
         let containment_ref: &dyn ContainmentQuery = &containment;
 
         let ctx = cell_eval_ctx(
@@ -289,7 +289,7 @@ mod tests {
             cell_id.clone(),
             (Value::Real(2.5), DeterminacyState::Determined),
         );
-        let containment = NoContainment;
+        let containment = MockContainmentQuery { result: None };
 
         let ctx = cell_eval_ctx(
             &values,
@@ -320,8 +320,9 @@ mod tests {
     /// returned context. Per the `Restricted` arm in
     /// `reify_expr`'s field-sample dispatch, this resolves to the inner
     /// field's value only when `ctx.containment.and_then(|c| c.contains(..))`
-    /// is `Some(true)` (as here, via `AlwaysInside`) and would instead
-    /// silently degrade to `Value::Undef` if `ctx.containment` were `None`
+    /// is `Some(true)` — as here, via a `MockContainmentQuery` carrying
+    /// `result: Some(true)` — and would instead silently degrade to
+    /// `Value::Undef` if `ctx.containment` were `None`
     /// — e.g. if a future edit dropped the `.with_containment(..)` link
     /// from `cell_eval_ctx`'s body. Mirrors the mock-resolver construction
     /// in `reify-expr/tests/field_op_dispatch_tests.rs`, but exercised
@@ -345,7 +346,7 @@ mod tests {
         };
         // Sentinel — NOT Undef (eval_expr's strict-Undef short-circuit would
         // otherwise fire before the Restricted dispatch arm runs).
-        // AlwaysInside ignores the actual region value.
+        // The containment double ignores the actual region value.
         let region = Value::Bool(false);
         let restricted = Value::Field {
             domain_type: Type::dimensionless_scalar(),
@@ -359,7 +360,7 @@ mod tests {
         };
 
         let (values, functions, meta_map, determinacy, sink) = empty_inputs();
-        let containment = AlwaysInside;
+        let containment = MockContainmentQuery { result: Some(true) };
 
         let ctx = cell_eval_ctx(
             &values,
@@ -413,7 +414,7 @@ mod tests {
     #[test]
     fn cell_eval_ctx_runtime_sink_receives_diagnostics_during_eval() {
         let (values, functions, meta_map, determinacy, sink) = empty_inputs();
-        let containment = NoContainment;
+        let containment = MockContainmentQuery { result: None };
 
         let ctx = cell_eval_ctx(
             &values,

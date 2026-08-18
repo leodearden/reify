@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, Type, ValueCellId};
 // `reify-expr` is an optional dependency enabled by `eval-helpers`; see the
-// rationale on its entry in Cargo.toml. Only the ContainmentQuery doubles below
-// need it, so both the import and those doubles carry the same gate.
+// rationale on its entry in Cargo.toml. Only the ContainmentQuery double below
+// needs it, so both the import and that double carry the same gate.
 #[cfg(feature = "eval-helpers")]
 use reify_expr::ContainmentQuery;
 use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, ConstraintSolver, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, OptimizedImpl, OptimizedImplInput, OptimizedImplOutput, QueryError, ResolutionProblem, Satisfaction, SolveResult, TessError, Value, ValueMap, VolumeMesh};
@@ -2172,46 +2172,46 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
     }
 }
 
-/// A [`ContainmentQuery`] that never resolves containment.
+/// A [`ContainmentQuery`] that answers every query with a pre-programmed
+/// `Option<bool>`, ignoring the region and point it is handed.
 ///
 /// Requires the `eval-helpers` feature (which is what supplies `reify-expr`).
 ///
-/// The trivial stub for tests that do not exercise `restrict`/`sample`
+/// The trivial stub for tests that do not exercise real `restrict`/`sample`
 /// containment resolution but must still supply the capability: constructing
 /// it needs no `Engine` and no geometry kernel.
 ///
-/// Note it is NOT an "always outside" double. Per [`ContainmentQuery`]'s
-/// documented return semantics, `None` means containment is *indeterminate*
-/// (non-geometry region, malformed point, kernel error) — which yields
-/// `Value::Undef`, the same observable value a `Some(false)` would, but for a
-/// different reason. A test that needs strictly-outside behaviour wants a
-/// `Some(false)` double; none exists yet, and this is where to add it when one
-/// is first needed.
+/// One parameterized double rather than a family of zero-field ones
+/// (`NoContainment`, `AlwaysInside`, ...): the answers a `ContainmentQuery`
+/// can give are exactly the three inhabitants of `result`, so a test needing
+/// a different answer sets the field instead of adding another struct here.
+///
+/// Choose `result` by the semantics [`ContainmentQuery`] documents for its
+/// return value — the three are NOT interchangeable, even where two of them
+/// produce the same observable `Value`:
+/// - `Some(true)` — the point is inside the region.
+/// - `Some(false)` — the point is strictly outside.
+/// - `None` — containment is *indeterminate* (non-geometry region, malformed
+///   point, kernel error). This yields `Value::Undef`, the same value
+///   `Some(false)` yields, but for a different reason — so a test that means
+///   "outside" must say `Some(false)`, not `None`.
+///
+/// Name, field and body are deliberately identical to the hand-rolled double
+/// in `crates/reify-expr/tests/field_op_dispatch_tests.rs`, which cannot reach
+/// this one under the `eval-helpers` gate (see the `reify-expr` entry in this
+/// crate's Cargo.toml for the measured reason the gate stays). Re-pointing
+/// that file once the gate allows it is then an import swap, not a call-site
+/// rewrite.
 #[cfg(feature = "eval-helpers")]
-pub struct NoContainment;
-
-#[cfg(feature = "eval-helpers")]
-impl ContainmentQuery for NoContainment {
-    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-        None
-    }
+pub struct MockContainmentQuery {
+    /// The answer returned for every `(region, point)` pair.
+    pub result: Option<bool>,
 }
 
-/// A [`ContainmentQuery`] that reports every point as inside the region.
-///
-/// The deliberate complement of [`NoContainment`], used to drive the
-/// `sample(restrict(field, region), point)` dispatch arm down its "inside"
-/// branch so a behavioral test can observe a wired `containment` capability
-/// actually taking effect, rather than merely being carried.
-///
-/// Requires the `eval-helpers` feature (which is what supplies `reify-expr`).
 #[cfg(feature = "eval-helpers")]
-pub struct AlwaysInside;
-
-#[cfg(feature = "eval-helpers")]
-impl ContainmentQuery for AlwaysInside {
+impl ContainmentQuery for MockContainmentQuery {
     fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
-        Some(true)
+        self.result
     }
 }
 
@@ -4662,14 +4662,15 @@ mod tests {
         );
     }
 
-    // No unit test pins `NoContainment`/`AlwaysInside` here: each would only
-    // restate its own three-line body (`None` / `Some(true)`), and two sampled
-    // argument pairs cannot establish the "for every (region, point)" claim
-    // anyway. Both doubles are already load-bearing in the consuming tests,
-    // which fail loudly on any behaviour change — reify-eval's
+    // No unit test pins `MockContainmentQuery` here: one could only restate its
+    // own one-line body (`self.result`), and sampled argument pairs cannot
+    // establish the "for every (region, point)" claim anyway. The double is
+    // already load-bearing in the consuming tests, which fail loudly on any
+    // behaviour change — reify-eval's
     // `cell_eval_ctx_containment_resolves_via_wired_query` only reaches
-    // `Value::Real(42.0)` because `AlwaysInside` answers `Some(true)`, and the
-    // determinacy assertions in the same module fail if `NoContainment` ever
-    // starts resolving. Those tests also perform the `&dyn ContainmentQuery`
-    // coercion, so it needs no separate guard here either.
+    // `Value::Real(42.0)` because its `result: Some(true)` instance answers
+    // inside, and the determinacy assertions in the same module fail if a
+    // `result: None` instance ever starts resolving. Those tests also perform
+    // the `&dyn ContainmentQuery` coercion, so it needs no separate guard here
+    // either.
 }

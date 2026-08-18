@@ -4317,7 +4317,7 @@ mod tests {
         ValueCellId,
     };
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
-    use reify_test_support::mocks::NoContainment;
+    use reify_test_support::mocks::MockContainmentQuery;
 
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -4366,7 +4366,7 @@ mod tests {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
         let sink = RefCell::new(Vec::new());
-        let containment = NoContainment;
+        let containment = MockContainmentQuery { result: None };
         reelaborate_guarded_group(
             &graph,
             &group,
@@ -5000,7 +5000,7 @@ mod tests {
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
             let sink = RefCell::new(Vec::new());
-            let containment = NoContainment;
+            let containment = MockContainmentQuery { result: None };
 
             reelaborate_guarded_group(
                 &graph,
@@ -5045,7 +5045,7 @@ mod tests {
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
             let sink = RefCell::new(Vec::new());
-            let containment = NoContainment;
+            let containment = MockContainmentQuery { result: None };
 
             reelaborate_guarded_group(
                 &graph,
