@@ -10090,3 +10090,197 @@ structure Assembly {
             result.values
         );
     }
+    // ── task 6170 (precision-nominal η): Mode-B export refusal ────────────────
+    //
+    // The occurrence-driven (`reify build`, no `-o`) half of the export refusal.
+    // PRD `docs/prds/v0_6/precision-nominal-representation-guarantee.md` §1.1 /
+    // task η / C-SURFACE (2): a design declaring a `RepresentationWithin` bound
+    // the export path cannot demonstrate it honours must REFUSE the artifact
+    // rather than write it and report success.
+    //
+    // Geometry is a cheap `box`, never a sphere: η's refusal is a static
+    // module-shape decision taken before any measurement, so these tests import
+    // none of the 5-20 s OCCT tessellation cost the PRD §6 gate-cost rule warns
+    // about (and `ExportRecordingKernel` wraps `MockGeometryKernel` anyway — no
+    // OCCT at all). Nothing here touches the filesystem: `/tmp/d` is only a
+    // `design_dir` for path resolution, and every assertion is on the in-memory
+    // artifact.
+
+    /// A module declaring a `RepresentationWithin` bound has its `Output`
+    /// occurrence RECOGNIZED but REFUSED: one artifact, declared path and format
+    /// preserved, zero bytes, an `Error` diagnostic carrying
+    /// [`reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport`] —
+    /// and no `export_with_options` call at all.
+    ///
+    /// Each assertion is load-bearing:
+    /// * ONE artifact with the DECLARED path/format — the occurrence is
+    ///   recognized, not silently skipped. Zero artifacts would drive the CLI's
+    ///   "the design declares no `: Output` occurrences" message, which is FALSE
+    ///   for exactly the modules η targets.
+    /// * EMPTY bytes — this is what makes the CLI writer skip the file
+    ///   (it gates on `!bytes.is_empty()`, never on `format`).
+    /// * The recording kernel's `exported` log EMPTY — the strongest signal
+    ///   available: the refusal happens BEFORE serialization, so no bytes can
+    ///   leak by any route, not merely that produced bytes were discarded.
+    ///
+    /// RED until step-6 adds the gate: today the occurrence exports normally, so
+    /// this sees non-empty bytes, no Error diagnostic and one recorded export.
+    /// That failure IS §1.1 reproduced at the engine boundary.
+    #[test]
+    fn build_outputs_refuses_export_for_module_declaring_representation_within() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        // The `repr_within_with_stl_output.ri` fixture's shape: a geometry
+        // structure owning an `: Output` occurrence, plus a SEPARATE checker
+        // structure declaring the bound on it (the canonical idiom).
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}
+
+structure DCheck {
+    param subject : D
+    constraint RepresentationWithin(subject, 1mm)
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            outputs.artifacts.len(),
+            1,
+            "the STLOutput occurrence must still be RECOGNIZED (one artifact), so the \
+             CLI reports it as refused rather than claiming the design declares no \
+             `: Output` occurrences; got {}",
+            outputs.artifacts.len()
+        );
+        let art = &outputs.artifacts[0];
+        assert_eq!(
+            art.path,
+            PathBuf::from("/tmp/d/o.stl"),
+            "the refused artifact must carry the TRUE declared destination so a caller \
+             can see which export was refused"
+        );
+        assert_eq!(
+            art.format,
+            reify_ir::ExportFormat::Stl,
+            "the refused artifact must preserve the DSL-driven format"
+        );
+        assert!(
+            art.bytes.is_empty(),
+            "the refused artifact must carry ZERO bytes — that is what makes the CLI \
+             writer (which gates on `!bytes.is_empty()`) write no file; got {} bytes",
+            art.bytes.len()
+        );
+        let refusal = art
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == reify_core::Severity::Error)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the refused artifact must carry an Error-severity diagnostic — that \
+                     is what the CLI's exit gate keys on; got {:?}",
+                    art.diagnostics
+                )
+            });
+        assert_eq!(
+            refusal.code,
+            Some(reify_core::DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+            "the refusal must carry the typed code so downstream tooling matches on it \
+             rather than on message substrings"
+        );
+        assert!(
+            refusal
+                .message
+                .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the refusal message must embed the E_* token for the CLI integration \
+             tests, which observe only captured stderr text; got: {}",
+            refusal.message
+        );
+
+        let exported = exported.lock().unwrap().clone();
+        assert!(
+            exported.is_empty(),
+            "export_with_options must NEVER be called for a refused occurrence — the \
+             refusal precedes serialization, so no bytes can leak by any route; got {:?}",
+            exported
+        );
+    }
+
+    /// The C2 negative: the SAME module with the bound-declaring structure
+    /// DELETED exports completely normally.
+    ///
+    /// This is the regression guard for PRD C2 / §3.1(f) — every existing
+    /// unbounded design keeps exporting byte-identically once the refusal lands.
+    /// A gate that over-fired would refuse every export in the repo, so this test
+    /// is what bounds the blast radius of step-6.
+    ///
+    /// GREEN today and must STAY green.
+    #[test]
+    fn build_outputs_exports_normally_without_a_representation_within_bound() {
+        use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
+        use std::path::{Path, PathBuf};
+        use std::sync::{Arc, Mutex};
+
+        // Byte-identical to the refusal test's module MINUS `structure DCheck`.
+        let module = parse_and_compile_with_stdlib(
+            r#"structure def D {
+    let part = box(10mm, 20mm, 5mm)
+    sub o = STLOutput(subject: part, resolution: 0.2mm, path: "o.stl")
+}"#,
+        );
+
+        let executed: Arc<Mutex<Vec<reify_ir::GeometryHandleId>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let exported: Arc<Mutex<Vec<(reify_ir::GeometryHandleId, reify_ir::ExportFormat)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
+        let recorded_options = kernel.recorded_options();
+        let mut engine = crate::Engine::new(
+            Box::new(MockConstraintChecker::new()),
+            Some(Box::new(kernel)),
+        );
+
+        let outputs = engine.build_outputs_with_result(&module, Path::new("/tmp/d"), None);
+
+        assert_eq!(
+            outputs.artifacts.len(),
+            1,
+            "exactly one ExportArtifact for the single STLOutput occurrence, got {}",
+            outputs.artifacts.len()
+        );
+        let art = &outputs.artifacts[0];
+        assert_eq!(art.path, PathBuf::from("/tmp/d/o.stl"));
+        assert_eq!(art.format, reify_ir::ExportFormat::Stl);
+        assert!(
+            !art.bytes.is_empty(),
+            "an UNBOUNDED module must still export bytes — the refusal must not fire \
+             here (PRD C2)"
+        );
+        assert!(
+            !art.diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Error),
+            "an unbounded module must carry NO Error diagnostic; got {:?}",
+            art.diagnostics
+        );
+        assert_eq!(
+            recorded_options.lock().unwrap().len(),
+            1,
+            "export_with_options must be called exactly once for the unbounded module — \
+             serialization is untouched by η"
+        );
+    }
