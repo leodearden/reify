@@ -865,7 +865,9 @@ mod compute_representation_bounds_tests;
 mod tests {
     use super::*;
     use crate::graph::ConstraintNodeData;
-    use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, Type, ValueCellId};
+    use reify_core::{
+        ConstraintNodeId, ContentHash, DiagnosticCode, DimensionVector, Severity, Type, ValueCellId,
+    };
     use reify_ir::{CompiledExpr, PersistentMap, Value};
 
     /// Build a `(ConstraintNodeId, ConstraintNodeData)` pair carrying the
@@ -2680,6 +2682,234 @@ structure Plain {
             !module_declares_representation_within(&compiled),
             "a module with no RepresentationWithin constraint must NOT be detected \
              (unbounded designs keep exporting unchanged)"
+        );
+    }
+    // ── task 6170 (precision-nominal η): the shared export-refusal diagnostic ─
+    //
+    // `unenforced_representation_bound_diagnostic` is the ONE builder both
+    // export surfaces consult — `reify build -o <file>` (`cmd_build`'s `-o` arm)
+    // and `Engine::build_outputs_with_result` — so the two refusals cannot word
+    // themselves differently or disagree about what counts as bounded (PRD
+    // `docs/prds/v0_6/precision-nominal-representation-guarantee.md`, task eta /
+    // C-SURFACE (2) §1.1).
+    //
+    // It is built SOLELY from `compute_representation_bounds`' subject →
+    // tightest-bound table, never from an independent scan of
+    // `module.templates`. Cases 4 and 5 below are what make that structural
+    // rather than stylistic: min-fold-per-subject and deterministic
+    // lexicographic-by-subject ordering are properties only the `BTreeMap` table
+    // provides — a hand-rolled `.any()` boolean walk cannot produce either.
+
+    /// A module with a DIRECT template-level bound yields an `Error` diagnostic
+    /// carrying the typed code, the `E_*` message token, and the SUBJECT's
+    /// struct name.
+    ///
+    /// The name asserted is `MyGeom` (`param subject : MyGeom`), NOT the
+    /// declaring template `Checker` — the table keys on the subject's declared
+    /// `StructureRef` type, which is what the user must go and look at.
+    ///
+    /// `Severity::Error` is load-bearing, not cosmetic: `cmd_build`'s existing
+    /// `diagnostics.iter().any(|d| d.severity == Severity::Error)` gate is what
+    /// turns this diagnostic into a non-zero exit (PRD INV-SF-2).
+    #[test]
+    fn unenforced_representation_bound_diagnostic_returns_error_for_direct_bound() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure Checker {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled)
+            .expect("a module declaring a RepresentationWithin bound must be refused");
+        assert_eq!(
+            diag.severity,
+            Severity::Error,
+            "the refusal must be Error severity — that is what cmd_build's existing \
+             exit gate keys on to produce a non-zero exit"
+        );
+        assert_eq!(
+            diag.code,
+            Some(DiagnosticCode::RepresentationBoundUnenforcedOnExport),
+            "the refusal must carry the typed code so downstream tooling matches on \
+             it rather than on message substrings"
+        );
+        assert!(
+            diag.message
+                .contains(crate::E_REPR_BOUND_UNENFORCED_ON_EXPORT),
+            "the message must embed the E_* token — CLI integration tests observe \
+             only captured stderr TEXT and have no access to the typed code; got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("MyGeom"),
+            "the message must name the SUBJECT struct (the compute_representation_bounds \
+             key), so the user knows which structure carries the bound; got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("Checker"),
+            "the message must NOT name the DECLARING template — the table keys on the \
+             subject's declared StructureRef type, not on where the constraint was \
+             written; got: {}",
+            diag.message
+        );
+    }
+
+    /// A module with no `RepresentationWithin` at all yields `None`.
+    ///
+    /// THE LOAD-BEARING NEGATIVE. `None` is what makes every existing unbounded
+    /// design keep exporting byte-identically once both refusal sites consult
+    /// this builder (PRD C2 / §3.1(f)). A builder that over-fired here would
+    /// refuse every export in the repo.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_returns_none_for_plain_module() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure Plain {
+    param x : Real = 1.0
+    constraint x > 0.0
+}
+"#,
+        );
+        assert!(
+            unenforced_representation_bound_diagnostic(&compiled).is_none(),
+            "a module with no RepresentationWithin constraint must NOT be refused — \
+             unbounded designs keep exporting unchanged"
+        );
+    }
+
+    /// A bound wrapped in a guarded group's ELSE branch is still refused.
+    ///
+    /// A bound must not be smuggled past the export gate by hiding it in a
+    /// guard: the table unions `guarded_groups[*].constraints` with
+    /// `guarded_groups[*].else_constraints` and evaluates no guard, so the
+    /// static reading is conservative in both branches.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_detects_guarded_else_branch() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure GuardedElse {
+    param subject : MyGeom
+    param z : Real = 5.0
+    where z > 0.0 {
+        constraint z > 0.0
+    } else {
+        constraint RepresentationWithin(subject, 1mm)
+    }
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled).expect(
+            "a RepresentationWithin inside a guarded group's else branch must still be \
+             refused (guarded_groups[*].else_constraints)",
+        );
+        assert!(
+            diag.message.contains("MyGeom"),
+            "the guarded-else bound's subject must be named; got: {}",
+            diag.message
+        );
+    }
+
+    /// Two bounds on ONE subject report only the TIGHTER of the two.
+    ///
+    /// NON-TAUTOLOGICAL AND STRUCTURALLY LOAD-BEARING: min-fold-per-subject is a
+    /// property only `compute_representation_bounds`' `BTreeMap` provides. A
+    /// hand-rolled `.any()` boolean walk cannot produce it, and a `Vec`-append
+    /// walk would name BOTH bounds. This test is what proves the delegation is
+    /// real rather than a second traversal that happens to agree today.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_reports_the_tightest_bound_per_subject() {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure MyGeom {
+    param x : Real = 1.0
+}
+
+structure LooseFirst {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 2mm)
+}
+
+structure TightSecond {
+    param subject : MyGeom
+    constraint RepresentationWithin(subject, 0.5mm)
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled)
+            .expect("a doubly-bounded subject must still be refused");
+        assert!(
+            diag.message.contains("5.000e-4"),
+            "the TIGHTER bound (0.5mm = 5.000e-4 m) must be reported; got: {}",
+            diag.message
+        );
+        assert!(
+            !diag.message.contains("2.000e-3"),
+            "the LOOSER bound (2mm = 2.000e-3 m) must be min-folded away, not also \
+             reported — duplicate bounds on one subject collapse to the tightest; \
+             got: {}",
+            diag.message
+        );
+    }
+
+    /// Two DISTINCT bounded subjects are BOTH named, in `BTreeMap`
+    /// (lexicographic-by-subject-struct-name) order.
+    ///
+    /// The checkers are declared in REVERSE alphabetical order deliberately: a
+    /// source-order (`Vec`-append) walk would emit `Zeta` first, so asserting
+    /// `Alpha` precedes `Zeta` pins the ordering to the table rather than to the
+    /// traversal. Deterministic order is what makes the refusal text reproducible
+    /// across runs and therefore assertable by the CLI integration tests.
+    #[test]
+    fn unenforced_representation_bound_diagnostic_names_every_bounded_subject_in_deterministic_order()
+    {
+        let compiled = reify_test_support::parse_and_compile_with_stdlib(
+            r#"
+structure Alpha {
+    param x : Real = 1.0
+}
+
+structure Zeta {
+    param y : Real = 2.0
+}
+
+structure ZetaChecker {
+    param subject : Zeta
+    constraint RepresentationWithin(subject, 3mm)
+}
+
+structure AlphaChecker {
+    param subject : Alpha
+    constraint RepresentationWithin(subject, 1mm)
+}
+"#,
+        );
+        let diag = unenforced_representation_bound_diagnostic(&compiled)
+            .expect("a module with two bounded subjects must be refused");
+        let alpha = diag
+            .message
+            .find("Alpha")
+            .unwrap_or_else(|| panic!("subject `Alpha` must be named; got: {}", diag.message));
+        let zeta = diag
+            .message
+            .find("Zeta")
+            .unwrap_or_else(|| panic!("subject `Zeta` must be named; got: {}", diag.message));
+        assert!(
+            alpha < zeta,
+            "every bounded subject must be named in BTreeMap (lexicographic) order, so \
+             the refusal text is reproducible across runs — `Alpha` must precede `Zeta` \
+             even though `ZetaChecker` is declared first; got: {}",
+            diag.message
         );
     }
 }
