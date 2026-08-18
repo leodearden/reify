@@ -400,12 +400,28 @@ impl Engine {
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
-    /// each." Migration is in progress, not yet complete: this task (5040)
-    /// routes the 3 paired sites in `engine_eval.rs` through this helper,
-    /// but `engine_edit.rs` and `concurrent.rs` still bump the counters by
-    /// hand pending their own migration tasks. See
-    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
-    /// call-site inventory.
+    /// each."
+    ///
+    /// **The migration is complete** — this is now the sole writer of both
+    /// `next_snapshot_id` and `next_version_id`. All five live
+    /// paired-allocation sites route through it: `engine_edit.rs`'s
+    /// `edit_param` and `edit_source`, and `engine_eval.rs`'s `eval` (two
+    /// sites) and `dispatch_merged_cluster_solve`.
+    ///
+    /// **One allowlisted exception survives**: `engine_eval.rs`'s
+    /// `eval_cached` re-stamps `next_snapshot_id` alone — reusing the
+    /// caller-supplied `version` — behind a `// version-id-gate: allow`
+    /// comment, since routing through here would spuriously bump
+    /// `next_version_id` too.
+    ///
+    /// The discipline is self-enforcing, not aspirational:
+    /// `crates/reify-eval/tests/version_id_discipline_gate.rs` scans
+    /// `crates/reify-eval/src/` for raw `self.next_*_id` use outside this
+    /// allocator and its readers, which is why `docs/invariants.md`
+    /// records INV-BUILD-2 as `enforced(type+lint)`. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the settled
+    /// contract statement — the gate test above is the live source of
+    /// truth for the call-site set.
     pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
         let snapshot_id = SnapshotId(self.next_snapshot_id);
         self.next_snapshot_id += 1;
@@ -2365,13 +2381,17 @@ impl Engine {
     ///     divergence from `current_eval_version()` that this site
     ///     deliberately avoids). This equals the *current eval* version in
     ///     eval-only flows, but the two notions are not the same guarantee:
-    ///     `engine_edit.rs` and `concurrent.rs` still bump `next_version_id`
-    ///     by hand (migration in progress — see `allocate_snapshot_version`'s
-    ///     doc), so a non-eval allocation occurring between an eval and a
-    ///     drain would stamp drained events with a version that does not
-    ///     correspond to that eval. Pre-existing exposure — the prior inline
-    ///     `next_version_id.saturating_sub(1)` formula had the identical
-    ///     coupling — left unchanged by this reader (task 5047 / δ).
+    ///     `engine_edit.rs`'s `edit_param` and `edit_source` still
+    ///     *allocate* versions on non-eval paths — now via
+    ///     `allocate_snapshot_version()` rather than by hand — so a
+    ///     non-eval allocation occurring between an eval and a drain would
+    ///     stamp drained events with a version that does not correspond to
+    ///     that eval. (The allowlisted `eval_cached` re-stamp is
+    ///     snapshot-only and never advances `next_version_id`, so it cannot
+    ///     contribute to this desync.) Pre-existing exposure — the prior
+    ///     inline `next_version_id.saturating_sub(1)` formula had the
+    ///     identical coupling — left unchanged by this reader (task 5047 /
+    ///     δ).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
