@@ -5122,6 +5122,22 @@ impl Engine {
         let default_kernel_name = self.default_kernel_name.clone();
         let mut artifacts: Vec<crate::ExportArtifact> = Vec::new();
 
+        // (2a) Export refusal (task η, PRD
+        //      `docs/prds/v0_6/precision-nominal-representation-guarantee.md`
+        //      §1.1 / C-SURFACE (2)): a module declaring a `RepresentationWithin`
+        //      bound this path cannot demonstrate it honours must REFUSE its
+        //      artifacts rather than write them and report success.
+        //
+        //      Computed ONCE here rather than inside the loop: it is a static,
+        //      module-level scan of compiled IR, so the cost is paid per build
+        //      and not per occurrence. `None` — the overwhelmingly common case —
+        //      leaves every existing unbounded design byte-identical (PRD C2).
+        //
+        //      The same helper backs the `reify build -o <file>` refusal in
+        //      reify-cli's `cmd_build`, so the two export surfaces cannot word
+        //      themselves differently or disagree about what counts as bounded.
+        let refusal = crate::tolerance_combine::unenforced_representation_bound_diagnostic(module);
+
         // (2) Deterministic declaration-order walk of every occurrence sub:
         //     emit one artifact per recognized Output occurrence (step-10).
         for template in &module.templates {
@@ -5186,6 +5202,32 @@ impl Engine {
                 // (5) Resolve the destination (design-relative / --out-dir) up
                 //     front so any failure diagnostic below can name the path.
                 let path = resolve_artifact_path(&spec.path, design_dir, out_dir_override);
+
+                // (5a) η's refusal gate. Placed AFTER path resolution — so the
+                //      artifact carries the TRUE declared destination and a
+                //      caller can see WHICH export was refused — but BEFORE
+                //      subject-handle resolution, colour resolution and
+                //      `export_with_options`, so nothing is serialized.
+                //
+                //      A recognized-but-empty-bytes artifact, not an early
+                //      return with zero artifacts: with zero artifacts the CLI
+                //      prints "No output files written: the design declares no
+                //      `: Output` occurrences", which is FALSE for exactly the
+                //      modules η targets. Emitting the refused occurrence
+                //      selects the accurate "all N `: Output` occurrence(s) were
+                //      deferred or failed" branch instead, with no CLI change at
+                //      all. This is the same empty-bytes error-artifact idiom the
+                //      subject-unresolved and kernel-export-failed paths below
+                //      already use.
+                if let Some(d) = &refusal {
+                    artifacts.push(crate::ExportArtifact {
+                        path: path.clone(),
+                        format: export_format,
+                        bytes: Vec::new(),
+                        diagnostics: vec![d.clone()],
+                    });
+                    continue;
+                }
 
                 // (4) Resolve `subject` → live kernel handle via the sub's
                 //     `subject` ARG: a ValueRef into the post-build hydrated map
