@@ -11,9 +11,9 @@ visualization") is a plain `{vertices, indices, normals}` struct with **no invar
 validator**. The only weld/closed/orientable enforcement in the codebase lives *inside Manifold's
 ingest* (the 4329 fix, `crates/reify-kernel-manifold/src/kernel.rs:228-270`), so it protected exactly
 one consumer. That is the structural generator of the serially-discovered handoff holes:
-4329 (unwelded verts) → 4336 (REVERSED-face winding) → **live 4876** (gmsh attributed producer
-SIGSEGVs on unwelded OCCT output) — the same defect re-instanced at each consumer the fix never
-touched. Meanwhile 59 `impl GeometryKernel` exist (5 real, ~45 bespoke mocks) against exactly two
+4329 (unwelded verts) → 4336 (REVERSED-face winding) → 4876 (gmsh attributed producer SIGSEGVs on
+unwelded OCCT output — preflight + ξ landed, §9) — the same defect re-instanced at each consumer the
+fix never touched. Meanwhile 59 `impl GeometryKernel` exist (5 real, ~45 bespoke mocks) against exactly two
 real-output cross-kernel test files; handle identity is per-kernel folklore; and warm-start carries
 a live latent bug (`parent_handle` neither persisted nor cleared across restore).
 
@@ -24,7 +24,7 @@ suite over real outputs, replacing "contract held in one consumer".**
 - Any Boolean of OCCT BRep solids **demanded as `Mesh`** (Stl/Obj sink, viewport) routes OCCT
   tessellation → Manifold ingest (existing e2e `crates/reify-eval/tests/manifold_cross_kernel_real.rs`).
 - FEA **volume meshing** consumes tessellated surfaces via the gmsh producers
-  (`mesh_surface_to_volume{,_attributed}`) — the live 4876 crash path.
+  (`mesh_surface_to_volume{,_attributed}`) — the 4876 crash path (preflight + ξ landed, §9).
 - Leo dogfoods `prj/printer_v01`.
 
 The validator (§2/§3) is a **producer** whose named consumers are the three seam wirings in this PRD
@@ -179,13 +179,18 @@ re-validate**. cfg-gated `has_occt`/`has_gmsh` like the existing cross-kernel te
 on the same parent return **stable ids** within a session, per real kernel. The **Manifold
 `extract_edges` arm was red** (un-memoized, §8) until task #5108 landed the mirrored
 `extracted_edges` cache (the `ManifoldKernel::extracted_edges` field on
-`reify-kernel-manifold/src/kernel.rs`, cache-first read in `extract_edges`); it is **green on current
-main**, meeting §8's acceptance test
+`crates/reify-kernel-manifold/src/kernel.rs`, cache-first read in `extract_edges`); it is **green on
+current main** (under `has_occt` builds — like the matrix above, the whole
+`handle_stability_conformance.rs` binary is `#![cfg(has_occt)]`, so the arm is skipped rather than run
+without that kernel), meeting §8's acceptance test
 (`handle_stability_conformance.rs::manifold_extract_edges_returns_stable_ids`).
 
 **The gmsh-attributed arm** started `#[ignore = "blocked on #<ξ> — attribution-aware repair"]`, but
 since task #5116 ("task ξ", §9) landed the correspondence-map weld it is **un-ignored and green on
-current main** — the acceptance test for the 4876 real fix (§9 ξ) is met.
+current main** (under `has_occt`/`has_gmsh`/`mesh-morph` builds —
+`occt_gmsh_attributed_conformance.rs` is `#![cfg(all(has_occt, has_gmsh, feature = "mesh-morph"))]`,
+so it is compiled out, not merely skipped, on a build lacking those kernels) — the acceptance test for
+the 4876 real fix (§9 ξ) is met.
 
 ## §6 — Warm-start drift guards (INV-GEO-3)
 
@@ -229,7 +234,7 @@ OCCT stub**, deleting the bespoke `mod tests` assertions + local `assert_stub_me
 
 ## §8 — Manifold `extract_edges` memoization (INV-GEO-2) — DONE (task #5108)
 
-`ManifoldKernel::extract_edges` (`reify-kernel-manifold/src/kernel.rs`) **was un-memoized** — a
+`ManifoldKernel::extract_edges` (`crates/reify-kernel-manifold/src/kernel.rs`) **was un-memoized** — a
 dormant 4262 re-instance: `extract_faces` got the `extracted_faces` cache plus coplanar-face
 coalescing in the 4262 fix; edges did not. It was masked in production by BRepOnly gating
 (`crates/reify-eval/src/topology_selectors.rs::region_query_capability`: the `LeafQuery::ByRole`
@@ -250,27 +255,32 @@ watertight edges). This proves the mechanism fires on the **real** input (G6 dis
 diagnostic bridge both downstream leaves consume.
 
 **#4876 (preflight) — DONE.** Rust-side watertightness preflight in the attributed path
-(`mesh_boundary.rs::preflight_watertight_surface`, gated by `mesh_boundary.rs::surface_needs_weld`):
-runs the §3 weldedness/closedness capability check; on non-watertight input returns
+(`crates/reify-kernel-gmsh/src/mesh_boundary.rs::preflight_watertight_surface`): runs the §3
+weldedness/closedness capability check; on non-watertight input returns
 `Err(MeshContractViolation)` (**fail-closed — the §4 site-3 exception**) so the realization edge's
 existing honest-degradation falls back to the plain producer with a visible diagnostic, converting the
-SIGSEGV to a diagnostic. Post-ξ (#5116, below), `mesh_surface_to_volume_with_attribution` calls this
-preflight **twice**: first as a cheap probe on the RAW surface (skipped when the caller passes an
-explicit `repair_cfg`) that short-circuits the weld when the surface is already watertight, then again
-on the WELDED result as a fail-closed net that rejects only a surface still non-watertight after
-welding — so post-ξ this no longer functions as an outright pre-gmsh rejection, only as the net after
-repair has had a chance to fix what it can. (Update #4876's stale `metadata.files`: the cited
-`mesh_surface_to_volume_attributed.rs` does not exist → `mesh_boundary.rs` + `repair.rs`.)
+SIGSEGV to a diagnostic. Post-ξ (#5116, below), this preflight runs **twice** per attributed call —
+the probe call made *by*
+`crates/reify-kernel-gmsh/src/mesh_boundary.rs::surface_needs_weld` on the RAW surface (skipped
+when the caller passes an explicit `repair_cfg`), which short-circuits the weld when the surface is
+already watertight; then a second, fail-closed call on the WELDED result inside the weld branch —
+gated on that same predicate having returned true — that rejects only a surface still non-watertight
+after welding. So post-ξ this no longer functions as an outright pre-gmsh rejection, only as the net
+after repair has had a chance to fix what it can. (Update #4876's stale `metadata.files`: the cited
+`mesh_surface_to_volume_attributed.rs` does not exist →
+`crates/reify-kernel-gmsh/src/mesh_boundary.rs` + `crates/reify-kernel-gmsh/src/repair.rs`.)
 
 **ξ — Real fix: attribution-aware repair — DONE (task #5116).** Threads a vertex-merge
-**correspondence map** through `repair_surface_mesh_with_correspondence` (`repair.rs:118`) so
-per-node attribution survives welding, replacing the prior outright rejection. Wired into the
-attributed producer at `mesh_boundary.rs::mesh_surface_to_volume_with_attribution`, under its own
-"# Repair / welding (task ξ, #5116)" doc section, with the weld itself gated by the
+**correspondence map** through
+`crates/reify-kernel-gmsh/src/repair.rs::repair_surface_mesh_with_correspondence` so per-node
+attribution survives welding, replacing the prior outright rejection. Wired into the attributed
+producer at `crates/reify-kernel-gmsh/src/mesh_boundary.rs::mesh_surface_to_volume_with_attribution`,
+under its own "# Repair / welding (task ξ, #5116)" doc section, with the weld itself gated by the
 `surface_needs_weld(surface, repair_cfg)` guard inside that function. The attributed producer now
 works on real OCCT tessellations; acceptance met — §5's gmsh-attributed conformance arm
-(`crates/reify-kernel-conformance/tests/occt_gmsh_attributed_conformance.rs`) is un-ignored and
-green (real attributed volume mesh, attribution preserved).
+(`crates/reify-kernel-conformance/tests/occt_gmsh_attributed_conformance.rs`) is un-ignored and green
+(real attributed volume mesh, attribution preserved; under `has_occt`/`has_gmsh`/`mesh-morph`
+builds only, per §5).
 
 ## §10 — Cross-PRD seams and ownership (G4)
 
