@@ -178,7 +178,7 @@ structure def Mode {
     param participation_mass : Real         // effective modal mass along
                                             //   a reference direction (set
                                             //   at modal_analysis call time)
-    param damping_ratio    : Real           // ζ_i = (αω_i² + β)/(2ω_i)
+    param damping_ratio    : Real           // ζ_i = (α + β·ω_i²)/(2·ω_i)
                                             //   for Rayleigh; 0 for undamped
 }
 

@@ -173,7 +173,7 @@ fn damping_descriptor_trait_declared() {
 // ─── step-5: NoDamping marker structure ──────────────────────────────────────
 
 /// `NoDamping` is a zero-field marker structure refining `DampingDescriptor`.
-/// Semantically equivalent to `RayleighDamping(alpha: 0, beta: 0)` but a
+/// Semantically equivalent to `RayleighDamping(alpha: 0.0Hz, beta: 0.0s)` but a
 /// distinct nominal type so the future `modal_analysis` trampoline can
 /// discriminate the no-damping fast path via SIR-α nominal type-tag.
 ///
@@ -337,21 +337,40 @@ fn rayleigh_damping_param_shape() {
 ///
 /// Task #6093's stated acceptance signal was "a bare-`Real` construction now
 /// produces the standard structure-field dimension diagnostic". That signal
-/// **cannot be delivered**, because Reify does not type-check structure
-/// constructor arguments at all. Verified live at the task's branch point
-/// against the release binary:
+/// **cannot be delivered by this task**, and the reason is narrower than "no
+/// ctor checking exists". A struct-ctor field-conformance pass DOES exist
+/// (`crates/reify-compiler/src/conformance/mod.rs`, emitting at
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY = Warning`), and the whole example corpus
+/// is gated on it by
+/// `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`.
+/// What is true is that the **dimensioned-`Scalar` family is deliberately
+/// excluded** from that pass: `general_leaf_param_family_is_validated`
+/// (`conformance/mod.rs:1789`) lists it as HELD — supplying a bare
+/// dimensionless literal at a dimensioned slot is idiomatic corpus-wide, and
+/// whether it should stay legal is a language-semantics question whose answer
+/// is position-dependent across six gates. So a bare `Real` at this
+/// `Frequency`/`Time` slot is silent TODAY, not unreachable in principle.
+///
+/// Measured live at the task's branch point against the release binary:
 ///
 ///   - `Probe(a: 5.0mm, b: 0.0003kg)` into `Frequency`/`Time` params passes
 ///     `check` clean, and `eval` then stores the values verbatim.
 ///   - The already-tightened stdlib `Mode(frequency: 5.0mm, ...)` from task
 ///     4548 is equally silent — the sibling precedent has the same gap.
-///   - The repo already documents this in prose at
-///     `examples/modal/transient_step_response.ri:44` ("structure ctors do
-///     not type-check args").
 ///
-/// Manufacturing that diagnostic would mean gating the eval-side reader
-/// (`modal_ops::read_scalar_si`), which this task explicitly scopes out and
-/// which `docs/prds/v0_6/dimension-checked-readers.md` owns.
+/// # Who owns the ctor-side gate (not this task, and not the readers PRD)
+///
+/// The bare-arg-at-a-dimensioned-slot negative pin is owned by
+/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1 (invariant I3,
+/// task γ = #5627), which introduces it as a value floor rather than by
+/// inverting the existing probe in place. That existing probe —
+/// `struct_ctor_field_conformance_tests.rs::family_dimensioned_scalar_given_unit_literal_arg_is_silent`
+/// — pins only the accepted FIX form (a dimensioned unit literal at a
+/// dimensioned slot emits zero ctor-conformance diagnostics), which is exactly
+/// the form step-5 of this task migrated the five RayleighDamping call sites
+/// to. `docs/prds/v0_6/dimension-checked-readers.md` owns a different seam
+/// entirely: the EVAL-side reader (`modal_ops::read_scalar_si`), which this
+/// task deliberately leaves tolerant.
 ///
 /// What the declaration change *does* produce is this: the declared type
 /// propagates into expression type-checking on field **reads**. So a bare

@@ -385,10 +385,21 @@ fn e2e_cantilever_step_response_decay_matches_modal_damping() {
     //     `RayleighDamping.alpha` / `.beta` were retyped from the `Real`
     //     placeholder to their registered named dimensions (`Frequency` = s⁻¹,
     //     `Time`), so the fixture's ctor args migrate from bare `0.0` / `0.0003`
-    //     to `0.0Hz` / `0.0003s`. Reify structure ctors do not type-check their
-    //     arguments, so compile-cleanliness proves nothing here — reading the
-    //     evaluated cell is the only way to see whether the corpus actually
-    //     carries the dimension.
+    //     to `0.0Hz` / `0.0003s`.
+    //
+    //     Compile-cleanliness proves nothing about that migration — not
+    //     because Reify has no ctor checking (it has one: the field-conformance
+    //     pass in `crates/reify-compiler/src/conformance/mod.rs`, corpus-gated
+    //     by `examples_smoke::no_example_emits_ctor_field_conformance_diagnostics`),
+    //     but because the dimensioned-`Scalar` family is deliberately EXCLUDED
+    //     from it (`general_leaf_param_family_is_validated`,
+    //     `conformance/mod.rs:1789`, HELD pending the language-semantics
+    //     ruling). A bare `0.0` at this `Frequency` slot is therefore silent
+    //     today; the negative pin that would make it loud is owned by
+    //     `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1
+    //     invariant I3 (task γ = #5627), not by this task. Reading the
+    //     evaluated cell is consequently the only way to see whether the corpus
+    //     actually carries the dimension.
     //
     //     Piggybacks the eval above rather than standing alone: a second FEA
     //     solve would cost a full extra eigensolve, and a synthetic inline
