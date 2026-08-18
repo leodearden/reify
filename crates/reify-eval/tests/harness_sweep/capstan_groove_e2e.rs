@@ -2,10 +2,12 @@
 //! (task #5454 — thread-hole δ, dogfood leaf 1; PRD
 //! `docs/prds/v0_6/thread-hole-features.md` §6 row 11, re-spec'd by #5580).
 //!
-//! Compiles the REAL design file `prj/printer_v01/dev_capstan.ri` through the
-//! full source → parse → compile(stdlib+checked) → Engine(real
-//! `OcctKernelHandle`) → tessellate pipeline and pins two properties of the
-//! rope seat cut into the drum.
+//! Compiles the REAL design file `prj/printer_v01/dev_capstan.ri` and pins
+//! three things: two geometric properties of the rope seat cut into the drum
+//! (1, 2 — through the full source → parse → compile(stdlib+checked) →
+//! Engine(real `OcctKernelHandle`) → tessellate pipeline) and one design-level
+//! relation between the drum and the fairlead that tracks it (3 — through the
+//! kernel-free value-eval + constraint-check surface, so it runs everywhere).
 //!
 //! **1. The seat admits the rope (`capstan_seat_admits_the_rope_radially`).**
 //! The seat is a HALF-ROUND: the swept section's arc centre sits ON the land
@@ -64,6 +66,20 @@
 //! ≈ 148× the real residual while still catching a modelling regression (a
 //! `groove_r` off by 7 % moves ΔV by ~14 %). See [`HALF_ROUND_REL_TOL`].
 //!
+//! **3. The shuttle covers the band the wrap migrates over
+//! (`capstan_active_band_is_covered_by_the_fairlead_stroke`,
+//! `capstan_drive_constrains_the_shuttle_to_cover_the_band`).** The drum's
+//! `band` (the departure tangent's axial migration over the full feed) and its
+//! `groove_len` (the whole grooved extent, band plus the dead anchor wraps) are
+//! two DIFFERENT axial figures, and `Fairlead.stroke` is a third — the band
+//! rounded up to a whole turn. The first test pins the coverage window
+//! `band ≤ stroke ≤ band + lead` over the file's evaluated cells; the second
+//! pins that `CapstanDrive` states the relation in the DSL itself, so a plain
+//! `reify check` catches a divergence too. Neither reads geometry, so both go
+//! through [`dev_capstan_checked`] (no kernel) rather than the OCCT fixture —
+//! a gate whose whole point is "this must bite outside a full OCCT run" must
+//! not itself be skipped when OCCT is absent.
+//!
 //! **No geometry number is hard-coded here.** Every input to the expected value
 //! is read back out of the file's own evaluated cells (`rope_dia`, `pitch_r`,
 //! `groove_r`, `land_r`, `lead`, `groove_len`), so a parameter edit moves the
@@ -90,8 +106,8 @@
 //! also the only regression guard on `dev_capstan.ri` as a whole.
 
 use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
-use reify_eval::TessellateResult;
-use reify_ir::{Satisfaction, Value};
+use reify_eval::{CheckResult, TessellateResult};
+use reify_ir::{Satisfaction, Value, ValueMap};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -110,6 +126,26 @@ const FAIRLEAD_ENTITY: &str = "Fairlead";
 /// The assembly holding both — and therefore the only scope in which the
 /// cross-structure band↔stroke relation can be stated.
 const CAPSTAN_DRIVE_ENTITY: &str = "CapstanDrive";
+
+/// The `sub` name `CapstanDrive` binds the capstan under.
+const CAPSTAN_SUB: &str = "capstan";
+
+/// The `sub` name `CapstanDrive` binds the fairlead shuttle under.
+const SHUTTLE_SUB: &str = "shuttle";
+
+/// Entity path of a `CapstanDrive` sub-instance — `CapstanDrive.capstan`,
+/// `CapstanDrive.shuttle`.
+///
+/// The value map carries BOTH key forms for a contained structure's scalar
+/// cells: the bare template (`Capstan.band`, `Fairlead.stroke`) and the
+/// instance-scoped composition below. They agree today only because parameter
+/// overrides through `sub` are dropped (task 4147 — the design file's own
+/// header records it); the DSL constraint `shuttle.stroke >= capstan.band`
+/// resolves against the INSTANCE, so the gate reads the instance form and
+/// separately asserts the two agree.
+fn sub_entity(sub: &str) -> String {
+    format!("{CAPSTAN_DRIVE_ENTITY}.{sub}")
+}
 
 /// Relative tolerance on `ΔV` against the ideal half-round swept solid
 /// `0.5·π·groove_r²·L`, the spine-radius arc length.
@@ -197,10 +233,24 @@ fn dev_capstan() -> &'static TessellateResult {
     R.get_or_init(tessellate_dev_capstan)
 }
 
-/// Load, parse, compile and tessellate `prj/printer_v01/dev_capstan.ri` with a
-/// real OCCT kernel, asserting the pipeline is Error-diagnostic-free at every
-/// stage. Use [`dev_capstan`] rather than calling this directly.
-fn tessellate_dev_capstan() -> TessellateResult {
+/// The design file's pure value-eval + constraint-check surface, computed once
+/// per test binary — NO geometry kernel.
+///
+/// This is the `Engine::new(checker, None) + check()` path `reify check` itself
+/// takes (crates/reify-cli/src/main.rs). The design-level gates (module doc 3)
+/// need only scalar cells and `constraint_results`, both of which this surface
+/// carries, so they run unconditionally instead of being skipped wherever OCCT
+/// is unavailable — which matters most for
+/// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, whose entire claim
+/// is that the relation bites *outside* a full OCCT run.
+fn dev_capstan_checked() -> &'static CheckResult {
+    static R: OnceLock<CheckResult> = OnceLock::new();
+    R.get_or_init(check_dev_capstan)
+}
+
+/// Load, parse and compile `prj/printer_v01/dev_capstan.ri`, asserting both
+/// stages are Error-diagnostic-free. Shared by the two fixtures.
+fn compile_dev_capstan() -> reify_compiler::CompiledModule {
     let source = std::fs::read_to_string(DEV_CAPSTAN)
         .unwrap_or_else(|e| panic!("failed to read design file {DEV_CAPSTAN}: {e}"));
 
@@ -226,6 +276,34 @@ fn tessellate_dev_capstan() -> TessellateResult {
         compile_errors.is_empty(),
         "compile errors in {DEV_CAPSTAN}: {compile_errors:#?}"
     );
+    compiled
+}
+
+/// Evaluate and constraint-check the design file with no kernel. Use
+/// [`dev_capstan_checked`] rather than calling this directly.
+///
+/// Deliberately NOT asserted Error-diagnostic-free, unlike
+/// [`tessellate_dev_capstan`]: the file's `blank_volume` / `body_volume` cells
+/// call `volume()`, a geometry-consumer builtin that is only resolvable on the
+/// build()/tessellate() path, so this surface reports exactly two
+/// "`volume` could not be resolved" errors by construction. They are the
+/// OCCT fixture's business — the tests reading THIS result assert on the cells
+/// and constraint results they actually consume, each of which panics with a
+/// pointed message if it failed to evaluate.
+fn check_dev_capstan() -> CheckResult {
+    let compiled = compile_dev_capstan();
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        None,
+    );
+    engine.check(&compiled)
+}
+
+/// Load, parse, compile and tessellate `prj/printer_v01/dev_capstan.ri` with a
+/// real OCCT kernel, asserting the pipeline is Error-diagnostic-free at every
+/// stage. Use [`dev_capstan`] rather than calling this directly.
+fn tessellate_dev_capstan() -> TessellateResult {
+    let compiled = compile_dev_capstan();
 
     // ---- Tessellate with a real OCCT kernel via SingleKernelHolder ----
     let mut planner = reify_geometry::SingleKernelHolder::new();
@@ -248,24 +326,31 @@ fn tessellate_dev_capstan() -> TessellateResult {
     result
 }
 
-/// Read a `Value::Scalar` cell of `entity` out of the tessellation's value map,
-/// asserting its dimension, and return its SI value (m / m³ / dimensionless).
+/// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
+/// dimension, and return its SI value (m / m³ / dimensionless).
 ///
 /// Entity-parameterised so the cross-structure band↔stroke gate can read
-/// [`FAIRLEAD_ENTITY`] cells through the same dimension-checked path (and the
-/// same "is the cell declared in …?" hint) the capstan cells go through, rather
-/// than carrying a second copy of the `Value::Scalar` match. Both structures are
-/// `sub`s of the file's `CapstanDrive` assembly, but their scalar cells are
-/// keyed at the bare template — `Fairlead.stroke`, exactly as `Capstan.rope_dia`
-/// is — so one key form covers both.
+/// [`FAIRLEAD_ENTITY`] cells — and the instance-scoped `CapstanDrive.shuttle`
+/// form — through the same dimension-checked path (and the same "is the cell
+/// declared in …?" hint) the capstan cells go through, rather than carrying a
+/// second copy of the `Value::Scalar` match. Map-parameterised (rather than
+/// taking a `&TessellateResult`) so the kernel-free [`dev_capstan_checked`]
+/// surface reads its cells through the same helper.
+///
+/// Both structures are `sub`s of the file's `CapstanDrive` assembly, and the map
+/// carries BOTH key forms for their scalar cells — the bare template
+/// (`Fairlead.stroke`, exactly as `Capstan.rope_dia` is) and the instance-scoped
+/// [`sub_entity`] composition (`CapstanDrive.shuttle.stroke`). Which one a
+/// caller wants is a real choice, not a formality: see the (0) claim in
+/// `capstan_active_band_is_covered_by_the_fairlead_stroke`.
 fn entity_cell(
-    result: &TessellateResult,
+    values: &ValueMap,
     entity: &str,
     cell: &str,
     expected_dim: DimensionVector,
 ) -> f64 {
     let id = ValueCellId::new(entity, cell);
-    match result.values.get(&id) {
+    match values.get(&id) {
         Some(Value::Scalar {
             si_value,
             dimension,
@@ -285,8 +370,8 @@ fn entity_cell(
 
 /// [`entity_cell`] fixed to [`CAPSTAN_ENTITY`] — the majority of this module's
 /// reads.
-fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVector) -> f64 {
-    entity_cell(result, CAPSTAN_ENTITY, cell, expected_dim)
+fn capstan_cell(values: &ValueMap, cell: &str, expected_dim: DimensionVector) -> f64 {
+    entity_cell(values, CAPSTAN_ENTITY, cell, expected_dim)
 }
 
 /// Read a dimensionless (`: Real`) cell of `entity` — a pure count such as
@@ -299,9 +384,9 @@ fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVe
 /// assertions are about the DESIGN, not about which representation the evaluator
 /// picks for a unitless number. A `Value::Scalar` carrying any real dimension is
 /// still rejected — that would mean the cell had silently acquired units.
-fn entity_real(result: &TessellateResult, entity: &str, cell: &str) -> f64 {
+fn entity_real(values: &ValueMap, entity: &str, cell: &str) -> f64 {
     let id = ValueCellId::new(entity, cell);
-    match result.values.get(&id) {
+    match values.get(&id) {
         Some(Value::Real(v)) => *v,
         Some(Value::Scalar {
             si_value,
@@ -400,10 +485,10 @@ fn capstan_seat_admits_the_rope_radially() {
 
     let result = dev_capstan();
 
-    let rope_dia = capstan_cell(result, "rope_dia", DimensionVector::LENGTH);
-    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
-    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
-    let land_r = capstan_cell(result, "land_r", DimensionVector::LENGTH);
+    let rope_dia = capstan_cell(&result.values, "rope_dia", DimensionVector::LENGTH);
+    let pitch_r = capstan_cell(&result.values, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(&result.values, "groove_r", DimensionVector::LENGTH);
+    let land_r = capstan_cell(&result.values, "land_r", DimensionVector::LENGTH);
 
     // ---- (1) The seat breaks through the land ----
     assert!(
@@ -447,8 +532,8 @@ fn capstan_seat_admits_the_rope_radially() {
     );
 
     // ---- (3) The drum the kernel produced really has that seat ----
-    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
-    let bore_r = capstan_cell(result, "bore_r", DimensionVector::LENGTH);
+    let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
+    let bore_r = capstan_cell(&result.values, "bore_r", DimensionVector::LENGTH);
     let drum = finished_drum(result);
 
     // Read the radial profile only well inside the wrap band: at the band ends
@@ -544,13 +629,13 @@ fn capstan_seat_volume_delta_matches_half_pi_r2_l() {
     let result = dev_capstan();
 
     // ---- Read the design's own cells (SI: m, m³) ----
-    let blank_volume = capstan_cell(result, "blank_volume", DimensionVector::VOLUME);
-    let body_volume = capstan_cell(result, "body_volume", DimensionVector::VOLUME);
-    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
-    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
-    let land_r = capstan_cell(result, "land_r", DimensionVector::LENGTH);
-    let lead = capstan_cell(result, "lead", DimensionVector::LENGTH);
-    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
+    let blank_volume = capstan_cell(&result.values, "blank_volume", DimensionVector::VOLUME);
+    let body_volume = capstan_cell(&result.values, "body_volume", DimensionVector::VOLUME);
+    let pitch_r = capstan_cell(&result.values, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(&result.values, "groove_r", DimensionVector::LENGTH);
+    let land_r = capstan_cell(&result.values, "land_r", DimensionVector::LENGTH);
+    let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
+    let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
 
     // ---- Pappus: unroll the helix to get its arc length ----
     let turns = groove_len / lead;
@@ -705,11 +790,11 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
 
     let result = dev_capstan();
 
-    let band = capstan_cell(result, "band", DimensionVector::LENGTH);
-    let lead = capstan_cell(result, "lead", DimensionVector::LENGTH);
+    let band = capstan_cell(&result.values, "band", DimensionVector::LENGTH);
+    let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
     let active_turns = entity_real(result, CAPSTAN_ENTITY, "active_turns");
     let dead_total = entity_real(result, CAPSTAN_ENTITY, "dead_total");
-    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
+    let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
     let stroke = entity_cell(result, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
 
     // ---- (1) `band` is the ACTIVE migration, not the total grooved extent ----
