@@ -1,12 +1,17 @@
 // gdt_zones.ri — GD&T γ zone-constructor CI gate (task 4476).
 //
-// Exercises the three prismatic zone geometry constructors:
+// Exercises all four zone geometry constructors:
 //   zone_cylinder(axis, width)                          — Ø-zone cylinder about an axis wire
 //   zone_annulus(axis, nominal_radius, width, length)   — annular shell tolerance zone
 //   zone_profile(solid, width)                          — surface profile zone shell
+//   zone_slab(face, width)                              — face offset ±width/2, capped into a slab
+//
+// This is the worked example chunks/geometry.md's "GD&T Tolerance Zones" section
+// cites for all four, and that claim is gated: see
+// stdlib_chunk_geometry_ops_smoke.rs::geometry_chunk_example_citations_hold_against_the_real_examples.
 //
 // `reify eval` must: exit 0, emit no Error diagnostics, and print
-//   cyl_zone, ann_zone, prof_zone (geometry cell names)
+//   cyl_zone, ann_zone, prof_zone, slab_zone (geometry cell names)
 //   zone_ok = true (non-geometry Bool anchor: w > 0mm = 8mm > 0mm → true)
 //
 // Exact zone volumes are pinned in Rust kernel oracle tests
@@ -30,6 +35,13 @@ structure def GdtZones {
     // ── zone_profile(solid: Geometry, width: Length) ──────────────────────────
     // Profile zone shell: lowers to Difference(Thicken(solid, +w/2), Thicken(solid, −w/2)).
     let prof_zone = zone_profile(box(10mm, 10mm, 10mm), 1mm)
+
+    // ── zone_slab(face: Geometry, width: Length) ─────────────────────────────
+    // Slab zone: takes a FACE or 2D profile (not a solid, unlike zone_profile)
+    // and offsets it ±width/2, capping the result into a centred slab.
+    // Volume is the right-prism identity width × area — 2mm × (40mm × 20mm) —
+    // pinned exactly in zone_slab_e2e.rs, not here.
+    let slab_zone = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm)
 
     // ── Observable Bool anchor (non-geometry) ───────────────────────────────
     // Asserted by cli_gdt_zones_eval.rs: zone_ok = true (w = 8mm > 0mm → true).
