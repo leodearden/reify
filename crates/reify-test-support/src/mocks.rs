@@ -2181,10 +2181,10 @@ impl ConstraintSolver for MultiCallSpyConstraintSolver {
 /// containment resolution but must still supply the capability: constructing
 /// it needs no `Engine` and no geometry kernel.
 ///
-/// One parameterized double rather than a family of zero-field ones
-/// (`NoContainment`, `AlwaysInside`, ...): the answers a `ContainmentQuery`
-/// can give are exactly the three inhabitants of `result`, so a test needing
-/// a different answer sets the field instead of adding another struct here.
+/// One parameterized double rather than a family of zero-field ones (a struct
+/// per answer): the answers a `ContainmentQuery` can give are exactly the three
+/// inhabitants of `result`, so a test needing a different answer sets the field
+/// instead of adding another struct here.
 ///
 /// Choose `result` by the semantics [`ContainmentQuery`] documents for its
 /// return value — the three are NOT interchangeable, even where two of them
