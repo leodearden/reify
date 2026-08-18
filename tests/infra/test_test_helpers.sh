@@ -1649,6 +1649,34 @@ _wl_snapshot_real_trash() {
     return 0
 }
 
+# _wl_classify_new_trash <before-file> <after-file> <stem>: sets the globals
+# _wl_new_real/_wl_new_other to the space-separated entries new in <after-file>
+# that do/don't match <stem>, extracted verbatim (#6299) from what this block
+# used to run inline, so WL-j14..j18 can unit-check the classification that
+# decides WL-j9's verdict. `comm -13` requires sorted input, which is exactly
+# what _wl_snapshot_real_trash's `| sort` guarantees for its two outfiles —
+# keep the two coupled.
+#
+# MUST be called as a plain statement, NEVER as $(_wl_classify_new_trash ...):
+# a command substitution runs the body in a subshell and silently discards
+# both global assignments, the same subshell-safety hazard this file already
+# documents for make_isolated_lane's _TMPDIRS+= (see WL-g above). For the same
+# reason the loop below reads via `< <(comm ...)` process substitution rather
+# than a `comm ... | while` pipe, which would put the loop itself in a
+# subshell and lose the globals the same way.
+_wl_classify_new_trash() {
+    local _before="$1" _after="$2" _stem="$3" _wl_e
+    _wl_new_real=""
+    _wl_new_other=""
+    while IFS= read -r _wl_e; do
+        [ -n "$_wl_e" ] || continue
+        case "$_wl_e" in
+            "$_stem"*) _wl_new_real="$_wl_new_real$_wl_e " ;;
+            *)         _wl_new_other="$_wl_new_other$_wl_e " ;;
+        esac
+    done < <(comm -13 "$_before" "$_after")
+}
+
 _wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-before"
 cat > "$_WL_DIR/litter-live-real.sh" <<'PROBE'
 set -uo pipefail
@@ -1658,15 +1686,7 @@ assert_shared_trash_litter_detector_live
 PROBE
 _wl_run "$_WL_DIR/litter-live-real.sh"
 _wl_snapshot_real_trash "$_WL_REAL_TRASH_DIR" "$_WL_DIR/real-trash-after"
-_wl_new_real=""
-_wl_new_other=""
-while IFS= read -r _wl_e; do
-    [ -n "$_wl_e" ] || continue
-    case "$_wl_e" in
-        "$_WL_SELFTEST_STEM"*) _wl_new_real="$_wl_new_real$_wl_e " ;;
-        *)                     _wl_new_other="$_wl_new_other$_wl_e " ;;
-    esac
-done < <(comm -13 "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after")
+_wl_classify_new_trash "$_WL_DIR/real-trash-before" "$_WL_DIR/real-trash-after" "$_WL_SELFTEST_STEM"
 if [ -n "${_wl_new_other// /}" ]; then
     echo "note: /tmp/.reseed-trash gained entries not attributable to $_WL_SELFTEST_STEM (other worktrees; not a failure): $_wl_new_other"
 fi
