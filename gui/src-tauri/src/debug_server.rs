@@ -3263,8 +3263,9 @@ mod tests {
         // nothing else, so its envelope must stay bit-for-bit today's single block.
         // screenshot/screenshot_window: neither ever carries a non-`data` success key
         // (their handlers in bridge.ts's `buildHandlers`), so the new gate must never
-        // perturb them — that is what
-        // keeps gui/test/visual/rpcEnvelope.test.ts:320-326's image-only stub accurate.
+        // perturb them — that is what keeps gui/test/visual/rpcEnvelope.test.ts's
+        // `resolves to null when there is no text block to interpret` image-only stub
+        // accurate.
         for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
             let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
             let content = out["content"]
