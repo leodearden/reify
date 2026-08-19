@@ -17565,6 +17565,53 @@ fn rigid_mass_props_survive_repeated_rebuild_under_selective_demand() {
     }
 }
 
+/// Task #5338 amendment (reviewer suggestion 3): `set_active_fea_case` is a FIFTH
+/// GuiState-producing entry point, and it must not revert a `: Rigid` body's
+/// auto-derived mass-prop cells.
+///
+/// It deliberately does NOT re-evaluate or re-tessellate — it clones the cached
+/// mesh payload, re-applies the FEA channels, and rebuilds `values` /
+/// `constraints` from the kernel-LESS `last_check`. That rebuild is where the
+/// gap sat: `build_values` leaves `mass` / `centroid` / `moment_of_inertia` /
+/// `moi_principal` Undef and the `moi_principal[0] > 0` PD constraint
+/// Indeterminate, and unlike `build_gui_state` this path never called
+/// `surface_geometry_derived_cells`, so a case switch silently undid what the
+/// previous rebuild had determined (pre-existing since task 5194).
+///
+/// The `sync_demand` + rebuild before the switch is load-bearing: it flips the
+/// engine to the frontend's SELECTIVE posture, so the retention cache — not a
+/// fresh full-scope delta — is the only thing the case switch can source the
+/// cells from, which is exactly the production situation.
+#[test]
+fn rigid_mass_props_survive_an_fea_case_switch() {
+    let mut session = rigid_mass_props_session();
+
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+    assert_rigid_mass_props_determined(&state, "cold load");
+
+    let keys = visible_realization_keys(&state);
+    assert!(
+        !keys.is_empty(),
+        "the loaded fixture must render at least one realization mesh — an empty \
+         key list would make sync_demand a no-op and this test vacuous"
+    );
+    session.sync_demand(&keys);
+    let state = session
+        .build_gui_state()
+        .expect("the selective rebuild before the case switch should succeed");
+    assert_rigid_mass_props_determined(&state, "selective rebuild");
+
+    // An unknown case name is deliberate and harmless — `set_active_fea_case`
+    // falls back to the lex-first default, and the fixture carries no FEA case at
+    // all. What is under test is the REBUILD it performs, not case selection.
+    let state = session
+        .set_active_fea_case("overload")
+        .expect("set_active_fea_case should succeed on a loaded module");
+    assert_rigid_mass_props_determined(&state, "after the FEA case switch");
+}
+
 // ── Task 5074 step-1: from_engine must delegate to the canonical A1
 // production-compute-fns bundler (PRD docs/prds/compute-fea-hardening.md
 // task A3), not hand-roll register_compute_fns + register_shell_extract_compute_fns.
