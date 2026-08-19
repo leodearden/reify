@@ -839,13 +839,86 @@ sandbox:
 #       Restart-tier, so this lands INERT and the operator picks when that
 #       one-time cost is paid.
 #       Full analysis lives in the seam-guard header, not here.
+#   XDG_CACHE_HOME (task 5909): compute_write_set() grants ~/.cache/uv but
+#   NOTHING under ~/.cache/tree-sitter, so a sandboxed role's grammar probe
+#   dies writing ~/.cache/tree-sitter/lock (the failure behind tasks
+#   5894/5904/5897 — test_prd_capability_check.sh, test_prd_gate_corpus.sh,
+#   test_prd_gate_compiler_type_hygiene.sh).
+#     WHY THIS VARIABLE: tree-sitter 0.26.8 (on PATH at
+#     /home/leo/.cargo/bin/tree-sitter) exposes no tree-sitter-specific
+#     cache-dir env var, so XDG_CACHE_HOME is the only lever — MEASURED on
+#     this host to relocate its lib/ + lock/ dirs and to create the whole
+#     tree when the root is absent (no provisioning step needed).
+#     UPSTREAM: cross-repo task 5896 adds the ~/.cache/tree-sitter
+#     carve-out to compute_write_set() directly; landing it retires this
+#     leg of the redirect (same shape as dark_factory:3162 above for
+#     ~/.cargo/~/.npm).
+#     DELIBERATELY NOT SEEDED: unlike CARGO_HOME/npm_config_cache, this dir
+#     gets no pre-seed and no tmpfiles `x` age-clean exclusion in
+#     scripts/setup-agent-cache-redirect.sh — the tree-sitter cache is
+#     DERIVED and self-healing (a missing lib/*.so is simply recompiled
+#     from grammar source), so neither fix the seeder exists to provide
+#     applies. Adding a third seeder destination would also turn
+#     tests/infra/test_agent_cache_redirect.sh's G2/G3 ("exactly two
+#     destination dirs", "conf paths == seeder destinations") red for no
+#     benefit — do not "complete the pattern" here.
+#   UV_CACHE_DIR (task 5909, COUNTER-redirect, NOT another /tmp redirect):
+#   XDG_CACHE_HOME above is a GENERAL variable and uv honours it too;
+#   compute_write_set() row 7 already grants ~/.cache/uv — 159G measured
+#   on this host, the LARGEST single entry under ~/.cache — so without this
+#   pin the XDG_CACHE_HOME redirect would silently move uv's cache OFF its
+#   own grant and into /tmp, where this block's KNOWN GAPS tmpfiles rule
+#   (`D /tmp 1777 root root 30d`) both wipes at boot and age-deletes
+#   contents mid-uptime — the same partial-gutting hazard already
+#   documented above for the cargo registry, on a cache that currently has
+#   a working grant. Pinning UV_CACHE_DIR (uv's highest-precedence cache
+#   override) back at its granted path contains that collateral.
+#   Deliberately NOT pinning SCCACHE_DIR even though ~/.cache/sccache
+#   exists and would also follow the XDG redirect: ~/.cache/sccache is NOT
+#   in compute_write_set(), so a sandboxed role cannot write it today
+#   regardless — pinning it back at ~/.cache/sccache would name an
+#   UNGRANTED path and be strictly worse than letting it follow the
+#   redirect. (sccache is a client/server daemon; storage lives with the
+#   already-running server, which this yaml points at a redis backend via
+#   sccache.backend_env.)
+#   PER-ROLE EFFECT OF THIS PAIR (task 5909; the anchor now feeds SIX roles,
+#   not the three it fed when these two keys were written): both keys ride
+#   the shared `&sandbox_cache_env` anchor, so they reach every aliased role.
+#   The split is NOT the same as the CARGO_HOME/npm_config_cache split
+#   recorded above, so it is recorded separately rather than by reference:
+#     implementer / debugger / simple_task — load-bearing, the whole point:
+#       without the redirect their grammar probe dies on ~/.cache/tree-sitter.
+#     architect — LIVE from the next restart (unrestricted Bash), and unlike
+#       the cargo/npm pair it lands COLD: /tmp/reify-agent-xdg-cache is
+#       DELIBERATELY NOT SEEDED (see above), so the architect does not
+#       inherit a warm shared cache the way it does for ~/.cargo/~/.npm — it
+#       trades a warm ~/.cache for an empty one. ACCEPTED: every dir this
+#       moves is derived and self-healing, and the one entry that is both
+#       large and genuinely granted (~/.cache/uv) is pinned back by
+#       UV_CACHE_DIR above.
+#     reviewer_comprehensive / judge — inert, same read-only tool grants that
+#       make their CARGO_HOME/npm_config_cache entries inert.
+#   BONUS, not a regression: because XDG_CACHE_HOME is general rather than
+#   tree-sitter-specific, the redirect also relocates ~/.cache/claude-cli-nodejs
+#   (26G) and ~/.cache/reify, NEITHER of which is in compute_write_set()
+#   either — so for the sandboxed three it widens the writable cache surface
+#   past the one dir that motivated it.
 #   Restart-tier: inert until the orchestrator restarts (companion task
-#   γ6b). Reify-side seam guard:
+#   γ6b; XDG_CACHE_HOME/UV_CACHE_DIR ride the same tier — config loads once
+#   at startup, no hot-reload). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.
 role_env_overrides:
   implementer: &sandbox_cache_env
     CARGO_HOME: /tmp/reify-agent-cargo-home
     npm_config_cache: /tmp/reify-agent-npm-cache
+    XDG_CACHE_HOME: /tmp/reify-agent-xdg-cache
+    # Counter-redirect, not a /tmp target on purpose: pins uv back at its
+    # own compute_write_set ~/.cache/uv grant so it does not silently
+    # follow XDG_CACHE_HOME above into /tmp's tmpfiles 30d wipe/age-clean.
+    # See the UV_CACHE_DIR paragraph above. Hardcoded absolute path
+    # (role_env_overrides values are not known to undergo env
+    # interpolation) — do not write $HOME/${HOME} here.
+    UV_CACHE_DIR: /home/leo/.cache/uv
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
   architect: *sandbox_cache_env
