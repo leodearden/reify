@@ -966,3 +966,83 @@ pub trait Plain { param value : Real }
         "non-generic trait <h2> must be unchanged (no empty `<>`); got html:\n{html}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// task-6321: type alias renders its type_expr when resolved_type is None
+// ---------------------------------------------------------------------------
+
+/// When a `CompiledTypeAlias` exports `resolved_type: None` (a parametric
+/// body, an entity-named body, or any other unresolvable RHS), `lower_type_alias`
+/// must render the alias's carried `type_expr` (via `impl Display for TypeExpr`)
+/// rather than the `"<parameterized>"` sentinel. That sentinel is a lie for an
+/// entity-named alias like `type F = Fit` and uninformative even for a
+/// genuinely parametric alias like `Container<T> = T`.
+///
+/// Expected strings are read directly off `impl Display for TypeExpr`
+/// (reify-ast/src/ast.rs:342-355): a bare `Named { name, type_args: [] }`
+/// renders as `name`; a `Named` with args renders `name<arg1, arg2>`.
+#[test]
+fn alias_with_unresolved_body_renders_its_type_expr() {
+    let source = r#"
+enum Fit { Close, Medium }
+pub type Container<T> = T
+pub type F = Fit
+pub type Fits = List<Fit>
+pub type MyLength = Length
+"#;
+    let compiled = compile_source_with_stdlib(source);
+    let model: DocModel = build_doc_model(&compiled, source);
+    let module = &model.modules[0];
+
+    // Parametric alias: body is the bare type param `T`.
+    let container_item = find_item(module, "Container");
+    match &container_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert_eq!(
+                type_repr, "T",
+                "Container's type_repr must be the type_expr Display 'T', not the \
+                 '<parameterized>' sentinel; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'Container', got {other:?}"),
+    }
+
+    // Entity-named alias: body names the local enum `Fit`.
+    let f_item = find_item(module, "F");
+    match &f_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert_eq!(
+                type_repr, "Fit",
+                "F's type_repr must be the type_expr Display 'Fit', not \
+                 '<parameterized>'; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'F', got {other:?}"),
+    }
+
+    // Composite body: List<Fit>.
+    let fits_item = find_item(module, "Fits");
+    match &fits_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert_eq!(
+                type_repr, "List<Fit>",
+                "Fits's type_repr must be the type_expr Display 'List<Fit>'; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'Fits', got {other:?}"),
+    }
+
+    // Resolvable alias: unchanged path (Some(resolved_type) → type_to_string).
+    // Do NOT pin the exact spelling: `reify_core::Type`'s Display is a
+    // canonicalising, non-source-syntax rendering, not the source text "Length".
+    let my_length_item = find_item(module, "MyLength");
+    match &my_length_item.kind {
+        ItemKind::TypeAlias { type_repr, .. } => {
+            assert!(
+                !type_repr.is_empty() && type_repr != "<parameterized>",
+                "MyLength type_repr must be non-empty and not the sentinel; got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'MyLength', got {other:?}"),
+    }
+}
