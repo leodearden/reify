@@ -482,6 +482,7 @@ mod tests {
     // `super::*` re-exports the module's `reify_fdm::{Bead, BeadRole, Layer,
     // Toolpath}` + `reify_ir::Value` imports alongside `toolpath_to_value`.
     use super::*;
+    use reify_core::DimensionVector;
 
     /// A hand-built 2-bead / 2-layer Toolpath with one in-layer and one
     /// inter-layer adjacency pair — the marshalling fixture for
@@ -545,6 +546,45 @@ mod tests {
         }
     }
 
+    /// Assert that `v` is a `Value::Scalar` carrying exactly `dimension` and an
+    /// `si_value` equal to `expected_si` to a 1e-12 **relative** tolerance.
+    ///
+    /// The dimension is checked as well as the magnitude: a magnitude-only
+    /// assertion would let a right-number/wrong-dimension Scalar through, which
+    /// is precisely the defect class this surface's conversion has to rule out.
+    ///
+    /// Relative rather than `assert_eq!` because `Value::Scalar` equality is
+    /// bitwise over f64. Every expected value here is ONE f64 operation from a
+    /// fixture literal, so its relative error is ≤ 2^-53 ≈ 1.11e-16 plus ~1e-16
+    /// of literal representation error — 1e-12 clears that by >3000x while
+    /// still failing any real unit error (the smallest of which is 1000x).
+    fn assert_scalar(v: &Value, expected_si: f64, dimension: DimensionVector, what: &str) {
+        match v {
+            Value::Scalar {
+                si_value,
+                dimension: d,
+            } => {
+                assert_eq!(
+                    *d, dimension,
+                    "{what}: expected dimension {dimension:?}, got {d:?}"
+                );
+                let tol = expected_si.abs() * 1e-12;
+                assert!(
+                    (si_value - expected_si).abs() <= tol,
+                    "{what}: expected si_value ~= {expected_si} (tol {tol}), got {si_value}"
+                );
+            }
+            other => panic!("{what}: expected a dimensioned Value::Scalar, got {other:?}"),
+        }
+    }
+
+    /// [`assert_scalar`] specialised to `DimensionVector::LENGTH` — the check
+    /// every marshalled geometry field (and every centerline coordinate) must
+    /// satisfy, in SI metres.
+    fn assert_length(v: &Value, expected_m: f64, what: &str) {
+        assert_scalar(v, expected_m, DimensionVector::LENGTH, what);
+    }
+
     /// The top-level value is a `StructureInstance` named `Toolpath` carrying a
     /// `beads` List of 2 and a `layers` List of 2 `Layer` structures.
     #[test]
@@ -572,15 +612,40 @@ mod tests {
             other => panic!("expected a Layer StructureInstance, got {other:?}"),
         }
         assert_eq!(field(&layers[0], "index"), Some(&Value::Int(0)));
-        assert_eq!(field(&layers[0], "z"), Some(&Value::Real(0.2)));
+        // 0.2 mm -> 2.0e-4 m, Length-dimensioned (the DSL-visible surface is SI).
+        assert_length(
+            field(&layers[0], "z").expect("layer z field"),
+            2.0e-4,
+            "layer 0 z (0.2 mm)",
+        );
         let bead_indices = as_list(field(&layers[1], "bead_indices").expect("bead_indices"));
         assert_eq!(bead_indices.len(), 1);
         assert_eq!(bead_indices[0], Value::Int(1), "layer 1 owns bead 1");
     }
 
+    /// Assert that `v` is a `Value::Point` of EXACTLY three LENGTH-dimensioned
+    /// `Value::Scalar` components — the shape `resolve_point3_length_arg`
+    /// (`geometry_ops.rs`) requires of any point fed to a geometry builtin.
+    /// Bare-`Real` components fail it (returning None + a Warning), so a
+    /// centerline built from them is a dead end in the language; this is the
+    /// property that makes `Bead.centerline` actually usable.
+    fn assert_point3_length(v: &Value, expected_m: [f64; 3], what: &str) {
+        match v {
+            Value::Point(coords) => {
+                assert_eq!(coords.len(), 3, "{what}: expected exactly 3 components");
+                for (i, (c, e)) in coords.iter().zip(expected_m.iter()).enumerate() {
+                    assert_length(c, *e, &format!("{what} component {i}"));
+                }
+            }
+            other => panic!("{what}: expected a Value::Point, got {other:?}"),
+        }
+    }
+
     /// Each marshalled bead carries its role (as a `BeadRole` enum value), its
-    /// geometry scalars (native mm / mm·min⁻¹, NOT SI-converted — θ owns that),
-    /// its integer layer index, and its centerline polyline as a List.
+    /// geometry scalars — SI metres in dimensioned `Value::Scalar`s, converted
+    /// from the Rust struct's native G-code millimetres at this marshalling
+    /// boundary — its integer layer index, and its centerline polyline as a
+    /// List of `Point3<Length>`.
     #[test]
     fn bead_fields_carry_role_geometry_and_centerline() {
         let v = toolpath_to_value(&sample_toolpath());
@@ -596,15 +661,31 @@ mod tests {
             }),
             "Perimeter maps to the BeadRole::Perimeter enum value"
         );
-        assert_eq!(field(&beads[0], "width"), Some(&Value::Real(0.45)));
-        assert_eq!(field(&beads[0], "height"), Some(&Value::Real(0.2)));
+        // Geometry: native mm in the Rust struct -> SI metres here (x 1e-3).
+        assert_length(
+            field(&beads[0], "width").expect("width field"),
+            4.5e-4,
+            "bead 0 width (0.45 mm)",
+        );
+        assert_length(
+            field(&beads[0], "height").expect("height field"),
+            2.0e-4,
+            "bead 0 height (0.2 mm)",
+        );
         assert_eq!(field(&beads[0], "layer_index"), Some(&Value::Int(0)));
-        assert_eq!(field(&beads[0], "layer_z"), Some(&Value::Real(0.2)));
+        assert_length(
+            field(&beads[0], "layer_z").expect("layer_z field"),
+            2.0e-4,
+            "bead 0 layer_z (0.2 mm)",
+        );
         assert_eq!(field(&beads[0], "nominal_temp"), Some(&Value::Real(210.0)));
         assert_eq!(field(&beads[0], "speed"), Some(&Value::Real(1800.0)));
 
         let cl0 = as_list(field(&beads[0], "centerline").expect("centerline field"));
         assert_eq!(cl0.len(), 2, "bead 0 has two centerline points");
+        // [0, 0, 0.2] mm and [10, 0, 0.2] mm -> metres.
+        assert_point3_length(&cl0[0], [0.0, 0.0, 2.0e-4], "bead 0 centerline point 0");
+        assert_point3_length(&cl0[1], [1.0e-2, 0.0, 2.0e-4], "bead 0 centerline point 1");
 
         // The second bead's distinct role maps through too.
         assert_eq!(
@@ -618,6 +699,11 @@ mod tests {
         );
         let cl1 = as_list(field(&beads[1], "centerline").unwrap());
         assert_eq!(cl1.len(), 3, "bead 1 has three centerline points");
+        // Every point of every bead carries the Point3<Length> shape, not just
+        // the first bead's: [0,0,0.4], [10,0,0.4], [10,5,0.4] mm -> metres.
+        assert_point3_length(&cl1[0], [0.0, 0.0, 4.0e-4], "bead 1 centerline point 0");
+        assert_point3_length(&cl1[1], [1.0e-2, 0.0, 4.0e-4], "bead 1 centerline point 1");
+        assert_point3_length(&cl1[2], [1.0e-2, 5.0e-3, 4.0e-4], "bead 1 centerline point 2");
     }
 
     /// The two adjacency lists are marshalled into distinctly-named fields, each
