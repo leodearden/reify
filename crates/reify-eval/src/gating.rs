@@ -13,9 +13,8 @@
 //! would introduce a cycle.  A runtime-layer scheduler would compute the
 //! candidate gated set via `NodePolicyOverrides::resolve()` and feed it to
 //! these helpers; no such consumer exists today — the concurrent scheduler
-//! was deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  The
-//! end-to-end witness is
-//! `crates/reify-eval/tests/only_run_on_final_inputs_gating.rs`.
+//! was deleted with `concurrent.rs` in c1b8dba3f7 (task ο, #5065).  See
+//! [`has_non_final_inputs`] for the end-to-end test witness.
 
 use std::collections::HashSet;
 
