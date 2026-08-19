@@ -917,6 +917,30 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # known, accepted gap (not "fixed" by a real heredoc-state parser, which
 # this line-oriented scanner deliberately is not) by the addendum assert
 # just after F3 below.
+#
+# (4) GRAMMAR-PRECISION gaps in the direct-call-site predicate itself,
+# found during amendment review. F_EXEC_RE/F_CALL_RE are LINE-oriented
+# pattern matches, not a shell parser, so they miss idiomatic shapes that
+# are semantically equivalent to ones they do match:
+#   - POSIX dot-source (`. "$path"`) is not an alternative to `source`/
+#     `bash` in F_EXEC_RE;
+#   - a call guarded by a keyword or operator on the same line (e.g.
+#     `if test_semaphore_acquire "$SLOT"; then`) is not matched by
+#     F_CALL_RE, which requires the call to be the line's first token.
+# Two sibling false negatives measured in the same review -- a flag token
+# between an exec verb and its path, and a bind line carrying a trailing
+# same-line comment -- WERE fixed, in F_EXEC_RE and F_BIND_RE respectively
+# (see their own comments below); both were closed-form single-shape
+# widenings, verified not to change the derived roster over the real tree
+# before landing. The two above were not: safely admitting `if`/`&&`/`||`-
+# guarded calls needs statement-boundary awareness this scanner does not
+# have, and a naive widening risks matching inside an unrelated quoted
+# string instead -- the same class of hazard that sank the run_all
+# alternation in (2). No suite in tests/infra is known to use either shape
+# today (F1's pass is the evidence). Net effect: F2's positive control
+# proves the derivation matches its OWN canonical fixture shapes, not the
+# full diversity of real bash call syntax, and a green F1 should be read
+# accordingly.
 
 # The declared roster: every suite this file currently knows to be
 # deadline-capable THROUGH A DIRECT WRAPPER CALL SITE (see SCOPE (2) above
@@ -996,10 +1020,22 @@ TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
 # to MISS test_verify_semaphore_e2e.sh, which assigns
 # `export REIFY_TEST_SEMAPHORE_WAIT="$wait"` (a variable, :528).
 F_WAIT_RE='REIFY_(TEST_SEMAPHORE|OCCT_LOCK|LANE_X_FLOCK|RUN_ALL_POOL)_WAIT='
-# A variable bound to one of the four acquire-wrapper paths.
-F_BIND_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh"?$'
-# One of the four wrappers exec'd or sourced by path.
-F_EXEC_RE='(bash|source)[[:blank:]]+"?[^"]*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh'
+# A variable bound to one of the four acquire-wrapper paths. Anchored to
+# "quote-or-not, then blank-or-end-of-line", not a bare end-of-line ($):
+# a strict $ anchor was MEASURED to silently drop a bind line the moment
+# it grew a trailing same-line comment (e.g. `LIB=".../lib_slot_acquire.sh"
+# # the wrapper`) -- test_slot_event_log.sh's roster membership rests on
+# exactly one such line today, so this was a live gap, not a hypothetical
+# one. Comment-stripping upstream only removes FULL-LINE comments, never a
+# trailing one, so the anchor itself has to tolerate it.
+F_BIND_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh"?([[:blank:]]|$)'
+# One of the four wrappers exec'd or sourced by path. Tolerates flag
+# tokens between the verb and the path (e.g. `bash -x ".../foo.sh"`): the
+# original `"?[^"]*` could not cross the quote that follows a flag, so
+# `bash -x "$SCRIPTS_DIR/cargo-test-occt-gated.sh"` was a measured miss.
+# Both widenings above were checked against the real tree before landing
+# and change no member of the derived roster (see SCOPE (4)).
+F_EXEC_RE='(bash|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*"?[^"]*/(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock|lib_slot_acquire)\.sh'
 # A bare call to one of the three acquire functions.
 # BIND/EXEC/CALL exist because the wrapper defaults are FINITE
 # (REIFY_TEST_SEMAPHORE_WAIT=1800 at lib_test_semaphore.sh:100,
@@ -1059,7 +1095,12 @@ F_NEG_DIR="$TMPF/fx-neg"; mkdir -p "$F_NEG_DIR"
 # F2 POSITIVE -- one runtime-built fixture per grammar variant, each in ITS
 # OWN file so a narrowing edit that stops matching exactly one variant shows
 # up as a basename-COUNT drop naming how many variants it stopped seeing
-# (the E_POS_VARIANTS idiom), not swallowed by the other four.
+# (the E_POS_VARIANTS idiom), not swallowed by the others. Seven, not five:
+# amendment review measured two real false-negative shapes in the original
+# five-fixture set (a bind line with a trailing comment; an exec line with
+# a flag before the path) and F_BIND_RE/F_EXEC_RE were widened to catch
+# them (see their own comments above) -- these two fixtures are what pin
+# that widening as a positive control rather than leaving it unverified.
 cat > "$F_POS_DIR/test_f_pos_wait_literal.sh" <<'WAITLITEOF'
 #!/usr/bin/env bash
 export REIFY_TEST_SEMAPHORE_WAIT=30
@@ -1073,15 +1114,23 @@ cat > "$F_POS_DIR/test_f_pos_bind.sh" <<'BINDEOF'
 #!/usr/bin/env bash
 LIB="$REPO_ROOT/scripts/lib_slot_acquire.sh"
 BINDEOF
+cat > "$F_POS_DIR/test_f_pos_bind_trailing_comment.sh" <<'BINDCMTEOF'
+#!/usr/bin/env bash
+LIB="$REPO_ROOT/scripts/lib_slot_acquire.sh"  # the wrapper
+BINDCMTEOF
 cat > "$F_POS_DIR/test_f_pos_exec.sh" <<'EXECEOF'
 #!/usr/bin/env bash
 bash "$SCRIPTS_DIR/cargo-test-occt-gated.sh" true
 EXECEOF
+cat > "$F_POS_DIR/test_f_pos_exec_flag.sh" <<'EXECFLAGEOF'
+#!/usr/bin/env bash
+bash -x "$SCRIPTS_DIR/cargo-test-occt-gated.sh" true
+EXECFLAGEOF
 cat > "$F_POS_DIR/test_f_pos_call.sh" <<'CALLEOF'
 #!/usr/bin/env bash
 slot_acquire "$LOCK" 1 1
 CALLEOF
-F_POS_VARIANTS=5
+F_POS_VARIANTS=7
 
 # F3 NEGATIVE -- fixtures that must NOT be detected. The second shape is
 # load-bearing: a naive whole-file token-mention grep was measured to return
@@ -1113,7 +1162,7 @@ DATAEOF
 F2_COUNT="$(_f_deadline_capable "$F_POS_DIR" | wc -l | tr -d ' ')"
 F3_COUNT="$(_f_deadline_capable "$F_NEG_DIR" | wc -l | tr -d ' ')"
 
-assert "F2: positive control -- the derivation flags all $F_POS_VARIANTS grammar variants (WAIT= literal, WAIT= var, bind, exec, bare call; got $F2_COUNT)" \
+assert "F2: positive control -- the derivation flags all $F_POS_VARIANTS grammar variants (WAIT= literal, WAIT= var, bind, bind+trailing-comment, exec, exec+flag, bare call; got $F2_COUNT)" \
     test "$F2_COUNT" -eq "$F_POS_VARIANTS"
 assert "F3: comment-only mentions and closure/copy-list DATA are NOT flagged (got $F3_COUNT)" \
     test "$F3_COUNT" -eq 0
