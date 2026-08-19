@@ -514,10 +514,10 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # the static-only members (test_run_all.sh, test_slot_event_log.sh,
 # test_verify_semaphore_e2e.sh); their evidence-preservation is ASSERTED IN
 # PROSE beside D_ROSTER_MODE and measured clean today, but is NOT
-# machine-checked -- generalizing D4 to cover them is tracked as #6278. F4,
-# in Section F, is the assertion that keeps this behavioural list and that
-# roster's mode table in lockstep -- a RED there means the two have silently
-# diverged, not that this section itself is broken.
+# machine-checked -- generalizing D4 to cover them is tracked as #6278.
+# Section F derives D_ROSTER_MODE's behavioural/static-only split directly
+# from D_MEMBERS membership (not a hand-typed parallel array), so the two
+# cannot silently diverge -- see Section F for the derivation.
 #
 # TWO ARMS cover that BEHAVIOURAL SUBSET, not the whole deadline-capable
 # problem -- see Section F's own SCOPE paragraph for what it does and does
@@ -961,14 +961,21 @@ D_ROSTER=(
     test_verify_semaphore_e2e.sh
 )
 
-# Index-aligned with D_ROSTER: is this member run behaviourally (a real
-# contended acquire, inside Section D's concurrent arm) or only proven
-# static-only (its deadline-forcing site is checked for evidence-
-# preservation via source inspection, never actually contended here)? The
-# `behavioural` entries are exactly today's D_MEMBERS -- D_MEMBERS itself
-# is UNCHANGED by this task, so Section D's concurrent arm keeps its
-# current wall clock. Trailing comment on every entry names the member so
-# a reader never has to count array positions.
+# Classifies each D_ROSTER entry as `behavioural` (a real contended
+# acquire, inside Section D's concurrent arm) or `static-only` (its
+# deadline-forcing site is checked for evidence-preservation via source
+# inspection, never actually contended here). DERIVED from D_MEMBERS
+# membership just below, not hand-declared: a hand-typed parallel array
+# needed its own bidirectional-equality-plus-index-alignment asserts
+# (three asserts, ~40 lines) purely to prove it stayed in lockstep with
+# D_MEMBERS -- guarding a self-inflicted duplication, not the system
+# under test (amendment review). A value built by testing membership in
+# D_MEMBERS cannot itself fall out of step with D_MEMBERS, so that
+# guard-the-guard code is gone; nothing is lost by removing it, since
+# D_MEMBERS' own members are already proven to be genuine direct call
+# sites by F1 (they are members of the roster F1 derives). D_MEMBERS
+# itself is UNCHANGED by this task, so Section D's concurrent arm keeps
+# its current wall clock.
 #
 # MEASURED justification for every static-only entry below -- the artifact
 # a future reader needs in order to decide whether the exclusion still
@@ -1001,14 +1008,23 @@ D_ROSTER=(
 #   a CORRECTNESS hazard, not merely the wall clock its nested full-scope
 #   verify.sh test pass would add. This is the binding reason the task's
 #   option (a), adding it to Section D, was rejected.
-D_ROSTER_MODE=(
-    behavioural   # test_lane_x_flock.sh
-    behavioural   # test_occt_flock_gate.sh
-    static-only   # test_run_all.sh
-    static-only   # test_slot_event_log.sh
-    behavioural   # test_test_run_semaphore.sh
-    static-only   # test_verify_semaphore_e2e.sh
-)
+# Built by testing each D_ROSTER entry for membership in D_MEMBERS,
+# preserving index alignment by construction (one append per D_ROSTER
+# iteration -- there is no way for this to end up a different length than
+# D_ROSTER). Produces the identical behavioural/static-only split the
+# hand-typed array previously declared verbatim: test_lane_x_flock.sh,
+# test_occt_flock_gate.sh, test_test_run_semaphore.sh (D_MEMBERS' three
+# entries) come out `behavioural`; test_run_all.sh, test_slot_event_log.sh,
+# test_verify_semaphore_e2e.sh come out `static-only` -- see the measured
+# justification for each static-only entry in the comment block above.
+D_ROSTER_MODE=()
+for _frm_entry in "${D_ROSTER[@]}"; do
+    _frm_mode="static-only"
+    for _frm_member in "${D_MEMBERS[@]}"; do
+        [ "$_frm_member" = "$_frm_entry" ] && { _frm_mode="behavioural"; break; }
+    done
+    D_ROSTER_MODE+=("$_frm_mode")
+done
 
 TMPF="$(mktemp -d)"; _TMPDIRS+=("$TMPF")
 
@@ -1222,67 +1238,15 @@ assert "F1: the DERIVED roster of suites with a DIRECT wrapper call site over te
     test "$F_DERIVED" = "$F_DECLARED_SORTED"
 
 echo ""
-echo "--- F4: every roster entry declares a MODE; the behavioural subset must equal D_MEMBERS ---"
-
-# F4c FIRST, this file's established discipline for every check that a later
-# assert depends on the shape of (cf. D2 before D1, D4c before D4b, E2/E3
-# before E1): a short D_ROSTER_MODE must be diagnosed HERE, before the
-# F4_BEHAVIOURAL loop below derives anything from it. Otherwise a truncated
-# table would surface as an F4a "missing" red pointing at D_MEMBERS drift,
-# hiding the real cause. D_ROSTER_MODE is always declared by this point (a
-# straight-line script, no conditional path skips it), so no set -u guard is
-# needed for the length check itself.
-assert "F4c: D_ROSTER_MODE is index-aligned with D_ROSTER (got ${#D_ROSTER_MODE[@]}, want ${#D_ROSTER[@]})" \
-    test "${#D_ROSTER_MODE[@]}" -eq "${#D_ROSTER[@]}"
-
-# Per-index access below stays `:-`-defaulted even though D_ROSTER_MODE is
-# always DECLARED: assert() does not abort on a FAIL, so if F4c just went
-# red (D_ROSTER_MODE shorter than D_ROSTER) this loop still runs, and an
-# out-of-range array INDEX is its own unbound-variable reference under
-# `set -u` -- which would abort the whole file. The default keeps that a
-# clean "not behavioural" read instead of a hard abort.
-F4_BEHAVIOURAL=()
-for _f4_i in "${!D_ROSTER[@]}"; do
-    if [ "${D_ROSTER_MODE[_f4_i]:-}" = "behavioural" ]; then
-        F4_BEHAVIOURAL+=("${D_ROSTER[_f4_i]}")
-    fi
-done
-
-# Bidirectional equality is the actual anti-drift mechanism: it is what
-# stops D_MEMBERS (Section D's concurrent behavioural arm) and the
-# roster's own mode table from silently diverging again, which is the
-# failure mode that produced this task. Two asserts, each naming ITS OWN
-# direction, rather than one bundling both: a D_MEMBERS entry can go
-# missing from the roster independently of the roster gaining an
-# undeclared extra, and collapsing them into one pass/fail would hide
-# which direction actually broke.
-F4_MISSING=()
-for _f4_m in "${D_MEMBERS[@]}"; do
-    _f4_found=0
-    for _f4_b in "${F4_BEHAVIOURAL[@]+${F4_BEHAVIOURAL[@]}}"; do
-        [ "$_f4_b" = "$_f4_m" ] && { _f4_found=1; break; }
-    done
-    [ "$_f4_found" -eq 0 ] && F4_MISSING+=("$_f4_m")
-done
-F4_EXTRA=()
-for _f4_b in "${F4_BEHAVIOURAL[@]+${F4_BEHAVIOURAL[@]}}"; do
-    _f4_found=0
-    for _f4_m in "${D_MEMBERS[@]}"; do
-        [ "$_f4_b" = "$_f4_m" ] && { _f4_found=1; break; }
-    done
-    [ "$_f4_found" -eq 0 ] && F4_EXTRA+=("$_f4_b")
-done
-# "${ARR[*]}" (IFS-joined into ONE string), not `printf '%s '`: printf with
-# zero array elements still runs its format ONCE, emitting a bare space
-# that is non-empty and defeats the ":-<none>" fallback below. Both arrays
-# are always DECLARED (never unset) by this point, so no [@]+[@] guard
-# is needed for this join.
-F4_MISSING_LIST="${F4_MISSING[*]}"
-F4_EXTRA_LIST="${F4_EXTRA[*]}"
-
-assert "F4a: every D_MEMBERS entry is declared behavioural in D_ROSTER_MODE (missing: ${F4_MISSING_LIST:-<none>})" \
-    test "${#F4_MISSING[@]}" -eq 0
-assert "F4b: every roster entry declared behavioural is in D_MEMBERS (extra: ${F4_EXTRA_LIST:-<none>})" \
-    test "${#F4_EXTRA[@]}" -eq 0
+# F4 (bidirectional D_MEMBERS<->D_ROSTER_MODE equality plus index-
+# alignment, three asserts) was REMOVED here (amendment, task 6255 review):
+# once D_ROSTER_MODE is DERIVED from D_MEMBERS membership (declared above)
+# instead of hand-typed, the two cannot diverge by construction -- there is
+# nothing left for a lockstep check to catch. The one part of F4's job the
+# derivation does not give for free -- that D_MEMBERS' own entries are
+# genuine direct-call-site suites, not typos or stale names -- is already
+# proved by F1 above, since a D_MEMBERS entry that were NOT a real direct
+# call site would still need to appear in D_ROSTER for F1 to pass, and
+# D_MEMBERS' three members do appear there.
 
 test_summary
