@@ -226,3 +226,126 @@ fn real_slicer_build_is_deterministic_verify_and_lock() {
          (byte-identical G-code → identical Toolpath)"
     );
 }
+
+// ── Declared-unit regime (task #6301) ───────────────────────────────────────
+
+/// Compile `src` with the stdlib and return its Error-severity diagnostics as
+/// `(code, message)` pairs. Uses `compile_source_with_stdlib` (which does NOT
+/// assert the absence of compile errors) so the negative half below can inspect
+/// the errors rather than panicking on them.
+fn compile_errors(src: &str) -> Vec<(Option<DiagnosticCode>, String)> {
+    let module = reify_test_support::compile_source_with_stdlib(src);
+    reify_test_support::errors_only(&module)
+        .into_iter()
+        .map(|d| (d.code, d.message.clone()))
+        .collect()
+}
+
+/// Assert `src` compiles with no Error-severity diagnostics.
+fn assert_compiles_clean(src: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors.is_empty(),
+        "{what}: expected a clean compile, got errors: {errors:?}"
+    );
+}
+
+/// Assert `src` is REJECTED with at least one `ParamDefaultTypeMismatch`.
+fn assert_param_default_type_mismatch(src: &str, what: &str) {
+    let errors = compile_errors(src);
+    assert!(
+        errors
+            .iter()
+            .any(|(code, _)| *code == Some(DiagnosticCode::ParamDefaultTypeMismatch)),
+        "{what}: expected a ParamDefaultTypeMismatch error, got: {errors:?}"
+    );
+}
+
+/// The stdlib `Bead` / `Layer` field types declare the SAME unit regime that
+/// `toolpath_to_value` marshals into — SI and dimensioned.
+///
+/// This is the enforcement of `fdm_slice.ri`'s "Field-type ↔ marshalling
+/// contract" header, which until now asserted that the declarations and the
+/// marshaller "MUST stay aligned" with nothing actually checking it. Drift in
+/// either direction is now a test failure.
+///
+/// Pure compile-level: no OCCT, no PrusaSlicer, no beads — so unlike the two
+/// tests above it carries no `OCCT_AVAILABLE` / `slicer_on_path` guard and runs
+/// in every environment.
+///
+/// # Why this shape
+///
+/// The obvious spelling — passing a unit-bearing literal to a constructor,
+/// `Bead(width: 0.45mm)` — has NO discriminating power here: structure-
+/// construction arguments are not dimension-checked, so even a flagrantly wrong
+/// `Flatness(tolerance_value: 0.45kg)` compiles clean. Binding a field to a
+/// declared param IS checked (`ParamDefaultTypeMismatch`), so reading the field
+/// back out into a typed param is what actually observes its declared type.
+#[test]
+fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
+    // Positive half: each field binds cleanly to a param of its own dimension.
+    // RED while the fields are declared `Real`, GREEN once they name their unit.
+    assert_compiles_clean(
+        "structure P { param w : Length = Bead().width }",
+        "Bead.width is Length",
+    );
+    assert_compiles_clean(
+        "structure P { param h : Length = Bead().height }",
+        "Bead.height is Length",
+    );
+    assert_compiles_clean(
+        "structure P { param z : Length = Bead().layer_z }",
+        "Bead.layer_z is Length",
+    );
+    assert_compiles_clean(
+        "structure P { param s : Velocity = Bead().speed }",
+        "Bead.speed is Velocity",
+    );
+    assert_compiles_clean(
+        "structure P { param t : Temperature = Bead().nominal_temp }",
+        "Bead.nominal_temp is Temperature",
+    );
+    assert_compiles_clean(
+        "structure P { param z : Length = Layer().z }",
+        "Layer.z is Length",
+    );
+
+    // The dimensionless-by-nature fields stay `Int` — the regime covers the
+    // dimensional fields, it does not sweep up the indices.
+    assert_compiles_clean(
+        "structure P { param i : Int = Bead().layer_index }",
+        "Bead.layer_index stays Int",
+    );
+    assert_compiles_clean(
+        "structure P { param i : Int = Layer().index }",
+        "Layer.index stays Int",
+    );
+
+    // Negative half — the half that actually closes the silent bare-number
+    // surface. Binding a now-dimensioned field to a bare `Real` param must be
+    // REJECTED; this assertion fails if someone later reverts a field to `Real`.
+    assert_param_default_type_mismatch(
+        "structure P { param w : Real = Bead().width }",
+        "Bead.width must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param s : Real = Bead().speed }",
+        "Bead.speed must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param t : Real = Bead().nominal_temp }",
+        "Bead.nominal_temp must no longer satisfy a bare Real param",
+    );
+    assert_param_default_type_mismatch(
+        "structure P { param z : Real = Layer().z }",
+        "Layer.z must no longer satisfy a bare Real param",
+    );
+
+    // Mechanism control: a WRONG-dimension binding is rejected, and stays
+    // rejected either way. Without this, a compiler that silently accepted
+    // everything would make the positive half above pass vacuously.
+    assert_param_default_type_mismatch(
+        "structure P { param m : Mass = Bead().width }",
+        "a Mass param must never accept a Bead width",
+    );
+}
