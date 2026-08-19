@@ -1618,6 +1618,16 @@ pub(crate) fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[Compile
 /// Both `read_closure` and `cells_reaching` therefore run EVERY id — seed reads
 /// and mid-walk reads alike — through [`crate::resolve_order::normalize_cell_id`]
 /// against `path_map`, which is identity for an already-template-keyed id.
+///
+/// Crucially, BOTH are ADDITIVE about it: they keep the RAW spelling alongside
+/// the normalised one rather than replacing it. That is the whole substance of
+/// the bridge, and it must hold in both directions at once — `read_closure`
+/// inserts both into its closure, and `cells_reaching` keys its reverse map on
+/// both. Making only ONE side additive is worse than making neither: layer 4
+/// then sees an instance-path auto as pinned (no warning) while layer 1 still
+/// drops the constraint that pins it (no solve), turning a correct warning into
+/// a silent `Undef`. See each walk's own comment for the construction argument
+/// that neither addition can perturb the PRD2 D1 identity branch.
 struct CellReadIndex<'t> {
     /// Every NON-AUTO cell across all templates that carries a plain
     /// `default_expr`, keyed by id. Autos have no `default_expr` and are
@@ -1784,14 +1794,39 @@ impl<'t> CellReadIndex<'t> {
         // MEMOIZED (task #5467 amendment): the reverse graph is a pure function
         // of `cell_map`/`path_map` and independent of `auto_ids`, so N calls on
         // one index cost ONE `extract_value_deps` sweep, not N.
+        //
+        // ADDITIVE keying, mirroring `read_closure`'s `push` (task #5467
+        // step-19). Keying ONLY on the normalised spelling made the two
+        // directions of this one index disagree: the FORWARD walk retains both
+        // spellings, but every caller seeds THIS walk with RAW declaration ids
+        // (`build_solver_problem` passes `regular_auto_cells.iter().map(|c|
+        // c.id.clone())`), and the compiler mints instance-path-keyed auto
+        // decls — `ValueCellId("Holder.b", "bore")` at
+        // `reify-compiler/src/entity.rs:3025` (construction named-arg) and
+        // `:3130` (sub-override). A `let` reading that same cell normalises its
+        // dep to `Bearing.bore`, so a normalise-only key set can NEVER be hit
+        // by the raw seed: `reverse.get()` misses, `reaches` comes back empty,
+        // layer 1 drops the let-indirected constraint, and the auto is never
+        // solved — while the additive `read_closure` has already let layer 4
+        // see it and suppress the `W_UNDERDETERMINED` warning. That combination
+        // is strictly worse than not widening at all: a loud, correct warning
+        // becomes a silent `Undef`. Locked by
+        // `let_indirected_instance_path_autos_resolve_through_their_lets`.
+        //
+        // Cannot perturb the D1 identity branch, by the same construction
+        // argument `read_closure` documents: the keys this ADDS are exactly the
+        // raw spellings whose normalisation DIFFERS, i.e. instance-path ones.
+        // A template-keyed seed's lookups are byte-identical, and an
+        // instance-path seed previously matched nothing at all.
         let reverse = self.reverse.get_or_init(|| {
             let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
             for (id, expr) in &self.cell_map {
                 for dep in crate::deps::extract_value_deps(expr) {
-                    reverse
-                        .entry(self.normalize(dep))
-                        .or_default()
-                        .push(id.clone());
+                    let norm = self.normalize(dep.clone());
+                    if norm != dep {
+                        reverse.entry(dep).or_default().push(id.clone());
+                    }
+                    reverse.entry(norm).or_default().push(id.clone());
                 }
             }
             reverse
