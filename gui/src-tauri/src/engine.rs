@@ -4375,7 +4375,10 @@ fn surface_geometry_derived_cells(
     // the edited entity, leaving reachable only an op failure in an entity OTHER
     // than the edited one — an extension of the cross-entity residual documented on
     // that method. Closing it needs reify-eval to report the dispatched-realization
-    // set on `TessellateResult` directly; filed as a follow-up (#5338 amendment).
+    // set on `TessellateResult` directly (out of this task's locked scope); filed as
+    // a follow-up under ticket `tkt_0RSMMRJ9E6HZHWYYYRFJP028ST`, not as a
+    // tracked-pattern comment, since the curator assigns the task id asynchronously
+    // and a cite must resolve to a live task to be valid.
     let mut dispatched_entities: Option<HashSet<String>> = None;
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the

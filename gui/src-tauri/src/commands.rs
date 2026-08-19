@@ -633,8 +633,11 @@ pub fn open_file_engine_impl(
 /// end to end on the argv launch. Delivering it end to end means applying the same
 /// resolve where the frontend reads it — at `build_gui_state`, against the session's
 /// canonical `file_path` — which changes `files[].path` for every `get_initial_state`
-/// consumer and is therefore out of scope here; filed as a follow-up (#5338
-/// amendment).
+/// consumer (including the live-edit `file_key` join in `build_files_with_live_edit`)
+/// and is therefore out of scope here. Filed as a follow-up under ticket
+/// `tkt_0RSMMJKNAYC6YCYNNNA86P9AYQ`, not as a tracked-pattern comment, since the
+/// curator assigns the task id asynchronously and a cite must resolve to a live task
+/// to be valid.
 ///
 /// `path` MUST already be canonical — [`resolve_initial_file_path`] is the argv
 /// string → canonical `PathBuf` step and stays the caller's responsibility, and
