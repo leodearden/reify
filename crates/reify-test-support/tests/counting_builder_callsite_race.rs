@@ -5,27 +5,25 @@
 //! Calls the leaf `build()` directly rather than a wrapper, so a future
 //! refactor that moves the priming call up into a wrapper is caught here.
 //!
-//! # HARD INVARIANT: this file must contain EXACTLY ONE `#[test]`
+//! # HARD INVARIANT: exactly one `#[test]` in this file
 //!
-//! Do NOT merge this file with the other `*_callsite_race.rs` files, and do
-//! NOT add a second test to it. The failure being guarded depends on two
-//! *process-global* preconditions that any sibling test in the same binary
-//! would destroy:
-//!
-//! 1. `tracing_core::callsite::Dispatchers::has_just_one == true` (at most one
-//!    live dispatcher). A second concurrently-live dispatcher makes the
-//!    rebuilder `and` every live dispatcher's `Interest`, and
-//!    `Interest::never().and(Interest::always()) == Interest::sometimes()` —
-//!    i.e. healthy, so the bug cannot express itself.
-//! 2. No global default subscriber installed yet. Any sibling test that calls
-//!    `prime_tracing_callsite_cache()` (directly, or transitively via one of
-//!    the counting/capturing constructors) installs one for the whole process.
-//!
-//! With a sibling test present this file would still pass — but it would pass
-//! for the wrong reason, silently stopping being a regression guard.
+//! Do NOT add a second `#[test]` here, and do NOT merge this file with the
+//! sibling `*_callsite_race.rs` guards. The bug only expresses itself in a
+//! pristine process — at most one live dispatcher, and no global default
+//! installed yet — and any sibling test in the same binary destroys both
+//! preconditions, leaving a guard that still passes but for the wrong reason.
+//! The mechanism is documented in full on
+//! `reify_test_support::prime_tracing_callsite_cache`; the test's first
+//! statement asserts the preconditions so a violation fails loudly instead of
+//! degrading silently.
 
-/// A unique callsite hit nowhere else in the workspace. `#[inline(never)]` so
-/// the sibling thread and the test thread hit the *same* callsite.
+/// The probe callsite: a WARN message unique across the workspace, so no other
+/// test can have registered this callsite before the sibling thread does.
+///
+/// A single non-generic fn, so both threads execute the one macro expansion.
+/// `#[inline(never)]` is cosmetic — `tracing::warn!` expands to a function-local
+/// `static CALLSITE`, and inlining a non-generic fn does not duplicate its
+/// statics — it only keeps the frame legible in a backtrace.
 #[inline(never)]
 fn probe() {
     tracing::warn!("counting_builder_callsite_race probe");
@@ -33,6 +31,17 @@ fn probe() {
 
 #[test]
 fn counting_builder_counts_event_after_sibling_thread_registers_callsite() {
+    // Precondition, not decoration — see the HARD INVARIANT above.
+    // `has_been_set()` goes true on any `set_global_default` *or*
+    // `set_default`/`with_default` (tracing-core 0.1.36 `dispatcher.rs:327`
+    // and `:849`), so this catches every way a sibling test could have
+    // disarmed the guard.
+    assert!(
+        !tracing::dispatcher::has_been_set(),
+        "precondition violated: a tracing dispatcher was already installed before \
+         this test ran — a sibling #[test] in this binary has destroyed the guard"
+    );
+
     let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
         .count_level(tracing::Level::WARN)
         .build();
