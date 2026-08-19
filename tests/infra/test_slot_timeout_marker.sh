@@ -1207,6 +1207,82 @@ F_EDGE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*/'
 # matching inside `$RAX`.
 F_EDGE_VAR_PRE='"?\$\{?'
 F_EDGE_VAR_SUF='\}?([^A-Za-z0-9_]|$)'
+# (f) THE EXEC-FORWARDING-LIB rule, which is what makes the SECOND-ORDER
+# route visible. A sibling `*_lib.sh` is exec-forwarding iff it binds a
+# variable from a positional AND execs THAT SAME variable through the
+# anchored verb grammar above; every function such a lib defines is then
+# treated as a forwarding call, so passing a node-bound variable to one is an
+# edge. Same-variable is load-bearing and was measured: the looser reading
+# ("binds SOME positional and execs SOME variable") admits SIX libs, among
+# them test_affected_crates_lib.sh, which defines a function named `cargo`,
+# and test_nextest_absent_lib.sh, which defines `cleanup`.
+# MEASURED over tests/infra today, EXACTLY ONE lib qualifies --
+# run_all_ambient_isolation_lib.sh. nextest_absent_lib.sh, plan_capture_lib.sh,
+# occt_flock_gate_lib.sh, load_tolerance_lib.sh, copy_list_preflight_lib.sh,
+# lock_charter_harness_lib.sh and test_helpers.sh all fail the exec half.
+# That tightness is the whole point: it is what keeps `assert` and every
+# other ubiquitous helper out of the rule. If a future reader finds many
+# libs qualifying, the rule has stopped being tight and needs re-narrowing.
+F_FWD_POSBIND_RE='^[[:blank:]]*(local[[:blank:]]+)?[A-Za-z_][A-Za-z0-9_]*="\$[0-9]"'
+F_FWD_FNDEF_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\(\)'
+
+# F_FWD_LIB_MAP[<lib basename>] -> `|`-separated alternation of the function
+# names that exec-forwarding lib defines. Computed ONCE per derivation by
+# _f_scan_fwd_libs below, hoisted out of both the per-node and the per-round
+# loops, so the whole rule costs a constant handful of greps.
+declare -A F_FWD_LIB_MAP=()
+declare -A F_FWD_FN_ALT_CACHE=()
+F_FWD_FN_ALT=""
+
+_f_scan_fwd_libs() {
+    local _d="$1" _sd="$2" _l _base _n _fns _pv _fwd
+    local -a _pvars=()
+    F_FWD_LIB_MAP=()
+    F_FWD_FN_ALT_CACHE=()
+    for _l in "$_d"/*_lib.sh; do
+        [ -e "$_l" ] || continue
+        _base="${_l##*/}"
+        grep -vE '^[[:blank:]]*#' "$_l" > "$_sd/$_base" || true
+        _pvars=()
+        mapfile -t _pvars < <(grep -oE -- "$F_FWD_POSBIND_RE" "$_sd/$_base" \
+            | sed -E 's/^[[:blank:]]*(local[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/' | sort -u)
+        if [ "${#_pvars[@]}" -eq 0 ]; then continue; fi
+        _fwd=0
+        for _pv in "${_pvars[@]}"; do
+            [ -n "$_pv" ] || continue
+            _n="$(grep -cE -- "${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_pv}${F_EDGE_VAR_SUF}" "$_sd/$_base" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then _fwd=1; break; fi
+        done
+        [ "$_fwd" -eq 1 ] || continue
+        _fns="$(grep -oE -- "$F_FWD_FNDEF_RE" "$_sd/$_base" \
+            | sed -E 's/^[[:blank:]]*//; s/[[:blank:]]*\(\)$//' | sort -u | tr '\n' '|' | sed 's/|$//' || true)"
+        [ -n "$_fns" ] || continue
+        F_FWD_LIB_MAP["$_base"]="$_fns"
+    done
+}
+
+# _f_fwd_fn_alt <stripped-node-file> -> sets F_FWD_FN_ALT to the alternation
+# of forwarding function names reachable from THAT node, i.e. defined by the
+# exec-forwarding libs it actually `source`s (matched with the same anchored
+# verb grammar). Restricting to sourced libs is what stops an unsourced
+# lib's helper NAME from conferring an edge on a file that merely reuses the
+# name. Sets a global rather than printing, so its per-node memo survives:
+# a `$(...)` reader would be a subshell and the cache would be discarded.
+_f_fwd_fn_alt() {
+    local _sf="$1" _lib _n
+    if [ -n "${F_FWD_FN_ALT_CACHE[$_sf]+set}" ]; then
+        F_FWD_FN_ALT="${F_FWD_FN_ALT_CACHE[$_sf]}"
+        return 0
+    fi
+    F_FWD_FN_ALT=""
+    for _lib in "${!F_FWD_LIB_MAP[@]}"; do
+        _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_lib//./\\.}${F_EDGE_PATH_SUF}" "$_sf" || true)"
+        if [ "${_n:-0}" -ge 1 ]; then
+            F_FWD_FN_ALT="${F_FWD_FN_ALT:+$F_FWD_FN_ALT|}${F_FWD_LIB_MAP[$_lib]}"
+        fi
+    done
+    F_FWD_FN_ALT_CACHE["$_sf"]="$F_FWD_FN_ALT"
+}
 
 # _f_edge_exists <stripped-node-file> <target-basename> -> rc 0 if the node
 # whose comment-stripped text is in <stripped-node-file> INVOKES
@@ -1227,7 +1303,7 @@ F_EDGE_VAR_SUF='\}?([^A-Za-z0-9_]|$)'
 # Grepping a FILE, never downstream of a pipe, and counting rather than
 # `-q`/`-l`: doubly beyond the SIGPIPE/pipefail hazard documented above.
 _f_edge_exists() {
-    local _sf="$1" _esc="${2//./\\.}" _n _v
+    local _sf="$1" _esc="${2//./\\.}" _n _v _re
     local -a _vars=()
 
     _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" || true)"
@@ -1235,9 +1311,19 @@ _f_edge_exists() {
 
     mapfile -t _vars < <(grep -oE -- "${F_EDGE_BIND_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" \
         | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)=.*/\1/' | sort -u)
+    if [ "${#_vars[@]}" -eq 0 ]; then return 1; fi
+    _f_fwd_fn_alt "$_sf"
     for _v in "${_vars[@]}"; do
         [ -n "$_v" ] || continue
-        _n="$(grep -cE -- "${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}" "$_sf" || true)"
+        # Exec position: right after an anchored verb, or as the line's own
+        # first command word, or -- the second-order route -- on a line whose
+        # first command word is an exec-forwarding helper this file sources.
+        _re="${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+        _re="$_re|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+        if [ -n "$F_FWD_FN_ALT" ]; then
+            _re="$_re|^[[:blank:]]*($F_FWD_FN_ALT)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+        fi
+        _n="$(grep -cE -- "$_re" "$_sf" || true)"
         if [ "${_n:-0}" -ge 1 ]; then return 0; fi
     done
     return 1
@@ -1332,6 +1418,10 @@ _f_closure_compute() {
             _pend+=("$_sd/$_base")
         fi
     done < <(_f_node_list "$_d")
+
+    # The exec-forwarding-lib classification, hoisted: once per derivation,
+    # never per node and never per round.
+    _f_scan_fwd_libs "$_d" "$_sd"
 
     # DELTA starts as the seed set, SORTED. A node reachable from two capable
     # nodes would otherwise report whichever route bash's hash iteration
