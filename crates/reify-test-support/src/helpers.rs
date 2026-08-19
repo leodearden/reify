@@ -756,29 +756,6 @@ pub fn get_value_cell_in<'a>(
         })
 }
 
-/// Retrieve the `ValueCellDecl` of a value cell by name from the first template.
-///
-/// Convenience wrapper that delegates to [`get_value_cell_in`] using the name of the first
-/// template in the module. Measured: named-template lookups outnumber first-template lookups
-/// ~2:1 across the test suite, so prefer [`get_value_cell_in`] directly when the module has
-/// several templates and you need to target a specific one.
-///
-/// # Panics
-/// - `"expected at least one template in module"` if `templates` is empty.
-/// - Panics from [`get_value_cell_in`] if the cell is absent.
-pub fn get_value_cell<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    name: &str,
-) -> &'a reify_compiler::ValueCellDecl {
-    let template_name = module
-        .templates
-        .first()
-        .expect("expected at least one template in module")
-        .name
-        .as_str();
-    get_value_cell_in(module, template_name, name)
-}
-
 /// Retrieve the compiled `default_expr` of a let binding by name from a named template.
 ///
 /// Variant of [`get_let_expr`] for multi-structure modules where `templates.first()` may
@@ -1791,55 +1768,6 @@ mod tests {
         super::get_value_cell_in(&module, "S", "y");
     }
 
-    // ── get_value_cell ────────────────────────────────────────────────────
-
-    /// get_value_cell targets the FIRST template only; a cell in the second
-    /// template is not reachable via get_value_cell. Asserts on wrapper-only
-    /// fields (`id.member`, `cell_type`) that get_let_expr cannot reach.
-    #[test]
-    fn test_get_value_cell_targets_first_template() {
-        let source = r#"
-            structure Alpha { let a = 1.5 }
-            structure Beta  { let b = 2.7 }
-        "#;
-        let module = super::compile_source(source);
-        // Alpha is first — cell `a` should be found.
-        let cell = super::get_value_cell(&module, "a");
-        assert_eq!(cell.id.member, "a");
-        assert_eq!(
-            cell.cell_type,
-            reify_core::Type::dimensionless_scalar(),
-            "expected cell_type == Type::dimensionless_scalar() for Alpha.a, got {:?}",
-            cell.cell_type
-        );
-    }
-
-    /// get_value_cell with a cell name that only exists in the SECOND template
-    /// should panic with "no value cell named", because the helper only looks
-    /// inside the first template.
-    #[test]
-    #[should_panic(expected = "no value cell named")]
-    fn test_get_value_cell_does_not_search_other_templates() {
-        let source = r#"
-            structure Alpha { let a = 1.5 }
-            structure Beta  { let b = 2.7 }
-        "#;
-        let module = super::compile_source(source);
-        // `b` is in Beta (second template), not Alpha (first) — must panic.
-        super::get_value_cell(&module, "b");
-    }
-
-    /// get_value_cell should panic with "expected at least one template" when
-    /// the module has no templates at all (empty module built via builder).
-    #[test]
-    #[should_panic(expected = "expected at least one template")]
-    fn test_get_value_cell_panics_on_empty_templates() {
-        use reify_core::ModulePath;
-        let module =
-            crate::builders::CompiledModuleBuilder::new(ModulePath::single("empty")).build();
-        super::get_value_cell(&module, "anything");
-    }
-
     // ── get_let_expr_in ───────────────────────────────────────────────────
 
     /// get_let_expr_in should return the default_expr of the named cell in the
@@ -1957,20 +1885,20 @@ mod tests {
         super::get_let_expr(&module, "anything");
     }
 
-    // ── cross-consistency: get_let_expr(_in) agrees with get_value_cell(_in) ──
+    // ── delegation regression: get_let_expr_in stays expressed on get_value_cell_in ──
 
-    /// get_let_expr_in and get_value_cell_in must resolve to the SAME cell.
-    /// Uses a module where the same cell name ("w") exists in two templates
-    /// with DIFFERENT values, so a wrong-template resolution by either helper
-    /// would be observable here (mismatched content_hash) rather than
-    /// accidentally passing. Compares via `content_hash` — CompiledExpr and
-    /// CompiledExprKind derive no PartialEq, so content_hash equality is the
-    /// established structural-equality mechanism already relied on elsewhere
-    /// in this crate (e.g. builders/topology.rs's content_hash comparisons).
-    /// This is a refactor-safety pin written BEFORE get_let_expr_in is
-    /// re-expressed on top of get_value_cell_in: it passes immediately here
-    /// against the current independent implementations, and is what actually
-    /// guards the upcoming delegation change.
+    /// get_let_expr_in delegates to get_value_cell_in (see the collapse in this same
+    /// commit series) rather than running its own independent template/cell lookup, so
+    /// this is not a cross-check between two implementations — there is only one lookup
+    /// left. What it pins is that the delegation stays intact: if a future edit gives
+    /// get_let_expr_in its own lookup again, a wrong-template regression there would
+    /// surface as a content_hash mismatch against get_value_cell_in's result rather than
+    /// two independent bugs silently agreeing. Uses a module where the same cell name
+    /// ("w") exists in two templates with DIFFERENT values so a wrong-template resolution
+    /// is actually observable. Compares via `content_hash` — CompiledExpr and
+    /// CompiledExprKind derive no PartialEq, so content_hash equality is the established
+    /// structural-equality mechanism already relied on elsewhere in this crate (e.g.
+    /// builders/topology.rs's content_hash comparisons).
     #[test]
     fn test_get_let_expr_in_agrees_with_get_value_cell_in() {
         let source = r#"
@@ -1987,29 +1915,6 @@ mod tests {
         assert_eq!(
             expr_hash, cell_expr_hash,
             "get_let_expr_in and get_value_cell_in must resolve the same default_expr for Beta.w"
-        );
-    }
-
-    /// get_let_expr and get_value_cell must resolve to the SAME cell (first
-    /// template only) — the matching pair test for the first-template
-    /// convenience wrappers, mirroring
-    /// test_get_let_expr_in_agrees_with_get_value_cell_in above.
-    #[test]
-    fn test_get_let_expr_agrees_with_get_value_cell() {
-        let source = r#"
-            structure Alpha { let w = 1.5 }
-            structure Beta  { let w = 2.7 }
-        "#;
-        let module = super::compile_source(source);
-        let expr_hash = super::get_let_expr(&module, "w").content_hash;
-        let cell_expr_hash = super::get_value_cell(&module, "w")
-            .default_expr
-            .as_ref()
-            .unwrap()
-            .content_hash;
-        assert_eq!(
-            expr_hash, cell_expr_hash,
-            "get_let_expr and get_value_cell must resolve the same default_expr for Alpha.w (first template)"
         );
     }
 
