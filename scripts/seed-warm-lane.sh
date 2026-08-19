@@ -82,6 +82,25 @@
 #   `set -euo pipefail` and writes stdout exactly once, at the terminal echo.
 #   (§9.5 inv.13 "Caller obligation on the fail-closed path" is the ruling.)
 #
+#   PIPE-SAFE (task #6219): every DETACHED child this script forks (the
+#   orphan-trash sweep and the reseed-trash rm) holds NO descriptor of the
+#   caller's: fd 0, fd 1 and fd 2 are ALL redirected away EXPLICITLY
+#   (`</dev/null >/dev/null 2>&1` on the whole group -- the stdin half is
+#   spelled out rather than left to bash's async-list default, which does not
+#   reach a detach nested inside a redirected construct; see
+#   `_close_inherited_fds`'s doc-comment for the measurement, not restated
+#   here), and every OTHER inherited descriptor is
+#   closed generically by `_close_inherited_fds` (defined with the log
+#   helpers below) -- so ANY lock FD a caller holds is closed in the child,
+#   not just the two this pool's callers happen to use today (FD 9: seed's
+#   own --lane-lock acquire and thin-warm-lane.sh's --reseed; FD 8:
+#   warm-lane-gc.sh's reclaim). So a caller may capture this stdout through a
+#   pipe -- `$(...)`, `| consumer`, or the `2>&1 | while read` shape
+#   warm-lane-gc.sh:648-649 uses -- without blocking on that background rm of
+#   a possibly large tree, and without the rm silently outliving the
+#   caller's own lock release. A future caller's lock FD is covered
+#   automatically, with no closer to edit (task #6219 amendment).
+#
 # Stdout (record mode): resolved sidecar path on success.
 # Stderr:               all diagnostics, progress messages, and errors.
 #
@@ -140,6 +159,67 @@ info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
 warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
+
+# _close_inherited_fds (task #6219 amendment) -- closes every file descriptor
+# >= 3 open in the calling shell. Called as the FIRST statement inside every
+# detached background job this script forks (the orphan-trash sweep, the
+# reseed-trash rm), so the child holds NO descriptor inherited from its
+# caller -- whatever it may be, present or future -- instead of enumerating
+# each caller's private FD-locking convention by number at every call site.
+# This codebase's callers currently use FD 9 for seed's own --lane-lock
+# acquire and thin-warm-lane.sh's --reseed, and FD 8 for warm-lane-gc.sh's
+# reclaim; before this function existed, a third convention would have
+# needed a third numbered close added at both call sites below -- an
+# inverted dependency (the callee needing to track every caller's private
+# implementation detail) that had already produced the same class of leak
+# twice (FD 9 in #5705, FD 8 in #6219). See the LANE-LOCK RELEASE CONTRACT
+# block below for why an inherited dup of a caller's flock'd descriptor
+# matters at all (short version: a flock is attached to the OPEN FILE
+# DESCRIPTION, not the descriptor, so a detached child holding a dup keeps
+# the caller's lock held for the child's entire lifetime, even after the
+# caller itself releases and exits).
+# fd 0/1/2 are deliberately EXCLUDED (-ge 3): the group this runs inside
+# applies its own `</dev/null >/dev/null 2>&1` redirect to the WHOLE group
+# before any statement in the group body runs, so by the time this loop runs
+# those three descriptors are already the group's own, not the caller's --
+# closing them here would break the pipe-safety this exists to provide rather
+# than help it.
+# The stdin half is spelled EXPLICITLY at both call sites rather than left to
+# bash's async-list /dev/null default (amendment 2, correcting this
+# doc-comment's earlier claim that the default sufficed): that default applies
+# only "in the absence of any explicit redirections", and the orphan-sweep
+# detach lives inside `while IFS= read ... done < <(find ...)`, so without an
+# explicit `</dev/null` its child inherits the LOOP's redirected stdin
+# instead. MEASURED with the shipped shape: the non-loop reseed-trash detach
+# reports fd 0 = /dev/null, the loop-nested one reports fd 0 = pipe:[...] (the
+# process substitution). Benign in itself -- that pipe is seed's own,
+# already-exhausted find, not the caller's -- but it made the invariant this
+# design leans on ("a future caller's lock FD is covered automatically") false
+# for fd 0, so a future detach placed inside a construct whose stdin IS the
+# caller's would have silently reintroduced the leak class. The explicit
+# redirect makes it true by construction; Block V's V14-V17 in
+# tests/infra/test_seed_warm_lane.sh pin it behaviourally and structurally.
+#
+# `2>/dev/null` sits OUTSIDE the eval'd string, scoping it to the eval builtin
+# (amendment 2). Inside the string it is a redirection on an `exec` with NO
+# command, which bash applies PERMANENTLY to the shell that runs it --
+# silently destroying this script's whole diagnostic channel (the header's
+# "Stderr: all diagnostics, progress messages, and errors" contract, err()
+# included) for any future caller of this helper that does not already
+# pre-redirect fd 2, which the doc above actively invites. Masked until now
+# only because both call sites wrap the helper in a group that is itself
+# already `>/dev/null 2>&1`. The suppression is belt-and-braces either way:
+# bash returns 0 silently when closing an unopened descriptor. Block V's V18
+# in tests/infra/test_seed_warm_lane.sh pins this against the SHIPPED body
+# (extracted from this file, not retyped), with a mutation control that
+# re-inserts the old spelling and asserts it goes red.
+_close_inherited_fds() {
+    local _fd _n
+    for _fd in /proc/self/fd/*; do
+        _n="${_fd##*/}"
+        [ "$_n" -ge 3 ] 2>/dev/null && eval "exec ${_n}<&-" 2>/dev/null
+    done
+}
 
 # ── usage ─────────────────────────────────────────────────────────────────────
 _usage() {
@@ -857,8 +937,10 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     #
     # THIS BLOCK IS THE SINGLE SOURCE OF TRUTH for the mechanism and for the
     # measured rates. Every other site that touches FD 9 -- the --lane-lock
-    # header note, _usage(), the two `{ rm -rf ...; } 9<&- &` call sites below,
-    # tests/infra/test_seed_lane_lock_release_soak.sh, tests/infra/README.md --
+    # header note, _usage(), the two detached background jobs below (each
+    # spelled `{ _close_inherited_fds; rm -rf ...; } </dev/null >/dev/null 2>&1 &`,
+    # task #6219 amendment), tests/infra/test_seed_lane_lock_release_soak.sh,
+    # tests/infra/README.md --
     # carries a ONE-LINE POINTER here, never a copy of the argument or of the
     # numbers. Re-measuring (which is exactly what the soak harness exists to
     # make easy) must then edit one place, not six; the house G7
@@ -867,21 +949,27 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     #
     # WHY AN EXPLICIT LOCK_UN AND NOT JUST PROCESS EXIT / `exec 9>&-`:
     # a flock is attached to the OPEN FILE DESCRIPTION, not to the descriptor.
-    # The detached background jobs below (`{ rm -rf ...; } 9<&- &`, the orphan
-    # sweep and the reseed-trash rm) perform their `9<&-` in the forked CHILD,
-    # AFTER the fork -- so between fork() and that close the child holds a dup
-    # of this very OFD and the exclusive lock is STILL HELD, even once this
-    # process has exited. A consumer probing the instant seed exits then sees a
-    # held lock, and acquire_lane's default is a non-blocking `flock -n`
-    # (refusing with $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77
-    # under --distinct-lock-refusal-rc), so it is spuriously refused. Note the
+    # The detached background jobs below (the orphan sweep and the
+    # reseed-trash rm) close every inherited descriptor, INCLUDING this one,
+    # via `_close_inherited_fds` (see its own doc-comment near the log
+    # helpers) in the forked CHILD, AFTER the fork -- so between fork() and
+    # that close the child holds a dup of this very OFD and the exclusive
+    # lock is STILL HELD, even once this process has exited. A consumer
+    # probing the instant seed exits then sees a held lock, and
+    # acquire_lane's default is a non-blocking `flock -n` (refusing with
+    # $LANE_LOCK_REFUSAL_RC -- 75 EX_TEMPFAIL by default, 77 under
+    # --distinct-lock-refusal-rc), so it is spuriously refused. Note the
     # refusal is spurious EITHER WAY: #5568's rc only makes a real refusal
     # legible, it does not make this window benign. `flock -u` on any
     # descriptor referring to the OFD drops the lock for every process holding
     # a dup, which closes the window; closing our own descriptor provably does
-    # not. Measured on a 32-core host under 24 busy-spin workers,
-    # held-after-exit over 200 trials: `9<&-` alone 16/200, `9<&-` + parent
-    # `exec 9>&-` 14/200, `9<&-` + parent `flock -u 9` 0/200.
+    # not. Measured on a 32-core host under 24 busy-spin workers (against the
+    # then-current explicit `9<&-` close; `_close_inherited_fds` closes FD 9
+    # the same way -- in the child, after the fork -- just discovered
+    # generically rather than by number, so this timing measurement is
+    # unchanged by the task #6219 amendment), held-after-exit over 200
+    # trials: `9<&-` alone 16/200, `9<&-` + parent `exec 9>&-` 14/200,
+    # `9<&-` + parent `flock -u 9` 0/200.
     #
     # WHY AN EXIT TRAP AND NOT A STATEMENT AT THE SUCCESS TAIL: a tail
     # statement is unreachable the moment seed aborts after acquiring -- the
@@ -1059,15 +1147,28 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
-        # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
-        # so a detached child does not keep it open for its whole lifetime
-        # (lib_slot_acquire.sh daemon-FD-inheritance guard). A no-op when FD 9
-        # was never opened (--lane-lock not passed). It only NARROWS the
-        # fork-to-close window and cannot close it -- see the LANE-LOCK RELEASE
-        # CONTRACT block at the flock acquire above (#5705).
+        # _close_inherited_fds (task #6219 amendment): see its own doc-comment
+        # near the log helpers for the full argument -- not restated here
+        # (G7). Closes any lane-lock FD this or another caller may hold,
+        # generically. It only NARROWS the fork-to-close window and cannot
+        # close it entirely -- see the LANE-LOCK RELEASE CONTRACT block at
+        # the flock acquire above (#5705).
+        # </dev/null >/dev/null 2>&1 (task #6219): same rationale as the
+        # reseed-trash rm below (see its comment for the full fd-1/fd-2
+        # argument) -- this detached child must not hold a descriptor of a
+        # pipe-capturing caller either. A failed rm here is still surfaced:
+        # this very sweep re-finds and re-warns about the entry on the lane's
+        # next seed, and warm-lane-gc-sweep.sh's _reap_stale_trash reaps it
+        # pool-wide.
+        # The </dev/null half is LOAD-BEARING AT THIS SITE SPECIFICALLY
+        # (amendment 2): this detach is nested inside the `while ... done <
+        # <(find ...)` below, so bash's async-list /dev/null stdin default
+        # does not apply and the child would otherwise inherit the loop's
+        # redirected stdin. Measurement and the general argument live in
+        # `_close_inherited_fds`'s doc-comment -- not restated here (G7).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
+            { _close_inherited_fds; rm -rf "$_rp_orphan"; } </dev/null >/dev/null 2>&1 &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -1423,19 +1524,38 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
-    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD so a
-    # detached child does not keep it open for its whole lifetime
-    # (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when FD 9 was
-    # never opened (--lane-lock not passed); the SYNC (foreground) branch needs
-    # no change -- it completes before seed exits either way. As at the orphan
-    # sweep above, 9<&- only NARROWS the fork-to-close window -- see the
-    # LANE-LOCK RELEASE CONTRACT block at the flock acquire above (#5705).
+    # _close_inherited_fds (task #6219 amendment): see its own doc-comment
+    # near the log helpers for the full argument -- not restated here (G7).
+    # The SYNC (foreground) branch needs no change: it completes before seed
+    # exits either way, so it never forks a detached child to close anything
+    # for. As at the orphan sweep above, the close only NARROWS the
+    # fork-to-close window -- see the LANE-LOCK RELEASE CONTRACT block at the
+    # flock acquire above (#5705).
+    # </dev/null >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
+    # machine-readable result channel -- exactly one echo "$LANE_TARGET" at
+    # the very end (see the Stdout contract in the header) -- so a detached
+    # child must never hold a descriptor of it. Without this redirect, a
+    # caller that captures stdout through a PIPE rather than a file (e.g.
+    # scripts/warm-lane-gc.sh:648-649's `2>&1 | while IFS= read -r line; do
+    # ...; done`) blocks until this background rm of a possibly large tree
+    # ALSO exits, defeating the point of detaching it. Applied after the fd
+    # close so a lock-fd leak can never masquerade as a stdout leak; a failed
+    # rm here is no longer observable on this fd, but a leaked entry is
+    # still reported by two other mechanisms: the orphan-trash sweep above
+    # re-finds and re-warns about it on this lane's next seed, and
+    # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
+    # The </dev/null half is redundant HERE -- this detach is not nested in a
+    # redirected construct, so bash's async-list default already gives it
+    # /dev/null -- and is spelled anyway so the two sites share ONE shape that
+    # V17's structural guard can require uniformly, rather than one that holds
+    # by construction and one that holds by a conditional bash default (see
+    # `_close_inherited_fds`'s doc-comment, amendment 2; not restated, G7).
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } 9<&- &
+            { _close_inherited_fds; rm -rf "$RESEED_TRASH"; } </dev/null >/dev/null 2>&1 &
         fi
     fi
 fi
