@@ -35,6 +35,16 @@
 #     inherits a warm cache rather than a cold one — and its exposure to the
 #     /tmp tmpfiles age-deletion gap is exactly the one implementer already
 #     carries (ticket tkt_0RRSYZX0Y446V2HSW0GHHNRYYH).
+#   merger — NOT sandboxed either (roles.py:45 defaults sandboxed=False and
+#     MERGER does not set it), but likewise holds unrestricted `Bash`
+#     (roles.py:1161) and its system prompt rule 3 directs it to "Run tests
+#     after resolving", so its entry is LIVE from the next orchestrator
+#     restart, on the conflict-resolution path. Accepted on exactly the
+#     architect's grounds — the /tmp pair is already warm, so merger
+#     inherits a warm cache rather than paying a cold start — and carrying
+#     exactly the same tmpfiles age-deletion exposure
+#     (tkt_0RRSYZX0Y446V2HSW0GHHNRYYH). Added by #6275; see the SECOND
+#     COUPLING section below for why ADDING beat restoring the exclusion.
 #   reviewer_comprehensive / judge — allowed_tools are read-only
 #     (_READ_ONLY_TOOLS, roles.py:106 = Read/Glob/Grep/Bash(git:*), plus
 #     verdict/jcodemunch tools), so NEITHER can invoke cargo or npm at all.
@@ -112,37 +122,76 @@
 #       -- yet delivers NO redirect, because _build_agent_env keys on
 #       role.name, which _reviewer_role (roles.py:643) builds as
 #       f'reviewer_{name}' == 'reviewer_comprehensive'.
-#   STILL UNGUARDED: CACHE_REDIRECT_ROLES and KNOWN_DISPATCH_ROLES are both
-#   hand-maintained reify-side declarations. roles.py is DF-owned and NOT
-#   reify-observable, so if DF marks one of the three still-uncovered
-#   dispatch roles sandboxed -- namely MERGER, STEWARD or DEEP_REVIEWER --
-#   this guard stays green while that role runs with an unwritable ~/.cargo,
-#   the exact EACCES-mid-build failure this guard exists to prevent. Naming
-#   those three exactly (rather than a vague "a fourth role") is the point:
-#   a DF-side author flipping sandboxed=True on any of them needs a
-#   breadcrumb back to this file and to dark-factory-orchestrator.yaml's
-#   role_env_overrides comment.
-#   merger was EXCLUDED ON PURPOSE, not merely un-added -- but its stated
-#   rationale ("redirecting the merge agent's CARGO_HOME to a cold /tmp
-#   cache would diverge it from the verify subprocess cache path on the one
-#   gate that lands everything") was INVERTED by task 5836, which moved
-#   verify_env.CARGO_HOME onto that same /tmp path. merger carries no
-#   override, so it still resolves the DEFAULT ~/.cargo while the merge
-#   verify it shares the _merge-verify lane's target/ with uses /tmp: the
-#   divergence the exclusion existed to prevent now exists in the other
-#   direction. Reachable, not theoretical -- merger is not sandboxed
-#   (roles.py:45 defaults sandboxed=False; merger does not set it) yet holds
-#   unrestricted Bash (roles.py:1161), and its system prompt directs it to
-#   run tests after resolving a conflict. Left uncovered here deliberately:
-#   adding it must also extend CACHE_REDIRECT_ROLES (changing (A)/(C)/(D)
-#   coverage) and should carry its own measurement, since the exposure is
-#   bounded to the conflict-resolution path rather than every merge. Filed
-#   as #6275. Even so, do NOT "close the gap" by blanket-adding every role in
-#   DF's ROLES registry.
-#   This paragraph is the AUTHORITATIVE statement of the inverted rationale;
-#   dark-factory-orchestrator.yaml's role_env_overrides comment deliberately
-#   carries only the conclusion plus a pointer here, so #6275 does not have
-#   to edit two full copies in lockstep.
+#   STILL UNGUARDED: CACHE_REDIRECT_ROLES, KNOWN_DISPATCH_ROLES and
+#   UNCOVERED_DISPATCH_ROLES are all hand-maintained reify-side
+#   declarations. roles.py is DF-owned and NOT reify-observable, so if DF
+#   marks one of the two still-uncovered dispatch roles sandboxed -- namely
+#   STEWARD or DEEP_REVIEWER -- this guard stays green while that role runs
+#   with an unwritable ~/.cargo, the exact EACCES-mid-build failure this
+#   guard exists to prevent. Naming those two exactly (rather than a vague
+#   "some other role") is the point: a DF-side author flipping
+#   sandboxed=True on either needs a breadcrumb back to this file and to
+#   dark-factory-orchestrator.yaml's role_env_overrides comment.
+#   merger WAS excluded on purpose, and is now COVERED. Its original
+#   exclusion rationale ("redirecting the merge agent's CARGO_HOME to a cold
+#   /tmp cache would diverge it from the verify subprocess cache path on the
+#   one gate that lands everything") was INVERTED by task 5836, which moved
+#   verify_env.CARGO_HOME onto that same /tmp path: with merger left on the
+#   default ~/.cargo, the divergence the exclusion existed to prevent
+#   existed in the OTHER direction. Task 6275 re-evaluated the exclusion on
+#   that repaired footing and resolved it by ADDING merger to the redirect
+#   rather than restoring the exclusion on a rewritten rationale.
+#   WHY ADD BEAT RESTORE-THE-EXCLUSION. Merger's low frequency bounds the
+#   BENEFIT, not the cost, so it argues low URGENCY rather than wrongness,
+#   and the payoff is asymmetric. The entry costs ~zero: the /tmp pair is
+#   already warmed by the three sandboxed roles plus every DF-launched
+#   verify, so merger inherits a warm cache instead of paying a cold start
+#   -- the identical acceptance task 5858 granted `architect`, also
+#   unsandboxed and also holding unrestricted Bash. On the invocations where
+#   merger DOES compile, leaving it on ~/.cargo dirties the registry deps in
+#   the shared target/ and the following verify re-dirties them back:
+#   cargo's per-unit Fingerprint embeds the registry source path while
+#   `-C metadata` is CARGO_HOME-independent, so both homes overwrite the
+#   SAME .fingerprint file and the thrash is bidirectional and recurring,
+#   not a one-time switching cost. Accepted cost: it extends the /tmp
+#   tmpfiles age-deletion exposure (tkt_0RRSYZX0Y446V2HSW0GHHNRYYH) to one
+#   more role, identically to architect's.
+#   MEASURED EXPOSURE (re-derived for #6275 on 2026-08-19; the task asked
+#   for merger's own measurement rather than an assumed frequency):
+#     - merger is 391 of 36,076 agent invocations = 1.08% of all roles, and
+#       1.15% of the nine-dispatch-role subset. Source:
+#       data/orchestrator/runs.db table `invocations` (project reify,
+#       2026-04-07..2026-08-19), read-only; re-run with
+#       `sqlite3 "file:<repo>/data/orchestrator/runs.db?mode=ro" "SELECT
+#       role, COUNT(*) FROM invocations GROUP BY role ORDER BY 2 DESC;"`.
+#     - ALL of those are conflict-resolution runs, by construction, not by
+#       sampling: MERGER has exactly ONE dispatch site in the orchestrator,
+#       workflow.py:_resolve_conflicts (the `_invoke(MERGER, ...)` call).
+#       There is no non-conflict merger dispatch, so the "bounded to merges
+#       that hit a conflict" caveat is already priced into the 1.08%.
+#     - WHETHER MERGER ACTUALLY RUNS CARGO IS **NOT INSTRUMENTED** on this
+#       host, and this is a negative finding, not a proxy. runs.db records
+#       role/model/cost/tokens/duration per invocation and no tool calls;
+#       the only place commands survive is the retained
+#       data/orchestrator/agent-transcripts/ tree, whose retention is
+#       partial -- 7 genuine merger sessions survive against 391 recorded
+#       invocations (~1.8%). Of those 7, 2 issued at least one `cargo`
+#       command. N=7 is an observation that the "Run tests after resolving"
+#       directive is sometimes obeyed -- so the entry is not vacuous -- and
+#       is FAR too small to be a rate. Do not quote it as one.
+#   Even with merger added, do NOT "close the gap" by blanket-adding every
+#   role in DF's ROLES registry: reviewer_comprehensive and judge are here
+#   as defense-in-depth against a tool-grant widening, not because every
+#   name belongs. The residual uncovered set is now pinned mechanically by
+#   (C)'s complement assertion against UNCOVERED_DISPATCH_ROLES, so a
+#   blanket add fails that assertion until the author states the new split
+#   deliberately.
+#   This paragraph is the AUTHORITATIVE statement of the coupling and its
+#   resolution; dark-factory-orchestrator.yaml's role_env_overrides comment
+#   deliberately carries only the conclusion plus a pointer here, so a
+#   future re-evaluation does not have to edit two full copies in lockstep.
+#   That split is not decorative: the two copies drifted once already, which
+#   is what #6275 had to repair.
 #
 # THIRD COUPLING -- CARGO_HOME AGREEMENT ACROSS A SHARED target/ (task 5836,
 # guarded by (D)+(E) below). Distinct from the two above: those are about
@@ -250,10 +299,21 @@
 #       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:` and
 #       `npm_config_cache:` are all cited verbatim in the yaml.
 #   (C) ROLE-NAME DECLARATION CROSS-CHECK (plain bash, always runs, does
-#       not read the yaml at all): every CACHE_REDIRECT_ROLES member is a
-#       member of KNOWN_DISPATCH_ROLES, the hand-mirrored copy of DF's
-#       ROLES registry (roles.py:1512). Converts the nine role names this
-#       header states in prose into an executable constraint.
+#       not read the yaml at all), two assertions:
+#       (a) SUBSET -- every CACHE_REDIRECT_ROLES member is a member of
+#           KNOWN_DISPATCH_ROLES, the hand-mirrored copy of DF's ROLES
+#           registry (roles.py:1512). Catches a misspelled member that
+#           would satisfy every value-shape assertion in (A) while
+#           _build_agent_env's role.name lookup silently missed.
+#       (b) COMPLEMENT (#6275) -- KNOWN_DISPATCH_ROLES minus
+#           CACHE_REDIRECT_ROLES equals UNCOVERED_DISPATCH_ROLES, compared
+#           as an ORDER-INSENSITIVE set so reordering either declaration is
+#           not a spurious FAIL. (a) alone is blind to which roles are left
+#           OUT; that residual set lived only in prose, in two files, and
+#           both copies went stale the moment merger joined the redirect.
+#       Together these convert the nine role names this header states in
+#       prose -- and the covered/uncovered split between them -- into an
+#       executable constraint. (a) alone only half-served that claim.
 #   (D) CARGO_HOME AGREEMENT (task 5836; python3+PyYAML, gated on the SAME
 #       sandbox.enabled precondition as (A) -- with sandbox off there is no
 #       agent-side redirect for verify to agree WITH): verify_env.CARGO_HOME
@@ -284,6 +344,18 @@
 # RED when (D) was added (task 5836): verify_env carried no CARGO_HOME at
 # all, so (D) reported 9 FAILs -- 3 shape plus one equality per redirected
 # role -- against a green 63-assertion baseline.
+# RED when merger was added to the redirect (task 6275): merger is required
+# by CACHE_REDIRECT_ROLES but absent from role_env_overrides, so (A)'s
+# per-role loop reports 9 FAILs plus 1 from (D)'s equality check, against a
+# green 74-assertion baseline.
+# RED when (C)'s complement assertion was added (task 6275): the new
+# UNCOVERED_DISPATCH_ROLES declaration was seeded with the value this
+# header and the yaml BOTH still asserted in prose at the time -- "merger
+# steward deep_reviewer" -- while the computed complement was already
+# "steward deep_reviewer". 84 passed, 1 failed, the diagnostic naming the
+# drifted role ("declared uncovered but IS redirected: merger"). Seeding
+# from the stale prose rather than the true value is what made that red a
+# measurement of the prose instead of a self-fulfilling assertion.
 
 set -euo pipefail
 
