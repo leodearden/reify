@@ -1041,6 +1041,90 @@ mod tests {
         assert_eq!(pre_done_findings, scoped_findings);
     }
 
+    /// A `TaskMetadata` in the exact state the D-1 pre-done hook observes:
+    /// pre-transition `status`, and `done_provenance: None` because the
+    /// interceptor has not written it yet.
+    fn pre_done_meta(task_id: &str, status: &str, files: &[&str]) -> TaskMetadata {
+        TaskMetadata {
+            task_id: task_id.to_string(),
+            status: status.to_string(),
+            files: files.iter().map(|s| s.to_string()).collect(),
+            done_provenance: None,
+            title: format!("Task {}", task_id),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        }
+    }
+
+    /// A gitignored `metadata.files` entry must never refuse a done-flip.
+    ///
+    /// A gitignored path can never resolve on main *by construction*, so
+    /// letting it block a fail-closed state transition is a guaranteed false
+    /// positive (memory:
+    /// `project_steward_metadata_files_gitignore_falsepositive.md`). The
+    /// gitignored aspect already has its own dedicated breadcrumb — the
+    /// `P5MetadataFilesGitignored` Medium from `check_gitignored` — which is
+    /// the correct channel for it.
+    ///
+    /// Note the deliberate divergence from the SWEEP, which does NOT exclude
+    /// gitignored entries from `genuinely_absent` (see the comment above the
+    /// deliverable-presence rescue in `p5_phantom_done.rs`). The gate diverges
+    /// on purpose: refusing a state transition is a far costlier error than a
+    /// Low sweep finding.
+    #[test]
+    fn pre_done_gate_does_not_refuse_on_gitignored_entry() {
+        let conn = seed_db();
+
+        let mut git = MockGitOps::new();
+        git.set_path_tracked_on("main", "crates/reify-audit/src/lib.rs", true);
+        git.set_is_gitignored("target/debug/generated.rs", true);
+        // `path_tracked_on` for the gitignored path stays at its `false`
+        // default — a build artefact is never tracked on main.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345G".to_string(),
+            pre_done_meta(
+                "6345G",
+                "in-progress",
+                &["crates/reify-audit/src/lib.rs", "target/debug/generated.rs"],
+            ),
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check_pre_done(&ctx, "6345G");
+
+        let highs: Vec<&Finding> =
+            findings.iter().filter(|f| f.severity == Severity::High).collect();
+        assert!(
+            highs.is_empty(),
+            "a gitignored metadata.files entry must not refuse the done-flip; got {:?}",
+            highs
+        );
+        assert_eq!(
+            findings.len(),
+            1,
+            "expected exactly the gitignored breadcrumb; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].pattern, Pattern::P5MetadataFilesGitignored);
+        assert_eq!(findings[0].severity, Severity::Medium);
+    }
+
     /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
     /// unreachable AND no sibling-FF covers the missing set, but every
     /// metadata.files entry resolves to a tracked path on main (dir-aware,
