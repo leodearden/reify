@@ -182,6 +182,38 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 
 **Measured 2026-08-19** (dated context, not a live claim): 522 tracked `.md` under `docs/` carried 2,678 fully-qualified path+line cites across 571 distinct paths, 56 of which no longer exist; 285 of 352 `docs/prds/*.md` carried line anchors and only 12 recorded the commit they were true at.
 
+## PRD terminal status — closed vocabulary + decompose-close stamp
+
+**Measured 2026-08-19** (dated context, not a live claim): ~200 of ~350 `docs/prds/*.md` carry a `Status:` marker across ~19 distinct values in four syntactic families, and only 3 PRDs had ever reached a terminal one. A completed plan that still reads as live work manufactures counterfactual claims — the `kernel-seam-contracts.md` recurrence (#6214, #6232, #6274, plus `esc-6232-5`).
+
+**Terminal vocabulary — closed, exactly three values.** A PRD's status is terminal iff the first ALL-CAPS token after its `Status` label is one of:
+- **`SHIPPED`** — every decomposition leaf reached `done`. Cancelled leaves are tolerated alongside, provided at least one leaf landed.
+- **`SUPERSEDED`** — replaced by a named successor PRD; name the successor on the same line.
+- **`WITHDRAWN`** — abandoned; every leaf is `cancelled` and there is no successor.
+
+Anything else is non-terminal. The **live-side vocabulary stays free-form** — only the terminal set is closed, which is all that's needed to make terminality machine-checkable, and closing the live side would oblige a corpus-wide header migration that `esc-6232-5` ruled out. **`reify-audit --pattern PPRDSTATUS` (#6346) checks against exactly this set — the two must agree, and changing this list is a change to that detector's contract.**
+
+**Marker form.** The terminal token is ALL CAPS and appears in the first `Status` line within the first ~10 lines of the file. Both landed exemplars conform; quoted by name, not line: the header of `docs/prds/v0_6/data-carrying-enums.md` (`**Status:** **SHIPPED (v0.6)** — …`) and the header of `docs/prds/kernel-seam-contracts.md` (`**Status: SHIPPED.** All 16 decomposition leaves have landed — …`). The first form is preferred; both are accepted, so the two ratified exemplars stay conformant rather than becoming retroactively wrong.
+
+**Freeze header — the ratified shape; do not invent a new one.** Three parts, per the headers of `docs/prds/v0_6/data-carrying-enums.md` and `docs/prds/kernel-seam-contracts.md` as landed in `edd9703fae`:
+1. The terminal token plus the **landed leaf task IDs** (e.g. `α #5102 … ξ #5116`).
+2. The sentence "The body below is the AS-AUTHORED design record ... they are not current statements of fact."
+3. An explicit **LIVE vs AS-AUTHORED map** naming which sections remain maintained. Load-bearing criterion: a section that production code *defers to* (rustdoc citing it as the authority) is LIVE, because a false claim there propagates into the code.
+
+Apply the same as-authored header to the PRD's `.capability-manifest.md`.
+
+**Section-level variant**, for a superseded block inside an otherwise-live PRD: `docs/prds/v0_3/compute-node-contract.md` Phase 9 — "retained for historical record; do not implement it as written", naming the successor task IDs.
+
+**Cite task IDs, never task status.** Decomposition leaf rows carry `#NNNN` and say nothing about `done` / `deferred` / `pending`. The ID is immutable and queryable; a status word written into prose rots the moment the task moves. Worked defect: the pre-fix `kernel-seam-contracts.md` read "Adopt existing task #4876 (`deferred`, high)" while #4876 was actually `done` — the defect #6355 exists to detect.
+
+**Decompose-close obligations** (normative; applies at decompose-mode Step 5.5–6, before hand-back). The session **must** do both:
+1. **Backfill the real task IDs** into every decomposition-plan leaf row of the PRD, replacing Greek-label-only rows, and commit that edit beside the stamped sidecar using the same `git commit --only` vehicle as Step 5.5. This closes the defect named in `esc-6232-5`: `kernel-seam-contracts.md`'s decomposition-section header read "task IDs assigned at decompose time" while containing none, which made leaf state mechanically unresolvable from the document for six weeks — the single structural cause of the recurrence, and what makes leaf state machine-checkable at all.
+2. **File a PRD-close leaf** in the same batch, wired by real `add_dependency` edges to depend on every other leaf. Its deliverable is the terminal stamp itself: set the Status marker to the terminal token, name the landed leaf IDs, add the AS-AUTHORED freeze paragraph and the LIVE/AS-AUTHORED map, and apply the matching header to the `.capability-manifest.md`. Its user-observable signal is the committed header. In-corpus precedent for this leaf shape: #4438 (`auto-type-param completion θ`, done) and #3847 (`KCC-θ`, done).
+
+Without (2), nothing ever stamps a terminal status — which is why only 3 of ~350 PRDs ever had one.
+
+**Do not retro-migrate the corpus.** Per `esc-6232-5`'s ruling, the ~35 same-profile docs need per-doc judgement (still-active PRD vs completed plan vs capability manifest vs dated snapshot that must not be retroactively edited) and are adjudicated in the #6346 → #6347 sitting, not by a sweep from this rule.
+
 ## Capability Manifest — reify evidence forms
 
 Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf* for reify. **Manifest path:** `docs/prds/<vM_N>/<slug>.capability-manifest.md` (commit beside the PRD).
