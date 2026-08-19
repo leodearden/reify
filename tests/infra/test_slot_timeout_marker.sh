@@ -1079,15 +1079,29 @@ F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquir
 # input to produce a count, so it can never race the producer that way --
 # the same reason D4's `_d_unredirected` already uses `-c`
 # rather than `-q`/`-l` here.
+# The four EREs as ONE alternation -- the exact string _f_deadline_capable
+# used to pass to grep inline, named so the direct sweep and the closure's
+# SEED round cannot drift apart.
+F_DIRECT_RE="$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE"
+
 # _f_direct_capable_file <path> -> rc 0 if <path> has a DIRECT wrapper call
-# site under the four EREs above, rc 1 otherwise. Extracted verbatim from
-# _f_deadline_capable's per-file body (task 6291) so the direct predicate
-# exists in exactly ONE copy: the direct sweep below and the closure's SEED
-# round both call this, so they cannot drift apart.
+# site, rc 1 otherwise. Extracted verbatim from _f_deadline_capable's
+# per-file body (task 6291).
 _f_direct_capable_file() {
-    local _p="$1" _n
-    _n="$(grep -vE '^[[:blank:]]*#' "$_p" \
-        | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
+    local _n
+    _n="$(grep -vE '^[[:blank:]]*#' "$1" | grep -cE -- "$F_DIRECT_RE" || true)"
+    [ "${_n:-0}" -ge 1 ]
+}
+
+# _f_direct_capable_stripped <already-comment-stripped file> -> same
+# predicate, one grep instead of two. The closure strips every node once up
+# front (it needs those stripped copies for the edge scan anyway), so re-
+# stripping per node inside the SEED round would double the seed cost for
+# nothing. Grepping a FILE rather than a pipe also puts this beyond the
+# SIGPIPE/pipefail hazard entirely.
+_f_direct_capable_stripped() {
+    local _n
+    _n="$(grep -cE -- "$F_DIRECT_RE" "$1" || true)"
     [ "${_n:-0}" -ge 1 ]
 }
 
@@ -1154,6 +1168,25 @@ _f_node_list() {
 F_EDGE_NAIVE_EXEC_PRE='(bash|sh|source)[[:blank:]]+.*'
 F_EDGE_NAIVE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*'
 
+# _f_edge_exists <stripped-node-file> <target-basename> -> rc 0 if the node
+# whose comment-stripped text is in <stripped-node-file> INVOKES
+# <target-basename>. This is the one place the edge grammar lives, so
+# tightening it is a one-function change.
+#
+# Grepping a FILE, never downstream of a pipe, and counting rather than
+# `-q`/`-l`: doubly beyond the SIGPIPE/pipefail hazard documented above.
+_f_edge_exists() {
+    local _sf="$1" _esc="${2//./\\.}" _n
+    _n="$(grep -cE -- "$F_EDGE_NAIVE_EXEC_PRE$_esc|$F_EDGE_NAIVE_BIND_PRE$_esc" "$_sf" || true)"
+    [ "${_n:-0}" -ge 1 ]
+}
+
+# Scratch for the closure: a memo of each directory's derivation, and the
+# comment-stripped copy of each node. Under $TMPF, already in _TMPDIRS.
+F_CLOSURE_CACHE_DIR="$TMPF/closure-cache"; mkdir -p "$F_CLOSURE_CACHE_DIR"
+
+_f_closure_key() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+
 # _f_closure <dir> -> one "<basename> <route>" line per capable node,
 # sorted. route is `direct` (a wrapper call site of its own) or
 # `via:<basename>` (the capable node it reaches a deadline through).
@@ -1162,45 +1195,125 @@ F_EDGE_NAIVE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*'
 # _f_deadline_capable and _e_scan: this file's output is re-emitted into the
 # merge-gate verify log.
 #
-# Every membership test uses the DRAINING `grep -cE ... || true` form with a
-# count comparison, never `grep -q`/`-l` downstream of a pipe -- see the
-# SIGPIPE/pipefail note on _f_direct_capable_file above.
+# MEMOIZED THROUGH A FILE, not a shell variable, and that is load-bearing:
+# every consumer below reads the derivation inside a `$(...)` command
+# substitution, which is a SUBSHELL, so a cache held in a global array would
+# be discarded the moment each call returned and the real-tree derivation
+# would run once per assert. A file written by the subshell survives it. The
+# derivation is a pure function of the directory's contents, and every
+# fixture dir is fully written before its first read, so the memo can never
+# serve a stale answer within a run; the cache itself lives in a per-run
+# mktemp dir, so it cannot survive between runs either.
 _f_closure() {
-    local _d="$1" _p _base _cand _esc _n
-    local -A _cap=()
-    local -a _pend=() _seeds=()
+    local _d="$1" _cache
+    _cache="$F_CLOSURE_CACHE_DIR/$(_f_closure_key "$_d").closure"
+    if [ ! -f "$_cache" ]; then
+        _f_closure_compute "$_d" > "$_cache.part"
+        mv -f "$_cache.part" "$_cache"
+    fi
+    cat "$_cache"
+}
 
-    # SEED round: the UNCHANGED four-ERE direct predicate.
+# _f_closure_compute <dir> -> the derivation proper: a WORKLIST fixed point
+# over invocation edges.
+#
+# Three sets are maintained: CAP (capable node -> route), PEND (nodes not yet
+# capable, held as their comment-stripped copies), and DELTA (the nodes that
+# became capable in the PREVIOUS round). Each round scans only PEND, and only
+# against DELTA -- a node that already failed against the older members
+# cannot newly match them, so re-testing them is pure waste. That is the
+# difference between this and the naive all-pairs form: measured on the real
+# tree, all-pairs cost 8.6s against ~2s for this shape and ~1.4s for the
+# seed-only scan that preceded the closure, for identical output.
+#
+# THREE FILTERS, cheapest first, so the per-round cost is dominated by a
+# constant handful of greps rather than by one process per node:
+#   1. ONE multi-file `grep -cHE` for the whole round, asking which PEND
+#      nodes mention ANY newly-capable node at all. `-c` (never `-q`/`-l`)
+#      so every file is drained -- see the SIGPIPE/pipefail note above --
+#      and `-H` so the filename prefix is present even when PEND is down to
+#      a single file, which is the shape that would otherwise silently
+#      reparse a bare count as a path.
+#   2. Per survivor, ONE `grep -oE` naming exactly WHICH delta members it
+#      mentions, so the edge grammar runs against a shortlist (normally one
+#      candidate) instead of the whole of DELTA.
+#   3. The edge grammar itself, per shortlisted candidate.
+# Filters 1 and 2 are strict supersets of every edge rule (each requires the
+# target basename to appear on some line), so they can only ever skip nodes
+# that had no edge. The shortlist is sorted, so first-match still picks the
+# same route a full sorted DELTA walk would.
+#
+# TERMINATION, and why the mutually-invoking cycle fixture is not admitted:
+# capability propagates only FROM the capable set. A node becomes capable
+# only by invoking something ALREADY capable, so a pair that invokes only
+# each other never enters CAP, DELTA goes empty, and the loop stops. PEND is
+# also strictly non-increasing, which bounds the round count independently.
+_f_closure_compute() {
+    local _d="$1" _p _base _cand _esc _n _alt _hit _sd _line
+    local -A _cap=()
+    local -a _pend=() _delta=() _next=() _still=() _short=()
+
+    _sd="$F_CLOSURE_CACHE_DIR/$(_f_closure_key "$_d").stripped"
+    rm -rf "$_sd"; mkdir -p "$_sd"
+
+    # SEED round: the UNCHANGED four-ERE direct predicate. Every node is
+    # comment-stripped exactly once here, for the whole derivation -- a token
+    # mentioned only in a comment neither makes a file deadline-capable nor
+    # constitutes an invocation.
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _base="${_p##*/}"
-        if _f_direct_capable_file "$_p"; then
+        grep -vE '^[[:blank:]]*#' "$_p" > "$_sd/$_base" || true
+        if _f_direct_capable_stripped "$_sd/$_base"; then
             _cap["$_base"]="direct"
         else
-            _pend+=("$_p")
+            _pend+=("$_sd/$_base")
         fi
     done < <(_f_node_list "$_d")
 
-    # Candidates in SORTED order: a node reachable from two capable nodes
-    # would otherwise report whichever route bash's hash iteration happened
-    # to hand back first, making the derived route non-deterministic.
+    # DELTA starts as the seed set, SORTED. A node reachable from two capable
+    # nodes would otherwise report whichever route bash's hash iteration
+    # handed back first, making the derived route non-deterministic run to
+    # run.
     while IFS= read -r _cand; do
         [ -n "$_cand" ] || continue
-        _seeds+=("$_cand")
+        _delta+=("$_cand")
     done < <(printf '%s\n' "${!_cap[@]}" | sort)
 
-    # ONE pass at this step -- enough for a one-hop edge only.
-    for _p in "${_pend[@]}"; do
-        _base="${_p##*/}"
-        for _cand in "${_seeds[@]}"; do
+    while [ "${#_delta[@]}" -gt 0 ] && [ "${#_pend[@]}" -gt 0 ]; do
+        _alt=""
+        for _cand in "${_delta[@]}"; do
             _esc="${_cand//./\\.}"
-            _n="$(grep -vE '^[[:blank:]]*#' "$_p" \
-                | grep -cE -- "$F_EDGE_NAIVE_EXEC_PRE$_esc|$F_EDGE_NAIVE_BIND_PRE$_esc" || true)"
-            if [ "${_n:-0}" -ge 1 ]; then
-                _cap["$_base"]="via:$_cand"
-                break
-            fi
+            _alt="${_alt:+$_alt|}$_esc"
         done
+        _next=(); _still=()
+        while IFS= read -r _line; do
+            [ -n "$_line" ] || continue
+            _p="${_line%:*}"; _n="${_line##*:}"
+            if [ "${_n:-0}" -eq 0 ]; then _still+=("$_p"); continue; fi
+            _base="${_p##*/}"
+            _short=()
+            mapfile -t _short < <(grep -oE -- "($_alt)" "$_p" | sort -u)
+            _hit=""
+            for _cand in "${_short[@]}"; do
+                [ -n "$_cand" ] || continue
+                if _f_edge_exists "$_p" "$_cand"; then _hit="$_cand"; break; fi
+            done
+            if [ -n "$_hit" ]; then
+                _cap["$_base"]="via:$_hit"
+                _next+=("$_base")
+            else
+                _still+=("$_p")
+            fi
+        done < <(grep -cHE -- "($_alt)" "${_pend[@]}" || true)
+        _pend=("${_still[@]}")
+        _delta=()
+        if [ "${#_next[@]}" -gt 0 ]; then
+            while IFS= read -r _cand; do
+                [ -n "$_cand" ] || continue
+                _delta+=("$_cand")
+            done < <(printf '%s\n' "${_next[@]}" | sort)
+        fi
     done
 
     for _base in "${!_cap[@]}"; do
