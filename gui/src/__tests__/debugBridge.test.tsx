@@ -2747,6 +2747,45 @@ describe('debug bridge tree-node expand/collapse', () => {
       expect(constraint).toEqual({ error: `tree node control not found: ${path}` });
     }
   });
+
+  // (k) is (j)'s POSITIVE complement, and it exists because (j) alone does not
+  // pin what escapeAttrValue MEANS — only that it does not throw. Measured
+  // mutation matrix against escapeAttrValue (bridge.ts), which is why both
+  // cases are needed:
+  //
+  //   escape dropped from driveTreeNode          → (j) FAILS, (k) fails
+  //   `v.replace(/["\\]/g, '')` — strip, not escape → (j) PASSES, (k) FAILS
+  //
+  // A helper that DELETED the metacharacters still satisfies (j)'s
+  // not-found-rather-than-throw assertion, so only this case pins the actual
+  // semantics: a testid that really carries a quote and a backslash must still
+  // RESOLVE to its own element and be clicked.
+  //
+  // That matrix also settles which arm of the escape runs here: the strip
+  // mutation could only change a verdict if the hand-rolled `["\\]` fallback
+  // is live, i.e. jsdom exposes no global CSS and CSS.escape is never reached.
+  it('(k) a testid that really contains a quote and a backslash still resolves and clicks', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    // Both metacharacters in one fixture: the quote would terminate the selector
+    // string and the backslash would start an escape sequence inside it.
+    const path = 'Bracket."1"\\x';
+    const { expandedSet, btn } = setupDesignPanel(path, false);
+    const clickSpy = vi.fn();
+    btn.addEventListener('click', clickSpy);
+
+    // The fixture holds the RAW metacharacters — asserted, so the test cannot
+    // pass by accidentally storing a pre-escaped attribute.
+    expect(btn.getAttribute('data-testid')).toBe(`chevron-${path}`);
+    expect(expandedSet.has(path)).toBe(false);
+
+    const result = await dispatch(9030, 'expand_tree_node', { path });
+
+    expect(result).toEqual({ ok: true, path, expanded: true });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    expect(expandedSet.has(path)).toBe(true);
+  });
 });
 
 // ─── F2 LSP probe handlers (steps 7-14) ─────────────────────────────────────
