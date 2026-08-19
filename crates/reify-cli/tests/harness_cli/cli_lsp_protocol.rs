@@ -971,3 +971,85 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
 
     wait_for_exit(&mut guard, 5, stderr_reader);
 }
+
+/// Owns the "the drain works under REAL pipe backpressure" guard that used
+/// to live in `lsp_full_interactive_loop_through_binary`'s phase 4b (task
+/// #6162). That property belongs to `spawn_pipe_reader`/`wait_for_exit`'s
+/// ordering, not to reify-lsp's logging, so it is pinned here against a
+/// trigger this file fully controls rather than a production log line
+/// reify-lsp is free to change — including a fix that truncates that line,
+/// which is exactly what task #6162 does. Re-pointing this guard at a stub
+/// also means it can never again be silently re-coupled to a production
+/// code path and go vacuous the way task 6161's original version did (its
+/// `>= 128 KiB` bound depended on an incidental coincidence between the
+/// logged URI's length and the pipe's capacity).
+///
+/// The stub — pure POSIX shell builtins, no external commands — writes a
+/// recognisable marker FIRST, so it survives `elide`'s head window even
+/// though the marker is nowhere near the 512-byte threshold, then exactly
+/// 256 iterations of a 1024-byte `printf`, i.e. 256 * 1024 = 262144 bytes,
+/// then exits 0.
+///
+/// `spawn_pipe_reader` is called on the stderr pipe BEFORE `wait_for_exit`
+/// — mirroring `lsp_full_interactive_loop_through_binary`'s ordering, and
+/// the property under test: reading the pipe concurrently with the
+/// child's writes is what prevents the child from blocking in `write()`
+/// once the (possibly kernel-shrunk — see `spawn_pipe_reader`'s doc
+/// comment) pipe buffer fills. Falsified by hand while writing this test:
+/// temporarily moving the `spawn_pipe_reader` call to after an unbounded
+/// `try_wait` poll loop (i.e. waiting for the child to exit before ever
+/// starting to drain it) made the test hang, exactly as
+/// `spawn_pipe_reader`'s doc comment predicts ("a regression in this
+/// ordering surfaces as a hang, not a failed assertion") — confirmed by
+/// running it under an external `timeout` and observing it get killed
+/// rather than complete, then reverted to this ordering.
+///
+/// Asserts `stderr.len() >= 128 * 1024` — half of the deterministic
+/// 262144-byte producer, so this bound can never be tripped by incidental
+/// noise nor fail to catch a real regression — and that the marker
+/// survived, proving the captured bytes came from this stub and not some
+/// other source.
+///
+/// Does not take `acquire_lsp_test_lock()`: this stub is not an LSP
+/// process, needs no tokio runtime, and taking the lock would serialise
+/// this test behind the 30s LSP test for no benefit (same rationale as
+/// `wait_for_exit_timeout_branch_drains_and_reports_stderr` above).
+#[cfg(unix)]
+#[test]
+fn stderr_drain_survives_backpressure_from_a_chatty_stub_child() {
+    let child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf 'REIFY_6162_BACKPRESSURE_MARKER\n' >&2; i=0; while [ $i -lt 256 ]; do printf '%1024s' '' >&2; i=$((i+1)); done",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn /bin/sh stub");
+    let mut guard = KillOnDrop(child);
+
+    let stderr_pipe = guard.stderr.take().expect("stderr");
+    // Spawned BEFORE wait_for_exit — this ordering is the property under
+    // test (see doc comment above).
+    let stderr_reader = spawn_pipe_reader(stderr_pipe);
+
+    let (status, stderr) = wait_for_exit(&mut guard, 30, stderr_reader);
+    let stderr_summary = elide(&stderr);
+    assert!(
+        status.success(),
+        "stub should exit cleanly after writing its deterministic payload (stderr: {stderr_summary})"
+    );
+    assert!(
+        stderr.len() >= 128 * 1024,
+        "expected >=128KiB of captured stderr (half of the stub's deterministic 262144-byte \
+         payload), got {} bytes — the drain likely did not keep up with the child's writes. \
+         Captured stderr: {stderr_summary}",
+        stderr.len()
+    );
+    assert!(
+        stderr.contains("REIFY_6162_BACKPRESSURE_MARKER"),
+        "expected the captured stderr to contain the stub's marker, proving the bytes came \
+         from this test's own trigger. Captured stderr: {stderr_summary}"
+    );
+}
