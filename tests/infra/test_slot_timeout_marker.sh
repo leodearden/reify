@@ -1216,6 +1216,77 @@ else
 fi
 
 echo ""
+echo "--- FC1: control on the transitive-closure derivation (one hop) ---"
+
+# CLOSURE CONTROLS, same controls-first discipline F2/F3 hold for the direct
+# predicate. Section F's derivation is not only over DIRECT wrapper call
+# sites: a suite reaches a finite-WAIT deadline just as surely by INVOKING a
+# node that has one -- tests/infra/run_all.sh, whose pool worker calls
+# slot_acquire with the finite default REIFY_RUN_ALL_POOL_WAIT=1800
+# (run_all.sh:1361), or another suite that is itself capable.
+#
+# LABELLED FC<n>, not F4+: F4 was a real assert in this section and was
+# removed (see the note after F1 below). Reusing the number would make that
+# note read as if it described these.
+#
+# FC1 is the ONE-HOP positive control: a seed node plus three distinct
+# invocation-edge shapes. The fixture tree lives under $TMPF, already
+# registered in _TMPDIRS, so it is cleaned up with Section F's other
+# fixtures.
+F_CLOSURE_POS_DIR="$TMPF/fx-closure-pos"; mkdir -p "$F_CLOSURE_POS_DIR"
+
+# (i) SEED suite -- a direct wrapper call site, capable under the four EREs
+# above with no closure involved at all.
+cat > "$F_CLOSURE_POS_DIR/test_c_seed.sh" <<'C1SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+C1SEEDEOF
+# (ii) run_all.sh -- a seed NODE that is not a test_*.sh suite. Mirrors the
+# real tests/infra/run_all.sh:1361 finite pool-wait default, which is the
+# whole reason invoking run_all.sh is a deadline-capable act. It is a NODE,
+# never a roster entry: D_ROSTER lists SUITES forked under the pool.
+cat > "$F_CLOSURE_POS_DIR/run_all.sh" <<'C1RUNALLEOF'
+#!/usr/bin/env bash
+_H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
+C1RUNALLEOF
+# (iii) EDGE shape 1 -- a node invoked by LITERAL path.
+cat > "$F_CLOSURE_POS_DIR/test_c_lit_runall.sh" <<'C1LITEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/run_all.sh" "$D"
+C1LITEOF
+# (iv) EDGE shape 2 -- a variable BOUND to a node path, then exec'd. The
+# real tree's three run_all invokers all take this shape.
+cat > "$F_CLOSURE_POS_DIR/test_c_var_runall.sh" <<'C1VAREOF'
+#!/usr/bin/env bash
+RA="$SCRIPT_DIR/run_all.sh"
+bash "$RA" "$D"
+C1VAREOF
+# (v) EDGE shape 3 -- suite -> SUITE, not suite -> run_all.sh. The real tree
+# has this route too (test_verify_env_ambient_isolation.sh invokes
+# test_occt_flock_gate.sh), so a run_all-centred closure would miss it.
+cat > "$F_CLOSURE_POS_DIR/test_c_suite.sh" <<'C1SUITEEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_seed.sh"
+C1SUITEEOF
+# The INVOKER count is held apart from the total so a narrowing edit reports
+# how many EDGE VARIANTS it stopped seeing rather than one opaque number
+# (the F_POS_VARIANTS/E_POS_VARIANTS idiom above).
+F_CLOSURE_POS_VARIANTS=3
+F_CLOSURE_POS_EXPECT=$(( F_CLOSURE_POS_VARIANTS + 1 ))
+
+# Counted with the DRAINING `grep -cE ... || true` form, never `grep -q`/`-l`
+# downstream of a pipe -- see the SIGPIPE/pipefail note on
+# _f_deadline_capable above. Restricted to test_* basenames because
+# run_all.sh is a capability NODE, not a roster SUITE. The `|| true` also
+# means that while _f_closure_names does not exist yet the count reads 0 and
+# this assert FAILS cleanly instead of aborting the suite under `set -e`.
+F_FC1_COUNT="$(_f_closure_names "$F_CLOSURE_POS_DIR" | grep -cE '^test_' || true)"
+
+assert "FC1: one-hop closure positive control -- the seed plus all $F_CLOSURE_POS_VARIANTS invocation-edge variants (literal node path, bound-then-exec variable, suite->suite) are derived (expected $F_CLOSURE_POS_EXPECT, got $F_FC1_COUNT)" \
+    test "$F_FC1_COUNT" -eq "$F_CLOSURE_POS_EXPECT"
+
+
+echo ""
 echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
 
 F_DERIVED="$(_f_deadline_capable "$SCRIPT_DIR")"
