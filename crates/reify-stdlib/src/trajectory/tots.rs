@@ -64,8 +64,139 @@ use crate::dynamics::rnea::inverse_dynamics_open_chain;
 /// discards the dimension, so the revolute shaper's rad·s⁻¹ / rad·s⁻² SI
 /// magnitudes flow into the canonical stand-in model exactly as the linear
 /// half's m·s⁻¹ / m·s⁻² do. Recognition is the only thing that differs.
+///
+/// The prose invariant above is MECHANICALLY enforced by
+/// `shaper_family_guard::every_shipped_shaper_structure_is_recognised` below:
+/// it scans the shipped `trajectory.ri` for every `structure def <Name> :
+/// Shaper` and fails if any of them is recognised by neither this predicate
+/// nor `build_train_for_shaper`. That turns "must be widened in lockstep"
+/// from a comment into a RED at the source of the next drift.
 pub(crate) fn is_tots_shaper_type_name(type_name: &str) -> bool {
     matches!(type_name, "TOTSShaper" | "RevoluteTOTSShaper")
+}
+
+#[cfg(test)]
+mod shaper_family_guard {
+    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
+
+    use super::is_tots_shaper_type_name;
+    use crate::trajectory::input_shape::build_train_for_shaper;
+
+    /// The shipped stdlib source, embedded at COMPILE time so the guard needs
+    /// no runtime cwd and cannot silently no-op on a missing file. This is the
+    /// very file the compiler ships (`stdlib_loader.rs` `include_str!`s the
+    /// same path), so the scan below sees exactly the declarations authors get.
+    const TRAJECTORY_RI: &str = include_str!("../../../reify-compiler/stdlib/trajectory.ri");
+
+    /// Every `structure def <Name> : Shaper` declared in `source`.
+    ///
+    /// Deliberately a dumb line scan rather than a parse: the guard must keep
+    /// working without pulling `reify-compiler` into `reify-stdlib`'s
+    /// dependency graph (the dependency edge does not exist and must not be
+    /// created for a test). Comment lines are skipped so the module-header
+    /// bullet list at the top of `trajectory.ri` is not mistaken for a decl.
+    fn declared_shaper_type_names(source: &str) -> Vec<String> {
+        source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//"))
+            .filter_map(|line| {
+                let rest = line.strip_prefix("structure def ")?;
+                let (name, bound) = rest.split_once(':')?;
+                (bound.split_whitespace().next()? == "Shaper")
+                    .then(|| name.trim().to_string())
+            })
+            .collect()
+    }
+
+    /// A field-less `Shaper` instance carrying `type_name`, exactly the shape
+    /// the eval path routes on (both dispatch sites read the nominal tag; the
+    /// impulse arms fall back to their `.ri` defaults for absent fields).
+    fn bare_shaper_instance(type_name: &str) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: type_name.to_string(),
+            version: 0,
+            fields: PersistentMap::new(),
+        }))
+    }
+
+    /// LOCKSTEP GATE (task 6096). Every shaper structure shipped in
+    /// `trajectory.ri` must be recognised by one of the two eval-side
+    /// recognisers — [`is_tots_shaper_type_name`] (the SQP family) or
+    /// [`build_train_for_shaper`] (the ZV/ZVD/EI/Cascaded impulse family).
+    ///
+    /// WHY this exists rather than a comment: a `Shaper` refiner that neither
+    /// recogniser knows falls through to `build_train_for_shaper` → `None` →
+    /// `Value::Undef`, with exit 0 and ZERO diagnostics. That failure is
+    /// SILENT, so the next shaper addition would look green from every angle
+    /// except the value it produces — which is exactly how the gap this task
+    /// closed was opened. If you are reading this because it just went RED:
+    /// add your new shaper to whichever arm evaluates it (widen
+    /// `is_tots_shaper_type_name` for an SQP-family shaper, add a
+    /// `build_train_for_shaper` arm for an impulse-family one). Do NOT add it
+    /// to an allowlist here.
+    #[test]
+    fn every_shipped_shaper_structure_is_recognised() {
+        let declared = declared_shaper_type_names(TRAJECTORY_RI);
+
+        // Canary on the scan itself: if the `.ri` spelling ever changes so the
+        // line scan stops matching, this guard would silently pass over an
+        // empty set. The six known refiners are TOTSShaper, RevoluteTOTSShaper,
+        // ZVShaper, ZVDShaper, EIShaper, CascadedShaper.
+        assert!(
+            declared.len() >= 6,
+            "scan of trajectory.ri found only {} `structure def <Name> : Shaper` \
+             declarations ({:?}) — expected at least the 6 known refiners. The \
+             scan itself has probably broken (declaration spelling changed); fix \
+             `declared_shaper_type_names` rather than lowering this bound.",
+            declared.len(),
+            declared
+        );
+
+        for name in &declared {
+            let by_tots = is_tots_shaper_type_name(name);
+            let by_impulse = build_train_for_shaper(&bare_shaper_instance(name)).is_some();
+            assert!(
+                by_tots || by_impulse,
+                "`structure def {name} : Shaper` is shipped in trajectory.ri but no \
+                 eval-side dispatch arm recognises it: is_tots_shaper_type_name() is \
+                 false and build_train_for_shaper() returns None. Evaluating it would \
+                 yield a SILENT Value::Undef (exit 0, zero diagnostics). Widen \
+                 `is_tots_shaper_type_name` (SQP family) or add a \
+                 `build_train_for_shaper` arm (impulse family)."
+            );
+        }
+    }
+
+    /// Direct unit coverage of the predicate's name set: both family members
+    /// in, and the neighbouring shaper structures — which MUST be handled by
+    /// the impulse arm instead — out. Pins the boundary the guard above
+    /// checks only in aggregate.
+    #[test]
+    fn is_tots_shaper_type_name_matches_exactly_the_sqp_family() {
+        for member in ["TOTSShaper", "RevoluteTOTSShaper"] {
+            assert!(
+                is_tots_shaper_type_name(member),
+                "{member} is an SQP-family shaper and must be recognised"
+            );
+        }
+        for outsider in [
+            "ZVShaper",
+            "ZVDShaper",
+            "EIShaper",
+            "CascadedShaper",
+            "TOTSShaperX",
+            "totsshaper",
+            "",
+        ] {
+            assert!(
+                !is_tots_shaper_type_name(outsider),
+                "{outsider:?} is not an SQP-family shaper; recognising it would route \
+                 it into the SQP loop instead of its own arm"
+            );
+        }
+    }
 }
 
 // ── Parameter types ───────────────────────────────────────────────────────────

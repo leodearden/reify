@@ -22,8 +22,11 @@
 //!    stand-in that echoes the input profile (a valid `Shaper` is still
 //!    required — an unrecognised shaper ⇒ `Value::Undef`).
 //!
-//!    The dispatcher checks for `TOTSShaper` BEFORE the impulse-train path (λ):
-//!    when the shaper is a `TOTSShaper`, it runs the real SQP loop
+//!    The dispatcher checks for a TOTS-family shaper (`TOTSShaper` /
+//!    `RevoluteTOTSShaper`, one per joint kind — membership is decided by
+//!    [`super::tots::is_tots_shaper_type_name`], the single source of truth)
+//!    BEFORE the impulse-train path (λ): when the shaper is one of those, it
+//!    runs the real SQP loop
 //!    ([`super::tots::solve_tots`], which calls `simulate_trajectory_core` +
 //!    `inverse_dynamics_open_chain` per iteration) on a canonical single-DOF
 //!    point-to-point stand-in parameterised by the shaper's readable scalar
@@ -148,11 +151,19 @@ pub fn build_train_for_shaper(shaper: &Value) -> Option<ImpulseTrain> {
     }
 }
 
-/// Build the canonical single-DOF gantry stand-in model for a `TOTSShaper`.
+/// Build the canonical single-DOF gantry stand-in model for a TOTS-family
+/// shaper (`TOTSShaper` / `RevoluteTOTSShaper`; see
+/// [`super::tots::is_tots_shaper_type_name`]).
 ///
-/// This is the θ-deferred placeholder: full Value marshalling of the
-/// `TOTSShaper`'s `modes` (`List<Mode>`) and `actuator_limits`
-/// (`List<JointLimit>`) into a multi-mode `TotsModel` waits until the
+/// Joint-kind-independent by construction: the model is the same canonical
+/// stand-in for both halves of the family, because the marshalling path
+/// (`field_f64` → `read_scalar_si`) reads SI magnitudes and discards the
+/// dimension. Only the `.ri` DECLARATIONS differ per joint kind (m·s⁻¹ /
+/// m·s⁻² vs rad·s⁻¹ / rad·s⁻²).
+///
+/// This is the θ-deferred placeholder: full Value marshalling of the shaper's
+/// `modes` (`List<Mode>`) and `actuator_limits` (`List<JointLimit>` /
+/// `List<RevoluteJointLimit>`) into a multi-mode `TotsModel` waits until the
 /// Profile↔spline `Value` marshalling (`evaluate_profile`) is unblocked.
 ///
 /// The canonical model mirrors the gantry fixture in `tots.rs` tests:
@@ -180,8 +191,15 @@ fn canonical_tots_model() -> TotsModel {
     }
 }
 
-/// Run the TOTS SQP loop for a `TOTSShaper`, using the readable scalar fields
-/// of `shaper_data` to parameterise a canonical single-DOF P2P stand-in.
+/// Run the TOTS SQP loop for a TOTS-family shaper (`TOTSShaper` /
+/// `RevoluteTOTSShaper`; membership per
+/// [`super::tots::is_tots_shaper_type_name`]), using the readable scalar
+/// fields of `shaper_data` to parameterise a canonical single-DOF P2P
+/// stand-in.
+///
+/// Kind-agnostic: `field_f64` reads `velocity_limit` / `acceleration_limit` as
+/// SI magnitudes and discards the dimension, so the revolute half's rad·s⁻¹ /
+/// rad·s⁻² values flow through exactly as the linear half's m·s⁻¹ / m·s⁻² do.
 ///
 /// Returns the [`TotsOutcome`] so the caller can map
 /// `ConstraintInfeasible` → `Value::Undef` and
@@ -227,13 +245,17 @@ fn run_tots(shaper_data: &StructureInstanceData) -> TotsOutcome {
 /// - exactly two arguments `(profile, shaper)`;
 /// - both must be a [`Value::StructureInstance`];
 /// - the shaper must resolve to an [`ImpulseTrain`] via
-///   [`build_train_for_shaper`] (ZV/ZVD/EI/Cascaded), or be a `TOTSShaper`
-///   whose SQP run is feasible. Any other shaper or infeasible TOTS problem
+///   [`build_train_for_shaper`] (ZV/ZVD/EI/Cascaded), or be a TOTS-family
+///   shaper (`TOTSShaper` / `RevoluteTOTSShaper`, one per joint kind) whose
+///   SQP run is feasible. Any other shaper or infeasible TOTS problem
 ///   returns `Value::Undef`.
 ///
-/// **Dispatch order**: `TOTSShaper` is checked FIRST (λ arm), because
-/// `build_train_for_shaper` returns `None` for it and would otherwise
-/// immediately return `Value::Undef`. Impulse arms are structurally unchanged.
+/// **Dispatch order**: the TOTS FAMILY is checked FIRST (λ arm), because
+/// `build_train_for_shaper` returns `None` for every member and would
+/// otherwise immediately return `Value::Undef`. Impulse arms are structurally
+/// unchanged. Family membership is decided by
+/// [`super::tots::is_tots_shaper_type_name`] — the single source of truth,
+/// shared with `trampoline::input_shape_value` so the two arms cannot drift.
 ///
 /// On success the shaped `Profile` is returned as a registry-free
 /// [`Value::StructureInstance`] that **echoes the input profile's own**
