@@ -296,7 +296,6 @@ fn regression_combined_import_file_parses_cleanly() {
     parse_clean(source);
 }
 
-
 // ── Review round: the shapes adjacent to the settled one ────────────────
 //
 // #5931 settled the SEPARATOR. These pin the two neighbouring properties that
@@ -315,9 +314,9 @@ fn item_identifiers(source: &str) -> Vec<String> {
 
     let decl = find_node_by_kind(root, "import_declaration")
         .unwrap_or_else(|| panic!("expected an `import_declaration` node; got kinds: {kinds:?}"));
-    let items = decl.child_by_field_name("items").unwrap_or_else(|| {
-        panic!("`{source}` must have an `items` field; kinds: {kinds:?}")
-    });
+    let items = decl
+        .child_by_field_name("items")
+        .unwrap_or_else(|| panic!("`{source}` must have an `items` field; kinds: {kinds:?}"));
     assert_eq!(
         items.kind(),
         "import_items",
