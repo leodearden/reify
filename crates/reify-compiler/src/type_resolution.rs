@@ -227,19 +227,32 @@ impl TypeAliasEntry {
     /// across the module boundary.  This enables `resolve_parameterized_alias` to
     /// instantiate them at use sites via `resolve_type_alias_expr_with_subst`.
     ///
-    /// Non-parametric aliases (`type_params.is_empty()`) never reach
-    /// `resolve_parameterized_alias`, so their body is not carried across — this
-    /// avoids a wasted deep-clone of every non-parametric alias body in the per-
-    /// compile prelude-seed loop.
+    /// An UNRESOLVED non-parametric alias (`resolved_type: None`) also carries
+    /// its body across (task 6259). Such an entry is an alias whose body names
+    /// an entity — `pub type Fq = SomeEnum` / `= SomeStructureDef` /
+    /// `= SomeOccurrenceDef` / `= SomeTrait`; the alias DFS runs before those
+    /// name sets exist, so it legitimately leaves the entry unresolved, and the
+    /// deferred use-site arm in `resolve_type_expr_with_aliases_kinded` reads
+    /// `type_expr` to finish the job. Dropping the body here would leave the
+    /// seeded entry with BOTH `resolved_type: None` and `type_expr: None`, so
+    /// that arm could not fire and the use site would report a hard
+    /// `unresolved type` for the rest of the module.
+    ///
+    /// The allocation optimisation is retained for the overwhelmingly common
+    /// case: an already-resolved non-parametric alias still skips the deep
+    /// clone, because it resolves via `resolved_type` and no path reads its
+    /// body. Only the parametric and the still-unresolved entries pay for it.
     pub(crate) fn from_compiled_for_prelude(cta: &CompiledTypeAlias) -> TypeAliasEntry {
         TypeAliasEntry {
             name: cta.name.clone(),
             resolved_type: cta.resolved_type.clone(),
             type_params: cta.type_params.clone(),
-            // Only clone the body for parametric aliases — non-parametric ones resolve
-            // via resolved_type and never read type_expr, so skipping the clone avoids
-            // an unnecessary allocation in the per-compile prelude-seed loop.
-            type_expr: if cta.type_params.is_empty() {
+            // Skip the clone ONLY for an already-resolved non-parametric alias:
+            // it resolves via `resolved_type` and nothing reads its body. A
+            // parametric alias needs the body for `resolve_parameterized_alias`;
+            // an unresolved non-parametric one needs it for the deferred
+            // use-site arm (task 6259).
+            type_expr: if cta.type_params.is_empty() && cta.resolved_type.is_some() {
                 None
             } else {
                 cta.type_expr.clone()
