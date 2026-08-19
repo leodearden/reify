@@ -610,11 +610,22 @@ echo "--- Tests 17a-17b (task 5984): global [profile.default] test-threads pool 
 
 _DEFAULT_TT_AWK='/^\[profile\.default\]/{f=1;next}/^\[/{f=0}f&&/^test-threads[[:space:]]*=/{match($0,/[0-9]+/);print substr($0,RSTART,RLENGTH);exit}'
 
-# Test 17a: the in-file literal is the sed-template fallback / HARD_CAP ceiling.
+# Test 17a: the in-file literal is the SED-TEMPLATE FALLBACK — the reference-host
+# nproc placeholder, deliberately NOT a narrowing ceiling.  RE-POINTED in place
+# by task 6018 (was 16, framed as "the HARD_CAP literal"): HARD_CAP no longer
+# defaults to a narrowing constant, so the literal now stands in for host nproc
+# on the 32-core reference host, exactly as the in-file '24' stands in for the
+# resolved occt cap.  scripts/gen-nextest-config.sh rewrites this line to the
+# host-resolved value for every verify pass, so the literal is only ever seen by
+# a bare `cargo nextest run` that bypasses verify.sh.
 # Asserted on the EXTRACTED value (not a raw grep) so an occurrence inside an
-# overrides block cannot satisfy it.
-assert "nextest.toml: [profile.default] has test-threads = 16 (sed-template fallback / HARD_CAP literal, section-scoped to the [profile.default] table)" \
-    bash -c "[ \"\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')\" = '16' ]"
+# overrides block cannot satisfy it — that section scoping is the whole point of
+# _DEFAULT_TT_AWK's `/^\[/{f=0}` reset.
+# Deliberately a BARE INTEGER, not nextest's `"num-cpus"`: 17b extracts with
+# match($0,/[0-9]+/) (empty on a quoted string) and 17k pins the
+# `^test-threads = [0-9][0-9]*$` sed anchor.  Both must stay green here.
+assert "nextest.toml: [profile.default] has test-threads = 32 (sed-template fallback — the reference-host nproc placeholder, NOT a narrowing ceiling; section-scoped to the [profile.default] table)" \
+    bash -c "[ \"\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')\" = '32' ]"
 
 # Test 17b: that value is a non-empty positive integer >= 1.  nextest treats an
 # absent key as unbounded (= logical CPU count), so this pins that the in-file
