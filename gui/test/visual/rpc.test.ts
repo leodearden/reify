@@ -248,9 +248,19 @@ describe("parseRpcResponse vs normalizeRpcEnvelope — the documented divergence
     // harness must stay POSITIONAL and take the image at content[0]; no driver
     // reads image data, so the normaliser searches past it and hands back the
     // diagnostics a driver can actually branch on. Do NOT "fix" them into
-    // agreement: turning parseRpcResponse's branch 3 into a `.find` would let the
-    // text block win branch 4 instead, and the corruption would surface as bad
-    // PNG bytes out of Buffer.from — never as a type error.
+    // agreement: rewriting parseRpcResponse's branch 3 to search for the TEXT
+    // block the way normalizeRpcEnvelope does (`content.find(c => c.type ===
+    // "text") ?? content[0]`) lets branch 4 win ahead of branch 3, and the
+    // corruption would surface as bad PNG bytes out of Buffer.from — never as a
+    // type error. THIS case is what catches that: measured, it fails alone
+    // (1 failed | 20 passed).
+    //
+    // What this case does NOT pin, so nobody reads it as more than it is: an
+    // IMAGE-targeted `.find` (`content.find(c => c.type === "image") ??
+    // content[0]`) passes all 21, because §2d fixes the image at content[0], so
+    // searching for it and indexing to it agree on every envelope the contract
+    // admits. Branch 3 is positional to keep branch PRECEDENCE explicit, not
+    // because that rewrite would be caught here.
     const envelope = {
       result: {
         // `isError` deliberately ABSENT — this is a success envelope.

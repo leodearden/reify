@@ -291,11 +291,20 @@ the branch-3 fall-through case in `gui/test/visual/rpcEnvelope.test.ts`. The
 error-envelope divergences are pinned case-by-case in those same two files.
 
 That decode pair is what makes the split above load-bearing rather than
-advisory. Collapsing `parseRpcResponse`'s positional image branch into a `.find`
-now fails case 4b, and only case 4b; before the pair existed it passed the
-entire JS suite and surfaced only as corrupt PNG bytes in `run.ts`'s
-`Buffer.from(…, "base64")`. Consult these tests before collapsing the two
-decoders.
+advisory — against the collapse that actually corrupts, which is worth naming
+precisely. Rewriting `parseRpcResponse`'s branch 3 to search for the TEXT block
+the way `normalizeRpcEnvelope` does (`content.find(c => c.type === "text") ??
+content[0]`) lets branch 4 win ahead of branch 3, and fails case 4b — measured
+on the suite as 1 failed | 20 passed, so case 4b and only case 4b catches it.
+Before the pair existed that same rewrite passed the entire JS suite and
+surfaced only as corrupt PNG bytes in `run.ts`'s `Buffer.from(…, "base64")`.
+
+An IMAGE-targeted `.find` is a different matter and the suite does not object:
+`content.find(c => c.type === "image") ?? content[0]` passes all 21, because
+§2d fixes the image at `content[0]`, so searching for it and indexing to it
+agree on every envelope this contract admits. Branch 3 stays positional to keep
+branch PRECEDENCE explicit at the point of reading, not because a test would
+catch that rewrite. Consult these tests before collapsing the two decoders.
 
 ---
 
