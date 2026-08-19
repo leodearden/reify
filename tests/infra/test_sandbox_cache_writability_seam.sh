@@ -313,6 +313,18 @@ CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_compre
 # hand-maintained mirror of a DF-owned fact reify cannot observe.
 KNOWN_DISPATCH_ROLES="architect implementer debugger merger steward deep_reviewer reviewer_comprehensive judge simple_task"
 
+# The residual UNCOVERED dispatch roles -- the members of
+# KNOWN_DISPATCH_ROLES that CACHE_REDIRECT_ROLES does NOT redirect, i.e. the
+# roles still resolving the DEFAULT ~/.cargo and ~/.npm.
+#
+# SEEDED FROM THIS REPO'S OWN PROSE, DELIBERATELY: the value below is what
+# dark-factory-orchestrator.yaml (":NOT covered: merger, steward,
+# deep_reviewer") and this file's own second COUPLING section ("namely
+# MERGER, STEWARD or DEEP_REVIEWER") both still assert in comment text. The
+# assertion in (C) below computes the set for real and compares. If the two
+# disagree, the prose is false -- which is the whole point of pinning it.
+UNCOVERED_DISPATCH_ROLES="merger steward deep_reviewer"
+
 # ---------------------------------------------------------------------------
 # (A) STRUCTURE -- parse YAML and assert key/value shape
 # ---------------------------------------------------------------------------
@@ -804,7 +816,7 @@ assert "'npm_config_cache:' cited in dark-factory-orchestrator.yaml" \
 echo "--- (C) role-name declaration cross-check (bash) ---"
 
 # Exported for the `bash -c` checker below (same idiom as SANDBOX_BLOCK in (B)).
-export CACHE_REDIRECT_ROLES KNOWN_DISPATCH_ROLES
+export CACHE_REDIRECT_ROLES KNOWN_DISPATCH_ROLES UNCOVERED_DISPATCH_ROLES
 
 # A misspelled member of CACHE_REDIRECT_ROLES mirrored into the yaml too would
 # satisfy every assertion in (A) -- present, absolute, under /tmp, distinct,
@@ -822,6 +834,45 @@ assert "every CACHE_REDIRECT_ROLES member is a real DF dispatch role name (KNOWN
             esac
         done
         exit $rc
+    '
+
+# The assertion above is SUBSET-DIRECTION ONLY: it proves every redirected
+# role is a real dispatch name, but it is blind to the COMPLEMENT -- which
+# roles are left OUT. That residual set was stated only in prose, in two
+# files, and both copies went stale the moment `merger` joined the redirect
+# (task 6275). Pinning the complement makes the next role addition or removal
+# impossible to land without a conscious edit to UNCOVERED_DISPATCH_ROLES,
+# which drags the author back to the prose that describes it.
+assert "the residual UNCOVERED dispatch-role set (KNOWN_DISPATCH_ROLES minus CACHE_REDIRECT_ROLES) equals the UNCOVERED_DISPATCH_ROLES declaration -- pins the complement the subset check above cannot see" \
+    bash -c '
+        computed=""
+        for r in $KNOWN_DISPATCH_ROLES; do
+            case " $CACHE_REDIRECT_ROLES " in
+                *" $r "*) ;;
+                *) computed="$computed $r" ;;
+            esac
+        done
+        # Order-insensitive on BOTH sides: compare sorted token streams, so
+        # merely reordering either declaration is not a spurious FAIL.
+        c_sorted=$(printf "%s\n" $computed | sort | tr "\n" " ")
+        d_sorted=$(printf "%s\n" $UNCOVERED_DISPATCH_ROLES | sort | tr "\n" " ")
+        [ "$c_sorted" = "$d_sorted" ] && exit 0
+        echo "residual uncovered dispatch-role set drifted from its declaration" >&2
+        echo "  computed (KNOWN_DISPATCH_ROLES minus CACHE_REDIRECT_ROLES): $c_sorted" >&2
+        echo "  declared (UNCOVERED_DISPATCH_ROLES):                        $d_sorted" >&2
+        for r in $computed; do
+            case " $UNCOVERED_DISPATCH_ROLES " in
+                *" $r "*) ;;
+                *) echo "  uncovered in fact but NOT declared uncovered: $r" >&2 ;;
+            esac
+        done
+        for r in $UNCOVERED_DISPATCH_ROLES; do
+            case " $computed " in
+                *" $r "*) ;;
+                *) echo "  declared uncovered but IS redirected: $r" >&2 ;;
+            esac
+        done
+        exit 1
     '
 
 test_summary
