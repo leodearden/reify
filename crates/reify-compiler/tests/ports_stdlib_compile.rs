@@ -821,7 +821,8 @@ structure def RotaryConformerMissingTorque : RotaryPort {
 
 /// LinearPort refines exactly [MotivePort] with required members [max_speed,
 /// max_force, stroke, axis] in order:
-///   max_speed : Scalar<Velocity = Length/Time>
+///   max_speed : Scalar<Velocity> (NAMED_DIMENSIONS builtin, m/s; back-compat
+///               `pub type Velocity` in units.ri resolves to the same dimension)
 ///   max_force : Scalar<FORCE>
 ///   stroke    : Scalar<LENGTH>
 ///   axis      : Vector3<Length>
@@ -859,14 +860,15 @@ fn linear_port_trait_surface() {
         );
     }
 
-    // Velocity = Length / Time (alias resolves to the composite dimension).
+    // Velocity is a NAMED_DIMENSIONS builtin (m/s); it resolves to Length/Time
+    // regardless (see units.ri:87-96 for the builtin-shadows-alias rationale).
     let expected_velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_speed"),
         Type::Scalar {
             dimension: expected_velocity_dim
         },
-        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity alias)"
+        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity NAMED_DIMENSIONS builtin)"
     );
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_force"),
@@ -3094,11 +3096,14 @@ structure def S {
 /// collision with the unrelated stdlib `Coupling<P: DrivingJoint + HasMotion>`
 /// kinematic joint type in crates/reify-compiler/stdlib/kinematic.ri.)
 ///
-/// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
+/// Note: direction/Bidi/StructurePort/Bore/Shaft and max_torque/max_speed
 /// params are not exercised through an actual conformance path in this example
 /// (no concrete RotaryPort conformer is instantiated per PRD §4 decision 4).
-/// A follow-up that adds a concrete conformer supplying torque_capacity /
-/// max_speed / direction literals would close that coverage gap end-to-end.
+/// A concrete conformer supplying max_torque / max_speed literals is covered
+/// separately by `rotary_port_concrete_conformer_compiles` in this file;
+/// `direction` is exercised only through its Bidi default (see
+/// `port_conforms_without_direction_compiles_clean`) — an explicit non-default
+/// `direction` literal remains uncovered.
 #[test]
 fn example_ports_mechanical_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

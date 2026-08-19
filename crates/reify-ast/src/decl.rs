@@ -151,7 +151,7 @@ pub enum MemberDecl {
     /// `match` block. See PRD `docs/prds/match-block-decls.md` task 1 and spec §6.4.
     /// Tree-sitter grammar (task 3563) and ts_parser lowering (task 3564) are both
     /// wired; integration tests covering the parse → AST → compile pipeline live in
-    /// `crates/reify-compiler/tests/match_block_decl_lowering_tests.rs`.
+    /// `crates/reify-compiler/tests/harness_patterns/match_block_decl_lowering_tests.rs`.
     /// Some legacy hand-built tests remain in `match_arm_decl_group_compile_tests.rs`
     /// for AST-shape granularity.
     MatchArmDeclGroup(MatchArmDeclGroupDecl),

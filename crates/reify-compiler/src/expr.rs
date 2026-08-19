@@ -3134,7 +3134,7 @@ fn compile_expr_guarded_with_expected_inner(
                     // the user's return type wins. This shadow-by-user-fns precedence
                     // is intentional and pinned by the
                     // `user_defined_length_shadows_stdlib_geometry_query` regression
-                    // test in `crates/reify-compiler/tests/structural_physical_spec_shape.rs`.
+                    // test in `crates/reify-compiler/tests/harness_geometry_solver/structural_physical_spec_shape.rs`.
                     //
                     // **Internal-arm precedence (within `NoUserFunctions`).** The arms
                     // below are checked in order: `is_geometry_query_helper` →

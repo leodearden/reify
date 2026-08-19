@@ -97,5 +97,5 @@ module_visibility/
   therefore listed in the smoke `SKIP_SET` with a mandatory justification.
 
 The full two-way behaviour is exercised end-to-end by
-`crates/reify-cli/tests/cli_module_visibility_example.rs` running the real
+`crates/reify-cli/tests/harness_cli/cli_module_visibility_example.rs` running the real
 `reify` binary.

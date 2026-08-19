@@ -36,7 +36,7 @@ vi.mock('html-to-image', () => ({
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { toPng } from 'html-to-image';
-import { initDebugBridge } from '../debug/bridge';
+import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import type { DebugStores } from '../debug/types';
 
@@ -548,6 +548,137 @@ describe('element_screenshot: bridge handler', () => {
       expect(typeof result.size).toBe('number');
       expect(typeof result.limit).toBe('number');
       expect(result.size).toBeGreaterThan(result.limit);
+    } finally {
+      document.body.removeChild(el);
+    }
+  });
+
+  // ─── viewport scoping (#5891) — step-9 RED → step-10 GREEN ─────────────────
+
+  /** The two panes' mocked bounds. Distinct so the crop rect identifies the pane. */
+  const PANE_RECTS = {
+    'design-main': { x: 10, y: 20, width: 100, height: 50 },
+    'pane-1': { x: 300, y: 400, width: 60, height: 30 },
+  } as const;
+
+  /**
+   * Two `[data-viewport-id]` wrappers, each holding a same-testid element with a
+   * DIFFERENT getBoundingClientRect. Asserting on the captured drawImage source
+   * rect therefore pins WHICH element was captured — a bare `{data}` assertion
+   * would pass just as happily on the wrong pane, since the fake canvas returns
+   * the same stub URL either way.
+   */
+  function twoPanesWithShotTarget() {
+    const root = document.createElement('div');
+    root.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="shot"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="shot"></div></div>
+    `;
+    document.body.appendChild(root);
+    for (const id of ['design-main', 'pane-1'] as const) {
+      const el = root.querySelector(
+        `[data-viewport-id="${id}"] [data-testid="shot"]`,
+      ) as HTMLElement;
+      const r = PANE_RECTS[id];
+      vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+        x: r.x, y: r.y, width: r.width, height: r.height,
+        top: r.y, left: r.x, right: r.x + r.width, bottom: r.y + r.height,
+        toJSON: () => ({}),
+      });
+    }
+    return root;
+  }
+
+  /** The source rect drawImage was called with — {sx, sy, sw, sh}. DPR is 1 here. */
+  function capturedSourceRect() {
+    expect(drawImageSpy).toHaveBeenCalledTimes(1);
+    const a = drawImageSpy.mock.calls[0];
+    // drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh)
+    return { sx: a[1], sy: a[2], sw: a[3], sh: a[4] };
+  }
+
+  it('#5891 scoped: crops the named pane\'s element, not the first match', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 6, 'element_screenshot', {
+        testId: 'shot', viewportId: 'pane-1',
+      }) as any;
+
+      expect(result).toEqual({ data: 'data:image/png;base64,CROP' });
+      // pane-1's bounds, NOT design-main's (10,20,100,50).
+      expect(capturedSourceRect()).toEqual({ sx: 300, sy: 400, sw: 60, sh: 30 });
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 unknown viewportId returns notFoundForViewport and captures nothing', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 7, 'element_screenshot', {
+        testId: 'shot', viewportId: 'nope',
+      }) as any;
+
+      expect(result).toEqual({
+        error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('shot', 'nope'),
+      });
+      // Never silently falls back to the document-wide first match.
+      expect(drawImageSpy).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString and captures nothing', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 8, 'element_screenshot', {
+        testId: 'shot', viewportId: 5,
+      }) as any;
+
+      expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+      expect(drawImageSpy).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 unscoped multi-match crops the first and reports the guessed pane', async () => {
+    const root = twoPanesWithShotTarget();
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 9, 'element_screenshot', {
+        testId: 'shot',
+      }) as any;
+
+      expect(result).toEqual({
+        data: 'data:image/png;base64,CROP',
+        viewportId: 'design-main',
+        matchCount: 2,
+      });
+      // design-main's bounds — the mirror of the scoped case above, so a resolver
+      // keyed to the LAST match could not satisfy both.
+      expect(capturedSourceRect()).toEqual({ sx: 10, sy: 20, sw: 100, sh: 50 });
+    } finally {
+      document.body.removeChild(root);
+    }
+  });
+
+  it('#5891 single match keeps today\'s exact {data} payload — no diagnostic keys leak', async () => {
+    const el = document.createElement('div');
+    el.setAttribute('data-testid', 'lonely-shot');
+    document.body.appendChild(el);
+    vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, width: 40, height: 40,
+      top: 0, right: 40, bottom: 40, left: 0,
+      toJSON: () => ({}),
+    });
+
+    try {
+      const result = await dispatchAndGetResult(capturedHandler!, 10, 'element_screenshot', {
+        testId: 'lonely-shot',
+      }) as any;
+
+      expect(result).toEqual({ data: 'data:image/png;base64,CROP' });
     } finally {
       document.body.removeChild(el);
     }

@@ -190,6 +190,15 @@
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
+#   REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT — outer timeout for the gui-feature
+#                                  TEST-EXECUTION pass (`-p reify-gui --features gui`)
+#                                  emitted at the tail of add_test_passes(). Default 45m,
+#                                  sized from measurement on the workstation: a cold
+#                                  `--features gui` build (tauri + webkit2gtk + OCCT link)
+#                                  took 20m42s; a warm re-run took 137s total of which 59s
+#                                  was nextest execution over 906 tests. Distinct from
+#                                  REIFY_VERIFY_CLIPPY_TIMEOUT because that knob budgets a
+#                                  compile-only pass — this one budgets build + execution.
 #   REIFY_VERIFY_CHECK_TIMEOUT  — outer timeout for `cargo check --workspace --tests`.
 #                                  Default 30m.
 #   Values validated as ^[0-9]+[smhd]?$; invalid → default + stderr warning.
@@ -403,6 +412,7 @@ _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
 _VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 45m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
+_VERIFY_GUI_FEATURE_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
@@ -1337,13 +1347,39 @@ select_harness_kloc_guard
 # --narrow is a no-op for scope=branch (already narrowing) and scope=all
 # (condition never true).
 #
+# AFFECTED_CLOSURE — the raw reverse-dependency closure, COMPUTED whenever
+# RUN_RUST=1 AND SCOPE != all, i.e. deliberately WIDER than narrowing
+# eligibility above, so a consumer can make a membership test against the
+# closure WITHOUT activating narrowing. Its one consumer, and the full rationale
+# for reading SCOPE/AFFECTED_CLOSURE instead of inferring from NARROW_ACTIVE,
+# live on the decision itself: see the "NARROWED on the same affected-crate
+# axis" bullet in add_test_passes. Not restated here.
+#
+# Splitting COMPUTATION from ACTIVATION is value-preserving: AFFECTED,
+# NARROW_ACTIVE and AFFECTED_ALL_FLAGS end up with the same values on every
+# path, so the --workspace coupling that tests/infra/test_verify_scope.sh's
+# B9-default scenario pins is untouched.
+#
+# COST — affected_crates() is invoked at most ONCE per run (hence hoisting it
+# here rather than adding a second call site), and RUN_RUST=0 (a docs-only
+# hook-gated commit) skips it entirely. The call shells out to an UNGUARDED
+# `cargo metadata --format-version 1` in affected-crates-lib.sh's
+# _reverse_closure: 0.53s warm, but on a cold cache or a stale Cargo.lock it
+# performs dependency resolution, can reach the network, and can rewrite
+# Cargo.lock — now on the pre-commit-hook tier and under --print-plan, neither
+# of which previously shelled out to cargo on the staged path. Mitigated because
+# a RUN_RUST=1 hook run goes on to invoke cargo clippy/check anyway. Passing
+# --locked/--offline there is the real fix and is filed as follow-up; the
+# existing `|| { echo ALL; return 0; }` already fails wide if it errors.
+#
 # REIFY_AFFECTED_CRATES_OVERRIDE — testability/operator knob (whitespace/newline-
-# separated crate names). When set AND narrowing is eligible, used verbatim in
+# separated crate names). When set AND the closure is eligible, used verbatim in
 # place of calling affected_crates(). This mirrors the REIFY_PSI_GATE_PROC_PATH
 # knob idiom and allows hermetic --print-plan assertions in the workspace-less
 # fixture (where cargo metadata fails and affected_crates() always returns ALL).
 # ---------------------------------------------------------------------------
 AFFECTED=""
+AFFECTED_CLOSURE=""
 NARROW_ACTIVE=0
 AFFECTED_ALL_FLAGS=""
 
@@ -1354,10 +1390,17 @@ elif [ "$SCOPE" = "staged" ] && [ "$NARROW" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; th
     _narrowing_eligible=1
 fi
 
-if [ "$_narrowing_eligible" -eq 1 ]; then
+# Wider than _narrowing_eligible by design — see the AFFECTED_CLOSURE note in
+# this block's header.
+_closure_eligible=0
+if [ "$RUN_RUST" -eq 1 ] && { [ "$SCOPE" = "branch" ] || [ "$SCOPE" = "staged" ]; }; then
+    _closure_eligible=1
+fi
+
+if [ "$_closure_eligible" -eq 1 ]; then
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
         # Operator/testability override: use verbatim crate list.
-        AFFECTED="${REIFY_AFFECTED_CRATES_OVERRIDE}"
+        AFFECTED_CLOSURE="${REIFY_AFFECTED_CRATES_OVERRIDE}"
     elif [ -n "$CHANGED_FILES_RAW" ]; then
         # Real run: compute reverse-closure from the captured changed-file list.
         _af_args=()
@@ -1365,9 +1408,16 @@ if [ "$_narrowing_eligible" -eq 1 ]; then
             [ -n "$_af_f" ] && _af_args+=("$_af_f")
         done <<< "$CHANGED_FILES_RAW"
         if [ "${#_af_args[@]}" -gt 0 ]; then
-            AFFECTED="$(affected_crates "${_af_args[@]}")"
+            AFFECTED_CLOSURE="$(affected_crates "${_af_args[@]}")"
         fi
     fi
+fi
+
+if [ "$_narrowing_eligible" -eq 1 ]; then
+    # Narrowing eligibility ⊂ closure eligibility, so AFFECTED_CLOSURE is already
+    # computed here — consumed, never recomputed (one affected_crates() call, one
+    # `cargo metadata`, per run).
+    AFFECTED="$AFFECTED_CLOSURE"
     # NARROW_ACTIVE iff AFFECTED is non-empty and is NOT the sentinel "ALL".
     if [ -n "$AFFECTED" ] && [ "$AFFECTED" != "ALL" ]; then
         NARROW_ACTIVE=1
@@ -1982,6 +2032,201 @@ add_test_passes() {
         fi
     done
 
+    # gui-feature TEST-EXECUTION pass (task 5076; PRD docs/prds/compute-fea-hardening.md
+    # task A5).  reify-gui's #[cfg(feature = "gui")] code — gui_feature_tests in
+    # tests/engine_tests.rs, gui_tests in kernel_status_tests.rs, the gui-gated #[test]
+    # fns in event_bus_tests.rs / claude_bridge.rs, and the wholly gui-gated
+    # debug_server / event_bus modules — is reached by NO workspace pass above (all run
+    # without --features gui).  Until this pass existed it was only COMPILE-checked, by
+    # the `cargo check -p reify-gui --features gui --tests` line in build_plan, so a
+    # change that flipped engine.rs's cfg(feature="gui") arm to
+    # MorphRegistration::Unavailable compiled clean and passed every CI pass silently.
+    #
+    # PLACEMENT — inside the semaphore bracket, at the tail of the profile loop:
+    #   * Inside the slot because a --features gui build links tauri + webkit2gtk +
+    #     OCCT, i.e. exactly the RSS-heavy link wave the held slot exists to bound
+    #     (see the ACQUIRE-block comment above: memory is the binding constraint on
+    #     this host and whole-block serialization is its only implicit bound).
+    #   * OUTSIDE the profile loop so `--profile both` emits it exactly ONCE.
+    #     --features is a FEATURE axis, not a profile axis; a second release-profile
+    #     copy would cost another cold link for zero added coverage.
+    #   * Skipped for DF_VERIFY_ROLE=offline, whose plan runs the heavy #[ignore]
+    #     partition only.
+    #   * NARROWED on the same affected-crate axis every other narrowed pass uses.
+    #     THREE EXPLICIT ARMS, read off SCOPE and AFFECTED_CLOSURE directly:
+    #       1. SCOPE=all            -> emit.  The merge gate never narrows; that is
+    #                                  a CONTRACT, not a side effect.
+    #       2. closure unavailable  -> emit.  FAIL WIDE.  "Unavailable" covers the
+    #                                  ALL sentinel (a C4 workspace-global file, a
+    #                                  C5 cargo-metadata failure, an unmappable
+    #                                  path), an empty CHANGED_FILES_RAW, and a
+    #                                  malformed REIFY_AFFECTED_CRATES_OVERRIDE.
+    #                                  The empty case is genuinely OVERLOADED —
+    #                                  decide_scope's git-failure fail-wide paths
+    #                                  also return RUN_RUST=1 with
+    #                                  CHANGED_FILES_RAW="" — so conflating it
+    #                                  with "provably no crates" is CORRECT here
+    #                                  and cannot be tightened without a separate
+    #                                  closure-available sentinel.
+    #       3. otherwise            -> emit iff reify-gui ∈ AFFECTED_CLOSURE.
+    #     This is NOT keyed on NARROW_ACTIVE.  NARROW_ACTIVE is a narrowing-
+    #     ACTIVATION flag, not a scope oracle: NARROW_ACTIVE=0 ALSO holds for
+    #     `--scope staged` without `--narrow` and for the two fail-wide resets, so
+    #     the old "emitted whenever NARROW_ACTIVE=0 (scope=all, i.e. the merge
+    #     gate)" reading was a false equivalence.  Its cost was concrete and
+    #     measured: `hooks/project-checks` execs
+    #     `verify.sh all --profile debug --scope staged --include-infra`, and a
+    #     staged crates/reify-doc/src/lib.rs emitted 1 gui-feature pass — the
+    #     per-commit hook paying the full `--features gui` link for a closure that
+    #     cannot reach reify-gui.  Arm 3 now covers that shape too.
+    #     WHAT ACTUALLY BENEFITS is narrower than "every hook run", and the
+    #     difference is measured, not assumed: only a staged diff whose paths ALL
+    #     map to crates AND whose reverse closure excludes reify-gui takes arm 3.
+    #     A scripts-only staged diff yields the ALL sentinel (C5/unmappable) and a
+    #     tests/infra-only one yields an EMPTY closure (affected-crates-lib treats
+    #     tests/infra/* as non-crate, while decide_scope's conservative arm still
+    #     sets RUN_RUST=1) — both take arm 2 and keep paying the link.
+    #     Arm 1 keeps the merge gate unconditional, so a hook-tier miss can only
+    #     ever be LATENCY, never a coverage hole.
+    #     affected_crates() is a REVERSE-dependency closure, so a change anywhere in
+    #     reify-gui's dependency graph puts reify-gui in the set — measured on this
+    #     tree: crates/reify-eval/src/lib.rs and crates/reify-mesh-morph/src/lib.rs
+    #     both yield sets containing reify-gui; crates/reify-doc/src/lib.rs does not.
+    #     Emitting unconditionally made a `-p reify-doc` branch plan pay a full
+    #     tauri + webkit2gtk + OCCT feature-unification build (20m42s cold / ~137s
+    #     warm, and NOT shareable with any other pass's artifacts) that no reify-doc
+    #     change can regress — while that same plan already narrowed reify-gui's
+    #     UNGATED tests away, so running its gui-GATED ones would have been
+    #     incoherent.  Membership is the reverse closure rather than a hand-listed
+    #     trigger set (reify-gui/reify-eval/reify-mesh-morph) so a change to an
+    #     indirect dependency (reify-syntax, reify-ir, …) cannot silently fall out
+    #     of the trigger.
+    #
+    # NOT reusing emit_nextest_pass — nor extending it with an optional extra-flags
+    # parameter, which was considered and rejected.  Three structural mismatches, not
+    # one missing slot: (a) this pass is wrapped in an `if test -f …; then … fi` guard
+    # with a sidecar-placeholder prefix, so it needs a prefix AND a suffix hook, not a
+    # trailing-flags one; (b) emit_nextest_pass unconditionally interpolates
+    # ${_eff_gate_exclude}${_eff_offline_select}${_retry_filter_frag}, each of which
+    # can emit an `-E` filterset — and an `-E` here would narrow away the very
+    # gui-gated tests this pass exists to run (asserted by (b8) in
+    # tests/infra/test_compute_trampoline_registration_wired.sh), so they would all
+    # have to be suppressed for this caller; (c) ~30 plan-shape tests assert against
+    # that single construction site.  The two arms below therefore mirror its
+    # nextest/cargo-test if/else by hand so this pass is shape-identical on a
+    # nextest-less host.  What IS shared with it is kept in lockstep deliberately and
+    # is individually asserted: the memoized _NEXTEST_CONFIG_FILE + its lazy init,
+    # the --test-threads fragment, and the trailing ` 9<&-`.
+    #
+    # Three non-obvious requirements, each pinned by a live guard:
+    #  (i)  trailing ` 9<&-` — FD 9 is the held slot; tests/infra/test_verify_semaphore_
+    #       wiring.sh (1k) fails when ANY cargo test/nextest line lacks it.  This is a
+    #       direct `add`, so the token is NOT inherited from emit_nextest_pass's single
+    #       append site and is appended explicitly (valid shell: a redirection on a
+    #       compound command, kept on the same plan line the grep inspects).
+    #  (ii) --config-file — scripts/gen-nextest-config.sh's header records that plain
+    #       `--config` is a NO-OP for nextest test-groups on 0.9.136, so --config-file is
+    #       the only mechanism that applies the occt test-group cap, the global
+    #       [profile.default] test-threads pool cap and the per-binary priority
+    #       overrides.  Without it this pass would run UNCAPPED inside the held slot.
+    #       The SAME memoized _NEXTEST_CONFIG_FILE is reused (one temp file, one
+    #       _verify_cleanup EXIT removal — generating a second would leak it), with
+    #       emit_nextest_pass's lazy-init guard repeated so the pass cannot silently
+    #       degrade to an uncapped run in a scope that emitted no workspace pass.
+    #       --print-plan keeps the hermetic placeholder for the same reason it does
+    #       there (no subprocess, no temp file).
+    #  (iii) NO `-E` filterset.  Running the whole -p reify-gui --features gui suite is
+    #       what makes ALL gui-gated code execute; an enumerated name filter would
+    #       silently drift away from that set as modules are added.
+    # Outer timeout: its own _VERIFY_GUI_FEATURE_TEST_TIMEOUT knob (45m default) —
+    # see the REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT header entry for the measurement.
+    # ensure-gui-sidecar-placeholder.sh runs first for the same reason it does at the
+    # build_plan compile-check: tauri_build::build() validates bundle.externalBin and
+    # panics when gui/src-tauri/sidecar/reify-sidecar-<triple> is absent from disk.
+    local _emit_gui_feature_pass=0 _gui_ac
+    # Normalize the closure ONCE, into a word ARRAY, so that arm 2 below sees
+    # every malformed-knob shape as "unavailable" rather than as a crate list.
+    # A malformed REIFY_AFFECTED_CRATES_OVERRIDE must fail WIDE, never narrow —
+    # the same invariant, for the same reason, as the AFFECTED_ALL_FLAGS-empty
+    # reset in the Phase-2 narrowing block.  Three shapes, each measured to
+    # narrow the pass AWAY before this normalization existed:
+    #   * whitespace-only ("   ") — non-empty and not the ALL sentinel, so it
+    #     reached the membership loop, split to NOTHING, and never ran the loop
+    #     body.  Closed by the EMPTY-array test.
+    #   * glob-bearing ("*") — the split is an UNQUOTED expansion, so with
+    #     pathname expansion live it expanded against the CWD into directory
+    #     entries ("crates scripts") instead of collapsing; measured on a
+    #     hermetic fixture, `*` on --scope staged printed `closure=*` and
+    #     emitted ZERO gui-feature passes.  Closed by `set -f` ACROSS the split
+    #     (the caller's -f state is saved and restored — verify.sh does not
+    #     otherwise run with noglob).
+    #   * any token outside cargo's package-name grammar — a surviving glob
+    #     metacharacter, a path fragment, a stray flag.  A real affected_crates()
+    #     closure only ever holds crate names, so a token that cannot BE one
+    #     means the knob is malformed, not that the closure excludes reify-gui.
+    #     Closed by the grammar check, which routes to arm 2 rather than arm 3.
+    local -a _gui_closure_words=()
+    local _gui_closure_malformed=0 _gui_noglob_was=1
+    case "$-" in *f*) ;; *) _gui_noglob_was=0 ;; esac
+    set -f
+    # shellcheck disable=SC2086
+    for _gui_ac in $AFFECTED_CLOSURE; do
+        _gui_closure_words+=("$_gui_ac")
+        case "$_gui_ac" in
+            *[!A-Za-z0-9_.-]*) _gui_closure_malformed=1 ;;
+        esac
+    done
+    if [ "$_gui_noglob_was" -eq 0 ]; then set +f; fi
+    if [ "$DF_VERIFY_ROLE" != "offline" ]; then
+        if [ "$SCOPE" = "all" ]; then
+            # Merge gate: unconditional BY CONTRACT, not as a side effect of
+            # narrowing happening to be inactive.
+            _emit_gui_feature_pass=1
+        elif [ "${#_gui_closure_words[@]}" -eq 0 ] \
+            || [ "$_gui_closure_malformed" -eq 1 ] \
+            || { [ "${#_gui_closure_words[@]}" -eq 1 ] && [ "${_gui_closure_words[0]}" = "ALL" ]; }; then
+            # Closure unavailable — the ALL sentinel from a C4 global file / C5
+            # metadata failure / unmappable path, an empty CHANGED_FILES_RAW, or
+            # a malformed knob (see the normalization above).  Fail WIDE.
+            _emit_gui_feature_pass=1
+        else
+            for _gui_ac in "${_gui_closure_words[@]}"; do
+                if [ "$_gui_ac" = "reify-gui" ]; then
+                    _emit_gui_feature_pass=1
+                    break
+                fi
+            done
+        fi
+    fi
+    if [ "$_emit_gui_feature_pass" -eq 1 ]; then
+        local _gui_feat_cmd
+        # --test-threads=N (task 5264) applies here for the SAME reason it applies
+        # to every other test pass: an explicit --test-threads caps test-execution
+        # parallelism, and this pass — a tauri + webkit2gtk + OCCT link inside the
+        # held slot — is the last one that should run uncapped while the workspace
+        # passes are capped.  Empty when the flag is unset, so the emitted line is
+        # byte-for-byte unchanged by default (the same empty-or-leading-space idiom
+        # emit_nextest_pass uses for _tt_flag).  The cargo-test arm below already
+        # honoured ${TEST_THREADS:-1}; the two arms are now consistent.
+        local _gui_tt_flag=""
+        [ -n "$TEST_THREADS" ] && _gui_tt_flag=" --test-threads=${TEST_THREADS}"
+        if [ "$NEXTEST" -eq 1 ]; then
+            local _gui_cfg_path
+            if [ "$PRINT_PLAN" -eq 1 ]; then
+                _gui_cfg_path="${TMPDIR:-/tmp}/reify-nextest-occt.<print-plan-placeholder>"
+            else
+                if [ -z "$_NEXTEST_CONFIG_FILE" ]; then
+                    _NEXTEST_CONFIG_FILE="$("$SCRIPT_DIR/gen-nextest-config.sh")"
+                fi
+                _gui_cfg_path="$_NEXTEST_CONFIG_FILE"
+            fi
+            _gui_feat_cmd="${CARGO_PRIO}cargo nextest run -p reify-gui --features gui${_gui_tt_flag} --config-file ${_gui_cfg_path}"
+        else
+            _gui_feat_cmd="${CARGO_PRIO}cargo test -p reify-gui --features gui -- --test-threads=${TEST_THREADS:-1}"
+        fi
+        add "if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh && timeout --kill-after=60 ${_VERIFY_GUI_FEATURE_TEST_TIMEOUT} ${_gui_feat_cmd}; fi 9<&-"
+    fi
+
     # Release the semaphore slot after all passes complete.
     # The executor calls test_semaphore_release; the printer emits a comment.
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
@@ -2253,6 +2498,7 @@ build_plan() {
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
             add "if test -f scripts/check-nan-safe-ordering.sh; then timeout --kill-after=60 5m bash scripts/check-nan-safe-ordering.sh; else echo 'WARNING: check-nan-safe-ordering.sh not found, skipping'; fi"
+            add "if test -f scripts/check-compute-trampoline-registration.sh; then timeout --kill-after=60 5m bash scripts/check-compute-trampoline-registration.sh; else echo 'WARNING: check-compute-trampoline-registration.sh not found, skipping'; fi"
         fi
     fi
 
@@ -2610,7 +2856,13 @@ if [ "$PRINT_PLAN" -eq 1 ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
-    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
+    # `closure=` is APPENDED, never inserted: tests/infra/test_verify_scope.sh
+    # greps this line as the unanchored substrings "NARROW_ACTIVE=1 affected=…" /
+    # "NARROW_ACTIVE=0 affected=ALL", and plan_capture_lib.sh's plan_narrow_active
+    # matches NARROW_ACTIVE=([0-9]+); all three survive a trailing append and none
+    # survives a reordering.  A `#` comment line, so plan_count_noncomment_lines
+    # (`^[^#]`) — the oracle behind the THROUGHPUT-COUNTS sentinel — cannot see it.
+    echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-} closure=${AFFECTED_CLOSURE:-}"
     echo "# --- environment (process-level; inherited by every command below) ---"
     for _e in "${ENV_LINES[@]}"; do echo "# $_e"; done
     echo "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"

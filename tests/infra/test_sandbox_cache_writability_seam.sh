@@ -74,8 +74,11 @@
 # redirects CARGO_HOME and npm_config_cache to /tmp paths for each
 # sandboxed role. /tmp is the one host-global writable root in the write
 # set that a static yaml value can name. `verify_env` (elsewhere in this
-# file) is the WRONG surface: it feeds VERIFY subprocesses, which are not
-# sandboxed.
+# file) is the WRONG surface FOR THIS problem: it feeds VERIFY subprocesses,
+# which are not sandboxed, so setting CARGO_HOME there would not keep a
+# sandboxed AGENT alive. (verify_env does now carry the same CARGO_HOME, for
+# the unrelated reason in THIRD COUPLING below: fingerprint agreement over a
+# shared warm target/, not write access.)
 #
 # This guard pins the reify-owned leaf of the contract only.
 # compute_write_set itself is entirely DF-owned and not reify-observable
@@ -119,10 +122,105 @@
 #   a DF-side author flipping sandboxed=True on any of them needs a
 #   breadcrumb back to this file and to dark-factory-orchestrator.yaml's
 #   role_env_overrides comment.
-#   merger is EXCLUDED ON PURPOSE, not merely un-added: redirecting the
-#   merge agent's CARGO_HOME to a cold /tmp cache would diverge it from the
-#   verify subprocess cache path on the one gate that lands everything. Do
-#   NOT "close the gap" by blanket-adding every role in DF's ROLES registry.
+#   merger was EXCLUDED ON PURPOSE, not merely un-added -- but its stated
+#   rationale ("redirecting the merge agent's CARGO_HOME to a cold /tmp
+#   cache would diverge it from the verify subprocess cache path on the one
+#   gate that lands everything") was INVERTED by task 5836, which moved
+#   verify_env.CARGO_HOME onto that same /tmp path. merger carries no
+#   override, so it still resolves the DEFAULT ~/.cargo while the merge
+#   verify it shares the _merge-verify lane's target/ with uses /tmp: the
+#   divergence the exclusion existed to prevent now exists in the other
+#   direction. Reachable, not theoretical -- merger is not sandboxed
+#   (roles.py:45 defaults sandboxed=False; merger does not set it) yet holds
+#   unrestricted Bash (roles.py:1161), and its system prompt directs it to
+#   run tests after resolving a conflict. Left uncovered here deliberately:
+#   adding it must also extend CACHE_REDIRECT_ROLES (changing (A)/(C)/(D)
+#   coverage) and should carry its own measurement, since the exposure is
+#   bounded to the conflict-resolution path rather than every merge. Filed
+#   as #6275. Even so, do NOT "close the gap" by blanket-adding every role in
+#   DF's ROLES registry.
+#   This paragraph is the AUTHORITATIVE statement of the inverted rationale;
+#   dark-factory-orchestrator.yaml's role_env_overrides comment deliberately
+#   carries only the conclusion plus a pointer here, so #6275 does not have
+#   to edit two full copies in lockstep.
+#
+# THIRD COUPLING -- CARGO_HOME AGREEMENT ACROSS A SHARED target/ (task 5836,
+# guarded by (D)+(E) below). Distinct from the two above: those are about
+# WRITE ACCESS (a sandboxed agent dying on an unwritable ~/.cargo). This one
+# is about FINGERPRINT IDENTITY, and its failure mode is silent slowness
+# rather than an error, which is why it needs a test rather than review.
+#   THREE CONSUMERS write and re-read one warm lane's target/, and all three
+#   must agree on CARGO_HOME:
+#     1. the base-warming merge-verify build, whose target/
+#        scripts/refresh-warm-base.sh promotes to the pool base;
+#     2. the landlock-sandboxed agent roles, during their TDD turns;
+#     3. verify subprocesses, which are NOT sandboxed.
+#   Cargo's per-unit Fingerprint embeds `path = hash_u64(path_args(...))`,
+#   and for a REGISTRY package that is the absolute
+#   $CARGO_HOME/registry/src/index.crates.io-<hash>/<crate>/src/... path. So
+#   two consumers disagreeing on CARGO_HOME invalidate each other's units --
+#   cargo's own words, "Dirty <crate>: the path to the source changed",
+#   cascading into "Dirty <workspace crate>: info of dependency <crate>
+#   changed". Reify's Cargo.lock carries 685 registry entries.
+#   WHY /tmp AND NOT ~/.cargo: the agent side cannot move. DF's
+#   compute_write_set grants no ~/.cargo carve-out and /tmp is the one
+#   host-global writable root a static yaml value can name, so agents are
+#   PINNED there; verify and merge-verify are unsandboxed and are therefore
+#   the movable side. The upstream change that would retire the redirect and
+#   let all three sit on ~/.cargo is dark_factory:3162, UNLANDED (reify 5724
+#   was cancelled and refiled there).
+#   WHY SEEDING CANNOT SUBSTITUTE FOR AGREEMENT -- the tempting wrong fix:
+#     - It was never an mtime problem. Cargo stamps extracted sources with a
+#       canonical fixed mtime; crates present in BOTH homes read the
+#       identical stamp (1153704088) on either side, different inodes.
+#       Freshness here never turned on mtime, so pre-seeding registry/src
+#       (task 5729) fixes cold START and leaves fingerprint IDENTITY exactly
+#       as split as before.
+#     - "Just warm two caches" is structurally impossible, not merely
+#       expensive: `-C metadata` is CARGO_HOME-INDEPENDENT, so both homes
+#       write the SAME .fingerprint/<pkg>-<hash> file and each overwrites
+#       the other. One target/ holds exactly one fingerprint set per unit.
+#       Measured bidirectional: home-a (all Fresh) -> home-b (Dirty) ->
+#       home-a again (Dirty again).
+#   WHAT (D)+(E) STILL CANNOT OBSERVE -- limits, stated so this guard's
+#   green is not read as more coverage than it has. It reads the YAML, not
+#   the running orchestrator, so it CANNOT:
+#     - prove the activating restart happened. The yaml is restart-tier
+#       (loaded once at startup), so (D) goes green the moment the file is
+#       edited while the live orchestrator may still be running the old
+#       split config, for an unbounded time.
+#     - prove merge-verify actually BUILT the promoted warm base under this
+#       CARGO_HOME. refresh-warm-base.sh promotes whatever target/ it is
+#       given; nothing here inspects the promoted base's dep-info paths.
+#     - detect a target/ that is ALREADY split from before the flip. Lanes
+#       carrying pre-flip fingerprints keep paying one rebuild until they
+#       are re-seeded, and that shows up as slowness, never as a red test.
+#     - cover a verify that dark-factory did not launch. verify_env is
+#       applied only when DF spawns the verify subprocess; scripts/verify.sh
+#       sets no CARGO_HOME of its own, and neither does hooks/pre-merge-commit
+#       nor scripts/land.sh (measured: no CARGO_HOME reference in any of the
+#       three). So a hand-run `bash scripts/verify.sh` in a warm lane — and
+#       the land.sh -> pre-merge-commit path — inherits the ambient value,
+#       normally unset = ~/.cargo, and re-splits exactly the fingerprint set
+#       this flip unified, leaving the target/ in the other state for the
+#       next agent turn. (D)'s invariant therefore holds for
+#       orchestrator-launched verifies only. Tracked as #5853.
+#     - see the .package-cache LOCK population the flip CONSOLIDATES. Before
+#       it, verifies contended on ~/.cargo/.package-cache and sandboxed
+#       agents on the /tmp one; after it, every warm-lane verify AND every
+#       agent take the single /tmp/reify-agent-cargo-home/.package-cache.
+#       Bounded rather than free: cargo BLOCKS on that lock instead of
+#       failing, and scripts/assert-crate-dag.sh:31-37 already retries 5x on
+#       the empty-`cargo metadata` stdout that a sibling lock holder produced
+#       in esc-4419-41. Watch for a resurgence of that exact shape after the
+#       activating restart -- the fingerprint win is expected to dominate,
+#       but nothing in this guard can observe the trade.
+#   To observe the first three you must inspect the artifacts, not the
+#   config -- e.g. count target/debug/deps/*.d dep-info files referencing
+#   each home in a live lane, which is how the original split was found
+#   (105 under /tmp alongside 1176 under ~/.cargo, in one pool lane). The
+#   last two are runtime behaviours (whose shell launched verify; who holds
+#   the package-cache lock) and are outside any config-parsing guard.
 #
 # Pins, against dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE (python3+PyYAML, SKIP-guarded): IF sandbox.enabled is
@@ -156,6 +254,21 @@
 #       member of KNOWN_DISPATCH_ROLES, the hand-mirrored copy of DF's
 #       ROLES registry (roles.py:1512). Converts the nine role names this
 #       header states in prose into an executable constraint.
+#   (D) CARGO_HOME AGREEMENT (task 5836; python3+PyYAML, gated on the SAME
+#       sandbox.enabled precondition as (A) -- with sandbox off there is no
+#       agent-side redirect for verify to agree WITH): verify_env.CARGO_HOME
+#       is present, absolute, under /tmp, and byte-equal to
+#       role_env_overrides.<role>.CARGO_HOME for EVERY member of
+#       CACHE_REDIRECT_ROLES.
+#   (E) FLIP PRECONDITIONS (task 5836; same sandbox.enabled gate as (D)):
+#       (a) `cargo nextest --version` succeeds under the CONFIGURED
+#           verify_env.CARGO_HOME (parsed from the yaml, not hardcoded).
+#           That home has no bin/ of its own, so this passes only via the
+#           ~/.cargo/bin PATH fallthrough. Control arm: if nextest also
+#           fails under the default (unset) CARGO_HOME it is absent from
+#           the host, reported SKIP rather than misattributed to the
+#           redirect. (b) verify_env does NOT carry npm_config_cache --
+#           a deliberate asymmetry, pinned so it stays deliberate.
 #
 # (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the SKIP
 #     idiom used by test_merge_role_lint_first_seam.sh /
@@ -168,6 +281,9 @@
 # reviewer_comprehensive and judge are required by CACHE_REDIRECT_ROLES but
 # absent from role_env_overrides, so the per-role loop reports 8 FAILs for
 # each of the three.
+# RED when (D) was added (task 5836): verify_env carried no CARGO_HOME at
+# all, so (D) reported 9 FAILs -- 3 shape plus one equality per redirected
+# role -- against a green 63-assertion baseline.
 
 set -euo pipefail
 
@@ -282,6 +398,46 @@ Checks:
                                                'reviewer' assertion in the
                                                caller)
 
+Section-aware variants (task 5836), for the ONE-level top-level mappings —
+`verify_env` — as opposed to role_env_overrides' TWO-level role -> env -> value
+shape. Same three predicates as the role_* trio above, generalized from "a key
+under role_env_overrides[<role>]" to "a key under a named top-level mapping":
+
+  top_key_present <section> <key>          -- d[section][key] exists, is a
+                                               string, and is non-empty
+  top_key_absolute <section> <key>         -- ...and is an absolute path
+  top_key_under_tmp <section> <key>        -- ...and lies STRICTLY under /tmp
+                                               (same strict-descendant rule,
+                                               same rationale, as
+                                               role_key_under_tmp above)
+  top_key_absent <section> <key>           -- d[section] has NO <key> at all.
+                                               Pins a DELIBERATE asymmetry, not
+                                               an oversight (see the
+                                               npm_config_cache assertion in
+                                               the caller)
+  top_key_print <section> <key>            -- PRINT the value to stdout instead
+                                               of asserting on it (exit 1 with
+                                               no output if absent/empty), so a
+                                               bash caller can drive a real
+                                               subprocess with the configured
+                                               value rather than a second
+                                               hardcoded copy of it
+  cross_section_key_equals <section> <key> <role> <rolekey>
+                                           -- d[section][key] is EQUAL to
+                                               role_env_overrides[role][rolekey].
+                                               The anti-split invariant: cargo's
+                                               per-unit Fingerprint embeds the
+                                               registry source path, so if
+                                               verify and the sandboxed agents
+                                               disagree on CARGO_HOME they
+                                               invalidate each other's units in
+                                               a SHARED warm-lane target/ and
+                                               each rebuild all 685 registry
+                                               deps. A divergence here has no
+                                               symptom other than slowness,
+                                               which is exactly why it needs a
+                                               test rather than review.
+
 Exit 0 on pass, 1 on fail (or missing key/role), 2 on unknown check/bad args.
 """
 import sys
@@ -304,6 +460,24 @@ def _role_value(role, key):
     if not isinstance(role_map, dict):
         return None
     val = role_map.get(key)
+    if not isinstance(val, str) or val.strip() == "":
+        return None
+    return val
+
+
+def _top_value(section, key):
+    """Value of d[<section>][<key>], or None unless it is a non-empty string.
+
+    Deliberately a SEPARATE accessor from _role_value rather than a shared
+    generic walker: role_env_overrides is a TWO-level mapping
+    (role -> env -> value) while verify_env is ONE level (key -> value), so
+    the two lookups differ in arity and collapsing them would only obscure
+    which shape a given check expects.
+    """
+    section_map = d.get(section)
+    if not isinstance(section_map, dict):
+        return None
+    val = section_map.get(key)
     if not isinstance(val, str) or val.strip() == "":
         return None
     return val
@@ -404,6 +578,78 @@ if check == "role_key_absent":
         sys.exit(1)
     sys.exit(0)
 
+if check == "top_key_present":
+    section, key = rest
+    sys.exit(0 if _top_value(section, key) is not None else 1)
+
+if check == "top_key_absolute":
+    section, key = rest
+    val = _top_value(section, key)
+    sys.exit(0 if val is not None and Path(val).is_absolute() else 1)
+
+if check == "top_key_under_tmp":
+    section, key = rest
+    val = _top_value(section, key)
+    if val is None:
+        sys.exit(1)
+    # Strict descendant only -- /tmp itself is REJECTED, for the same reason
+    # spelled out under role_key_under_tmp above.
+    sys.exit(0 if Path("/tmp") in Path(val).parents else 1)
+
+if check == "top_key_absent":
+    section, key = rest
+    section_map = d.get(section)
+    if not isinstance(section_map, dict):
+        # Trivially absent. Every other assertion against this section already
+        # fails loudly in that state, so passing here is honest, not masking.
+        sys.exit(0)
+    if key in section_map:
+        print(
+            f"{section} carries the key {key!r}, whose ABSENCE is deliberate "
+            "-- see the caller's rationale before adding it",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "top_key_print":
+    section, key = rest
+    val = _top_value(section, key)
+    if val is None:
+        sys.exit(1)
+    print(val)
+    sys.exit(0)
+
+if check == "cross_section_key_equals":
+    section, key, role, rolekey = rest
+    section_val = _top_value(section, key)
+    role_val = _role_value(role, rolekey)
+    if section_val is None or role_val is None:
+        print(
+            f"missing value: {section}.{key}={section_val!r}, "
+            f"role_env_overrides.{role}.{rolekey}={role_val!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Exact scalar equality, NOT a normalized/resolved path comparison: cargo
+    # hashes the CARGO_HOME-derived source path as a STRING into each unit's
+    # fingerprint, so two spellings that resolve to the same directory (a
+    # trailing slash, a symlink, a `/tmp/./x`) still produce DIFFERENT
+    # fingerprints and still thrash. Normalizing here would hide exactly the
+    # divergence this check exists to catch.
+    if section_val != role_val:
+        print(
+            f"toolchain-cache SPLIT: {section}.{key}={section_val!r} != "
+            f"role_env_overrides.{role}.{rolekey}={role_val!r}. A warm-lane "
+            "target/ is shared between verify and the sandboxed agent, and "
+            "cargo's per-unit fingerprint embeds the registry source path, so "
+            "this divergence makes each side dirty the other's units and "
+            "rebuild the whole registry dep tree.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    sys.exit(0)
+
 print(f"unknown check or bad args: {check} {rest}", file=sys.stderr)
 sys.exit(2)
 PYEOF
@@ -443,8 +689,78 @@ PYEOF
 
         assert "role_env_overrides does NOT carry the collapsed 'reviewer' key at all (KNOWN_ROLE_NAMES accepts it, but _build_agent_env keys on role.name == 'reviewer_comprehensive', so a 'reviewer' entry is silently INERT -- no DF config warning, no redirect)" \
             python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absent reviewer
+
+        # -------------------------------------------------------------------
+        # (D) CARGO_HOME AGREEMENT -- verify_env vs role_env_overrides
+        #     (task 5836; gated on the SAME sandbox_enabled_true precondition
+        #     as (A) above, because with sandbox off there is no agent-side
+        #     redirect for verify to agree WITH)
+        # -------------------------------------------------------------------
+        echo "--- (D) CARGO_HOME agreement (verify_env vs role_env_overrides) ---"
+
+        assert "verify_env.CARGO_HOME is present and non-empty (verify subprocesses are NOT sandboxed, so nothing forces this -- but they share the warm lane's target/ with the sandboxed agent that built it, and leaving verify on the default ~/.cargo is the pre-5836 split)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_present verify_env CARGO_HOME
+
+        assert "verify_env.CARGO_HOME is an absolute path" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_absolute verify_env CARGO_HOME
+
+        assert "verify_env.CARGO_HOME lies under /tmp (not a free choice: /tmp is the one host-global writable root in the landlock write set, which PINS the agent side and therefore fixes where the two sides can meet)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_under_tmp verify_env CARGO_HOME
+
+        # THE load-bearing invariant of this block. Iterating CACHE_REDIRECT_ROLES
+        # rather than checking one representative role keeps agreement exact even
+        # if the yaml's `&sandbox_cache_env` anchor is ever expanded into per-role
+        # literals and one of them drifts.
+        for role in $CACHE_REDIRECT_ROLES; do
+            assert "verify_env.CARGO_HOME == role_env_overrides.${role}.CARGO_HOME (anti-split invariant: they share one warm target/, and a divergence has NO symptom except every sandboxed task rebuilding the whole registry dep tree twice -- agent, then verify)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" cross_section_key_equals verify_env CARGO_HOME "$role" CARGO_HOME
+        done
+
+        # -------------------------------------------------------------------
+        # (E) PRECONDITIONS THAT MAKE THE (D) FLIP SAFE AND BOUNDED (task 5836)
+        # -------------------------------------------------------------------
+        echo "--- (E) verify_env flip preconditions (toolchain resolution; deliberate asymmetry) ---"
+
+        # (E)(a) TOOLCHAIN-RESOLUTION PRECONDITION.
+        # Non-obvious and load-bearing. The redirect destination has NO bin/ at
+        # all -- it holds registry/ plus cargo's lock files, nothing else -- so
+        # `cargo nextest` under it resolves ONLY because ~/.cargo/bin is on PATH
+        # and cargo's subcommand lookup falls through from $CARGO_HOME/bin to
+        # PATH. (RUSTC_WRAPPER=sccache in verify_env resolves the same way.) If
+        # PATH ever loses ~/.cargo/bin, verify breaks confusingly at nextest
+        # rather than here, at the seam that caused it. Driven off the value
+        # PARSED from the yaml, never a second hardcoded copy, so the probe
+        # cannot silently test a path the config no longer names.
+        _VERIFY_CARGO_HOME="$(python3 "$_PARSE_PY" "$ORCH_YAML" top_key_print verify_env CARGO_HOME || true)"
+
+        if [ -z "$_VERIFY_CARGO_HOME" ]; then
+            echo "SKIP: verify_env.CARGO_HOME is absent/empty, so there is no configured value to probe (the (D) assertions above already report that as FAIL -- not re-reported here as a second failure for one cause)"
+        elif ! env -u CARGO_HOME cargo nextest --version >/dev/null 2>&1; then
+            # CONTROL ARM. Deliberately `env -u CARGO_HOME` rather than the
+            # AMBIENT env: this suite is itself run by a sandboxed agent whose
+            # ambient CARGO_HOME is already the redirect value, which would make
+            # the control and the probe the same measurement. Unsetting it tests
+            # cargo's genuine default (~/.cargo) whoever invokes the suite. A
+            # host where nextest is simply not installed must report SKIP, not a
+            # FAIL misattributed to the redirect.
+            echo "SKIP: 'cargo nextest --version' also fails under the DEFAULT (unset) CARGO_HOME, so nextest is genuinely unavailable on this host rather than broken by the redirect (control arm)"
+        else
+            assert "cargo nextest resolves under the configured verify_env.CARGO_HOME ($_VERIFY_CARGO_HOME), which has no bin/ of its own -- it works only via the ~/.cargo/bin PATH fallthrough, and the control arm above has already established nextest IS available on this host" \
+                env CARGO_HOME="$_VERIFY_CARGO_HOME" cargo nextest --version
+        fi
+
+        # (E)(b) DELIBERATE-ASYMMETRY PIN.
+        # Mirroring npm_config_cache too would be the obvious symmetric move and
+        # is deliberately NOT done: the measured defect is specific to cargo's
+        # path-keyed per-unit fingerprint, npm has no equivalent, and widening
+        # the merge gate's cache path buys nothing measured. Pinning the ABSENCE
+        # (same shape and same rationale as the collapsed-'reviewer' assertion
+        # above) forces any future npm mirroring to arrive as a deliberate edit
+        # carrying its own evidence, rather than as a symmetry-driven drive-by.
+        assert "verify_env does NOT carry npm_config_cache -- its absence is DELIBERATE (cargo's fingerprint embeds the registry source path; npm has no path-keyed equivalent, so mirroring it would widen the merge gate's blast radius for no measured gain)" \
+            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_absent verify_env npm_config_cache
     else
-        echo "SKIP: sandbox.enabled is not true; cache-redirect contract does not apply (guard is conditional, see header)"
+        echo "SKIP: sandbox.enabled is not true; none of the (A) cache-redirect, (D) CARGO_HOME-agreement or (E) flip-precondition contracts apply (guard is conditional, see header)"
     fi
 fi
 

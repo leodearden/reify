@@ -166,7 +166,6 @@
 #include <fstream>
 #include <cstdio>
 #include <cmath>
-#include <atomic>
 #include <mutex>
 #include <stdexcept>
 
@@ -574,22 +573,42 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 
 // --- Boolean-op-pass counter (task 5213) ---
 
-// Process-global count of completed OCCT boolean passes, incremented once per
+// PER-THREAD count of completed OCCT boolean passes, incremented once per
 // successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
-// single-pass fuse_shape_list.  Deterministic (an exact integer, not a
-// tolerance) and non-flaky: it lets tests assert that a K-instance pattern
-// performs exactly ONE boolean pass rather than K−1.  Also a first
-// instrumentation seed for future long-boolean progress reporting (Lever 4).
-// memory_order_relaxed is sufficient: tests reset/read under a mutex, so there
-// is no cross-thread ordering dependency to establish.
-static std::atomic<uint64_t> g_boolean_pass_count{0};
+// single-pass fuse_shape_list.  Each thread observes only the boolean passes it
+// performed itself, and reset_boolean_pass_count() zeroes the CALLING thread's
+// count only.  Deterministic (an exact integer, not a tolerance) and non-flaky:
+// it lets tests assert that a K-instance pattern performs exactly ONE boolean
+// pass rather than K−1.  It is a TEST-OBSERVABILITY hook, NOT a progress-
+// reporting one: production callers drive OCCT through OcctKernelHandle's
+// dedicated worker thread, so a reporter on any other thread reads a permanent
+// 0.  A cross-thread progress signal would need its own process-global
+// aggregate, deliberately not added here because nothing consumes one today.
+//
+// Per-thread rather than process-global because task #5277 folded all
+// reify-kernel-occt integration tests into ONE `harness_occt` binary: a
+// process-global counter is contaminated by any concurrently-scheduled test
+// that performs a boolean, so a reset→operate→read window could no longer be
+// trusted.  Per-thread storage restores the isolation that per-binary processes
+// used to provide, and does so in every execution mode (plain `cargo test`,
+// `--test-threads=1`, and nextest's process-per-test) rather than only under
+// the last.  It is sound because all four increment sites run synchronously on
+// the calling thread immediately after the corresponding Build() returns, so no
+// pass is ever attributed to a thread other than the one that performed it.
+//
+// `static` (internal linkage) matches the file's convention for file-scope
+// state (cf. g_step_export_mutex): nothing outside this TU names the variable —
+// only the two accessors below — so exporting the TLS symbol would needlessly
+// widen the ABI surface and force the general-dynamic TLS access model
+// (a __tls_get_addr call) at every increment site instead of local-exec.
+static thread_local uint64_t t_boolean_pass_count = 0;
 
 void reset_boolean_pass_count() {
-    g_boolean_pass_count.store(0, std::memory_order_relaxed);
+    t_boolean_pass_count = 0;
 }
 
 uint64_t boolean_pass_count() {
-    return g_boolean_pass_count.load(std::memory_order_relaxed);
+    return t_boolean_pass_count;
 }
 
 // --- Compound assembly ---
@@ -671,7 +690,7 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
         throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
     }
     // One completed boolean pass, regardless of instance count (task 5213).
-    g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+    t_boolean_pass_count += 1;
     TopoDS_Shape result = fuse.Shape();
     // The general BOP path (SetArguments/SetTools) always wraps its output in a
     // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
@@ -743,7 +762,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = fuse.Shape();
         return result;
@@ -757,7 +776,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = cut.Shape();
         return result;
@@ -771,7 +790,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
-        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+        t_boolean_pass_count += 1;
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;

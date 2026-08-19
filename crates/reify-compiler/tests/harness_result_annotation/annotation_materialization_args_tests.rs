@@ -15,7 +15,7 @@ use reify_compiler::{MaterializationAnnotationArg, MaterializationArgType};
 use reify_ir::{Value, ValueMap};
 use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
 
-const SMOKE_SOURCE: &str = include_str!("fixtures/eval_annotation_smoke.ri");
+const SMOKE_SOURCE: &str = include_str!("../fixtures/eval_annotation_smoke.ri");
 
 /// `@test_eval(2.0 * 1.5)` on `Foo` produces one `MaterializationAnnotationArg`
 /// with annotation "test_eval", arg_name "value", expected Real, and the compiled

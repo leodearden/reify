@@ -1772,7 +1772,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     // (built independently in `names_phase::build_resolution_names`) can both
     // contain the same name. Verified by the integration test
     // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
-    // crates/reify-compiler/tests/trait_type_arg_rejection_tests.rs. Placed
+    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
     // BEFORE simple-name resolution so the rejection fires regardless of any
     // same-name shadow later in the fallthrough.
     //

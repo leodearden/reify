@@ -33,12 +33,43 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { toPng } from 'html-to-image';
-import { initDebugBridge, SET_FEA_CHANNEL_ERRORS } from '../debug/bridge';
+import { initDebugBridge, SET_FEA_CHANNEL_ERRORS, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
+
+/**
+ * Build a describe-block's `dispatchCmd`: invoke the captured debug-request
+ * handler and return the parsed `debug_response` payload.
+ *
+ * Every block in this file had its own byte-identical copy of this nine-line
+ * body (17 of them), so a change to the response envelope meant 17 edits and any
+ * missed one drifted silently. Takes a THUNK rather than the handler itself
+ * because each block's `capturedHandler` is reassigned by its `beforeEach` —
+ * capturing the value here would freeze it at `undefined`.
+ *
+ * The per-block `beforeEach`/`afterEach` pairs are deliberately NOT folded in:
+ * they genuinely differ (some call `initDebugBridge` up front, others per test;
+ * some `cleanup()`, others `vi.restoreAllMocks()`), so a shared one would have
+ * to be parameterised into something longer than the four lines it replaced.
+ */
+function makeCmdDispatcher(getHandler: () => DebugRequestHandler | undefined) {
+  return async function dispatchCmd(
+    id: number,
+    command: string,
+    params: Record<string, unknown>,
+  ) {
+    vi.mocked(invoke).mockClear();
+    await getHandler()!({ payload: { id, command, params } });
+    const calls = vi.mocked(invoke).mock.calls;
+    const responseCall = calls.find((c) => c[0] === 'debug_response');
+    expect(responseCall).toBeDefined();
+    const payload = responseCall![1] as { id: number; result: string };
+    return JSON.parse(payload.result);
+  };
+}
 
 // jsdom 25 does not implement document.elementFromPoint — the method is simply
 // absent from the document prototype. vi.spyOn requires the property to exist
@@ -1185,19 +1216,7 @@ describe('debug bridge pickViewport selection', () => {
   }
 
   /** Dispatch any named command via the debug bridge and return parsed result. */
-  async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   /**
    * Generate the standard four pickViewport scenarios for a viewport-mediated tool.
@@ -1412,19 +1431,7 @@ describe('debug bridge dual-viewport binding regression', () => {
     };
   }
 
-  async function dispatchCmd(
-    id: number,
-    command: string,
-    params: Record<string, unknown>,
-  ) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('viewport_state with no viewportId returns meshCount from the populated design-main viewport, not 0 from def-preview', async () => {
     const stores = makeStores();
@@ -1732,15 +1739,7 @@ describe('debug bridge exposes layout on ctx', () => {
 describe('debug bridge R1 inspection tools', () => {
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -1999,15 +1998,7 @@ describe('debug bridge open_menu', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) open_menu({name:"file"}) returns {ok:true, open:"file"} and openMenu()==="file"', async () => {
     const stores = makeStores();
@@ -2079,15 +2070,7 @@ describe('debug bridge menu_state', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) with no menu open, menu_state returns {open:null, items:[]}', async () => {
     const stores = makeStores();
@@ -2167,15 +2150,7 @@ describe('debug bridge press_tab', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) from body (no focus), press_tab focuses first tabbable and returns its descriptor', async () => {
     const stores = makeStores();
@@ -2277,15 +2252,7 @@ describe('debug bridge tab_order', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('(a) returns order array matching document order for a/b/c buttons', async () => {
     const stores = makeStores();
@@ -3050,15 +3017,7 @@ describe('debug bridge click_at', () => {
   // step-3 RED → step-4 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3117,15 +3076,7 @@ describe('debug bridge hover', () => {
   // step-5 RED → step-6 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3181,15 +3132,7 @@ describe('debug bridge drag', () => {
   // step-7 RED → step-8 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3278,15 +3221,7 @@ describe('debug bridge focus_element', () => {
   // step-9 RED → step-10 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3324,21 +3259,75 @@ describe('debug bridge focus_element', () => {
     const result = await dispatchCmd(5303, 'focus_element', { testId: 'no-such-element' });
     expect(typeof result.error).toBe('string');
   });
+
+  // --- viewport scoping (#5891) ---
+  // Plain DOM is enough here: the resolveByTestId block above already proves the
+  // scoping works against a real mounted FeaModeToolbar, so these cases only
+  // need to establish that focus_element routes through the shared resolver.
+
+  /** Two panes, each holding an input under the same testId. design-main is first. */
+  function twoPanesWithInput() {
+    document.body.innerHTML = `
+      <div data-viewport-id="design-main"><input data-testid="fld" /></div>
+      <div data-viewport-id="pane-1"><input data-testid="fld" /></div>
+    `;
+    return {
+      designMain: document.querySelector('[data-viewport-id="design-main"] [data-testid="fld"]')!,
+      pane1: document.querySelector('[data-viewport-id="pane-1"] [data-testid="fld"]')!,
+    };
+  }
+
+  it('#5891 scoped: focuses the named pane\'s element, not the first match', async () => {
+    const { designMain, pane1 } = twoPanesWithInput();
+
+    const result = await dispatchCmd(5310, 'focus_element', { testId: 'fld', viewportId: 'pane-1' });
+
+    expect(result).toEqual({ ok: true });
+    expect(document.activeElement).toBe(pane1);
+    expect(document.activeElement).not.toBe(designMain);
+  });
+
+  it('#5891 unknown viewportId returns notFoundForViewport', async () => {
+    twoPanesWithInput();
+
+    const result = await dispatchCmd(5311, 'focus_element', { testId: 'fld', viewportId: 'nope' });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('fld', 'nope') });
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString', async () => {
+    twoPanesWithInput();
+
+    const result = await dispatchCmd(5312, 'focus_element', { testId: 'fld', viewportId: 5 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+  });
+
+  it('#5891 unscoped multi-match focuses the first and reports the guessed pane', async () => {
+    const { designMain } = twoPanesWithInput();
+
+    const result = await dispatchCmd(5313, 'focus_element', { testId: 'fld' });
+
+    expect(document.activeElement).toBe(designMain);
+    expect(result).toEqual({ ok: true, viewportId: 'design-main', matchCount: 2 });
+  });
+
+  it('#5891 single match keeps today\'s exact {ok:true} payload', async () => {
+    const input = document.createElement('input');
+    input.setAttribute('data-testid', 'lonely');
+    document.body.appendChild(input);
+
+    const result = await dispatchCmd(5314, 'focus_element', { testId: 'lonely' });
+
+    expect(result).toEqual({ ok: true });
+  });
 });
 
 describe('debug bridge scroll', () => {
   // step-11 RED → step-12 GREEN
   let capturedHandler: DebugRequestHandler | undefined;
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -3419,6 +3408,231 @@ describe('debug bridge scroll', () => {
     (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
     const result = await dispatchCmd(5407, 'scroll', { target: 'editor', left: Infinity });
     expect(typeof result.error).toBe('string');
+  });
+
+  // --- viewport scoping (#5891), DOM arm only ---
+
+  /** Two panes, each holding a scrollable panel under the same testId. */
+  function twoPanesWithPanel() {
+    document.body.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="panel"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="panel"></div></div>
+    `;
+    const panels = ['design-main', 'pane-1'].map((id) => {
+      const el = document.querySelector(`[data-viewport-id="${id}"] [data-testid="panel"]`)!;
+      // jsdom's native scrollTop/scrollLeft are no-ops — make them writable.
+      Object.defineProperty(el, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(el, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+      return el as HTMLElement;
+    });
+    return { designMain: panels[0], pane1: panels[1] };
+  }
+
+  it('#5891 scoped: scrolls the named pane\'s panel, leaving the other at 0', async () => {
+    const { designMain, pane1 } = twoPanesWithPanel();
+
+    const result = await dispatchCmd(5410, 'scroll', {
+      testId: 'panel', viewportId: 'pane-1', top: 120, left: 30,
+    });
+
+    expect(result).toEqual({ ok: true, scrollTop: 120, scrollLeft: 30 });
+    expect(pane1.scrollTop).toBe(120);
+    expect(designMain.scrollTop).toBe(0);
+  });
+
+  it('#5891 unknown viewportId returns notFoundForViewport', async () => {
+    twoPanesWithPanel();
+
+    const result = await dispatchCmd(5411, 'scroll', { testId: 'panel', viewportId: 'nope', top: 10 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('panel', 'nope') });
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString', async () => {
+    twoPanesWithPanel();
+
+    const result = await dispatchCmd(5412, 'scroll', { testId: 'panel', viewportId: 5, top: 10 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+  });
+
+  it('#5891 unscoped multi-match scrolls the first and reports the guessed pane', async () => {
+    const { designMain, pane1 } = twoPanesWithPanel();
+
+    const result = await dispatchCmd(5413, 'scroll', { testId: 'panel', top: 45 });
+
+    expect(designMain.scrollTop).toBe(45);
+    expect(pane1.scrollTop).toBe(0);
+    expect(result).toEqual({
+      ok: true, scrollTop: 45, scrollLeft: 0, viewportId: 'design-main', matchCount: 2,
+    });
+  });
+
+  it('#5891 single match keeps today\'s exact three-key payload', async () => {
+    const panel = document.createElement('div');
+    panel.setAttribute('data-testid', 'lonely-panel');
+    document.body.appendChild(panel);
+    Object.defineProperty(panel, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(panel, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+
+    const result = await dispatchCmd(5414, 'scroll', { testId: 'lonely-panel', top: 7 });
+
+    expect(result).toEqual({ ok: true, scrollTop: 7, scrollLeft: 0 });
+  });
+
+  it('#5891 editor mode IGNORES viewportId entirely — no error, no echoed fields', async () => {
+    // The editor arm resolves no testid, so a viewportId is meaningless there and
+    // must not become a spurious rejection: a caller that threads viewportId
+    // through generically would otherwise break every editor scroll.
+    const scrollDOM = document.createElement('div');
+    Object.defineProperty(scrollDOM, 'scrollTop', { configurable: true, writable: true, value: 0 });
+    Object.defineProperty(scrollDOM, 'scrollLeft', { configurable: true, writable: true, value: 0 });
+    (window as any).__REIFY_DEBUG__.editorView = { scrollDOM } as any;
+
+    const result = await dispatchCmd(5415, 'scroll', {
+      target: 'editor', top: 80, viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true, scrollTop: 80, scrollLeft: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// debug bridge dom_query viewport scoping (#5891 step-7 RED → step-8 GREEN)
+//
+// dom_query had NO dedicated unit test before this task, so this block is its
+// first coverage — the pre-#5891 payload shape is pinned here for the first time
+// rather than merely preserved.
+//
+// dom_query's contract differs deliberately from the driving tools above: it is
+// an EXISTENCE PROBE, so "no match in that pane" is `{exists:false}`, not an
+// error. Harnesses poll it while waiting for a pane to appear; turning a
+// not-yet-there pane into an error would make every such poll a failure instead
+// of a `false`. A malformed request — a non-string `viewportId` — is still a
+// loud error, because that is a caller bug rather than an observation.
+// ---------------------------------------------------------------------------
+describe('debug bridge dom_query viewport scoping', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+    const stores = makeStores();
+    await initDebugBridge(stores);
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    document.body.innerHTML = '';
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Two panes each holding a same-testid element with DISTINGUISHABLE text, so
+   * asserting on `text` proves WHICH element was described — not merely that
+   * something existed. jsdom implements no layout and no innerText, so `text` is
+   * stubbed per element; `bounds` stays all-zero (and therefore `visible` false)
+   * exactly as it already does for every other jsdom-hosted dom_query.
+   */
+  function twoPanesWithBadge() {
+    document.body.innerHTML = `
+      <div data-viewport-id="design-main"><div data-testid="badge"></div></div>
+      <div data-viewport-id="pane-1"><div data-testid="badge"></div></div>
+    `;
+    const [designMain, pane1] = ['design-main', 'pane-1'].map((id) => {
+      const el = document.querySelector(
+        `[data-viewport-id="${id}"] [data-testid="badge"]`,
+      ) as HTMLElement;
+      Object.defineProperty(el, 'innerText', { configurable: true, value: `${id} body` });
+      return el;
+    });
+    return { designMain, pane1 };
+  }
+
+  /** The complete pre-#5891 five-key payload — asserted with toEqual so an extra key fails. */
+  const description = (text: string) => ({
+    exists: true,
+    visible: false, // jsdom reports a zero-width rect for every element
+    text,
+    tagName: 'div',
+    bounds: { x: 0, y: 0, width: 0, height: 0 },
+  });
+
+  it('#5891 scoped: describes the named pane\'s element, not the first match', async () => {
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5420, 'dom_query', { testId: 'badge', viewportId: 'pane-1' });
+
+    expect(result).toEqual(description('pane-1 body'));
+  });
+
+  it('#5891 scoped to the FIRST pane still describes that pane — not merely the last match', async () => {
+    // The mirror of the case above. Without it, a resolver that always returned
+    // the LAST match would pass the 'pane-1' case for the wrong reason.
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5421, 'dom_query', {
+      testId: 'badge', viewportId: 'design-main',
+    });
+
+    expect(result).toEqual(description('design-main body'));
+  });
+
+  it('#5891 unknown viewportId returns {exists:false} — the deliberate existence-probe contract', async () => {
+    // NOT an error, unlike click_element/focus_element/scroll: dom_query is how a
+    // harness ASKS whether a pane's element is there yet. "That pane has no such
+    // element" is a legitimate observation and must stay pollable as `false`.
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5422, 'dom_query', { testId: 'badge', viewportId: 'nope' });
+
+    expect(result).toEqual({ exists: false });
+  });
+
+  it('#5891 non-string viewportId returns viewportIdNotString', async () => {
+    // A malformed param is a CALLER bug, not an observation, so it stays loud even
+    // though a missing element does not.
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5423, 'dom_query', { testId: 'badge', viewportId: 5 });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+  });
+
+  it('#5891 unscoped multi-match describes pane 0 and reports the guessed pane', async () => {
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5424, 'dom_query', { testId: 'badge' });
+
+    expect(result).toEqual({
+      ...description('design-main body'),
+      viewportId: 'design-main',
+      matchCount: 2,
+    });
+  });
+
+  it('#5891 single match keeps today\'s exact five-key payload — no diagnostic keys leak', async () => {
+    document.body.innerHTML = '<div data-testid="lonely-badge"></div>';
+    const el = document.querySelector('[data-testid="lonely-badge"]') as HTMLElement;
+    Object.defineProperty(el, 'innerText', { configurable: true, value: 'only one' });
+
+    const result = await dispatchCmd(5425, 'dom_query', { testId: 'lonely-badge' });
+
+    expect(result).toEqual(description('only one'));
+  });
+
+  it('#5891 zero-match unscoped query still returns {exists:false}', async () => {
+    twoPanesWithBadge();
+
+    const result = await dispatchCmd(5426, 'dom_query', { testId: 'no-such-testid' });
+
+    expect(result).toEqual({ exists: false });
   });
 });
 
@@ -3566,15 +3780,7 @@ describe('debug bridge resize_panes problemsHeight + get_local_storage', () => {
     return s;
   }
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   // (a) resize_panes({problemsHeight:240}) must call setProblemsHeight(240) and return
   //     a layout echo that includes problemsHeight:240.
@@ -3687,15 +3893,7 @@ describe('debug bridge store_state includes viewports', () => {
     return stub;
   }
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   it('store_state exposes viewports map with meshCount per registered viewport', async () => {
     const stores = makeStores();
@@ -3943,15 +4141,7 @@ describe('debug bridge set_fea_channel', () => {
     delete window.__REIFY_DEBUG__;
   });
 
-  async function dispatchCmd(id: number, command: string, params: Record<string, unknown>) {
-    vi.mocked(invoke).mockClear();
-    await capturedHandler!({ payload: { id, command, params } });
-    const calls = vi.mocked(invoke).mock.calls;
-    const responseCall = calls.find((c) => c[0] === 'debug_response');
-    expect(responseCall).toBeDefined();
-    const payload = responseCall![1] as { id: number; result: string };
-    return JSON.parse(payload.result);
-  }
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
 
   /**
    * Render the toolbar enabled, with errorIndicator among the available channels.
@@ -4376,5 +4566,261 @@ describe('debug bridge set_fea_channel', () => {
       expect(result).toEqual({ error: SET_FEA_CHANNEL_ERRORS.selectNotFoundForViewport(badId) });
     }
     expect(designMain.state.channel).toBe('vonMises');
+  });
+});
+
+describe('debug bridge resolveByTestId viewport scoping', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = '';
+    delete window.__REIFY_DEBUG__;
+  });
+
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
+
+  /**
+   * Mount one pane's REAL FeaModeToolbar under `viewportId`, enabled.
+   *
+   * Copied from the `set_fea_channel` suite's helper above (#5670) so these
+   * scoping tests run against the genuine `data-viewport-id` substrate the
+   * production component stamps — a hand-built DOM stub could drift from it
+   * and would not prove that the toolbar's own markup is addressable.
+   * `setEnabled(true)` is what makes `fea-mode-enable-toggle` a discriminating
+   * target: a click flips that pane's store true → false, so "which pane was
+   * driven" is directly readable off the two returned stores.
+   */
+  function mountPane(viewportId: string) {
+    const store = createFeaModeStore();
+    store.setEnabled(true);
+    render(() => (
+      <FeaModeToolbar
+        store={store}
+        availableChannels={['vonMises', 'displacement_magnitude', 'errorIndicator']}
+        viewportId={viewportId}
+      />
+    ));
+    ((window.__REIFY_DEBUG__!).feaModes ??= {})[viewportId] = store;
+    return store;
+  }
+
+  /** design-main mounts FIRST, so it is the document-wide first match. */
+  async function mountTwoPanes() {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    const designMain = mountPane('design-main');
+    const pane1 = mountPane('pane-1');
+    return { designMain, pane1 };
+  }
+
+  it('(a) a viewportId-scoped click_element drives that pane only — no cross-pane bleed', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5100, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+    // pane-1 is NOT the first match, so an unscoped resolver would have driven
+    // design-main here. This pair of assertions is the whole point of #5891.
+    expect(pane1.state.enabled).toBe(false);
+    expect(designMain.state.enabled).toBe(true);
+  });
+
+  it('(b) the scope is symmetric — viewportId:"design-main" drives design-main only', async () => {
+    // (a) alone would still pass if the resolver were accidentally hardcoded to
+    // the LAST match rather than reading viewportId. Driving the other pane by
+    // name rules that out.
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5101, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'design-main',
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(designMain.state.enabled).toBe(false);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(c) descendant-OR-self: a scoped fea-mode-toolbar resolves the root that carries BOTH attributes', async () => {
+    // FeaModeToolbar puts data-testid="fea-mode-toolbar" and data-viewport-id on
+    // the SAME element, so a descendant-only selector would fail to resolve the
+    // root by its own testid while succeeding for all nine sibling controls.
+    await mountTwoPanes();
+
+    const result = await dispatchCmd(5102, 'click_element', {
+      testId: 'fea-mode-toolbar',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('(d) an unknown viewportId returns notFoundForViewport and drives neither pane', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5103, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'nope',
+    });
+
+    expect(result).toEqual({
+      error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('fea-mode-enable-toggle', 'nope'),
+    });
+    // Distinct from a silent fallback to the document-wide first match: the
+    // caller named a pane that does not exist, so nothing may be driven.
+    expect(designMain.state.enabled).toBe(true);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(e) a non-string viewportId is a schema violation, matching pickViewport/pickFeaChannelSelect', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5104, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 5,
+    });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.viewportIdNotString });
+    expect(designMain.state.enabled).toBe(true);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(f) a viewportId carrying selector metacharacters returns notFoundForViewport, not a CSS-parser throw', async () => {
+    // Mirrors set_fea_channel case (s): the id is interpolated into an attribute
+    // selector, so an unescaped quote or backslash makes querySelector THROW a
+    // DOMException that the dispatcher surfaces as an opaque parser message —
+    // an unknown pane reading as a bridge malfunction.
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    for (const [i, badId] of ['pane-"1"', 'pane-\\1', 'pane-1"]'].entries()) {
+      const result = await dispatchCmd(5105 + i, 'click_element', {
+        testId: 'fea-mode-enable-toggle',
+        viewportId: badId,
+      });
+
+      expect(result).toEqual({
+        error: RESOLVE_BY_TESTID_ERRORS.notFoundForViewport('fea-mode-enable-toggle', badId),
+      });
+    }
+    expect(designMain.state.enabled).toBe(true);
+    expect(pane1.state.enabled).toBe(true);
+  });
+
+  it('(g) an UNSCOPED multi-match still clicks the first match, but now reports which pane it guessed', async () => {
+    const { designMain, pane1 } = await mountTwoPanes();
+
+    const result = await dispatchCmd(5108, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+    });
+
+    // Back-compat: first match wins, exactly as before #5891.
+    expect(designMain.state.enabled).toBe(false);
+    expect(pane1.state.enabled).toBe(true);
+    // ...but the guess is no longer silent. This is the whole reason unscoped
+    // ambiguity stays first-match instead of becoming a hard error.
+    expect(result).toEqual({ ok: true, viewportId: 'design-main', matchCount: 2 });
+  });
+
+  it('(h) a SINGLE match returns a byte-identical {ok:true} — no diagnostic keys leak into the common case', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    mountPane('design-main');
+
+    const result = await dispatchCmd(5109, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+    });
+
+    // toEqual, not a subset match: asserting the EXACT shape is what pins that
+    // the overwhelmingly common single-match response is unchanged, so no
+    // existing test or harness step comparing with toEqual starts failing.
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('(i) a SCOPED success also stays exactly {ok:true} — the caller already named the pane', async () => {
+    await mountTwoPanes();
+
+    const result = await dispatchCmd(5110, 'click_element', {
+      testId: 'fea-mode-enable-toggle',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('(j) zero matches still yields the unchanged notFound wording', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    const result = await dispatchCmd(5111, 'click_element', { testId: 'no-such-thing' });
+
+    expect(result).toEqual({ error: RESOLVE_BY_TESTID_ERRORS.notFound('no-such-thing') });
+  });
+
+  it('(k) a multi-match with NO data-viewport-id ancestor reports viewportId:null — pane unknown, ambiguity still surfaced', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    // Two bare divs sharing a testid, outside any pane wrapper: the resolver
+    // cannot name a pane, but must not hide that it picked between two.
+    document.body.innerHTML =
+      '<div data-testid="bare-dup"></div><div data-testid="bare-dup"></div>';
+
+    const result = await dispatchCmd(5112, 'click_element', { testId: 'bare-dup' });
+
+    expect(result).toEqual({ ok: true, viewportId: null, matchCount: 2 });
+  });
+
+  it('(l) a SCOPED request that matches TWICE INSIDE the named pane also reports the guess', async () => {
+    // Naming a pane narrows the candidate set; it does not guarantee it to one.
+    // Gating the diagnostic on "was the request scoped?" instead of on
+    // matchCount would re-create, one level down, exactly the silent
+    // wrong-target failure #5891 exists to remove — the caller named a pane and
+    // still got an arbitrary one of two elements, with nothing in the payload
+    // saying so.
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    document.body.innerHTML =
+      '<div data-viewport-id="pane-1">' +
+      '<div data-testid="intra-dup"></div><div data-testid="intra-dup"></div>' +
+      '</div>' +
+      '<div data-viewport-id="design-main"><div data-testid="intra-dup"></div></div>';
+
+    const result = await dispatchCmd(5113, 'click_element', {
+      testId: 'intra-dup',
+      viewportId: 'pane-1',
+    });
+
+    // matchCount is 2, not 3: the scoping DID exclude design-main's copy, so the
+    // count reports the ambiguity that actually remained after scoping.
+    expect(result).toEqual({ ok: true, viewportId: 'pane-1', matchCount: 2 });
+  });
+
+  it('(m) the pane ROOT matching both arms of the scoped selector counts ONCE, so it stays a bare {ok:true}', async () => {
+    // The scoped selector is a two-arm list (`el-with-both-attrs, pane el`).
+    // FeaModeToolbar stamps data-testid and data-viewport-id on the SAME node, so
+    // the root matches arm 1; querySelectorAll de-duplicates, keeping matchCount
+    // at 1. Without that de-duplication every scoped root lookup would report a
+    // phantom matchCount:2 — this pins the distinction against case (l), where
+    // the two matches are genuinely different elements.
+    await mountTwoPanes();
+
+    const result = await dispatchCmd(5114, 'click_element', {
+      testId: 'fea-mode-toolbar',
+      viewportId: 'pane-1',
+    });
+
+    expect(result).toEqual({ ok: true });
   });
 });

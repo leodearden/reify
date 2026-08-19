@@ -8,7 +8,7 @@
 //! Why this lives at the Rust level rather than in the compiler-driven
 //! E2E smoke tests: today the Reify parser does not let users annotate
 //! lambda parameters with the `ElasticResult` struct type, so the smoke
-//! tests in `crates/reify-eval/tests/multi_load_case_stdlib_smoke.rs`
+//! tests in `crates/reify-eval/tests/harness_fea_solver_e2e/multi_load_case_stdlib_smoke.rs`
 //! pass per-case Sampled scalar Fields directly through an identity
 //! lambda (the "lambda-syntax caveat" called out in fea_multi_case.ri's
 //! doc block). That covers the dispatch arm end-to-end but does NOT pin

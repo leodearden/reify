@@ -249,6 +249,17 @@ verify_env:
   REIFY_RELEASE_DELTA_SKIP: "1"
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
+  # Toolchain-cache UNIFICATION with the sandboxed agents (task 5836). MUST stay
+  # byte-identical to the role_env_overrides `&sandbox_cache_env` CARGO_HOME below
+  # — a warm lane's target/ is written by the AGENT and then re-read by VERIFY, and
+  # cargo's per-unit fingerprint embeds the registry source path, so any divergence
+  # makes each side dirty the other's units. /tmp is not a free choice: it is the one
+  # host-global writable root landlock grants the agent, so the agent side cannot
+  # move and verify is the side that must meet it. Enforced from outside by
+  # tests/infra/test_sandbox_cache_writability_seam.sh block (D), which reads BOTH
+  # values out of this file and requires equality for every redirected role.
+  # NOT mirrored: npm_config_cache — see block (E) of that guard.
+  CARGO_HOME: /tmp/reify-agent-cargo-home
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
   # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
   # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
@@ -458,6 +469,35 @@ speculation_probe:
   probe_fraction: 0.0
   suppress_flake_rate: 0.40
 
+# Per-role USD budgets. architect 15 -> 25 (2026-08-19, Leo approved, esc-6090-3).
+#
+# Same failure class as the reviewer 5 -> 12 bump in dark-factory defaults.yaml:
+# a budget-exhausted run burns the FULL ceiling, yields nothing, and then costs a
+# human triage cycle — so a ceiling that sits barely above the largest legitimate
+# run is a net spend INCREASE, not a saving.
+#
+# Evidence (reify runs.db invocations/events, role=architect):
+#   - since 2026-08-01: n=504, mean $4.45, p50 $3.72, p95 $10.64, max $15.79.
+#     $25 is ~2.3x p95 — a runaway guard normal operation never touches, so this
+#     raises the ceiling for ~0.6% of runs and typical spend not at all.
+#   - budget exhaustions all-time: 18. They cluster at ~$12 (Apr-Jul, when the
+#     ceiling WAS $12); after the 12 -> 15 raise only three recurred — 4370
+#     ($16.71), 5208 ($17.17), 6090 ($15.79). This is the second raise for the
+#     same mode, and the first one measurably worked.
+#   - worst overrun ever observed is $2.17, so $25 leaves ~44% headroom over it.
+#
+# Trigger: task 6090 (Direction ruling, 5 work items / 13 files) died at
+# cost_usd=15.79 / turns=68 — ONE call short of commit_planning, with a complete
+# 15-step plan that was then lost with its reclaimed lane. Dollars were binding
+# there, not turns.
+#
+# Load-once config, but budgets.* is on the code-owned green-tier hot-reload
+# allowlist (dark-factory config.py RELOADABLE_FIELDS, _submodel_leaf_paths(
+# 'budgets', BudgetsConfig)), so this takes effect via the escalation MCP's
+# reload_config — no orchestrator restart required.
+budgets:
+  architect: 25.0
+
 # Per-role turn budgets. Raising the architect budget is a direct response to
 # silent max_turns exits on large-scope tasks (e.g. reify 1749): the architect
 # now has headroom to verify premises and produce a plan without the CLI
@@ -484,9 +524,29 @@ speculation_probe:
 # (ISSUES_FOUND, 0 blocking) was then destroyed by the pre-respawn
 # clear_verdict(), so the gate reported a bogus ERROR. Recurrence: same class
 # in esc-5481-8 (task 5481) and esc-5891-3/5/6 (task 5891) — see curator gate
-# esc-6066-1. Load-once config: needs an orchestrator restart to take effect.
+# esc-6066-1.
+#
+# architect 120 -> 180 (2026-08-19, Leo approved, esc-6090-3): the COMPANION to
+# the budgets.architect 15 -> 25 raise above. Two points, both measured:
+#   (1) Turns are ALREADY independently binding on the architect, exactly as they
+#       were on the reviewer: three runs hit error_max_turns since 2026-08-01
+#       (6095 $9.62, 5685 $11.42, 5777 $9.71) — each died at the 120-turn wall
+#       with $3.5-5.4 of its $15 budget UNSPENT. Turns were binding, not dollars.
+#   (2) Raising the dollar ceiling ALONE would just move task 6090's death from
+#       the budget wall to the turn wall: it spent $15.79 over 68 turns, so
+#       reaching $25 at that rate needs ~108 turns — inside 120, but with no
+#       margin, and later turns cost more as context grows.
+# Sizing mirrors the budget raise: architect turns since 2026-08-01 are p50=48,
+# p95=100, max=155 (n=509), so the old 120 sat barely above p95 while 155 already
+# overran it. 180 is ~1.8x p95 and clears the observed max — a runaway guard,
+# not a working limit.
+#
+# Load-once config, but max_turns.* is on the code-owned green-tier hot-reload
+# allowlist (dark-factory config.py RELOADABLE_FIELDS, _submodel_leaf_paths(
+# 'max_turns', TurnsConfig)), so this takes effect via the escalation MCP's
+# reload_config — no orchestrator restart required.
 max_turns:
-  architect: 120
+  architect: 180
   reviewer: 45
 
 # Per-role agent wall-clock timeout overrides (task 5157, 2026-07-08, Leo
@@ -668,11 +728,19 @@ sandbox:
 # Sandbox companion (task γ6a): toolchain-cache redirect. Covers 6 of the 9
 # dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
 # debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
-# covered, deliberately: merger, steward, deep_reviewer. merger is excluded
-# on blast radius — redirecting the merge agent's CARGO_HOME to a cold /tmp
-# cache would diverge it from the verify subprocess cache path on the one
-# gate that lands everything (the same reasoning applied to verify_env
-# above).
+# covered: merger, steward, deep_reviewer.
+#   merger is uncovered on a rationale task 5836 INVERTED, not merely made
+#   stale: the exclusion turned on keeping the merge agent's CARGO_HOME equal
+#   to the verify subprocess cache path, and 5836 moved verify_env onto
+#   /tmp/reify-agent-cargo-home while merger, carrying no override, still
+#   resolves the DEFAULT ~/.cargo. Deliberately NOT fixed by 5836, whose scope
+#   is the verify/agent seam. Filed as #6275; until that lands the exclusion
+#   stands on a rationale that no longer holds.
+#   The full re-analysis — the roles.py cites showing the exposure is
+#   reachable rather than theoretical, why re-adding merger must also extend
+#   CACHE_REDIRECT_ROLES, and what measurement it owes — lives in ONE place,
+#   the header of tests/infra/test_sandbox_cache_writability_seam.sh (SECOND
+#   COUPLING). Do not restate it here; the two copies drifted once already.
 #   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
 #   sandboxed=True flip": workflow.py:_build_agent_env merges
 #   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or
@@ -714,7 +782,11 @@ sandbox:
 #   directly, which would retire this whole redirect): dark_factory:3162.
 #   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
 #   workflow.py:_build_agent_env for every role. verify_env (above) is the
-#   WRONG surface for this — verify subprocesses are not sandboxed.
+#   WRONG surface for THIS problem — verify subprocesses are not sandboxed,
+#   so setting CARGO_HOME there would not stop a sandboxed AGENT dying on an
+#   unwritable ~/.cargo. (verify_env does now carry the same CARGO_HOME, but
+#   for the unrelated task-5836 reason recorded above: fingerprint agreement
+#   over the shared warm target/, not write access.)
 #   WHY /tmp: it is the one host-global writable root in the write set, so
 #   the two dirs are shared across warm lanes and warm ONCE rather than
 #   per-lane; cargo's own .package-cache flock serializes concurrent access
@@ -734,14 +806,39 @@ sandbox:
 #       that crate's .cargo-ok marker survives) or npm's cacache store,
 #       producing missing-source build failures that don't look like a
 #       cache problem and surface only after long uptime.
-#     - Considered mirroring CARGO_HOME/npm_config_cache into verify_env
-#       too, so verify shares this /tmp cache instead of ~/.cargo/~/.npm,
-#       as an alternative fix for the double-copy problem; deferred —
-#       that would change the merge-gate build's cache path for EVERY
-#       task's verify run (high blast radius on the one gate that lands
-#       everything), whereas pre-seeding /tmp from the existing warm
-#       ~/.cargo/~/.npm (the ticket above) fixes the cold start without
-#       touching verify's cache path at all.
+#     - Mirroring CARGO_HOME into verify_env was once deferred here on
+#       blast-radius grounds. That deferral is REVERSED as of task 5836:
+#       verify_env above now carries the same CARGO_HOME. The original
+#       weighing was not wrong, it was INCOMPLETE — it compared the /tmp
+#       double-copy DISK cost against the merge gate's blast radius and
+#       never weighed FINGERPRINT INVALIDATION at all, because nobody had
+#       measured it yet. Measured since: cargo's per-unit Fingerprint
+#       embeds the registry source path ("Dirty <crate>: the path to the
+#       source changed"), so a CARGO_HOME split dirties all 685 registry
+#       deps in Cargo.lock and cascades into every workspace crate that
+#       depends on them. And because `-C metadata` is CARGO_HOME-
+#       INDEPENDENT, both homes write the SAME .fingerprint file and
+#       overwrite each other — so the thrash is BIDIRECTIONAL and
+#       recurring (measured a->b->a, dirty each time), not a one-time
+#       switching cost. That also rules out "just warm two caches": one
+#       target/ holds exactly one fingerprint set per unit.
+#       Seeding cannot substitute for agreement: this was never an mtime
+#       problem (extracted sources carry cargo's canonical fixed stamp and
+#       already match across both homes), so task 5729's cache seeding
+#       fixes cold START and leaves fingerprint IDENTITY untouched.
+#       Scope: CARGO_HOME only. npm_config_cache is deliberately NOT
+#       mirrored — npm has no path-keyed fingerprint equivalent, so
+#       widening the merge gate to it would buy nothing; that absence is
+#       pinned by block (E) of the seam guard so any future change arrives
+#       with its own evidence.
+#       Accepted cost: the current warm base was built under ~/.cargo, so
+#       the FIRST merge-verify after the activating restart pays ONE full
+#       cold rebuild to establish a /tmp-pathed base, which
+#       refresh-warm-base.sh then promotes normally. Steady state removes
+#       two full dependency-tree rebuilds per sandboxed task.
+#       Restart-tier, so this lands INERT and the operator picks when that
+#       one-time cost is paid.
+#       Full analysis lives in the seam-guard header, not here.
 #   Restart-tier: inert until the orchestrator restarts (companion task
 #   γ6b). Reify-side seam guard:
 #   tests/infra/test_sandbox_cache_writability_seam.sh.

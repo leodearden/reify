@@ -42,6 +42,7 @@ bug-hotspot survey (`docs/notes/bug-hotspot-survey-2026-07-05.md`) per Leo's dir
 | INV-FEA-1 | Every production engine declares its registration posture; full registration has one constructor | type+test (`Engine::new_production`; grep architecture test; locking tests for deliberate opt-outs incl. LSP) | proposed | compute-fea-hardening |
 | INV-FEA-2 | The compute-dispatch boundary converts panics to structured Failed outcomes | type+test (catch_unwind wrapper; per-arg Undef regression tests) | proposed | compute-fea-hardening |
 | INV-FEA-3 | NaN never enters an ordering | lint+test (`f64::total_cmp`/finite-guards; grep gate on `partial_cmp(...).unwrap_or` in numeric crates) | proposed | compute-fea-hardening |
+| INV-DIM-1 | Angle is primitive; the differential and tensor algebra is quotient-pure; every angle reading of a geometric ratio is an explicit named crossing carrying η = 1 rad (normative text: `docs/legibility/design-invariants.md` INV-AD-1..4) | doc+test (test half owned by sibling leaves: the rotational-closure exemplar, leaf δ, dep #5844; the curvature literal + `CURVATURE_DIM` duplicate-const drift pins, leaf α) | proposed | angle-dimension-completion |
 | INV-META-1 | Tasks cite the INV they serve; every INV names its enforcement mechanism | audit (extend reify-audit / review checklists) | proposed | (registry itself) |
 
 Related existing enforcement precedents in this repo (patterns to copy, cited in the survey):

@@ -19,7 +19,7 @@ module dcr_load_retype_target_resolves
 structure def DcrRetypedPointLoad {
     param point     : String     = ""
     param force     : Force      = 0N
-    param direction : List<Real> = [0.0, 0.0, -1.0]
+    param direction : Vector3<Dimensionless> = vec3(0.0, 0.0, -1.0)
 }
 
 structure def DcrRetypedPressureLoad {

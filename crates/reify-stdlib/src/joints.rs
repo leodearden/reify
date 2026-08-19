@@ -566,7 +566,7 @@ pub(crate) fn eval_joints(name: &str, args: &[Value]) -> Option<Value> {
         // `Value::Undef`, the wrapper propagates that Undef unchanged.
         // See design decisions in the task-2676 plan.json.
         //
-        // End-to-end coverage lives in crates/reify-eval/tests/kinematic_stdlib_smoke.rs.
+        // End-to-end coverage lives in crates/reify-eval/tests/harness_fea_solver_e2e/kinematic_stdlib_smoke.rs.
 
         // `screw(parent, lead)` — wrap a prismatic driving joint as a screw.
         //

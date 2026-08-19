@@ -9075,7 +9075,25 @@ impl Engine {
                                 false, // require_hex_wedge
                                 &realization_ops,
                                 &realization_step_ids,
-                                |_swept| unreachable!("gmsh_2d unreachable: force_tet=true"),
+                                // Task 5218: de-stub the swept 2-D producer edge
+                                // — wire the real op-stream cross-section
+                                // producer as gmsh_2d. Still gated: swept_kind is
+                                // None and force_tet is true, so dispatch
+                                // short-circuits to tet_path before this closure
+                                // is ever invoked. The edge-selection activation
+                                // (swept_kind lookup, force_tet/require_hex_wedge
+                                // from ElementTypePref, sweep_step wiring, storing
+                                // the Swept outcome) is contract C-5, owned by
+                                // task 4746.
+                                |swept| {
+                                    crate::sweep_classifier::build_swept_2d_mesh(
+                                        swept,
+                                        &realization_ops,
+                                        &realization_step_ids,
+                                        reify_solver_elastic::SweepElementTarget::HexPreferred,
+                                        &reify_solver_elastic::Mesh2dOptions::default(),
+                                    )
+                                },
                                 |_params, _mesh| {
                                     unreachable!("sweep_step unreachable: force_tet=true")
                                 },
@@ -13007,6 +13025,7 @@ mod reset_per_build_state_tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 angle_rad: 1.0,
+                profile: GeometryHandleId(0),
             },
         );
 

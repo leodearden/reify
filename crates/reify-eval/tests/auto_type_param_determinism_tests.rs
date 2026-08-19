@@ -173,7 +173,7 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
          unresolved-type Error — check_source_with_stdlib panics on compile errors. \
          The two-way symmetric behaviour (both --cfg target=linux and --cfg target=wasm \
          exit 0, each resolving the platform-correct Platform variant) is exercised \
-         end-to-end by crates/reify-cli/tests/cli_check_cfg_example.rs. \
+         end-to-end by crates/reify-cli/tests/harness_cli/cli_check_cfg_example.rs. \
          The siblings (platform_linux.ri, platform_wasm.ri) compile clean single-file \
          and are intentionally NOT skipped. \
          Mirrored from examples_smoke.rs::SKIP_SET (task 3995 ε).",
@@ -187,7 +187,7 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
          (2) the `let hidden = m.rated_torque` dot-access is a by-design E_PRIV_MEMBER_ACCESS \
          Error (rated_torque is priv on Motor). The priv-param-hidden / visible-param-resolves \
          two-way signal is exercised end-to-end by \
-         crates/reify-cli/tests/cli_module_visibility_example.rs via the real `reify check` \
+         crates/reify-cli/tests/harness_cli/cli_module_visibility_example.rs via the real `reify check` \
          binary. The siblings (producer.ri, mismatch_variant.ri) are self-contained / \
          CLI-only-diagnostic and are intentionally NOT skipped. \
          Mirrored from examples_smoke.rs::SKIP_SET (task 3980 ε).",
@@ -202,7 +202,7 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
          check_source_with_stdlib panics on compile errors. Positive (coherent) \
          coverage lives in the sibling multi_aspect_objective.ri (NOT skipped) and \
          both are exercised end-to-end by \
-         crates/reify-eval/tests/multi_aspect_objective_example_e2e.rs. \
+         crates/reify-eval/tests/harness_fea_solver_e2e/multi_aspect_objective_example_e2e.rs. \
          Mirrored from examples_smoke.rs::SKIP_SET (task δ #5020).",
     ),
 ];
@@ -238,7 +238,7 @@ fn compile_fresh() -> CompiledModule {
 /// Mirrors the construction shape used internally by
 /// `compile_builder::entities_phase::phase_pending_bound_checks` (lines
 /// 246-253 in entities_phase.rs) and copied from
-/// `crates/reify-compiler/tests/auto_type_param_phase_a_tests.rs`.
+/// `crates/reify-compiler/tests/harness_auto_binding/auto_type_param_phase_a_tests.rs`.
 fn build_registries(
     module: &CompiledModule,
 ) -> (

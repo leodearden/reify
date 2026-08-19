@@ -37,7 +37,7 @@
 //!    `Discarded`, dispatcher surfaces `Ok(Discarded)`).
 //!
 //! 3. **Engine-level wiring** —
-//!    `crates/reify-eval/tests/kernel_attribute_hook_wiring.rs` (task 2875):
+//!    `crates/reify-eval/tests/harness_kernel_realization/kernel_attribute_hook_wiring.rs` (task 2875):
 //!    pins that the engine dispatches the hook for the right ops with the
 //!    right `(op, parents, result, feature_id)` tuple, that primitives are
 //!    never dispatched, and that `QueryError` from the hook surfaces as a

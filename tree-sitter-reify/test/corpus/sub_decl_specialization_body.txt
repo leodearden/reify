@@ -3,7 +3,7 @@
 ; S-expressions below are NOT validated by CI (dark-factory-orchestrator.yaml does not run
 ; `tree-sitter test`). The canonical CI regression signal is the Rust integration
 ; test `sub_decl_specialization_body_parses_from_source` in
-; crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs.
+; crates/reify-syntax/tests/harness_syntax/sub_decl_specialization_body_parser_tests.rs.
 
 ================================================================================
 specialization body — permitted members (param_assignment + let + constraint)

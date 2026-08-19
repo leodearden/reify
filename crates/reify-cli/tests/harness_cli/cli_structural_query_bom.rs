@@ -12,7 +12,7 @@
 //!     RED until step-6 creates the example file.
 //!
 //! A dedicated structured golden (part_count==6, bolt_count==4) is in
-//! `crates/reify-eval/tests/structural_query_bom.rs` to avoid stdout-parse fragility.
+//! `crates/reify-eval/tests/harness_topology_selector/structural_query_bom.rs` to avoid stdout-parse fragility.
 
 use crate::common;
 
@@ -93,7 +93,7 @@ fn check_forall_members_constraint_is_satisfied_not_indeterminate() {
 /// GREEN after step-6: the example is created and evals to part_count=6 / bolt_count=4.
 ///
 /// The structured golden (exact Int values) lives in
-/// `crates/reify-eval/tests/structural_query_bom.rs` to avoid stdout-parse fragility.
+/// `crates/reify-eval/tests/harness_topology_selector/structural_query_bom.rs` to avoid stdout-parse fragility.
 #[test]
 fn eval_structural_query_bom_example_exits_zero() {
     let path = common::example_path("structural_query_bom.ri");

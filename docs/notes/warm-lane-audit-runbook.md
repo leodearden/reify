@@ -81,6 +81,7 @@ Additional env-only knobs (no dedicated flag):
 | `REIFY_WARM_LANE_AUDIT_DF` | `df` | `df` command override (mirrors `REIFY_WARM_LANE_DISK_GUARD_DF`; testability seam). |
 | `REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB` | `data/queue/*.db*` | Glob (or comma-separated globs) of dirty tracked paths that count as harmless "residue" rather than unrecoverable WIP — today, the `write_queue.db*` fused-memory `DurableWriteQueue` runtime files (sizing-lifecycle §2/D1). |
 | `REIFY_WARM_LANE_AUDIT_STATE_DIR` | `<mount>/.lane-state` | Directory holding the orchestrator's durable per-lane assignment records `<lane>.json` (dark-factory's `LANE_STATE_DIRNAME`, written by `orchestrator/src/orchestrator/lane_lifecycle.py`). May point anywhere, including outside the mount. Read-only; a missing dir is **not** an error — every lane simply reports `assigned=UNKNOWN` (A5). |
+| `REIFY_WARM_LANE_AUDIT_STASH_REPO` | (unset → the **first resident lane** that resolves as a git worktree) | Repo to query for the shared stash stack (see "Trailing STASH block"). `refs/stash` lives in the shared common git dir, so **one** query answers for the whole pool and any resident lane will do. Deliberately **no** fallback to this script's own repo root — that would make the audit's own hermetic tests read the real, live shared stack. Read-only; unresolvable (no resident lane is a git worktree, or the pointed-at path is not one) or a failed query degrades to `stash_entries=0` plus a stderr note, exit still 0. |
 
 ## Output
 
@@ -139,8 +140,10 @@ an investigate-then-escalate signal and never an auto-repair trigger.
 the `"headroom"` object):
 
 ```
-HEADROOM resident=N live=L pinned=P quarantined=Q free=F assigned=A state_unknown=S reclaimable=R leaked=K leak_unknown=U divergent_gib=D free_gib=G budget_gib=B plan_stranded=X plan_unknown=Y plan_rewritten=Z plan_mismatch=M
+HEADROOM resident=N live=L pinned=P quarantined=Q free=F assigned=A state_unknown=S reclaimable=R leaked=K leak_unknown=U divergent_gib=D free_gib=G budget_gib=B plan_stranded=X plan_unknown=Y plan_rewritten=Z plan_mismatch=M stash_entries=E
 PINNED   total=P pending=X infra-hold=Y blocked=Z terminal=T other=O unknown=V
+STASH    total=E
+STASH    entry ref=… branch=… message=…          (one line per entry)
 ```
 
 The occupancy figures are an **ordered, mutually exclusive partition** of the resident set —
@@ -152,7 +155,9 @@ resident = live + pinned + quarantined + free
 ```
 
 `assigned` and `state_unknown` are **cross-cuts**, not partition members: they may overlap any
-bucket and must never be added into the identity.
+bucket and must never be added into the identity. So are the four `plan_*` fields and
+`stash_entries` — the last of which is not a count of *lanes* at all (see below), and so can exceed
+`resident`.
 
 | Field | Meaning |
 |---|---|
@@ -173,6 +178,7 @@ bucket and must never be added into the identity.
 | `plan_unknown` | **Cross-cut**: lanes whose `plan_sync` could not be evaluated (A6). Same prohibition. Warned by name, with the cause. |
 | `plan_rewritten` | **Cross-cut**: lanes whose anchor was rewritten by a rebase. Same prohibition. **Counter-only — never warned**: it is the expected steady state, and a per-lane line for each would bury the stranded lane under the pool's own background noise. Emitted so `plan_stranded` is readable *in proportion to it* rather than in a vacuum. |
 | `plan_mismatch` | **Cross-cut**: lanes whose `plan_task` is `MISMATCH`. Same prohibition. |
+| `stash_entries` | **Cross-cut, and the only HOST-scoped figure on this line**: entries on the shared `refs/stash` stack, not a count of lanes. Same prohibition — never added into the identity, and it may exceed `resident`. See "Trailing STASH block". |
 
 **Trailing PINNED line** (table format: one line after HEADROOM; JSON format: a sibling
 `"pinned_by_status"` object carrying the six buckets — their total is `headroom.pinned`, so it is
@@ -188,6 +194,41 @@ emitted, zeros included** — a zero must be readable, never an absent line.
 | `infra-hold` | `infra-hold` | Ditto — held pending infrastructure. |
 | `other` | any status outside the buckets above | The residue, so it is **not** one reading: `in-progress` here means a **likely-crashed** consumer, while `deferred` / `review` are not-running states in the same family as `pending`. Read the per-lane `pin` column before acting. |
 | `unknown` | unresolvable | The holder could not be resolved (A3). |
+
+**Trailing STASH block** (table format: a `STASH total=E` count line after PINNED, then one
+`STASH entry ref=… branch=… message=…` detail line per entry — message last, so its spaces are
+unambiguous; JSON format: `headroom.stash_entries` plus a sibling `"stash_stack"` array of
+`{ref, branch, message}` objects). Like PINNED, **always emitted, zeros included** — an empty stack
+must read as a value an operator can see, never as an absent line. The count lives in exactly one
+place: the array carries no total of its own.
+
+`branch` is parsed from the reflog subject git writes (`On <branch>: <msg>` for `stash push -m`,
+`WIP on <branch>: <sha> <subject>` for a bare push). A subject in neither shape reports `branch=-`
+with the raw subject as `message` — never guessed, never dropped.
+
+**How to read it.** `refs/stash` is **ONE ref in the shared `.git`**, not per-worktree (git treats
+only `HEAD`, `refs/worktree/*`, `refs/bisect/*` and `refs/rewritten/*` as per-worktree), so:
+
+- The figure is **HOST-SCOPED**, not per-lane. One query answers for the whole pool, and every lane
+  would report the same number. It is not attributable to the lane it was read through.
+- It **does not self-drain**. Entries accrete until an operator drains them — which is exactly the
+  shape the original incident took (esc-5785-6: nine entries over ~1 month before the 2026-08-02/03
+  drain).
+- It is deliberately **NON-GATING** (A1, PRD §9.5 inv.12). A non-zero value never blocks dispatch,
+  reclaim or merge, and never requeues a task: the condition is host-scoped, so bouncing N tasks
+  one at a time would spin the whole fleet on a warning nobody reads.
+
+A **non-zero value means agents are still stashing in shared checkouts**, which is usually one of
+two things: the never-stash rule (CLAUDE.md → "Warm lanes") is not reaching them, or the
+`hooks/reference-transaction` guard has been **disarmed** by the `core.hooksPath` clobber that
+Claude Code's worktree feature performs on every worktree enter (CLAUDE.md → "Landing on main").
+That second case is why this field exists at all: it is the **backstop that makes a silently
+disarmed guard visible**. Triage in that order — check the guard is live before concluding the rule
+is being ignored.
+
+For the guard's measured reach — including that it covers the **push direction only** — read
+`hooks/reference-transaction`'s header and `tests/infra/test_stash_guard.sh`, which are
+authoritative. Do not re-derive it here.
 
 ## Classification
 
@@ -412,6 +453,13 @@ timer unit is wired by this task**; a follow-up may implement one.
   consumers matching the `reset=`/`removed=`/`preserved=` prefix keep working
   (`scripts/warm-lane-gc.sh` stdout contract).
 
+  `stash_entries=E` is worth trending in the same place, and is the HEADROOM field most improved
+  by history: it is host-scoped and does not self-drain, so a single snapshot cannot
+  distinguish "one entry, pushed a minute ago" from "one entry that has sat there for a month".
+  **Slow accretion is precisely the shape the original incident took** — nine entries over ~1 month
+  (esc-5785-6) — so a series that only ever climbs is the signal, and any decline is an operator
+  drain rather than the pool healing itself. Trend it; do not gate on it.
+
 ## Pointers
 
 | Topic | Source |
@@ -422,3 +470,4 @@ timer unit is wired by this task**; a follow-up may implement one.
 | Hard/soft-floor admission gating (the script that actually blocks dispatch) | `scripts/warm-lane-disk-guard.sh` |
 | Reclaim primitives this script's classification informs | `scripts/warm-lane-gc.sh`, `scripts/thin-warm-lane.sh` |
 | Pool lifecycle & invariants (acquire/reset/release) | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |
+| The shared-stash guard `stash_entries` backstops (measured reach, push-direction-only) | `hooks/reference-transaction` header, `tests/infra/test_stash_guard.sh` |

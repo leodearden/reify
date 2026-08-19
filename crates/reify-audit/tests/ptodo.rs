@@ -441,6 +441,160 @@ mod tests {
         );
     }
 
+    /// §8.1 lane δ-A end-to-end through `check()` — the user-observable signal
+    /// this task exists to deliver, shaped after
+    /// `crates/reify-eval/src/engine_build.rs:12891`.
+    ///
+    /// A cited deferral rationale on an `#[allow(dead_code)]` attribute routes
+    /// through the UNCHANGED β liveness lane: with the cite seeded `done` it is
+    /// a High `orphaned:` finding. An uncited deferral rationale is High
+    /// `untracked:` (SCOPE-1). A benign rationale — the dominant class among
+    /// the 68 measured candidates — yields nothing.
+    #[test]
+    fn check_allow_dead_code_deferral_lane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        write_file(
+            root,
+            "cited.rs",
+            "#[allow(dead_code)] // production wiring pending task #4744 (volume-mesh)\nfn f() {}\n",
+        );
+        write_file(
+            root,
+            "uncited.rs",
+            "#[allow(dead_code)] // wiring pending the morph rewrite\nfn g() {}\n",
+        );
+        write_file(
+            root,
+            "benign.rs",
+            "#[allow(dead_code)] // used by some, but not all, test binaries\nfn h() {}\n",
+        );
+
+        // #4744 is `done` (terminal) → the cited line resolves to `orphaned`.
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4744, "done")],
+        );
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec![
+            "cited.rs".to_string(),
+            "uncited.rs".to_string(),
+            "benign.rs".to_string(),
+        ]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        let for_path = |p: &str| -> Option<&Finding> {
+            findings.iter().find(|f| {
+                f.evidence
+                    .iter()
+                    .any(|e| matches!(e, EvidenceRef::File { path: q } if q == p))
+            })
+        };
+
+        let cited = for_path("cited.rs")
+            .unwrap_or_else(|| panic!("expected orphaned finding for cited.rs; got {findings:?}"));
+        assert_eq!(cited.pattern, Pattern::PTodo);
+        assert_eq!(cited.severity, Severity::High);
+        assert!(
+            cited.summary.starts_with("orphaned:"),
+            "summary must start with 'orphaned:': {}",
+            cited.summary
+        );
+        assert!(
+            cited.summary.contains("#4744"),
+            "summary must carry the cite id: {}",
+            cited.summary
+        );
+
+        let uncited = for_path("uncited.rs")
+            .unwrap_or_else(|| panic!("expected untracked finding for uncited.rs; got {findings:?}"));
+        assert_eq!(uncited.pattern, Pattern::PTodo);
+        assert_eq!(uncited.severity, Severity::High);
+        assert!(
+            uncited.summary.starts_with("untracked:"),
+            "summary must start with 'untracked:': {}",
+            uncited.summary
+        );
+
+        assert!(
+            for_path("benign.rs").is_none(),
+            "a non-deferral allow-rationale must yield NO finding; got {findings:?}"
+        );
+        assert_eq!(
+            findings.len(),
+            2,
+            "exactly two δ-A findings expected (cited + uncited); got {findings:?}"
+        );
+    }
+
+    /// FP guard at the fixture level, per the esc-6087-1 ruling: the committed
+    /// `scenario14_allow_dead_code_deferral.rs` fixture is entirely NEGATIVE —
+    /// every line is an `#[allow(dead_code)]` whose rationale must NOT classify.
+    ///
+    /// The real class-(a) identifier sites (`mark_pending_with_cause`) are not
+    /// δ-A candidates in-tree — they carry no allow-attribute — so guard 3
+    /// cannot be pinned against live code at this level. This SYNTHETIC fixture
+    /// supplies that pin. It lives under the already-allowlisted
+    /// `crates/reify-audit/` prefix, so it is invisible to the live sweep and
+    /// cannot pollute the §6.6 baseline; copied here into a temp root, its path
+    /// is NOT allowlisted, so it is genuinely swept.
+    ///
+    /// `tests/cli.rs`'s whole-fixture-tree sweep gives this a second,
+    /// independent enforcement point: because the fixture contributes zero
+    /// findings, that test's exact `4 findings / exit 2` assertions stay true
+    /// and go red if δ-A ever over-fires.
+    #[test]
+    fn committed_allow_dead_code_fixture_contributes_zero_findings() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/ptodo/scenario14_allow_dead_code_deferral.rs");
+        let content = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("read committed fixture {}: {e}", fixture.display()));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "scenario14_allow_dead_code_deferral.rs", &content);
+
+        let mut git = MockGitOps::new();
+        git.set_ls_files(vec!["scenario14_allow_dead_code_deferral.rs".to_string()]);
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: root.to_path_buf(),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = reify_audit::ptodo::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "the δ-A negative fixture must contribute ZERO findings; got {findings:?}"
+        );
+    }
+
     /// ζ inverse lane: end-to-end `check()` integration. Seeds an on-disk DB
     /// with a non-terminal (pending) task whose metadata.files lists:
     ///   - a DELETED path (mock: absent from tracked, git has history)

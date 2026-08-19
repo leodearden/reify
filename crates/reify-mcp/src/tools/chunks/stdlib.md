@@ -20,7 +20,8 @@ The Reify standard library (`std.*`) provides domain-specific functionality.
 ## Key Math Functions
 
 `abs`, `min`, `max`, `clamp`, `lerp`, `sqrt`, `pow`, `log`, `exp`
-`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (take `Angle`)
+`sin`, `cos`, `tan` (take `Angle`)
+`asin`, `acos`, `atan`, `atan2` (return `Angle`)
 `dot`, `cross`, `normalize`, `magnitude`, `determinant`, `inverse`
 
 ## Key Geometry Operations

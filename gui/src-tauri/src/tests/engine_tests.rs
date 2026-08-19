@@ -14326,7 +14326,7 @@ structure Part {
 ///
 /// The `Ok` assertion alone is the proof: the stub would return `Err` here, so
 /// an `Ok` can only arise if the real checker is wired into `EngineSession`.
-/// This test mirrors the CLI smoke in `crates/reify-cli/tests/cli_auto_type_param_select.rs`
+/// This test mirrors the CLI smoke in `crates/reify-cli/tests/harness_cli/cli_auto_type_param_select.rs`
 /// (step-8) and completes §11.2 row "LSP/MCP/CLI/GUI binary surface" (task ζ).
 #[test]
 fn auto_type_param_real_checker_selects_in_gui_engine() {
@@ -14803,7 +14803,7 @@ fn build_gui_state_no_display_output_yields_empty_display_panes() {
 fn build_gui_state_drops_display_output_with_unresolved_subject() {
     // `param b : Solid` with no default compiles legally (the Reify compiler
     // accepts geometry-typed params without a constructor; confirmed by
-    // crates/reify-compiler/tests/geometry_profile_precondition_tests.rs).
+    // crates/reify-compiler/tests/harness_geometry_solver/geometry_profile_precondition_tests.rs).
     // At eval time, the cell has no `RealizationDecl`, so
     // `mint_symbolic_geometry_handles_into_values` skips it and the
     // evaluator writes `Value::Undef` for it (no default_expr → Undef path
@@ -17616,16 +17616,15 @@ fn engine_session_registers_fea_and_shell_extract_dispatch() {
 ///
 /// Gated because `reify-mesh-morph` is only on the graph under `--features
 /// gui` (see the `gui` feature list in `gui/src-tauri/Cargo.toml`).
-/// Compile-verified in CI by the gui-feature compile-check block in
-/// `scripts/verify.sh` but never executed there — OCCT/tauri linking makes
-/// gui-feature test execution a local-only step, so this specific assertion
-/// (the only one exercising the new mesh-morph registration) has no
-/// CI-executed regression coverage today: a future change that flipped the
-/// `#[cfg(feature = "gui")]` arm in `from_engine` to `Unavailable` would
-/// compile clean and pass every CI pass silently. Closing that gap is task
-/// 5076 (PRD task A5's static drift guard + gui-feature test execution),
-/// out of this task's scope. Precedent for this gated-module shape:
-/// `kernel_status_tests` and `event_bus_tests` in this same directory.
+/// A change flipping the `#[cfg(feature = "gui")]` arm in `from_engine` to
+/// `Unavailable` compiles clean, so it is caught only by executing this
+/// assertion or by a static check. Task 5076 wired both: `scripts/verify.sh`
+/// now EXECUTES this module, via the `-p reify-gui --features gui` test pass
+/// emitted from `add_test_passes()`, and
+/// `scripts/check-compute-trampoline-registration.sh` pins a
+/// `MorphRegistration::Enabled` on `gui/src-tauri/src/engine.rs`.
+/// Precedent for this gated-module shape: `kernel_status_tests` and
+/// `event_bus_tests` in this same directory.
 ///
 /// Asserts only `morph_producer().is_some()`: TEST A above
 /// (`engine_session_registers_fea_and_shell_extract_dispatch`, ungated)

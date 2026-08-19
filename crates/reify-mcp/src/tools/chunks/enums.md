@@ -104,12 +104,65 @@ Payloads shipped in v0.6; these bounds apply to the current surface.
 
 ## Option Type
 
-`Option<T>` with `some(value)` / `none` is compiler-intrinsic, not an enum:
-```
-param coating : Option<CoatingSpec> = none
+`Option<T>` with `some(value)` / `none` is compiler-intrinsic, not an enum — it has
+no `enum` declaration and no variants you can match on. An `Option` is read with the
+**recovery combinators**, which are prelude-registered (no import needed):
+```reify
+param base : Length = 1mm
+param coating : Option<Length> = some(0.25mm)
 
-let total = match coating {
-    some(c) => base + c.thickness
-    none => base
-}
+let bare  = unwrap_or(coating, 0mm)
+let has   = is_some(coating)
+let alt   = or_else(coating, some(0.05mm))
+let total = map_or(coating, base, |c: Length| base + c)
 ```
+That evaluates to `bare = 0.25mm`, `has = true`, `alt = some(0.25mm)`,
+`total = 1.25mm`. With `coating = none` the same source gives `bare = 0mm`,
+`has = false`, `alt = some(0.05mm)`, `total = 1mm`.
+
+Recovery is driven by the **subject** — the first argument:
+
+| Combinator | subject `some(x)` | subject `none` |
+|---|---|---|
+| `unwrap_or(o, dflt)` | `x` | `dflt` |
+| `or_default(o, dflt)`, `fallback(o, dflt)` | `x` | `dflt` (aliases of `unwrap_or`) |
+| `or_else(o, alt)` | `o`, intact | `alt` |
+| `is_some(o)` / `is_none(o)` | `true` / `false` | `false` / `true` |
+| `map_or(o, dflt, \|x: T\| ...)` | `f(x)` | `dflt` |
+| `ok_or(o, err)` | `Ok { value: x }` | `Err { error: err }` |
+
+`map_or` is the **only** combinator that binds the payload to a name, so it is what
+replaces a `some(c) => ...` match arm. `ok_or` bridges an `Option` into a `Result`
+you *can* match on. An `undef` subject propagates `undef` through every combinator
+(Kleene three-valued).
+
+Declared in `crates/reify-compiler/stdlib/option_recovery.ri` (`ok_or` in
+`crates/reify-compiler/stdlib/result.ri`); runnable examples
+`examples/m6_fallback_recovery.ri` and `examples/option_map_or.ri`.
+
+### Do not `match` an Option
+
+`match` **cannot** read an `Option` payload — in either form. Both failure modes
+are measured:
+
+- **`some(c) => ...` is a parse error.** The pattern grammar has no positional
+  form at all (`match_pattern` is
+  `variant_binding_pattern | identifier ('|' identifier)* | '_'`), so a payload
+  binder can only ever be written as named fields — and `Option` has no fields to
+  name.
+- **Binder-less `some => ... , none => ...` arms parse but silently evaluate to
+  `undef`** — for a `some(x)` subject just as much as for a `none` subject, with
+  no diagnostic. `Option` is intrinsic (`Value::Option`), not a `Value::Enum`, and
+  match-arm selection fires only on `Value::Enum`. **Do not use this form**: it is
+  the quieter, worse version of the same mistake.
+
+Use the recovery combinators above instead; `map_or` is the payload-binding one.
+The gap is open and deliberate — authority:
+`docs/prds/v0_6/data-carrying-enums.md` §10 and design fork **F4**.
+
+Contrast: `Result<T, E>` **is** a real prelude enum
+(`crates/reify-compiler/stdlib/result.ri`), so its `Ok { value: v }` /
+`Err { error: e }` patterns fit the named-field grammar and match normally —
+whereas `Option` has no `EnumDef` at all. That asymmetry is exactly why the two
+types differ here, and why `ok_or` (which bridges `Option` into `Result`) is the
+route to a genuine `match`.
