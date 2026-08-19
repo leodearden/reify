@@ -70,6 +70,43 @@ pub fn available_topics() -> &'static [&'static str] {
     TOPICS
 }
 
+/// Every embedded chunk as `(topic, content)`, in the same order as
+/// [`TOPICS`]. Backs [`chunk_corpus`].
+const CORPUS: &[(&str, &str)] = &[
+    ("collections", COLLECTIONS),
+    ("connect", CONNECT),
+    ("constraints", CONSTRAINTS),
+    ("enums", ENUMS),
+    ("fields", FIELDS),
+    ("functions", FUNCTIONS),
+    ("geometry", GEOMETRY),
+    ("guards", GUARDS),
+    ("occurrences", OCCURRENCES),
+    ("parameters", PARAMETERS),
+    ("purposes", PURPOSES),
+    ("stdlib", STDLIB),
+    ("structures", STRUCTURES),
+    ("syntax", SYNTAX),
+    ("traits", TRAITS),
+    ("types", TYPES),
+    ("units", UNITS),
+];
+
+/// Every embedded chunk as `(topic, content)` pairs, read directly from the
+/// `include_str!` constants above — never from the filesystem — so
+/// corpus-wide invariants track exactly what the shipped binary serves
+/// rather than whatever happens to be on disk.
+///
+/// This exists so corpus-wide invariants (e.g. "this vocabulary must survive
+/// *somewhere* in the corpus") can be asserted in-crate at the DEFAULT test
+/// gate, unlike opt-in PDOCCOVER (`crates/reify-audit/src/pdoccover.rs`),
+/// which is not part of the default sweep. See
+/// `docs/notes/angle-crossing-doctrine-placement-2026-08-19.md` for the
+/// decision record this accessor was added to support.
+pub fn chunk_corpus() -> &'static [(&'static str, &'static str)] {
+    CORPUS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,6 +131,11 @@ mod tests {
     #[test]
     fn available_topics_returns_17_entries() {
         assert_eq!(available_topics().len(), 17);
+        assert_eq!(
+            chunk_corpus().len(),
+            TOPICS.len(),
+            "chunk_corpus() must stay in sync with the TOPICS roster"
+        );
     }
 
     /// The angle-crossing doctrine's `Hz`/`rad/s` vocabulary is a corpus
