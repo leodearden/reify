@@ -259,6 +259,45 @@ fn assert_accept_reject_parity(row: &Row) {
     }
 }
 
+// ── Exemption ledger ────────────────────────────────────────────────────────
+//
+// Documented, intentional compile-vs-eval divergences. Every row a table
+// declares `Expect::Diverge { ledger: "<key>" }` must have an entry here
+// naming the responsible disjunct/tier; an undocumented divergence panics
+// UNLEDGERED, and an entry whose rows have started agreeing panics STALE, so
+// this block cannot drift out of sync with the tables in either direction.
+//
+// ── "D4" — type-param-carrying ARG as a compile-only wildcard ───────────────
+//
+// Compile-side `resolve_function_overload`'s `matches` tier applies FOUR
+// per-param disjuncts (type_compat.rs:1195-1202); the fourth,
+// `type_carries_type_param(arg_ty)` (task-4232 γ), lets a generic fn body pass
+// a `TypeParam`-typed value to a concrete-param callee without a spurious
+// NoMatch. Eval-side `find_matching_compiled_function`'s wildcard pass
+// (reify-expr/src/lib.rs:1566-1573) has only THREE disjuncts — there is no
+// arg-side counterpart at all.
+//
+// So `P_compile == P_eval || type_carries_type_param(arg_ty)`: for a
+// single-candidate overload set, D4 is the ONLY accept/reject divergence
+// class, which is why the other 14 rows in the table below are clean.
+//
+// Consequence when it fires: the compiler resolves the call, then
+// `eval_user_function_call` (reify-expr/src/lib.rs:1625) finds nothing and
+// returns a bare `Value::Undef` carrying NO `UndefCause` — the silent
+// INV-SF-1 miss path, not a diagnostic.
+//
+// This is TEMPORARY and OWNED. Adding the missing eval-side disjunct is
+// task #5686's fix; this task deliberately does NOT duplicate it — it pins
+// the divergence so it cannot widen or be forgotten. Covers both the bare
+// `TypeParam(T)` arg and the HEADED arg carrying a nested type param
+// (`Result<T,E>`), which reach `matches` by the same disjunct but differ in
+// the head tier: the bare form is kept by `head_matches`'s
+// `matches!(arg_ty, Type::TypeParam(_))` arm, while the headed form leaves
+// `head_matches` empty and falls through to `matches`.
+//
+// TODO(#5686): remove this ledger row and reclassify the two D4 rows to
+// Expect::Agree once the eval-side D4 disjunct lands.
+
 // ── Single-candidate accept/reject table ────────────────────────────────────
 
 /// Every row below is a ONE-candidate overload set. Types are built fresh per
@@ -301,8 +340,8 @@ fn single_candidate_rows() -> Vec<Row> {
         // Compile's `matches` tier has a fourth disjunct `type_carries_type_param(arg_ty)`
         // that eval's wildcard pass has no counterpart for. Expected to be the
         // ONLY accept/reject divergence class in this table.
-        Row { label: "D4 bare: f(Int) <- TypeParam(T)",           params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![tp("T")],                                      expect: Expect::Agree },
-        Row { label: "D4 nested: f(Int) <- Result<T,E>",          params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![result_of(vec![tp("T"), tp("E")])],            expect: Expect::Agree },
+        Row { label: "D4 bare: f(Int) <- TypeParam(T)",           params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![tp("T")],                                      expect: Expect::Diverge { ledger: "D4" } },
+        Row { label: "D4 nested: f(Int) <- Result<T,E>",          params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![result_of(vec![tp("T"), tp("E")])],            expect: Expect::Diverge { ledger: "D4" } },
     ]
 }
 
@@ -322,4 +361,49 @@ fn single_candidate_accept_reject_parity() {
         rows.len(),
         failures.join("\n  - ")
     );
+}
+
+/// Anti-vacuity guard for the "D4" ledger row.
+///
+/// The ledger only earns its keep if the divergence it documents is REAL
+/// right now — a ledger row covering a case that never diverged would pass
+/// silently forever. So assert the two sides' behaviour FIRST-HAND before
+/// asserting that the engine accepts the row as ledgered.
+#[test]
+fn d4_arg_side_type_param_divergence_is_genuine_and_ledgered() {
+    let fns = vec![make_fn("f", vec![("x", Type::Int)], vec![])];
+    let arg_ty = Type::TypeParam("T".to_string());
+
+    // Compile side ACCEPTS: `type_carries_type_param(arg_ty)` fires, and the
+    // head tier's bare-`TypeParam` arm keeps the sole candidate.
+    let verdict = reify_compiler::__resolve_function_overload_for_parity_test(
+        "f",
+        std::slice::from_ref(&arg_ty),
+        &fns,
+    );
+    assert_eq!(
+        verdict,
+        ParityOverloadVerdict::Resolved { index: 0 },
+        "D4 premise: compile side must still RESOLVE `f(x: Int)` called with a \
+         `TypeParam` arg — if this fails, #5686 or a related change altered the \
+         compile side and the D4 ledger row needs re-deriving, not deleting"
+    );
+
+    // Eval side REJECTS: its wildcard pass has no arg-side disjunct.
+    assert!(
+        find_matching_compiled_function(&fns, "f", &[arg(arg_ty.clone())]).is_none(),
+        "D4 premise: eval side must still return None — if this now resolves, \
+         #5686 has landed: delete the D4 ledger row and reclassify both D4 rows \
+         to Expect::Agree"
+    );
+
+    // ...and only then: the engine classifies the ledgered row as OK.
+    assert_accept_reject_parity(&Row {
+        label: "D4 bare (companion)",
+        params: vec![("x", Type::Int)],
+        type_params: vec![],
+        call_name: "f",
+        arg_types: vec![arg_ty],
+        expect: Expect::Diverge { ledger: "D4" },
+    });
 }
