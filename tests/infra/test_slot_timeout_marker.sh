@@ -1764,6 +1764,102 @@ F_FC4_ADMITTED="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -E '^test_' | tr 
 assert "FC4: none of the five measured non-invocation shapes is an edge -- bind-only inspection target, exec verb inside a case PATTERN, copy-list element, git pathspec, and a real invocation of a NON-capable node (expected 0, got $F_FC4_COUNT: ${F_FC4_ADMITTED:-<none>})" \
     test "$F_FC4_COUNT" -eq 0
 
+echo ""
+echo "--- FC5/FC6: the second-order route -- a node-bound variable handed to an exec-forwarding helper ---"
+
+# The remaining real route, and the one a per-file two-phase rule cannot see
+# on its own. tests/infra/test_run_all_ambient_isolation.sh never execs its
+# TARGET (bound to test_run_all.sh at :93); it hands it to
+# `ambient_isolation_check_one "$TARGET" ...` (:366), and the
+# `bash "$_target" 2>&1` lives in run_all_ambient_isolation_lib.sh:73/:92
+# behind `local _target="$1"`.
+#
+# The rule has to key on the lib ACTUALLY FORWARDING to an exec, not on
+# "any argument to any helper" -- otherwise `assert` and every other
+# ubiquitous helper becomes an edge. These fixtures are what hold that line:
+# a forwarding lib and an inert twin, and a file that sources the forwarding
+# lib but only inspects its target.
+F_CLOSURE_FWD_DIR="$TMPF/fx-closure-fwd"; mkdir -p "$F_CLOSURE_FWD_DIR"
+
+cat > "$F_CLOSURE_FWD_DIR/test_c_seed.sh" <<'C5SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+C5SEEDEOF
+# The FORWARDING lib: binds a variable from a positional AND execs a
+# variable. run_all_ambient_isolation_lib.sh:59/:73 in miniature.
+cat > "$F_CLOSURE_FWD_DIR/c_fwd_lib.sh" <<'C5FWDLIBEOF'
+#!/usr/bin/env bash
+fwd_run_one() {
+    local _t="$1" _key="$2"
+    local _out
+    _out="$(
+        export "$_key=1"
+        bash "$_t" 2>&1
+    )" || return 1
+    printf '%s\n' "$_out" > /dev/null
+}
+C5FWDLIBEOF
+# The INERT twin: binds a positional, but never execs it. Must NOT make its
+# callers' arguments into edges.
+cat > "$F_CLOSURE_FWD_DIR/c_inert_lib.sh" <<'C5INERTLIBEOF'
+#!/usr/bin/env bash
+inert_check() {
+    local _t="$1"
+    grep -qE '^#!' "$_t"
+}
+C5INERTLIBEOF
+# POSITIVE: sources the forwarding lib, binds TARGET to the seed, and only
+# ever passes it on. test_run_all_ambient_isolation.sh:91/:93/:366 in
+# miniature.
+cat > "$F_CLOSURE_FWD_DIR/test_c_fwd_pos.sh" <<'C5POSEOF'
+#!/usr/bin/env bash
+source "$SCRIPT_DIR/c_fwd_lib.sh"
+TARGET="$SCRIPT_DIR/test_c_seed.sh"
+_check_rc=0
+fwd_run_one "$TARGET" "$_key" "$MANIFEST_KEYS" || _check_rc=$?
+C5POSEOF
+# NEGATIVE: same handoff shape, but to the INERT lib. The rule must key on
+# the lib forwarding to an exec, not on the handoff.
+cat > "$F_CLOSURE_FWD_DIR/test_c_fwd_neg.sh" <<'C5NEGEOF'
+#!/usr/bin/env bash
+source "$SCRIPT_DIR/c_inert_lib.sh"
+TARGET="$SCRIPT_DIR/test_c_seed.sh"
+inert_check "$TARGET"
+C5NEGEOF
+# NEGATIVE: sources the FORWARDING lib, but never hands it the target --
+# only inspects it. Sourcing an exec-forwarding lib is not itself an edge.
+cat > "$F_CLOSURE_FWD_DIR/test_c_fwd_neg_inspect.sh" <<'C5NEGINSEOF'
+#!/usr/bin/env bash
+source "$SCRIPT_DIR/c_fwd_lib.sh"
+TARGET="$SCRIPT_DIR/test_c_seed.sh"
+test -f "$TARGET"
+grep -qE '^#!' "$TARGET"
+C5NEGINSEOF
+F_CLOSURE_FWD_EXPECT=2
+
+F_FC5_POS_ROUTE="$(_f_route_of "$F_CLOSURE_FWD_DIR" test_c_fwd_pos.sh)"
+F_FC5_COUNT="$(_f_closure_names "$F_CLOSURE_FWD_DIR" | grep -cE '^test_' || true)"
+F_FC5_DERIVED="$(_f_closure_names "$F_CLOSURE_FWD_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
+
+assert "FC5a: a node-bound variable passed to an EXEC-FORWARDING helper is an edge (expected via:test_c_seed.sh, got ${F_FC5_POS_ROUTE:-<underived>})" \
+    test "$F_FC5_POS_ROUTE" = "via:test_c_seed.sh"
+assert "FC5b: the same handoff to an INERT lib, and sourcing a forwarding lib without handing it the target, are NOT edges (expected $F_CLOSURE_FWD_EXPECT derived, got $F_FC5_COUNT: ${F_FC5_DERIVED:-<none>})" \
+    test "$F_FC5_COUNT" -eq "$F_CLOSURE_FWD_EXPECT"
+
+# REAL-TREE ROUTE PINS. Membership alone would not catch a derivation that
+# reached the right file by the wrong edge, and for this file that is not
+# hypothetical: a path-mention grammar derives
+# test_run_all_ambient_isolation.sh via:run_all.sh off the `case`-pattern
+# comparison at :160, which is a datum, not a call. Pinning the route is what
+# makes the roster entry's recorded justification checkable.
+F_FC6_AMB_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_run_all_ambient_isolation.sh)"
+F_FC6_VENV_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_env_ambient_isolation.sh)"
+
+assert "FC6a: test_run_all_ambient_isolation.sh derives by its REAL second-order route, not off the case-pattern line (expected via:test_run_all.sh, got ${F_FC6_AMB_ROUTE:-<underived>})" \
+    test "$F_FC6_AMB_ROUTE" = "via:test_run_all.sh"
+assert "FC6b: test_verify_env_ambient_isolation.sh derives through the suite it actually invokes (expected via:test_occt_flock_gate.sh, got ${F_FC6_VENV_ROUTE:-<underived>})" \
+    test "$F_FC6_VENV_ROUTE" = "via:test_occt_flock_gate.sh"
+
 
 echo ""
 echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
