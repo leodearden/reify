@@ -422,6 +422,19 @@ mod tests {
         assert_eq!(dof_kind_of(&Type::Axis), None);
     }
 
+    /// `SO(N)` has `N(N-1)/2` rotational DOF (1, 3, 6 for N = 2, 3, 4), so the
+    /// flat answer of 3 is correct only at N=3. `Value::Orientation` is
+    /// quaternion-only and `try_infer_type` returns `Orientation(3)`
+    /// unconditionally, so no other arity is inhabited — the classifier must
+    /// decline rather than invent a DOF count for an uninhabitable type.
+    /// Widening this to a real per-arity formula is task 6336's call, not this
+    /// test's.
+    #[test]
+    fn dof_kind_of_uninhabitable_orientation_arity_is_none() {
+        assert_eq!(dof_kind_of(&Type::Orientation(2)), None);
+        assert_eq!(dof_kind_of(&Type::Orientation(4)), None);
+    }
+
     /// A `Scalar<Angle>` DOF field contributes 1 rotational freedom.
     #[test]
     fn declared_kinds_angle_is_one_rotational() {
