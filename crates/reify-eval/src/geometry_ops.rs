@@ -3420,7 +3420,7 @@ fn curve_arc(
     // pre-existing read order exactly (centre and radius were already first).
     //
     // What stays BARE is a deliberate triage decision, not an omission:
-    // `start_angle`/`end_angle` are angles (PRD 3's scope, tracked separately)
+    // `start_angle`/`end_angle` are angles (PRD 3's scope — gated by #5779)
     // and `ax`/`ay`/`az` are a dimensionless unit vector.
     let [cx, cy, cz, radius] = required_length_args(
         ["cx", "cy", "cz", "radius"],
