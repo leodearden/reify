@@ -169,4 +169,35 @@ mod tests {
             );
         }
     }
+
+    /// PDOCCOVER tripwire: the field-operator names' ONLY corpus mention is
+    /// `units.md:92`, inside the angle-crossing doctrine section. Losing it
+    /// would silently ship a `pdoccover` regression — PDOCCOVER
+    /// (`crates/reify-audit/src/pdoccover.rs`) would add one High
+    /// `undocumented-name:` finding per name — but `pdoccover` is opt-in
+    /// (`crates/reify-audit/pdoccover-baseline.txt` does not exist) and is
+    /// not part of the default sweep, so the merge gate alone would not
+    /// catch this. See
+    /// `docs/notes/angle-crossing-doctrine-placement-2026-08-19.md`.
+    #[test]
+    fn field_operator_names_keep_a_chunk_mention() {
+        // Mirrors `FIELD_OP_NAMES` at `crates/reify-compiler/src/units.rs:1041`.
+        // Hard-coded rather than depending on reify-compiler from reify-mcp to
+        // read the live registry: that would be a layering inversion for a
+        // four-element list, and PDOCCOVER already owns the live-registry
+        // direction.
+        const FIELD_OP_NAMES: &[&str] = &["gradient", "divergence", "curl", "laplacian"];
+        for name in FIELD_OP_NAMES {
+            assert!(
+                corpus_contains_word(name),
+                "field-operator name `{name}` has no word-boundary mention \
+                 anywhere in the chunk corpus. Its only corpus mention was \
+                 `units.md:92`; losing it adds one High `undocumented-name:` \
+                 PDOCCOVER finding (crates/reify-audit/src/pdoccover.rs). \
+                 `crates/reify-audit/pdoccover-baseline.txt` does not exist \
+                 and PDOCCOVER is opt-in, so the merge gate would not catch \
+                 this."
+            );
+        }
+    }
 }
