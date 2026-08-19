@@ -632,7 +632,12 @@ assert "nextest.toml: [profile.default] test-threads is a non-empty positive int
 # ---------------------------------------------------------------------------
 # Tests 17c-17e (task 5984): host-relative derivation of the global pool cap.
 #
-# Derivation: tt = min(HARD_CAP=16, nproc)   [nproc term skipped if unavailable]
+# Derivation: tt = min(HARD_CAP, nproc)   [nproc term skipped if unavailable]
+#   HARD_CAP — REIFY_NEXTEST_TEST_THREADS_HARD_CAP, whose DEFAULT is the resolved
+#     host CPU count (task 6018; it was the literal 16 under task 5984).  So by
+#     default the min() collapses to nproc and imposes NO ceiling below what
+#     nextest would itself pick; the knob remains an escape hatch for a host that
+#     genuinely needs tightening (Test 17f).
 #   REIFY_NEXTEST_TEST_THREADS — explicit override, wins verbatim.
 #   nproc — REIFY_OCCT_NPROC if valid, else system nproc/getconf.  That knob is
 #     deliberately REUSED rather than aliased: the value is the host's logical
@@ -640,13 +645,15 @@ assert "nextest.toml: [profile.default] test-threads is a non-empty positive int
 #     from task 4621's occt-only derivation).
 #
 # NO RAM term here, unlike the occt cap — deliberate, see the rationale block in
-# .config/nextest.toml: this cap's justification is CPU-share symmetry and
-# runqueue depth, not RSS.
+# .config/nextest.toml: this key exists to bound runqueue depth, not RSS.  OCCT
+# threads carry ~2 GiB anon each and ordinary Rust test binaries do not, which is
+# why the RAM term belongs on the occt cap and not on this one.
 #
-# Why host-relative at all (the task 4621 lesson): a bare literal 16 equals
-# nproc on a 16t laptop (no reduction whatsoever — the status quo this task
-# exists to fix) and OVERSUBSCRIBES an 8-core host or CPU-quota'd container 2x,
-# making the "cap" actively harmful.  REIFY_OCCT_NPROC is injected in every case
+# Why host-relative at all (the task 4621 lesson): a bare literal OVERSUBSCRIBES
+# any host smaller than the literal — an 8-core host or a CPU-quota'd container
+# would get 16 runnable test threads on a 16-literal, making the "cap" actively
+# harmful.  Host-relativity is what these tests pin; the DEFAULT ceiling being
+# nproc itself (task 6018) is what stops the derivation narrowing below it.  REIFY_OCCT_NPROC is injected in every case
 # below so each expectation is an exact integer on ANY host (Tests 13a-15b form).
 # Compile-free: no cargo, no nextest, no workspace compile (task 4613).
 #
@@ -672,9 +679,9 @@ assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=5: [profile.default] te
         [ \"\$val\" = \"5\" ]
     "
 
-# Test 17d: REIFY_OCCT_NPROC=8 -> 8 (nproc binds, below HARD_CAP=16).
-# This is the assertion a bare in-file literal cannot satisfy: on an 8-core host
-# a fixed 16 would oversubscribe 2x.
+# Test 17d: REIFY_OCCT_NPROC=8 -> 8 (nproc binds; HARD_CAP defaults to nproc, so
+# min(8, 8) = 8).  This is the assertion a bare in-file literal cannot satisfy:
+# on an 8-core host a fixed 32 would oversubscribe 4x.
 # RED against step-2: stays 16.
 assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads resolves to 8 (nproc binds, no 2x oversubscription)" \
     bash -c "
@@ -686,28 +693,34 @@ assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads
         [ \"\$val\" = \"8\" ]
     "
 
-# Test 17e: REIFY_OCCT_NPROC=32 -> 16 (HARD_CAP binds; workstation profile).
-# GREEN-by-coincidence before step-4 (the literal 16 is simply passed through
-# unrewritten) — kept deliberately: it is the host-independent workstation
-# anchor that pins the ceiling once 17d forces a real derivation.
-assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profile.default] test-threads resolves to 16 (HARD_CAP binds)" \
+# Test 17e: REIFY_OCCT_NPROC=32 -> 32 (workstation profile).  RE-POINTED in place
+# by task 6018 (was `-> 16 (HARD_CAP binds)`), not retired: the property under
+# test is unchanged — what the workstation profile resolves to — only its value
+# moved.  HARD_CAP now defaults to the resolved host CPU count, so the derivation
+# applies NO ceiling below nproc and min(32, 32) = 32.  This is the
+# host-independent workstation anchor: 17d pins that nproc binds downward on a
+# small host, 17f pins that an explicit HARD_CAP still tightens, and this pins
+# that nothing narrows the pool by default.
+assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profile.default] test-threads resolves to 32 (the injected host CPU count — the derivation applies NO ceiling below nproc by default)" \
     bash -c "
         cfg=\$(REIFY_OCCT_NPROC=32 \
               env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
               bash \"${GEN_CFG}\")
         val=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
         rm -f \"\$cfg\"
-        [ \"\$val\" = \"16\" ]
+        [ \"\$val\" = \"32\" ]
     "
 
 # ---------------------------------------------------------------------------
 # Tests 17f-17g (task 5984): the HARD_CAP knob and the >=1 clamp.
 #
 # 17f exercises the REIFY_NEXTEST_TEST_THREADS_HARD_CAP parse path — mirroring
-#   Test 15a's role for REIFY_OCCT_NEXTEST_HARD_CAP.  With NPROC=32 neither the
-#   default 16 nor the CPU term binds, so the custom ceiling is the SOLE active
-#   bound; without this assert a regression in that parse silently produces 16
-#   and nothing notices.
+#   Test 15a's role for REIFY_OCCT_NEXTEST_HARD_CAP.  With NPROC=32 the CPU term
+#   does not bind and the default ceiling IS that CPU term, so the custom
+#   ceiling 4 is the SOLE active bound; without this assert a regression in that
+#   parse silently produces 32 (the unnarrowed default) and nothing notices.
+#   This is the assert that keeps the tightening escape hatch alive now that the
+#   default no longer narrows anything (task 6018).
 # 17g pins the zero-clamp.  `0` is digits-only-VALID, so it passes the parse
 #   guard and would otherwise reach the config as `test-threads = 0`.
 #   VERIFIED on cargo-nextest 0.9.136 (scratch crate, task-5984 review pass):
@@ -764,7 +777,7 @@ assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS_HARD_CAP=0/NPROC=32: [p
 # matter what the config says.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Tests 17h-17i (task 5984): REGRESSION GUARDS (green-on-arrival) — no oversubscription; global cap is the binding ceiling ---"
+echo "--- Tests 17h-17i (task 5984, re-pointed 6018): REGRESSION GUARDS — no oversubscription; the occt group cap is a genuine backstop below the global ---"
 
 # Test 17h (no oversubscription): the generated global pool never exceeds the
 # host's CPU count.  This is the invariant the whole task exists to establish,
@@ -781,19 +794,29 @@ assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8 (no explicit overrides): genera
         [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ] && [ \"\$val\" -le 8 ]
     "
 
-# Test 17i (the global is the binding ceiling; the occt group is a BACKSTOP,
-# not competing config): under the host-independent workstation profile, extract
-# BOTH caps from the SAME generated file and assert the global is strictly less
-# than the occt group cap (16 < 24).  Pins the design property documented in
-# .config/nextest.toml: the global subsumes the group cap on this host class,
-# TIGHTENING the group's effective memory bound (24x2=48 GiB -> 16x2=32 GiB)
-# rather than loosening anything — which is why the group is kept, not deleted.
+# Test 17i (the occt group cap is a GENUINE BACKSTOP, not subsumed config):
+# under the host-independent workstation profile, extract BOTH caps from the SAME
+# generated file and assert the global is strictly GREATER than the occt group
+# cap (32 > 24).  RE-POINTED in place by task 6018, not retired: the property
+# under test — the ORDERING of the two caps on this host class — is the same one
+# 17h/17i were written to pin; task 5984's narrowing had inverted it, and
+# un-narrowing the global inverts it back.
 #
-# DO NOT generalise this to "global <= occt cap on any host".  That is FALSE:
-# the occt cap carries a RAM term the global deliberately does not, so on e.g.
-# NPROC=8 with a small MemTotal the occt cap resolves BELOW the global.  This
-# assertion is deliberately scoped to the injected workstation profile.
-assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): generated [profile.default] test-threads is strictly less than the generated [test-groups] occt max-threads, BOTH extracted from the same file (global binds; occt group is a backstop)" \
+# Why the new direction is the load-bearing one.  While the global resolved to 16
+# it subsumed the group entirely and a group cap of 24 could never bind — the
+# group was dead config kept only against a future raise.  With the global back
+# at nproc (32) the group cap binds again at 24, so the group's effective memory
+# bound is 24 x ~2 GiB = 48 GiB per run, consistent with the headroom basis at
+# the top of .config/nextest.toml.  That is exactly the property the AMENDMENT
+# block in that file now asserts, and this assert is what keeps the two honest.
+#
+# DO NOT generalise this to "global >= occt cap on any host".  That is FALSE in
+# BOTH directions, and now in the other one: the occt cap carries a RAM term the
+# global deliberately does not, so on e.g. NPROC=8 with a small MemTotal the occt
+# cap resolves BELOW the global — and on a host where an operator tightens
+# REIFY_NEXTEST_TEST_THREADS_HARD_CAP the global drops back below the group.
+# This assertion is deliberately scoped to the injected workstation profile.
+assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): generated [profile.default] test-threads is strictly GREATER than the generated [test-groups] occt max-threads, BOTH extracted from the same file (the occt group cap is a genuine backstop below the global, not subsumed by it)" \
     bash -c "
         cfg=\$(REIFY_OCCT_NPROC=32 REIFY_OCCT_MEMTOTAL_GIB=128 \
               env -u REIFY_NEXTEST_TEST_THREADS -u REIFY_NEXTEST_TEST_THREADS_HARD_CAP \
@@ -802,7 +825,7 @@ assert "gen-nextest-config.sh NPROC=32/MEM=128 (workstation profile): generated 
         tt=\$(awk '${_DEFAULT_TT_AWK}' \"\$cfg\")
         oc=\$(awk '${_OCCT_AWK}' \"\$cfg\")
         rm -f \"\$cfg\"
-        [ -n \"\$tt\" ] && [ -n \"\$oc\" ] && [ \"\$tt\" -lt \"\$oc\" ]
+        [ -n \"\$tt\" ] && [ -n \"\$oc\" ] && [ \"\$tt\" -gt \"\$oc\" ]
     "
 
 # ---------------------------------------------------------------------------
