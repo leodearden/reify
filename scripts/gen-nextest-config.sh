@@ -214,10 +214,16 @@ case "${REIFY_NEXTEST_TEST_THREADS:-}" in
     (''|*[!0-9]*)
         # Explicit override not set (or invalid) — derive host-relative cap.
 
-        # HARD_CAP: upper ceiling, default 16 (matches dark_factory:3589's
-        # pytest -n 16 so neither fleet gains CPU share over the other).
+        # HARD_CAP: upper ceiling.  DEFAULT = the resolved host CPU count
+        # ($_nproc), so min(HARD_CAP, nproc) collapses to nproc and this
+        # derivation imposes NO ceiling below what nextest would itself pick
+        # (task 6018).  ${_nproc:-32} is the LAST RESORT, reached only when
+        # neither `nproc` nor `getconf _NPROCESSORS_ONLN` resolved — mirroring
+        # the occt derivation's skip-unavailable-term structure, and the same
+        # constant as the in-file `test-threads = 32` literal in
+        # .config/nextest.toml (keep the two coupled).
         case "${REIFY_NEXTEST_TEST_THREADS_HARD_CAP:-}" in
-            (''|*[!0-9]*) tt_hard_cap=16 ;;
+            (''|*[!0-9]*) tt_hard_cap="${_nproc:-32}" ;;
             (*)           tt_hard_cap="${REIFY_NEXTEST_TEST_THREADS_HARD_CAP}" ;;
         esac
 
