@@ -249,6 +249,21 @@ fn interp_bare_coordinate_drops_op_dimensioned_builds() {
     );
 }
 
+#[test]
+fn bezier_bare_coordinate_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "bezier",
+        "x1",
+        r#"structure def BareBezier {
+            let w = bezier(0, 0, 0, 5, 10, 0, 10, 0, 0)
+        }"#,
+        r#"structure def DimBezier {
+            let w = bezier(0mm, 0mm, 0mm, 5mm, 10mm, 0mm, 10mm, 0mm, 0mm)
+        }"#,
+        |op| matches!(op, GeometryOp::BezierCurve { .. }),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The desugaring cross-check — the highest-risk unknown in task 5623
 // ---------------------------------------------------------------------------

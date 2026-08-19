@@ -6839,6 +6839,95 @@
     }
 
     // ---------------------------------------------------------------------------
+    // `bezier`'s VARIADIC control-point triples (task 5658, R2 sweep)
+    //
+    // Like `interp`, every position is a control-point coordinate and there is
+    // no dimensionless neighbour. Carried at THREE control points rather than
+    // two so the row also proves `coord_display` keeps numbering past the first
+    // point — a `% 3` / `/ 3` slip that produced `x1,y1,z1,x1,y1,z1,…` would
+    // pass a two-point fixture's per-position sweep but collapse the count
+    // assertion here.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `bezier` op from its nine gated coordinates (3 control points),
+    /// in gate order.
+    fn bezier_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        variadic_curve(CurveKind::BezierCurve, c)
+    }
+
+    /// `bezier`'s row in the shared gate table — the WIDEST gated set in the
+    /// whole Contract C table at nine positions.
+    const BEZIER_GATE: LengthGateCase = LengthGateCase {
+        label: "bezier",
+        build: bezier_with_coords,
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2", "x3", "y3", "z3"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_bezier_length_gate_rejects_every_coordinate() {
+        assert_length_gated(BEZIER_GATE);
+    }
+
+    /// Nine DISTINCT Length coordinates land in their own IR slots, in order —
+    /// pinning the flat-stream → `chunks_exact(3)` grouping across three
+    /// control points.
+    #[test]
+    fn compile_geometry_op_bezier_length_coordinates_accepted() {
+        let values = ValueMap::new();
+
+        let op = bezier_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+            literal_length(0.023),
+            literal_length(0.045),
+            literal_length(0.067),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::BezierCurve { control_points }) => {
+                assert_eq!(
+                    control_points,
+                    vec![
+                        [0.012, 0.034, 0.056],
+                        [0.078, 0.090, 0.011],
+                        [0.023, 0.045, 0.067],
+                    ]
+                );
+            }
+            other => panic!(
+                "expected Ok(BezierCurve) for nine Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "nine finite Length coordinates are the fully clean path and must \
+             emit no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: ALL FAILURES AT ONCE, across every R1 family
     // ---------------------------------------------------------------------------
 
@@ -6865,6 +6954,7 @@
             HELIX_GATE,
             ARC_GATE,
             INTERP_GATE,
+            BEZIER_GATE,
         ] {
             assert_every_bare_position_reported(case);
         }
