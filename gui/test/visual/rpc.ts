@@ -50,16 +50,19 @@ export type RpcResult<T> =
  * that trailing block. That TEXT-targeted rewrite lets branch 4 win ahead of
  * branch 3 and silently changes branch precedence — and `./run.ts` feeds
  * `value.data` straight into `Buffer.from(…, "base64")`, so the failure would
- * surface as corrupt PNG bytes, not a type error. Measured, it fails case 4b
- * alone (1 failed | 20 passed) — see ./rpc.test.ts's "documented divergence"
- * suite and docs/debug-mcp-contract.md §2a, which pin the same mutation.
+ * surface as corrupt PNG bytes, not a type error. Before assuming a
+ * TEXT-targeted rewrite here is caught by a test, check ./rpc.test.ts's
+ * "documented divergence" suite yourself.
  *
- * An IMAGE-targeted `.find(c => c.type === "image")` is a different matter and
- * is NOT what that guard catches: it agrees with the positional read on every
- * envelope this contract admits, because §2d fixes the image at `content[0]`,
- * so searching for it and indexing to it agree. Branch 3 stays positional to
- * keep branch PRECEDENCE explicit at the point of reading, not because a test
- * would catch that rewrite.
+ * An IMAGE-targeted `.find(c => c.type === "image")` is a different rewrite:
+ * it agrees with the positional read on every envelope this contract admits,
+ * because `mcp_content_blocks` (gui/src-tauri/src/debug_server.rs) always
+ * builds the image block first and `content.push`es any trailing diagnostics
+ * text after it — an ordering pinned by the Rust test
+ * `mcp_content_blocks_appends_pane_diagnostics_beside_the_image` — so
+ * searching for the image and indexing to it agree. Branch 3 stays positional
+ * to keep branch PRECEDENCE explicit at the point of reading, not because a
+ * test would catch the TEXT-targeted rewrite.
  */
 export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
   const env = envelope as Record<string, unknown>;
