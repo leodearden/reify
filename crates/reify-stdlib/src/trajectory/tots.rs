@@ -48,10 +48,10 @@ use crate::dynamics::rnea::inverse_dynamics_open_chain;
 /// The family has two members, one per joint kind (the per-joint-kind duality
 /// declared in `trajectory.ri`):
 ///
-///   - `TOTSShaper`         — prismatic/linear (`Scalar<Velocity>` /
-///                            `Scalar<Acceleration>` limits)
-///   - `RevoluteTOTSShaper` — revolute/rotational (`Scalar<AngularVelocity>` /
-///                            `Rate<AngularVelocity>` limits)
+/// - `TOTSShaper` — prismatic/linear (`Scalar<Velocity>` /
+///   `Scalar<Acceleration>` limits)
+/// - `RevoluteTOTSShaper` — revolute/rotational (`Scalar<AngularVelocity>` /
+///   `Rate<AngularVelocity>` limits)
 ///
 /// **Why this must be widened in lockstep with the `.ri` surface.** A `Shaper`
 /// refiner that a dispatch site does not recognise falls through to
