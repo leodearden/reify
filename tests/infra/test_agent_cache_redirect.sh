@@ -889,9 +889,14 @@ G_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 # set is no longer "roles DF sandboxes today" (roles.py sandboxed=True), it is
 # "roles reify's yaml redirects ahead of DF sandboxing them": implementer,
 # debugger and simple_task are sandboxed today; architect,
-# reviewer_comprehensive and judge are redirected pre-emptively per the
-# sibling suite's header. Not reify-observable, so a change to either side's
-# copy needs a manual update in both places.
+# reviewer_comprehensive, judge and merger are redirected pre-emptively per
+# the sibling suite's header (merger added by #6275, which re-evaluated an
+# exclusion whose rationale task 5836 had inverted). Not reify-observable, so
+# a change to either side's copy needs a manual update in both places — and
+# note that is now doubly true: this is the THIRD hand-maintained mirror of
+# the set, after the sibling suite's CACHE_REDIRECT_ROLES and the yaml's
+# role_env_overrides, and this enumeration is the copy that silently went
+# stale when merger was added.
 G_CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge merger"
 
 # REIFY_AGENT_CACHE_ROOT is UNSET here, unlike in run_redirect: observing the
