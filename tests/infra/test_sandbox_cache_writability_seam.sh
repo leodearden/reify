@@ -18,15 +18,27 @@
 # redirected here BEFORE DF confines it (task 5858 added architect,
 # reviewer_comprehensive and judge on exactly that basis).
 #
-# DF CITES IN THIS FILE ARE BY SYMBOL NAME, NOT BY LINE NUMBER, deliberately.
-# These breadcrumbs exist so a DF-side author can find the fact being claimed,
-# and line anchors rot on every DF edit: #6275's review measured four of them
-# stale at once -- `roles.py:401` (architect's Bash) was really 965,
-# `roles.py:1161` (merger's Bash) really 1368, `roles.py:1512` (the ROLES
-# registry) really 2088, `roles.py:643` (_reviewer_role) really 1184 -- with
-# every one of the underlying CLAIMS still true. A wrong anchor is worse than
-# no anchor: it sends the reader to unrelated code and quietly discredits a
-# correct claim. Cite `roles.py, MERGER.allowed_tools`, not `roles.py:1368`.
+# DF CITES IN THIS FILE ARE BY SYMBOL NAME OR GREPPABLE ANCHOR TEXT, NEVER BY
+# LINE NUMBER, deliberately. These breadcrumbs exist so a DF-side author can
+# find the fact being claimed, and line anchors rot on every DF edit. #6275's
+# review re-measured all eleven DF anchors this file and the yaml carried:
+# NINE were stale, with every underlying CLAIM still true --
+#   roles.py:401  (architect's Bash)      was really 965
+#   roles.py:1161 (merger's Bash)         really 1368
+#   roles.py:1512 (the ROLES registry)    really 2088
+#   roles.py:643  (_reviewer_role)        really 1184
+#   config.py:4003 (the role_env_overrides validator)  really 4398
+#   config.py:4008 (the ANTHROPIC_* comment)           really 4320
+#   config.py:3801 (the role_env_overrides Field)      really 4325
+#   workflow.py:10358 (the "do not add 'judge'" rule)  really 12424
+#   shared/task_metadata.py:70 (KNOWN_ROLE_NAMES)      really :72
+# Only roles.py:45 (`sandboxed: bool = False`) and roles.py:106
+# (_READ_ONLY_TOOLS) still resolved. A wrong anchor is worse than no anchor:
+# it sends the reader to unrelated code and quietly discredits a correct
+# claim. Refreshing the numbers just reproduces the rot on DF's next edit, so
+# cite `roles.py, MERGER.allowed_tools` -- or a quoted string to grep for --
+# and never `roles.py:1368`. The line numbers above are the EVIDENCE for this
+# rule, not breadcrumbs; they are the only ones in this file.
 #
 # THE WIDER ENTRIES ARE NOT UNIFORMLY "INERT UNTIL DF SANDBOXES THE ROLE".
 # workflow.py:_build_agent_env merges role_env_overrides.get(role.name, {})
@@ -65,8 +77,9 @@
 #     future tool-grant widening, NOT on the "dies on its first cargo write"
 #     rationale that applies to the sandboxed three.
 #
-# WHY `judge` IS SAFE despite workflow.py:10358's "do not add 'judge' to
-# role_env_overrides": that rule is scoped to ENDPOINT env
+# WHY `judge` IS SAFE despite workflow.py's "do not add 'judge' to
+# role_env_overrides" comment (grep that string; it cites 3cd380a079): that
+# rule is scoped to ENDPOINT env
 # (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN routing judge through vLLM,
 # where max_model_len breaks tool-use after 2 rounds, 3cd380a079).
 # CARGO_HOME / npm_config_cache route nothing; the global `env_overrides`
@@ -90,8 +103,9 @@
 # Warm paths still succeed, so this fails exactly on dependency-adding /
 # cold-cache tasks — routine in a Rust workspace + Tauri GUI repo.
 #
-# FIX: dark-factory-orchestrator.yaml's `role_env_overrides` (DF
-# config.py:3801, a dict[role -> dict[env]] merged LAST into EVERY role's
+# FIX: dark-factory-orchestrator.yaml's `role_env_overrides` (DF config.py,
+# the `role_env_overrides` Field — a dict[role -> dict[env]] merged LAST into
+# EVERY role's
 # env by workflow.py:_build_agent_env — not just the three infra roles)
 # redirects CARGO_HOME and npm_config_cache to /tmp paths for each
 # sandboxed role. /tmp is the one host-global writable root in the write
@@ -119,7 +133,8 @@
 #       only entries defining CARGO_HOME/npm_config_cache -- because
 #       role_env_overrides is a general-purpose DF surface whose primary
 #       documented use is per-role ENDPOINT env (ANTHROPIC_BASE_URL /
-#       ANTHROPIC_AUTH_TOKEN, config.py:4008). An unrelated, entirely
+#       ANTHROPIC_AUTH_TOKEN -- see the comment on config.py's
+#       role_env_overrides Field). An unrelated, entirely
 #       legitimate `merger: {ANTHROPIC_BASE_URL: ...}` must NOT turn this
 #       cache-writability guard red and misdirect its author here.
 #     - MEMBER NAMES: (C) below pins every CACHE_REDIRECT_ROLES entry
@@ -489,8 +504,9 @@ Checks:
                                                general-purpose DF surface
                                                whose other documented use is
                                                per-role ENDPOINT env
-                                               (ANTHROPIC_BASE_URL etc.,
-                                               config.py:4008), and an
+                                               (ANTHROPIC_BASE_URL etc., per
+                                               the comment on config.py's
+                                               role_env_overrides Field), and an
                                                unrelated entry of that kind
                                                must not turn this
                                                cache-writability guard red.
@@ -653,7 +669,8 @@ if check == "no_undeclared_cache_redirect":
     declared = set(rest)
     # Scoped to the CACHE contract on purpose: an entry that carries only
     # endpoint env (ANTHROPIC_BASE_URL/AUTH_TOKEN -- role_env_overrides' other
-    # documented use, config.py:4008) is none of this guard's business.
+    # documented use, per the comment on that Field in DF's config.py) is none
+    # of this guard's business.
     undeclared = sorted(
         role
         for role, role_map in overrides.items()

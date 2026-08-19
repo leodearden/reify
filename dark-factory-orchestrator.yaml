@@ -775,7 +775,8 @@ sandbox:
 #   The key is `reviewer_comprehensive`, NOT the collapsed `reviewer` (which
 #   validates silently against DF's KNOWN_ROLE_NAMES yet delivers nothing).
 #   The full coupling analysis — that trap, why `judge` is safe despite
-#   workflow.py:10358, and what this seam still cannot observe — lives in
+#   workflow.py's "do not add 'judge' to role_env_overrides" comment, and
+#   what this seam still cannot observe — lives in
 #   ONE place, the header of
 #   tests/infra/test_sandbox_cache_writability_seam.sh (the file whose
 #   assertions enforce it). Do not restate it here; the two copies drifted
