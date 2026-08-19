@@ -2994,4 +2994,68 @@ structure Assembly {
             reparsed.errors
         );
     }
+
+    // --- task #6162: bound the client-controlled URI in the did_change
+    // unknown-URI log line ---
+
+    #[test]
+    fn truncate_for_log_bounds_long_input_and_never_splits_a_codepoint() {
+        // (a) short input passes through verbatim, unchanged.
+        assert_eq!(truncate_for_log("file:///tmp/a.ri"), "file:///tmp/a.ri");
+        assert_eq!(truncate_for_log(""), "");
+
+        // (b) boundary: an input of EXACTLY LOG_URI_MAX_CHARS chars is
+        // returned verbatim, not truncated. This is the off-by-one that
+        // `char_indices().nth()` gets right and a naive `len() > MAX` guard
+        // gets wrong.
+        let exactly_max: String = "a".repeat(LOG_URI_MAX_CHARS);
+        assert_eq!(truncate_for_log(&exactly_max), exactly_max);
+
+        // (c) one char over the boundary: keeps the first 256 chars and
+        // reports the exact byte length (257) in the marker.
+        let one_over: String = "a".repeat(LOG_URI_MAX_CHARS + 1);
+        let truncated = truncate_for_log(&one_over);
+        assert!(truncated.starts_with(&"a".repeat(LOG_URI_MAX_CHARS)));
+        assert!(
+            truncated.contains("[truncated, 257 bytes total]"),
+            "expected truncation marker with byte count, got: {truncated}"
+        );
+
+        // (d) multi-byte safety: 300 repetitions of a 3-byte codepoint
+        // (900 bytes total). A naive `&s[..256]` byte slice would PANIC
+        // here, since byte offset 256 falls mid-codepoint — that is the
+        // regression this case exists to catch. The result must keep
+        // exactly 256 CHARS of prefix (not more, not fewer) and report the
+        // true byte length in the marker.
+        let multi_byte: String = "\u{2318}".repeat(300);
+        assert_eq!(multi_byte.len(), 900);
+        let truncated_multi = truncate_for_log(&multi_byte);
+        assert_eq!(
+            truncated_multi
+                .chars()
+                .take_while(|&c| c == '\u{2318}')
+                .count(),
+            LOG_URI_MAX_CHARS,
+            "must keep exactly {LOG_URI_MAX_CHARS} chars of prefix, got: {truncated_multi}"
+        );
+        assert!(
+            truncated_multi.contains("[truncated, 900 bytes total]"),
+            "expected 900-byte marker, got: {truncated_multi}"
+        );
+
+        // (e) the measured payload shape from the bug report: a huge
+        // client-controlled URI must collapse to a small, bounded line.
+        let huge = format!("file:///tmp/{}.ri", "a".repeat(160 * 1024));
+        let truncated_huge = truncate_for_log(&huge);
+        assert!(
+            truncated_huge.len() < 1024,
+            "truncated huge URI should be well under 1 KiB, got {} bytes",
+            truncated_huge.len()
+        );
+        assert!(
+            truncated_huge.contains(&format!("[truncated, {} bytes total]", huge.len())),
+            "expected marker reporting the true input length {}, got: {truncated_huge}",
+            huge.len()
+        );
+    }
 }
