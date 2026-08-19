@@ -2546,13 +2546,20 @@ fn rigid_mass_props_survive_watcher_reload() {
 ///
 /// (a) the mass-prop cells surface — the argv launch is the entry point the
 ///     2026-07-22 dogfood retest reported as broken;
-/// (b) every `files[].path` is a canonical ABSOLUTE path — the #5193 identity
-///     contract, produced only by `UnresolvedGuiState::resolve`. Without it an
-///     argv-launched GUI receives stem-only module keys like
-///     `"rigid_mass_props_smoke.ri"`;
+/// (b) every `files[].path` in the RETURNED state is a canonical ABSOLUTE path —
+///     the #5193 identity contract, produced only by `UnresolvedGuiState::resolve`;
 /// (c) the state agrees with `open_file_engine_impl`'s for the same file — same
 ///     `files[].path` set and same value-cell determinacy map — so the two entry
 ///     points cannot silently drift apart again.
+///
+/// WHAT (b) DOES NOT SAY. This pins the contract at the FUNNEL boundary, not the
+/// pixels of an argv-launched GUI. `resolve` mutates only the returned `GuiState`,
+/// and `main()` uses that return value for its `Err` arm alone; the frontend's
+/// startup path is `initApp` → `get_initial_state` → `build_gui_state`, which
+/// rebuilds `files[]` from the stem-only `source_map()` keys. So this test stays
+/// green whether or not an argv launch ever paints absolute paths — read it as
+/// "the two funnels agree", never as "the #5193 split is closed end to end". See
+/// `commands::load_initial_file_impl`'s docs for the follow-up that would close it.
 ///
 /// RED before the accompanying impl: `commands::load_initial_file_impl` does not
 /// exist, so this does not compile.
@@ -2572,7 +2579,9 @@ fn load_initial_file_impl_matches_open_file_engine_impl_contract() {
     // (a) the headline defect.
     assert_rigid_mass_props_determined(&argv_state, "argv");
 
-    // (b) the #5193 identity contract.
+    // (b) the #5193 identity contract, AS PINNED AT THIS FUNNEL's boundary — see
+    //     the "WHAT (b) DOES NOT SAY" paragraph above before reading this as an
+    //     end-to-end guarantee for an argv-launched GUI.
     assert!(
         !argv_state.files.is_empty(),
         "an argv load must report at least one file entry"
@@ -2581,14 +2590,15 @@ fn load_initial_file_impl_matches_open_file_engine_impl_contract() {
         let p = std::path::Path::new(&f.path);
         assert!(
             p.is_absolute(),
-            "argv `files[].path` must be an absolute canonical path (the #5193 \
-             contract, produced by UnresolvedGuiState::resolve); got {:?}",
+            "the `files[].path` RETURNED by load_initial_file_impl must be an absolute \
+             canonical path (the #5193 contract, produced by UnresolvedGuiState::resolve); \
+             got {:?}",
             f.path
         );
         assert_eq!(
             p,
             canonical.as_path(),
-            "argv `files[].path` must equal the canonicalized fixture path; got {:?}",
+            "the returned `files[].path` must equal the canonicalized fixture path; got {:?}",
             f.path
         );
     }

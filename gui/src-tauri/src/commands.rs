@@ -619,10 +619,22 @@ pub fn open_file_engine_impl(
 ///
 /// `main()` previously called `EngineSession::load_file` inline and DISCARDED the
 /// returned `GuiState`, so [`UnresolvedGuiState::resolve`] never ran on the argv
-/// path: an argv-launched GUI received stem-only module keys (`"design.ri"`) in
-/// `files[].path` where a File-Open launch received canonical absolute paths.
-/// Routing argv through here closes that identity split (#5193) and makes the
-/// startup state observable to tests (#5338).
+/// path at all. Routing argv through here leaves ONE load body behind both entry
+/// points (they can no longer drift), applies `resolve` to the state this function
+/// returns, and makes the startup state observable to tests (#5338).
+///
+/// SCOPE OF THAT CLAIM — [`UnresolvedGuiState::resolve`] mutates only the returned
+/// `GuiState`, never engine state, and `main()` uses the return value for its `Err`
+/// arm only. The frontend's startup path (`initApp` → `get_initial_state` →
+/// [`crate::engine::EngineSession::build_gui_state`]) rebuilds `files[]` from the
+/// stem-only `source_map()` keys, so an argv-LAUNCHED GUI still paints stem-only
+/// `files[].path` — the #5193 identity split is closed at THIS boundary (which is
+/// what `load_initial_file_impl_matches_open_file_engine_impl_contract` pins), not
+/// end to end on the argv launch. Delivering it end to end means applying the same
+/// resolve where the frontend reads it — at `build_gui_state`, against the session's
+/// canonical `file_path` — which changes `files[].path` for every `get_initial_state`
+/// consumer and is therefore out of scope here; filed as a follow-up (#5338
+/// amendment).
 ///
 /// `path` MUST already be canonical — [`resolve_initial_file_path`] is the argv
 /// string → canonical `PathBuf` step and stays the caller's responsibility, and

@@ -783,13 +783,23 @@ fn main() {
     // `update_source` for import resolution) is always an absolute canonical
     // path, regardless of how the user spelled the CLI argument.
     // `engine_arc` is built BEFORE the argv load so the load can go through the
-    // shared #5193 open funnel (`load_initial_file_impl`), which takes a
-    // `&Mutex<EngineSession>`. The previous inline `session.load_file(..)` here
-    // bypassed that funnel and discarded the returned `GuiState`, so
-    // `UnresolvedGuiState::resolve` never ran and an argv-launched GUI received
-    // stem-only `files[].path` module keys instead of canonical absolute paths
-    // (#5193 / #5338). The emitter/sink installation block still runs later in
-    // `setup()` against this same `engine_arc`.
+    // shared open funnel (`load_initial_file_impl`), which takes a
+    // `&Mutex<EngineSession>`. The previous inline `session.load_file(..)` here was
+    // a SECOND copy of the load body that could — and did — drift from the
+    // File-Open path; routing through the funnel leaves exactly one, and surfaces a
+    // load failure as a warning instead of silently ignoring it. The emitter/sink
+    // installation block still runs later in `setup()` against this same
+    // `engine_arc`.
+    //
+    // SCOPE — this does NOT, on its own, give an argv-launched frontend the
+    // canonical absolute `files[].path` entries of the #5193 identity contract.
+    // `UnresolvedGuiState::resolve` inside the funnel mutates only the RETURNED
+    // `GuiState`, and this call site uses that return value for its `Err` arm only:
+    // the frontend's startup path is `initApp` → `get_initial_state` →
+    // `build_gui_state`, which rebuilds `files[]` from the stem-only `source_map()`
+    // keys. Closing that end to end means applying the resolve where the frontend
+    // actually reads it; see `commands::load_initial_file_impl`'s docs, which carry
+    // the follow-up.
     let engine_arc = Arc::new(Mutex::new(session));
 
     let mut initial_file: Option<std::path::PathBuf> = None;
