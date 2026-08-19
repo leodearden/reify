@@ -92,17 +92,36 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # while `test-thredz` does.  Same "verified once on 0.9.136" convention this
 # file already uses for the `--config`-is-a-NO-OP-for-test-groups note above.
 #
-# The in-file literal '16' is the sed-template fallback (the HARD_CAP ceiling),
-# mirroring the "in-file literal '24'" convention for the occt cap above:
-# scripts/gen-nextest-config.sh rewrites it to the host-resolved
-# min(HARD_CAP=16, nproc) for verify.sh, and a bare `cargo nextest run` that
-# bypasses verify.sh entirely still gets a bounded pool rather than 32.
+# The in-file literal '32' is the SED-TEMPLATE FALLBACK — the reference-host
+# nproc placeholder — mirroring the "in-file literal '24'" convention for the
+# occt cap above.  It is NOT a narrowing ceiling: scripts/gen-nextest-config.sh
+# rewrites this line to the host-resolved min(HARD_CAP, nproc) for every verify
+# pass (verify.sh passes the generated file as `--config-file`), and HARD_CAP
+# itself now defaults to that same resolved nproc, so the generated config is
+# the host-relative one and applies no ceiling below what nextest would pick.
+#
+# CONSEQUENCE ON A SMALLER HOST — read this before copying the file: a bare
+# `cargo nextest run` that bypasses verify.sh gets this literal VERBATIM, i.e.
+# 32, rather than that host's own CPU count.  On an 8-core box that is a 4x
+# oversubscription.  Use the generated config there —
+#   cfg=$(scripts/gen-nextest-config.sh); cargo nextest run --config-file "$cfg"
+# — or set REIFY_NEXTEST_TEST_THREADS explicitly.  Every verify path already
+# does the former, so this affects the manual dev-convenience path only.
+#
+# A BARE INTEGER is retained deliberately rather than nextest's host-relative
+# `test-threads = "num-cpus"`, which would otherwise be the more faithful
+# expression of "host nproc": gen-nextest-config.sh substitutes on the anchor
+# `^test-threads = [0-9][0-9]*$`, and Test 17k in
+# tests/infra/test_occt_gated_scope.sh pins that exactly one line matches it.
+# A quoted string breaks that anchor (the substitution would silently no-op) and
+# breaks Test 17b's match($0,/[0-9]+/) extraction.  If a future change does want
+# "num-cpus", the anchor and both tests must move WITH it, in one commit.
 #
 # CLI PRECEDENCE: nextest's own `--test-threads` beats the config file, so
 # verify.sh's `--test-threads=N` (task 5264, the dark-factory offline deep-test
 # lane) still wins verbatim when passed.  This key changes only the UNSET
 # default.
-test-threads = 16
+test-threads = 32
 
 # Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
 # Kept in sync with scripts/occt-touching-crates.txt by hand (these are config
