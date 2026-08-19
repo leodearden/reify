@@ -1118,16 +1118,17 @@ _f_excluded_node() {
     return 1
 }
 
+# _f_deadline_capable <dir> -> the derived ROSTER: the closure restricted to
+# test_*.sh basenames, names only, sorted. run_all.sh is filtered back out
+# here, and only here -- it is a capability NODE (three roster members reach
+# their deadline only through it) but never a roster ENTRY, because D_ROSTER
+# lists SUITES forked under the pool.
+#
+# `grep -E` is a PRINTING grep, which drains its input, so it is not the
+# `-q`/`-l` shape the SIGPIPE/pipefail note above forbids; the trailing
+# `|| true` is for a legitimately empty result, not to mask a failure.
 _f_deadline_capable() {
-    local _d="$1" _f _base
-    for _f in "$_d"/test_*.sh; do
-        [ -e "$_f" ] || continue
-        _base="${_f##*/}"
-        if _f_excluded_node "$_base"; then continue; fi
-        if _f_direct_capable_file "$_f"; then
-            printf '%s\n' "$_base"
-        fi
-    done | sort
+    _f_closure "$1" | cut -d' ' -f1 | grep -E '^test_' || true
 }
 
 # ---------------------------------------------------------------------------
@@ -1949,6 +1950,25 @@ assert "FC6a: test_run_all_ambient_isolation.sh derives by its REAL second-order
     test "$F_FC6_AMB_ROUTE" = "via:test_run_all.sh"
 assert "FC6b: test_verify_env_ambient_isolation.sh derives through the suite it actually invokes (expected via:test_occt_flock_gate.sh, got ${F_FC6_VENV_ROUTE:-<underived>})" \
     test "$F_FC6_VENV_ROUTE" = "via:test_occt_flock_gate.sh"
+
+# REAL-TREE NEGATIVE PIN. This is the one false admission the whole two-phase
+# rule exists to prevent, so it is pinned rather than left to F1: F1 would
+# also go RED on it, but only as an unexplained extra roster entry, and the
+# natural repair -- declaring it -- would silently produce a member whose
+# measured justification reads "not actually deadline-capable". Named here,
+# a future widening that re-admits it fails against a stated reason.
+F_FC7_DELTA_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_release_delta_skip.sh)"
+# REAL-TREE NON-VACUITY PIN. run_all.sh being a DIRECT seed is what makes
+# three of the five transitive members capable at all. If it silently stopped
+# seeding, those three would vanish from the derivation -- and F1 would stay
+# green against a correspondingly shrunken declaration, which is exactly the
+# failure mode D4a's own non-vacuity assert exists to catch one level down.
+F_FC7_RUNALL_ROUTE="$(_f_route_of "$SCRIPT_DIR" run_all.sh)"
+
+assert "FC7a: test_verify_release_delta_skip.sh is NOT derived -- it binds run_all.sh purely as an inspection target, and admitting it is the measured failure that sank the run_all alternation (expected <underived>, got ${F_FC7_DELTA_ROUTE:-<underived>})" \
+    test -z "$F_FC7_DELTA_ROUTE"
+assert "FC7b: run_all.sh is derived as a DIRECT seed node, so the three members that reach a deadline only through it are not vacuously absent (expected direct, got ${F_FC7_RUNALL_ROUTE:-<underived>})" \
+    test "$F_FC7_RUNALL_ROUTE" = "direct"
 
 
 echo ""
