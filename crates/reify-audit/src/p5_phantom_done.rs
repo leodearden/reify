@@ -155,6 +155,25 @@ fn extract_fn_name(line: &str) -> Option<String> {
 /// this exact string so the keys line up.
 const MAIN_BASE: &str = "main";
 
+/// Which caller a per-task pass is running for.
+///
+/// The two callers observe genuinely different task states, so a handful of
+/// guards must diverge — see [`check_task`] (status) and [`check_one`]
+/// (provenance). Threaded as a parameter rather than added to
+/// [`AuditContext`] deliberately: a context field would force a mechanical
+/// edit at every one of the ~40 test construction sites for no behavioural
+/// gain, and would make the mode look like ambient configuration rather than
+/// a property of the call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CheckMode {
+    /// The periodic sweep ([`check`] / `check_with_target`). Reads persisted,
+    /// post-transition state: `status == "done"` and `done_provenance` written.
+    Sweep,
+    /// The D-1 pre-done hook ([`check_pre_done`]). Reads pre-transition state:
+    /// the flip has not been written yet.
+    PreDone,
+}
+
 /// Production SQL used by [`has_task_completed_event`] to corroborate a
 /// merged task's `task_completed` event in runs.db. Hoisted to a `pub const`
 /// so the integration test `p5::tests::runs_db_schema_pin` can pin the test
@@ -207,7 +226,7 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
     let Some(meta) = ctx.task_metadata.get(task_id) else {
         return vec![];
     };
-    check_task(ctx, meta)
+    check_task(ctx, meta, CheckMode::PreDone)
 }
 
 /// Inner loop for the [`check`] periodic-sweep entry point. Iterates all
@@ -228,7 +247,7 @@ fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Fi
             continue;
         }
 
-        findings.extend(check_task(ctx, meta));
+        findings.extend(check_task(ctx, meta, CheckMode::Sweep));
     }
 
     findings
@@ -238,12 +257,21 @@ fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Fi
 /// and the inner loop of [`check_with_target`] (periodic sweep, O(n) iteration).
 /// Centralising the pass list here prevents drift when future per-task detectors
 /// join the per-task pass set — they get added in exactly one place.
-fn check_task(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
-    if meta.status != "done" {
+fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<Finding> {
+    // Sweep only. The sweep audits tasks that are ALREADY done, so a non-done
+    // row has nothing to corroborate.
+    //
+    // The pre-done hook deliberately skips this gate: it fires at fused-memory
+    // `task_interceptor.py` step "2d", BEFORE the status write, so the live
+    // `get_task` it reads still returns the pre-transition status
+    // ("in-progress"/"review"). Requiring `status == "done"` here made the gate
+    // structurally unable to fire on the one transition it exists to guard —
+    // every pre-done invocation returned `[]` unconditionally.
+    if mode == CheckMode::Sweep && meta.status != "done" {
         return vec![];
     }
     let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta) {
+    if let Some(f) = check_one(ctx, meta, mode) {
         findings.push(f);
     }
     if let Some(f) = check_gitignored(ctx, meta) {
@@ -414,10 +442,73 @@ fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
     !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p))
 }
 
+/// Provenance-free landing corroboration for the D-1 pre-done hook.
+///
+/// Reached only from [`check_one`] under [`CheckMode::PreDone`] when
+/// `done_provenance` is absent — which, at hook time, is *every* invocation
+/// (the interceptor persists provenance only after the hook returns). With no
+/// claimed commit and no persisted status to read, the only evidence available
+/// is the task's own id and its declared `metadata.files`.
+///
+/// Ordered cheapest-first, because the hook runs inside fused-memory's
+/// per-project write lock: every leg here delays every task mutation for the
+/// project.
+///
+/// Returns `Some` (a refusal) only when a declared deliverable is genuinely
+/// unaccounted for on main.
+fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
+    // No declared deliverable → nothing to corroborate. Research, ops and
+    // escalation tasks legitimately land no files and must flip freely.
+    if meta.files.is_empty() {
+        return None;
+    }
+
+    // The healthy flip: every declared entry resolves to a tracked file or
+    // directory on main. Costs N × `git ls-tree` and no `git log` at all.
+    let absent: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
+        .cloned()
+        .collect();
+    if absent.is_empty() {
+        return None;
+    }
+
+    Some(Finding {
+        pattern: Pattern::P5PhantomDone,
+        severity: Severity::High,
+        task_id: meta.task_id.clone(),
+        summary: format!(
+            "pre-done gate: {} declared metadata.files entr{} absent from main — \
+             refusing the done-flip for task {} (no landing evidence)",
+            absent.len(),
+            if absent.len() == 1 { "y is" } else { "ies are" },
+            meta.task_id
+        ),
+        evidence: vec![EvidenceRef::MetadataFiles { entries: absent }],
+    })
+}
+
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
-fn check_one(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
-    let prov = meta.done_provenance.as_ref()?;
+fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option<Finding> {
+    let Some(prov) = meta.done_provenance.as_ref() else {
+        return match mode {
+            // Sweep: unchanged (guard A1). A provenance-less `done` row is the
+            // norm for tasks predating provenance capture; emitting on every
+            // one of them is exactly the 4075/4464 false-positive storm.
+            CheckMode::Sweep => None,
+            // Pre-done: provenance is NOT missing, it is merely not yet
+            // written. `task_interceptor.py` accumulates it in the in-memory
+            // `audit_fields` dict and persists it only after this hook
+            // returns, and the hook command template substitutes just `{id}`
+            // (no env injection, no stdin), so the subprocess receives no task
+            // state beyond the id. Landing must therefore be corroborated from
+            // `task_id` + `metadata.files` alone.
+            CheckMode::PreDone => check_pre_done_landing(ctx, meta),
+        };
+    };
     let kind = prov.kind.as_deref().unwrap_or("");
 
     // Corroboration (a) — runs.db trail. For kind="merged", absence of a
