@@ -605,7 +605,7 @@ fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match — that match is the first element in document order, picked BEFORE its state is evaluated, so with several panes mounted an unscoped wait can answer off a pane other than the one you are about to act on; scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. This arm builds the SAME selector predicate as wait_for_selector, so it carries that tool's unscoped-wait trap in both directions — an unscoped wait is not proof about any one pane; see wait_for_selector's viewportId parameter for the mechanism, and scope the wait whenever the follow-up action is scoped. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
