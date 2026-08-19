@@ -4127,6 +4127,26 @@ function keywordSpans(src: string): string[] {
 }
 
 /**
+ * The same measurement for punctuation — `t.brace`, `t.paren` and friends all
+ * land in `tok-punctuation` under `classHighlighter`. Mirrors `keywordSpans`
+ * above and differs from it only in the class it filters on.
+ *
+ * A styleTags selector names a NODE. So this helper answers, indirectly, a
+ * question no other assertion in this file asks: does the token actually exist
+ * in the tree? An anonymous inline literal is consumed by the lexer and
+ * produces no node, and a node that does not exist cannot be selected, cannot
+ * be styled, and cannot be found by CodeMirror's bracket matching either.
+ */
+function punctuationSpans(src: string): string[] {
+  const tree = reifyLRLanguage.parser.parse(src);
+  const spans: string[] = [];
+  highlightTree(tree, classHighlighter, (from, to, classes) => {
+    if (classes.split(' ').includes('tok-punctuation')) spans.push(src.slice(from, to));
+  });
+  return spans;
+}
+
+/**
  * Promoting a word out of the `ReservedWord` @specialize list is mandatory
  * (lezer-generator otherwise hard-fails on a conflicting specialization), but
  * it silently drops that word out of the `ReservedWord: t.keyword` styleTags
@@ -4664,6 +4684,62 @@ describe('reifyLanguage — fold and indent coverage', () => {
       const fold = node!.type.prop(foldNodeProp)!;
       expect(fold(node!, EditorState.create({ doc: src }))).toBeNull();
     });
+  });
+
+  /**
+   * The two assertions below pin the editor affordances of the destructured
+   * import `import a.b.{C, D}` — the very form #5931 made canonical — against
+   * the way its opener is spelled in the grammar.
+   *
+   * WHY CI COULD NOT CATCH THIS, which is the durable lesson. The neighbouring
+   * guard `resolves fold and indent props on %s` is STRUCTURAL: it asserts only
+   * that `nodeType.prop(foldNodeProp)` IS DEFINED. A prop that resolves and
+   * then returns `null` on every input sails straight through it, and that is
+   * exactly what an `ImportItems` whose opener is an anonymous `".{"` literal
+   * does — `foldBody` looks up `node.getChild('{')`, an anonymous inline
+   * literal produces NO node at all, so the lookup misses and the fold is dead
+   * while the prop stays defined. MEASURED on the parser generated from that
+   * spelling: `ImportItems` children were `Identifier`, `,`, `Identifier`, `}`
+   * — no opener node — and the fold prop returned `null`. The assertions here
+   * are BEHAVIOURAL where that one is structural: they call the fold function
+   * and read the range, and they drive the real highlighter and read the spans.
+   *
+   * The same absent node has two further consequences that need no separate
+   * assertion once these pass, because they share the one root cause: the `}`
+   * has no reachable opener for CodeMirror's bracket matching, and
+   * `delimitedIndent`'s `align` path keys off `Identifier` instead of the
+   * brace.
+   */
+  it('folds the canonical destructured import to exactly its item list', () => {
+    const src = 'import std.mech.{Bolt, Nut}';
+    const cursor = reifyLRLanguage.parser.parse(src).cursor();
+    let items: SyntaxNode | null = null;
+    do {
+      if (cursor.type.name === 'ImportItems') items = cursor.node;
+    } while (!items && cursor.next());
+    expect(items, 'no ImportItems in the parse').not.toBeNull();
+
+    const fold = items!.type.prop(foldNodeProp)!;
+    const range = fold(items!, EditorState.create({ doc: src }));
+    // NOT null — `ImportItems` is listed in BRACE_FIRST_BODIES, and that
+    // membership is a claim that it folds, not merely that it has a prop.
+    expect(range, 'ImportItems resolves a fold prop that folds nothing').not.toBeNull();
+    // The range is the item list itself: `Bolt, Nut`. It starts after the
+    // WHOLE opener (`.{`, two characters), not after the `.`.
+    expect(range).toEqual({ from: src.indexOf('.{') + 2, to: src.lastIndexOf('}') });
+  });
+
+  it('styles the destructured import opener, symmetrically with its closer', () => {
+    const src = 'import a.{Foo}';
+    const spans = punctuationSpans(src);
+    // Sanity: the closer has always been styled, so a helper that collected
+    // nothing at all cannot make the real assertion pass vacuously.
+    expect(spans).toContain('}');
+    // MEASURED with an anonymous opener: the spans were `Foo` and `}` only,
+    // against `structure def F { }` → `{` and `}`. A destructured import that
+    // renders with an unstyled opener and a styled closer is asymmetric, in a
+    // grammar whose entire job is styling.
+    expect(spans).toContain('.{');
   });
 });
 
