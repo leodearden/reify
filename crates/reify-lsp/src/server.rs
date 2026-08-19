@@ -126,6 +126,35 @@ impl ReifyLanguageServer {
     }
 }
 
+/// Maximum number of CHARACTERS of a client-controlled string echoed into
+/// a stderr log line. Bounded so a single log line can never fill even a
+/// kernel-shrunk single-page (4096 B) pipe: 256 chars is at most 1024
+/// bytes of payload plus a ~75-byte prefix/marker (see task #6162).
+const LOG_URI_MAX_CHARS: usize = 256;
+
+/// Truncate a client-controlled string to at most [`LOG_URI_MAX_CHARS`]
+/// characters before it is echoed into a log line.
+///
+/// Exists because `did_change`'s unknown-URI diagnostic formats the
+/// client-supplied URI directly into an `eprintln!`, and that URI is
+/// unbounded and entirely attacker/bug-controlled: a misbehaving client can
+/// send an arbitrarily large `textDocument/didChange` for a never-opened
+/// URI, and without a bound the resulting single write can be large enough
+/// to fill (and block on) a kernel-shrunk pipe, stalling the writer thread
+/// (task #6162).
+///
+/// Uses `char_indices().nth(N)` rather than a byte-length check plus a
+/// hand-rolled `is_char_boundary` walk: `char_indices().nth(N)` yields the
+/// byte offset of the `(N+1)`-th character, which is a char boundary by
+/// construction, so the resulting slice can never panic on a multi-byte
+/// codepoint straddling the cut point.
+fn truncate_for_log(s: &str) -> String {
+    match s.char_indices().nth(LOG_URI_MAX_CHARS) {
+        None => s.to_string(),
+        Some((cut, _)) => format!("{}...[truncated, {} bytes total]", &s[..cut], s.len()),
+    }
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for ReifyLanguageServer {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -219,12 +248,22 @@ impl LanguageServer for ReifyLanguageServer {
             None => return,
         };
 
-        // Brief write lock: update the document
-        {
+        // Brief write lock: update the document. The lock guards ONLY the store
+        // mutation — the unknown-URI log below is emitted AFTER the guard drops,
+        // so a blocking stderr write can never be performed while every other
+        // did_open/did_change/did_close is queued behind this lock (task #6162).
+        let known = {
             let mut state = self.state.write().await;
-            if !state.documents.update(&uri, text.clone(), version) {
-                eprintln!("[reify-lsp] didChange for unknown URI: {}", uri);
-            }
+            state.documents.update(&uri, text.clone(), version)
+        };
+        if !known {
+            // The URI is client-controlled and unbounded; bound it so one
+            // notification cannot emit a 160 KiB line into a pipe the client
+            // may not be draining (task #6162).
+            eprintln!(
+                "[reify-lsp] didChange for unknown URI: {}",
+                truncate_for_log(uri.as_str())
+            );
         }
 
         // Eval runs outside the RwLock, using only the eval_state Mutex.
