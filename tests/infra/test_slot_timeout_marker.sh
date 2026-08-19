@@ -955,9 +955,14 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 D_ROSTER=(
     test_lane_x_flock.sh
     test_occt_flock_gate.sh
+    test_run_all_ambient_isolation.sh
+    test_run_all_clock_marker_sanitize.sh
+    test_run_all_content_skip.sh
+    test_run_all_pool_lock_host_global.sh
     test_run_all.sh
     test_slot_event_log.sh
     test_test_run_semaphore.sh
+    test_verify_env_ambient_isolation.sh
     test_verify_semaphore_e2e.sh
 )
 
@@ -1000,6 +1005,45 @@ D_ROSTER=(
 #   deliberately file-only capture grammar (D_CAPTURE_RE) excludes --
 #   including it behaviourally would force weakening that grammar for the
 #   existing three members.
+#
+#   THE FIVE TRANSITIVE MEMBERS (task 6291). None is in D_MEMBERS, so all
+#   five come out static-only and Section D's concurrent arm and its wall
+#   clock are untouched. Each is recorded with its derived ROUTE and its
+#   MEASURED leak-channel state -- the honest state, not a blanket "clean".
+#   test_run_all_clock_marker_sanitize.sh -- bucket pool; route run_all.sh
+#   (RUN_ALL bound :31, `bash "$RUN_ALL"` :96). Measured CLEAN on both
+#   channels: the child is captured to $RA_OUT_FILE (:92-96) and only
+#   grepped, and no capture variable is interpolated into any assert
+#   description.
+#   test_run_all_content_skip.sh -- bucket pool; route run_all.sh (RUN_ALL
+#   bound :25, invoked :86 and :387). Measured CLEAN: captured to $RUN_OUT
+#   (:80-87, :380-388) and only grepped; no capture interpolation in any
+#   description.
+#   test_run_all_pool_lock_host_global.sh -- bucket pool; route run_all.sh
+#   (REAL_RUN_ALL bound :69, invoked :122 and :126). Measured CLEAN: captured
+#   to $_out (:120-127), then reduced to a single `lock=` token
+#   (`_line=...grep 'lock=' | head -n1`; `_lock="${_line##*lock=}"`); the
+#   descriptions interpolate only that extracted token, which a sentinel line
+#   cannot ride.
+#   test_run_all_ambient_isolation.sh -- bucket pool; route test_run_all.sh,
+#   second-order (TARGET bound :93, handed to `ambient_isolation_check_one`
+#   :366, exec'd at run_all_ambient_isolation_lib.sh:73/:92). The capture at
+#   the exec site is correct (`bash "$_target" 2>&1` into $_amb_out), but
+#   run_all_ambient_isolation_lib.sh:106 ECHOES the whole $_amb_out on the
+#   genuine-bug (red) path. That is a bare-variable dump with no reader
+#   token, so it is outside E1's grammar in both directions -- E_CAT_RE is
+#   reader-keyed and E1 is assert-keyed, and this is a bare `echo`. Stated as
+#   a measured fact, not a defect claim against this task: the fix touches
+#   another module and belongs to the guard-widening work #6278 sits in, and
+#   is filed separately (ticket tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
+#   test_verify_env_ambient_isolation.sh -- bucket pool; route
+#   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
+#   2>&1` :177). The capture at the site is correct (into $amb_out,
+#   :172-178), but :189 interpolates the whole $amb_out into an assert
+#   DESCRIPTION on the red path -- again a bare variable with no reader to
+#   key on, which E1's own preamble names as out of its grammar. Same
+#   disposition as the entry above: measured, recorded, filed, not fixed
+#   here.
 #   test_verify_semaphore_e2e.sh -- bucket intra-run-serial (run-all-
 #   classification.manifest:56 -- mutates the invoking lane's own shared
 #   state: CoW target/, working-tree parser.c). Section D forks its members
@@ -1014,9 +1058,12 @@ D_ROSTER=(
 # D_ROSTER). Produces the identical behavioural/static-only split the
 # hand-typed array previously declared verbatim: test_lane_x_flock.sh,
 # test_occt_flock_gate.sh, test_test_run_semaphore.sh (D_MEMBERS' three
-# entries) come out `behavioural`; test_run_all.sh, test_slot_event_log.sh,
-# test_verify_semaphore_e2e.sh come out `static-only` -- see the measured
-# justification for each static-only entry in the comment block above.
+# entries) come out `behavioural`; the other EIGHT -- test_run_all.sh,
+# test_slot_event_log.sh, test_verify_semaphore_e2e.sh and the five
+# transitive members added by task 6291 -- come out `static-only`, which is
+# why growing D_ROSTER needed no edit here and left Section D's concurrent
+# arm and its wall clock untouched. See the measured justification for each
+# static-only entry in the comment block above.
 D_ROSTER_MODE=()
 for _frm_entry in "${D_ROSTER[@]}"; do
     _frm_mode="static-only"
