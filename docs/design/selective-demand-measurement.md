@@ -62,7 +62,7 @@ cargo test -p reify-eval --test selective_demand_measurement \
     emit_distribution_table -- --nocapture
 ```
 
-Source: `crates/reify-eval/tests/selective_demand_measurement.rs`
+Source: `crates/reify-eval/tests/harness_selective_demand/selective_demand_measurement.rs`
 
 ### Spec §3.2 source mapping
 
@@ -94,7 +94,7 @@ edit.
 
 > **Generated tables — regenerate after any fixture or graph-semantics change.**
 > The numbers below are emitted by the `emit_distribution_table` test in
-> `crates/reify-eval/tests/selective_demand_measurement.rs`; they are **not**
+> `crates/reify-eval/tests/harness_selective_demand/selective_demand_measurement.rs`; they are **not**
 > auto-pinned to the test output. Reproduce with:
 >
 > ```

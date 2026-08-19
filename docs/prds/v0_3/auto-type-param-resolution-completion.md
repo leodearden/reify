@@ -582,7 +582,7 @@ integration gate; θ supersedes v0.1.
 ### Phase 5 — Reconciliation + M-007 activation (ε)
 
 - **ε — Close 3522 superseded-by-3558; repoint 3751; M-007 real-source test; audit-finding state edits.**
-  - Files: task graph (3522 status, 3751 dep), `docs/architecture-audit/findings/auto-resolution-backtracking.md` (M-002/M-007/M-013/M-014 → WIRED), `reify-compiler/tests/auto_backjumping_real_source.rs` (NEW).
+  - Files: task graph (3522 status, 3751 dep), `docs/architecture-audit/findings/auto-resolution-backtracking.md` (M-002/M-007/M-013/M-014 → WIRED), `reify-compiler/tests/harness_auto_binding/auto_backjumping_real_source.rs` (NEW).
   - Observable signal (LEAF): `auto_backjumping_real_source` passes (real-source backjump, no `MockConstraintChecker`); `grep` shows the finding's M-013 row marked WIRED with this PRD's task IDs; 3751 `depends_on` α (not 3522).
   - Prereqs: α, β (M-007 needs real-checker substitution).
 

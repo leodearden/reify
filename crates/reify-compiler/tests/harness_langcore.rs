@@ -55,3 +55,5 @@ mod type_error_propagation_tests;
 mod type_expr_kind_dispatch_tests;
 #[path = "harness_langcore/type_hygiene_integration_gate.rs"]
 mod type_hygiene_integration_gate;
+#[path = "harness_langcore/uniform_member_path_tests.rs"]
+mod uniform_member_path_tests;

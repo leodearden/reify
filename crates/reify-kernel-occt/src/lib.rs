@@ -31,25 +31,40 @@ mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
 
-/// Zero the process-global boolean-op-pass counter (task 5213).
+/// Zero the calling thread's boolean-op-pass count (task 5213).
 ///
 /// Incremented once per completed OCCT boolean `Build()` (the binary
 /// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
 /// tests can assert that a K-instance pattern performs exactly ONE boolean
 /// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
-/// single-pass change (and a seed for future long-boolean progress reporting).
+/// single-pass change.
 ///
-/// The counter is process-global; callers reading it must serialize their
-/// reset→operate→read windows (see `tests/pattern_single_pass_counter.rs`).
+/// This is a TEST-OBSERVABILITY hook, not a progress-reporting one.  Do not
+/// plumb it into GUI/CLI progress reporting: those paths drive OCCT through
+/// [`OcctKernelHandle`]'s dedicated worker thread (see the per-thread scope
+/// below), so a reporter on any other thread reads a permanent 0.  A
+/// cross-thread progress signal would need a separate process-global
+/// aggregate, deliberately not added here because nothing consumes one today.
+///
+/// The counter is PER-THREAD: each thread has its own count, so a
+/// reset→operate→read window on one thread needs no serialization against
+/// other threads, and this reset zeroes only the calling thread's count.
+///
+/// The count therefore reflects only booleans performed ON THE CALLING THREAD.
+/// Work driven through [`OcctKernelHandle`], which owns a dedicated OCCT worker
+/// thread (see `src/handle.rs`), lands in that worker's count and is NOT
+/// observable from the caller — use [`OcctKernel`] directly when reading the
+/// counter.
 #[cfg(has_occt)]
 pub fn reset_boolean_pass_count() {
     ffi::ffi::reset_boolean_pass_count();
 }
 
-/// Read the process-global count of completed OCCT boolean passes.
+/// Read the calling thread's count of completed OCCT boolean passes.
 ///
-/// See [`reset_boolean_pass_count`] for the increment contract and
-/// serialization requirement.
+/// See [`reset_boolean_pass_count`] for the increment contract and for the
+/// per-thread scope (in particular, why [`OcctKernelHandle`]-driven work is not
+/// visible here).
 #[cfg(has_occt)]
 pub fn boolean_pass_count() -> u64 {
     ffi::ffi::boolean_pass_count()
@@ -548,15 +563,21 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
-/// Map a single-pass fuse result `OcctShape` to the [`BRepKind`] matching its
-/// actual top-level TopAbs type. `fuse_shape_list` yields a `SOLID` for an
-/// overlapping fuse and a `COMPSOLID` for a disjoint one; both `COMPSOLID` and
-/// `COMPOUND` are multi-body aggregates and classify as [`BRepKind::Compound`].
-/// Used by [`OcctKernel::fuse_all`] so the stored repr never claims a
-/// multi-body result is a single `Solid`. Any unrecognized type falls back to
+/// Map an `OcctShape` to the [`BRepKind`] matching its actual top-level TopAbs
+/// type, for ops whose result kind depends on their input rather than being
+/// fixed. Both `COMPSOLID` and `COMPOUND` are multi-body aggregates and
+/// classify as [`BRepKind::Compound`]. Any unrecognized type falls back to
 /// [`BRepKind::Solid`] (matches `store`'s implicit default).
+///
+/// Callers:
+/// - [`OcctKernel::fuse_all`] — `fuse_shape_list` yields a `SOLID` for an
+///   overlapping fuse and a `COMPSOLID` for a disjoint one, so the stored repr
+///   must not claim a multi-body result is a single `Solid`.
+/// - `GeometryOp::SweepGuided` / `GeometryOp::LoftGuided` — `make_pipe_shell` /
+///   `loft_guided_profiles` solidify only when the section(s) were faces and
+///   otherwise leave an un-capped `SHELL` (see cpp/occt_wrapper.cpp).
 #[cfg(has_occt)]
-fn brep_kind_of_fused(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
+fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
     let name = ffi::ffi::shape_type_name(shape)
         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
     Ok(match name.as_str() {
@@ -1011,7 +1032,7 @@ impl OcctKernel {
             // Identity passthrough: preserve the sole input's classification.
             self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
         } else {
-            brep_kind_of_fused(&fused)?
+            brep_kind_of_shape(&fused)?
         };
         Ok(self.store_with_repr(fused, repr))
     }
@@ -3174,6 +3195,11 @@ impl OcctKernel {
                 ffi::ffi::make_prism_infinite(profile_shape, dx, dy, dz, *both)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
+            // No Rust-side argument validation, unlike the LoftGuided / Pipe /
+            // ExtrudeInfinite neighbours: `make_pipe_shell` in
+            // cpp/occt_wrapper.{h,cpp} owns all three contracts — the section
+            // profile's, and the path's and guide's wire-ness — and raises a
+            // ContractViolation naming the offending argument and type.
             GeometryOp::SweepGuided {
                 profile,
                 path,
@@ -3182,8 +3208,18 @@ impl OcctKernel {
                 let profile_shape = self.get_shape(*profile)?;
                 let path_shape = self.get_shape(*path)?;
                 let guide_shape = self.get_shape(*guide)?;
-                ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::make_pipe_shell(profile_shape, path_shape, guide_shape)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // The result kind is input-dependent, so it cannot use the
+                // default `store` (which stamps BRepKind::Solid): a face
+                // profile — the only kind a DSL `sweep_guided()` can supply —
+                // is capped into a SOLID, while a wire or vertex profile
+                // leaves an un-capped SHELL that no end cap can close. Stamping
+                // Solid on the latter would make `repr_of()` report a closed
+                // solid for a shape whose `IsClosed` is false, and mislead the
+                // sub-shape classification keyed off the repr.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::LoftGuided { profiles, guides } => {
                 if profiles.len() < 2 {
@@ -3206,8 +3242,15 @@ impl OcctKernel {
                     let shape = self.get_shape(gid)?;
                     ffi::ffi::shape_vec_push(guide_vec.pin_mut(), shape);
                 }
-                ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
-                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+                let shape = ffi::ffi::loft_guided_profiles(&profile_vec, &guide_vec)
+                    .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // Input-dependent result kind, exactly as for SweepGuided
+                // above: an all-face section set — the only kind a DSL
+                // `loft_guided()` can supply — is capped into a SOLID, while a
+                // mixed or all-wire set stays an un-capped SHELL. Stamp the
+                // repr the shape actually has rather than the default Solid.
+                let repr = brep_kind_of_shape(&shape)?;
+                return Ok(self.store_with_repr(shape, repr));
             }
             GeometryOp::LineSegment {
                 x1,

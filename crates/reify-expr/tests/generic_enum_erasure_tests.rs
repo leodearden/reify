@@ -12,27 +12,11 @@
 //! generic-FN INV-2 pin, task 4233 δ). If either ever goes RED, it signals an
 //! erasure regression in a dependency, not a gap in this crate.
 //!
-//! Uses the same compile_source + cell_expr + eval_expr pattern as that file.
+//! Uses the same compile_source + get_let_expr + eval_expr pattern as that file.
 
 use reify_core::DimensionVector;
 use reify_ir::{Value, ValueMap};
-use reify_test_support::compile_source;
-
-/// Locate the `default_expr` of a named value cell in the first template.
-fn cell_expr<'a>(
-    module: &'a reify_compiler::CompiledModule,
-    member: &str,
-) -> &'a reify_ir::CompiledExpr {
-    let template = &module.templates[0];
-    template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found"))
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("value cell '{member}' has no default_expr"))
-}
+use reify_test_support::{compile_source, get_let_expr};
 
 // ── test (a): erased payload is byte-identical to a non-generic analogue ────
 
@@ -52,7 +36,7 @@ fn generic_enum_value_payload_identical_to_non_generic() {
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
 
-    let g_val = reify_expr::eval_expr(cell_expr(&module, "g"), &ctx);
+    let g_val = reify_expr::eval_expr(get_let_expr(&module, "g"), &ctx);
     let (g_type_name, g_variant, g_payload) = match &g_val {
         Value::Enum {
             type_name,
@@ -67,7 +51,7 @@ fn generic_enum_value_payload_identical_to_non_generic() {
     assert_eq!(g_type_name, "Result", "g should be a Result enum value");
     assert_eq!(g_variant, "Ok", "g should be the Ok variant");
 
-    let m_val = reify_expr::eval_expr(cell_expr(&module, "m"), &ctx);
+    let m_val = reify_expr::eval_expr(get_let_expr(&module, "m"), &ctx);
     let (m_type_name, m_variant, m_payload) = match &m_val {
         Value::Enum {
             type_name,
@@ -109,7 +93,7 @@ fn match_eval_on_generic_enum_is_type_arg_agnostic() {
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
 
-    let bore_val = reify_expr::eval_expr(cell_expr(&module, "bore"), &ctx);
+    let bore_val = reify_expr::eval_expr(get_let_expr(&module, "bore"), &ctx);
     match bore_val {
         Value::Scalar {
             si_value,

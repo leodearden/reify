@@ -16,6 +16,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{self, BBox};
 use reify_kernel_occt::OcctKernel;
 use reify_ir::{GeometryError, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 
@@ -38,27 +39,6 @@ fn kernel_with_line_profile_at_z0() -> (OcctKernel, GeometryHandleId) {
     (kernel, wire.id)
 }
 
-/// Parse the JSON-encoded bounding box string returned by
-/// `GeometryQuery::BoundingBox` into (zmin, zmax). (We only need Z here.)
-fn parse_bbox_z(s: &str) -> (f64, f64) {
-    // Expected format:
-    // {"xmin":<f>,"ymin":<f>,"zmin":<f>,"xmax":<f>,"ymax":<f>,"zmax":<f>}
-    let mut zmin = f64::NAN;
-    let mut zmax = f64::NAN;
-    let trimmed = s.trim_start_matches('{').trim_end_matches('}');
-    for pair in trimmed.split(',') {
-        let mut parts = pair.splitn(2, ':');
-        let key = parts.next().unwrap().trim().trim_matches('"');
-        let val: f64 = parts.next().unwrap().trim().parse().unwrap();
-        match key {
-            "zmin" => zmin = val,
-            "zmax" => zmax = val,
-            _ => {}
-        }
-    }
-    (zmin, zmax)
-}
-
 /// The core symmetry invariant: after ExtrudeSymmetric along +Z by
 /// distance d on a profile at z=0, the resulting shape's z-extent is
 /// [-d/2, +d/2]. This is equivalent to "result centroid z aligns with
@@ -72,13 +52,11 @@ fn extrude_symmetric_centroid_at_z_zero() {
     // box (typically ≤1e-6 for a 1m-scale shape), so we use a matching
     // tolerance.
     let bbox_tol = 1e-6_f64;
-    let profile_bbox = kernel
-        .query(&GeometryQuery::BoundingBox(profile_id))
-        .expect("profile bbox query should succeed");
-    let (p_zmin, p_zmax) = match profile_bbox {
-        Value::String(s) => parse_bbox_z(&s),
-        other => panic!("expected bbox String, got {:?}", other),
-    };
+    let BBox {
+        zmin: p_zmin,
+        zmax: p_zmax,
+        ..
+    } = common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(profile_id)));
     assert!(
         p_zmin.abs() < bbox_tol && p_zmax.abs() < bbox_tol,
         "profile z-extent should be ≈ [0, 0], got [{}, {}]",
@@ -95,13 +73,8 @@ fn extrude_symmetric_centroid_at_z_zero() {
         })
         .expect("ExtrudeSymmetric should succeed");
 
-    let bbox = kernel
-        .query(&GeometryQuery::BoundingBox(result.id))
-        .expect("bbox query should succeed");
-    let (zmin, zmax) = match bbox {
-        Value::String(s) => parse_bbox_z(&s),
-        other => panic!("expected bbox String, got {:?}", other),
-    };
+    let BBox { zmin, zmax, .. } =
+        common::bbox_of(kernel.query(&GeometryQuery::BoundingBox(result.id)));
     let half = distance / 2.0;
     assert!(
         (zmin - (-half)).abs() < bbox_tol,

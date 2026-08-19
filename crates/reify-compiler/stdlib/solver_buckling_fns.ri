@@ -17,7 +17,7 @@
 //   By the time `phase_functions` processes this file, `BucklingResult`, `BucklingMode`,
 //   and `BucklingOptions` are all in the prelude template registry and field
 //   access resolves correctly.  This mirrors the `std.flexures.types` /
-//   `std.flexures` split (stdlib_loader.rs:118-130).
+//   `std.flexures` split (`stdlib_loader::stdlib_sources`).
 
 // ── solve_buckling ────────────────────────────────────────────────────────────
 
@@ -26,10 +26,16 @@
 // The trampoline lives at crates/reify-eval/src/compute_targets/buckling.rs.
 //
 // Signature deviation from PRD §4 `(body: Body, ...)`:
-//   There is no Body→trampoline geometry channel. The @optimized trampoline
-//   receives flat value_inputs and reconstructs the column mesh from
-//   length/width/height, reusing the same pattern as `solve_elastic_static`
-//   (CN-η/3426, already landed). This keeps both solver entries uniform.
+//   `solve_buckling` predates the Body→trampoline geometry channel and does
+//   not use it: the @optimized trampoline receives flat value_inputs and
+//   reconstructs the column mesh from length/width/height rather than
+//   realizing a mesh from a `body` param. (The channel itself is live
+//   elsewhere — `Value::GeometryHandle` plus the `realization_inputs` path
+//   consumed by `solve_elastic_static`'s body-arg overload, task 4870,
+//   solver_elastic.ri — so this is a deviation from that later precedent,
+//   not evidence the channel doesn't exist.) This keeps solve_buckling
+//   uniform with its own multi-case sibling (`solve_buckling_load_cases`
+//   below), which also takes flat dims.
 //   See design decision DD-2 in .task/plan.json.
 //
 // Signature notes:
@@ -90,16 +96,20 @@ pub fn safety_factor_buckling(
     result.modes[0].eigenvalue
 }
 
-// `mode_shape` — displacement field eigenvector for mode n.
+// `mode_shape` — dimensionless mode-shape eigenvector field for mode n: a
+// DIRECTION field, not a displacement field (a buckling eigenvector is defined
+// only up to scalar multiplication — see the DIMENSIONALITY NOTE on
+// `BucklingMode.mode_shape` in solver_buckling.ri).
 //
 // Returns `result.modes[n].mode_shape`. For task ε this is `Undef`
 // per the tet-result convention (Undef must remain accepted for Field
-// params; see solver_elastic.ri:280-284). Displaced-position population
+// params; see the `ElasticResult.frame` Undef-for-absent-field convention in
+// solver_elastic.ri). Displaced-position population
 // is task ι/3458 (GUI animator).
 pub fn mode_shape(
     result : BucklingResult,
     n      : Int
-) -> Field<Point3<Length>, Vector3<Length>> {
+) -> Field<Point3<Length>, Vector3<Dimensionless>> {
     result.modes[n].mode_shape
 }
 

@@ -34,7 +34,7 @@ Default expressions on function parameters (`fn f(x : Real = expr)`) are compile
 
 **Rationale:** Keeps defaults pure-by-construction and order-independent — neither parameter-declaration order nor recursive self-reference can affect a default's compiled meaning. The same logic that gives order-independence to sibling parameter declarations (§2.2) would otherwise be in tension with sibling-default references.
 
-**Locked in by:** Implementation at `compile_function` in `crates/reify-compiler/src/functions.rs` and the regression test `fn_param_default_sibling_param_ref_errors` in `crates/reify-compiler/tests/fn_param_default_consumption_tests.rs`.
+**Locked in by:** Implementation at `compile_function` in `crates/reify-compiler/src/functions.rs` and the regression test `fn_param_default_sibling_param_ref_errors` in `crates/reify-compiler/tests/harness_traits/fn_param_default_consumption_tests.rs`.
 
 ---
 

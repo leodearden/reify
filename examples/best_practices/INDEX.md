@@ -13,6 +13,14 @@ A file that cannot reach a clean compile does **not** belong here — an exempla
 that does not work is worse than no exemplar. Do not add a `SKIP_SET` entry to
 exempt one.
 
+**It is constraint-gated too.** `crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`
+(task #6215) walks every `.ri` file here: each constraint must be `Satisfied`,
+or pinned `Indeterminate` with a documented reason — never `Violated`. See
+that file's module doc for the full contract (bidirectional allowlist
+checking; why this is not a `SKIP_SET`). E.g. `clearance_oracle.ri`'s two
+geometry-consumer constraints are pinned Indeterminate on this gate's pure
+value-eval surface by design — see its row below.
+
 ## How to use this index
 
 **Before probing the language, grep this file.** The corpus exists because
@@ -43,3 +51,4 @@ cargo test -p reify-compiler --test examples_smoke
 | `bolt_circle.ri` | 4-arg value form `circular_pattern(g, axis_z(point3(...)), n, 360deg)`; the angle is the **total sweep** (step = total/count), and `axis_*` takes exactly one `point3`. | Placing each hole by hand at a computed angle; the older 9-arg scalar form. |
 | `clearance_oracle.ri` | `intersects(a,b)` / `distance(a,b)` on **let-bound** geometry answers collision and gap exactly. Eval/build only — `reify check` reports these INDETERMINATE, which is expected. | Confirming clearances by eyeballing the viewport, or hand-computing a gap from params. |
 | `discrete_choice.ri` | Binary +-1 choice pending CP-SAT: `param s : Real = auto(free)` + `constraint s * s == 1`. `auto` is legal only as a binding **value** — `auto s : Real` is a parse error. Strict `auto` goes undef here (two roots defeat the uniqueness re-solve). | Hard-coding one alternative and hand-editing the file to try the other. |
+| `angle_crossings.ri` | An angle reading of an **arc-measure** ratio is an explicit crossing: `* 1rad` to enter Angle, `/ 1rad` to leave — always the no-space literal (`1 rad` is a parse error). Arc length is `r * theta / 1rad`; `omega = 2*pi * f * 1rad` is the separate 2π rad/cycle class. A *trigonometric* ratio needs no crossing — `atan`/`atan2`/`asin`/`acos` and the geometry `angle` queries return Angle directly. | `let theta : Angle = s / r` and `let arc : Length = r * theta` — both hard errors; unannotated, `r * theta` silently yields `m·rad` instead of a Length. Also `* 1rad` on a trigonometric ratio: it compiles and gives a *different* angle. |

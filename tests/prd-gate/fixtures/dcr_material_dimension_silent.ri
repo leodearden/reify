@@ -13,6 +13,9 @@ module dcr_material_dimension_silent
 //   spring_rate here          = 1.3802083333333336e-12 m^2*kg*s^-2*rad^-1
 //   spring_rate with 200GPa   = 1.3802083333333335    m^2*kg*s^-2*rad^-1
 //   ⇒ exactly 1e12x wrong, `reify eval` EXIT 0, zero Error diagnostics.
+// The dimension TAG became m^2*kg*s^-2*rad^-2 when task #5799 re-dimensioned
+// ROTATIONAL_STIFFNESS (Leo's 2026-07-29 ruling); both si_values above are
+// unchanged (a radian is numerically 1), so the 1e12x ratio still holds.
 //
 // This file must EVAL CLEAN (exit 0) today. When β lands it must exit 1 with a
 // coded `ArgDimensionMismatch` Error naming prb_cantilever_beam/youngs_modulus.

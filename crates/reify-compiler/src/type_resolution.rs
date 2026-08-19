@@ -632,6 +632,10 @@ pub(crate) fn resolve_type_with_params(
 /// LAST so existing sources that happened to reuse a name present in the
 /// builtin/alias/generic-param/structure namespaces keep their prior
 /// resolution behavior; trait names only resolve when no earlier kind matches.
+///
+/// Regression oracle for the builtin-before-alias half of this ordering:
+/// `tests::builtin_dimension_shadows_same_named_alias_with_different_dimension`
+/// (task #5892).
 pub(crate) fn resolve_type_with_aliases(
     name: &str,
     type_param_names: &HashSet<String>,
@@ -1482,6 +1486,13 @@ pub(crate) fn resolve_type_alias_expr(
 
 /// Helper: resolve a TypeExpr to a DimensionVector (for dimensional algebra).
 /// Returns None if the type cannot be resolved to a dimension.
+///
+/// For a `Named` type expr, checks builtins (`resolve_dimension_type`, which
+/// scans `reify_core::NAMED_DIMENSIONS`) BEFORE the alias registry — the
+/// dimension-algebra half of the builtin-before-alias precedence also
+/// documented on `resolve_type_with_aliases` above. Regression oracle:
+/// `tests::builtin_dimension_shadows_same_named_alias_in_dimension_resolution`
+/// (task #5892).
 pub(crate) fn resolve_type_alias_expr_to_dimension(
     type_expr: &reify_ast::TypeExpr,
     alias_registry: &TypeAliasRegistry,
@@ -1761,7 +1772,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     // (built independently in `names_phase::build_resolution_names`) can both
     // contain the same name. Verified by the integration test
     // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
-    // crates/reify-compiler/tests/trait_type_arg_rejection_tests.rs. Placed
+    // crates/reify-compiler/tests/harness_traits/trait_type_arg_rejection_tests.rs. Placed
     // BEFORE simple-name resolution so the rejection fires regardless of any
     // same-name shadow later in the fallthrough.
     //
@@ -4635,6 +4646,179 @@ mod tests {
             result,
             Some(Type::Selector(reify_core::ty::SelectorKind::Body)),
             "resolve_type_with_aliases(\"BodySelector\", …) should return Type::Selector(Body)"
+        );
+    }
+
+    // ── task 5892: builtin-shadows-alias resolution precedence ───────────────
+    //
+    // No existing test in the repo pins that a NAMED_DIMENSIONS builtin
+    // resolves BEFORE the alias registry. The nearest candidates
+    // (physical_constants_tests.rs, reserved_name_lint_tests.rs,
+    // ports_stdlib_compile.rs) all pass under either resolution order because
+    // the real stdlib alias `pub type Velocity = Length / Time`
+    // (`crates/reify-compiler/stdlib/units.ri`) resolves to a `DimensionVector`
+    // bit-identical to the `Velocity` builtin (`DimensionVector::VELOCITY`,
+    // registered in `reify_core::NAMED_DIMENSIONS`) — both branches agree
+    // today. `one_entry_alias_registry` below registers `"Velocity"` against a
+    // deliberately WRONG dimension (`MASS`, kg) so the two branches diverge
+    // observably, making the precedence claim testable.
+
+    /// Build a one-entry `TypeAliasRegistry` mapping `name` to
+    /// `Type::Scalar { dimension: dim }`. `seeded == true` registers via
+    /// `register_as_prelude_seed` (mirroring how the real stdlib `Velocity`
+    /// alias arrives in production — prelude-seeded, see
+    /// `compile_builder/aliases_phase.rs`); `seeded == false` uses plain
+    /// `register`. Shared by the task #5892 regression tests below: both the
+    /// `"Velocity"` fixture (deliberately WRONG dimension, so builtin-vs-alias
+    /// divergence is observable — see section comment above) and the `"Foo"`
+    /// (non-builtin, negative-control) fixture.
+    ///
+    /// Panics if `name` is already registered in a fresh registry, or if the
+    /// entry just inserted doesn't read back holding `dim` — either would let
+    /// a caller's precedence assertion pass while pinning nothing.
+    fn one_entry_alias_registry(name: &str, dim: DimensionVector, seeded: bool) -> TypeAliasRegistry {
+        let mut reg = TypeAliasRegistry::new();
+        let entry = TypeAliasEntry {
+            name: name.to_string(),
+            resolved_type: Some(Type::Scalar { dimension: dim }),
+            type_params: vec![],
+            type_expr: None,
+            is_pub: true,
+            span: reify_core::SourceSpan::new(0, 0),
+            content_hash: reify_core::ContentHash::of_str(name),
+        };
+        if seeded {
+            reg.register_as_prelude_seed(entry)
+        } else {
+            reg.register(entry)
+        }
+        .unwrap_or_else(|_| panic!("fresh registry: {name:?} must not already be registered"));
+
+        assert_eq!(
+            reg.lookup(name).and_then(|e| e.resolved_type.clone()),
+            Some(Type::Scalar { dimension: dim }),
+            "fixture bug: the alias registry entry for {name:?} must be \
+             present and hold dimension {dim:?}, or a caller's precedence \
+             assertion would pin nothing"
+        );
+        reg
+    }
+
+    /// `register_as_prelude_seed` and plain `register` differ only in
+    /// `seeded_names` bookkeeping, which is read solely by `iter()` and
+    /// `into_compiled()` — never by `lookup()` (see `TypeAliasRegistry`'s own
+    /// field doc above). Neither precedence test below calls
+    /// `iter()`/`into_compiled()`, so they fix `seeded = true` (the
+    /// production-realistic path) rather than looping both; this test pins,
+    /// once, that the choice doesn't matter to `lookup()`. Task #5892.
+    #[test]
+    fn prelude_seeding_does_not_affect_alias_registry_lookup() {
+        let seeded = one_entry_alias_registry("Velocity", DimensionVector::MASS, true);
+        let plain = one_entry_alias_registry("Velocity", DimensionVector::MASS, false);
+        assert_eq!(
+            seeded.lookup("Velocity").and_then(|e| e.resolved_type.clone()),
+            plain.lookup("Velocity").and_then(|e| e.resolved_type.clone()),
+            "register_as_prelude_seed and register must produce identical \
+             lookup() results for the same entry"
+        );
+    }
+
+    /// Regression oracle for the builtin-before-alias half of the precedence
+    /// documented on `resolve_type_with_aliases`'s own doc comment: "Falls
+    /// through: builtins → type params → alias registry → structure names →
+    /// trait names." Pins that a `reify_core::NAMED_DIMENSIONS` builtin
+    /// (`"Velocity"`, i.e. `DimensionVector::VELOCITY`) resolves BEFORE an
+    /// alias registry entry of the same name — and, as a negative control,
+    /// that a non-builtin alias name still resolves FROM the registry (so a
+    /// regression that broke the alias-registry fallback arm entirely
+    /// couldn't leave this test green for the wrong reason). Task #5892.
+    #[test]
+    fn builtin_dimension_shadows_same_named_alias_with_different_dimension() {
+        let reg = one_entry_alias_registry("Velocity", DimensionVector::MASS, true);
+        let result = resolve_type_with_aliases(
+            "Velocity",
+            &HashSet::new(),
+            &reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            result,
+            Some(Type::Scalar {
+                dimension: DimensionVector::VELOCITY
+            }),
+            "resolve_type_with_aliases must resolve the NAMED_DIMENSIONS \
+             builtin \"Velocity\" BEFORE consulting the alias registry, per \
+             the precedence documented on resolve_type_with_aliases's own \
+             doc comment (\"builtins → type params → alias registry → …\"); \
+             got: {result:?} (the alias registry entry says MASS)"
+        );
+
+        // Negative control (see doc comment above).
+        let non_builtin_reg = one_entry_alias_registry("Foo", DimensionVector::MASS, true);
+        let non_builtin_result = resolve_type_with_aliases(
+            "Foo",
+            &HashSet::new(),
+            &non_builtin_reg,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            non_builtin_result,
+            Some(Type::Scalar {
+                dimension: DimensionVector::MASS
+            }),
+            "resolve_type_with_aliases must resolve a non-builtin alias name \
+             (\"Foo\") FROM the alias registry; got: {non_builtin_result:?}"
+        );
+    }
+
+    /// Regression oracle for the builtin-before-alias half of the same
+    /// precedence contract, but for the DIMENSION-ALGEBRA entry point:
+    /// `resolve_type_alias_expr_to_dimension` — the path `Scalar<Velocity>`
+    /// port fields actually traverse (see ports_mechanical.ri /
+    /// ports_stdlib_compile.rs). `resolve_dimension_type` scans
+    /// `reify_core::NAMED_DIMENSIONS` so `"Velocity"` (i.e.
+    /// `DimensionVector::VELOCITY`) is found there first, before the `Named`
+    /// arm's `alias_registry.lookup` fallback — plus the same negative
+    /// control as the sibling test above. Task #5892.
+    #[test]
+    fn builtin_dimension_shadows_same_named_alias_in_dimension_resolution() {
+        let reg = one_entry_alias_registry("Velocity", DimensionVector::MASS, true);
+        let expr = named_type_expr("Velocity");
+        let mut diags: Vec<Diagnostic> = Vec::new();
+        let dim = resolve_type_alias_expr_to_dimension(&expr, &reg, &mut diags);
+
+        assert_eq!(
+            dim,
+            Some(DimensionVector::VELOCITY),
+            "resolve_type_alias_expr_to_dimension must resolve the \
+             NAMED_DIMENSIONS builtin \"Velocity\" (via resolve_dimension_type) \
+             BEFORE consulting the alias registry; got: {dim:?} (the alias \
+             registry entry says MASS)"
+        );
+        assert!(
+            diags.is_empty(),
+            "resolve_type_alias_expr_to_dimension must return via the \
+             builtin hit before reaching the \"cannot resolve … to a \
+             dimension type\" diagnostic; got: {diags:?}"
+        );
+
+        // Negative control (see doc comment above).
+        let non_builtin_reg = one_entry_alias_registry("Foo", DimensionVector::MASS, true);
+        let non_builtin_expr = named_type_expr("Foo");
+        let mut non_builtin_diags: Vec<Diagnostic> = Vec::new();
+        let non_builtin_dim = resolve_type_alias_expr_to_dimension(
+            &non_builtin_expr,
+            &non_builtin_reg,
+            &mut non_builtin_diags,
+        );
+        assert_eq!(
+            non_builtin_dim,
+            Some(DimensionVector::MASS),
+            "resolve_type_alias_expr_to_dimension must resolve a non-builtin \
+             alias name (\"Foo\") FROM the alias registry; got: \
+             {non_builtin_dim:?}"
         );
     }
 

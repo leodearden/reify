@@ -310,6 +310,7 @@
 //! let _ = Mesh2dError::EmptyBoundary;
 //! let _ = Mesh2dError::DegenerateBoundary;
 //! let _ = Mesh2dError::GmshUnavailable;
+//! let _ = Mesh2dError::ProfileUnresolvable("profile handle did not resolve".to_string());
 //! // Pin the four function items by their full signatures.
 //! let _: fn(&[[f64; 2]; 4]) -> f64 = compute_quad_skew;
 //! let _: fn(&[f32], &[u32], f64) -> bool = recombine_quality_ok;
@@ -702,6 +703,7 @@ pub use warm_state::{CgWarmState, solve_cg_with_warm_state, solve_cg_with_warm_s
 pub use mesher::{
     Mesh2d, Mesh2dError, Mesh2dOptions, Mesh2dReport, ProfileBoundary, SweepElementTarget,
     auto_mesh_size_from_boundary, compute_quad_skew, mesh_swept_profile_2d, recombine_quality_ok,
+    ring_signed_area_2d,
 };
 // Task 2988: sweep step — 2D mesh × K layers → 3D wedge/hex connectivity.
 // PRD reference: docs/prds/v0_3/hex-wedge-meshing.md task #7.

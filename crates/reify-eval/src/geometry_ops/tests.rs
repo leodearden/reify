@@ -21141,7 +21141,7 @@
     //
     // The coercion→resolve seam (Selector → List<Geometry> → extract_vertices)
     // is now covered by the `vertices_index_coercion` golden in
-    // crates/reify-eval/tests/selector_coercion_golden.rs (task #4723);
+    // crates/reify-eval/tests/harness_topology_selector/selector_coercion_golden.rs (task #4723);
     // these e2e tests cover the construction half of the integrated pipeline.
 
     /// `vertices(body)` compiled via `compile_with_stdlib` and built by

@@ -519,13 +519,13 @@ describe('defaultVisibilityFor — default_visible field (T6 aux hidden-by-defau
  *
  * It must be additive because `DisplayOutput` is OVERLOADED: the same
  * occurrence carries layer-3 appearance overrides AND multi-pane routing, and
- * `collect_display_routing` (engine.rs:4080-4086) emits a `DisplayDirective`
- * for EVERY DisplayDeferred occurrence, reading `pane` from the hydrated
- * instance where it is ALWAYS present (defaulted to 0). A directive therefore
- * proves nothing about visibility intent — an appearance-only
- * `DisplayOutput(subject:, style:)` is byte-identical on the wire to an
- * explicit `pane: 0`. An exhaustive `subject ? 'show' : 'hidden'` rule made
- * styling one body delete every other body from the viewport.
+ * `collect_display_routing` (gui/src-tauri/src/engine.rs) emits a
+ * `DisplayDirective` for EVERY DisplayDeferred occurrence, reading `pane`
+ * from the hydrated instance where it is ALWAYS present (defaulted to 0). A
+ * directive therefore proves nothing about visibility intent — an
+ * appearance-only `DisplayOutput(subject:, style:)` is byte-identical on the
+ * wire to an explicit `pane: 0`. An exhaustive `subject ? 'show' : 'hidden'`
+ * rule made styling one body delete every other body from the viewport.
  *
  * Scoped to realization nodes (the things that carry meshes) and to the
  * auto:default view; the All-Geometry escape hatch and user views are
@@ -621,9 +621,10 @@ describe('DisplayOutput explicit routing (#5195)', () => {
    * DisplayOutput subject, plus an INDEPENDENT `sub raw = RawEgress()` with its
    * own geometry realization that no DisplayOutput ever names.
    *
-   * `collect_display_routing` (engine.rs:4080-4086) pushes a `DisplayDirective`
-   * for that appearance-only `DisplayOutput(subject:, style:)` — it has no
-   * `pane:` argument at all, yet arrives on the wire with `pane: 0` because the
+   * `collect_display_routing` (gui/src-tauri/src/engine.rs) pushes a
+   * `DisplayDirective` for that appearance-only
+   * `DisplayOutput(subject:, style:)` — it has no `pane:` argument at all,
+   * yet arrives on the wire with `pane: 0` because the
    * hydrated instance always carries a defaulted `pane`. The paired engine-side
    * pin is engine_tests.rs::…display_output_defaults_pane_and_raw_stays_visible.
    */

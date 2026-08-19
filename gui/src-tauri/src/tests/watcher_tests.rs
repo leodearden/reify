@@ -7,6 +7,47 @@ use std::time::{Duration, Instant};
 
 use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 
+/// Clock seam for the `wait_*` helpers below, so their retry/poll contract
+/// can be pinned deterministically instead of against the host scheduler.
+/// Mirrors `Debouncer`'s existing convention in `watcher.rs` (all methods
+/// take an explicit `now: Instant` rather than reading the clock
+/// themselves) -- see #5709.
+trait WaitClock {
+    fn now(&self) -> Instant;
+    fn sleep(&mut self, d: Duration);
+}
+
+/// Real clock: reads [`Instant::now`] and actually blocks the thread.
+struct WallClock;
+impl WaitClock for WallClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn sleep(&mut self, d: Duration) {
+        std::thread::sleep(d)
+    }
+}
+
+/// Virtual clock: `sleep` advances `now` by exactly `d` and never blocks,
+/// so a whole retry budget elapses in microseconds and the attempt count
+/// is a function of the loop's arithmetic, not of host scheduling.
+struct VirtualClock {
+    now: Instant,
+}
+impl VirtualClock {
+    fn new(now: Instant) -> Self {
+        Self { now }
+    }
+}
+impl WaitClock for VirtualClock {
+    fn now(&self) -> Instant {
+        self.now
+    }
+    fn sleep(&mut self, d: Duration) {
+        self.now += d;
+    }
+}
+
 /// Poll `condition` every 20ms until it holds or `timeout` elapses.
 /// Returns immediately, before any sleep, if `condition` already holds.
 ///
@@ -15,18 +56,27 @@ use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 /// a full interval -- without this, a caller chaining many short windows
 /// (e.g. `wait_until_with_retry`'s per-attempt windows) would accumulate
 /// up to ~20ms of drift per window.
-fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
+fn wait_until_on(
+    clock: &mut dyn WaitClock,
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
+    let deadline = clock.now() + timeout;
     loop {
         if condition() {
             return true;
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(clock.now());
         if remaining.is_zero() {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(20).min(remaining));
+        clock.sleep(Duration::from_millis(20).min(remaining));
     }
+}
+
+/// See [`wait_until_on`] -- this wrapper runs against the real wall clock.
+fn wait_until(timeout: Duration, condition: impl Fn() -> bool) -> bool {
+    wait_until_on(&mut WallClock, timeout, condition)
 }
 
 /// Poll `sink` until `predicate` holds or `timeout` elapses.
@@ -44,7 +94,7 @@ fn wait_for<T>(
     wait_until(timeout, || predicate(&sink.lock().unwrap()))
 }
 
-/// Like [`wait_until`], but also invokes `attempt` before each poll window,
+/// Like [`wait_until_on`], but also invokes `attempt` before each poll window,
 /// up to `retry_every` apart, until `condition` holds or the OVERALL
 /// `timeout` budget elapses (`retry_every` bounds a single attempt's poll
 /// window, not the whole call).
@@ -67,23 +117,51 @@ fn wait_for<T>(
 /// a message blaming the watcher for never delivering anything, rather
 /// than the retry cadence being too fast -- so pick `retry_every` with
 /// this in mind rather than by feel.
-fn wait_until_with_retry(
+fn wait_until_with_retry_on(
+    clock: &mut dyn WaitClock,
     mut attempt: impl FnMut(),
     retry_every: Duration,
     timeout: Duration,
     condition: impl Fn() -> bool,
 ) -> bool {
-    let deadline = Instant::now() + timeout;
+    // A zero-length window never advances a `VirtualClock` (`sleep` adds
+    // `d` to `now`, and `0` is a no-op), so a caller passing `retry_every
+    // == Duration::ZERO` with a false condition would spin forever on the
+    // virtual clock instead of failing -- a silent hang rather than a
+    // panic. `WallClock` doesn't have this failure mode (real time
+    // advances regardless), so nothing in this file hits it today; this
+    // guards the shared seam for future callers. This is `assert!`, not
+    // `debug_assert!`, because the verify pipeline's release-profile test
+    // pass builds with `-C debug-assertions=off`: a `debug_assert!` here
+    // would be compiled out in exactly that pass, so the failure mode this
+    // guards against would degrade from a loud panic to a silent hang
+    // burning the whole release-test budget instead of failing fast. See
+    // #5709.
+    assert!(
+        !retry_every.is_zero(),
+        "retry_every must be non-zero: a zero window never advances a VirtualClock"
+    );
+    let deadline = clock.now() + timeout;
     loop {
         attempt();
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if wait_until(remaining.min(retry_every), &condition) {
+        let remaining = deadline.saturating_duration_since(clock.now());
+        if wait_until_on(clock, remaining.min(retry_every), &condition) {
             return true;
         }
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             return false;
         }
     }
+}
+
+/// See [`wait_until_with_retry_on`] -- this wrapper runs against the real wall clock.
+fn wait_until_with_retry(
+    attempt: impl FnMut(),
+    retry_every: Duration,
+    timeout: Duration,
+    condition: impl Fn() -> bool,
+) -> bool {
+    wait_until_with_retry_on(&mut WallClock, attempt, retry_every, timeout, condition)
 }
 
 /// Try to create a FileWatcher, returning None if OS resources (e.g. inotify
@@ -471,6 +549,15 @@ fn debouncer_paths_are_coalesced_and_drained_independently() {
     assert_eq!(deb.next_wait(t0 + Duration::from_millis(160)), None);
 }
 
+// Assertions over these helpers must be MONOTONE UNDER DESCHEDULING.
+// A saturated host can deschedule this thread for an entire timeout
+// budget, so: lower bounds on `start.elapsed()` and `>=`-style
+// "at least once" counts are safe (they only grow under load), while
+// upper bounds on elapsed and "more than N attempts" claims invert
+// and become flakes. Sharp count/promptness claims belong on the
+// `VirtualClock` tests below, which have no wall-clock dependency
+// at all. See #5709.
+
 #[test]
 fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
@@ -522,53 +609,18 @@ fn wait_for_returns_false_after_timeout_when_never_satisfied() {
     );
 }
 
-#[test]
-fn wait_until_with_retry_reissues_the_attempt_until_the_condition_holds() {
-    // `attempt` only flips the shared counter; `condition` reads the SAME
-    // counter and is satisfied once it reaches 3. If `wait_until_with_retry`
-    // only invoked `attempt` once (like a plain poll), the condition would
-    // never hold and this would time out. Reissuing it is exactly the
-    // property the de-flake depends on: a stimulus (e.g. a write) lost to a
-    // not-yet-live watcher must be re-issued, not just waited on.
-    let counter = Rc::new(Cell::new(0u32));
-    let attempt_counter = counter.clone();
-    let condition_counter = counter.clone();
-
-    let found = wait_until_with_retry(
-        move || attempt_counter.set(attempt_counter.get() + 1),
-        Duration::from_millis(20),
-        Duration::from_secs(2),
-        move || condition_counter.get() >= 3,
-    );
-
-    assert!(
-        found,
-        "condition should be satisfied once attempt has been reissued enough times"
-    );
-    assert!(
-        counter.get() >= 3,
-        "attempt should have been reissued (not just invoked once) before \
-         the condition held, got {} invocations",
-        counter.get()
-    );
-}
-
-#[test]
-fn wait_until_with_retry_returns_true_without_waiting_when_already_satisfied() {
-    let start = Instant::now();
-    let found = wait_until_with_retry(
-        || {},
-        Duration::from_millis(150),
-        Duration::from_secs(10),
-        || true,
-    );
-    assert!(found, "already-satisfied condition should return true");
-    assert!(
-        start.elapsed() < Duration::from_millis(200),
-        "should return promptly when already satisfied, took {:?}",
-        start.elapsed()
-    );
-}
+// `wait_until_with_retry_returns_true_without_waiting_when_already_satisfied`
+// (a real-clock "found + elapsed < 200ms" test) was removed here: its
+// upper-bound-on-elapsed claim was starvation-invertible like the count
+// assertion above, and once widened to a non-discriminating 5s bound its
+// two remaining claims were each already covered elsewhere -- `found` is
+// proven deterministically by
+// `wait_until_with_retry_does_not_sleep_when_the_condition_already_holds_on_a_virtual_clock`
+// below (which also proves the sharp "never sleeps" form no wall-clock
+// bound can), and that the real wrapper is actually wired to `WallClock`
+// is proven by `..._returns_false_after_the_timeout_when_never_satisfied`
+// just below (`elapsed >= 200ms` only holds if `WallClock::sleep` really
+// blocks). See #5709.
 
 #[test]
 fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() {
@@ -589,11 +641,239 @@ fn wait_until_with_retry_returns_false_after_the_timeout_when_never_satisfied() 
         "should wait out the full timeout, took {:?}",
         start.elapsed()
     );
+    // `>= 1`, not `> 1`: a thread descheduled for the whole 200ms budget
+    // between the first `attempt()` and the deadline check legitimately
+    // issues exactly one attempt, so a "more than once" claim here is
+    // starvation-invertible (this was the reported flake). The exact
+    // "reissued more than once" claim -- deterministically 10 attempts --
+    // now lives on the virtual clock in
+    // `wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadline_on_a_virtual_clock`
+    // below. `>= 1` is starvation-proof by construction: `attempt()` is
+    // called unconditionally before the loop ever computes `remaining` or
+    // checks the deadline. See #5709.
     assert!(
-        counter.get() > 1,
-        "attempt should have been reissued more than once while waiting \
-         for the condition, got {}",
+        counter.get() >= 1,
+        "attempt should be issued unconditionally at least once, even when \
+         the condition never holds, got {}",
         counter.get()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_reissues_the_attempt_for_every_window_until_the_deadline_on_a_virtual_clock()
+ {
+    // Deterministic replacement for the flaky assertion above: on a virtual
+    // clock the attempt count is a pure function of the loop's arithmetic
+    // (200ms budget / 20ms windows = 10), not of host scheduling, so this
+    // makes the same ">1" claim without ever being at the mercy of the
+    // scheduler. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_millis(200),
+        || false,
+    );
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert_eq!(
+        counter.get(),
+        10,
+        "attempt should have been reissued for every window until the \
+         deadline (200ms budget / 20ms windows = 10 attempts), got {}",
+        counter.get()
+    );
+    assert_eq!(
+        clock.now() - t0,
+        Duration::from_millis(200),
+        "the virtual clock should advance by exactly the timeout budget, \
+         neither short nor overshot, got {:?}",
+        clock.now() - t0
+    );
+}
+
+#[test]
+fn wait_until_with_retry_on_clamps_its_final_window_to_remaining_on_a_non_multiple_timeout() {
+    // The 200ms/20ms case above (and the 2s/20ms case below) can't
+    // distinguish the retry loop's OWN `remaining.min(retry_every)` clamp
+    // from a regression that used a bare `retry_every`, because both land
+    // on the same total either way when the timeout is an exact multiple
+    // of retry_every -- this is the retry loop's own clamp, one layer
+    // above the (separately covered) clamp inside `wait_until_on` itself.
+    // A non-multiple budget can distinguish them: unclamped, a third 20ms
+    // window would overshoot 50ms to 60ms; clamped, it's cut to 10ms and
+    // the call lands on exactly 50ms (windows of 20 + 20 + 10). See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_millis(50),
+        || false,
+    );
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert_eq!(
+        counter.get(),
+        3,
+        "three windows (20 + 20 + 10ms) should fit in a 50ms budget, got {} attempts",
+        counter.get()
+    );
+    assert_eq!(
+        clock.now() - t0,
+        Duration::from_millis(50),
+        "the final window should be clamped to the remaining budget rather \
+         than overshooting to 60ms, got {:?}",
+        clock.now() - t0
+    );
+}
+
+#[test]
+fn wait_until_with_retry_stops_reissuing_once_the_condition_holds_on_a_virtual_clock() {
+    // Deterministic replacement for the former (now-deleted) wall-clock test
+    // `wait_until_with_retry_reissues_the_attempt_until_the_condition_holds`.
+    // Preserved rationale: `attempt` only flips the shared counter;
+    // `condition` reads the SAME counter and is satisfied once it reaches 3.
+    // If `wait_until_with_retry` only invoked `attempt` once (like a plain
+    // poll), the condition would never hold and this would time out.
+    // Reissuing it is exactly the property the de-flake depends on: a
+    // stimulus (e.g. a write) lost to a not-yet-live watcher must be
+    // re-issued, not just waited on.
+    //
+    // On the virtual clock, the condition is re-checked at the head of each
+    // poll window, so the 3rd attempt short-circuits before any further
+    // sleep -- the count is deterministically exactly 3 rather than merely
+    // "eventually >= 3" within a wall-clock budget. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+    let condition_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(20),
+        Duration::from_secs(2),
+        move || condition_counter.get() >= 3,
+    );
+
+    assert!(
+        found,
+        "condition should be satisfied once attempt has been reissued enough times"
+    );
+    assert_eq!(
+        counter.get(),
+        3,
+        "attempt should be reissued exactly until the condition first holds, got {} invocations",
+        counter.get()
+    );
+}
+
+#[test]
+fn wait_until_with_retry_attempts_exactly_once_when_the_condition_already_holds_on_a_virtual_clock()
+ {
+    // This test's subject is the attempt count, not the clock: "the clock
+    // never advances when the condition already holds" is pinned once, at
+    // the layer that actually implements it, by
+    // `wait_until_on_does_not_advance_the_clock_when_the_condition_already_holds`
+    // below -- duplicating that assertion here added scaffolding without a
+    // distinct failure mode. What IS unique to the retry wrapper is that it
+    // calls `attempt` exactly once (not zero, not more) before the first,
+    // immediately-successful poll window. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+    let counter = Rc::new(Cell::new(0u32));
+    let attempt_counter = counter.clone();
+
+    let found = wait_until_with_retry_on(
+        &mut clock,
+        move || attempt_counter.set(attempt_counter.get() + 1),
+        Duration::from_millis(150),
+        Duration::from_secs(10),
+        || true,
+    );
+
+    assert!(found, "already-satisfied condition should return true");
+    assert_eq!(
+        counter.get(),
+        1,
+        "already-satisfied condition should still attempt exactly once, got {}",
+        counter.get()
+    );
+}
+
+#[test]
+#[should_panic(expected = "retry_every must be non-zero")]
+fn wait_until_with_retry_on_panics_when_retry_every_is_zero() {
+    // The guard in `wait_until_with_retry_on` is an `assert!`, not a
+    // `debug_assert!`, precisely so this stays a loud, profile-independent
+    // panic instead of degrading to a hang that only reproduces in debug
+    // builds -- see the comment on the guard itself. See #5709.
+    wait_until_with_retry_on(
+        &mut VirtualClock::new(Instant::now()),
+        || {},
+        Duration::ZERO,
+        Duration::from_millis(200),
+        || false,
+    );
+}
+
+#[test]
+fn wait_until_on_clamps_the_final_sleep_to_remaining_on_a_virtual_clock() {
+    // The doc comment above `wait_until_on` claims the 20ms poll interval
+    // is clamped to whatever time remains before `deadline`, so the final
+    // sleep of a call never overshoots `timeout` by a full interval. A
+    // budget that's an exact multiple of the poll interval -- like the
+    // 200ms/20ms cases above -- can't distinguish clamped from unclamped
+    // behaviour, since both land on exactly 200ms. A non-multiple budget
+    // can: unclamped, the third 20ms window would overshoot 50ms to 60ms;
+    // clamped, that window is cut short and it lands on exactly 50ms. See
+    // #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+
+    let found = wait_until_on(&mut clock, Duration::from_millis(50), || false);
+
+    assert!(!found, "condition is never satisfied, should time out");
+    assert_eq!(
+        clock.now() - t0,
+        Duration::from_millis(50),
+        "the final poll window should be clamped to the remaining budget \
+         rather than the full 20ms interval, got {:?}",
+        clock.now() - t0
+    );
+}
+
+#[test]
+fn wait_until_on_does_not_advance_the_clock_when_the_condition_already_holds() {
+    // Companion to the clamping test above, pinned at the same layer:
+    // proves `wait_until_on` itself checks `condition` before ever
+    // sleeping, directly rather than through the `wait_until_with_retry_on`
+    // wrapper. This is the ONLY place that claim is pinned -- the
+    // retry-layer test
+    // (`wait_until_with_retry_attempts_exactly_once_when_the_condition_already_holds_on_a_virtual_clock`)
+    // asserts only its own attempt count now, since duplicating this clock
+    // assertion there added no distinct failure mode. See #5709.
+    let t0 = Instant::now();
+    let mut clock = VirtualClock::new(t0);
+
+    let found = wait_until_on(&mut clock, Duration::from_secs(10), || true);
+
+    assert!(found, "already-satisfied condition should return true");
+    assert_eq!(
+        clock.now(),
+        t0,
+        "already-satisfied condition should not advance the clock at all, i.e. never sleep"
     );
 }
 

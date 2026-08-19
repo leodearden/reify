@@ -249,6 +249,17 @@ verify_env:
   REIFY_RELEASE_DELTA_SKIP: "1"
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
+  # Toolchain-cache UNIFICATION with the sandboxed agents (task 5836). MUST stay
+  # byte-identical to the role_env_overrides `&sandbox_cache_env` CARGO_HOME below
+  # — a warm lane's target/ is written by the AGENT and then re-read by VERIFY, and
+  # cargo's per-unit fingerprint embeds the registry source path, so any divergence
+  # makes each side dirty the other's units. /tmp is not a free choice: it is the one
+  # host-global writable root landlock grants the agent, so the agent side cannot
+  # move and verify is the side that must meet it. Enforced from outside by
+  # tests/infra/test_sandbox_cache_writability_seam.sh block (D), which reads BOTH
+  # values out of this file and requires equality for every redirected role.
+  # NOT mirrored: npm_config_cache — see block (E) of that guard.
+  CARGO_HOME: /tmp/reify-agent-cargo-home
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
   # contract C3 / task 4518 δ). It is NOT injected here; apply_env selects the role
   # FIFO at runtime (merge→/tmp/reify-jobserver-merge, task→/tmp/reify-jobserver-task).
@@ -340,23 +351,26 @@ cpu_governance:
     enabled: true
     threshold: 50  # REIFY_CPU_ADMIT_AGENT_THRESHOLD (scripts/agent-bin/cargo) — avg10 % PSI ceiling for heavy cargo subcommands
   DF_AGENT_CPU_GOVERN: 1  # reify-owned value dark-factory ζ reads to enable the agent-launch spawn prefix
-  # fleet_load_detector (task 5135): host-aggregate loadavg/PSI oversubscription
+  # fleet_load_detector (task 5135): host-aggregate loadavg oversubscription
   # DETECTOR (scripts/fleet-load-detector.sh) — observes ALL concurrently-
-  # dispatched lanes via host-global /proc/loadavg + /proc/pressure/cpu, no
-  # per-lane enumeration needed. Knob VALUES below MUST match the script's
-  # :-fallback defaults (cross-checked by tests/infra/test_fleet_load_detector
-  # .sh Block I, kept self-contained rather than enlarging
-  # test_cpu_governance_config.sh). `enabled` is DF-consumed (not grep-checked
-  # against a reify script, exactly like DF_AGENT_CPU_GOVERN above) — dark-
-  # factory L3b (out of scope for reify; docs/prds/run-all-pool-contention-
-  # tiering-fix.md §9) reads this block to wire the periodic invocation +
-  # dispatch-admission cap/escalation action. dark-factory-orchestrator.yaml loads once at
-  # startup, so a config edit needs commit-then-restart to take effect on the
-  # DF side (deploy-time concern, not verified here).
+  # dispatched lanes via host-global /proc/loadavg alone, no per-lane
+  # enumeration needed. Knob VALUES below MUST match the script's :-fallback
+  # defaults (cross-checked by tests/infra/test_fleet_load_detector.sh Block I,
+  # kept self-contained rather than enlarging test_cpu_governance_config.sh).
+  # A second knob, avg10_threshold (a PSI `some avg10 >= 80` arm), lived here
+  # and was DROPPED by task 5985 — rationale and supporting measurements in the
+  # scripts/fleet-load-detector.sh header, which is the canonical record. Block
+  # I now pins that key's ABSENCE, so reintroducing it here fails the suite.
+  # `enabled` is DF-consumed (not grep-checked against a reify script, exactly
+  # like DF_AGENT_CPU_GOVERN above) — dark-factory L3b (out of scope for reify;
+  # docs/prds/run-all-pool-contention-tiering-fix.md §9) reads this block to
+  # wire the periodic invocation + dispatch-admission cap/escalation action.
+  # dark-factory-orchestrator.yaml loads once at startup, so a config edit
+  # needs commit-then-restart to take effect on the DF side (deploy-time
+  # concern, not verified here).
   fleet_load_detector:
     enabled: true
     ratio_threshold: 4.0  # REIFY_FLEET_LOAD_RATIO_THRESHOLD (scripts/fleet-load-detector.sh)
-    avg10_threshold: 80   # REIFY_FLEET_LOAD_AVG10_THRESHOLD (scripts/fleet-load-detector.sh)
 
 # ── Warm-lane CoW pool (Phase 6, task ε #4663) ───────────────────────────────
 # reify ships the primitives: scripts/{provision-warm-lane-fs,seed-warm-lane,
@@ -459,8 +473,32 @@ speculation_probe:
 # silent max_turns exits on large-scope tasks (e.g. reify 1749): the architect
 # now has headroom to verify premises and produce a plan without the CLI
 # truncating mid-tool-call.
+#
+# reviewer 30 -> 45 (2026-08-07, Leo approved, esc-5905-3): the same failure
+# mode, now measured on the reviewer.
+#
+# THE KEY IS THE COLLAPSED `reviewer`, NOT `reviewer_comprehensive`. routing.py's
+# _config_key() maps every role whose name starts with "reviewer" to the single
+# `reviewer` config key ("byte-equivalence, invariant 3"), so TurnsConfig has no
+# per-specialization reviewer field at all — a `reviewer_comprehensive:` key here
+# is silently DROPPED by pydantic extra=ignore (caught by the config-key census
+# as esc-config-unknown-keys-startup-2 on the first attempt at this change).
+# Consequence: this necessarily raises EVERY reviewer specialization; it cannot
+# be scoped to one. That is acceptable because reviewer_comprehensive is the only
+# reviewer active in this project.
+# NOTE the sibling agent_env block below DOES key on `reviewer_comprehensive` —
+# the two namespaces use different role vocabularies. Do not copy one to the other.
+# Evidence (esc-5905-3, task 5905): 4 of 5 reviewer_comprehensive runs died at
+# maxTurns=30 (turnCount=31) on a 13-file/+432-131 diff, each leaving $2.3-2.9
+# of its $5 budget UNSPENT — turns were binding, not dollars. The single run
+# that completed needed nearly the whole 30. Worse, its successful verdict
+# (ISSUES_FOUND, 0 blocking) was then destroyed by the pre-respawn
+# clear_verdict(), so the gate reported a bogus ERROR. Recurrence: same class
+# in esc-5481-8 (task 5481) and esc-5891-3/5/6 (task 5891) — see curator gate
+# esc-6066-1. Load-once config: needs an orchestrator restart to take effect.
 max_turns:
   architect: 120
+  reviewer: 45
 
 # Per-role agent wall-clock timeout overrides (task 5157, 2026-07-08, Leo
 # approved — verify-flakiness survey follow-up, esc-4827 class).
@@ -539,6 +577,40 @@ starvation_watchdog:
   skip_threshold: 50
   idle_secs: 86400.0
 
+# Dispatch-admission gate (PsiAdmissionConfig; DF tasks 2327/2328). PROVISIONAL
+# TUNING, Leo 2026-08-03 — green-tier hot-reloadable, so retune via
+# mcp__escalation__reload_config without a restart.
+#
+# cpu_some_avg10: the shipped default 85.0 has NEVER fired on this host. Measured
+# CPU PSI `some` avg10, two 1 Hz samples: 2026-07-31 (load ~85) min 5.5 / med 46.3
+# / max 68.9; 2026-08-03 (load ~190) min 62.2 / med 66.8 / max 74.1. The
+# distribution SLIDES with load rather than spreading, so every value below 62 is
+# a total gate on a busy day and every value above 69 is dead on a quiet one.
+# Fraction of ticks the gate would hold — 55: 22.2%/100%, 60: 13.9%/100%,
+# 65: 1.9%/68.1%, 70: 0.0%/13.5%, 75: 0%/0%. 70 is the only value inert when
+# quiet yet engaged when busy. NOTE CPU PSI `full` is always 0.00 by kernel
+# definition (something is always runnable) — only `some` is usable for CPU.
+#
+# min_inflight_floor: raised 1 -> 3. The gate defers NEW dispatch while saturated;
+# in-flight drains only as tasks finish, so the floor is "always allow dispatch
+# below N", a safety net rather than a target. It is PER-ORCHESTRATOR and seven
+# orchestrator services run here, so 3 is up to 21 guaranteed in the worst case —
+# though five of the seven draw 0.18 cores combined, making the realistic figure ~6.
+#
+# mem_some_avg10 (15.0), mem_full_avg10 (3.0) and io_some_avg10 (40.0) are LEFT AT
+# DEFAULTS deliberately: mem_full=3.0 is exactly the operator's P1 target expressed
+# as a threshold, and both memory axes are correctly specified as hard trips that
+# should fire only when P1 is actually breached (2026-08-03: mem full med 0.6,
+# max 1.9 -> fires 0%; mem some max 2.9 -> fires 0%).
+#
+# DURABLE FIX PENDING: a fixed CPU-PSI threshold is fragile because the variable
+# tracks load instead of discriminating it. The runqueue ratio keeps a stable
+# meaning (2.4x quiet vs 7.1x busy) and reify already ships the detector
+# (scripts/fleet-load-detector.sh); dark_factory:3590 adds the consumer axis.
+psi_admission:
+  cpu_some_avg10: 70.0
+  min_inflight_floor: 3
+
 # ── Lever C (multi-host post-merge verify) — ENABLED 2026-06-10 ───────────────
 # leo-laptop is a second verify host. Parity-proven 5/5 (dark-factory
 # docs/verdict-parity-report.md, 2026-06-10); the operator enable path landed via
@@ -604,11 +676,50 @@ sandbox:
   enabled: true
   backend: landlock
 
-# Sandbox companion (task γ6a): toolchain-cache redirect for the three
-# sandboxed roles (implementer, debugger, simple_task — a hardcoded copy of
-# DF's roles.py sandboxed=True set; reify cannot observe a DF-side 4th
-# role addition, see the "SECOND, UNGUARDED COUPLING" note in
-# tests/infra/test_sandbox_cache_writability_seam.sh's header).
+# Sandbox companion (task γ6a): toolchain-cache redirect. Covers 6 of the 9
+# dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
+# debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
+# covered: merger, steward, deep_reviewer.
+#   merger is uncovered on a rationale task 5836 INVERTED, not merely made
+#   stale: the exclusion turned on keeping the merge agent's CARGO_HOME equal
+#   to the verify subprocess cache path, and 5836 moved verify_env onto
+#   /tmp/reify-agent-cargo-home while merger, carrying no override, still
+#   resolves the DEFAULT ~/.cargo. Deliberately NOT fixed by 5836, whose scope
+#   is the verify/agent seam. Filed as #6275; until that lands the exclusion
+#   stands on a rationale that no longer holds.
+#   The full re-analysis — the roles.py cites showing the exposure is
+#   reachable rather than theoretical, why re-adding merger must also extend
+#   CACHE_REDIRECT_ROLES, and what measurement it owes — lives in ONE place,
+#   the header of tests/infra/test_sandbox_cache_writability_seam.sh (SECOND
+#   COUPLING). Do not restate it here; the two copies drifted once already.
+#   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
+#   sandboxed=True flip": workflow.py:_build_agent_env merges
+#   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or
+#   not. Per role, as of task 5858:
+#     implementer / debugger / simple_task — roles.py sandboxed=True TODAY;
+#       the redirect is what keeps them building at all.
+#     architect — NOT sandboxed yet, but has unrestricted Bash
+#       (roles.py:401), so this entry is LIVE from the next orchestrator
+#       restart: it moves the architect's ad-hoc cargo/npm off the warm
+#       ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp pair. Accepted
+#       because that /tmp cache is already warmed by the three sandboxed
+#       roles above (so the architect inherits a warm cache, not a cold
+#       one), and its exposure to the tmpfiles age-deletion gap below is
+#       exactly the one implementer already carries.
+#     reviewer_comprehensive / judge — read-only tool grants
+#       (_READ_ONLY_TOOLS, roles.py:106; Bash scoped to `git:*`), so neither
+#       can invoke cargo or npm at all. Genuinely inert today AND after a
+#       sandboxed=True flip; kept as defense-in-depth against a future
+#       tool-grant widening, NOT because either would otherwise die on a
+#       cargo write.
+#   The key is `reviewer_comprehensive`, NOT the collapsed `reviewer` (which
+#   validates silently against DF's KNOWN_ROLE_NAMES yet delivers nothing).
+#   The full coupling analysis — that trap, why `judge` is safe despite
+#   workflow.py:10358, and what this seam still cannot observe — lives in
+#   ONE place, the header of
+#   tests/infra/test_sandbox_cache_writability_seam.sh (the file whose
+#   assertions enforce it). Do not restate it here; the two copies drifted
+#   once already.
 #   WHY: compute_write_set (DF-owned, orchestrator/agents/write_set.py)
 #   grants worktree + <base>/.task-meta/<name> + main .git carve-outs +
 #   ~/.cache/uv + ~/.claude/fleet + /tmp + /dev, and NOTHING under
@@ -619,10 +730,14 @@ sandbox:
 #   `npm install` exit 1 — ~/.npm/_logs unwritable). Warm paths still
 #   succeed, so this bites exactly on dependency-adding / cold-cache tasks.
 #   Upstream fix (add ~/.cargo + ~/.npm carve-outs to compute_write_set
-#   directly, which would retire this whole redirect): reify task 5724.
+#   directly, which would retire this whole redirect): dark_factory:3162.
 #   WHY THIS LEVER: role_env_overrides is merged LAST by DF's
 #   workflow.py:_build_agent_env for every role. verify_env (above) is the
-#   WRONG surface for this — verify subprocesses are not sandboxed.
+#   WRONG surface for THIS problem — verify subprocesses are not sandboxed,
+#   so setting CARGO_HOME there would not stop a sandboxed AGENT dying on an
+#   unwritable ~/.cargo. (verify_env does now carry the same CARGO_HOME, but
+#   for the unrelated task-5836 reason recorded above: fingerprint agreement
+#   over the shared warm target/, not write access.)
 #   WHY /tmp: it is the one host-global writable root in the write set, so
 #   the two dirs are shared across warm lanes and warm ONCE rather than
 #   per-lane; cargo's own .package-cache flock serializes concurrent access
@@ -642,14 +757,39 @@ sandbox:
 #       that crate's .cargo-ok marker survives) or npm's cacache store,
 #       producing missing-source build failures that don't look like a
 #       cache problem and surface only after long uptime.
-#     - Considered mirroring CARGO_HOME/npm_config_cache into verify_env
-#       too, so verify shares this /tmp cache instead of ~/.cargo/~/.npm,
-#       as an alternative fix for the double-copy problem; deferred —
-#       that would change the merge-gate build's cache path for EVERY
-#       task's verify run (high blast radius on the one gate that lands
-#       everything), whereas pre-seeding /tmp from the existing warm
-#       ~/.cargo/~/.npm (the ticket above) fixes the cold start without
-#       touching verify's cache path at all.
+#     - Mirroring CARGO_HOME into verify_env was once deferred here on
+#       blast-radius grounds. That deferral is REVERSED as of task 5836:
+#       verify_env above now carries the same CARGO_HOME. The original
+#       weighing was not wrong, it was INCOMPLETE — it compared the /tmp
+#       double-copy DISK cost against the merge gate's blast radius and
+#       never weighed FINGERPRINT INVALIDATION at all, because nobody had
+#       measured it yet. Measured since: cargo's per-unit Fingerprint
+#       embeds the registry source path ("Dirty <crate>: the path to the
+#       source changed"), so a CARGO_HOME split dirties all 685 registry
+#       deps in Cargo.lock and cascades into every workspace crate that
+#       depends on them. And because `-C metadata` is CARGO_HOME-
+#       INDEPENDENT, both homes write the SAME .fingerprint file and
+#       overwrite each other — so the thrash is BIDIRECTIONAL and
+#       recurring (measured a->b->a, dirty each time), not a one-time
+#       switching cost. That also rules out "just warm two caches": one
+#       target/ holds exactly one fingerprint set per unit.
+#       Seeding cannot substitute for agreement: this was never an mtime
+#       problem (extracted sources carry cargo's canonical fixed stamp and
+#       already match across both homes), so task 5729's cache seeding
+#       fixes cold START and leaves fingerprint IDENTITY untouched.
+#       Scope: CARGO_HOME only. npm_config_cache is deliberately NOT
+#       mirrored — npm has no path-keyed fingerprint equivalent, so
+#       widening the merge gate to it would buy nothing; that absence is
+#       pinned by block (E) of the seam guard so any future change arrives
+#       with its own evidence.
+#       Accepted cost: the current warm base was built under ~/.cargo, so
+#       the FIRST merge-verify after the activating restart pays ONE full
+#       cold rebuild to establish a /tmp-pathed base, which
+#       refresh-warm-base.sh then promotes normally. Steady state removes
+#       two full dependency-tree rebuilds per sandboxed task.
+#       Restart-tier, so this lands INERT and the operator picks when that
+#       one-time cost is paid.
+#       Full analysis lives in the seam-guard header, not here.
 #   XDG_CACHE_HOME (task 5909): compute_write_set() grants ~/.cache/uv but
 #   NOTHING under ~/.cache/tree-sitter, so a sandboxed role's grammar probe
 #   dies writing ~/.cache/tree-sitter/lock (the failure behind tasks
@@ -662,7 +802,7 @@ sandbox:
 #     tree when the root is absent (no provisioning step needed).
 #     UPSTREAM: cross-repo task 5896 adds the ~/.cache/tree-sitter
 #     carve-out to compute_write_set() directly; landing it retires this
-#     leg of the redirect (same shape as task 5724 above for
+#     leg of the redirect (same shape as dark_factory:3162 above for
 #     ~/.cargo/~/.npm).
 #     DELIBERATELY NOT SEEDED: unlike CARGO_HOME/npm_config_cache, this dir
 #     gets no pre-seed and no tmpfiles `x` age-clean exclusion in
@@ -675,7 +815,8 @@ sandbox:
 #     benefit — do not "complete the pattern" here.
 #   UV_CACHE_DIR (task 5909, COUNTER-redirect, NOT another /tmp redirect):
 #   XDG_CACHE_HOME above is a GENERAL variable and uv honours it too;
-#   compute_write_set() row 7 already grants ~/.cache/uv, so without this
+#   compute_write_set() row 7 already grants ~/.cache/uv — 159G measured
+#   on this host, the LARGEST single entry under ~/.cache — so without this
 #   pin the XDG_CACHE_HOME redirect would silently move uv's cache OFF its
 #   own grant and into /tmp, where this block's KNOWN GAPS tmpfiles rule
 #   (`D /tmp 1777 root root 30d`) both wipes at boot and age-deletes
@@ -691,6 +832,28 @@ sandbox:
 #   redirect. (sccache is a client/server daemon; storage lives with the
 #   already-running server, which this yaml points at a redis backend via
 #   sccache.backend_env.)
+#   PER-ROLE EFFECT OF THIS PAIR (task 5909; the anchor now feeds SIX roles,
+#   not the three it fed when these two keys were written): both keys ride
+#   the shared `&sandbox_cache_env` anchor, so they reach every aliased role.
+#   The split is NOT the same as the CARGO_HOME/npm_config_cache split
+#   recorded above, so it is recorded separately rather than by reference:
+#     implementer / debugger / simple_task — load-bearing, the whole point:
+#       without the redirect their grammar probe dies on ~/.cache/tree-sitter.
+#     architect — LIVE from the next restart (unrestricted Bash), and unlike
+#       the cargo/npm pair it lands COLD: /tmp/reify-agent-xdg-cache is
+#       DELIBERATELY NOT SEEDED (see above), so the architect does not
+#       inherit a warm shared cache the way it does for ~/.cargo/~/.npm — it
+#       trades a warm ~/.cache for an empty one. ACCEPTED: every dir this
+#       moves is derived and self-healing, and the one entry that is both
+#       large and genuinely granted (~/.cache/uv) is pinned back by
+#       UV_CACHE_DIR above.
+#     reviewer_comprehensive / judge — inert, same read-only tool grants that
+#       make their CARGO_HOME/npm_config_cache entries inert.
+#   BONUS, not a regression: because XDG_CACHE_HOME is general rather than
+#   tree-sitter-specific, the redirect also relocates ~/.cache/claude-cli-nodejs
+#   (26G) and ~/.cache/reify, NEITHER of which is in compute_write_set()
+#   either — so for the sandboxed three it widens the writable cache surface
+#   past the one dir that motivated it.
 #   Restart-tier: inert until the orchestrator restarts (companion task
 #   γ6b; XDG_CACHE_HOME/UV_CACHE_DIR ride the same tier — config loads once
 #   at startup, no hot-reload). Reify-side seam guard:
@@ -709,6 +872,9 @@ role_env_overrides:
     UV_CACHE_DIR: /home/leo/.cache/uv
   debugger: *sandbox_cache_env
   simple_task: *sandbox_cache_env
+  architect: *sandbox_cache_env
+  reviewer_comprehensive: *sandbox_cache_env
+  judge: *sandbox_cache_env
 
 # Escalation
 escalation:

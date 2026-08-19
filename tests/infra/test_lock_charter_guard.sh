@@ -224,12 +224,23 @@ echo "--- Cycle 4: --list-extensions drift guard + coherence ---"
 # Invisible on today's all-lowercase vector — the two orderings are md5-identical
 # — but the list already carries hyphenated members and glibc collation ignores
 # punctuation at the primary level, so it will not stay invisible forever.
+#
+# `csv` (the 59th entry, added #6067) mirrors dark_factory 43410b3418 and is
+# dark-factory-evidenced only — reify tracks zero .csv files.  Its behavioural
+# coverage is the coherence loop below, which classifies every emitted extension;
+# the incident narrative lives with _EXTS in scripts/lock-charter-guard.sh, not
+# here.  Per-entry test cycles are deliberately NOT the convention: widening the
+# allowlist costs exactly three pin edits — _EXTS, this CANONICAL_EXTS, and
+# lcl_canonical_extensions() in tests/infra/lock_charter_harness_lib.sh — and no
+# bespoke cycle, because this block's equality assertion is already strictly
+# stronger than any single-entry presence check.
 CANONICAL_EXTS="c
 cc
 cjs
 conf
 cpp
 css
+csv
 cts
 cxx
 diff

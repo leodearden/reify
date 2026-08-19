@@ -50,9 +50,9 @@ structure def AsymmetricRig {
     port mech : out MechanicalPort {
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm)
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1)
         )
     }
     port heat : in ThermalPort {
@@ -77,9 +77,9 @@ structure def HydroConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm)
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1)
         )
         param fitting_type = FittingStandard.NPT
     }

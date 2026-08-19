@@ -43,3 +43,7 @@ mod flat_sort_kahn_core_delegation;
 // reason as #5196's and #5045's above.
 #[path = "harness_engine/nested_sub_derived_let_e2e.rs"]
 mod nested_sub_derived_let_e2e;
+// Task #5758's dimensioned-ctor SI-value pins land here for the same
+// anti-re-accretion reason as #5196's, #5045's and #5360's above.
+#[path = "harness_engine/dimensioned_ctor_migration_si_values.rs"]
+mod dimensioned_ctor_migration_si_values;

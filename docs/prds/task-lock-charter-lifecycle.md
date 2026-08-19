@@ -477,12 +477,21 @@ are the dark-factory external-deps.
    - the **extensionless-basename** allowlist (C-P1 clause (ii)), emitted by
      `--list-extensionless`. γ's mirror of it is `dark_factory:3248`.
 
-   Completeness is not a one-time answer for either: both have already been found stale
-   by a manual sweep once (extensions at 36→58, `dark_factory:3117`; basenames at
-   0→8, `dark_factory:3248`). The standing defence is the live-corpus subset alarm in
-   `tests/infra/test_lock_charter_guard.sh` (Cycle 9), which re-runs the sweep in CI and
-   goes RED when a tracked extensionless basename is missing from the α vector. A RED
-   there is fixed by updating α **and** γ together — the emitters exist so the two can be
+   Completeness is not a one-time answer for either: the extension vector has already
+   been found stale **twice**, by two different mechanisms — once by a manual sweep
+   (36→58, `dark_factory:3117`, 2026-07-28) and once by γ's own corpus guard going RED
+   plus reconciliation review on the α side (58→59, reify #6067 / dark-factory
+   43410b3418, 2026-08-07, adding `csv`). A reify-corpus sweep would not have caught
+   the latter, since reify tracks zero `.csv` files; the full incident narrative is
+   owned by `scripts/lock-charter-guard.sh`'s header, not restated here. The basename
+   vector has been found stale **once** (0→8, `dark_factory:3248`). The live-corpus
+   subset alarm in `tests/infra/test_lock_charter_guard.sh` (Cycle 9), which re-runs
+   the sweep in CI and goes RED when a tracked extensionless basename is missing from
+   the α vector, is the standing defence for the **extensionless-basename** vector
+   only — there is no live-corpus drift alarm for the extension vector on the α side
+   yet (γ has one — `test_every_tracked_extension_is_allowlisted`, which is what
+   caught `csv`; the α mirror is tracked as reify #6068). A RED in that Cycle 9 alarm
+   is fixed by updating α **and** γ together — the emitters exist so the two can be
    compared byte-for-byte rather than by eye.
 3. **ε hide-point.** Precise architect-input field to suppress (`plan_tools.create_plan`
    args vs the briefing prompt assembly) — confirm at ε impl (§6 ⚠️).

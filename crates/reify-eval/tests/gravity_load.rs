@@ -25,7 +25,9 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 /// `Value::StructureInstance` with `type_name == "Gravity"`, whose `magnitude`
 /// field is `Value::Scalar { dimension: ACCELERATION, si_value ≈ 9.80665 }`
 /// (from the `STANDARD_GRAVITY()` default), and whose `direction` field is
-/// `Value::List([0.0, 0.0, -1.0])` (the canonical −Z unit vector).
+/// `Value::Vector([0.0, 0.0, -1.0])` (the canonical −Z unit vector; task 5905
+/// retyped the param to `Vector3<Dimensionless>`, so its `vec3(...)` default
+/// materialises as `Value::Vector`).
 ///
 /// RED: `Gravity(…)` is an unknown constructor today — falls through to
 /// `Value::Undef` — so the `StructureInstance` branch is never reached.
@@ -79,9 +81,9 @@ structure def GravityFixture {
                     other
                 ),
             }
-            // direction default = [0.0, 0.0, -1.0]
+            // direction default = vec3(0.0, 0.0, -1.0) → Value::Vector (task 5905)
             match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
+                Some(Value::Vector(items)) => {
                     assert_eq!(
                         items.len(),
                         3,
@@ -105,7 +107,7 @@ structure def GravityFixture {
                     );
                 }
                 other => panic!(
-                    "Gravity.direction must be Value::List([0.0, 0.0, -1.0]); got {:?}",
+                    "Gravity.direction must be Value::Vector([0.0, 0.0, -1.0]); got {:?}",
                     other
                 ),
             }
@@ -160,9 +162,9 @@ structure def GravityMagOverride {
                     other
                 ),
             }
-            // direction must retain its [0,0,-1] default when only magnitude is overridden
+            // direction must retain its vec3(0,0,-1) default when only magnitude is overridden
             match field(&data.fields, "direction") {
-                Some(Value::List(items)) => {
+                Some(Value::Vector(items)) => {
                     assert_eq!(
                         items.len(),
                         3,
@@ -199,19 +201,21 @@ structure def GravityMagOverride {
 }
 
 /// task 4439 step-1: `Gravity` with an explicit direction override round-trips
-/// correctly — `direction` must be `Value::List([1.0, 0.0, 0.0])`.
+/// correctly — `direction` must be `Value::Vector([1.0, 0.0, 0.0])` (task 5905:
+/// the param is `Vector3<Dimensionless>`, so the override is spelled `vec3(...)`).
 ///
 /// Both params are supplied in declaration order (`magnitude` first, `direction`
 /// second) because structure-def constructors use positional binding — the same
-/// pattern as `PointLoad(point: "", force: 0.0, direction: […])` in
-/// `structure_instance_e2e.rs:552`.
+/// pattern as `PointLoad(point: "", force: 0.0, direction: vec3(…))` in
+/// `point_load_direction_field_default_and_override`
+/// (`structure_instance_e2e.rs`).
 ///
 /// RED: same unknown-ctor path as above.
 #[test]
 fn gravity_direction_override_round_trips() {
     const SOURCE: &str = r#"
 structure def GravityDirOverride {
-    let g = Gravity(magnitude: STANDARD_GRAVITY(), direction: [1.0, 0.0, 0.0])
+    let g = Gravity(magnitude: STANDARD_GRAVITY(), direction: vec3(1.0, 0.0, 0.0))
 }
 "#;
 
@@ -227,7 +231,7 @@ structure def GravityDirOverride {
 
     match g {
         Value::StructureInstance(data) => match field(&data.fields, "direction") {
-            Some(Value::List(items)) => {
+            Some(Value::Vector(items)) => {
                 assert_eq!(
                     items.len(),
                     3,
@@ -251,7 +255,7 @@ structure def GravityDirOverride {
                 );
             }
             other => panic!(
-                "Gravity direction override must be Value::List([1.0, 0.0, 0.0]); \
+                "Gravity direction override must be Value::Vector([1.0, 0.0, 0.0]); \
                      got {:?}",
                 other
             ),
@@ -312,14 +316,16 @@ structure def GravityMagAccess {
 }
 
 /// Member-access chain `self.g.direction` reads through the `Gravity` structure
-/// instance and resolves to `Value::List([0.0, 0.0, -1.0])` — the canonical
+/// instance and resolves to `Value::Vector([0.0, 0.0, -1.0])` — the canonical
 /// −Z unit vector default.
 ///
-/// Covers the member-access evaluator path for the `List<Real>`-valued
+/// Covers the member-access evaluator path for the `Vector3<Dimensionless>`-valued
 /// `direction` field, which is materially distinct from the scalar `magnitude`
 /// member-access shape tested above.  `PressureLoad.direction` is a `String`;
-/// this is the first Load-conformer whose `direction` is a `List<Real>`, so
-/// this test exercises a distinct read-through path.
+/// this is the first Load-conformer whose `direction` is a 3-vector, so this
+/// test exercises a distinct read-through path.  (task 5905 retyped the field
+/// from `List<Real>` under trajectory.ri's direction-field rule; the value
+/// therefore materialises as `Value::Vector`, not `Value::List`.)
 #[test]
 fn gravity_member_access_direction() {
     const SOURCE: &str = r#"
@@ -340,7 +346,7 @@ structure def GravityDirAccess {
         .unwrap_or_else(|| panic!("GravityDirAccess.direction cell missing from eval result"));
 
     match dir {
-        Value::List(items) => {
+        Value::Vector(items) => {
             assert_eq!(
                 items.len(),
                 3,
@@ -364,7 +370,7 @@ structure def GravityDirAccess {
             );
         }
         other => panic!(
-            "self.g.direction must resolve to Value::List([0.0, 0.0, -1.0]); \
+            "self.g.direction must resolve to Value::Vector([0.0, 0.0, -1.0]); \
              got {other:?}"
         ),
     }

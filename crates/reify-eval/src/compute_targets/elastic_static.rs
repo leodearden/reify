@@ -3622,19 +3622,27 @@ impl std::fmt::Display for FeaValueShapeError {
     }
 }
 
-/// Shared arity + per-component `Value::Scalar` extraction for
+/// Shared arity + per-component extraction for
 /// `extract_point3_si`/`extract_vec3_si`, once the caller has matched `val`
 /// against `Value::Point`/`Value::Vector` and obtained the ordered component
 /// slice.
 ///
 /// `shape_context` labels a `< 3`-components arity error; `component_context`
-/// labels a per-component non-Scalar error; `noun` names the shape
+/// labels a per-component read failure; `noun` names the shape
 /// (`"Point"`/`"Vector"`) for the arity error's message.
+///
+/// `component` is what SPLITS the two callers (task 5848). They differ in
+/// DIMENSION, so they differ in which `Value` spellings are legitimate:
+/// `extract_point3_si` reads a genuinely dimensioned `Point3<Length>` and
+/// stays strict ([`dimensioned_component`]); `extract_vec3_si` reads the
+/// dimensionless `MaterialFrame` axes and is tolerant
+/// ([`dimensionless_component`]).
 fn extract_scalar_triple(
     comps: &[Value],
     shape_context: &'static str,
     component_context: &'static str,
     noun: &'static str,
+    component: fn(&Value) -> Option<f64>,
 ) -> Result<[f64; 3], FeaValueShapeError> {
     if comps.len() < 3 {
         return Err(FeaValueShapeError::ExpectedList {
@@ -3642,14 +3650,39 @@ fn extract_scalar_triple(
             got: format!("{noun} with {} components", comps.len()),
         });
     }
-    let comp = |v: &Value| match v {
-        Value::Scalar { si_value, .. } => Ok(*si_value),
-        other => Err(FeaValueShapeError::ExpectedScalar {
+    let comp = |v: &Value| {
+        component(v).ok_or_else(|| FeaValueShapeError::ExpectedScalar {
             context: component_context,
-            got: format!("{other:?}"),
-        }),
+            got: format!("{v:?}"),
+        })
     };
     Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
+}
+
+/// Per-component reader for a DIMENSIONED triple — `aabb_min`/`aabb_max`'s
+/// `Point3<Length>`. A bare `Value::Real`/`Value::Int` component there is a
+/// genuinely missing dimension, so it must fail (task #5080's contract, pinned
+/// by `extract_point3_si_rejects_non_scalar_component`).
+fn dimensioned_component(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Per-component reader for a DIMENSIONLESS triple — `MaterialFrame`'s three
+/// `Vector3<Dimensionless>` axes (task 5848). A dimensionless `.ri` literal
+/// compiles to `Value::Int`/`Value::Real` and reaches this reader verbatim, so
+/// all three numeric spellings must read; mirrors `modal_ops::read_scalar_si`,
+/// the landed tolerant reader serving `ModalOptions.reference_direction`. A
+/// genuinely non-numeric component still fails.
+fn dimensionless_component(v: &Value) -> Option<f64> {
+    match v {
+        Value::Scalar { si_value, .. } => Some(*si_value),
+        Value::Real(r) => Some(*r),
+        Value::Int(n) => Some(*n as f64),
+        _ => None,
+    }
 }
 
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
@@ -3670,18 +3703,23 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
         "extract_point3_si",
         "extract_point3_si component",
         "Point",
+        dimensioned_component,
     )
 }
 
-/// Extract `[f64; 3]` SI values from a `Value::Vector([Scalar<Length>, ...])`.
+/// Extract `[f64; 3]` values from a `Value::Vector` of three numeric
+/// components.
 ///
 /// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
+/// Those axes are `Vector3<Dimensionless>` (task 5848), so the components
+/// arrive as `Int`/`Real` from a `.ri` literal and as `Scalar` from a Rust
+/// minter — see [`dimensionless_component`].
 fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Vector(v) => v,
         other => {
             return Err(FeaValueShapeError::ExpectedList {
-                context: "extract_vec3_si (Vector3<Length>)",
+                context: "extract_vec3_si (Vector3<Dimensionless>)",
                 got: format!("{other:?}"),
             })
         }
@@ -3691,6 +3729,7 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
         "extract_vec3_si",
         "extract_vec3_si component",
         "Vector",
+        dimensionless_component,
     )
 }
 
@@ -3987,6 +4026,45 @@ fn extract_density(val: &Value) -> f64 {
     }
 }
 
+/// Read a load's `direction` field into `[f64; 3]`, falling back to `[0, 0, -1]`
+/// (−Z) when the field is absent or mis-shaped.
+///
+/// Shared by the `PointLoad` and `Gravity` arms of [`extract_loads`], whose
+/// `direction` params are both declared `Vector3<Dimensionless>` in
+/// `fea_multi_case.ri` (task 5905, under trajectory.ri's direction-field rule).
+///
+/// **Both** `Value::Vector` and `Value::List` are accepted, deliberately —
+/// mirroring `modal_ops::read_vec3`, the landed analogue serving the modal
+/// `Vector3<Dimensionless>` direction fields:
+///
+/// - `Value::Vector` is what a `.ri` `vec3(...)` materialises as, i.e. every
+///   call site once the param is declared `Vector3<Dimensionless>`.
+/// - `Value::List` is retained because compile-time conformance only guards
+///   `.ri` call sites. Rust-constructed `StructureInstance` fixtures bypass it
+///   entirely and legitimately build a `Value::List` direction; a Vector-only
+///   reader would send every one of those silently down the −Z fallback, which
+///   is the exact silent-corruption failure this reader exists to close.
+///
+/// Per-component reads delegate to [`dimensionless_component`], so a component
+/// spelled `Value::Scalar` (dimensionless), `Value::Real` or `Value::Int` all
+/// read alike; a genuinely non-numeric component contributes `0.0`.
+///
+/// The `_ => [0.0, 0.0, -1.0]` fallback for genuinely malformed input is
+/// intentional forward-compatibility contract, pinned by
+/// `extract_loads_malformed_direction_defaults_to_neg_z`.
+fn read_direction_or_neg_z(direction: Option<&Value>) -> [f64; 3] {
+    match direction {
+        Some(Value::Vector(elems) | Value::List(elems)) if elems.len() == 3 => {
+            let mut d = [0.0f64; 3];
+            for (slot, e) in d.iter_mut().zip(elems.iter()) {
+                *slot = dimensionless_component(e).unwrap_or(0.0);
+            }
+            d
+        }
+        _ => [0.0, 0.0, -1.0],
+    }
+}
+
 /// `(tip_force, pressures, body_force)` — see [`extract_loads`].
 type ExtractedLoads = ([f64; 3], Vec<PressureSpec>, [f64; 3]);
 
@@ -4027,25 +4105,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
         if let Value::StructureInstance(data) = item {
             if data.type_name == "PointLoad" {
                 if let Some(Value::Real(f)) = data.fields.get("force") {
-                    let dir = match data.fields.get("direction") {
-                        Some(Value::List(elems)) if elems.len() == 3 => {
-                            let mut d = [0.0f64; 3];
-                            for (i, e) in elems.iter().enumerate() {
-                                // List<Real> elements materialize as either
-                                // `Value::Real` (scene literals) or dimensionless
-                                // `Value::Scalar` (structure-def default values),
-                                // mirroring the `magnitude` parse below. Handle
-                                // both so the default [0,0,-1] is honoured.
-                                match e {
-                                    Value::Real(v) => d[i] = *v,
-                                    Value::Scalar { si_value, .. } => d[i] = *si_value,
-                                    _ => {}
-                                }
-                            }
-                            d
-                        }
-                        _ => [0.0, 0.0, -1.0],
-                    };
+                    let dir = read_direction_or_neg_z(data.fields.get("direction"));
                     for axis in 0..3 {
                         tip_force_vec[axis] += f * dir[axis];
                     }
@@ -4061,20 +4121,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
                     Some(Value::Scalar { si_value, .. }) => *si_value,
                     _ => continue,
                 };
-                let dir = match data.fields.get("direction") {
-                    Some(Value::List(elems)) if elems.len() == 3 => {
-                        let mut d = [0.0f64; 3];
-                        for (i, e) in elems.iter().enumerate() {
-                            match e {
-                                Value::Real(v) => d[i] = *v,
-                                Value::Scalar { si_value, .. } => d[i] = *si_value,
-                                _ => {}
-                            }
-                        }
-                        d
-                    }
-                    _ => [0.0, 0.0, -1.0],
-                };
+                let dir = read_direction_or_neg_z(data.fields.get("direction"));
                 for axis in 0..3 {
                     body_force[axis] += density * magnitude * dir[axis];
                 }
@@ -7984,6 +8031,133 @@ mod tests {
         assert!((fz).abs() < 1e-9, "expected fz≈0, got {fz}");
     }
 
+    // ── task 5905: `direction` retyped to Vector3<Dimensionless> ─────────────
+
+    /// Build a `PointLoad` whose `direction` field is the supplied `Value`
+    /// verbatim, so a test can vary the outer Value variant (List vs Vector).
+    fn point_load_with_direction_value(force: f64, direction: Value) -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [
+            ("force".to_string(), Value::Real(force)),
+            ("direction".to_string(), direction),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PointLoad".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// Build a `Gravity` whose `direction` field is the supplied `Value`
+    /// verbatim (`magnitude` is a dimensioned `Value::Scalar`, as always).
+    fn gravity_with_direction_value(magnitude_si: f64, direction: Value) -> Value {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> = [
+            (
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: magnitude_si,
+                    dimension: DimensionVector::ACCELERATION,
+                },
+            ),
+            ("direction".to_string(), direction),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "Gravity".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// task 5905: `PointLoad.direction` is declared `Vector3<Dimensionless>`, so
+    /// a `.ri`-authored `vec3(...)` materialises as `Value::Vector`, NOT
+    /// `Value::List`.  The reader must accept it.
+    ///
+    /// This is the one failure mode no other gate catches: a `Value::Vector`
+    /// that falls through to the `_ => [0.0, 0.0, -1.0]` arm produces a
+    /// perfectly plausible -Z load with NO diagnostic anywhere, silently
+    /// discarding the author's direction.
+    ///
+    /// RED before the reader learns `Value::Vector`: a +X direction is read as
+    /// the -Z fallback, so `fz` is -1000 instead of `fx`.
+    #[test]
+    fn extract_loads_accepts_vector_direction_for_point_load() {
+        let dir = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let loads = Value::List(vec![point_load_with_direction_value(1000.0, dir)]);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0).unwrap();
+        assert!(
+            (fx - 1000.0).abs() < 1e-9,
+            "Value::Vector direction [1,0,0] with force 1000 should give \
+             fx=1000, got {fx} (fell through to the -Z fallback?)"
+        );
+        assert!((fy).abs() < 1e-9, "expected fy≈0, got {fy}");
+        assert!(
+            (fz).abs() < 1e-9,
+            "expected fz≈0, got {fz} — a non-zero fz means the +X direction \
+             was silently replaced by the -Z fallback"
+        );
+    }
+
+    /// task 5905, Gravity arm: same contract as the PointLoad arm above — a
+    /// `Value::Vector` direction must reach `body_force`, not the -Z fallback.
+    ///
+    /// ρ=2000, magnitude=10, direction=[1,0,0] → body_force=[20000, 0, 0].
+    #[test]
+    fn extract_loads_accepts_vector_direction_for_gravity() {
+        let dir = Value::Vector(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]);
+        let loads = Value::List(vec![gravity_with_direction_value(10.0, dir)]);
+        let (_, _, [bx, by, bz]) = extract_loads(&loads, 2000.0).unwrap();
+        assert!(
+            (bx - 20000.0).abs() < 1e-6,
+            "Value::Vector direction [1,0,0] with ρ=2000, m=10 should give \
+             body_force x=20000, got {bx} (fell through to the -Z fallback?)"
+        );
+        assert!((by).abs() < 1e-9, "expected body_force y≈0, got {by}");
+        assert!(
+            (bz).abs() < 1e-9,
+            "expected body_force z≈0, got {bz} — a non-zero z means the +X \
+             direction was silently replaced by the -Z fallback"
+        );
+    }
+
+    /// task 5905, component spelling: a `Vector3<Dimensionless>` default
+    /// declared in `.ri` can materialise with dimensionless `Value::Scalar`
+    /// components rather than bare `Value::Real` (the same split
+    /// `extract_loads_direction_scalar_elements_handled` covers for the List
+    /// encoding).  Both spellings must read identically inside a
+    /// `Value::Vector`.
+    #[test]
+    fn extract_loads_accepts_vector_direction_with_scalar_components() {
+        let dir = Value::Vector(
+            [0.0_f64, 1.0_f64, 0.0_f64]
+                .iter()
+                .map(|&v| Value::Scalar {
+                    si_value: v,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                })
+                .collect(),
+        );
+        let loads = Value::List(vec![point_load_with_direction_value(750.0, dir)]);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0).unwrap();
+        assert!((fx).abs() < 1e-9, "expected fx≈0, got {fx}");
+        assert!(
+            (fy - 750.0).abs() < 1e-9,
+            "Value::Vector of dimensionless Value::Scalar components [0,1,0] \
+             with force 750 should give fy=750, got {fy}"
+        );
+        assert!(
+            (fz).abs() < 1e-9,
+            "expected fz≈0, got {fz} — a non-zero fz means the +Y direction \
+             was silently replaced by the -Z fallback"
+        );
+    }
+
     /// amendment (task 4245 esc): malformed `direction` values silently fall back
     /// to `[0, 0, -1]` — this is the intentional forward-compatibility contract
     /// (design_decision[4] in plan.json).  This test pins the contract so the
@@ -9912,18 +10086,39 @@ mod tests {
         );
     }
 
-    /// Amendment (task #5080 review, suggestion 1): a `Value::Vector` with 3
-    /// components where one is not a `Value::Scalar` must report
-    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` from the
-    /// per-component check, not `ExpectedList`.
+    /// Task 5848 RETARGET of the task-#5080 review amendment (suggestion 1),
+    /// which pinned that a `Value::Vector` component that is not a
+    /// `Value::Scalar` must report `Err(ExpectedScalar)`.
+    ///
+    /// That contract was written when `MaterialFrame`'s axes were
+    /// `Vector3<Length>`, where a bare `Real`/`Int` component genuinely IS a
+    /// missing dimension. The axes are now `Vector3<Dimensionless>`, where
+    /// `Real`/`Int` is the CORRECT spelling — so the Vector path reads all
+    /// three numeric spellings and returns their f64s.
+    ///
+    /// #5080 is preserved where it is still true rather than overturned: its
+    /// Point-path twin `extract_point3_si_rejects_non_scalar_component` above
+    /// still pins the strict reading for the genuinely dimensioned
+    /// `Point3<Length>` (`aabb_min`/`aabb_max`), and is deliberately untouched.
+    ///
+    /// The rejection half survives here too: a genuinely NON-NUMERIC component
+    /// must still report `Err(ExpectedScalar)`.
     #[test]
-    fn extract_vec3_si_rejects_non_scalar_component() {
+    fn extract_vec3_si_reads_numeric_components_and_rejects_non_numeric() {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
-        let mixed = Value::Vector(vec![scalar(1.0), scalar(2.0), Value::Real(3.0)]);
-        let res = extract_vec3_si(&mixed);
+        let mixed = Value::Vector(vec![scalar(1.0), Value::Real(2.0), Value::Int(3)]);
+        assert_eq!(
+            extract_vec3_si(&mixed),
+            Ok([1.0, 2.0, 3.0]),
+            "Scalar/Real/Int axis components must all read as their f64 value"
+        );
+
+        let non_numeric =
+            Value::Vector(vec![scalar(1.0), scalar(2.0), Value::String("z".to_string())]);
+        let res = extract_vec3_si(&non_numeric);
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
-            "expected Err(ExpectedScalar) for a Vector with a non-Scalar component, got: {:?}",
+            "expected Err(ExpectedScalar) for a Vector with a non-numeric component, got: {:?}",
             res
         );
     }
@@ -10442,6 +10637,161 @@ mod tests {
         .collect();
 
         let _ = anisotropic_material_from_value(&anisotropic_material(fields));
+    }
+
+    // ── task 5848: MaterialFrame's axes are DIMENSIONLESS, and nothing on the
+    // path to `rotate_voigt` normalises them ─────────────────────────────────
+
+    /// Build a `MaterialFrame` Value with explicit axes, spelling every axis
+    /// component with `component` — the `Value` variant a `.ri` literal of
+    /// that kind compiles to. `origin` stays `Point3<Length>` either way.
+    fn frame_with_axes(
+        x: [f64; 3],
+        y: [f64; 3],
+        z: [f64; 3],
+        component: fn(f64) -> Value,
+    ) -> Value {
+        let len = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let axis =
+            |v: [f64; 3]| Value::Vector(vec![component(v[0]), component(v[1]), component(v[2])]);
+        let fields: PersistentMap<String, Value> = [
+            (
+                "origin".to_string(),
+                Value::Point(vec![len(0.0), len(0.0), len(0.0)]),
+            ),
+            ("x_axis".to_string(), axis(x)),
+            ("y_axis".to_string(), axis(y)),
+            ("z_axis".to_string(), axis(z)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MaterialFrame".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// A genuinely ANISOTROPIC orthotropic law (distinct `e1`/`e2`/`e3`), so
+    /// the frame actually moves `D_global`. `het_ortho_law`'s isotropic alias
+    /// would make any orthonormal rotation a no-op and the invariance
+    /// assertion below vacuous.
+    fn anisotropic_ortho_law() -> Value {
+        let pa = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::PRESSURE,
+        };
+        let fields: PersistentMap<String, Value> = [
+            ("e1".to_string(), pa(205e9)),
+            ("e2".to_string(), pa(120e9)),
+            ("e3".to_string(), pa(68e9)),
+            ("g12".to_string(), pa(50e9)),
+            ("g13".to_string(), pa(40e9)),
+            ("g23".to_string(), pa(28e9)),
+            ("nu12".to_string(), Value::Real(0.29)),
+            ("nu13".to_string(), Value::Real(0.25)),
+            ("nu23".to_string(), Value::Real(0.20)),
+        ]
+        .into_iter()
+        .collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// `d_matrix_global()` for [`anisotropic_ortho_law`] under the given frame
+    /// axes and axis-component spelling, read through the production
+    /// `anisotropic_material_from_value` seam.
+    fn d_global_under_frame(
+        x: [f64; 3],
+        y: [f64; 3],
+        z: [f64; 3],
+        component: fn(f64) -> Value,
+    ) -> [[f64; 6]; 6] {
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), anisotropic_ortho_law()),
+            ("frame".to_string(), frame_with_axes(x, y, z, component)),
+        ]
+        .into_iter()
+        .collect();
+        anisotropic_material_from_value(&anisotropic_material(fields))
+            .expect("a well-formed AnisotropicMaterial must read")
+            .d_matrix_global()
+    }
+
+    /// Task 5848 retypes `MaterialFrame`'s three axes from `Vector3<Length>`
+    /// to `Vector3<Dimensionless>`, so the DSL spelling moves from
+    /// `vec3(0m, 1m, 0m)` to `vec3(0, 1, 0)`. Every numeric `Value` spelling a
+    /// component can arrive as must therefore yield a BITWISE identical
+    /// `D_global` — the retype moves the declaration, not the solve.
+    ///
+    /// The basis for exactness is NOT normalisation (there is none — see the
+    /// fence below). It is that the per-component reader takes the same f64
+    /// out of `Scalar { si_value: 1.0 }`, `Real(1.0)` and `Int(1)`, so the
+    /// identical numbers reach `rotate_voigt`'s `T`.
+    ///
+    /// The `Int` leg is the load-bearing one: an integer `.ri` literal
+    /// compiles to `Value::Int`, so `vec3(0, 1, 0)` — the natural dimensionless
+    /// spelling, and the one `examples/anisotropic_bar.ri` now uses — reaches
+    /// this reader as `Int`, not `Real`.
+    #[test]
+    fn material_frame_axes_read_identically_across_numeric_spellings() {
+        let (x, y, z) = ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        let as_length: fn(f64) -> Value = |v| Value::Scalar {
+            si_value: v,
+            dimension: DimensionVector::LENGTH,
+        };
+        let as_real: fn(f64) -> Value = Value::Real;
+        let as_int: fn(f64) -> Value = |v| Value::Int(v as i64);
+
+        let baseline = d_global_under_frame(x, y, z, as_length);
+        assert_eq!(
+            d_global_under_frame(x, y, z, as_real),
+            baseline,
+            "Real-spelled axis components must give a bitwise-identical D_global \
+             to the former Length spelling"
+        );
+        assert_eq!(
+            d_global_under_frame(x, y, z, as_int),
+            baseline,
+            "Int-spelled axis components (what `vec3(0, 1, 0)` compiles to) must \
+             give a bitwise-identical D_global to the former Length spelling"
+        );
+    }
+
+    /// FENCE: nothing on the path `extract_vec3_si` →
+    /// `AnisotropicMaterial::from_law` → `rotate_voigt` normalises the frame —
+    /// no `normalize`, no `.norm()`, no `debug_assert!`. `rotate_voigt`
+    /// consumes the rows raw as direction cosines and `D_global` is homogeneous
+    /// of DEGREE 4 in them, so a frame supplied non-unit silently rescales the
+    /// stiffness (a 1mm-spelled "unit" axis would have scaled it by 1e-12).
+    ///
+    /// This is the executable replacement for constitutive.ri's former claims
+    /// that `rotate_voigt` "normalises each axis to unit magnitude", that
+    /// `vec3(1mm, 0mm, 0mm)` and `vec3(2m, 0m, 0m)` "produce the same
+    /// D_global", and that it "debug-asserts the basis is orthonormal". All
+    /// three were false. Orthonormality is a real but UNENFORCED precondition,
+    /// and this test is what makes a future non-unit producer fail loudly
+    /// instead of quietly rescaling.
+    #[test]
+    fn material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global() {
+        let as_real: fn(f64) -> Value = Value::Real;
+        let unit = d_global_under_frame([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_real);
+        let doubled_x =
+            d_global_under_frame([0.0, 2.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], as_real);
+        assert_ne!(
+            unit, doubled_x,
+            "doubling x_axis must move D_global — if this ever passes, something \
+             started normalising the frame and constitutive.ri's precondition \
+             comment needs revisiting"
+        );
     }
 
     // ── task 5087 (PRD compute-fea-hardening D9): validate-all-inputs gate ────

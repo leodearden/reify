@@ -1,0 +1,11 @@
+// Fixture (γ decompose-phase premise, tau1-numeric): `floor(2.5mm)` on a
+// dimensioned Length compiles clean TODAY — `reify check` exits 0 with zero
+// diagnostics. That silent mistyping (floor silently accepting/stripping a
+// dimensioned argument) is the defect the task fixes; this file is the
+// "before" half of the premise.
+
+module numeric_floor_dimensioned_silent_accept
+
+structure def NumericFloorDimensionedSilentAccept {
+    let f = floor(2.5mm)
+}

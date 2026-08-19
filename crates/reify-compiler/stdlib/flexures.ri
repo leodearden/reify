@@ -48,7 +48,8 @@
 // ── Type aliases ──────────────────────────────────────────────────────────
 
 // RotationalStiffness — torsional spring constant relating angular
-// displacement to restoring torque (N·m/rad in SI). PRD §4.2 names this as
+// displacement to restoring torque (N·m/rad² in SI, so that k·θ closes on
+// Reify's N·m/rad torque; task #5799). PRD §4.2 names this as
 // the canonical type for `FlexureCompliance.effective_stiffness`.
 //
 // No module-level alias is needed. Task 3849 landed `RotationalStiffness` (and
@@ -80,7 +81,7 @@
 //                           flexure-emitted joint (γ·E·I/L for a cantilever
 //                           per Howell §5.2; analogous closed-form for each
 //                           PRB primitive in PRD §5). Typed as the built-in
-//                           `RotationalStiffness` dimension (N·m/rad; task 3849
+//                           `RotationalStiffness` dimension (N·m/rad²; task 3849
 //                           NAMED_DIMENSIONS), so the field resolves to
 //                           `DimensionVector::ROTATIONAL_STIFFNESS` directly.
 //   max_stress            — peak bending stress at the declared range
@@ -152,7 +153,7 @@
 // runtime; the declared `Range<Angle>` type is retained as a nominal
 // placeholder (records are built Rust-side, bypassing the ctor type check).
 structure def FlexureCompliance {
-    param effective_stiffness : RotationalStiffness = 0N*m/rad
+    param effective_stiffness : RotationalStiffness = 0N*m/rad^2
     param max_stress : Pressure = 0Pa
     param max_stress_at_neutral : Pressure = 0Pa
     param yield_margin : Real = 0.0
@@ -169,9 +170,9 @@ structure def FlexureCompliance {
     // numerator/denominator) — declaring the upper bound at the
     // structure-def level makes the contract explicit in production code
     // rather than relying solely on test coverage (task 2544 convention;
-    // mirrors `BucklingOptions.n_modes > 0` in solver_buckling.ri:87 and
+    // mirrors `BucklingOptions.n_modes > 0` in solver_buckling.ri and
     // `PiecewisePolynomialProfile.waypoints.count > 0` in
-    // trajectory.ri:230).
+    // trajectory.ri).
     //
     // SIR-α's `check_constraints_against_templates` machinery (task 3540,
     // landed) evaluates structure-level constraints at the eval path, so
@@ -200,13 +201,13 @@ structure def FlexureCompliance {
 //   `FlexureCompliance(effective_stiffness: ..., max_stress: ..., ...)`,
 //   so the defaults never leak into populated records once γ / δ / ε / ζ /
 //   η / θ land. Exact precedent: the bare `Steel_AISI_1045()`
-//   instantiation pattern in `materials_fea.ri:132+` (every field
+//   instantiation pattern in `materials_fea.ri` (every field
 //   defaulted at the structure_def level, ctor call is bare).
 //
 // `pub` so user code can call `flexure_compliance(some_joint)` directly
 // without prefixing with the `std.flexures::` module path — same posture
-// as `pub fn STANDARD_GRAVITY()` in `units.ri:82` and `pub fn
-// standard_bolt_lengths()` in `standard_stock.ri:10`.
+// as `pub fn STANDARD_GRAVITY()` in `units.ri` and `pub fn
+// standard_bolt_lengths()` in `standard_stock.ri`.
 //
 // TODO(joint-type): the `joint` parameter is typed `Length` purely so the // ptodo:allow type-placeholder awaiting future type-system PRD
 // accessor overload-matches a PRB-ctor result — a constructed joint is a

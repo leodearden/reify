@@ -8,9 +8,9 @@
 # into /tmp via a `role_env_overrides` block in dark-factory-orchestrator.yaml.
 # /tmp is not a free choice: dark-factory's compute_write_set() grants no
 # ~/.cargo / ~/.npm carve-out, so /tmp is the one host-global writable root a
-# static yaml value can name.  Closing that upstream gap is tracked as reify
-# task #5724 (blocked, pending cross-repo refile); until then the redirect is
-# load-bearing and this script makes it cheap and durable.
+# static yaml value can name.  Closing that upstream gap is tracked as
+# dark_factory:3162; until then the redirect is load-bearing and this script
+# makes it cheap and durable.
 #
 # Consequence without this script: the FIRST dependency-touching agent run
 # after every boot re-downloads the crates.io index and the whole dep tree on a

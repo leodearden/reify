@@ -20,8 +20,11 @@
 #
 # WHAT IS TESTED (built up across the task's TDD steps):
 #   - the shared lib tests/infra/harness-layout-lib.sh: the 5 consolidatable
-#     crates, 7 override stems, the in-scope-standalone predicate, and the
-#     baseline-membership predicate (this file, step-1);
+#     crates, 7 override stems, the in-scope-standalone predicate, the
+#     baseline-membership predicate (this file, step-1), and
+#     _harness_layout_row_crate, the shared `crate=<c>` path derivation behind
+#     BOTH this gate's FAIL line and test_harness_kloc_cap.sh's baseline-row
+#     detectors (task #5990);
 #   - the gate scripts/check-harness-baseline-registration.sh in args/stdin
 #     input mode (step-3) and --from-git self-derivation mode (step-5);
 #   - verify.sh plan-shape: the gate is emitted early under RUN_RUST=1 (step-7);
@@ -166,6 +169,63 @@ assert "E: a commented-out registration row does NOT make its path a member" \
     bash -c '! { source "$1"; harness_layout_baseline_contains "crates/reify-eval/tests/commented.rs" "$2"; }' _ "$LIB" "$_E_BASELINE"
 
 # ===========================================================================
+# Section E2: _harness_layout_row_crate — the shared `crate=` derivation.
+#
+# The `crate=<c>` field on this gate's FAIL line and on
+# test_harness_kloc_cap.sh's baseline-row FAIL lines is ONE derivation, and it
+# belongs in the lib for the same reason the predicates above do: two guards
+# that disagree about what `crate=` means for an odd-shaped row emit
+# contradictory verdicts about the same file. These asserts pin the derivation
+# AS LIB SURFACE — every one sources ONLY harness-layout-lib.sh in a child
+# shell, never test_harness_kloc_cap.sh, so a definition that lives solely in
+# that test file cannot satisfy them.
+#
+# The contract: `crates/<c>/<rest>` -> <c>; EVERY other shape -> the `-`
+# sentinel (the same non-crate-scoped field harness_stale_selector_violations
+# already emits). The function returns via the global _HL_ROW_CRATE, matching
+# _harness_layout_norm_path/_HL_NORM_OUT, so each assert reads that global
+# inside the same child shell that made the call.
+# ===========================================================================
+echo ""
+echo "--- Section E2: _harness_layout_row_crate (shared crate= derivation) ---"
+
+# The assertion that is RED for the RIGHT reason before the move: absent from
+# the lib, independent of any particular input shape.
+assert "E2: the lib DEFINES _harness_layout_row_crate" \
+    bash -c 'source "$1"; declare -F _harness_layout_row_crate >/dev/null' _ "$LIB"
+
+assert "E2: crates/reify-eval/tests/x.rs derives crate=reify-eval" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/reify-eval/tests/x.rs" "reify-eval"
+# A NON-consolidatable crate still derives its own name: this is a path-shape
+# derivation, NOT a membership test against the 5 (the kLOC-cap detectors scan
+# every baseline row, not just the consolidatable ones).
+assert "E2: crates/reify-solver-elastic/tests/x.rs derives crate=reify-solver-elastic (not a membership test)" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/reify-solver-elastic/tests/x.rs" "reify-solver-elastic"
+# Independent of the `tests/` segment — the second segment is not consulted.
+assert "E2: crates/reify-eval/src/foo.rs derives crate=reify-eval (independent of the tests/ segment)" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/reify-eval/src/foo.rs" "reify-eval"
+assert "E2: a non-crates/-rooted path derives the '-' sentinel" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "not/a/crate/path.rs" "-"
+# The degenerate shapes, where the sentinel and a naive `${p#crates/}` strip
+# diverge (rationale: harness-layout-lib.sh's header on the function).
+assert "E2: a bare crates/<seg> (single segment) derives the '-' sentinel, not a phantom crate" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates/loneseg" "-"
+# A doubled slash MATCHES `crates/*/*` (bash lets `*` match the empty string),
+# so this pins that the derived value is re-checked: `crate=` must never be
+# emitted blank for a typo'd manifest row the malformed-row detector reports.
+assert "E2: a doubled-slash crates//<f> derives the '-' sentinel, not an EMPTY crate" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "crates//foo.rs" "-"
+assert "E2: the empty string derives the '-' sentinel (a blank row cannot manufacture a crate)" \
+    bash -c 'source "$1"; _harness_layout_row_crate "$2"; [ "$_HL_ROW_CRATE" = "$3" ]' \
+    _ "$LIB" "" "-"
+
+# ===========================================================================
 # Section F: the gate script exists and is executable.
 # ===========================================================================
 echo ""
@@ -183,10 +243,16 @@ assert "F: scripts/check-harness-baseline-registration.sh is executable" \
 _G_ROOT="$(mktemp -d)"; _TMPDIRS+=("$_G_ROOT")
 mkdir -p "$_G_ROOT/crates/reify-eval/tests"
 mkdir -p "$_G_ROOT/crates/reify-solver-elastic/tests"
+mkdir -p "$_G_ROOT/crates/reify-compiler/tests"
 : > "$_G_ROOT/crates/reify-eval/tests/newthing.rs"          # in-scope, added
 : > "$_G_ROOT/crates/reify-eval/tests/harness_foo.rs"       # harness_* -> ignored
 : > "$_G_ROOT/crates/reify-eval/tests/tensegrity_t0a.rs"    # override   -> ignored
 : > "$_G_ROOT/crates/reify-solver-elastic/tests/foo.rs"     # non-consolidatable -> ignored
+# A SECOND unregistered in-scope standalone, in a DIFFERENT consolidatable
+# crate — Section G2's `crate=` derivation probe. Deliberately absent from
+# _G_BASELINE_MISSING. Every section here passes its candidates as explicit
+# args, so merely adding this file perturbs no existing section's output.
+: > "$_G_ROOT/crates/reify-compiler/tests/newthing.rs"      # in-scope, added (Section G2)
 # crates/reify-eval/tests/ghost.rs is deliberately NEVER created -> ignored (non-existent).
 
 # Baseline WITHOUT newthing (unregistered -> the gate must FIRE on it).
@@ -221,6 +287,40 @@ assert "G: EXACTLY one FAIL line (harness_*/override/non-consolidatable/non-exis
     bash -c '[ "$(grep -cE "^HARNESS_BASELINE_REG FAIL " "$1")" -eq 1 ]' _ "$_G_OUT"
 assert "G: no ignored candidate leaks into a FAIL line" \
     bash -c '! grep -E "^HARNESS_BASELINE_REG FAIL " "$1" | grep -qE "harness_foo|tensegrity_t0a|reify-solver-elastic|ghost"' _ "$_G_OUT"
+
+# ===========================================================================
+# Section G2: the `crate=` field is DERIVED from each offender's own path, not
+# fixed.
+#
+# Every OTHER gate assertion in this file pins crate=reify-eval and nothing
+# else, so a derivation that hardcoded that field, read the wrong global, or
+# was handed the wrong argument would still satisfy the entire suite. Running
+# two offenders in DIFFERENT consolidatable crates through ONE invocation pins
+# both values simultaneously and closes that hole.
+#
+# The two offenders deliberately share a basename (newthing.rs) and differ
+# ONLY in their crate segment, so an implementation keying on anything but
+# that segment cannot tell them apart.
+# ===========================================================================
+echo ""
+echo "--- Section G2: crate= is derived per-offender across two crates ---"
+
+_G2_OUT="$(mktemp)"; _TMPDIRS+=("$_G2_OUT")
+_G2_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs \
+    crates/reify-compiler/tests/newthing.rs </dev/null ) > "$_G2_OUT" 2>/dev/null || _G2_RC=$?
+
+assert "G2: gate exits 1 when two unregistered in-scope standalones are added" \
+    test "$_G2_RC" -eq 1
+assert "G2: the reify-eval offender's FAIL line carries crate=reify-eval" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-eval file=crates/reify-eval/tests/newthing\.rs reason=unregistered-standalone$' "$_G2_OUT"
+assert "G2: the reify-compiler offender's FAIL line carries crate=reify-compiler (derived, not fixed)" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-compiler file=crates/reify-compiler/tests/newthing\.rs reason=unregistered-standalone$' "$_G2_OUT"
+assert "G2: EXACTLY two FAIL lines — one per offender" \
+    bash -c '[ "$(grep -cE "^HARNESS_BASELINE_REG FAIL " "$1")" -eq 2 ]' _ "$_G2_OUT"
+assert "G2: SUMMARY counts both offenders (added=2 violations=2)" \
+    grep -Eq '^HARNESS_BASELINE_REG SUMMARY added=2 violations=2$' "$_G2_OUT"
 
 # ===========================================================================
 # Section H: the SAME added path WITH a matching baseline row PASSES (rc 0).

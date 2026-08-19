@@ -204,6 +204,17 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   > invariant, enforced by `check --soft` itself).
 
 ### 8.4 GC — `warm-lane-gc.sh` (δ)
+
+> **Scope note (added 2026-08-07 — task 6063).** This section's heading and framing — Pass 1 / Pass 2,
+> the `_is_reclaimable` predicate, the per-entry cost model — are gc's. **One bullet below is not:** the
+> **live-reference gate** is *shared* mechanism, and `scripts/thin-warm-lane.sh` (its third call site,
+> task 5823) points here as its single normative home, as does `warm-lane-pool-cow-seeding.md` §9.5
+> inv.10/inv.11. Read that bullet as binding on **both** callers — the /proc mechanism, the
+> per-lane-not-batch TOCTOU rationale and the measured **per-call** cost apply identically to thin.
+> What is gc-specific there is only the Pass 1 / Pass 2 *ordering* prose and the `entries × per-call`
+> aggregate that follows from gc's per-entry loop; thin's own ordering and its one-call-per-invocation
+> shape are stated in the same bullet. Every other bullet in this section is gc-only.
+
 - `reclaim` runs two passes:
   - **Pass 1 — FREE pool lanes (`_lane-*`/`_spec-*`).** Reset `target/` to thin (via the α
     primitive) for **every** lane whose per-lane `flock -n` is free — **regardless of dirty tracked
@@ -222,13 +233,19 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
     touched — where "live-consumer" is **two** distinct tests since task 5572: the `_is_reclaimable`
     flock, and a live process reference at or under the entry, which sits OUTSIDE that predicate and
     runs after it (see the live-reference gate bullet below).
-- **Live-reference gate (task 5572), both passes.** A per-lane live **process-reference** check
+- **Live-reference gate (gc: task 5572; thin: task 5823).** A per-lane live **process-reference** check
   (`live_ref_present`, `scripts/lib_live_refs.sh`): does any process hold its cwd, an open fd, or an
   mmap at or under the entry? It sits deliberately **OUTSIDE** the `_is_reclaimable` predicate,
   which is precisely why its share of the preserved count is reported separately rather than folded
   into `preserved`. **Order:** Pass 1 gains it as its second preserve gate (after the flock); in
   Pass 2 it runs **AFTER** `_is_reclaimable` — cheapest decisive predicate first, so only an orphan
   that would actually be removed pays for the walk (the `_is_reclaimable` git pair is ~18 ms).
+  **Third call site — `thin-warm-lane.sh` (task 5823).** The same `live_ref_present` is also thin's
+  T4 gate, making thin this gate's **third** call site alongside gc's Pass 1 and Pass 2. Unlike gc's
+  per-entry, per-pass call, thin calls it **exactly once per invocation**: after its own `flock -n 9`
+  acquire and immediately before its `rm -rf <lane_dir>/target`. That placement is also why it covers
+  thin's `--reseed` branch and the post-abort discard of an uncertified clone (cow-seeding §9.5
+  inv.13).
   **Why per-lane and not a batch snapshot:** it is evaluated immediately before that entry's reset
   (Pass 1) or remove (Pass 2), under the flock the loop already holds. An up-front batch scan is the
   TOCTOU this gate exists to close — it would leave a lane that goes live mid-traversal unprotected

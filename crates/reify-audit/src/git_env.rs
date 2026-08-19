@@ -16,45 +16,70 @@
 //! `tests/g_allow_repo_wide_hard_gate.rs`, `tests/ptodo_baseline.rs` and
 //! `reify-test-support/src/orphan_audit.rs`, all `git --version`.)
 //!
-//! **Known gap, stated as a gap:** `reify-test-support`'s
+//! **Resolved non-central case:** `reify-test-support`'s
 //! `scripts/audit-orphan-producers.sh` spawn
-//! (`crates/reify-test-support/src/orphan_audit.rs`) is NOT sanitized. It
-//! runs `.current_dir(repo_root)` against the LIVE repository, where
-//! `repo_root` is derived from `CARGO_MANIFEST_DIR` — i.e. the checkout the
-//! crate was compiled in — while the script's first action is
-//! `REPO_ROOT="$(git rev-parse --show-toplevel)"`. Leaving it alone rests on
-//! the premise that an ambient `GIT_DIR` names that same checkout, and that
-//! premise is ASSUMED, not enforced. Two facts bound the risk:
+//! (`crates/reify-test-support/src/orphan_audit.rs`) sanitizes the same
+//! [`REPO_REDIRECT_VARS`] set via its own local `REPO_REDIRECT_VARS` const
+//! and `sanitize` fn, rather than calling [`sanitize`] here directly: the
+//! dependency edge runs `reify-audit` -> `reify-test-support`, so
+//! `reify-test-support` cannot depend on `reify-audit` without inverting it.
+//! That local copy is a deliberate duplicate, not an independent judgment
+//! call — and unlike a comment-only "keep in sync" note, the duplication is
+//! now pinned by test:
+//! `repo_redirect_vars_matches_reify_test_support_orphan_audit_copy` below
+//! asserts the two lists stay equal, so a divergence fails `cargo test`
+//! rather than drifting silently. Without the sanitization, the script's
+//! first action, `REPO_ROOT="$(git rev-parse --show-toplevel)"`, would have
+//! been vulnerable to exactly the failure mode documented below: an ambient
+//! `GIT_DIR`/`GIT_WORK_TREE` beats BOTH cwd and `-C` (measured:
+//! `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C /tmp/gwt_b
+//! rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the two vars
+//! prints `/tmp/gwt_b`), and under this project's warm-lane topology tests
+//! routinely execute inside `worktrees/_lane-NN` while an ambient hook
+//! environment may name a different checkout. The blast radius would have
+//! been an orphan audit silently enumerating the wrong tree rather than
+//! erroring.
 //!
-//! - Measured on this worktree: an ambient `GIT_DIR`/`GIT_WORK_TREE` beats
-//!   BOTH cwd and `-C`. `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a
-//!   git -C /tmp/gwt_b rev-parse --show-toplevel` prints `/tmp/gwt_a`;
-//!   dropping the two vars prints `/tmp/gwt_b`.
-//! - Under this project's warm-lane topology, tests routinely execute inside
-//!   `worktrees/_lane-NN` while an ambient hook environment may name a
-//!   different checkout — which is exactly the assumption this module argues
-//!   against making.
-//!
-//! The blast radius is bounded but real: an orphan audit that enumerates the
-//! wrong tree rather than erroring. That file is outside this change's lock
-//! scope, so it is recorded here rather than fixed here. Closing it costs one
-//! [`sanitize`] call and cannot regress anything, because the script
-//! rediscovers its own root from cwd; the alternative is to assert the
-//! premise (compare the child's `rev-parse --show-toplevel` against
-//! `repo_root` and fail loudly on mismatch).
+//! **As of task 5698**, the local copy sanitizes a SECOND `orphan_audit.rs`
+//! site too: `child_repo_root`, a `git rev-parse --show-toplevel` probe run
+//! against the caller-supplied `repo_root` before the script spawn. Where the
+//! sanitization above stops an ambient redirect var from overriding an
+//! otherwise-correct `repo_root`, this probe covers a channel sanitization
+//! cannot: a `repo_root` that was wrong to begin with — a `CARGO_MANIFEST_DIR`
+//! `.parent()` walk landing on the wrong level, a `.git` file pointing at
+//! another checkout, a symlinked or embedded checkout. It asserts the
+//! property the sanitization is meant to establish — that the child resolves
+//! the SAME work tree the caller intended — by comparing the caller's
+//! `repo_root` against what the (sanitized) child itself resolves; a
+//! disagreement is now a hard panic. That closes the "blast radius" named
+//! above for this second channel too: without the probe, a wrong `repo_root`
+//! would have been an orphan audit silently enumerating the wrong tree rather
+//! than erroring, exactly like the unsanitized-redirect-var case above.
 //!
 //! ## Sweep status
 //!
 //! `git grep -n 'Command::new("git")' -- '*.rs'` over the whole workspace
-//! returns, besides this module and prose references to it, exactly the three
-//! `git --version` probes named above. Every repo-targeting *git* site — the
-//! three `RealGitOps` methods (`spawn_once`, `is_gitignored`, `is_ancestor`)
-//! and the six fixture helpers in `tests/cli.rs` and `tests/real_git_ops.rs` —
-//! is routed through here. The grep does NOT catch the orphan-audit gap above,
-//! because that site spawns a *shell script* that runs git internally; a
-//! sweep for new call sites must consider both shapes. Re-run that grep when
-//! adding a git call site: a new hit that is not a `--version` probe is a
-//! defect.
+//! returns, besides this module and prose references to it, the `git
+//! --version` probes named above. **As of task 5698**, the same grep also
+//! returns two more accounted-for, non-exempt sites, both in
+//! `crates/reify-test-support/src/orphan_audit.rs`: the `child_repo_root`
+//! probe described above, and a `git init` test fixture in
+//! `wrong_tree_with_real_scope_panics` (builds a decoy repo to audit; "a
+//! fixture helper that shells `git init` into a tempdir" is literally the
+//! example the rule at the top of this module names). Neither is a
+//! `--version` probe, so neither qualifies for the carve-out above; both are
+//! legitimate because both are routed through `orphan_audit.rs`'s own local
+//! `sanitize` copy, for the same dependency-direction reason the script spawn
+//! is (see "Resolved non-central case" above). Every OTHER repo-targeting
+//! *git* site — the three `RealGitOps` methods (`spawn_once`,
+//! `is_gitignored`, `is_ancestor`) and the six fixture helpers in
+//! `tests/cli.rs` and `tests/real_git_ops.rs` — is routed through here. The
+//! grep does NOT catch the orphan-audit *script spawn* described above,
+//! because that site spawns a *shell script* that runs git internally rather
+//! than calling `git` directly; a sweep for new call sites must consider both
+//! shapes. Re-run that grep when adding a git call site: a new hit that is
+//! neither a `--version` probe nor one of the two `orphan_audit.rs` sites
+//! named above is a defect.
 //!
 //! # The failure mode this prevents
 //!
@@ -267,6 +292,27 @@ mod tests {
                  repo-redirect set by construction"
             );
         }
+    }
+
+    /// `reify-test-support` cannot depend on this crate (the dependency edge
+    /// runs `reify-audit` -> `reify-test-support`), so
+    /// `crates/reify-test-support/src/orphan_audit.rs` keeps its own copy of
+    /// [`REPO_REDIRECT_VARS`] to sanitize its `audit-orphan-producers.sh`
+    /// script spawn (see this module's "Resolved non-central case" doc
+    /// above) rather than calling [`sanitize`] here. This test is what keeps
+    /// that copy honest: it fails `cargo test` the moment the two lists
+    /// diverge, instead of resting on the doc comment in either file.
+    #[test]
+    fn repo_redirect_vars_matches_reify_test_support_orphan_audit_copy() {
+        assert_eq!(
+            REPO_REDIRECT_VARS,
+            reify_test_support::orphan_audit::REPO_REDIRECT_VARS,
+            "crates/reify-test-support/src/orphan_audit.rs's REPO_REDIRECT_VARS \
+             copy has drifted from this crate's copy — update both lists \
+             together (reify-test-support cannot depend on reify-audit to \
+             reuse this const directly, so the two copies must be edited in \
+             lockstep)"
+        );
     }
 
     /// Close the loop on REAL git behaviour rather than on `Command` metadata.

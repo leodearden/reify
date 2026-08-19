@@ -126,9 +126,14 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
 /// Mint the default zero-`Frame3` `Value::StructureInstance` used for
 /// `MassProperties.origin` (task 4547, Disposition 1).
 ///
-/// `Frame3` (declared in `std.ports`, `ports.ri`) has four `Vector3<Length>`
-/// members — `origin` / `x_axis` / `y_axis` / `z_axis` — so the default is four
-/// zero length-vectors. This replaces the former `Value::Real(0.0)` `origin`
+/// `Frame3` (declared in `std.ports`, `ports.ri`) has four 3-vector members whose
+/// quantity slots are NOT uniform (task 5848): `origin` is a position, so
+/// `Vector3<Length>`; `x_axis` / `y_axis` / `z_axis` are directions, so
+/// `Vector3<Dimensionless>`. The default is therefore one zero length-vector plus
+/// three zero dimensionless vectors — the axes as `Value::Real`, the house
+/// representation for a dimensionless quantity (Invariant V), which is also what
+/// the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to.
+/// This replaces the former `Value::Real(0.0)` `origin`
 /// sentinel: the `MassProperties` structure_def now declares `origin : Frame3`,
 /// so minting a real `Frame3` keeps the runtime value faithful to the declared
 /// type instead of leaving a type/value divergence. `frame3_from_transform_value`
@@ -137,14 +142,19 @@ fn mint_instance(type_name: &str, fields: Vec<(String, Value)>) -> Value {
 /// `dynamics_ops::assemble_mass_properties` so both producers emit an identical
 /// `origin`.
 pub fn default_frame3() -> Value {
-    let zero_vec3 = || Value::Vector(vec![Value::length(0.0); 3]);
+    // The ZERO magnitude is load-bearing, not a placeholder: this minter is shared
+    // with `dynamics_ops::assemble_mass_properties` and both producers must emit an
+    // identical `origin`, so the degenerate basis must NOT be "improved" into an
+    // identity basis here.
+    let zero_position = || Value::Vector(vec![Value::length(0.0); 3]);
+    let zero_direction = || Value::Vector(vec![Value::Real(0.0); 3]);
     mint_instance(
         "Frame3",
         vec![
-            ("origin".to_string(), zero_vec3()),
-            ("x_axis".to_string(), zero_vec3()),
-            ("y_axis".to_string(), zero_vec3()),
-            ("z_axis".to_string(), zero_vec3()),
+            ("origin".to_string(), zero_position()),
+            ("x_axis".to_string(), zero_direction()),
+            ("y_axis".to_string(), zero_direction()),
+            ("z_axis".to_string(), zero_direction()),
         ],
     )
 }
@@ -1474,6 +1484,74 @@ mod tests {
         super::default_frame3()
     }
 
+    /// Task 5848: `default_frame3()` must mint each member with the quantity the
+    /// retyped `Frame3` declaration gives it — `origin` a LENGTH zero (it is a
+    /// position), the three axes DIMENSIONLESS zeros (they are directions).
+    ///
+    /// This guards task 4547's stated invariant, quoted in `default_frame3`'s own
+    /// doc: the mint exists so "minting a real `Frame3` keeps the runtime value
+    /// faithful to the declared type instead of leaving a type/value divergence".
+    /// Once ports.ri retypes the axes, an all-`Value::length(0.0)` mint
+    /// reintroduces exactly the divergence 4547 removed — and the ctor-conformance
+    /// walker cannot catch it, because its Vector arm is arity-only (accepts any
+    /// vector-shaped arg regardless of quantity). So this test is the only thing
+    /// standing between the retype and a silent regression.
+    ///
+    /// The axes are `Value::Real`, not `Value::Scalar { dimension: DIMENSIONLESS }`:
+    /// a dimensionless quantity is represented as `Value::Real` house-wide
+    /// (Invariant V — see `reify-eval/tests/dimensionless_unification_example_e2e.rs`),
+    /// which is also what the DSL spelling `vec3(0.0, 0.0, 0.0)` evaluates to.
+    #[test]
+    fn default_frame3_mints_length_origin_and_dimensionless_axes() {
+        let frame = super::default_frame3();
+        let Value::StructureInstance(data) = &frame else {
+            panic!("default_frame3() must mint a StructureInstance, got {frame:?}")
+        };
+
+        let components = |member: &str| -> Vec<Value> {
+            match data.fields.get(member) {
+                Some(Value::Vector(c)) if c.len() == 3 => c.clone(),
+                other => panic!("Frame3.{member} must be a 3-component Vector, got {other:?}"),
+            }
+        };
+
+        // origin is a POSITION — Length-dimensioned zeros.
+        for (i, c) in components("origin").into_iter().enumerate() {
+            assert_eq!(
+                c,
+                Value::length(0.0),
+                "Frame3.origin[{i}] is a position component, so it must be a \
+                 LENGTH-dimensioned zero"
+            );
+        }
+
+        // The three axes are DIRECTIONS — dimensionless zeros.
+        for member in ["x_axis", "y_axis", "z_axis"] {
+            for (i, c) in components(member).into_iter().enumerate() {
+                assert_eq!(
+                    c,
+                    Value::Real(0.0),
+                    "Frame3.{member}[{i}] is a direction component, so it must be a \
+                     dimensionless zero (Value::Real per Invariant V), not a Length"
+                );
+                assert!(
+                    c.dimension().is_dimensionless(),
+                    "Frame3.{member}[{i}] must carry a dimensionless quantity"
+                );
+            }
+        }
+
+        // The ZERO magnitude is deliberate and must be preserved: this degenerate
+        // basis is the production default shared with
+        // `dynamics_ops::assemble_mass_properties`, so "improving" it into an
+        // identity basis would smuggle a behaviour change into a retype.
+        assert!(
+            components("z_axis").iter().all(|c| c.as_f64() == Some(0.0)),
+            "default_frame3()'s basis must stay all-zero (shared with \
+             assemble_mass_properties; both producers must emit an identical origin)"
+        );
+    }
+
     /// Build a canonical `MassProperties` `Value::StructureInstance` matching
     /// `dynamics_ops::assemble_mass_properties`'s shape: `mass` a Mass-scalar,
     /// `com` a `Value::Point` of Length-scalars, `inertia` a 3×3 `Value::Matrix`
@@ -2742,10 +2820,10 @@ mod tests {
     // These tests fail until step-4 wires joint_compliance into the link loop:
     // currently compliance is hardcoded None, so every Δτ is 0.
     //
-    // (a) TRAJECTORY SPRING: a compliant revolute (spring_rate=2.0 N·m/rad,
+    // (a) TRAJECTORY SPRING: a compliant revolute (spring_rate=2.0 N·m/rad²,
     //     neutral=π/12 rad) driven at θ=π/6 (vels=accels=0) via the trajectory
     //     path; Δτ = −k·(θ−neutral) = −2.0·(π/12) = −π/6 within 1e-12.
-    // (b) SNAPSHOT-PATH DAMPING: a damping-only revolute (c=3.5 N·m·s/rad) at
+    // (b) SNAPSHOT-PATH DAMPING: a damping-only revolute (c=3.5 N·m·s/rad²) at
     //     q̇=1.7 rad/s via the snapshot path; Δτ = −c·q̇ = −5.95 within 1e-12.
     // (c) NO-REGRESSION: plain joint trajectory torque still ≈ 0.4905 N·m.
 
@@ -2834,7 +2912,7 @@ mod tests {
 
         let theta = PI / 6.0; // position > neutral → spring pushes back
 
-        // Compliant mechanism: spring_rate=2.0 N·m/rad, neutral=π/12 rad.
+        // Compliant mechanism: spring_rate=2.0 N·m/rad², neutral=π/12 rad.
         let compliant_joint =
             make_compliant_revolute_joint(Some(2.0), None, PI / 12.0);
         let compliant_mech = {
@@ -2891,7 +2969,7 @@ mod tests {
         let theta = -PI / 6.0; // same angle as the static test (-30°)
         let omega = 1.7_f64;
 
-        // Compliant mechanism: damping=3.5 N·m·s/rad, no spring.
+        // Compliant mechanism: damping=3.5 N·m·s/rad², no spring.
         let damping_joint =
             make_compliant_revolute_joint(None, Some(3.5), 0.0);
         let damping_mech = {
@@ -2955,11 +3033,11 @@ mod tests {
         let delta_got = tau_damp - tau_plain;
         assert!(
             (delta_got - delta_expected).abs() < 1e-12,
-            "damping Δτ: expected {delta_expected:.15} N·m·s/rad, got {delta_got:.15}"
+            "damping Δτ: expected {delta_expected:.15} N·m·s/rad², got {delta_got:.15}"
         );
     }
 
-    /// Trajectory-path damping: compliant pendulum (c=3.5 N·m·s/rad, no spring)
+    /// Trajectory-path damping: compliant pendulum (c=3.5 N·m·s/rad², no spring)
     /// driven via `inverse_dynamics_lower` at θ=π/6, q̇=1.7 rad/s.
     /// Δτ = −c·q̇ = −3.5·1.7 = −5.95 within 1e-12.
     ///
@@ -2975,7 +3053,7 @@ mod tests {
         let theta = PI / 6.0;
         let omega = 1.7_f64;
 
-        // Compliant mechanism: damping=3.5 N·m·s/rad, no spring.
+        // Compliant mechanism: damping=3.5 N·m·s/rad², no spring.
         let damping_joint = make_compliant_revolute_joint(None, Some(3.5), 0.0);
         let damping_mech = {
             let mp = mass_properties_fixture(1.0, [0.0, 0.0, -0.1], [[0.0; 3]; 3]);

@@ -36,7 +36,9 @@
 # see scripts/check-harness-baseline-registration.sh's _hint() for the exact
 # remediation wording (single source of truth — do not restate it here).
 #
-# REGENERATE (from repo root; verify the count is unchanged before committing):
+# REGENERATE (from repo root) — regenerate-and-DIFF, never regenerate-and-
+# replace, and NEVER "check the count is unchanged": a ratchet only shrinks, so
+# an unchanged count across a consolidation leaf is the bug, not the check.
 #   git ls-files -- 'crates/reify-cli/tests/*.rs' 'crates/reify-syntax/tests/*.rs' \
 #       'crates/reify-kernel-occt/tests/*.rs' 'crates/reify-eval/tests/*.rs' \
 #       'crates/reify-compiler/tests/*.rs' \
@@ -44,23 +46,32 @@
 #     | grep -vE '/tests/(tensegrity_t0a|representation_within_assertion|harness_[^/]+)\.rs$' \
 #     | sort
 #
-# Baseline snapshot generated on base commit e6595a38 — expected per-crate:
-#   reify-cli 73, reify-syntax 61, reify-kernel-occt 48, reify-eval 395,
-#   reify-compiler 290 = 867 total.
+# `diff` that output against this file's data rows. In steady state they match
+# EXACTLY, because the guard pins BOTH directions: a live standalone with no row
+# fails rule (b), and a row with no live file fails the orphan-row scan in
+# tests/infra/test_harness_kloc_cap.sh. A mismatch is therefore actionable — it
+# is never a prompt to re-baseline this file wholesale:
+#   listed here, absent from the output -> ORPHAN row: the file was consolidated
+#     and its row was not removed. Delete the row (the consolidating leaf owed
+#     it in the same diff).
+#   in the output, absent here -> a NEW un-grandfathered standalone. Consolidate
+#     it per C1; do NOT add a row — growing this baseline is superseded, above.
+#
+# HISTORICAL, NOT MAINTAINED — the first snapshot, kept only to date this
+# baseline's origin: on base commit e6595a38 it was reify-cli 73, reify-syntax
+# 61, reify-kernel-occt 48, reify-eval 395, reify-compiler 290 = 867 total.
+# Landed consolidation leaves have shrunk it far below that (and three of those
+# five crates to zero rows). The LIVE count is whatever the recipe above prints,
+# and the guard's row scans already report it (`rows=N`) — deliberately not
+# restated here, so it cannot go stale again.
 crates/reify-compiler/tests/add_sub_operand_guard_tests.rs
 crates/reify-compiler/tests/ad_hoc_selector_compile_tests.rs
-crates/reify-compiler/tests/affine_algebra_typing_tests.rs
-crates/reify-compiler/tests/affine_composition_order_tests.rs
-crates/reify-compiler/tests/affine_constructor_typing_tests.rs
 crates/reify-compiler/tests/alias_dfs_diagnostic_tests.rs
 crates/reify-compiler/tests/ambient_default_injection_tests.rs
 crates/reify-compiler/tests/ambient_default_material_integration_gate.rs
 crates/reify-compiler/tests/analysis_stress_fn_compile.rs
 crates/reify-compiler/tests/and_or_operand_guard_tests.rs
 crates/reify-compiler/tests/anisotropic_bar_example_tests.rs
-crates/reify-compiler/tests/annotation_compile_tests.rs
-crates/reify-compiler/tests/annotation_materialization_args_tests.rs
-crates/reify-compiler/tests/annotation_schema_registry_parity.rs
 crates/reify-compiler/tests/aspect_massive_tests.rs
 crates/reify-compiler/tests/assoc_type_projection_reduction_tests.rs
 crates/reify-compiler/tests/boolean_arg_cross_sub_diagnostic_tests.rs
@@ -84,13 +95,7 @@ crates/reify-compiler/tests/constitutive_stdlib_compile.rs
 crates/reify-compiler/tests/constraint_def_compile_tests.rs
 crates/reify-compiler/tests/constraint_inst_tests.rs
 crates/reify-compiler/tests/constructor_hash_tests.rs
-crates/reify-compiler/tests/cost_aggregation_tests.rs
-crates/reify-compiler/tests/cost_robustness_tradeoff_lowering.rs
-crates/reify-compiler/tests/cost_subtree_aggregate_compile_tests.rs
 crates/reify-compiler/tests/coupling_motionvalue_integration_gate.rs
-crates/reify-compiler/tests/cross_module_alias_propagation_tests.rs
-crates/reify-compiler/tests/cross_sub_geometry_diagnostic_tests.rs
-crates/reify-compiler/tests/cross_sub_geometry_lowering_tests.rs
 crates/reify-compiler/tests/curvature_arg_aware_typing.rs
 crates/reify-compiler/tests/datum_constructor_tests.rs
 crates/reify-compiler/tests/datum_projection_tests.rs
@@ -101,19 +106,10 @@ crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs
 crates/reify-compiler/tests/display_annotation_tests.rs
 crates/reify-compiler/tests/display_style_appearance_tests.rs
 crates/reify-compiler/tests/doc_propagation_tests.rs
-crates/reify-compiler/tests/ds_sentinel_l0_poison_tests.rs
-crates/reify-compiler/tests/ds_sentinel_l1_poison_tests.rs
-crates/reify-compiler/tests/ds_sentinel_l5_boundary_tests.rs
 crates/reify-compiler/tests/dynamics_stdlib_compile.rs
 crates/reify-compiler/tests/entity_overload_tests.rs
 crates/reify-compiler/tests/examples_smoke.rs
-crates/reify-compiler/tests/expected_type_arg_pushdown_tests.rs
-crates/reify-compiler/tests/expected_type_pushdown_integration.rs
-crates/reify-compiler/tests/expected_type_pushdown_let_tests.rs
 crates/reify-compiler/tests/expr_error_sentinel_tests.rs
-crates/reify-compiler/tests/fdm_as_printed_stdlib_compile.rs
-crates/reify-compiler/tests/fdm_correlations_stdlib_compile.rs
-crates/reify-compiler/tests/fdm_stdlib_compile.rs
 crates/reify-compiler/tests/fea_supertrait_conformance_tests.rs
 crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 crates/reify-compiler/tests/field_compile_tests.rs
@@ -125,13 +121,6 @@ crates/reify-compiler/tests/forall_statement_lower_tests.rs
 crates/reify-compiler/tests/forall_statement_stub_tests.rs
 crates/reify-compiler/tests/generate_combinator_tests.rs
 crates/reify-compiler/tests/generic_enum_pattern_binder_tests.rs
-crates/reify-compiler/tests/geometry_arg_count_span_tests.rs
-crates/reify-compiler/tests/geometry_centered_primitives_tests.rs
-crates/reify-compiler/tests/geometry_let_value_cell_lowering.rs
-crates/reify-compiler/tests/geometry_profile_precondition_tests.rs
-crates/reify-compiler/tests/geometry_traits_inference_tests.rs
-crates/reify-compiler/tests/geometry_traits_tests.rs
-crates/reify-compiler/tests/geometry_traits_user_asserted_tests.rs
 crates/reify-compiler/tests/ground_sugar_tests.rs
 crates/reify-compiler/tests/guard_compilation.rs
 crates/reify-compiler/tests/half_space_compile_tests.rs
@@ -151,15 +140,6 @@ crates/reify-compiler/tests/lambda_compile_tests.rs
 crates/reify-compiler/tests/list_helper_selector_coercion_tests.rs
 crates/reify-compiler/tests/m11_annotations_solver_hint_tests.rs
 crates/reify-compiler/tests/m9_error_cases.rs
-crates/reify-compiler/tests/materials_chemical_tests.rs
-crates/reify-compiler/tests/materials_electrical_optionality_tests.rs
-crates/reify-compiler/tests/materials_electrical_tests.rs
-crates/reify-compiler/tests/materials_fea_tests.rs
-crates/reify-compiler/tests/materials_mechanical_tests.rs
-crates/reify-compiler/tests/materials_optical_tests.rs
-crates/reify-compiler/tests/materials_param_surface_tests.rs
-crates/reify-compiler/tests/materials_thermal_optical_optionality_tests.rs
-crates/reify-compiler/tests/materials_thermal_tests.rs
 crates/reify-compiler/tests/material_struct_tests.rs
 crates/reify-compiler/tests/math_construction_signatures_tests.rs
 crates/reify-compiler/tests/math_signatures.rs
@@ -170,19 +150,12 @@ crates/reify-compiler/tests/modal_mechanism_compile.rs
 crates/reify-compiler/tests/modal_options_validation_tests.rs
 crates/reify-compiler/tests/modify_kind_public_api.rs
 crates/reify-compiler/tests/module_dag_tests.rs
-crates/reify-compiler/tests/money_acceptance_sweep_tests.rs
-crates/reify-compiler/tests/money_arithmetic_tests.rs
-crates/reify-compiler/tests/money_force_diagnostic_tests.rs
-crates/reify-compiler/tests/money_units_tests.rs
 crates/reify-compiler/tests/mul_div_operand_guard_tests.rs
 crates/reify-compiler/tests/mul_div_static_runtime_parity.rs
 crates/reify-compiler/tests/multi_load_bracket_example_tests.rs
 crates/reify-compiler/tests/multi_load_case_stdlib_tests.rs
 crates/reify-compiler/tests/nominal_marker_typing_tests.rs
 crates/reify-compiler/tests/numeric_and_range_literals_example.rs
-crates/reify-compiler/tests/objective_conflict.rs
-crates/reify-compiler/tests/objective_dimension_coherence.rs
-crates/reify-compiler/tests/objective_set_lowering.rs
 crates/reify-compiler/tests/occurrence_compile_tests.rs
 crates/reify-compiler/tests/optimized_annotation_tests.rs
 crates/reify-compiler/tests/option_compile_tests.rs
@@ -211,11 +184,6 @@ crates/reify-compiler/tests/relate_block_check_tests.rs
 crates/reify-compiler/tests/relate_threading_tests.rs
 crates/reify-compiler/tests/relation_check_tests.rs
 crates/reify-compiler/tests/reserved_name_lint_tests.rs
-crates/reify-compiler/tests/result_combinator_overload_tests.rs
-crates/reify-compiler/tests/result_combinator_resolution_tests.rs
-crates/reify-compiler/tests/result_fallback_resolution_tests.rs
-crates/reify-compiler/tests/result_match_binder_tests.rs
-crates/reify-compiler/tests/result_prelude_enum_tests.rs
 crates/reify-compiler/tests/robustness_examples_tests.rs
 crates/reify-compiler/tests/rounded_primitives_tests.rs
 crates/reify-compiler/tests/same_module_structure_ctor_compile.rs
@@ -226,10 +194,6 @@ crates/reify-compiler/tests/shadowing_warning_tests.rs
 crates/reify-compiler/tests/silent_defaults_tests.rs
 crates/reify-compiler/tests/si_units_tests.rs
 crates/reify-compiler/tests/solid_param_tests.rs
-crates/reify-compiler/tests/solver_elastic_static_stdlib_compile.rs
-crates/reify-compiler/tests/solver_elastic_tests.rs
-crates/reify-compiler/tests/solver_hint_payload_tests.rs
-crates/reify-compiler/tests/solver_hint_tests.rs
 crates/reify-compiler/tests/stackup_stdlib_tests.rs
 crates/reify-compiler/tests/standard_gravity_tests.rs
 crates/reify-compiler/tests/standard_joint_library_tests.rs
@@ -238,16 +202,10 @@ crates/reify-compiler/tests/stdlib_determinacy_purposes.rs
 crates/reify-compiler/tests/stdlib_loader_tests.rs
 crates/reify-compiler/tests/string_interp_lowering_tests.rs
 crates/reify-compiler/tests/struct_ctor_field_conformance_tests.rs
-crates/reify-compiler/tests/structural_physical_spec_shape.rs
-crates/reify-compiler/tests/structural_physical_tests.rs
-crates/reify-compiler/tests/structural_query_compile_tests.rs
-crates/reify-compiler/tests/structural_query_filter_compile_tests.rs
 crates/reify-compiler/tests/structure_in_purpose_ambient_tests.rs
 crates/reify-compiler/tests/subbody_objective_ignored_tests.rs
 crates/reify-compiler/tests/sub_placement_lowering_tests.rs
 crates/reify-compiler/tests/sub_structure_existence_tests.rs
-crates/reify-compiler/tests/surface_finish_cost_tests.rs
-crates/reify-compiler/tests/surface_finish_stdlib_compile.rs
 crates/reify-compiler/tests/task_1570_tests.rs
 crates/reify-compiler/tests/tensegrity_stdlib_tests.rs
 crates/reify-compiler/tests/termination_check_tests.rs
@@ -256,8 +214,6 @@ crates/reify-compiler/tests/tolerancing_tests.rs
 crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
 crates/reify-compiler/tests/trajectory_stdlib_compile.rs
 crates/reify-compiler/tests/undef_literal_compile_tests.rs
-crates/reify-compiler/tests/unit_declaration_tests.rs
-crates/reify-compiler/tests/unit_registry_tests.rs
 crates/reify-compiler/tests/unresolved_diagnostic_code_audit_tests.rs
 crates/reify-compiler/tests/user_defined_unit_tests.rs
 crates/reify-compiler/tests/value_mod_compile_tests.rs
@@ -304,7 +260,6 @@ crates/reify-eval/tests/compose_example_smoke.rs
 crates/reify-eval/tests/compute_cache_key_population.rs
 crates/reify-eval/tests/compute_contract_reexport_compat.rs
 crates/reify-eval/tests/compute_dispatch_registry.rs
-crates/reify-eval/tests/concurrent.rs
 crates/reify-eval/tests/cone_primitive_e2e.rs
 crates/reify-eval/tests/conformance_runtime.rs
 crates/reify-eval/tests/connect_eval.rs

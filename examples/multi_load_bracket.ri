@@ -69,19 +69,19 @@ structure MultiLoadBracket {
 
     let operating = LoadCase(
         name:     "operating",
-        loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: [0.0, -1.0, 0.0])],
+        loads:    [PointLoad(point: "load_face", force: 5000.0,  direction: vec3(0.0, -1.0, 0.0))],
         supports: [mount],
     )
 
     let overload = LoadCase(
         name:     "overload",
-        loads:    [PointLoad(point: "load_face", force: 10000.0, direction: [0.0, -1.0, 0.0])],
+        loads:    [PointLoad(point: "load_face", force: 10000.0, direction: vec3(0.0, -1.0, 0.0))],
         supports: [mount],
     )
 
     let transport = LoadCase(
         name:     "transport",
-        loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: [0.0, -1.0, 0.0])],   // 5 g downward (-Y); see STANDARD_GRAVITY() in std.units
+        loads:    [Gravity(magnitude: 5 * STANDARD_GRAVITY(), direction: vec3(0.0, -1.0, 0.0))],   // 5 g downward (-Y); see STANDARD_GRAVITY() in std.units
         supports: [mount],
     )
 
@@ -96,7 +96,7 @@ structure MultiLoadBracket {
     // `ShellForce.Auto` would classify this bracket as a shell (thickness/
     // in-plane ratio 6/80 = 0.075 < shell_threshold=0.2), but the shell
     // kernel only applies transverse (Z-axis) loads.  Our loads are in the
-    // Y direction (`direction: [0,−1,0]`), so the shell path would silently
+    // Y direction (`direction: vec3(0,−1,0)`), so the shell path would silently
     // discard them (shell in-plane loading is out of scope; see task 4245).
     // The tet/solid path handles all three force-vector components and
     // produces Regular3D Sampled stress fields that `envelope_von_mises`

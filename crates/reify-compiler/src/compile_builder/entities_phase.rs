@@ -1634,7 +1634,7 @@ fn check_expr_struct_ctor_args(
             // type-coercion escape hatches (e.g. `ConstitutiveLawInput.law :
             // ConstitutiveLaw`) and are already covered by the fn-call / sub-
             // component paths. REVISIT this exemption once those escape-hatch call
-            // sites are migrated — see docs/prds/struct-ctor-conformance.md; at that
+            // sites are migrated — see docs/prds/struct-ctor-field-type-conformance.md; at that
             // point the `!matches!(… TraitObject …)` guard can be dropped so bare
             // trait params are checked too.
             let should_check = template

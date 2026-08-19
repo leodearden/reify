@@ -151,6 +151,99 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/git"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# _PSRC_STUB_DIR — dedicated PATH-stub for run_passset()'s rc-classification
+# coverage (Block PS-RC, task #5885). DELIBERATELY SEPARATE from STUB_DIR
+# above: Blocks FC/SG/PRIV prepend STUB_DIR to PATH to drive the REAL
+# seed-warm-lane.sh, so planting a `cargo`/`cargo-nextest` stub there could
+# silently alter those blocks. Nothing here compiles anything — argv is
+# recorded, output/rc are canned via env knobs — so Block PS-RC's arms run in
+# milliseconds with zero cargo invocations.
+#
+# Split into two directories so a caller can independently control whether
+# `command -v cargo-nextest` succeeds, which run_passset's branch-selection
+# `if` OR-gates against `cargo nextest --version`:
+#   $_PSRC_STUB_DIR          — the `cargo` stub only.
+#   $_PSRC_STUB_DIR_NEXTEST  — a NESTED dir holding a `cargo-nextest` stub,
+#                              kept out of $_PSRC_STUB_DIR itself so a PATH
+#                              can include the former without the latter.
+#                              Arm C (nextest branch) puts BOTH dirs on PATH;
+#                              arm D (cargo-test fallback) puts ONLY
+#                              $_PSRC_STUB_DIR on PATH (plus /usr/bin:/bin,
+#                              excluding ~/.cargo/bin) so `command -v
+#                              cargo-nextest` genuinely fails rather than
+#                              finding either our stub or the host's real
+#                              plugin — the only way to reach the `cargo
+#                              nextest --version` half of the OR-gate that
+#                              REIFY_TEST_PASSSET_NEXTEST=0 controls.
+# Nested under $_PSRC_STUB_DIR (not a second _TMPDIRS entry): the parent's
+# `rm -rf` in cleanup() already reclaims it.
+#
+# Env knobs read by the `cargo` stub:
+#   REIFY_TEST_PASSSET_CALLS    — argv sink (both stubs); default /dev/null.
+#   REIFY_TEST_PASSSET_NEXTEST  — `cargo nextest --version` probe result:
+#                                 "1" (default) → exit 0 (available);
+#                                 anything else → exit 1 (unavailable).
+#   REIFY_TEST_PASSSET_OUT      — path to a file whose contents are cat'd to
+#                                 stdout for a `nextest run` / `test`
+#                                 invocation (the canned fixture).
+#   REIFY_TEST_PASSSET_RC       — exit code for a `nextest run` / `test`
+#                                 invocation; default 0.
+# ─────────────────────────────────────────────────────────────────────────────
+_PSRC_STUB_DIR="$(mktemp -d /tmp/test-warm-pool-psrc-stub-XXXXXX)"
+_TMPDIRS+=("$_PSRC_STUB_DIR")
+
+_PSRC_STUB_DIR_NEXTEST="$_PSRC_STUB_DIR/nextest-plugin"
+mkdir -p "$_PSRC_STUB_DIR_NEXTEST"
+
+_PSRC_CALLS_FILE="$(mktemp /tmp/test-warm-pool-psrc-calls-XXXXXX)"
+_TMPDIRS+=("$_PSRC_CALLS_FILE")
+
+_PSRC_ERRF="$(mktemp /tmp/test-warm-pool-psrc-err-XXXXXX)"
+_TMPDIRS+=("$_PSRC_ERRF")
+
+# cargo stub: record argv; answer `nextest --version` per
+# REIFY_TEST_PASSSET_NEXTEST; for `nextest run …` / `test …`, cat the canned
+# fixture named by REIFY_TEST_PASSSET_OUT (if set) to stdout, then exit
+# REIFY_TEST_PASSSET_RC (default 0). Any other invocation shape is a loud
+# failure rather than a silent pass-through, so a call this stub does not
+# recognize cannot masquerade as a canned result.
+cat > "$_PSRC_STUB_DIR/cargo" << 'PSRC_CARGO_EOF'
+#!/usr/bin/env bash
+echo "cargo $*" >> "${REIFY_TEST_PASSSET_CALLS:-/dev/null}"
+
+if [ "${1:-}" = "nextest" ] && [ "${2:-}" = "--version" ]; then
+    if [ "${REIFY_TEST_PASSSET_NEXTEST:-1}" = "1" ]; then
+        echo "cargo-nextest-stub 0.0.0 (canned)"
+        exit 0
+    fi
+    exit 1
+fi
+
+case "${1:-}" in
+    nextest|test)
+        if [ -n "${REIFY_TEST_PASSSET_OUT:-}" ] && [ -f "${REIFY_TEST_PASSSET_OUT:-}" ]; then
+            cat "${REIFY_TEST_PASSSET_OUT}"
+        fi
+        exit "${REIFY_TEST_PASSSET_RC:-0}"
+        ;;
+esac
+
+echo "cargo-stub (Block PS-RC, #5885): unhandled invocation: $*" >&2
+exit 127
+PSRC_CARGO_EOF
+chmod +x "$_PSRC_STUB_DIR/cargo"
+
+# cargo-nextest stub: argv-recording only, always exit 0. Lives in the nested
+# $_PSRC_STUB_DIR_NEXTEST (see header above) so it can be included/excluded
+# from PATH independently of the cargo stub.
+cat > "$_PSRC_STUB_DIR_NEXTEST/cargo-nextest" << 'PSRC_NEXTEST_EOF'
+#!/usr/bin/env bash
+echo "cargo-nextest $*" >> "${REIFY_TEST_PASSSET_CALLS:-/dev/null}"
+exit 0
+PSRC_NEXTEST_EOF
+chmod +x "$_PSRC_STUB_DIR_NEXTEST/cargo-nextest"
+
 # run_helper — invoke SEED_SCRIPT under stub PATH; capture OUT/ERR_OUT/RC.
 run_helper() {
     local rc=0
@@ -969,6 +1062,120 @@ _passset_normalize_cargo_test() {
     | sort
 }
 
+# _passset_classify_rc(runner, rc, nresults) — pure classifier: reads cargo's
+# raw exit status (plus the count of normalized result lines already parsed
+# by the caller) and emits exactly ONE classification token on stdout:
+#   ok | test-failures | build-failure | no-tests-run | runner-error
+# Always exits 0 and touches no globals — a plain function of its three
+# positional args, unit-testable with canned integers (Block PS-RC arm A).
+#
+# rc table is EMPIRICALLY PROBED on this host (cargo-nextest 0.9.136), not
+# guessed — see Block PS-RC's header for the full probe writeup:
+#   nextest:    0→ok (or no-tests-run if nresults==0); 4→no-tests-run;
+#               100→test-failures, UNLESS nresults==0: rc=100 with ZERO
+#               parsed result lines means _passset_normalize_nextest parsed
+#               nothing (output-format drift, the #5878 failure shape) —
+#               not an honest test failure — so that combination is
+#               runner-error instead; 101→build-failure; else→runner-error.
+#   cargo-test: libtest returns rc=101 for BOTH a compile failure and an
+#               honest test failure — the exit code alone cannot
+#               distinguish them, so nresults is the disambiguator: rc==0 is
+#               ok (or no-tests-run if nresults==0); rc==101 is test-failures
+#               when nresults>0, else build-failure. Any OTHER nonzero rc
+#               (127 command-not-found, 130/137 signal death, a bad
+#               manifest/argument, …) is runner-error, NOT build-failure —
+#               101 is the only code libtest overloads for a compile
+#               failure, so mislabeling an unrelated nonzero rc as
+#               build-failure would misdirect the reader exactly the way
+#               the #5885 defect did.
+#   unknown runner → runner-error, so a typo in the caller can never
+#               silently read as "ok".
+#
+# Honest limitation: a multi-crate `cargo test` where one crate fails to
+# compile AFTER another crate already emitted its results would classify as
+# test-failures rather than build-failure (nresults>0 masks the later
+# compile error). Not fixed here — cargo stops at the first compile error in
+# practice, so this shape is not reachable today.
+_passset_classify_rc() {
+    local runner="$1" rc="$2" nresults="$3"
+    case "$runner" in
+        nextest)
+            case "$rc" in
+                0)   if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi ;;
+                4)   echo "no-tests-run" ;;
+                100) if [ "$nresults" -eq 0 ]; then echo "runner-error"; else echo "test-failures"; fi ;;
+                101) echo "build-failure" ;;
+                *)   echo "runner-error" ;;
+            esac
+            ;;
+        cargo-test)
+            if [ "$rc" -eq 0 ]; then
+                if [ "$nresults" -eq 0 ]; then echo "no-tests-run"; else echo "ok"; fi
+            elif [ "$rc" -eq 101 ]; then
+                if [ "$nresults" -gt 0 ]; then echo "test-failures"; else echo "build-failure"; fi
+            else
+                echo "runner-error"
+            fi
+            ;;
+        *)
+            echo "runner-error"
+            ;;
+    esac
+    return 0
+}
+
+# _passset_report_failure(class, manifest, rc, runner) — loud, greppable
+# diagnostic for a run_passset() classification other than ok/test-failures.
+# Writes a multi-line block to STDERR ONLY (grouped `{ …; } >&2`) and never
+# touches stdout, so a fatal run's diagnostic can never corrupt the pass-set
+# string the caller captures via `$( )` — that byte-stability is what keeps
+# Block PS's comparison semantics unchanged (#5885). Always returns 0; all
+# four fields are interpolated from the arguments, never hardcoded.
+#
+# Line 1 carries the single stable marker token PASSSET-RUN-FAILURE plus
+# machine-readable class=/runner=/rc=/manifest= fields (grep-friendly).
+# The remaining lines exist to stop the #5878-shaped misdiagnosis by name:
+# a reader who sees Block PS's identity assert fail must land here and learn
+# this is a BUILD/RUNNER failure, NOT a warm-lane CoW divergence.
+_passset_report_failure() {
+    local class="$1" manifest="$2" rc="$3" runner="$4"
+    {
+        echo "ERROR: PASSSET-RUN-FAILURE class=$class runner=$runner rc=$rc manifest=$manifest"
+        echo "  run_passset() could not produce a valid pass-set: the cargo run"
+        echo "  did not complete (see class= above)."
+        echo "  This is a BUILD/RUNNER failure, NOT a warm-lane CoW divergence (#5885)."
+    } >&2
+    return 0
+}
+
+# _passset_finish(runner, rc, nresults, manifest) — shared tail of BOTH
+# run_passset() branches (amendment, #5885): classify the run via
+# _passset_classify_rc and, for any class other than ok/test-failures, emit
+# the loud diagnostic via _passset_report_failure. Returns 0 for ok/
+# test-failures (an honest pass or an honest test failure — the caller's
+# already-printed pass-set is the right thing to compare) and 3 otherwise.
+# Before this helper existed the nextest and cargo-test branches carried a
+# byte-for-byte copy of this classify→report→return dispatch; extracting it
+# keeps the two branches from drifting out of sync by hand.
+#
+# Caller contract: the pass-set MUST already be printf'd to stdout BEFORE
+# calling this — _passset_finish itself writes nothing to stdout (only
+# _passset_report_failure's stderr diagnostic, and only on the fatal path),
+# so that ordering is what keeps a caller's captured `$( )` pass-set string
+# byte-stable even when the run turns out to be unusable.
+_passset_finish() {
+    local runner="$1" rc="$2" nresults="$3" manifest="$4"
+    local class
+    class="$(_passset_classify_rc "$runner" "$rc" "$nresults")"
+    case "$class" in
+        ok|test-failures) return 0 ;;
+        *)
+            _passset_report_failure "$class" "$manifest" "$rc" "$runner"
+            return 3
+            ;;
+    esac
+}
+
 # run_passset(manifest) — run the workspace tests (cargo nextest run if available,
 # else cargo test) and produce a normalized, deterministic string capturing the
 # sorted test identifiers plus the pass/fail counts.  Output is on stdout.
@@ -982,44 +1189,83 @@ _passset_normalize_cargo_test() {
 #     and counter-free) → grep + sort only (nothing volatile to strip).
 # The output format is designed to be byte-comparable between two runs on
 # semantically identical workspaces.
+#
+# rc contract (#5885): cargo's exit status is classified via
+# _passset_classify_rc (dispatched through the shared _passset_finish tail —
+# see its docblock above) and is NOT swallowed. Returns 0 for the ok/
+# test-failures classes (an honest pass or an honest test failure — the
+# caller's pass-set comparison is the right way to observe those). Returns 3
+# for build-failure/no-tests-run/runner-error — a run that did NOT produce a
+# trustworthy pass-set. In both cases the pass-set string is printed to
+# STDOUT FIRST, so a caller capturing via `$( )` sees the exact same bytes
+# it always has; the fatal-path diagnostic (_passset_report_failure) goes to
+# STDERR ONLY and never touches stdout, so it cannot corrupt that captured
+# string. See Block PS-RC (arms C/D) for the wiring coverage and Block PS
+# for the consumer.
 run_passset() {
     local manifest="$1"
     local test_output passed=0 failed=0 ignored=0
+    local rc=0 nresults=0
 
     if command -v cargo-nextest >/dev/null 2>&1 || \
        cargo nextest --version >/dev/null 2>&1; then
-        # nextest: normalize via _passset_normalize_nextest (strips timing column + progress counter)
-        test_output="$(
+        # Capture raw output + rc FIRST, normalize SECOND — keeps
+        # _passset_normalize_nextest a pure stdin→stdout filter and makes rc
+        # a plain local, avoiding PIPESTATUS (which cannot escape the `$( )`
+        # that captures the pass-set). `raw` is declared bare on its own
+        # line: `local raw="$(cmd)" || rc=$?` would capture `local`'s exit
+        # status instead of cargo's, silently reintroducing the swallow.
+        local raw
+        raw="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo nextest run \
                     --manifest-path "$manifest" \
-                    --no-fail-fast 2>&1 \
-            | _passset_normalize_nextest \
-            || true
-        )"
+                    --no-fail-fast 2>&1
+        )" || rc=$?
+        test_output="$(printf '%s\n' "$raw" | _passset_normalize_nextest || true)"
         # Count outcomes from the NORMALIZED (timing-free) lines
         passed="$(printf '%s\n' "$test_output" | grep -c '^PASS' || true)"
         failed="$(printf '%s\n' "$test_output" | grep -c '^FAIL' || true)"
+        nresults="$(printf '%s\n' "$test_output" | grep -c '.' || true)"
         printf 'passed=%s failed=%s\n%s\n' "$passed" "$failed" "$test_output"
+        _passset_finish nextest "$rc" "$nresults" "$manifest" || return 3
     else
-        # cargo test: capture test names and the summary line
-        test_output="$(
+        # cargo test: capture raw output + rc FIRST, normalize SECOND — same
+        # split as the nextest branch above, same rationale (avoids
+        # PIPESTATUS; keeps the normalizer a pure filter; `raw` declared
+        # bare so its assignment's own exit status, not `local`'s, reaches
+        # `|| rc=$?`).
+        #
+        # NOTE: no `-- --test-output immediate-fail` here. That flag is
+        # NEXTEST-only; libtest rejects it (`error: Unrecognized option:
+        # 'test-output'`, probed empirically) and aborts before running any
+        # test, so restoring it would make this branch report
+        # build-failure on EVERY run, healthy or not (#5885) — do not add
+        # it back.
+        local raw
+        raw="$(
             CARGO_INCREMENTAL=0 RUSTC_WRAPPER="" RUSTFLAGS="" \
                 cargo test \
-                    --manifest-path "$manifest" \
-                    -- --test-output immediate-fail 2>&1 \
-            || true
-        )"
+                    --manifest-path "$manifest" 2>&1
+        )" || rc=$?
         # Extract sorted test identifiers via _passset_normalize_cargo_test
         local test_lines
-        test_lines="$(printf '%s\n' "$test_output" \
+        test_lines="$(printf '%s\n' "$raw" \
             | _passset_normalize_cargo_test \
             || true)"
         passed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ok$' || true)"
         failed="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. FAILED$' || true)"
         ignored="$(printf '%s\n' "$test_lines" | grep -c '\.\.\. ignored$' || true)"
+        # _passset_normalize_cargo_test's regex matches ONLY ok/FAILED/ignored
+        # lines (no other category passes through), so the total result-line
+        # count is exactly their sum — no need for a 4th grep pass over
+        # $test_lines to recompute what these three greps already counted.
+        nresults=$(( passed + failed + ignored ))
         printf 'passed=%s failed=%s ignored=%s\n%s\n' \
             "$passed" "$failed" "$ignored" "$test_lines"
+        # libtest exits 101 for BOTH a compile failure and an honest test
+        # failure — nresults (not rc alone) is what tells them apart.
+        _passset_finish cargo-test "$rc" "$nresults" "$manifest" || return 3
     fi
 }
 
@@ -1850,6 +2096,417 @@ assert "PS-NORM: cargo-test lines normalize stably via _passset_normalize_cargo_
     test "$_PSNORM_CT_FWD" = "$_PSNORM_CT_REV"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Block PS-RC — run_passset() rc classification (ALWAYS-RUN, task #5885)
+#
+# Charter: unit + wiring coverage for the rc-classification layer that keeps
+# run_passset() from swallowing cargo's exit status with `|| true`. Nothing
+# in this block invokes a real cargo build — arm A is pure-function table
+# testing, arm B is a diagnostic-emitter contract test, and arms C/D drive
+# run_passset() end-to-end through the _PSRC_STUB_DIR canned cargo (prereq
+# above) — so the whole block runs in milliseconds, always, on every host.
+#
+# Background (#5885): run_passset()'s nextest AND cargo-test branches both
+# discard cargo's exit code via `| _passset_normalize_* || true`. One side
+# failing to build silently empties that side's pass-set, which Block PS's
+# identity assert (`_PS_COLD = _PS_WARM`) misreports as "warm-lane test
+# identifiers == cold control" mismatch — sending the reader hunting a
+# CoW-divergence bug that does not exist. Worse: if BOTH sides fail to
+# build, both emit the identical `passed=0 failed=0` string and the identity
+# assert reports a false GREEN on a workspace that never compiled (arm C4
+# below reproduces this directly).
+#
+# _passset_classify_rc(runner, rc, nresults) is the pure classifier this
+# block exists to pin. Its rc table is EMPIRICALLY PROBED on this host, not
+# guessed:
+#   cargo-nextest 0.9.136:
+#     rc=0   → all tests ran, none failed                    → ok
+#     rc=4   → no tests were run at all                       → no-tests-run
+#     rc=100 → an HONEST test failure (PASS/FAIL lines present) → test-failures,
+#              UNLESS nresults==0 too — rc=100 with ZERO parsed result lines
+#              means the normalizer parsed nothing (output-format drift, the
+#              #5878 shape), not an honest failure, so THAT combination is
+#              runner-error instead (amendment; arm A pins both rows).
+#     rc=101 → a BUILD failure (zero PASS/FAIL/SKIP lines)      → build-failure
+#   cargo test (libtest): rc=101 on BOTH a compile failure AND an honest
+#     test failure — the exit code ALONE cannot distinguish them, which is
+#     why the classifier also takes nresults (the count of parsed
+#     `test … ok/FAILED/ignored` lines): zero → build-failure, nonzero →
+#     test-failures. Any OTHER nonzero rc (127 command-not-found, a signal
+#     death, a bad manifest/argument, …) is runner-error, NOT build-failure —
+#     101 is the only code libtest overloads this way, so routing every
+#     nonzero rc through the same build-failure label would misdiagnose things
+#     that have nothing to do with a compile error (amendment; arm A pins this).
+#
+# Discriminating power: the nextest 100→test-failures row is what stops this
+# guard from firing on an honest test failure (the failure mode the task
+# explicitly warns against); the 101→build-failure row is the misdiagnosis
+# this task exists to fix; the nresults-gated 100 row and the cargo-test
+# non-101→runner-error row (both added in the amendment pass) keep those two
+# same guarantees from leaking into their respective ambiguous edges.
+#
+# RED (arm A): _passset_classify_rc does not exist yet. Every table-row
+# assertion below captures via `"$(_passset_classify_rc … 2>/dev/null ||
+# true)"` — under this file's `set -euo pipefail`, calling an undefined
+# function inside a bare command substitution would abort the WHOLE script
+# (the historical failure mode Block PS-NORM's header already documents);
+# `2>/dev/null || true` instead yields an empty string, so RED here is one
+# clean per-row assertion FAIL, and the suite still runs to its summary line.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block PS-RC: run_passset() rc classification (#5885) ---"
+
+# ── Arm A: _passset_classify_rc <runner> <rc> <nresults> truth table ────────
+# nextest rows
+_PSRC_A_NX_OK="$(_passset_classify_rc nextest 0 2 2>/dev/null || true)"
+_PSRC_A_NX_NORESULT_RC0="$(_passset_classify_rc nextest 0 0 2>/dev/null || true)"
+_PSRC_A_NX_NOTESTS="$(_passset_classify_rc nextest 4 0 2>/dev/null || true)"
+_PSRC_A_NX_TESTFAIL="$(_passset_classify_rc nextest 100 2 2>/dev/null || true)"
+_PSRC_A_NX_BUILDFAIL="$(_passset_classify_rc nextest 101 0 2>/dev/null || true)"
+_PSRC_A_NX_RUNNERERR="$(_passset_classify_rc nextest 137 0 2>/dev/null || true)"
+# amendment: rc=100 (nextest's "honest test failure" code) with ZERO parsed
+# result lines is the exact false-green shape #5878 already showed us once —
+# the normalizer parsed nothing, so this is NOT an honest test failure.
+_PSRC_A_NX_TESTFAIL_ZERONRESULTS="$(_passset_classify_rc nextest 100 0 2>/dev/null || true)"
+
+# cargo-test rows
+_PSRC_A_CT_OK="$(_passset_classify_rc cargo-test 0 2 2>/dev/null || true)"
+_PSRC_A_CT_NORESULT_RC0="$(_passset_classify_rc cargo-test 0 0 2>/dev/null || true)"
+_PSRC_A_CT_TESTFAIL="$(_passset_classify_rc cargo-test 101 2 2>/dev/null || true)"
+_PSRC_A_CT_BUILDFAIL="$(_passset_classify_rc cargo-test 101 0 2>/dev/null || true)"
+# amendment: rc=127 (command-not-found) is NOT the ambiguous libtest
+# compile-vs-test code (101) — must not be mislabeled build-failure.
+_PSRC_A_CT_RUNNERERR="$(_passset_classify_rc cargo-test 127 0 2>/dev/null || true)"
+
+# unknown-runner row
+_PSRC_A_UNKNOWN="$(_passset_classify_rc bogus 0 2 2>/dev/null || true)"
+
+assert "PS-RC A: nextest rc=0 nresults=2 → ok" \
+    test "$_PSRC_A_NX_OK" = "ok"
+assert "PS-RC A: nextest rc=0 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_NX_NORESULT_RC0" = "no-tests-run"
+assert "PS-RC A: nextest rc=4 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_NX_NOTESTS" = "no-tests-run"
+assert "PS-RC A: nextest rc=100 nresults=2 → test-failures (NOT a build failure — must not fire on honest test failures)" \
+    test "$_PSRC_A_NX_TESTFAIL" = "test-failures"
+assert "PS-RC A: nextest rc=101 nresults=0 → build-failure (the #5885 defect this task fixes)" \
+    test "$_PSRC_A_NX_BUILDFAIL" = "build-failure"
+assert "PS-RC A: nextest rc=137 nresults=0 → runner-error" \
+    test "$_PSRC_A_NX_RUNNERERR" = "runner-error"
+assert "PS-RC A: nextest rc=100 nresults=0 → runner-error, NOT test-failures (zero parsed results means the normalizer saw nothing — output-format drift/#5878, not an honest test failure)" \
+    test "$_PSRC_A_NX_TESTFAIL_ZERONRESULTS" = "runner-error"
+
+assert "PS-RC A: cargo-test rc=0 nresults=2 → ok" \
+    test "$_PSRC_A_CT_OK" = "ok"
+assert "PS-RC A: cargo-test rc=0 nresults=0 → no-tests-run" \
+    test "$_PSRC_A_CT_NORESULT_RC0" = "no-tests-run"
+assert "PS-RC A: cargo-test rc=101 nresults=2 → test-failures (libtest's rc=101 is ambiguous; nresults disambiguates)" \
+    test "$_PSRC_A_CT_TESTFAIL" = "test-failures"
+assert "PS-RC A: cargo-test rc=101 nresults=0 → build-failure" \
+    test "$_PSRC_A_CT_BUILDFAIL" = "build-failure"
+assert "PS-RC A: cargo-test rc=127 nresults=0 → runner-error, NOT build-failure (rc≠101 is not the ambiguous libtest code)" \
+    test "$_PSRC_A_CT_RUNNERERR" = "runner-error"
+
+assert "PS-RC A: unknown runner → runner-error (a typo can never silently read as ok)" \
+    test "$_PSRC_A_UNKNOWN" = "runner-error"
+
+# ── Arm B: _passset_report_failure <class> <manifest> <rc> <runner> diagnostic
+# contract. Stderr/stdout captured SEPARATELY via the SG3 idiom (:1424):
+# `2>&1 1>/dev/null` inside the `$( )` routes stderr into the capture and
+# discards stdout; `2>/dev/null` does the inverse. This is the byte-stability
+# guard for Block PS — a diagnostic that leaked onto stdout would corrupt the
+# captured pass-set string run_passset's caller compares.
+_PSRC_B_ERR="$(_passset_report_failure build-failure /nonexistent/Cargo.toml 101 nextest 2>&1 1>/dev/null || true)"
+_PSRC_B_OUT="$(_passset_report_failure build-failure /nonexistent/Cargo.toml 101 nextest 2>/dev/null || true)"
+
+assert "PS-RC B: stderr contains the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the class (class=build-failure)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the rc (rc=101)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "rc=101"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the runner (runner=nextest)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "runner=nextest"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr names the manifest path (manifest=/nonexistent/Cargo.toml)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "manifest=/nonexistent/Cargo.toml"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stderr states this is a build/runner failure, NOT a warm-lane CoW divergence (anti-misdiagnosis)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "not a warm-lane cow divergence"' _ "$_PSRC_B_ERR"
+assert "PS-RC B: stdout is EMPTY (a diagnostic on stdout would corrupt Block PS's pass-set comparison)" \
+    test -z "$_PSRC_B_OUT"
+
+# Anti-tautology: a second invocation with DIFFERENT class/rc/runner must
+# show those fields tracking the arguments, not a hardcoded string.
+_PSRC_B2_ERR="$(_passset_report_failure runner-error /other/Cargo.toml 137 cargo-test 2>&1 1>/dev/null || true)"
+assert "PS-RC B: second invocation's stderr tracks its OWN class (class=runner-error, not hardcoded)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=runner-error"' _ "$_PSRC_B2_ERR"
+assert "PS-RC B: second invocation's stderr tracks its OWN rc (rc=137, not hardcoded)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "rc=137"' _ "$_PSRC_B2_ERR"
+
+# ── Arm C: end-to-end wiring of run_passset()'s NEXTEST branch, driven by the
+# _PSRC_STUB_DIR canned cargo (prereq above) — no real compilation, ms-scale.
+# Each sub-case temp-env-prefixes a single `run_passset` call (bash exports
+# prefix assignments into the environment for that call AND any subprocess
+# it forks — verified: the stub `cargo` sees them), captures stdout via
+# `$( )`, rc via `|| _RC=$?`, and stderr via a trailing `2>"$_PSRC_ERRF"` on
+# the same call (the _refresh_capture idiom, :1112-1128).
+#
+# C2/C3 are "must NOT fire" controls: honest-test-failure and all-pass are
+# NOT the defect this task fixes, so their assertions already hold under
+# today's unmodified run_passset and stay green start-to-finish — they exist
+# to catch a regression in step-6's rewiring, not to be RED now.
+#
+# RED: today's run_passset swallows the rc, so C1 and C4 (both build-failure
+# scenarios) return 0 and _passset_report_failure is never called — their
+# rc==3 and marker-present assertions FAIL. C4's byte-equality assertion is
+# green FROM THE START, which is the point: it proves the double-build-
+# failure symmetric case ALREADY produces byte-identical pass-sets today —
+# only the new out-of-band rc (also asserted here, and RED) can see it.
+echo ""
+echo "--- Block PS-RC arm C: run_passset() nextest-branch wiring ---"
+
+_PSRC_C1_MANIFEST="/nonexistent/psrc-c1/Cargo.toml"
+_PSRC_C1_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c1-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C1_FIXTURE")
+cat > "$_PSRC_C1_FIXTURE" << 'PSRC_C1_EOF'
+error[E0433]: failed to resolve: use of undeclared crate or module `foo`
+ --> src/lib.rs:3:5
+  |
+3 |     foo::bar();
+  |     ^^^ use of undeclared crate or module `foo`
+
+error: could not compile `warm_leaf` (lib) due to 1 previous error
+PSRC_C1_EOF
+
+# (C1) canned BUILD FAILURE: zero PASS/FAIL/SKIP lines, rc=101.
+_PSRC_C1_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C1_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C1_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C1_RC=$?
+_PSRC_C1_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC C1: build failure (nextest, rc=101, zero result lines) → run_passset returns exactly 3" \
+    test "$_PSRC_C1_RC" -eq 3
+assert "PS-RC C1: stderr carries the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C1_ERR"
+assert "PS-RC C1: stderr names the manifest path passed in" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' _ "$_PSRC_C1_ERR" "$_PSRC_C1_MANIFEST"
+assert "PS-RC C1: stdout keeps the unchanged passed=0 failed=0 shape" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=0 failed=0"' _ "$_PSRC_C1_OUT"
+
+# (C2) canned HONEST TEST FAILURE: real-shaped nextest output, one PASS + one
+# FAIL line, rc=100 — the guard must NOT fire on this.
+_PSRC_C2_MANIFEST="/nonexistent/psrc-c2/Cargo.toml"
+_PSRC_C2_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c2-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C2_FIXTURE")
+cat > "$_PSRC_C2_FIXTURE" << 'PSRC_C2_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  FAIL [   0.008s] warm_leaf tests::leaf_smoke
+PSRC_C2_EOF
+
+_PSRC_C2_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C2_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C2_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=100 \
+        run_passset "$_PSRC_C2_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C2_RC=$?
+_PSRC_C2_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC C2: honest test failure (nextest, rc=100) → run_passset returns 0 (guard must NOT fire)" \
+    test "$_PSRC_C2_RC" -eq 0
+assert "PS-RC C2: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C2_ERR"
+assert "PS-RC C2: stdout's first line is exactly passed=1 failed=1" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=1 failed=1"' _ "$_PSRC_C2_OUT"
+
+# (C3) canned ALL PASS: two PASS lines, rc=0.
+_PSRC_C3_MANIFEST="/nonexistent/psrc-c3/Cargo.toml"
+_PSRC_C3_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-c3-XXXXXX)"
+_TMPDIRS+=("$_PSRC_C3_FIXTURE")
+cat > "$_PSRC_C3_FIXTURE" << 'PSRC_C3_EOF'
+  PASS [   0.012s] warm_dep tests::dep_smoke
+  PASS [   0.008s] warm_leaf tests::leaf_smoke
+PSRC_C3_EOF
+
+_PSRC_C3_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C3_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C3_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=0 \
+        run_passset "$_PSRC_C3_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C3_RC=$?
+_PSRC_C3_ERR="$(cat "$_PSRC_ERRF")"
+
+# Expected byte-exact output — empirically verified against the REAL
+# _passset_normalize_nextest run against this exact fixture (not hand-
+# guessed): strips the [ ] timing column, squeezes whitespace, sorts.
+# "PASS warm_dep…" sorts before "PASS warm_leaf…" (d < l).
+_PSRC_C3_EXPECTED="$(printf 'passed=2 failed=0\nPASS warm_dep tests::dep_smoke\nPASS warm_leaf tests::leaf_smoke')"
+
+assert "PS-RC C3: all pass (nextest, rc=0) → run_passset returns 0" \
+    test "$_PSRC_C3_RC" -eq 0
+assert "PS-RC C3: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_C3_ERR"
+assert "PS-RC C3: stdout is byte-equal to the expected passed=2 failed=0 + sorted pass-set" \
+    test "$_PSRC_C3_OUT" = "$_PSRC_C3_EXPECTED"
+
+# (C4) SYMMETRIC FALSE-GREEN NEGATIVE CONTROL: the C1 build-failure fixture,
+# invoked TWICE under different manifest paths standing in for cold/warm.
+_PSRC_C4_COLD_MANIFEST="/nonexistent/psrc-c4-cold/Cargo.toml"
+_PSRC_C4_WARM_MANIFEST="/nonexistent/psrc-c4-warm/Cargo.toml"
+
+_PSRC_C4_COLD_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C4_COLD_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C4_COLD_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C4_COLD_RC=$?
+
+_PSRC_C4_WARM_RC=0
+> "$_PSRC_ERRF"
+_PSRC_C4_WARM_OUT="$(
+    PATH="$_PSRC_STUB_DIR:$_PSRC_STUB_DIR_NEXTEST:$PATH" \
+    REIFY_TEST_PASSSET_NEXTEST=1 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_C1_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_C4_WARM_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_C4_WARM_RC=$?
+
+assert "PS-RC C4: symmetric false-green — cold/warm build-failure pass-sets are BYTE-EQUAL (Block PS's identity assert alone cannot see this)" \
+    test "$_PSRC_C4_COLD_OUT" = "$_PSRC_C4_WARM_OUT"
+assert "PS-RC C4: cold-side rc is 3 (the out-of-band signal that IS able to see it)" \
+    test "$_PSRC_C4_COLD_RC" -eq 3
+assert "PS-RC C4: warm-side rc is 3 (the out-of-band signal that IS able to see it)" \
+    test "$_PSRC_C4_WARM_RC" -eq 3
+
+# ── Arm D: end-to-end wiring of run_passset()'s CARGO-TEST FALLBACK branch.
+# Forced by PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" — a full REPLACEMENT of
+# PATH (not a prepend), so ~/.cargo/bin (and any other real cargo-nextest
+# location) is excluded outright, PLUS REIFY_TEST_PASSSET_NEXTEST=0 so the
+# stub cargo's `nextest --version` probe also fails. Deliberately NO
+# $_PSRC_STUB_DIR_NEXTEST on this PATH (see the prereq header) — that is
+# what makes `command -v cargo-nextest` genuinely fail rather than finding
+# either stub.
+#
+# NON-VACUITY GUARD FIRST: without proving the fallback branch actually ran,
+# a host that happens to ship cargo-nextest under /usr/bin (this one does
+# not — checked) would silently take the NEXTEST branch instead, and every
+# assertion below would test nothing.
+#
+# RED on D1/D2 (not D3): today's cargo-test branch still passes the
+# nextest-only `-- --test-output immediate-fail` flag (D1) and still
+# swallows the rc (D2's rc/marker checks). D3 (an honest test failure) is a
+# "must NOT fire" control — our canned stub does not simulate the real
+# libtest flag-rejection, so it already holds unmodified and exists to catch
+# a step-8 regression, not to be RED now.
+echo ""
+echo "--- Block PS-RC arm D: run_passset() cargo-test fallback-branch wiring ---"
+
+_PSRC_D2_MANIFEST="/nonexistent/psrc-d2/Cargo.toml"
+_PSRC_D2_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-d2-XXXXXX)"
+_TMPDIRS+=("$_PSRC_D2_FIXTURE")
+cat > "$_PSRC_D2_FIXTURE" << 'PSRC_D2_EOF'
+error[E0433]: failed to resolve: use of undeclared crate or module `bar`
+ --> src/lib.rs:5:5
+  |
+5 |     bar::baz();
+  |     ^^^ use of undeclared crate or module `bar`
+
+error: could not compile `warm_dep` (lib) due to 1 previous error
+PSRC_D2_EOF
+
+> "$_PSRC_CALLS_FILE"
+_PSRC_D2_RC=0
+> "$_PSRC_ERRF"
+_PSRC_D2_OUT="$(
+    PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" \
+    REIFY_TEST_PASSSET_CALLS="$_PSRC_CALLS_FILE" \
+    REIFY_TEST_PASSSET_NEXTEST=0 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_D2_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_D2_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_D2_RC=$?
+_PSRC_D2_ERR="$(cat "$_PSRC_ERRF")"
+_PSRC_D2_CALLS="$(cat "$_PSRC_CALLS_FILE")"
+
+assert "PS-RC D: non-vacuity — the fallback branch actually ran (stub invoked as \`cargo test …\`)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^cargo test "' _ "$_PSRC_D2_CALLS"
+assert "PS-RC D: non-vacuity — the NEXTEST branch did NOT run (no \`cargo nextest run\` recorded)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "cargo nextest run"' _ "$_PSRC_D2_CALLS"
+
+# (D1) --test-output is a NEXTEST-only flag; libtest rejects it with
+# `error: Unrecognized option: 'test-output'` (verified empirically on this
+# host), making the fallback branch emit zero result lines UNCONDITIONALLY.
+assert "PS-RC D1: recorded argv carries NO --test-output token (nextest-only flag; libtest rejects it)" \
+    bash -c '! printf "%s\n" "$1" | grep -q -- "--test-output"' _ "$_PSRC_D2_CALLS"
+
+# (D2) canned COMPILE FAILURE: zero `test … ok` lines, rc=101.
+assert "PS-RC D2: compile failure (cargo-test, rc=101, zero result lines) → run_passset returns exactly 3" \
+    test "$_PSRC_D2_RC" -eq 3
+assert "PS-RC D2: stderr carries the PASSSET-RUN-FAILURE marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_D2_ERR"
+assert "PS-RC D2: stderr names class=build-failure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "class=build-failure"' _ "$_PSRC_D2_ERR"
+assert "PS-RC D2: stderr names runner=cargo-test" \
+    bash -c 'printf "%s\n" "$1" | grep -q "runner=cargo-test"' _ "$_PSRC_D2_ERR"
+# amendment: the cargo-test branch's counterpart to C1's stdout-shape check —
+# run_passset()'s docblock claims the pass-set is printed to stdout BEFORE
+# the fatal return on BOTH branches; only C1 pinned that for nextest. Without
+# this, a regression that swapped the printf/return order (or dropped the
+# printf) in the cargo-test branch ONLY would go undetected.
+assert "PS-RC D2: stdout keeps the unchanged passed=0 failed=0 ignored=0 shape" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=0 failed=0 ignored=0"' _ "$_PSRC_D2_OUT"
+
+# (D3) canned TEST FAILURE: rc=101 — the SAME rc a compile failure produces
+# under libtest — so only the result-line count (not rc alone) can tell
+# them apart. The guard must NOT fire on this.
+_PSRC_D3_MANIFEST="/nonexistent/psrc-d3/Cargo.toml"
+_PSRC_D3_FIXTURE="$(mktemp /tmp/test-warm-pool-psrc-d3-XXXXXX)"
+_TMPDIRS+=("$_PSRC_D3_FIXTURE")
+cat > "$_PSRC_D3_FIXTURE" << 'PSRC_D3_EOF'
+running 2 tests
+test a::smoke ... ok
+test b::smoke ... FAILED
+
+failures:
+    b::smoke
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+PSRC_D3_EOF
+
+_PSRC_D3_RC=0
+> "$_PSRC_ERRF"
+_PSRC_D3_OUT="$(
+    PATH="$_PSRC_STUB_DIR:/usr/bin:/bin" \
+    REIFY_TEST_PASSSET_NEXTEST=0 \
+    REIFY_TEST_PASSSET_OUT="$_PSRC_D3_FIXTURE" \
+    REIFY_TEST_PASSSET_RC=101 \
+        run_passset "$_PSRC_D3_MANIFEST" 2>"$_PSRC_ERRF"
+)" || _PSRC_D3_RC=$?
+_PSRC_D3_ERR="$(cat "$_PSRC_ERRF")"
+
+assert "PS-RC D3: honest test failure (cargo-test, rc=101 — SAME rc as a compile failure) → run_passset returns 0 (guard must NOT fire)" \
+    test "$_PSRC_D3_RC" -eq 0
+assert "PS-RC D3: stderr carries NO PASSSET-RUN-FAILURE marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "PASSSET-RUN-FAILURE"' _ "$_PSRC_D3_ERR"
+assert "PS-RC D3: stdout's first line is exactly passed=1 failed=1 ignored=0" \
+    bash -c 'test "$(printf "%s\n" "$1" | head -1)" = "passed=1 failed=1 ignored=0"' _ "$_PSRC_D3_OUT"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Block PG — Provenance-guard refusal + rename-negative-control (ALWAYS-RUN)
 #
 # B12: provenance-guard refusal assertions — exercising the REAL
@@ -2344,15 +3001,50 @@ assert "B4: fresh-unit count in warm lane == in-place control (path-independence
 # run_passset(manifest) is defined in impl-passset. Until then, calling it
 # errors under set -euo pipefail → RED on a substrate (SKIP on non-substrate
 # because the substrate gate fires first).
+#
+# rc asserts (#5885): run_passset() no longer swallows cargo's exit status
+# (Block PS-RC pins the classifier/diagnostic/wiring, always-run). The two
+# new asserts below discriminate a BUILD/RUNNER failure on EACH side, by
+# name, BEFORE the identity assert runs — every pass-set must be trustworthy
+# independently. This closes a false-GREEN gap the identity assert alone
+# cannot see: if BOTH sides fail to build, both emit the identical
+# `passed=0 failed=0` string and the identity assert reports GREEN on a
+# workspace that never compiled (reproduced directly by Block PS-RC's arm
+# C4). run_passset()'s stderr diagnostic (_passset_report_failure) is NOT
+# captured by the `$( )` below — stdout only — so on a real failure it still
+# reaches the console/verify log even though only the rc is asserted here.
+#
+# Identity assert is GUARDED on both rcs being 0 (amendment): running it
+# unconditionally would still show a misleading PASS line — "warm-lane test
+# identifiers == cold control" — on the exact symmetric double-build-failure
+# case the two rc asserts above exist to catch, since two untrustworthy
+# empty pass-sets are trivially byte-equal to each other. The suite as a
+# whole still correctly fails (via the rc asserts), but a reader scanning for
+# the FAILING line would see this one reported green right next to it. When
+# either side's rc is nonzero the comparison is skipped outright — logged,
+# not asserted — rather than reusing this file's whole-script _skip()
+# (:478), which calls test_summary and exit 0 and would abort every block
+# still to come (B6/B11/B13/TRASH3).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block PS: identical test pass-set (warm vs cold) ---"
 
-_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")"
-_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")"
+_PS_COLD_RC=0
+_PS_COLD="$(run_passset "$_WS_BASE/Cargo.toml")" || _PS_COLD_RC=$?
+_PS_WARM_RC=0
+_PS_WARM="$(run_passset "$_WS_LANE/Cargo.toml")" || _PS_WARM_RC=$?
 
-assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
-    test "$_PS_COLD" = "$_PS_WARM"
+assert "PS: cold-control pass-set run completed without a build/runner failure (#5885)" \
+    test "$_PS_COLD_RC" -eq 0
+assert "PS: warm-lane pass-set run completed without a build/runner failure (#5885)" \
+    test "$_PS_WARM_RC" -eq 0
+
+if [ "$_PS_COLD_RC" -eq 0 ] && [ "$_PS_WARM_RC" -eq 0 ]; then
+    assert "PS: warm-lane test identifiers == cold control (byte-identical source)" \
+        test "$_PS_COLD" = "$_PS_WARM"
+else
+    echo "  PS-IDENTITY-SUPPRESSED: warm-lane test identifiers == cold control — comparison skipped because a pass-set run failed above (see PASSSET-RUN-FAILURE and the failed rc assert); two untrustworthy pass-sets can be byte-equal without meaning anything (#5885 arm C4)." >&2
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block B7 — Reset-in-place stability: K cycles (SUBSTRATE-GATED)

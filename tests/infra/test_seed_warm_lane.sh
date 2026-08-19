@@ -3817,13 +3817,14 @@ assert "T4b: counterfactual control — the SAME detached grandchild whose stub 
 #
 # The arms are built as two-sided pairs, so that no single-sided edit to the
 # guard can stay green: U1/U1b straddle the causal .fingerprint gate AND the
-# guard's call position relative to the invalidation sweep; U1c/U1d straddle the
-# -maxdepth 3 probe bound; U2/U2b straddle what the guard keys on (base
-# resolution — NOT an empty delta set, and NOT an explicit --touch list);
-# U3/U3b/U3c straddle the opt-out knob's exact-"1" contract; U4/U4b/U4c straddle
-# `absent` vs `present but empty` in the refusal's per-tier attribution, with
-# U4b/U4d straddling the .basecommit trailing-whitespace trim that the same
-# distinction rests on.
+# guard's call position relative to the invalidation sweep; U1b/U1e straddle
+# the probe's find-traversal outcome itself (succeeds vs FAILS with EACCES on
+# an unreadable subdirectory); U1c/U1d straddle the -maxdepth 3 probe bound;
+# U2/U2b straddle what the guard keys on (base resolution — NOT an empty delta
+# set, and NOT an explicit --touch list); U3/U3b/U3c straddle the opt-out
+# knob's exact-"1" contract; U4/U4b/U4c straddle `absent` vs `present but
+# empty` in the refusal's per-tier attribution, with U4b/U4d straddling the
+# .basecommit trailing-whitespace trim that the same distinction rests on.
 #
 #   Placed AFTER the task-#5633 Block T and BEFORE Block R, for the same reason
 #   Block S is: per Block R's ordering note, a block appended after R2/R5 gets
@@ -3973,6 +3974,87 @@ assert "U1d: a depth-4 .fingerprint nested in a build-script out dir is OUTSIDE 
     test "$RC" -eq 0
 assert "U1d: STDOUT is exactly <lane>/target" \
     bash -c '[ "$1" = "$2" ]' _ "$OUT" "$U1D_LANE/target"
+
+# ── U1e: the probe's FIND-TRAVERSAL-FAILURE branch (outcome 1 of
+# _assert_delta_touch_base_substantiated's `if ! fingerprint_dir="$(find ...)"`
+# wrapper) — an EACCES on a subdirectory under LANE_TARGET is a DIFFERENT
+# outcome from "no .fingerprint anywhere" (U1b, outcome 2) and from "base
+# unsubstantiated" (U1/U1c/U1d, outcome 3): only a TRAVERSAL failure exits the
+# probe non-zero WITHOUT ever assigning fingerprint_dir, which is exactly the
+# distinction the guard's own `if !` wrapper (rather than a bare assignment
+# under set -e) exists to attribute. None of U1/U1b/U1c/U1d/U2 reach it. U1b is
+# this arm's byte-identical POSITIVE CONTROL: same fixture, minus the one
+# unreadable subdirectory, exits 0 with stdout "<lane>/target" — so exit status
+# alone discriminates outcome (1) from outcome (2), with no .fingerprint
+# anywhere to make the arm readdir-order-dependent.
+#
+# Mode 000 is not a barrier for root, so the whole arm is skipped there — idiom
+# copied from tests/infra/test_warm_lane_audit.sh's L9 arm and
+# tests/infra/test_warm_lane_lock_guard.sh's D4 arm, including the "restore
+# before any assert" ordering both of those document: an aborting assertion
+# must never leave cleanup()'s rm -rf stuck on an untraversable dir.
+if [ "$(id -u)" -ne 0 ]; then
+    IFS='|' read -r U1E_BASE U1E_LANE <<< "$(_u_make_fixture U1e 0)"
+    # DEPTH IS LOAD-BEARING: target/debug/<name> is depth 2 from LANE_TARGET,
+    # INSIDE the probe's `-maxdepth 3` bound, so find descends into it and gets
+    # EACCES. At depth 3 (like U1c/U1d's .fingerprint placements) find would
+    # stat the entry but never READ it, and the probe would succeed — silently
+    # degrading this arm into a duplicate of U1b. Deliberately named
+    # "untraversable", not "output" or "locked", to stay clear of the inv.12
+    # guard's own freshness-reference name.
+    mkdir -p "$U1E_BASE/debug/untraversable"
+    chmod 000 "$U1E_BASE/debug/untraversable"
+
+    reset_calls
+    RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+        run_helper_real "$U1E_BASE" "$U1E_LANE" --fresh-checkout
+
+    # Capture the non-vacuity precondition BEFORE restoring the mode, with an
+    # explicit `if ...; then VAR=1; fi` — NOT `[ -r x ] && VAR=1`, whose
+    # errexit exemption is positional (only inside an if/while condition; as a
+    # bare statement a false `[ -r x ]` would itself trip this file's set -e).
+    # The condition requires existence AND unreadability, not bare `! -r`:
+    # `[ -r path ]` is ALSO false when path does not exist at all, so a bare
+    # `[ ! -r "$U1E_CLONE_DIR" ]` capture would satisfy this precondition for
+    # the WRONG reason if a future GNU cp stopped creating the destination
+    # dir when it can't read the source — silently degrading this arm into a
+    # U1b duplicate while the non-vacuity check meant to catch exactly that
+    # degrade kept printing PASS.
+    U1E_CLONE_DIR="$U1E_LANE/target/debug/untraversable"
+    U1E_CLONE_WAS_UNTRAVERSABLE=""
+    if [ -d "$U1E_CLONE_DIR" ] && [ ! -r "$U1E_CLONE_DIR" ]; then U1E_CLONE_WAS_UNTRAVERSABLE=1; fi
+    # Restore BOTH copies — the base fixture's dir AND the clone's — before any
+    # assert runs, so an aborting assertion can never leave cleanup()'s rm -rf
+    # stuck on an untraversable path.
+    chmod 0755 "$U1E_BASE/debug/untraversable" || true
+    chmod 0755 "$U1E_CLONE_DIR" || true
+
+    # WHY the mode-000 dir reaches the lane at all, MEASURED (not assumed):
+    # run_helper_real's cp stub exit-0s regardless of `/bin/cp -a`'s own status
+    # (see the stub, above), and GNU cp still CREATES the destination directory
+    # carrying the source's mode even though it could not read the source's
+    # entries to populate it — `/bin/cp: cannot access '<src>/debug/untraversable':
+    # Permission denied`, dest created as `d---------`. The next assertion is the
+    # guard that turns a future change in either of those two behaviours into an
+    # attributable red instead of a silent degrade into a U1b duplicate.
+    assert "U1e: NON-VACUITY — the clone's copy of the mode-000 dir existed AND was untraversable before the restore (else this arm silently degrades into a duplicate of U1b)" \
+        test -n "$U1E_CLONE_WAS_UNTRAVERSABLE"
+    assert "U1e: seed exits NON-zero — the traversal-failure probe is an abort, not a return-0 fall-through" \
+        test "$RC" -ne 0
+    assert "U1e: STDOUT is EMPTY on the traversal-failure abort (caller falls back to a cold rebuild)" \
+        bash -c '[ -z "$1" ]' _ "$OUT"
+    assert "U1e: an [error] line names the probe traversal failure AND the lane target path" \
+        bash -c 'printf "%s\n" "$1" | grep "\[error\]" | grep -qF "probe FAILED to walk $2"' _ "$ERR_OUT" \
+        "$U1E_LANE/target"
+    # DISCRIMINATOR: outcome (3)'s refusal wording is structurally impossible on
+    # a fixture with no .fingerprint anywhere — so a future change that routed a
+    # traversal failure into the refusal path (rather than its own attributed
+    # abort) goes red here.
+    assert "U1e: no [error] line carries the outcome-(3) unsubstantiated-base refusal wording" \
+        bash -c '! printf "%s\n" "$1" | grep "\[error\]" | grep -q "Unsubstantiated delta-touch base"' _ "$ERR_OUT"
+else
+    echo "  SKIP: U1e (running as root — mode 000 does not make a directory untraversable)"
+fi
 
 # ── U2: DISCRIMINATOR (green before AND after) — .fingerprint present, but a
 # base RESOLVES via --base-commit while the stub git returns an EMPTY

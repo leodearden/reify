@@ -5,10 +5,31 @@
 //! down with a trailing `fs::remove_dir_all(...)` leaks that directory whenever
 //! an assertion fails and the test unwinds — i.e. precisely on RED CI runs.
 //! This module supplies the RAII replacement.
+//!
+//! # The workspace-wide invariant
+//!
+//! [`collect_workspace_unguarded_temp_dirs`] sweeps every `.rs` file in the
+//! workspace — `src/`, `tests/`, and `build.rs` alike — for sites that defeat
+//! the guard, and this module's `workspace_has_no_unguarded_temp_dirs` test
+//! enforces it BY DEFAULT, workspace-wide. The invariant is narrowed only two
+//! ways:
+//!
+//! - a per-line `// temp-dir:allow — reason` escape at the offending site, or
+//! - a comment-justified entry in that test's `SWEEP_EXCEPTIONS` table, for a
+//!   file that is migrating but is not clean yet.
+//!
+//! A `SWEEP_EXCEPTIONS` entry must be DELETED the moment its file goes clean
+//! — the table is asserted against staleness in both directions (see
+//! `partition_enforced_and_stale`), so a stale entry fails loudly rather than
+//! rotting silently the way this module's earlier six-entry allowlist did.
+//!
+//! [`assert_no_unguarded_temp_dir_sites`] remains available as a targeted
+//! single-file guard for callers who want to pin one specific file rather
+//! than rely on the workspace sweep.
 
-use crate::ignore_hygiene::is_doc_comment_line;
+use crate::ignore_hygiene::{is_doc_comment_line, walk_rs_files};
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Re-exported so call sites can NAME the guard type (in a helper's return
 /// signature, say) through `reify_test_support` without their own crate
@@ -284,6 +305,165 @@ pub fn assert_no_unguarded_temp_dir_sites(repo_relative_path: &str) {
     }
 }
 
+/// Walk the entire workspace collecting every temp-dir hygiene violation
+/// found in ANY `.rs` file — `src/`, `tests/`, and `build.rs` alike, since a
+/// leaking temp dir in a build script is just as real as one in a test. This
+/// is what closes the gap [`assert_no_unguarded_temp_dir_sites`]'s six
+/// hand-picked call sites left open: those never saw a `src/` file.
+///
+/// The structural twin of
+/// [`crate::ignore_hygiene::collect_workspace_stale_pointers`]: walk with
+/// [`walk_rs_files`] under an accept-everything predicate, read, scan with
+/// [`find_unguarded_temp_dir_sites`], and format each hit as
+/// `"<relative/path>: <violation>"`. I/O errors on individual files are
+/// silently skipped — a file deleted mid-walk by a concurrent build must not
+/// become a spurious violation.
+///
+/// This is a PURE COLLECTOR: it has no knowledge of any exception list. The
+/// denylist is policy, not mechanism, and lives beside its justification in
+/// the ratchet test that calls this function — keeping the collector
+/// reusable by any future caller. [`assert_no_unguarded_temp_dir_sites`]
+/// remains the right tool for a targeted single-file guard; this function
+/// does not replace it.
+pub fn collect_workspace_unguarded_temp_dirs(workspace_root: &Path) -> Vec<String> {
+    walk_rs_files(workspace_root, |_| true)
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok().map(|s| (path, s)))
+        .flat_map(|(path, source)| {
+            let rel = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(path)
+                .display()
+                .to_string();
+            find_unguarded_temp_dir_sites(&source)
+                .into_iter()
+                .map(move |v| format!("{rel}: {v}"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Companion to [`collect_workspace_unguarded_temp_dirs`]: counts how many
+/// of `rs_files` (as produced by [`walk_rs_files`]) can be successfully read
+/// as UTF-8 text, as opposed to silently skipped by a per-file I/O error —
+/// non-UTF-8 source, permission denied, or a file deleted mid-walk (see
+/// [`collect_workspace_unguarded_temp_dirs`]'s doc comment for why skipping
+/// is the deliberate policy for that last case).
+///
+/// # Why this exists alongside the walker-health guard
+///
+/// `workspace_has_no_unguarded_temp_dirs`'s walker-health guard counts files
+/// the WALKER returned — before any read is ever attempted — so it cannot
+/// see a SYSTEMATIC read failure (a permissions change under `crates/`, a
+/// source file that somehow isn't valid UTF-8) that would silently empty
+/// the sweep's real coverage while leaving the walked count untouched. That
+/// is precisely the vacuous-pass failure mode the health guard exists to
+/// catch, just one layer deeper than the walk itself: comparing this
+/// function's result against `rs_files.len()` closes the gap.
+pub fn count_readable_rs_files(rs_files: &[PathBuf]) -> usize {
+    rs_files
+        .iter()
+        .filter(|path| std::fs::read_to_string(path).is_ok())
+        .count()
+}
+
+/// Partition a raw sweep result (as produced by
+/// [`collect_workspace_unguarded_temp_dirs`]) against an exception table of
+/// `(repo_relative_path, expected_count, justification)` triples, returning
+/// `(enforced, stale)`:
+///
+/// - `enforced` — violations not covered by any exception. Non-empty means
+///   the sweep must fail: bind a named guard local, or annotate the line
+///   `// temp-dir:allow — reason`.
+/// - `stale` — exception paths (the first tuple element) that no longer
+///   match ANY violation. Non-empty ALSO means the sweep must fail, but with
+///   the opposite remedy: the file was migrated off hand-rolled temp dirs,
+///   so its entry must be DELETED from the exception table.
+///
+/// # Why the stale half exists
+///
+/// The six-entry allowlist this task retires decayed into a no-op ratchet
+/// because nothing forced it to grow. A denylist decays the mirror-image
+/// way: entries outlive the condition that justified them and silently
+/// re-open the hole the exception was meant to narrowly carve out. Asserting
+/// `stale` empty is what makes the exception list self-cleaning — when a
+/// listed file is migrated, this half goes RED and mechanically forces the
+/// entry's deletion in the same change.
+///
+/// # The count must match exactly, or nothing is exempted
+///
+/// A path-prefix match alone would exempt EVERY violation in the named
+/// file, present and future — so a second hand-rolled site added later to
+/// an already-excepted file would be silently swallowed instead of
+/// surfacing as a regression. `expected_count` closes that hole: an
+/// exception only exempts its file's violations when the actual count of
+/// matches equals `expected_count` exactly. A mismatched-but-nonzero count
+/// exempts nothing at all — every one of that file's violations falls
+/// through to `enforced`, exactly as if the file had never been excepted —
+/// so a new site is caught as loudly as a new site anywhere else. A count of
+/// zero is unchanged: the existing `stale` signal, since the file has been
+/// fully migrated off hand-rolled temp dirs.
+///
+/// # Matching is anchored, not substring-based
+///
+/// An exception matches a violation only via the `"{path}: "` prefix the
+/// collector emits — never a bare substring search — so an exception for
+/// `foo.rs` can never accidentally suppress a violation in `notfoo.rs`.
+/// Path separators are normalised (`\` → `/`) before comparing, so the
+/// match is robust regardless of how either side constructed its path.
+///
+/// `pub` (not test-only): its only current caller is this module's
+/// `workspace_has_no_unguarded_temp_dirs`, but that does not make it dead
+/// code — `reify-test-support` is a library crate whose entire purpose is
+/// to be depended on by other crates' tests, so any crate wanting the same
+/// ratchet-with-self-cleaning-exceptions shape can reuse this classification
+/// rather than reimplementing it.
+pub fn partition_enforced_and_stale(
+    violations: &[String],
+    exceptions: &[(&str, usize, &str)],
+) -> (Vec<String>, Vec<String>) {
+    let normalize = |s: &str| s.replace('\\', "/");
+    let prefix_for = |path: &str| format!("{}: ", normalize(path));
+
+    let mut exempted = vec![false; violations.len()];
+    let mut stale: Vec<String> = Vec::new();
+
+    for &(path, expected_count, _justification) in exceptions {
+        let prefix = prefix_for(path);
+        let match_indices: Vec<usize> = violations
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| normalize(v).starts_with(prefix.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+
+        if match_indices.is_empty() {
+            // No violation left in this file at all — the exception has
+            // gone stale and must be deleted.
+            stale.push(path.to_string());
+        } else if match_indices.len() == expected_count {
+            // The count matches exactly — exempt precisely these matches.
+            for i in match_indices {
+                exempted[i] = true;
+            }
+        }
+        // else: nonzero but != expected_count. Deliberately exempt NOTHING
+        // here — every matched violation falls through to `enforced` below,
+        // the same as a violation in a file with no exception at all. This
+        // is what stops a whole-file prefix match from silently widening to
+        // cover a brand-new site that was never accounted for.
+    }
+
+    let enforced: Vec<String> = violations
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !exempted[*i])
+        .map(|(_, v)| v.clone())
+        .collect();
+
+    (enforced, stale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,7 +579,7 @@ mod tests {
 
         assert_eq!(
             path.parent(),
-            Some(std::env::temp_dir().as_path()),
+            Some(std::env::temp_dir().as_path()), // temp-dir:allow — attribution test must compare against the REAL temp dir
             "the directory must be a DIRECT child of the temp dir so the \
              `find /tmp -maxdepth 1` triage glob reaches it; got {path:?}"
         );
@@ -520,7 +700,7 @@ mod tests {
         assert_eq!(
             find_unguarded_temp_dir_sites(&src).len(),
             1,
-            "the bare `env::temp_dir()` form must be flagged too"
+            "the bare `env::temp_dir()` form must be flagged too" // temp-dir:allow — prose mention inside an assertion message
         );
     }
 
@@ -757,50 +937,414 @@ mod tests {
         assert_no_unguarded_temp_dir_sites(&file.display().to_string());
     }
 
-    // ── ratchet: files migrated off hand-rolled temp dirs ────────────────────
+    // ── collect_workspace_unguarded_temp_dirs ────────────────────────────────
     //
-    // Each guard below is ratcheted on by #5640 together with the migration that
-    // makes it pass.  The list is deliberately EXPLICIT rather than a repo-wide
-    // sweep: `crates/reify-build-utils/src/lib.rs` still holds a bare call
-    // pending #5639's merge, and a sweep would make this crate red on an
-    // unrelated task's merge order.  Adding a file here is how you extend the
-    // ratchet — but migrate it in the same or the very next commit.
-    //
-    // The end state is a workspace sweep with an explicit, comment-justified
-    // exception list, reusing `ignore_hygiene::walk_test_rs_files` (which needs a
-    // path filter first — `server.rs` and `reify-build-utils/src/lib.rs` are
-    // `src/` files it currently excludes).  That change edits `ignore_hygiene.rs`,
-    // outside this task's locks, and is filed as follow-up work.
+    // Mirrors ignore_hygiene's `cwsp_*` tests: a synthetic workspace exercised
+    // end to end through the walk-read-scan-format collector. Needles reuse
+    // the `guarded_call`/`guard_fn` helpers above, so this file never contains
+    // an adjacent literal match and cannot self-trigger the very sweep it is
+    // testing here.
 
+    /// Fixture shape: (a) `crates/alpha/src/lib.rs` — a `src/` file with a
+    /// hand-rolled construction site, unreachable by the old tests-only
+    /// walker and thus the whole point of the workspace-wide sweep; (b)
+    /// `crates/beta/tests/thing.rs` — a `tests/` file with an unbound-guard
+    /// one-liner, pinning that BOTH violation kinds survive the workspace
+    /// layer; (c) `crates/gamma/src/ok.rs` — a `src/` file whose only site
+    /// carries the per-line `// temp-dir:allow` escape, pinning that the
+    /// escape propagates through the collector (the exact mechanism pre-2
+    /// relies on to exempt this module's own two sites); (d)
+    /// `crates/delta/src/clean.rs` — clean, contributes nothing; (e)
+    /// `target/skip.rs` — a violation under a pruned directory, must not
+    /// surface.
     #[test]
-    fn import_resolve_tests_have_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-compiler/tests/import_resolve_tests.rs");
-    }
+    fn cwutd_synthetic_workspace_reports_src_and_tests_violations_only() {
+        // Uses this module's own prefixed_tempdir (like the anuts_* fixtures
+        // above) rather than raw tempfile::tempdir(), so any debris surviving
+        // a SIGKILL of this test is attributable to it — an anonymous
+        // `.tmpXXXXXX` name would leave an operator strictly worse off, per
+        // prefixed_tempdir's own doc comment.
+        let guard = prefixed_tempdir("reify-test-support-cwutd-");
+        let root = guard.path();
 
-    #[test]
-    fn user_defined_unit_tests_have_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites(
-            "crates/reify-compiler/tests/user_defined_unit_tests.rs",
+        let call = guarded_call();
+        let guard_fn = guard_fn();
+
+        let alpha = root.join("crates/alpha/src/lib.rs");
+        let alpha_src = format!("fn f() {{\n    let d = std::{call}.join(\"x\");\n}}\n");
+
+        let beta = root.join("crates/beta/tests/thing.rs");
+        let beta_src =
+            format!("fn g() {{\n    let d = {guard_fn}(\"x-\").path().to_path_buf();\n}}\n");
+
+        let gamma = root.join("crates/gamma/src/ok.rs");
+        let gamma_src =
+            format!("fn h() {{\n    let d = {call}; // temp-dir:allow — test fixture\n}}\n");
+
+        let delta = root.join("crates/delta/src/clean.rs");
+        let delta_src = "fn clean() {}\n".to_string();
+
+        let pruned = root.join("target/skip.rs");
+        let pruned_src = format!("fn p() {{\n    let d = std::{call};\n}}\n");
+
+        for (path, content) in [
+            (&alpha, alpha_src.as_str()),
+            (&beta, beta_src.as_str()),
+            (&gamma, gamma_src.as_str()),
+            (&delta, delta_src.as_str()),
+            (&pruned, pruned_src.as_str()),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create parent dirs");
+            std::fs::write(path, content.as_bytes()).expect("write file");
+        }
+
+        let violations = collect_workspace_unguarded_temp_dirs(root);
+
+        assert_eq!(
+            violations.len(),
+            2,
+            "expected exactly 2 violations — alpha (src/) and beta (tests/) — with gamma \
+             escaped, delta clean, and target/ pruned: {violations:?}"
+        );
+        let combined = violations.join("\n");
+        assert!(
+            combined.contains("crates/alpha/src/lib.rs"),
+            "expected a violation naming the alpha src/ file — the whole point of the \
+             workspace-wide sweep, unreachable by the old tests-only walker: {violations:?}"
+        );
+        assert!(
+            combined.contains("crates/beta/tests/thing.rs"),
+            "expected a violation naming the beta tests/ file: {violations:?}"
         );
     }
 
+    // ── count_readable_rs_files ──────────────────────────────────────────────
+
+    /// A mix of one valid-UTF-8 file and one file containing invalid UTF-8
+    /// bytes → count is 1, not 2. Pins that the function actually attempts a
+    /// read rather than trusting the file list handed to it — the whole
+    /// point, since the walker-health guard it complements counts files
+    /// BEFORE any read is attempted and so cannot see this kind of silent
+    /// drop on its own.
     #[test]
-    fn m5_integration_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-eval/tests/m5_integration.rs");
+    fn crf_counts_only_files_that_read_successfully_as_utf8() {
+        let guard = prefixed_tempdir("reify-test-support-crf-");
+        let root = guard.path();
+
+        let good = root.join("good.rs");
+        std::fs::write(&good, b"fn main() {}\n").expect("write good fixture");
+
+        let bad = root.join("bad.rs");
+        // 0x80 is a bare continuation byte: it can never start a valid UTF-8
+        // sequence, so `read_to_string` must fail with InvalidData.
+        std::fs::write(&bad, [0x66, 0x6e, 0x20, 0x80, 0x28, 0x29]).expect("write bad fixture");
+
+        let files = vec![good, bad];
+        assert_eq!(
+            count_readable_rs_files(&files),
+            1,
+            "expected only the valid-UTF-8 file to count as readable"
+        );
     }
 
+    /// Empty input → 0, pinning the no-files contract.
     #[test]
-    fn cli_doc_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-cli/tests/harness_cli/cli_doc.rs");
+    fn crf_empty_input_returns_zero() {
+        assert_eq!(count_readable_rs_files(&[]), 0);
     }
 
+    // ── partition_enforced_and_stale ─────────────────────────────────────────
+    //
+    // Tests exercise the pure classification over synthetic (violations,
+    // exceptions) inputs — no live repo state — so the stale-entry branch
+    // (whose trigger condition, #5639 landing, does not exist in the repo
+    // today) is directly testable. The function itself lives in the outer
+    // module, directly beneath `collect_workspace_unguarded_temp_dirs` — see
+    // its doc comment there for the full contract.
+
+    /// (1) A violation for path A, exempted by an exception naming A with
+    /// the matching expected count (1) → both halves empty: the exception
+    /// is exercised and current.
     #[test]
-    fn lsp_server_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-lsp/src/server.rs");
+    fn pes_exact_match_leaves_both_halves_empty() {
+        let violations =
+            vec!["crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string()];
+        let exceptions: &[(&str, usize, &str)] = &[("crates/a/src/lib.rs", 1, "justification")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert!(
+            enforced.is_empty(),
+            "expected no enforced violations: {enforced:?}"
+        );
+        assert!(stale.is_empty(), "expected no stale exceptions: {stale:?}");
     }
 
+    /// (2) A violation for A only, but the exception table ALSO lists B →
+    /// B is STALE. This is the exact case that fires when #5639 lands and
+    /// migrates `reify-build-utils`: its entry must be deleted, and this
+    /// assertion is what forces that deletion.
     #[test]
-    fn rpath_smoke_has_no_unguarded_temp_dirs() {
-        assert_no_unguarded_temp_dir_sites("crates/reify-kernel-gmsh/tests/rpath_smoke.rs");
+    fn pes_exception_with_no_matching_violation_is_stale() {
+        let violations =
+            vec!["crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string()];
+        let exceptions: &[(&str, usize, &str)] = &[
+            ("crates/a/src/lib.rs", 1, "justification a"),
+            ("crates/b/src/lib.rs", 1, "justification b"),
+        ];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert!(
+            enforced.is_empty(),
+            "expected no enforced violations: {enforced:?}"
+        );
+        assert_eq!(
+            stale,
+            vec!["crates/b/src/lib.rs".to_string()],
+            "expected b's exception to be reported stale: {stale:?}"
+        );
+    }
+
+    /// (3) Violations for A and C, exception list covers only A → C is
+    /// ENFORCED (an un-excepted violation — the sweep must fail on it).
+    #[test]
+    fn pes_unexempted_violation_is_enforced() {
+        let violations = vec![
+            "crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string(),
+            "crates/c/src/lib.rs: line 7: unbound guard: \"...\"".to_string(),
+        ];
+        let exceptions: &[(&str, usize, &str)] = &[("crates/a/src/lib.rs", 1, "justification a")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert_eq!(
+            enforced,
+            vec!["crates/c/src/lib.rs: line 7: unbound guard: \"...\"".to_string()],
+            "expected c's violation to be enforced: {enforced:?}"
+        );
+        assert!(stale.is_empty(), "expected no stale exceptions: {stale:?}");
+    }
+
+    /// (4) No violations at all, but the exception table is non-empty →
+    /// EVERY exception is stale.
+    #[test]
+    fn pes_empty_violations_makes_every_exception_stale() {
+        let violations: Vec<String> = Vec::new();
+        let exceptions: &[(&str, usize, &str)] = &[
+            ("crates/a/src/lib.rs", 1, "justification a"),
+            ("crates/b/src/lib.rs", 1, "justification b"),
+        ];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert!(
+            enforced.is_empty(),
+            "expected no enforced violations: {enforced:?}"
+        );
+        assert_eq!(
+            stale.len(),
+            2,
+            "expected both exceptions to be stale against zero violations: {stale:?}"
+        );
+    }
+
+    /// (5) Anchoring: an exception path that is merely a SUBSTRING of a
+    /// violation's path (not a true `"{path}: "` prefix) must NOT suppress
+    /// that violation, and the exception itself must be reported stale — a
+    /// substring collision must never silently exempt the wrong file.
+    #[test]
+    fn pes_exception_matching_is_anchored_on_the_path_prefix_not_a_substring() {
+        let violations =
+            vec!["crates/b/notfoo.rs: line 1: hand-rolled construction: \"...\"".to_string()];
+        // "foo.rs" is a substring of "notfoo.rs" but not a `"{path}: "` prefix
+        // of the violation string above.
+        let exceptions: &[(&str, usize, &str)] = &[("foo.rs", 1, "should not match notfoo.rs")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert_eq!(
+            enforced,
+            vec!["crates/b/notfoo.rs: line 1: hand-rolled construction: \"...\"".to_string()],
+            "a substring match must not suppress the real violation: {enforced:?}"
+        );
+        assert_eq!(
+            stale,
+            vec!["foo.rs".to_string()],
+            "the non-matching exception must be reported stale: {stale:?}"
+        );
+    }
+
+    /// (6) An exception pinned at `expected_count == 1` but the file now has
+    /// TWO matching violations (a second hand-rolled site was added after
+    /// the exception was written) → NEITHER is exempted, both surface via
+    /// `enforced` exactly like a violation in a never-excepted file would,
+    /// and the exception is NOT reported stale (the file still has
+    /// violations — `stale` is reserved for a zero-match count). This is
+    /// the exact regression a bare path-prefix match would silently swallow.
+    #[test]
+    fn pes_exception_with_wrong_violation_count_exempts_nothing() {
+        let violations = vec![
+            "crates/a/src/lib.rs: line 3: hand-rolled construction: \"...\"".to_string(),
+            "crates/a/src/lib.rs: line 9: hand-rolled construction: \"...\"".to_string(),
+        ];
+        // Written when the file had exactly one site.
+        let exceptions: &[(&str, usize, &str)] = &[("crates/a/src/lib.rs", 1, "justification")];
+
+        let (enforced, stale) = partition_enforced_and_stale(&violations, exceptions);
+
+        assert_eq!(
+            enforced, violations,
+            "a violation count that no longer matches expected_count must \
+             exempt nothing at all — both sites must surface: {enforced:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "the file still has violations, so its exception is not STALE \
+             (that signal is reserved for a zero-match count): {stale:?}"
+        );
+    }
+
+    // ── workspace_has_no_unguarded_temp_dirs (the live ratchet) ──────────────
+    //
+    // Replaces the six hand-picked `*_have_no_unguarded_temp_dirs` guards below
+    // with a whole-workspace sweep, narrowed only by the comment-justified
+    // `SWEEP_EXCEPTIONS` table. `partition_enforced_and_stale` above classifies
+    // the sweep's raw output against that table in both directions, and BOTH
+    // halves are asserted empty here — see that function's doc comment for why
+    // the stale half exists.
+
+    /// The sweep's exception table: `(repo-relative path, expected violation
+    /// count, justification)` triples. A bare path can never be added
+    /// without a written reason — the tuple's third element enforces that
+    /// structurally.
+    ///
+    /// The count pins exactly how many violations in that file the
+    /// exception may cover. `partition_enforced_and_stale` only exempts a
+    /// file when its ACTUAL violation count equals this number — so if a
+    /// SECOND hand-rolled site is added to an already-excepted file, the
+    /// count stops matching and NEITHER site is exempted; both surface as
+    /// ordinary enforced violations instead of being silently swallowed by
+    /// a whole-file prefix match. This closes a hole a plain
+    /// `(path, justification)` pair would leave open.
+    ///
+    /// Every entry here must CURRENTLY violate, with its count exactly
+    /// right — `workspace_has_no_unguarded_temp_dirs` asserts that too (the
+    /// `stale` half of `partition_enforced_and_stale`), so an entry whose
+    /// file gets migrated off hand-rolled temp dirs fails LOUDLY until its
+    /// entry is deleted, rather than silently rotting the way this module's
+    /// earlier six-entry allowlist did.
+    ///
+    /// Re-measured (not merely trusted) at debug-fix time for this task:
+    /// `crates/reify-build-utils/src/lib.rs` was the sole exception when this
+    /// ratchet was authored, because #5639 (which migrates its `fn
+    /// tempdir()` test helper off the hand-rolled std-library accessor) had
+    /// not yet landed on `main`. #5639 has since landed and this branch
+    /// picked it up, so that file no longer violates — exactly the
+    /// self-cleaning failure this table's staleness check exists to force:
+    /// the ratchet went RED with a stale entry, and the entry was deleted
+    /// here rather than left to rot. `temp_dirs.rs`'s own two self-trigger
+    /// sites are exempted per-line instead of listed here (see pre-2).
+    const SWEEP_EXCEPTIONS: &[(&str, usize, &str)] = &[];
+
+    /// The live ratchet. Every `.rs` file in the workspace — `src/`, `tests/`,
+    /// and `build.rs` alike — must be free of temp-dir hygiene violations,
+    /// except for the paths explicitly listed (with justification) in
+    /// `SWEEP_EXCEPTIONS` below. An exception that no longer matches any
+    /// violation has rotted stale and must be deleted — see
+    /// `partition_enforced_and_stale`'s doc comment for why that direction is
+    /// asserted too.
+    #[test]
+    fn workspace_has_no_unguarded_temp_dirs() {
+        // Same resolution as `assert_no_unguarded_temp_dir_sites`: this crate's
+        // CARGO_MANIFEST_DIR is always `<repo>/crates/reify-test-support`, so
+        // two `.parent()` walks reach the repo root.
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crates/reify-test-support has a parent (crates/)")
+            .parent()
+            .expect("crates/ has a parent (the repo root)");
+
+        // Walker-health guard FIRST, mirroring the two-part check in
+        // `tests/ignore_reason_hygiene.rs`: a walk that silently breaks (a
+        // renamed directory component, say) must fail loudly and
+        // specifically, not report the workspace clean because it scanned
+        // nothing.
+        //   1. Minimum count (>500) — measured 1758 `.rs` files at the time
+        //      this ratchet was written; 500 is far below the real count
+        //      (stable against ordinary file churn) yet an order of magnitude
+        //      above what a partial-subtree breakage would return.
+        //   2. Sentinel path — a `src/` file, so a regression in the walker's
+        //      `src/`-inclusion (the entire reason this sweep replaces the
+        //      six hand-picked guards below) is caught with a specific
+        //      diagnostic rather than folded into the count check.
+        let all_rs_files = walk_rs_files(repo_root, |_| true);
+        assert!(
+            all_rs_files.len() > 500,
+            "walker found only {} .rs file(s) — expected >500; the walker may \
+             be broken, or repo_root resolved to the wrong directory",
+            all_rs_files.len()
+        );
+        let sentinel = repo_root.join("crates/reify-build-utils/src/lib.rs");
+        assert!(
+            all_rs_files.contains(&sentinel),
+            "sentinel file {sentinel:?} not found in walker output — the \
+             walker may be broken, or may have regressed to excluding src/ \
+             files again"
+        );
+
+        //   3. Read-health guard — closes a blind spot the two checks above
+        //      cannot see: they count files the WALKER returned, before any
+        //      read is attempted, so a SYSTEMATIC read failure (a
+        //      permissions change under `crates/`, say) would silently
+        //      empty the sweep's real coverage below while leaving the
+        //      walked count untouched — the same vacuous-pass failure mode,
+        //      one layer deeper than the walk itself. A small delta (not
+        //      zero) tolerates a file legitimately deleted mid-walk by a
+        //      concurrent build, the same tradeoff
+        //      `collect_workspace_unguarded_temp_dirs` accepts for its own
+        //      per-file I/O errors.
+        let readable = count_readable_rs_files(&all_rs_files);
+        let unread = all_rs_files.len().saturating_sub(readable);
+        assert!(
+            unread <= 5,
+            "the walker found {} .rs file(s) but only {readable} could be \
+             read — {unread} file(s) silently failed (non-UTF-8 source, \
+             permission denied, or similar); the sweep may be blind to real \
+             violations in those files. Investigate before trusting a clean \
+             result.",
+            all_rs_files.len(),
+        );
+
+        // `collect_workspace_unguarded_temp_dirs` walks again internally.
+        // Intentional test-only overhead, the same tradeoff
+        // `tests/ignore_reason_hygiene.rs` accepts: the walk is cheap next to
+        // the file I/O that follows, and keeping the health guard and the
+        // sweep as independent calls is cleaner than threading a shared
+        // pre-computation through both.
+        let violations = collect_workspace_unguarded_temp_dirs(repo_root);
+        let (enforced, stale) = partition_enforced_and_stale(&violations, SWEEP_EXCEPTIONS);
+
+        assert!(
+            enforced.is_empty(),
+            "Found {} un-excepted temp-dir hygiene violation(s):\n  {}\n\n\
+             Fix each by binding a named guard local:\n\
+             \x20   let guard = reify_test_support::prefixed_tempdir(\"<prefix>-\");\n\
+             \x20   let dir = guard.path().to_path_buf();\n\n\
+             ...or, if the site is legitimately hand-rolled, annotate the \
+             line `// {} — reason` and it will be skipped.",
+            enforced.len(),
+            enforced.join("\n  "),
+            ALLOW_ESCAPE,
+        );
+        assert!(
+            stale.is_empty(),
+            "Found stale SWEEP_EXCEPTIONS entry/entries that no longer match \
+             any violation:\n  {}\n\n\
+             The file was migrated off hand-rolled temp dirs — DELETE its \
+             entry from SWEEP_EXCEPTIONS. A stale exception silently re-opens \
+             the hole it was written to narrowly carve out.",
+            stale.join("\n  ")
+        );
     }
 }

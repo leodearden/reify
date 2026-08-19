@@ -135,7 +135,9 @@ structure def Tensegrity {
 //   TensegrityWire { kind: "strut", from_index: 0, to_index: 3, x1: ..., ... }
 // rather than an opaque map. The Rust-side `tensegrity_wires` builtin
 // constructs TensegrityWire instances directly using StructureTypeId(0) as
-// placeholder (SIR-α convention, engine_eval.rs:1789).
+// placeholder (SIR-α convention: the ephemeral `StructureTypeId(0)` documented
+// in crates/reify-eval/src/engine_eval.rs, esc-3540-173 — identity is
+// name+version, not type_id).
 //
 // All params are required — TensegrityWire instances are never user-constructed;
 // the builtin always supplies all nine fields.

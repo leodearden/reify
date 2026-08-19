@@ -346,11 +346,15 @@ fn std_ports_module_cardinality_locked() {
 // ─── step-3 (task α): Frame3 structure surface ───────────────────────────────
 
 /// std/ports should contain a `structure def Frame3` with exactly 4 Param-kind
-/// value cells (origin, x_axis, y_axis, z_axis), each resolving to
-/// `Type::Vector { n: 3, quantity: Length[LENGTH] }`.
+/// value cells, SPLIT by what each member denotes (task 5848):
+///   - `origin` is a POSITION  → `Type::Vector { n: 3, quantity: Length }`
+///   - `x_axis`/`y_axis`/`z_axis` are DIRECTIONS → quantity `Dimensionless`
+///
+/// The `origin` half is the load-bearing fence: it proves the retype
+/// discriminates position from direction rather than sweeping the whole
+/// structure dimensionless.
 ///
 /// Frame3 is the port-frame structure added by task α, step-4.
-/// RED on current main (no Frame3 in std/ports → template lookup fails).
 #[test]
 fn frame3_structure_surface() {
     let module = load_module("std/ports");
@@ -381,17 +385,34 @@ fn frame3_structure_surface() {
         param_names
     );
 
-    // All 4 params must resolve to Vector3<Length>.
-    let expected_type = Type::Vector {
+    // A 3-vector over the given quantity dimension.
+    let vec3_of = |dimension| Type::Vector {
         n: 3,
-        quantity: Box::new(Type::Scalar {
-            dimension: DimensionVector::LENGTH,
-        }),
+        quantity: Box::new(Type::Scalar { dimension }),
     };
-    for expected_name in &["origin", "x_axis", "y_axis", "z_axis"] {
+    // origin denotes a POSITION (Length); the three axes denote DIRECTIONS
+    // (dimensionless unit vectors) — task 5848.
+    for (expected_name, expected_type, why) in [
+        ("origin", vec3_of(DimensionVector::LENGTH), "a POSITION"),
+        (
+            "x_axis",
+            vec3_of(DimensionVector::DIMENSIONLESS),
+            "a DIRECTION",
+        ),
+        (
+            "y_axis",
+            vec3_of(DimensionVector::DIMENSIONLESS),
+            "a DIRECTION",
+        ),
+        (
+            "z_axis",
+            vec3_of(DimensionVector::DIMENSIONLESS),
+            "a DIRECTION",
+        ),
+    ] {
         let cell = param_cells
             .iter()
-            .find(|vc| vc.id.member == *expected_name)
+            .find(|vc| vc.id.member == expected_name)
             .unwrap_or_else(|| {
                 panic!(
                     "Frame3 missing param '{}'; got: {:?}",
@@ -400,8 +421,8 @@ fn frame3_structure_surface() {
             });
         assert_eq!(
             cell.cell_type, expected_type,
-            "Frame3.{} must be Type::Vector{{n:3, quantity:Length[LENGTH]}}, got {:?}",
-            expected_name, cell.cell_type
+            "Frame3.{} denotes {}, so it must be {:?}; got {:?}",
+            expected_name, why, expected_type, cell.cell_type
         );
     }
 }
@@ -722,9 +743,9 @@ import std.ports.mechanical
 structure def RotaryConformer : RotaryPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param max_torque : Torque = 1N * 1m / 1rad
@@ -772,9 +793,9 @@ import std.ports.mechanical
 structure def RotaryConformerMissingTorque : RotaryPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param max_speed : AngularVelocity = 1rad / 1s
     param axis : Vector3<Length> = vec3(0mm, 0mm, 1mm)
@@ -800,7 +821,8 @@ structure def RotaryConformerMissingTorque : RotaryPort {
 
 /// LinearPort refines exactly [MotivePort] with required members [max_speed,
 /// max_force, stroke, axis] in order:
-///   max_speed : Scalar<Velocity = Length/Time>
+///   max_speed : Scalar<Velocity> (NAMED_DIMENSIONS builtin, m/s; back-compat
+///               `pub type Velocity` in units.ri resolves to the same dimension)
 ///   max_force : Scalar<FORCE>
 ///   stroke    : Scalar<LENGTH>
 ///   axis      : Vector3<Length>
@@ -838,14 +860,15 @@ fn linear_port_trait_surface() {
         );
     }
 
-    // Velocity = Length / Time (alias resolves to the composite dimension).
+    // Velocity is a NAMED_DIMENSIONS builtin (m/s); it resolves to Length/Time
+    // regardless (see units.ri:87-96 for the builtin-shadows-alias rationale).
     let expected_velocity_dim = DimensionVector::LENGTH.div(&DimensionVector::TIME);
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_speed"),
         Type::Scalar {
             dimension: expected_velocity_dim
         },
-        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity alias)"
+        "LinearPort.max_speed must be Scalar<Length/Time> (Velocity NAMED_DIMENSIONS builtin)"
     );
     assert_eq!(
         param_type("std/ports/mechanical", "LinearPort", "max_force"),
@@ -1830,9 +1853,9 @@ structure def PinConformer {
         param current_rating : Current = 0.1A
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param pin_id : String = "A1"
     }
@@ -2308,9 +2331,9 @@ import std.ports.thermal
 structure def ContactPatch : ThermalContactPort {
     param frame : Frame3 = Frame3(
         origin: vec3(0mm, 0mm, 0mm),
-        x_axis: vec3(1mm, 0mm, 0mm),
-        y_axis: vec3(0mm, 1mm, 0mm),
-        z_axis: vec3(0mm, 0mm, 1mm),
+        x_axis: vec3(1, 0, 0),
+        y_axis: vec3(0, 1, 0),
+        z_axis: vec3(0, 0, 1),
     )
     param region : Geometry = box(10mm, 10mm, 1mm)
     param heat_flow : Power = 1N * 1m / 1s
@@ -2707,9 +2730,9 @@ structure def PipeConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param inner_diameter : Length = 25mm
         param connection_type = PipeConnectionType.Threaded
@@ -2886,9 +2909,9 @@ structure def HydroConformer {
         param fluid_type = FluidType.Liquid
         param frame : Frame3 = Frame3(
             origin: vec3(0mm, 0mm, 0mm),
-            x_axis: vec3(1mm, 0mm, 0mm),
-            y_axis: vec3(0mm, 1mm, 0mm),
-            z_axis: vec3(0mm, 0mm, 1mm),
+            x_axis: vec3(1, 0, 0),
+            y_axis: vec3(0, 1, 0),
+            z_axis: vec3(0, 0, 1),
         )
         param fitting_type = FittingStandard.NPT
     }
@@ -3073,11 +3096,14 @@ structure def S {
 /// collision with the unrelated stdlib `Coupling<P: DrivingJoint + HasMotion>`
 /// kinematic joint type in crates/reify-compiler/stdlib/kinematic.ri.)
 ///
-/// Note: direction/Bidi/StructurePort/Bore/Shaft and torque_capacity/max_speed
+/// Note: direction/Bidi/StructurePort/Bore/Shaft and max_torque/max_speed
 /// params are not exercised through an actual conformance path in this example
 /// (no concrete RotaryPort conformer is instantiated per PRD §4 decision 4).
-/// A follow-up that adds a concrete conformer supplying torque_capacity /
-/// max_speed / direction literals would close that coverage gap end-to-end.
+/// A concrete conformer supplying max_torque / max_speed literals is covered
+/// separately by `rotary_port_concrete_conformer_compiles` in this file;
+/// `direction` is exercised only through its Bidi default (see
+/// `port_conforms_without_direction_compiles_clean`) — an explicit non-default
+/// `direction` literal remains uncovered.
 #[test]
 fn example_ports_mechanical_ri_compiles_clean() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -105,13 +105,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "dom_query",
-            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect.",
+            description: "Query a DOM element by data-testid. Returns existence, visibility, text content, and bounding rect. Optional viewportId scopes the query to one viewport pane; a testId absent from that pane returns { exists: false } rather than an error, so this stays usable as an existence probe while a pane is still appearing.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value to query"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Scope the query to the pane whose [data-viewport-id] subtree contains (or is) the element. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane. A testId not present in the named pane yields { exists: false }, not an error."
                     }
                 },
                 "required": ["testId"]
@@ -124,13 +128,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "click_element",
-            description: "Click a DOM element by data-testid. Dispatches a synthetic click event.",
+            description: "Click a DOM element by data-testid. Dispatches a synthetic click event. Optional viewportId scopes resolution to one viewport pane — required to click a per-pane control unambiguously when several panes are mounted.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value of the element to click"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Click the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -263,13 +271,17 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "element_screenshot",
-            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" }. Frontend-mediated (no Rust dispatch arm).",
+            description: "Crop a screenshot to the bounds of a DOM element identified by data-testid. Captures the full window via html-to-image, then extracts the element's bounding rect (CSS-logical px from the window origin) scaled by devicePixelRatio (τ0 DPR contract). Returns { data: \"data:image/png;base64,...\" } as an image content block. Optional viewportId scopes resolution to one viewport pane, so a per-pane element is cropped from the pane that was asked for; omitting it keeps the document-wide first match, and when more than one element matched, the pane diagnostics (viewportId, matchCount) arrive as a SECOND text content block after the image. Frontend-mediated (no Rust dispatch arm).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "Value of the data-testid attribute on the target element (e.g. \"diagnostics-dialog\")."
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Crop the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -404,19 +416,37 @@ fn tool_defs() -> Vec<ToolDef> {
                           view-state (no engine re-solve, unlike set_fea_case) — frontend-mediated, \
                           no dispatch_tool arm. Used by the visual-regression harness to select a \
                           channel before taking a screenshot. Returns { ok: true }, or \
-                          { error: <reason> } if `channel` is missing/non-string, the channel is \
-                          not an available option, the select is disabled, the toolbar select is \
-                          not present in the DOM, or the select's value does not settle on the \
-                          requested channel after the change event dispatches. NOTE: that last \
-                          check only catches a listener reverting the value — it cannot detect a \
-                          silently-inert onChange, since the DOM value is set before the event \
-                          fires (see the set_fea_channel comment in bridge.ts).",
+                          { error: <reason> } if `channel` is missing/non-string, `viewportId` is \
+                          present but not a string, the channel is not an available option, the \
+                          select is disabled, no FEA toolbar select is present in the DOM at all, \
+                          an explicit `viewportId` matches no mounted toolbar (distinct from the \
+                          none-mounted-anywhere case), more than one toolbar is mounted and no \
+                          `viewportId` was given to disambiguate, or the select's value does not \
+                          settle on the requested channel after the change event dispatches. \
+                          (SET_FEA_CHANNEL_ERRORS in bridge.ts is the single source of truth for \
+                          the exact strings; the conditions are what is contracted here.) The \
+                          ambiguity case became reachable in #5670: previously only pane 0 was \
+                          handed a FeaModeStore, so at most one toolbar ever existed; App.tsx now \
+                          gives every pane its own keyed store, so an N-pane document mounts N \
+                          toolbars and `viewportId` is required in practice for multi-pane \
+                          documents. NOTE: the value-settling check only catches a listener \
+                          reverting the value — it cannot detect a silently-inert onChange, since \
+                          the DOM value is set before the event fires (see the set_fea_channel \
+                          comment in bridge.ts).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "channel": {
                         "type": "string",
                         "description": "Name of the scalar channel to activate (e.g. 'errorIndicator', 'vonMises', 'displacement_magnitude')."
+                    },
+                    // #5670: deliberately NOT the "first populated viewport is targeted"
+                    // boilerplate the nine camera/canvas tools share — pickFeaChannelSelect
+                    // has no first-populated tiebreak, because every mounted toolbar is
+                    // equally valid to drive and guessing would silently misapply a switch.
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional id of the pane whose FEA toolbar to target (e.g. 'design-main', 'pane-1'). When omitted, the single mounted FEA toolbar is targeted; if more than one pane has one, the call fails as ambiguous rather than guessing — pass this to disambiguate."
                     }
                 },
                 "required": ["channel"]
@@ -569,13 +599,13 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for",
-            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a predicate is satisfied or a timeout elapses. Returns { ok: true, waited_ms: number } on success or { error: 'timeout' } when the deadline expires. Predicate is a tagged union: { kind: 'selector', testId, state: 'visible'|'gone', text?, viewportId? } for DOM presence checks, or { kind: 'store', path, equals } for store dotted-path equality checks. The selector arm's optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "predicate": {
                         "type": "object",
-                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text? } or { kind: 'store', path, equals }"
+                        "description": "Tagged predicate: { kind: 'selector', testId, state?, text?, viewportId? } or { kind: 'store', path, equals }. Optional predicate.viewportId scopes the selector arm to the pane whose [data-viewport-id] subtree contains (or is) the element; omit for the document-wide first match. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
                     },
                     "timeout_ms": { "type": "integer" }
                 }
@@ -583,7 +613,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "wait_for_selector",
-            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional timeout_ms (default 5000, must be positive).",
+            description: "Poll until a [data-testid] element reaches the requested state or a timeout elapses. Returns { ok: true, waited_ms: number } or { error: 'timeout' }. state: 'visible' (default) or 'gone'. Optional text asserts el.textContent.trim() matches when state='visible'. Optional viewportId scopes the wait to one viewport pane — note that under state:'gone' an element still visible in a DIFFERENT pane counts as gone from the named one, and so does a viewportId naming a pane that is absent entirely — an unmounted pane, or a typo'd id, resolves {ok:true, waited_ms:0} indistinguishably from a real teardown. Confirm the pane exists (dom_query) before relying on a gone-wait as proof one happened; under state:'visible' the same mistake instead fails loudly with a timeout. Optional timeout_ms (default 5000, must be positive).",
             input_schema: json!({
                 "type": "object",
                 "required": ["testId"],
@@ -591,6 +621,10 @@ fn tool_defs() -> Vec<ToolDef> {
                     "testId": { "type": "string" },
                     "state": { "type": "string", "enum": ["visible", "gone"] },
                     "text": { "type": "string" },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Wait on the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Return shape is unchanged either way — this tool observes rather than drives, so it reports no viewportId/matchCount. Under state:'gone' a pane that does not exist counts as vacuously gone and resolves immediately."
+                    },
                     "timeout_ms": { "type": "integer" }
                 }
             }),
@@ -809,13 +843,18 @@ fn tool_defs() -> Vec<ToolDef> {
             name: "focus_element",
             description: "Focus a DOM element by its data-testid attribute. \
                           Calls el.focus() on the resolved element. \
-                          Returns {ok: true} on success or {error} if not found or testId is missing.",
+                          Returns {ok: true} on success or {error} if not found or testId is missing. \
+                          Optional viewportId scopes resolution to one viewport pane.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "The data-testid attribute value of the element to focus"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional. Focus the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane."
                     }
                 },
                 "required": ["testId"]
@@ -842,13 +881,19 @@ fn tool_defs() -> Vec<ToolDef> {
                           DOM mode: pass testId to set scrollTop/scrollLeft on the resolved element. \
                           Editor mode: pass target:'editor' to scroll the CodeMirror scrollDOM. \
                           Returns {ok: true, scrollTop, scrollLeft} with the resulting scroll offsets \
-                          (enabling a get_layout_metrics round-trip to confirm the applied offset).",
+                          (enabling a get_layout_metrics round-trip to confirm the applied offset). \
+                          Optional viewportId scopes DOM-mode resolution to one viewport pane; it is \
+                          ignored in editor mode, which resolves no data-testid.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "testId": {
                         "type": "string",
                         "description": "data-testid of the DOM element to scroll (DOM mode)"
+                    },
+                    "viewportId": {
+                        "type": "string",
+                        "description": "Optional, DOM mode only. Scroll the element in the pane whose [data-viewport-id] subtree contains (or is) it. Omit for the document-wide first match. Either way, a request matching more than one element additionally reports viewportId (the pane the driven element actually sits in) and matchCount — naming a pane narrows the candidates but does not guarantee one, since a testId can repeat within a pane. Ignored (never rejected) when target:'editor'."
                     },
                     "target": {
                         "type": "string",
@@ -1031,6 +1076,82 @@ fn is_image_tool(name: &str) -> bool {
     matches!(name, "screenshot" | "screenshot_window" | "element_screenshot")
 }
 
+/// Map a successful tool result onto the MCP `tools/call` `{"content": [...]}`
+/// envelope.
+///
+/// Pure (no `DebugServerState`) so the transport is unit-testable: `handle_mcp`
+/// is an axum handler taking `State(DebugServerState)` — an Arc-of-Mutex bundle
+/// of EngineSession, SelectionInfo, DebugBridge and GuiState — which is
+/// impractical to build in `mod tests`, and is why this envelope had no coverage
+/// at all before #5891.
+///
+/// Two properties are load-bearing and neither is arbitrary:
+///
+/// 1. ORDER — the image block stays at `content[0]`, diagnostics are APPENDED.
+///    `parseRpcResponse` (gui/test/visual/rpc.ts, branch table :33) is POSITIONAL
+///    (`content[0].type === "image"`) and gui/test/visual/run.ts:202-211 feeds
+///    `value.data` straight into `Buffer.from(…, "base64")`, so a prepended text
+///    block would be decoded as PNG bytes and corrupt the visual-regression
+///    harness. `normalizeRpcEnvelope` (rpcEnvelope.mjs) instead SEARCHES for the
+///    text block, so appending is invisible to it.
+///
+/// 2. GATING — the diagnostics block is emitted only when the residual (every
+///    top-level key except `data`) is a non-empty object with no top-level string
+///    `error`. Non-empty keeps `screenshot`/`screenshot_window` — which return
+///    `{data}` and nothing else (bridge.ts:689,702) — and every scoped or
+///    single-match `element_screenshot` bit-for-bit unchanged, mirroring the
+///    bridge-side `paneDiagnostics` gate one layer down rather than inventing a
+///    second condition that can drift. The `error` exclusion upholds the
+///    CROSS-LANGUAGE INVARIANT documented at gui/test/visual/rpcEnvelope.mjs:54-58:
+///    `isInBandError` reads any top-level string `error` as a tool FAILURE, so
+///    emitting one beside a successful image would make every driver report a
+///    working screenshot as broken.
+///
+/// Anything else — a non-image tool, or an image tool whose result carries no
+/// string `data` (every `element_screenshot` error shape) — falls through to
+/// today's single pretty-printed text block over the FULL result.
+fn mcp_content_blocks(tool_name: &str, result: &Value) -> Value {
+    if is_image_tool(tool_name)
+        && let Some(data) = result.get("data").and_then(|d| d.as_str())
+    {
+        // Strip data URL prefix if present
+        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
+        let mut content = vec![json!({
+            "type": "image",
+            "data": base64,
+            "mimeType": "image/png"
+        })];
+
+        // Property 2 above: append the pane-guess diagnostics only when there is
+        // something to say and saying it cannot be misread as a failure.
+        if let Some(obj) = result.as_object() {
+            let residual: serde_json::Map<String, Value> = obj
+                .iter()
+                .filter(|(k, _)| k.as_str() != "data")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let carries_in_band_error = residual.get("error").is_some_and(|v| v.is_string());
+            if !residual.is_empty() && !carries_in_band_error {
+                let residual = Value::Object(residual);
+                let text = serde_json::to_string_pretty(&residual)
+                    .unwrap_or_else(|_| residual.to_string());
+                content.push(json!({"type": "text", "text": text}));
+            }
+        }
+
+        return json!({"content": content});
+    }
+
+    // Standard text content block
+    let text = serde_json::to_string_pretty(result).unwrap_or_else(|_| result.to_string());
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }]
+    })
+}
+
 // --- Tool dispatch ---
 
 // Handles state-free tool arms so they can be tested without a DebugServerState.
@@ -1081,7 +1202,15 @@ where
 {
     let engine = Arc::clone(engine);
     let (tx, rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
+    // Task 5357: run the engine closure on a dedicated large-stack thread (256
+    // MiB) rather than the default ~2 MiB, so a deeply-nested compile driven via
+    // the debug/MCP tools cannot overflow the stack. Unlike the previous bare
+    // `std::thread::spawn` (which panics on OS thread-creation failure),
+    // `spawn_on_large_stack` returns an `io::Result` we surface as a clean Err
+    // (consistent with the "engine thread died" string below). The returned
+    // JoinHandle is dropped/ignored exactly as the prior fire-and-forget spawn
+    // was; results still flow via the oneshot channel.
+    crate::large_stack::spawn_on_large_stack(move || {
         // with_engine_lock catches panics and recovers from mutex poisoning,
         // so f() panicking will not leave the mutex poisoned for future callers.
         // The user closure f returns Result<T, String>, so with_engine_lock
@@ -1089,7 +1218,8 @@ where
         let result =
             crate::engine_lock::with_engine_lock(&engine, f).and_then(std::convert::identity);
         let _ = tx.send(result);
-    });
+    })
+    .map_err(|e| format!("failed to spawn engine thread: {e}"))?;
     rx.await.map_err(|_| "engine thread died".to_string())?
 }
 
@@ -1518,38 +1648,10 @@ async fn handle_mcp(
             let tool_args = req.params.get("arguments").cloned().unwrap_or(json!({}));
 
             match dispatch_tool(&state, tool_name, tool_args).await {
-                Ok(result) => {
-                    // Check if this is an image tool (contains base64 image data)
-                    if is_image_tool(tool_name)
-                        && let Some(data) = result.get("data").and_then(|d| d.as_str())
-                    {
-                        // Strip data URL prefix if present
-                        let base64 = data.strip_prefix("data:image/png;base64,").unwrap_or(data);
-                        return Json(JsonRpcResponse::ok(
-                            id,
-                            json!({
-                                "content": [{
-                                    "type": "image",
-                                    "data": base64,
-                                    "mimeType": "image/png"
-                                }]
-                            }),
-                        ));
-                    }
-
-                    // Standard text content block
-                    let text = serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|_| result.to_string());
-                    JsonRpcResponse::ok(
-                        id,
-                        json!({
-                            "content": [{
-                                "type": "text",
-                                "text": text
-                            }]
-                        }),
-                    )
-                }
+                // Image and text envelopes share ONE call site: the whole
+                // result→content mapping lives in the pure `mcp_content_blocks`
+                // so it is unit-testable without a DebugServerState (#5891).
+                Ok(result) => JsonRpcResponse::ok(id, mcp_content_blocks(tool_name, &result)),
                 Err(e) => JsonRpcResponse::ok(
                     id,
                     json!({
@@ -1640,32 +1742,62 @@ async fn handle_wait_for(state: &DebugServerState, params: Value) -> Result<Valu
         .await
 }
 
+/// Default poll deadline for `wait_for_selector`, in milliseconds.
+const WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS: u64 = 5_000;
+
+/// Build the params `wait_for_selector` forwards to the frontend.
+///
+/// This is an explicit ALLOWLIST, unlike every other frontend-mediated tool —
+/// those hand their params to `query_frontend` wholesale, so a new schema
+/// property reaches the bridge with no Rust change at all. Here an un-listed key
+/// is dropped SILENTLY, which is why this is a named, separately-tested function
+/// rather than an inline block: adding a param to the schema without adding it
+/// here advertises a capability the frontend never receives.
+///
+/// `viewportId` (#5891) is copied through VERBATIM, including a wrongly-typed
+/// value. Re-validating it here would create a second rejection site that can
+/// drift from the frontend's wording; the frontend's ladder stays the only one.
+/// When the caller omitted it the key is omitted entirely rather than emitted as
+/// null, because the frontend branches on `viewportId !== undefined` — a null
+/// would read as a scoped request for a pane that can never match.
+///
+/// Pure (no `DebugServerState`) so the contract is unit-testable directly.
+fn canonical_wait_for_selector_params(params: &Value) -> Value {
+    let timeout_ms = params
+        .get("timeout_ms")
+        .and_then(|v| v.as_u64())
+        .filter(|&n| n > 0)
+        .unwrap_or(WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS);
+
+    let mut canonical = serde_json::Map::new();
+    canonical.insert("timeout_ms".to_string(), json!(timeout_ms));
+    for key in ["testId", "state", "text", "viewportId"] {
+        if let Some(v) = params.get(key) {
+            canonical.insert(key.to_string(), v.clone());
+        }
+    }
+    Value::Object(canonical)
+}
+
 async fn handle_wait_for_selector(
     state: &DebugServerState,
     params: Value,
 ) -> Result<Value, String> {
-    // Validate and canonicalize timeout_ms. Default 5000ms.
-    let timeout_ms: u64 = match params.get("timeout_ms") {
-        None => 5_000,
-        Some(v) => match v.as_u64().filter(|&n| n > 0) {
-            Some(n) => n,
-            None => return Ok(json!({"error": "timeout_ms must be a positive integer"})),
-        },
-    };
+    // Validate timeout_ms — the only rejection this handler owns. Canonicalization
+    // itself lives in the pure helper below.
+    if let Some(v) = params.get("timeout_ms") {
+        if v.as_u64().filter(|&n| n > 0).is_none() {
+            return Ok(json!({"error": "timeout_ms must be a positive integer"}));
+        }
+    }
 
-    // Build canonical params and pass through to the frontend.
-    let mut canonical_params = serde_json::Map::new();
-    canonical_params.insert("timeout_ms".to_string(), json!(timeout_ms));
-    if let Some(v) = params.get("testId") {
-        canonical_params.insert("testId".to_string(), v.clone());
-    }
-    if let Some(v) = params.get("state") {
-        canonical_params.insert("state".to_string(), v.clone());
-    }
-    if let Some(v) = params.get("text") {
-        canonical_params.insert("text".to_string(), v.clone());
-    }
-    let canonical_params = Value::Object(canonical_params);
+    let canonical_params = canonical_wait_for_selector_params(&params);
+    // Read the timeout back OUT of the canonical params rather than re-deriving it,
+    // so the Rust-side guard and the value the frontend actually polls on cannot
+    // drift apart.
+    let timeout_ms = canonical_params["timeout_ms"]
+        .as_u64()
+        .unwrap_or(WAIT_FOR_SELECTOR_DEFAULT_TIMEOUT_MS);
 
     let rust_timeout = Duration::from_millis(timeout_ms.saturating_add(5_000));
     state
@@ -2260,7 +2392,7 @@ mod tests {
         // `dispatch_by_realization`). Pin the types here. Deeper VALUE-level
         // coverage — a pruned realization's count being 0/absent vs a dispatched
         // one's > 0 — lives in the engine integration test
-        // (crates/reify-eval/tests/selective_demand_epsilon.rs) and the GUI-side
+        // (crates/reify-eval/tests/harness_selective_demand/selective_demand_epsilon.rs) and the GUI-side
         // §8 boundary rows (gui/src-tauri/src/tests/commands_tests.rs); this test
         // only guards the tool wiring + projection shape on a cold engine.
         assert!(
@@ -2430,6 +2562,17 @@ mod tests {
             "orbit_camera",
             "pan_camera",
             "zoom_camera",
+            "set_fea_channel", // #5670: viewportId disambiguates WHICH pane's FEA toolbar to drive
+            // #5891: the generic data-testid resolvers. Every one of these took the
+            // document-wide FIRST match, so with N panes mounted they silently drove
+            // or described pane 0. click_element and dom_query get their first-ever
+            // Rust schema coverage here.
+            "click_element",
+            "dom_query",
+            "focus_element",
+            "scroll",
+            "element_screenshot",
+            "wait_for_selector",
         ];
         for tool_name in tools {
             let entry = defs
@@ -2449,6 +2592,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    // #5891 step-13 RED → step-14 GREEN.
+    //
+    // Every other frontend-mediated tool passes its params through WHOLESALE via
+    // query_frontend, so a new schema property reaches the bridge with no Rust
+    // change. wait_for_selector is the one exception: it rebuilds its params by
+    // explicit ALLOWLIST, so an un-listed key is dropped SILENTLY — the schema
+    // would advertise viewportId and the frontend would never see it. That makes
+    // this the only load-bearing Rust edit in the change, so the canonicalization
+    // is extracted as a pure function and pinned here, testable without standing
+    // up a DebugServerState.
+    #[test]
+    fn canonical_wait_for_selector_params_forwards_viewport_id() {
+        // Present: copied through verbatim, alongside the pre-existing four keys.
+        let out = canonical_wait_for_selector_params(&json!({
+            "testId": "fea-mode-warp-slider",
+            "state": "visible",
+            "text": "ready",
+            "timeout_ms": 250,
+            "viewportId": "pane-1",
+        }));
+        assert_eq!(out["viewportId"].as_str(), Some("pane-1"));
+        assert_eq!(out["testId"].as_str(), Some("fea-mode-warp-slider"));
+        assert_eq!(out["state"].as_str(), Some("visible"));
+        assert_eq!(out["text"].as_str(), Some("ready"));
+        assert_eq!(out["timeout_ms"].as_u64(), Some(250));
+
+        // Absent: the KEY is omitted entirely, not emitted as null. The frontend
+        // ladder branches on `viewportId !== undefined`, so a forwarded null would
+        // read as a SCOPED request for a pane that can never match — turning every
+        // unscoped wait into a guaranteed timeout.
+        let out = canonical_wait_for_selector_params(&json!({"testId": "x"}));
+        assert!(
+            !out.as_object()
+                .expect("canonical params must be a JSON object")
+                .contains_key("viewportId"),
+            "viewportId must be absent, not null, when the caller omitted it: {out}"
+        );
+        assert_eq!(
+            out["timeout_ms"].as_u64(),
+            Some(5_000),
+            "the default timeout still applies when timeout_ms is omitted"
+        );
+
+        // Wrongly typed: forwarded VERBATIM so the frontend's ladder stays the one
+        // rejection site. Re-validating here would create a second site that can
+        // drift out of sync with the wording the frontend tests pin.
+        let out = canonical_wait_for_selector_params(&json!({"testId": "x", "viewportId": 5}));
+        assert_eq!(out["viewportId"].as_i64(), Some(5));
     }
 
     // step-9 RED → step-10 GREEN: four C1 app-chrome tools registered in tool_defs().
@@ -2992,6 +3185,178 @@ mod tests {
         // Non-image tools must not match
         assert!(!is_image_tool("health"));
         assert!(!is_image_tool(""));
+    }
+
+    // --- #5891 step-16 RED → step-17 GREEN: the MCP `tools/call` response envelope ---
+    //
+    // `element_screenshot`'s pane-guess diagnostics (`viewportId`/`matchCount`) are
+    // the entire point of #5891 for that tool, yet the image branch of `tools/call`
+    // returned EARLY with a content array holding only the image block — so they were
+    // discarded at the transport boundary. The frontend test
+    // (debugFixtureInjection.test.ts:653-658) asserts at the BRIDGE level and stays
+    // green while end-to-end is broken, and `handle_mcp` takes `State(DebugServerState)`
+    // — an Arc-of-Mutex bundle impractical to build here — which is why the envelope
+    // had ZERO coverage. The pure Value→Value mapping is therefore extracted as
+    // `mcp_content_blocks`, the same move step-14 made for
+    // `canonical_wait_for_selector_params`.
+
+    #[test]
+    fn mcp_content_blocks_appends_pane_diagnostics_beside_the_image() {
+        let out = mcp_content_blocks(
+            "element_screenshot",
+            &json!({
+                "data": "data:image/png;base64,AAA=",
+                "viewportId": "design-main",
+                "matchCount": 2,
+            }),
+        );
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            2,
+            "an unscoped multi-match crop must yield the image block PLUS a diagnostics block; got {out}"
+        );
+
+        // The image block stays at index 0. `gui/test/visual/rpc.ts:33` branch 3 is
+        // POSITIONAL — `content[0].type === "image"` — and `run.ts:202-211` feeds
+        // `value.data` straight into `Buffer.from(…, "base64")`, so prepending the
+        // text block would decode pretty-printed JSON as PNG bytes and corrupt the
+        // visual-regression harness.
+        assert_eq!(
+            content[0]["type"].as_str(),
+            Some("image"),
+            "the image block must stay at content[0] (rpc.ts:33 branch 3 is positional); got {out}"
+        );
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "AAA=", "mimeType": "image/png"}),
+            "content[0] must be exactly today's image block, data-URL prefix stripped"
+        );
+
+        // The residual EXCLUDES `data`, so the base64 blob is not duplicated into
+        // the text block.
+        assert_eq!(
+            content[1]["type"].as_str(),
+            Some("text"),
+            "the diagnostics block must be a text block; got {out}"
+        );
+        let residual: Value = serde_json::from_str(
+            content[1]["text"]
+                .as_str()
+                .expect("the diagnostics block must carry a `text` string"),
+        )
+        .expect("the diagnostics block must carry valid JSON");
+        assert_eq!(
+            residual,
+            json!({"viewportId": "design-main", "matchCount": 2}),
+            "the residual must be the result MINUS `data` — never re-embedding the base64 blob"
+        );
+    }
+
+    #[test]
+    fn mcp_content_blocks_leaves_data_only_image_results_byte_identical() {
+        // element_screenshot: every SCOPED or single-match call returns `{data}` and
+        // nothing else, so its envelope must stay bit-for-bit today's single block.
+        // screenshot/screenshot_window: neither ever carries a non-`data` success key
+        // (bridge.ts:689,702), so the new gate must never perturb them — that is what
+        // keeps gui/test/visual/rpcEnvelope.test.ts:320-326's image-only stub accurate.
+        for tool in ["element_screenshot", "screenshot", "screenshot_window"] {
+            let out = mcp_content_blocks(tool, &json!({"data": "data:image/png;base64,BBB="}));
+            let content = out["content"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool}: the envelope must carry a `content` array"));
+            assert_eq!(
+                content.len(),
+                1,
+                "{tool}: a `data`-only result must yield exactly one block; got {out}"
+            );
+            assert_eq!(
+                content[0],
+                json!({"type": "image", "data": "BBB=", "mimeType": "image/png"}),
+                "{tool}: the lone block must be exactly today's image block"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_content_blocks_falls_through_to_one_full_text_block_without_image_data() {
+        // A non-image tool: unchanged single pretty-printed text block over the FULL
+        // result — click_element's own pane diagnostics ride inside it, not beside it.
+        let result = json!({"ok": true, "viewportId": "pane-1", "matchCount": 2});
+        let out = mcp_content_blocks("click_element", &result);
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "a non-image tool must yield one block; got {out}"
+        );
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        let parsed: Value = serde_json::from_str(
+            content[0]["text"]
+                .as_str()
+                .expect("the block must carry a `text` string"),
+        )
+        .expect("the text block must carry valid JSON");
+        assert_eq!(parsed, result, "the text block must carry the FULL result");
+
+        // An image tool whose result has NO string `data` — i.e. every
+        // element_screenshot ERROR shape. The error must reach the caller intact
+        // rather than be swallowed by an image branch with nothing to encode.
+        let err = json!({"error": "element has zero area"});
+        let out = mcp_content_blocks("element_screenshot", &err);
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "an image tool with no string `data` must fall through to one text block; got {out}"
+        );
+        assert_eq!(content[0]["type"].as_str(), Some("text"));
+        let parsed: Value = serde_json::from_str(
+            content[0]["text"]
+                .as_str()
+                .expect("the block must carry a `text` string"),
+        )
+        .expect("the text block must carry valid JSON");
+        assert_eq!(
+            parsed, err,
+            "the error shape must survive the transport verbatim"
+        );
+    }
+
+    #[test]
+    fn mcp_content_blocks_suppresses_a_residual_carrying_an_in_band_error() {
+        // CROSS-LANGUAGE INVARIANT (gui/test/visual/rpcEnvelope.mjs:54-58): no success
+        // payload may carry a top-level string `error`, because `isInBandError` (:81-83)
+        // reads one as a tool FAILURE. Emitting such a residual beside a successful
+        // image would make every driver report a working screenshot as broken —
+        // strictly worse than omitting a key no handler produces today.
+        let out = mcp_content_blocks(
+            "element_screenshot",
+            &json!({
+                "data": "data:image/png;base64,CCC=",
+                "error": "stale frame",
+                "matchCount": 2,
+            }),
+        );
+        let content = out["content"]
+            .as_array()
+            .expect("the envelope must carry a `content` array");
+        assert_eq!(
+            content.len(),
+            1,
+            "a residual carrying a string `error` must NOT be emitted beside the image; got {out}"
+        );
+        assert_eq!(
+            content[0],
+            json!({"type": "image", "data": "CCC=", "mimeType": "image/png"}),
+            "the image block must still ship, alone"
+        );
     }
 
     // --- F1: inject_diagnostics + reset_app_state ---

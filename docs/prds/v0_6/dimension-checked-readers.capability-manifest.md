@@ -69,7 +69,7 @@ before-image in a header comment so the RED is re-checkable at dispatch (D4).
 ## The four headline defects, measured end to end
 
 1. **1e12× spring rate.** `Material(youngs_modulus: 200mm)` → `prb_cantilever_beam` gives
-   `1.3802083333333336e-12 m²·kg·s⁻²·rad⁻¹`; the `200GPa` twin gives `1.3802083333333335`.
+   `1.3802083333333336e-12 m²·kg·s⁻²·rad⁻²`; the `200GPa` twin gives `1.3802083333333335`.
    Exit 0, zero Error diagnostics. (β)
 2. **The load that vanishes.** In an identical cantilever scene, `PointLoad(force: 1000.0)`
    drives a real solve (`max_von_mises 5139325.408614099 Pa`, 719 iterations) while the

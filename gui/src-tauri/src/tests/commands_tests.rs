@@ -1719,6 +1719,169 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
+// ── Task 5357 step-5: run_on_large_stack composition guard ───────────────────
+
+/// Sorted key projection of a keyed `GuiState` collection.
+fn sorted_keys<T>(items: &[T], key: impl Fn(&T) -> &str) -> Vec<String> {
+    let mut keys: Vec<String> = items.iter().map(|i| key(i).to_owned()).collect();
+    keys.sort();
+    keys
+}
+
+/// Assert that two `GuiState`s agree on everything a large-stack relocation
+/// could plausibly change: the identity (and hence cardinality) of every keyed
+/// collection, plus both diagnostics streams.
+///
+/// Deliberately NOT a whole-`GuiState` `assert_eq!`. The two states here come
+/// from two independently constructed `EngineSession`s, so a full comparison
+/// would also assert run-to-run determinism of every float, every vertex buffer
+/// and every collection's ORDER — none of which is the property under test. If
+/// any `GuiState` field ever became ordering-dependent (e.g. built from a
+/// `HashMap`/`HashSet` walk) or gained a timing/counter field, a full comparison
+/// would go flaky for a reason with nothing to do with `large_stack`, and the
+/// failure would point at the wrong subsystem. These order-insensitive
+/// projections are what actually distinguish "ran on the large-stack thread"
+/// from "ran inline".
+fn assert_same_salient_state(
+    wrapped: &crate::types::GuiState,
+    direct: &crate::types::GuiState,
+    what: &str,
+) {
+    assert_eq!(
+        sorted_keys(&wrapped.files, |f| &f.path),
+        sorted_keys(&direct.files, |f| &f.path),
+        "{what}: the set of loaded file paths must not depend on which thread the compile ran on"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped.meshes, |m| &m.entity_path),
+        sorted_keys(&direct.meshes, |m| &m.entity_path),
+        "{what}: the set of realized mesh entity_paths must be identical"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped.values, |v| &v.cell_id),
+        sorted_keys(&direct.values, |v| &v.cell_id),
+        "{what}: the set of value cell_ids must be identical"
+    );
+    assert_eq!(
+        sorted_keys(&wrapped.constraints, |c| &c.node_id),
+        sorted_keys(&direct.constraints, |c| &c.node_id),
+        "{what}: the set of constraint node_ids must be identical"
+    );
+    assert_eq!(
+        wrapped.compile_diagnostics.len(),
+        direct.compile_diagnostics.len(),
+        "{what}: compile diagnostics count must be identical; wrapped={:?} direct={:?}",
+        wrapped.compile_diagnostics,
+        direct.compile_diagnostics
+    );
+    assert_eq!(
+        wrapped.tessellation_diagnostics.len(),
+        direct.tessellation_diagnostics.len(),
+        "{what}: tessellation diagnostics count must be identical; wrapped={:?} direct={:?}",
+        wrapped.tessellation_diagnostics,
+        direct.tessellation_diagnostics
+    );
+}
+
+/// `open_file_engine_impl` invoked THROUGH `run_on_large_stack` returns the same
+/// `Ok(GuiState)` as a direct (un-wrapped) call.
+///
+/// This proves the large-stack helper composes safely with the real engine /
+/// `with_engine_lock` / compile path when the compile runs on a plain `std`
+/// thread (no tokio-context `blocking_send` issue; identical result). It is the
+/// headless proxy for the un-headless-testable `open_file_engine` / `update_source`
+/// Tauri command wiring (step-6): those commands cannot be built headlessly, so
+/// this exercises the exact `run_on_large_stack(|| open_file_engine_impl(..))`
+/// composition they perform.
+#[test]
+fn open_file_engine_impl_runs_correctly_through_large_stack() {
+    use crate::commands::open_file_engine_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bracket.ri");
+    std::fs::write(&file, bracket_source()).unwrap();
+    // Absolute path → canonicalization needs no cwd change (unlike the relative
+    // sibling test above), so no `cwd_lock` is required.
+    let path = file.to_str().unwrap();
+
+    // Direct (un-wrapped) call on a fresh engine.
+    let engine_direct = Mutex::new(EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    ));
+    let direct = open_file_engine_impl(&engine_direct, path)
+        .expect("direct open_file_engine_impl should succeed");
+
+    // The same call routed through the large-stack helper on an identically
+    // initialized fresh engine. The scoped closure borrows `&engine_wrapped` /
+    // `path` directly — no `Arc` clone, no `'static` bound.
+    let engine_wrapped = Mutex::new(EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    ));
+    let wrapped =
+        crate::large_stack::run_on_large_stack(|| open_file_engine_impl(&engine_wrapped, path))
+            .expect("open_file_engine_impl through run_on_large_stack should succeed");
+
+    // Concrete expected shape (independent of the direct half).
+    assert!(
+        !wrapped.files.is_empty(),
+        "GuiState.files should be non-empty after loading a file on the large stack"
+    );
+    assert!(
+        !wrapped.meshes.is_empty(),
+        "GuiState.meshes should be non-empty after a clean compile on the large stack"
+    );
+    assert!(
+        wrapped.compile_diagnostics.is_empty(),
+        "a clean bracket_source compile on the large stack must emit no compile diagnostics; \
+         got: {:?}",
+        wrapped.compile_diagnostics
+    );
+
+    assert_same_salient_state(&wrapped, &direct, "open_file_engine_impl");
+}
+
+/// `reload_for_watch_impl` invoked THROUGH `run_on_large_stack` returns the same
+/// salient state as a direct (un-wrapped) call.
+///
+/// The sibling of the guard above, for the OTHER half of the step-6 wiring.
+/// TWO distinct call sites perform exactly this composition, and both are
+/// un-headless-testable (they take `tauri::AppHandle` / `tauri::State`):
+/// the frontend-invoked `main.rs::update_source` command, and
+/// `main.rs::create_watcher`'s `FileEvent::Changed` callback — the latter being
+/// the recompile reached on EVERY watch-triggered on-disk reload, i.e. the
+/// highest-frequency of the wrapped compile paths.
+#[test]
+fn reload_for_watch_impl_runs_correctly_through_large_stack() {
+    use crate::commands::reload_for_watch_impl;
+
+    // Direct (un-wrapped) call on a freshly loaded engine.
+    let engine_direct = make_test_engine_for_commands();
+    let direct = reload_for_watch_impl(&engine_direct, "bracket.ri", bracket_source())
+        .expect("direct reload_for_watch_impl should succeed");
+
+    // The same call routed through the large-stack helper on an identically
+    // initialized engine. The scoped closure borrows `&engine_wrapped` directly.
+    let engine_wrapped = make_test_engine_for_commands();
+    let wrapped = crate::large_stack::run_on_large_stack(|| {
+        reload_for_watch_impl(&engine_wrapped, "bracket.ri", bracket_source())
+    })
+    .expect("reload_for_watch_impl through run_on_large_stack should succeed");
+
+    assert!(
+        !wrapped.meshes.is_empty(),
+        "GuiState.meshes should be non-empty after a successful reload on the large stack"
+    );
+    assert!(
+        wrapped.compile_diagnostics.is_empty(),
+        "a successful reload on the large stack must emit no compile diagnostics; got: {:?}",
+        wrapped.compile_diagnostics
+    );
+
+    assert_same_salient_state(&wrapped, &direct, "reload_for_watch_impl");
+}
+
 // ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
 
 /// `cancel_solve_impl` calls `.cancel()` on the published handle, clears the

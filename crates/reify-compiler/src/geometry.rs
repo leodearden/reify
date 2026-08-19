@@ -1010,9 +1010,9 @@ fn rounded_corner_dims(
 /// `zone_annulus`/`zone_profile` multi-op compose + `step_offset +
 /// sub_ops.len()` index-tracking idiom. The final `Union` (the last element
 /// of the returned `Vec`) is the realization root. `dz` is cloned across all
-/// 4 corners by the caller: a dimensioned `-(height/2)` for `rounded_box`'s
-/// solid cylinders, a dimensionless `Literal(Real(0.0))` for
-/// `rounded_rect`'s planar circles.
+/// 4 corners by the caller, and is LENGTH-dimensioned from both: a
+/// `-(height/2)` product for `rounded_box`'s solid cylinders, a
+/// `Literal(Scalar{LENGTH, 0.0})` for `rounded_rect`'s planar circles.
 #[allow(clippy::too_many_arguments)]
 fn emit_rounded_union_compose(
     mut sub_ops: Vec<CompiledGeometryOp>,
@@ -1496,11 +1496,25 @@ fn compile_geometry_call_inner(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `height.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real`
+                // takes the Scalar×Real arm and preserves LENGTH. Retyping the factor
+                // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — numerically silent through `Value::as_f64()`, but
+                // rejected by the incoming eval-layer length gate. Pinned by
+                // crates/reify-compiler/tests/harness_geometry_solver/geometry_centered_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero =
-                CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dx = dy = 0, LENGTH-dimensioned in anticipation of the eval-layer length
+            // gate (docs/prds/v0_6/units-length-gate-completion.md §8 α: "without it,
+            // cylinder_centered(5mm, 20mm) starts failing the moment translate dx/dy is
+            // gated"). That gate matches on the runtime Value's DimensionVector, so a
+            // bare Real(0.0) will not be accepted once it reaches these slots. TODAY
+            // Translate still reads dx/dy/dz via `Value::as_f64()`, which accepts Real
+            // and Scalar alike — so this is behaviour-preserving, not a behaviour change.
+            let zero = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -2060,10 +2074,16 @@ fn compile_geometry_call_inner(
             let ax = it.next().unwrap();
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
-            // Inject literal 2π for the angle
+            // Inject literal 2π (radians) for the angle — ANGLE-dimensioned in
+            // anticipation of the eval-layer angle gate
+            // (docs/prds/v0_6/angle-units-surface-convergence.md, which owns all OTHER
+            // angle gating). TODAY `sweep_revolve` reads this slot via
+            // `Value::as_f64()`, which accepts Real and Scalar alike, so the retype is
+            // behaviour-preserving. `Value::angle` takes radians and the SI angle base
+            // unit IS the radian, so si_value == TAU exactly.
             let tau_expr = CompiledExpr::literal(
-                Value::Real(std::f64::consts::TAU),
-                reify_core::Type::dimensionless_scalar(),
+                Value::angle(std::f64::consts::TAU),
+                reify_core::Type::angle(),
             );
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
@@ -2356,9 +2376,21 @@ fn compile_geometry_call_inner(
                 w.result_type.clone(),
             );
             // minus_offset = -w/2 = w * (-0.5)
+            // NOTE: the units-length PRD
+            // (docs/prds/v0_6/units-length-gate-completion.md §8 α / §4 M1 / §2 anchor
+            // table) attributes this `-0.5` to `rounded_box`'s corner dz. It is
+            // `zone_profile`'s `minus_offset`, and it must NOT be retyped — see the
+            // invariant below.
             let minus_offset = CompiledExpr::binop(
                 BinOp::Mul,
                 w.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `w.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real` takes
+                // the Scalar×Real arm and preserves LENGTH. Retyping the factor to
+                // LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — rejected by the incoming eval-layer length gate.
+                // Pinned by crates/reify-compiler/tests/rounded_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 w.result_type.clone(),
             );
@@ -2436,6 +2468,13 @@ fn compile_geometry_call_inner(
             let dz = CompiledExpr::binop(
                 BinOp::Mul,
                 height.clone(),
+                // INVARIANT: this multiplier must stay a bare dimensionless
+                // `Literal(Real(..))`. The enclosing binop already carries
+                // `height.result_type` (LENGTH), and at eval `Scalar{LENGTH} × Real`
+                // takes the Scalar×Real arm and preserves LENGTH. Retyping the factor
+                // to LENGTH would switch eval onto the Scalar×Scalar arm and yield
+                // `Scalar{AREA}` — rejected by the incoming eval-layer length gate.
+                // Pinned by crates/reify-compiler/tests/rounded_primitives_tests.rs.
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
@@ -2521,8 +2560,13 @@ fn compile_geometry_call_inner(
             }
 
             let dims = rounded_corner_dims(&width, &depth, &corner_r);
-            // dz (all 4 corner circles) = 0 — planar, no z-offset.
-            let dz = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            // dz (all 4 corner circles) = 0 — planar, no z-offset. LENGTH-dimensioned
+            // even though it is zero, in anticipation of the eval-layer length gate
+            // (docs/prds/v0_6/units-length-gate-completion.md §8 α), which matches on
+            // the runtime Value's DimensionVector rather than on `result_type`. TODAY
+            // Translate reads dz via `Value::as_f64()`, which accepts Real and Scalar
+            // alike — so this is behaviour-preserving, not a behaviour change.
+            let dz = CompiledExpr::literal(Value::length(0.0), reify_core::Type::length());
 
             // Rect A: rectangle(width, depth-2r)
             let body_a = CompiledGeometryOp::Profile {

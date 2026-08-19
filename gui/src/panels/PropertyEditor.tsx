@@ -2,7 +2,15 @@ import { type Component, createSignal, createMemo, createEffect, For, Show } fro
 import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
-import { convertToUnit, formatDisplayNumber, ladderForDimension } from '../stores/unitLadder';
+import {
+  buildQuantityRe,
+  convertToUnit,
+  formatDisplayNumber,
+  ladderForDimension,
+  normalizeUnitLabel,
+  NUMBER_RE,
+  quantityUnitAlphabet,
+} from '../stores/unitLadder';
 import { loadAllUnitPreferences, pruneUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
 
 /**
@@ -57,11 +65,12 @@ function groupByEntity(values: Record<string, ValueData>): Record<string, ValueD
   return groups;
 }
 
-// No whitespace allowed between number and unit — matches .ri grammar (token.immediate).
-// The backend parse_value_string is more lenient (accepts "5 mm") but the frontend
-// intentionally enforces the stricter grammar rule.
-const QUANTITY_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?(mm|cm|deg|rad|m)$/;
-const NUM_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+// Both halves of the accepted input grammar — the bare number (`NUMBER_RE`)
+// and the number-plus-unit quantity (`buildQuantityRe`) — are defined ONCE, in
+// `../stores/unitLadder`, and share their numeric form. No whitespace is
+// allowed between number and unit, matching the .ri grammar (token.immediate);
+// the backend parse_value_string is more lenient (accepts "5 mm") but the
+// frontend intentionally enforces the stricter rule.
 
 export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [filterText, setFilterText] = createSignal('');
@@ -101,6 +110,48 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const persistedUnits = loadAllUnitPreferences();
 
   /**
+   * The typed-quantity gate (task #6028), resolved PER CELL: the accepted unit
+   * alphabet is the static floor unioned with just the ladder the cell's own
+   * dimension advertises — so a Length cell takes the Length rungs and refuses
+   * a Density literal, and a Volume cell the reverse. Before this it was a
+   * hard-coded five-unit alternation that rejected every unit the backend
+   * supports beyond those five; widening it to the union over ALL dimensions
+   * would instead have let any cell accept any other dimension's literal, which
+   * the backend then refuses on the worst-feedback path (see below).
+   *
+   * Cells with no dimension, and dimensions the ladder map does not cover,
+   * fall back to the union — the non-narrowing choice, and byte-identical to
+   * the pre-#6028 behaviour whenever the ladders are absent.
+   *
+   * Memoized so the alphabets and their regexes are rebuilt only when the
+   * ladder map changes; the returned resolver caches per dimension, so a panel
+   * of N cells over K dimensions builds at most K+1 regexes.
+   *
+   * ACCEPTED DEGRADATION: this gate still admits more than the commit path can
+   * parse, because the ladders are the curated DISPLAY table while the commit
+   * path has its own hard-coded suffix table. Per-cell scoping shrinks that
+   * gap; it does not close it. The full account — cause, user-visible shape,
+   * why it is accepted, and who owns the fix — is on `quantityUnitAlphabet` in
+   * `../stores/unitLadder`, and it is pinned end-to-end by the `App.test.tsx`
+   * block "ladder-derived units the backend cannot parse".
+   */
+  const quantityReFor = createMemo(() => {
+    const ladders = props.unitLadders;
+    const unionRe = buildQuantityRe(quantityUnitAlphabet(ladders));
+    const byDimension = new Map<string, RegExp>();
+    return (dimension: string | undefined): RegExp => {
+      if (dimension === undefined) return unionRe;
+      const cached = byDimension.get(dimension);
+      if (cached !== undefined) return cached;
+      const ladder = ladderForDimension(ladders ?? {}, dimension);
+      if (ladder === undefined) return unionRe;
+      const re = buildQuantityRe(quantityUnitAlphabet({ [dimension]: ladder }));
+      byDimension.set(dimension, re);
+      return re;
+    };
+  });
+
+  /**
    * The selectable unit ladder for a cell, or `undefined` when the cell has
    * no dimension/si_value, its dimension has no ladder (<2 options), or the
    * cell is demand-pruned and showing a prior good value — in which case the
@@ -123,10 +174,45 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     return ladder;
   }
 
-  /** The currently chosen unit option for a cell: in-session pick, else persisted, else the ladder default. */
+  /**
+   * The currently chosen unit option for a cell: in-session pick, else
+   * persisted, else the ladder default.
+   *
+   * Resolution is exact-match first, then a match on the ASCII normal form of
+   * BOTH sides (task #6028). Without that second attempt, task #5788's relabel
+   * of the curated tables (`m³` -> `m^3`) silently invalidates every stored
+   * preference written in the old spelling: the lookup misses and the cell
+   * snaps back to the default rung, changing the displayed magnitude with no
+   * user action and no notice.
+   *
+   * WHY at COMPARISON time rather than as a one-way rewrite of the persisted
+   * blob (the obvious "migration"): a stored-form rewrite is ORDER-DEPENDENT.
+   * Landing before #5788 — as this does — rewriting a stored `m³` to `m^3`
+   * would stop it matching the still-superscript live ladder, inflicting the
+   * exact harm being removed, only earlier. Normalizing both sides at
+   * comparison time resolves in both eras and in both directions, so #6028 and
+   * #5788 may land in either order. `gui/src/stores/unitPreferences.ts` is
+   * therefore deliberately untouched: localStorage keeps the verbatim label.
+   *
+   * A one-time user-facing notice was also considered and rejected:
+   * disproportionate UI for a pure relabel that preserves rung identity, and
+   * moot in any case — with this fix there is no reset to announce.
+   *
+   * Note the fallback is a NORMALIZED equality, not a fuzzy one: a genuinely
+   * unknown label still falls through to the `is_default` rung as before.
+   */
   function chosenOptionFor(val: ValueData, ladder: UnitOption[]): UnitOption {
     const label = selectedUnits()[val.cell_id] ?? persistedUnits[val.cell_id] ?? undefined;
-    const found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
+    let found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
+    if (found === undefined && typeof label === 'string') {
+      // Both sides are typed `string` but neither is guaranteed at runtime:
+      // `label` is parsed out of localStorage and `u.label` arrives over IPC.
+      // The exact-equality attempt above tolerates a non-string on either side
+      // (it just misses); the normalized attempt would throw, so it is guarded
+      // rather than trading a silent miss for a render-time crash.
+      const normalized = normalizeUnitLabel(label);
+      found = ladder.find((u) => typeof u.label === 'string' && normalizeUnitLabel(u.label) === normalized);
+    }
     return found ?? ladder.find((u) => u.is_default) ?? ladder[0];
   }
 
@@ -286,23 +372,27 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setEditValue(input.value);
   }
 
-  function isValidValue(value: string): boolean {
+  /**
+   * Whether `value` is an acceptable literal for the cell `cellId`. The cell is
+   * load-bearing, not decoration: the accepted unit alphabet is scoped to that
+   * cell's dimension (see `quantityReFor`).
+   */
+  function isValidValue(value: string, cellId: string): boolean {
     if (value === '') return false;
-    // NUM_RE gates non-decimal literals; isFinite catches overflow (e.g. 1e999 → Infinity)
-    if (NUM_RE.test(value) && Number.isFinite(Number(value))) return true;
-    if (QUANTITY_RE.test(value)) {
-      // Strip the unit suffix and check the numeric part for overflow.
-      // Unit alternation must stay in sync with QUANTITY_RE (longest-match-first: mm before m).
-      const numPart = value.replace(/(mm|cm|deg|rad|m)$/, '');
-      return Number.isFinite(Number(numPart));
-    }
+    // NUMBER_RE gates bare numeric literals; isFinite catches overflow (e.g. 1e999 → Infinity)
+    if (NUMBER_RE.test(value) && Number.isFinite(Number(value))) return true;
+    // Group 1 is the whole signed numeric literal, so the overflow check reads
+    // it directly — no second regex re-declaring the unit alternation to strip
+    // the suffix, and so nothing left to keep in sync.
+    const m = quantityReFor()(props.values[cellId]?.dimension).exec(value);
+    if (m) return Number.isFinite(Number(m[1]));
     return false;
   }
 
   /** Trim, validate, submit. Returns true on success. */
   function submitValue(cellId: string, rawValue: string, input: HTMLInputElement): boolean {
     const trimmed = rawValue.trim();
-    if (!isValidValue(trimmed)) {
+    if (!isValidValue(trimmed, cellId)) {
       return false;
     }
     input.removeAttribute('data-invalid');

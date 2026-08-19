@@ -20,6 +20,7 @@
 
 #![cfg(has_occt)]
 
+use crate::common::{self, Xyz};
 use reify_core::dimension::DimensionVector;
 use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
@@ -189,17 +190,9 @@ fn box_planar_top_face_projects_to_plane() {
         .iter()
         .copied()
         .find(|id| {
-            let c = kernel
-                .query(&GeometryQuery::Centroid(*id))
-                .expect("Centroid query should succeed");
-            // Centroid is a JSON-encoded {"x":..,"y":..,"z":..} string.
-            if let Value::String(s) = c {
-                let parsed: serde_json::Value =
-                    serde_json::from_str(&s).expect("centroid JSON parses");
-                (parsed["z"].as_f64().expect("centroid z") - half).abs() < 1e-6
-            } else {
-                false
-            }
+            let Xyz { z, .. } =
+                common::xyz_of(kernel.query(&GeometryQuery::Centroid(*id)), "Centroid");
+            (z - half).abs() < 1e-6
         })
         .expect("box must have a +Z top face at z = +side/2");
 

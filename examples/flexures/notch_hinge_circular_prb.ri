@@ -9,7 +9,7 @@
 // PRD ref:  docs/prds/v0_3/compliant-joints.md §5.2, §10.1
 //
 // Geometry (§10.1 row 2): r=1mm notch, t=0.2mm web, b=5mm width, AISI-1045.
-//   k_θ = 2 · 205 GPa · 5mm · (0.2mm)^2.5 / (9π · √(1mm))  ≈ 1.297 N·m/rad
+//   k_θ = 2 · 205 GPa · 5mm · (0.2mm)^2.5 / (9π · √(1mm))  ≈ 1.297 N·m/rad²
 //   θ_yield = 310 MPa · 3π · (2·1mm + 0.2mm) / (4 · 205 GPa · 0.2mm)
 //           ≈ 0.0392 rad ≈ 2.25°  (<5° PRB cap → yield-capped range)
 //

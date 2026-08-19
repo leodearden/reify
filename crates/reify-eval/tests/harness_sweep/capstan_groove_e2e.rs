@@ -1,32 +1,74 @@
-//! End-to-end acceptance gate for the printer_v01 capstan's helical rope groove
+//! End-to-end acceptance gate for the printer_v01 capstan's helical rope seat
 //! (task #5454 — thread-hole δ, dogfood leaf 1; PRD
-//! `docs/prds/v0_6/thread-hole-features.md` §6 row 11).
+//! `docs/prds/v0_6/thread-hole-features.md` §6 row 11, re-spec'd by #5580).
 //!
 //! Compiles the REAL design file `prj/printer_v01/dev_capstan.ri` through the
 //! full source → parse → compile(stdlib+checked) → Engine(real
-//! `OcctKernelHandle`) → tessellate pipeline and pins the stock-removal signal:
-//! the volume the helical channel takes out of the drum blank must match the
-//! Pappus prediction for a circular section of radius `groove_r` swept along a
-//! helix, `ΔV ≈ π·groove_r²·L_helix` with
-//! `L_helix = sqrt((2π·pitch_r·n)² + groove_len²)` and `n = groove_len / lead`.
+//! `OcctKernelHandle`) → tessellate pipeline and pins two properties of the
+//! rope seat cut into the drum.
 //!
-//! That prediction is checked at two very different resolutions, because the
-//! ideal swept tube is not quite what gets removed — the sliver of the cutter
-//! section that emerges through the land surface (the groove mouth) was never
-//! inside the blank to begin with:
-//!   1. `PAPPUS_REL_TOL` — the ideal tube within ±15 %, PRD §6 row 11 as
-//!      literally written. Coarse; this is the conformance statement.
-//!   2. `SEATED_SECTION_REL_TOL` — the same prediction with the analytic
-//!      circular-segment mouth loss subtracted, within ±2 %. This is the
-//!      regression-sensitive gate, and it models the geometry it measures
-//!      rather than leaning on a design constraint to keep the coarse
-//!      prediction valid.
+//! **1. The seat admits the rope (`capstan_seat_admits_the_rope_radially`).**
+//! The seat is a HALF-ROUND: the swept section's arc centre sits ON the land
+//! surface (`land_r == pitch_r`), so the mouth it opens is the section's full
+//! width `2·groove_r == rope_dia` and the rope can be laid in radially. That
+//! is the only depth that works. For a circular section of radius `groove_r`
+//! centred at `pitch_r` under a land at `land_r`, the mouth chord is
+//! `2·sqrt(groove_r² − (land_r − pitch_r)²)`, which is *maximised* at exactly
+//! `land_r == pitch_r`: a shallower land closes the mouth over the rope, and a
+//! deeper one closes it back under. A radially-admitting mouth is what
+//! `docs/projects/printer_v01.md` requires — its service model is "Hours
+//! (re-wind capstans)" and its departure tangent migrates axially across the
+//! band every revolution, so the rope has to leave the seat radially at an
+//! arbitrary mid-band position. #5580 retired the pre-existing `groove_mouth`
+//! captive-channel knob for exactly that reason. Re-introducing a radial
+//! cut-back of any depth necessarily moves `land_r` off `pitch_r`, which
+//! collapses that chord below `rope_dia` — so the mouth assertion catches it on
+//! mechanical grounds, whatever the parameter that produced it is called.
+//!
+//! **2. The seat removes the right stock
+//! (`capstan_seat_volume_delta_matches_half_pi_r2_l`).** The volume the helical
+//! seat takes out of the drum blank is checked at two very different
+//! resolutions:
+//!   1. `PAPPUS_REL_TOL` — the half-round swept solid
+//!      `ΔV ≈ 0.5·π·groove_r²·L_helix`, with
+//!      `L_helix = sqrt((2π·pitch_r·n)² + groove_len²)` and
+//!      `n = groove_len / lead`, within ±15 %. That is PRD §6 row 11 as
+//!      literally written (post-#5580). Coarse; this is the conformance
+//!      statement, and it is a band rather than an equality because of the
+//!      centroid effect below.
+//!   2. `HALF_ROUND_REL_TOL` — a centroid-Pappus + end-lens closed form within
+//!      ±3 %. This is the regression-sensitive gate. Two corrections make it
+//!      sharp, and they pull in OPPOSITE directions:
+//!        * the seated half-disc's area centroid lies `4·groove_r/(3π)`
+//!          radially INBOARD of the spine, so it sweeps a shorter helix than
+//!          the spine does — worth ≈ −5.3 % at the file's defaults;
+//!        * the swept tube's two end caps are flat discs normal to the helix
+//!          tangent, so a lens of it pokes past each end of the land cylinder
+//!          — into the retaining flanges, which are solid stock all the way
+//!          out to `flange_r`. The tube's radially OUTER half is therefore
+//!          removed there too, even though the band term (seated half only)
+//!          never counts it, so that outer half-lens has to be added back at
+//!          each end. Over BOTH ends that is exactly ONE full-disc lens,
+//!          ≈ +1.5 %.
+//!
+//!      Net ≈ −3.9 %: that is what band (1) has to swallow, and the entire
+//!      reason it cannot be an equality.
+//!
+//! Why band (2) is ±3 % and not the ±2 % this module carried before #5580: the
+//! old budget was written for a correction term worth ~2 % of the swept
+//! section (the emergent mouth sliver of a submerged channel). Under a
+//! half-round seat the correction is 50 % of the section, so that budget no
+//! longer covers it and carrying it over would be a guessed threshold. A
+//! pessimistic a-priori budget for the enlarged terms is ≲0.5 %, and the
+//! residual this seat actually leaves, measured, is 0.0202 % — so ±3 % is
+//! ≈ 148× the real residual while still catching a modelling regression (a
+//! `groove_r` off by 7 % moves ΔV by ~14 %). See [`HALF_ROUND_REL_TOL`].
 //!
 //! **No geometry number is hard-coded here.** Every input to the expected value
-//! is read back out of the file's own evaluated cells (`pitch_r`, `groove_r`,
-//! `groove_mouth`, `lead`, `groove_len`), so a parameter edit moves the gate
-//! with the design instead of going stale. That is also why the file exposes
-//! `blank_volume` / `body_volume` as `volume()` cells (a legitimate
+//! is read back out of the file's own evaluated cells (`rope_dia`, `pitch_r`,
+//! `groove_r`, `land_r`, `lead`, `groove_len`), so a parameter edit moves the
+//! gate with the design instead of going stale. That is also why the file
+//! exposes `blank_volume` / `body_volume` as `volume()` cells (a legitimate
 //! stock-removal metric on a machined part) rather than having the test
 //! recompute the blank's closed form and thereby hard-code the blank tree's
 //! shape.
@@ -62,33 +104,84 @@ const DEV_CAPSTAN: &str = concat!(
 /// The design entity whose cells and constraints this module gates.
 const CAPSTAN_ENTITY: &str = "Capstan";
 
-/// Relative tolerance on `ΔV` against the IDEAL swept tube `π·groove_r²·L`.
+/// Relative tolerance on `ΔV` against the ideal half-round swept solid
+/// `0.5·π·groove_r²·L`, the spine-radius arc length.
 ///
-/// This is PRD §6 row 11's conformance band verbatim. It is deliberately coarse:
-/// the ideal tube over-predicts by whatever the groove mouth cuts off, so the
-/// band has to swallow that (2.17 % at the file's defaults). Regression
-/// sensitivity comes from [`SEATED_SECTION_REL_TOL`] instead — do NOT tighten
-/// this one to compensate, it would stop meaning "row 11".
+/// This is PRD §6 row 11's conformance band verbatim (as re-spec'd by #5580 —
+/// the reference value moved from `π·r²·L` to `0.5·π·r²·L`; the band width did
+/// not). It is deliberately coarse: at the file's defaults the ideal
+/// over-predicts the true seat by 3.87 % (measured), and the band has to
+/// swallow that.
+/// That 3.9 % is a NET of two opposite terms, not a single effect — sweeping
+/// the section at the spine radius rather than at the seated half's area
+/// centroid over-predicts by ≈ 5.3 %, while the end lenses that emerge into
+/// the flanges are under-counted by ≈ 1.5 %. Regression sensitivity
+/// comes from [`HALF_ROUND_REL_TOL`] instead — do NOT tighten this one to
+/// compensate, it would stop meaning "row 11".
 const PAPPUS_REL_TOL: f64 = 0.15;
 
-/// Relative tolerance on `ΔV` against the mouth-corrected prediction
-/// `(π·groove_r² − A_segment)·L`.
+/// Relative tolerance on `ΔV` against the centroid-Pappus + end-lens closed
+/// form for a half-round seat (see the module docs for the derivation).
 ///
-/// With the emergent groove-mouth segment subtracted analytically, the residual
-/// is only the second-order terms the closed form ignores — land-surface
-/// curvature across the ~2.6 mm mouth chord (vs. the flat-chord segment model)
-/// and the ~2.7° helix obliquity. Measured on the file's defaults: −0.30 %, so
-/// 2 % leaves ~6× headroom while still catching the failure modes this module
-/// claims to catch (a groove_r off by 7 % moves ΔV by ~14 %; a noticeably
-/// shallower seat moves it further).
-const SEATED_SECTION_REL_TOL: f64 = 0.02;
+/// With the centroid shift and the end lenses both modelled, the residual is
+/// only the second-order terms the closed form ignores — land-surface
+/// curvature within the section plane (~0.006 %) and tessellation/`volume()`
+/// resolution. **Measured on THIS geometry** (the half-round seat this constant
+/// actually gates, at the file's defaults): the kernel reports ΔV =
+/// 2.589140e-5 m³ against a prediction of 2.589662e-5 m³, i.e. the closed form
+/// runs high by 0.0202 %. So 3 % is ≈ 148× the residual it has to cover — and
+/// ≈ 6× even the deliberately pessimistic ≲0.5 % a-priori budget for the
+/// enlarged correction terms, which is what sized it before the run. (Method
+/// cross-check: the same three ingredients reproduce the pre-#5580
+/// submerged-channel ΔV to −0.09 %. That geometry has a different seated area,
+/// centroid and end lenses, so it validates the METHOD, not this number.)
+///
+/// It stays sharp enough for the failure modes this module claims to catch: a
+/// `groove_r` off by 7 % moves ΔV by ~14 %, and a seat that reverts to a
+/// submerged full tube moves it by ~100 %.
+///
+/// This deliberately replaces the pre-#5580 `SEATED_SECTION_REL_TOL = 0.02`
+/// rather than inheriting it: that budget was sized for a correction term
+/// worth 2 % of the swept section, and under a half-round seat the correction
+/// is 50 % of it.
+const HALF_ROUND_REL_TOL: f64 = 0.03;
+
+/// Radial slack, as a fraction of `groove_r`, when reading the finished drum's
+/// profile back out of its tessellated mesh.
+///
+/// Sized from the residual actually measured on this design, not guessed. At
+/// the file's defaults the mesh reads back land = 24.000225 mm against a
+/// `pitch_r` of 24 mm (0.2 µm out — vertices of a tessellated cylinder lie ON
+/// the true circle, so only floating-point noise separates them), and a seat
+/// bottom of 20.979 mm against a `pitch_r - groove_r` of 21 mm (21 µm out —
+/// OCCT approximates the swept pipe surface with a B-spline, so the innermost
+/// generator is only sampled). Worst residual = 0.70 % of `groove_r`.
+///
+/// 10 % of `groove_r` is 0.3 mm here: 14x that residual, and still an order of
+/// magnitude tighter than every failure these assertions exist to catch — a
+/// seat that never breaks through reads the land radius instead of the groove
+/// bottom (3 mm out, 100 % of `groove_r`), and a land put back above the rope
+/// centreline reads high against `pitch_r` by however far it was raised.
+///
+/// That second figure is a **measured negative control**, not a derivation:
+/// reinstating the pre-#5580 submerged channel (`land_r = pitch_r + groove_r −
+/// 0.3mm`) and re-running this test makes the mesh read `land_max` =
+/// 26.700209 mm against `pitch_r` = 24 mm — 2.700 mm out, 90 % of `groove_r`,
+/// 9x this band, caught. The same run is also why both assertions reference
+/// `pitch_r` and not `land_r`: against `land_r` that submerged drum reads
+/// 0.2 µm out and sails through, and its `seat_min` is unchanged at
+/// 20.979 mm (the swept tube bottoms at `pitch_r − groove_r` whatever the land
+/// does), so neither of the other two mesh comparisons would have noticed it
+/// either. There is no regression this band could swallow that a tighter one
+/// would catch.
+const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 
 // ── Shared prologue ──────────────────────────────────────────────────────────
 
 /// The tessellated design, computed once per test binary.
 ///
 /// The full parse → compile → spawn-OCCT → sweep → boolean → tessellate pipeline
-/// costs ~5 s and both tests in this module only ever *read* the result, so it is
+/// costs ~5 s and every test in this module only ever *reads* the result, so it is
 /// memoized rather than run per test (same `OnceLock` caching idiom as
 /// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`). Callers must
 /// have already checked `reify_kernel_occt::OCCT_AVAILABLE`.
@@ -170,36 +263,227 @@ fn capstan_cell(result: &TessellateResult, cell: &str, expected_dim: DimensionVe
     }
 }
 
-/// Area of the circular segment of a radius-`r` disc lying beyond a chord whose
-/// sagitta (segment height) is `h`: `r²·acos((r−h)/r) − (r−h)·sqrt(2rh − h²)`.
+/// Arc length of a helix of radius `rho` making `turns` revolutions while
+/// rising `rise` axially: `sqrt((2π·rho·turns)² + rise²)` — the hypotenuse of
+/// the unrolled helix.
 ///
-/// Here `r` is the swept cutter's section radius and `h` is `groove_mouth`, so
-/// this is the slice of the cutter section that pokes out through the land
-/// surface as the groove mouth — stock that was never in the blank, and so is
-/// never removed from it. Valid for `0 ≤ h ≤ r`, which the design's own
-/// `0mm < groove_mouth < groove_r * 0.2` constraints keep it inside.
-///
-/// The chord is modelled flat while the land is really a cylinder; over the
-/// ~2.6 mm mouth chord at a ~26.7 mm land radius that approximation is worth a
-/// few tenths of a percent of `ΔV`, which is what [`SEATED_SECTION_REL_TOL`]
-/// budgets for.
-fn circular_segment_area(r: f64, h: f64) -> f64 {
-    let apothem = r - h; // centre-to-chord distance
-    r * r * (apothem / r).acos() - apothem * (2.0 * r * h - h * h).sqrt()
+/// Needed at two different radii by the half-round closed form: at the spine
+/// (`pitch_r`, for the coarse band and the end-lens obliquity factor) and at
+/// the seated half-disc's area centroid (which lies inboard of the spine, and
+/// therefore sweeps a measurably shorter path).
+fn helix_arc_len(rho: f64, turns: f64, rise: f64) -> f64 {
+    ((2.0 * PI * rho * turns).powi(2) + rise.powi(2)).sqrt()
 }
 
-// ── PRD §6 row 11: the groove removes π·r²·L of stock ────────────────────────
-
-/// The helical channel cut into the capstan drum must remove a volume matching
-/// the swept-tube prediction `π·groove_r²·L_helix` within ±15 % (PRD §6 row 11),
-/// and its mouth-corrected refinement within ±2 %, with every input read from
-/// the design file's own cells.
+/// The entity path of the surface backing `Capstan.body`, resolved through the
+/// value map rather than hard-coded.
 ///
-/// This is the consumer-visible "the groove is modelled for real" signal: a
-/// smooth core (or a groove that fails to break through the land) removes no
-/// stock at all, and a half-round surface seat removes only half the tube.
+/// The realization index is whatever slot the evaluator assigned to the `body`
+/// cell, so this never pins a literal index. Both consumers ([`finished_drum`]
+/// and [`capstan_surfaces_only_the_finished_drum`]) go through here, so the
+/// composed-descendant path form ([`CAPSTAN_SURFACE_PREFIX`], a sub-placement
+/// Phase-B detail) is stated once.
+fn capstan_body_path(result: &TessellateResult) -> String {
+    match result.values.get(&ValueCellId::new(CAPSTAN_ENTITY, "body")) {
+        Some(Value::GeometryHandle {
+            realization_ref, ..
+        }) => format!("{CAPSTAN_SURFACE_PREFIX}{}]", realization_ref.index),
+        other => panic!("Capstan.body must be a realized Value::GeometryHandle, got {other:?}"),
+    }
+}
+
+/// The tessellated surface backing `Capstan.body` — the finished grooved drum
+/// exactly as the viewport receives it.
+fn finished_drum(result: &TessellateResult) -> &reify_eval::MeshSurface {
+    let body_path = capstan_body_path(result);
+    result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path == body_path)
+        .unwrap_or_else(|| {
+            panic!(
+                "no tessellated surface at `{body_path}` (the finished drum); all \
+                 surfaces: {:?}",
+                result
+                    .meshes
+                    .iter()
+                    .map(|s| &s.entity_path)
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+// ── The seat must admit the rope radially ────────────────────────────────────
+
+/// The rope seat cut into the drum must be a HALF-ROUND that a 6 mm rope can be
+/// laid into radially, not a captive channel with a mouth narrower than the
+/// rope it is supposed to carry.
+///
+/// Three claims, all computed from the design file's own cells:
+///   1. the seat breaks through the land (`land_r < pitch_r + groove_r`) —
+///      otherwise it is a buried tunnel and the drum renders smooth;
+///   2. the mouth chord `2·sqrt(groove_r² − (land_r − pitch_r)²)` is at least
+///      `rope_dia`. The general chord form is used deliberately rather than
+///      asserting `land_r == pitch_r`: it catches a re-introduced depth offset
+///      in EITHER direction, and it states the mechanical requirement rather
+///      than one particular way of meeting it;
+///   3. the drum the kernel actually produced HAS that seat — read back off
+///      the finished mesh, not off the scalars. (1) and (2) are arithmetic
+///      over four scalar cells, and would stay green for a sweep placed at the
+///      wrong radius, a boolean that never breaks through, or a mouth that
+///      never opens; only the volume gate would notice, and only in aggregate.
+///      So this also checks the drum's radial profile inside the wrap band:
+///      its outermost surface is the land, sitting ON the rope centreline
+///      `pitch_r`, and it is cut all the way down to the groove bottom at
+///      `pitch_r − groove_r`. Both references are `pitch_r`-derived on
+///      purpose — `land_r` is the cell that parametrizes the land cylinder
+///      itself, so a mesh-vs-`land_r` comparison moves in lockstep with the
+///      design and asserts nothing.
 #[test]
-fn capstan_groove_volume_delta_matches_pi_r2_l() {
+fn capstan_seat_admits_the_rope_radially() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping: OCCT not available");
+        return;
+    }
+
+    let result = dev_capstan();
+
+    let rope_dia = capstan_cell(result, "rope_dia", DimensionVector::LENGTH);
+    let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
+    let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
+    let land_r = capstan_cell(result, "land_r", DimensionVector::LENGTH);
+
+    // ---- (1) The seat breaks through the land ----
+    assert!(
+        land_r < pitch_r + groove_r,
+        "the rope seat must break through the land surface, else it is a buried \
+         tunnel and the drum renders smooth: land_r = {:.4} mm is at or beyond the \
+         seat crest pitch_r + groove_r = {:.4} mm",
+        land_r * 1e3,
+        (pitch_r + groove_r) * 1e3
+    );
+
+    // ---- (2) The mouth admits the rope radially ----
+    // Chord of the seat circle (centre at pitch_r, radius groove_r) cut by the
+    // land cylinder at land_r. `max(0.0)` only fires when the seat lies wholly
+    // clear of the land, a case (1) already rejects — it just keeps the failure
+    // message numeric instead of NaN.
+    //
+    // The comparison carries a relative epsilon rather than being exact: at the
+    // file's defaults the two sides are bit-for-bit equal (`2·groove_r ==
+    // rope_dia` with `groove_r = rope_dia / 2`), so a bare `>=` sits at exactly
+    // zero margin and one unit-conversion refactor away from a 1-ulp false red.
+    // The epsilon is 1e-9 relative — nine orders below any real seat-depth
+    // regression, which moves the chord by a fraction of a millimetre at least.
+    let offset = land_r - pitch_r;
+    let mouth = 2.0 * (groove_r.powi(2) - offset.powi(2)).max(0.0).sqrt();
+    assert!(
+        mouth >= rope_dia * (1.0 - 1e-9),
+        "the rope seat's mouth must admit the rope RADIALLY: mouth chord = \
+         {:.4} mm but rope_dia = {:.4} mm. The chord is \
+         2·sqrt(groove_r² − (land_r − pitch_r)²) and is MAXIMISED only at \
+         land_r == pitch_r (a true half-round seat, mouth == 2·groove_r); here \
+         land_r − pitch_r = {:.4} mm, so a shallower land closes the mouth over \
+         the rope and a deeper one closes it back under. \
+         (pitch_r = {:.4} mm, groove_r = {:.4} mm, land_r = {:.4} mm)",
+        mouth * 1e3,
+        rope_dia * 1e3,
+        offset * 1e3,
+        pitch_r * 1e3,
+        groove_r * 1e3,
+        land_r * 1e3
+    );
+
+    // ---- (3) The drum the kernel produced really has that seat ----
+    let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
+    let bore_r = capstan_cell(result, "bore_r", DimensionVector::LENGTH);
+    let drum = finished_drum(result);
+
+    // Read the radial profile only well inside the wrap band: at the band ends
+    // the seat emerges into the flanges, whose faces sit out at `flange_r` and
+    // would dominate `land_max`.
+    let band_half = 0.9 * groove_len / 2.0;
+    // Inside the band the boundary is exactly three surfaces: the shaft bore at
+    // `bore_r`, the land, and the seat between the groove bottom `pitch_r −
+    // groove_r` and the land. Nothing lives between the bore and the groove
+    // bottom, so a cut anywhere in that gap cleanly separates "bore" from "land
+    // or seat". Take the midpoint of the two surfaces it separates rather than
+    // an offset off one of them: the design's own `pitch_r − groove_r > bore_r`
+    // wall constraint then guarantees `bore_r < bore_clear < pitch_r − groove_r`
+    // for EVERY parameter set the file admits, so this cannot go stale inside
+    // the design's legal space (`bore_r + groove_r`, the obvious spelling, is
+    // already above the groove bottom at a legal `bore_dia = 40mm`).
+    let bore_clear = 0.5 * (bore_r + (pitch_r - groove_r));
+    let mut band_vertices = 0usize;
+    let mut land_max = f64::MIN;
+    let mut seat_min = f64::MAX;
+    for v in drum.mesh.vertices.chunks_exact(3) {
+        let (x, y, z) = (v[0] as f64, v[1] as f64, v[2] as f64);
+        if z.abs() > band_half {
+            continue;
+        }
+        band_vertices += 1;
+        let r = x.hypot(y);
+        land_max = land_max.max(r);
+        if r > bore_clear {
+            seat_min = seat_min.min(r);
+        }
+    }
+    assert!(
+        band_vertices > 0 && seat_min.is_finite(),
+        "the finished drum has no mesh vertices in the wrap band |z| <= {:.4} mm \
+         outside the bore (bore_clear = {:.4} mm): {band_vertices} band vertices \
+         out of {} — the drum is not where the design says it is",
+        band_half * 1e3,
+        bore_clear * 1e3,
+        drum.mesh.vertices.len() / 3
+    );
+
+    let tol = MESH_RADIAL_TOL_FRAC * groove_r;
+    assert!(
+        (land_max - pitch_r).abs() <= tol,
+        "the drum's outermost surface inside the wrap band must be the land, and \
+         the land must sit ON the rope centreline pitch_r = {:.4} mm — that is \
+         what makes the seat a half-round — but the mesh reaches {:.4} mm (tol \
+         {:.4} mm; the design's own land_r cell is {:.4} mm). The reference here \
+         is pitch_r and NOT land_r deliberately: land_r is the very cell that \
+         parametrizes the blank's land cylinder, so a mesh-vs-land_r check would \
+         move in lockstep with any seat-depth edit and stay green. Against pitch_r \
+         this is the design claim itself, and a land raised back above the \
+         centreline (the pre-#5580 submerged channel) lands here.",
+        pitch_r * 1e3,
+        land_max * 1e3,
+        tol * 1e3,
+        land_r * 1e3
+    );
+    let groove_bottom = pitch_r - groove_r;
+    assert!(
+        (seat_min - groove_bottom).abs() <= tol,
+        "the seat must be cut all the way down to the groove bottom \
+         pitch_r − groove_r = {:.4} mm, but the drum's innermost non-bore \
+         surface inside the wrap band is at {:.4} mm (tol {:.4} mm). A seat that \
+         never breaks through leaves this at the land radius {:.4} mm; a seat cut \
+         past the centreline drives it below.",
+        groove_bottom * 1e3,
+        seat_min * 1e3,
+        tol * 1e3,
+        land_r * 1e3
+    );
+}
+
+// ── PRD §6 row 11: the seat removes 0.5·π·r²·L of stock ──────────────────────
+
+/// The helical seat cut into the capstan drum must remove a volume matching the
+/// half-round swept-solid prediction `0.5·π·groove_r²·L_helix` within ±15 %
+/// (PRD §6 row 11 as re-spec'd by #5580), and its centroid-Pappus + end-lens
+/// refinement within ±3 %, with every input read from the design file's own
+/// cells.
+///
+/// This is the consumer-visible "the seat is modelled for real" signal: a
+/// smooth core (or a seat that fails to break through the land) removes no
+/// stock at all, and a submerged full-tube channel removes about twice as much.
+#[test]
+fn capstan_seat_volume_delta_matches_half_pi_r2_l() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping: OCCT not available");
         return;
@@ -212,14 +496,14 @@ fn capstan_groove_volume_delta_matches_pi_r2_l() {
     let body_volume = capstan_cell(result, "body_volume", DimensionVector::VOLUME);
     let pitch_r = capstan_cell(result, "pitch_r", DimensionVector::LENGTH);
     let groove_r = capstan_cell(result, "groove_r", DimensionVector::LENGTH);
-    let groove_mouth = capstan_cell(result, "groove_mouth", DimensionVector::LENGTH);
+    let land_r = capstan_cell(result, "land_r", DimensionVector::LENGTH);
     let lead = capstan_cell(result, "lead", DimensionVector::LENGTH);
     let groove_len = capstan_cell(result, "groove_len", DimensionVector::LENGTH);
 
     // ---- Pappus: unroll the helix to get its arc length ----
     let turns = groove_len / lead;
-    let l_helix = ((2.0 * PI * pitch_r * turns).powi(2) + groove_len.powi(2)).sqrt();
-    let pappus = PI * groove_r.powi(2) * l_helix;
+    let l_helix = helix_arc_len(pitch_r, turns, groove_len);
+    let pappus = 0.5 * PI * groove_r.powi(2) * l_helix;
     let delta = blank_volume - body_volume;
 
     assert!(
@@ -232,38 +516,84 @@ fn capstan_groove_volume_delta_matches_pi_r2_l() {
          {body_volume:.6e} m³ = {delta:.6e} m³ (a smooth drum gives 0)"
     );
 
-    // ---- (1) PRD §6 row 11, as literally written: the ideal swept tube ± 15 % ----
+    // ---- (1) PRD §6 row 11, as literally written: the ideal half-round ± 15 % ----
     let pappus_err = (delta - pappus).abs() / pappus;
     assert!(
         pappus_err < PAPPUS_REL_TOL,
-        "groove stock removal off the swept-tube prediction: ΔV = {delta:.6e} m³, \
-         expected π·groove_r²·L = {pappus:.6e} m³ (rel err {:.2} %, tol {:.0} %); \
-         L_helix = {l_helix:.6} m over {turns:.4} turns \
+        "seat stock removal off the half-round swept-solid prediction: ΔV = \
+         {delta:.6e} m³, expected 0.5·π·groove_r²·L = {pappus:.6e} m³ (rel err \
+         {:.2} %, tol {:.0} %); L_helix = {l_helix:.6} m over {turns:.4} turns \
          (pitch_r = {pitch_r:.6} m, groove_r = {groove_r:.6} m, lead = {lead:.6} m, \
-         groove_len = {groove_len:.6} m)",
+         groove_len = {groove_len:.6} m). A result near 2x this is a submerged \
+         full-tube channel, which #5580 retired.",
         pappus_err * 100.0,
         PAPPUS_REL_TOL * 100.0
     );
 
-    // ---- (2) The sensitive gate: subtract the analytic groove-mouth segment ----
-    // The mouth sliver of the cutter section sweeps through air, not stock, so it
-    // is not part of ΔV. Modelling it here (instead of widening the band, or
-    // constraining the design to keep the naive prediction valid) is what makes
-    // this assertion tight enough to catch a real modelling regression.
-    let mouth_segment = circular_segment_area(groove_r, groove_mouth);
-    let seated = (PI * groove_r.powi(2) - mouth_segment) * l_helix;
-    let seated_err = (delta - seated).abs() / seated;
+    // ---- (2) The sensitive gate: centroid-Pappus + end lenses ----
+    // The closed form below is half-round-ONLY: it assumes the land plane passes
+    // through the seat's arc centre, so exactly half the section is seated and
+    // its centroid sits 4·groove_r/(3π) inboard of the spine. Guard that premise
+    // rather than let the formula be silently applied to a different design.
+    //
+    // The window is `groove_r * 1e-6`, which is the SAME window `dev_capstan.ri`
+    // sanctions in its own two-sided `land_r` band — deliberately, so that the
+    // DSL and this gate agree on what counts as "land_r == pitch_r" and there is
+    // no band of seat depths that `reify check` passes but this test panics on.
+    // Both are pure fp slack: `let land_r = pitch_r` is a bit-exact assignment,
+    // so the measured difference is 0.0 and the width only has to be positive.
+    let half_round_premise_tol = groove_r * 1e-6;
     assert!(
-        seated_err < SEATED_SECTION_REL_TOL,
-        "groove stock removal off the mouth-corrected prediction: ΔV = {delta:.6e} m³, \
-         expected (π·groove_r² − A_seg)·L = {seated:.6e} m³ (rel err {:.2} %, tol \
-         {:.0} %); A_seg = {mouth_segment:.6e} m² is {:.2} % of the π·groove_r² = \
-         {:.6e} m² section, from groove_mouth = {groove_mouth:.6} m on groove_r = \
-         {groove_r:.6} m; L_helix = {l_helix:.6} m over {turns:.4} turns",
-        seated_err * 100.0,
-        SEATED_SECTION_REL_TOL * 100.0,
-        100.0 * mouth_segment / (PI * groove_r.powi(2)),
-        PI * groove_r.powi(2)
+        (land_r - pitch_r).abs() < half_round_premise_tol,
+        "the half-round closed form below assumes land_r == pitch_r (the seat's \
+         arc centre lies ON the land surface), but land_r = {:.6} m and pitch_r = \
+         {:.6} m differ by {:.3e} m (window {:.3e} m, mirroring dev_capstan.ri's \
+         own land_r band). A seat at any other depth needs a different seated \
+         area AND a different centroid — re-derive the closed form rather than \
+         widening the band.",
+        land_r,
+        pitch_r,
+        (land_r - pitch_r).abs(),
+        half_round_premise_tol
+    );
+
+    // Seated section = half the swept disc; its area centroid is 4r/(3π) inboard
+    // of the spine, so it sweeps a shorter helix than the spine does.
+    let a_seat = PI * groove_r.powi(2) / 2.0;
+    let rho_c = pitch_r - 4.0 * groove_r / (3.0 * PI);
+    let v_band = a_seat * helix_arc_len(rho_c, turns, groove_len);
+    // Each end cap is a flat disc normal to the helix tangent, so a lens of the
+    // swept tube overhangs the land cylinder's end plane at z = ±groove_len/2 —
+    // into the retaining flange, which is solid stock all the way out to
+    // flange_r. `v_band` above counts only the SEATED (radially inner) half of
+    // the tube, so what is missing at each end is the OUTER half's lens,
+    // (1/3)·groove_r³·cot α. Over BOTH ends that is exactly ONE full-disc lens,
+    // (2/3)·groove_r³·cot α — (2/3)·groove_r³ being the first moment of a
+    // half-disc about its diameter, and cot α the tangent's obliquity to the
+    // axis. NOTE for anyone auditing the factor of 2 below: it is the two ends'
+    // HALF-lenses, so the total is one full lens, NOT one lens per end. Doubling
+    // it would bias the prediction by +1.5 %, which the ±3 % band would not
+    // catch. cot α is written out rather than approximated by
+    // csc α = l_helix/groove_len (worth +0.002 % of ΔV) — it costs nothing.
+    let cot_alpha = (2.0 * PI * pitch_r * turns) / groove_len;
+    let v_ends = 2.0 * (groove_r.powi(3) / 3.0) * cot_alpha;
+    let v_pred = v_band + v_ends;
+
+    let half_round_err = (delta - v_pred).abs() / v_pred;
+    assert!(
+        half_round_err < HALF_ROUND_REL_TOL,
+        "seat stock removal off the centroid-Pappus + end-lens prediction: ΔV = \
+         {delta:.6e} m³, expected {v_pred:.6e} m³ (rel err {:.2} %, tol {:.0} %). \
+         Breakdown: A_seat = {a_seat:.6e} m² swept at the seated centroid radius \
+         rho_c = {rho_c:.6} m (vs. spine pitch_r = {pitch_r:.6} m) gives v_band = \
+         {v_band:.6e} m³ ({:.2} % of the prediction); the two end lenses add \
+         v_ends = {v_ends:.6e} m³ ({:.2} %). L_helix = {l_helix:.6} m over \
+         {turns:.4} turns, groove_r = {groove_r:.6} m, groove_len = \
+         {groove_len:.6} m.",
+        half_round_err * 100.0,
+        HALF_ROUND_REL_TOL * 100.0,
+        100.0 * v_band / v_pred,
+        100.0 * v_ends / v_pred
     );
 }
 
@@ -285,9 +615,13 @@ const CAPSTAN_SURFACE_PREFIX: &str = "CapstanDrive.capstan#realization[";
 /// meshes instead of a grooved drum.
 ///
 /// Also pins that the design still checks clean at its defaults, so the
-/// `groove_mouth` / `land_r` constraints added alongside the groove cannot
-/// silently regress (equivalent to `reify check` reporting "All constraints
-/// satisfied").
+/// constraints guarding the seat cannot silently regress (equivalent to `reify
+/// check` reporting "All constraints satisfied"). Those are the two-sided
+/// `land_r` band that pins the seat depth to `pitch_r` (and so subsumes
+/// break-through), the groove-bottom-to-bore wall `pitch_r - groove_r >
+/// bore_r`, the mouth-clearance lead `lead > groove_r * 2.0`, and `flange_r >
+/// land_r`. That in-file band is what makes `reify check` — not just this
+/// Rust gate — report a seat depth edited off `pitch_r`.
 #[test]
 fn capstan_surfaces_only_the_finished_drum() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -299,12 +633,7 @@ fn capstan_surfaces_only_the_finished_drum() {
 
     // The realization slot backing `Capstan.body` — resolved from the value map,
     // so the test never hard-codes a realization index.
-    let body_path = match result.values.get(&ValueCellId::new(CAPSTAN_ENTITY, "body")) {
-        Some(Value::GeometryHandle {
-            realization_ref, ..
-        }) => format!("{CAPSTAN_SURFACE_PREFIX}{}]", realization_ref.index),
-        other => panic!("Capstan.body must be a realized Value::GeometryHandle, got {other:?}"),
-    };
+    let body_path = capstan_body_path(result);
 
     let capstan_surfaces: Vec<_> = result
         .meshes
@@ -384,7 +713,7 @@ fn capstan_surfaces_only_the_finished_drum() {
 
     // Strict for `Capstan`: all of its constraint inputs are defined on the happy
     // path, so anything other than `Satisfied` — Violated OR Indeterminate — is a
-    // regression in the groove_mouth / land_r work this module gates.
+    // regression in the rope-seat work this module gates.
     let unsatisfied: Vec<_> = capstan_constraints
         .iter()
         .filter(|c| c.satisfaction != Satisfaction::Satisfied)

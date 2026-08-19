@@ -70,7 +70,7 @@ test_cpu_load_governance_deflake.sh host-exclusive
 test_seed_lane_lock_release_soak.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (130, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (131, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cache_redirect.sh pool
 test_agent_cargo_shim.sh pool
@@ -78,6 +78,7 @@ test_amendment_rounds_default_restored.sh pool
 test_audit_orphan_producers.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_check_event_inventory.sh pool
+test_compute_trampoline_registration_wired.sh pool
 test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
@@ -150,6 +151,7 @@ test_reify_audit_freshness.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_audit_ptodo_ratchet_vacuity.sh pool
 test_reify_bin_freshness.sh pool
 test_reify_overlap_deploy_smoke.sh pool
 test_reify_overlap_detector.sh pool
@@ -174,7 +176,9 @@ test_setup_dev_no_ldconfig.sh pool
 test_setup_worktree_debug_port.sh pool
 test_sidecar_typecheck_test_path.sh pool
 test_slot_event_log.sh pool
+test_slot_timeout_marker.sh pool
 test_sn_gate.sh pool
+test_stash_guard.sh pool
 test_sync_comments_grep.sh pool
 test_target_per_lane_independence.sh pool
 test_test_helpers.sh pool

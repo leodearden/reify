@@ -8010,6 +8010,24 @@ impl Engine {
             }
         }
 
+        // Task 4152. Read the live realization counter into a local BEFORE the
+        // `&mut self` accumulator writes below, so the two borrows don't overlap.
+        //
+        // `eval_cached` never dispatches compute nodes (see this function's doc
+        // above), so it cannot itself realize geometry — this only ever reports
+        // what a prior `build()` left behind. Surfacing it here keeps the
+        // per-call stats block coherent with `Engine::cache_stats()`.
+        let realized = self.realization_cache.realization_entries();
+        stats.realization_entries = realized;
+
+        // Fold this call's eval-cache counters into the engine-level totals that
+        // `cache_stats()` reports. `realization_entries` is deliberately NOT
+        // accumulated: it is already a lifetime count owned by the
+        // RealizationCache, so adding it here would double-count.
+        self.cumulative_eval_cache_totals.hits += stats.cache_hits;
+        self.cumulative_eval_cache_totals.misses += stats.cache_misses;
+        self.cumulative_eval_cache_totals.early_cutoffs += stats.early_cutoffs;
+
         CachedEvalResult {
             eval_result: EvalResult {
                 values,

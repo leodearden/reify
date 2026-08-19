@@ -85,7 +85,7 @@ tasks:
         verdict: PASS
         delivered_check:
           kind: grep
-          pattern: "INTERRUPTED (worktree removed)"
+          pattern: "INTERRUPTED \\(worktree removed\\)"
           paths: ["tests/infra/run_all.sh"]
           expect: present
   - label: "W1a+W1c"

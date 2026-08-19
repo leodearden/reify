@@ -15,8 +15,8 @@ structure def BoxPart : Physical {
     param geometry : Solid = box(80mm, 60mm, 40mm)
     param material : Material = Material(
         name: "Steel Structural",
-        density: 7850.0,
-        youngs_modulus: 200000000000.0
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa
     )
 }
 
@@ -24,8 +24,8 @@ structure def TubePin : Physical {
     param geometry : Solid = cylinder(8mm, 50mm)
     param material : Material = Material(
         name: "Steel Pin",
-        density: 7850.0,
-        youngs_modulus: 200000000000.0
+        density: 7850kg/m^3,
+        youngs_modulus: 200GPa
     )
 }
 
@@ -33,8 +33,8 @@ structure def BasePlate : Physical {
     param geometry : Solid = box(200mm, 150mm, 10mm)
     param material : Material = Material(
         name: "Aluminum Plate 6061",
-        density: 2700.0,
-        youngs_modulus: 69000000000.0
+        density: 2700kg/m^3,
+        youngs_modulus: 69GPa
     )
 }
 
