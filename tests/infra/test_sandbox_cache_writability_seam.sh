@@ -126,7 +126,15 @@
 # SECOND COUPLING (now PARTLY guarded -- task 5858):
 #   GUARDED, both directions of a covered-set drift:
 #     - MISSING side: a role silently DROPPED from the yaml fails the
-#       per-role loop's role_key_present assertions (8 FAILs naming it).
+#       per-role loop's role_key_present assertions -- 18 FAILs naming
+#       it, plus (D)'s CARGO_HOME equality assert for that role = 19
+#       total (MEASURED, task 5909, by deleting `judge:` from the yaml
+#       and counting: 111 passed / 19 failed against the 130 green).
+#       Was 8 before task 5909 took the loop from two keys to four.
+#       The 19 is PER-ROLE and so survived task 6275 adding `merger`;
+#       only the totals moved. RE-MEASURED on 6275's merge of main, the
+#       same way (deleting `merger:`): 131 passed / 19 failed against a
+#       150 green. The +20 is merger's own 19 plus (C)(b) below.
 #     - EXTRA side: a role given a cache redirect in the yaml but NOT
 #       declared in CACHE_REDIRECT_ROLES fails no_undeclared_cache_redirect.
 #       That check is deliberately scoped to the CACHE contract -- it flags
@@ -302,11 +310,14 @@
 # Pins, against dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE (python3+PyYAML, SKIP-guarded): IF sandbox.enabled is
 #       true, THEN for EACH role in CACHE_REDIRECT_ROLES,
-#       role_env_overrides[<role>] defines BOTH CARGO_HOME
-#       and npm_config_cache, each an absolute path lying under /tmp (the
-#       landlock write set's host-global writable root) and explicitly
-#       NOT under $HOME/.cargo or $HOME/.npm — the exact regression this
-#       guard exists to catch. Gated on sandbox.enabled so it stays
+#       role_env_overrides[<role>] defines CARGO_HOME,
+#       npm_config_cache AND XDG_CACHE_HOME, each an absolute path lying
+#       under /tmp (the landlock write set's host-global writable root)
+#       and explicitly NOT under $HOME/.cargo, $HOME/.npm or
+#       $HOME/.cache (respectively) — the exact regression this guard
+#       exists to catch. It ALSO defines UV_CACHE_DIR, an absolute path
+#       explicitly NOT under /tmp (the opposite polarity — see the
+#       collateral paragraph below). Gated on sandbox.enabled so it stays
 #       correct if sandbox is ever flipped back off (mirrors the
 #       precondition-gated structure of
 #       test_merge_role_lint_first_seam.sh's concurrent_verify guard).
@@ -324,8 +335,9 @@
 #           just a cache-bearing one.
 #   (B) KNOB-NAME CROSS-CHECK (plain bash grep, always runs, no python
 #       needed): `backend: landlock` and `enabled: true` are cited under
-#       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:` and
-#       `npm_config_cache:` are all cited verbatim in the yaml.
+#       the sandbox block, and `role_env_overrides:`, `CARGO_HOME:`,
+#       `npm_config_cache:`, `XDG_CACHE_HOME:` and `UV_CACHE_DIR:` are all
+#       cited verbatim in the yaml.
 #   (C) ROLE-NAME DECLARATION CROSS-CHECK (plain bash, always runs, does
 #       not read the yaml at all), two assertions:
 #       (a) SUBSET -- every CACHE_REDIRECT_ROLES member is a member of
@@ -359,6 +371,43 @@
 #           redirect. (b) verify_env does NOT carry npm_config_cache --
 #           a deliberate asymmetry, pinned so it stays deliberate.
 #
+# WHY XDG_CACHE_HOME: compute_write_set() (orchestrator/agents/write_set.py)
+# has no carve-out for ~/.cache/tree-sitter (verified: zero tree-sitter /
+# tree_sitter hits in that file), so a sandboxed role's grammar probe dies
+# writing ~/.cache/tree-sitter/lock — the same EACCES-mid-build shape as the
+# CARGO_HOME/npm_config_cache gap above, just for tree-sitter's compile
+# cache. tree-sitter 0.26.8 (the version on PATH at
+# /home/leo/.cargo/bin/tree-sitter) exposes no tree-sitter-specific cache-dir
+# env var; XDG_CACHE_HOME is the only lever, and it was MEASURED on this
+# host to relocate tree-sitter's lib/ + lock/ dirs and to create the whole
+# tree when the root is absent (no provisioning step needed). Upstream fix:
+# cross-repo task 5896 (adds a ~/.cache/tree-sitter carve-out to
+# compute_write_set directly, cancelled reify-side and refiled in
+# dark-factory); landing it would retire this leg of the redirect the same
+# way dark_factory:3162 would retire the CARGO_HOME/npm_config_cache leg
+# (reify 5724, cited by an earlier draft of this paragraph, is the
+# CANCELLED reify-side original of that same refile -- see the
+# dark_factory:3162 note above; it can retire nothing).
+#
+# COLLATERAL, AND ITS CONTAINMENT (why UV_CACHE_DIR is pinned here too):
+# XDG_CACHE_HOME is a GENERAL variable, not tree-sitter-specific, and uv
+# honours it. compute_write_set() row 7 explicitly grants ~/.cache/uv, so
+# without a counter-pin the XDG_CACHE_HOME redirect above would silently
+# move uv's cache OFF its own grant and into /tmp — where
+# /usr/lib/tmpfiles.d/tmp.conf's `D /tmp 1777 root root 30d` both wipes at
+# every boot and age-deletes contents mid-uptime, the same partial-gutting
+# hazard the yaml's KNOWN GAPS note already documents for the cargo
+# registry, but on a cache that currently has a working grant. UV_CACHE_DIR
+# (uv's highest-precedence cache override) pins uv back at its granted
+# ~/.cache/uv, so this guard asserts it is present, absolute, and NOT under
+# /tmp — the opposite polarity from CARGO_HOME/npm_config_cache/
+# XDG_CACHE_HOME, which must lie under /tmp.
+# Deliberately NOT pinning SCCACHE_DIR, even though ~/.cache/sccache exists
+# on this host and would also follow the XDG redirect: ~/.cache/sccache is
+# NOT in compute_write_set(), so a sandboxed role cannot write it today
+# regardless — pinning it back at ~/.cache/sccache would name an UNGRANTED
+# path and be strictly worse than leaving it to follow the redirect.
+#
 # (A) is SKIPPED if python3 + PyYAML are unavailable (mirrors the SKIP
 #     idiom used by test_merge_role_lint_first_seam.sh /
 #     test_cpu_governance_config.sh).
@@ -368,23 +417,37 @@
 # yaml entirely while sandbox.enabled is true.
 # RED when the redirect set was widened (task 5858): architect,
 # reviewer_comprehensive and judge are required by CACHE_REDIRECT_ROLES but
-# absent from role_env_overrides, so the per-role loop reports 8 FAILs for
-# each of the three.
+# absent from role_env_overrides, so the per-role loop reported 8 FAILs for
+# each of the three (8 was the loop's width THEN, at two keys; the same
+# scenario reports 18 today -- see the MISSING-side note above).
 # RED when (D) was added (task 5836): verify_env carried no CARGO_HOME at
 # all, so (D) reported 9 FAILs -- 3 shape plus one equality per redirected
 # role -- against a green 63-assertion baseline.
+# RED when the key set was widened (task 5909): XDG_CACHE_HOME and
+# UV_CACHE_DIR are required by the per-role loop and by (B)'s citation
+# greps but absent from role_env_overrides, so the loop reports 9 FAILs
+# per role (3 shape for XDG_CACHE_HOME, 2 distinctness, 1 not-under
+# $HOME/.cache, 3 for UV_CACHE_DIR) plus 2 citation FAILs -- 56 against
+# the 74-assertion baseline that preceded it.
 # RED when merger was added to the redirect (task 6275): merger is required
 # by CACHE_REDIRECT_ROLES but absent from role_env_overrides, so (A)'s
 # per-role loop reports 9 FAILs plus 1 from (D)'s equality check, against a
-# green 74-assertion baseline.
+# green 74-assertion baseline. Those two numbers are the ORIGINAL red, taken
+# on the pre-5909 branch point where the loop was still four keys wide; 5909
+# landed on main first, so RE-MEASURED on the merge the same scenario reports
+# 18 loop FAILs plus the same 1 from (D) -- 131 passed / 19 failed against a
+# 150 green. Only the loop's width moved; the shape of the red did not.
 # RED when (C)'s complement assertion was added (task 6275): the new
 # UNCOVERED_DISPATCH_ROLES declaration was seeded with the value this
 # header and the yaml BOTH still asserted in prose at the time -- "merger
 # steward deep_reviewer" -- while the computed complement was already
-# "steward deep_reviewer". 84 passed, 1 failed, the diagnostic naming the
-# drifted role ("declared uncovered but IS redirected: merger"). Seeding
-# from the stale prose rather than the true value is what made that red a
-# measurement of the prose instead of a self-fulfilling assertion.
+# "steward deep_reviewer". 84 passed, 1 failed on the pre-5909 branch point,
+# the diagnostic naming the drifted role ("declared uncovered but IS
+# redirected: merger"); 149 passed, 1 failed re-measured on the merge --
+# this red is a SINGLE assertion, so 5909's key widening moved only the
+# passing count. Seeding from the stale prose rather than the true value is
+# what made that red a measurement of the prose instead of a self-fulfilling
+# assertion.
 
 set -euo pipefail
 
@@ -784,7 +847,7 @@ PYEOF
     if python3 "$_PARSE_PY" "$ORCH_YAML" sandbox_enabled_true; then
         echo "sandbox.enabled == true; asserting cache-writability contract for cache-redirect roles ($CACHE_REDIRECT_ROLES)"
         for role in $CACHE_REDIRECT_ROLES; do
-            for key in CARGO_HOME npm_config_cache; do
+            for key in CARGO_HOME npm_config_cache XDG_CACHE_HOME; do
                 assert "role_env_overrides.${role}.${key} is present and non-empty" \
                     python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" "$key"
 
@@ -801,8 +864,31 @@ PYEOF
             assert "role_env_overrides.${role}.npm_config_cache is NOT under \$HOME/.npm (the regression this guard exists to catch)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" npm_config_cache "$HOME/.npm"
 
+            assert "role_env_overrides.${role}.XDG_CACHE_HOME is NOT under \$HOME/.cache (the ungranted ~/.cache/tree-sitter default this guard exists to catch)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" XDG_CACHE_HOME "$HOME/.cache"
+
             assert "role_env_overrides.${role}.CARGO_HOME and .npm_config_cache are distinct paths (a same-dir target would pass every check above yet collide cargo's and npm's cache layouts)" \
                 python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME npm_config_cache
+
+            assert "role_env_overrides.${role}.CARGO_HOME and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside cargo's cache layout and pass every other check)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME XDG_CACHE_HOME
+
+            assert "role_env_overrides.${role}.npm_config_cache and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside npm's cache layout and pass every other check)" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" npm_config_cache XDG_CACHE_HOME
+
+            # UV_CACHE_DIR is a COUNTER-redirect (see the "COLLATERAL" header
+            # paragraph): it must NOT be under /tmp, the opposite polarity
+            # from CARGO_HOME/npm_config_cache/XDG_CACHE_HOME above. It is
+            # therefore asserted present/absolute here, outside the
+            # under-tmp loop, rather than joining the `for key in ...` list.
+            assert "role_env_overrides.${role}.UV_CACHE_DIR is present and non-empty" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" UV_CACHE_DIR
+
+            assert "role_env_overrides.${role}.UV_CACHE_DIR is an absolute path" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absolute "$role" UV_CACHE_DIR
+
+            assert "role_env_overrides.${role}.UV_CACHE_DIR keeps its own compute_write_set ~/.cache/uv grant instead of following XDG_CACHE_HOME into /tmp" \
+                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" UV_CACHE_DIR /tmp
         done
 
         # Unquoted expansion is intended -- the checker takes the roles as
@@ -920,6 +1006,12 @@ assert "'CARGO_HOME:' cited in dark-factory-orchestrator.yaml" \
 
 assert "'npm_config_cache:' cited in dark-factory-orchestrator.yaml" \
     grep -qE '^[[:space:]]*npm_config_cache:' "$ORCH_YAML"
+
+assert "'XDG_CACHE_HOME:' cited in dark-factory-orchestrator.yaml" \
+    grep -qE '^[[:space:]]*XDG_CACHE_HOME:' "$ORCH_YAML"
+
+assert "'UV_CACHE_DIR:' cited in dark-factory-orchestrator.yaml" \
+    grep -qE '^[[:space:]]*UV_CACHE_DIR:' "$ORCH_YAML"
 
 # ---------------------------------------------------------------------------
 # (C) ROLE-NAME DECLARATION CROSS-CHECK -- always runs (plain bash, no python,
