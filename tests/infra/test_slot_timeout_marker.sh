@@ -896,7 +896,7 @@ echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocat
 # still MISSED test_run_all_ambient_isolation.sh's real second-order route,
 # matching only its `case`-pattern comparison line (:160). Both measurements
 # are now PINNED against a future re-widening -- see F_EDGE_ANCHOR's comment
-# below, and the FC6a/FC7a real-tree route pins -- rather than left as prose.
+# below, and the FC6a/FC7b real-tree route pins -- rather than left as prose.
 # Three residual routes remain, each stated as MEASURED rather than
 # hypothesised:
 #
@@ -1170,21 +1170,22 @@ F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquir
 # SEED round cannot drift apart.
 F_DIRECT_RE="$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE"
 
-# _f_direct_capable_file <path> -> rc 0 if <path> has a DIRECT wrapper call
-# site, rc 1 otherwise. Extracted verbatim from _f_deadline_capable's
-# per-file body (task 6291).
-_f_direct_capable_file() {
-    local _n
-    _n="$(grep -vE '^[[:blank:]]*#' "$1" | grep -cE -- "$F_DIRECT_RE" || true)"
-    [ "${_n:-0}" -ge 1 ]
-}
-
-# _f_direct_capable_stripped <already-comment-stripped file> -> same
-# predicate, one grep instead of two. The closure strips every node once up
-# front (it needs those stripped copies for the edge scan anyway), so re-
-# stripping per node inside the SEED round would double the seed cost for
+# _f_direct_capable_stripped <already-comment-stripped file> -> rc 0 if that
+# file has a DIRECT wrapper call site, rc 1 otherwise. This is the ONLY
+# direct predicate: it is _f_deadline_capable's old per-file body with the
+# comment-strip lifted out of it, because the closure strips every node once
+# up front (it needs those stripped copies for the edge scan anyway) and
+# re-stripping per node inside the SEED round would double the seed cost for
 # nothing. Grepping a FILE rather than a pipe also puts this beyond the
 # SIGPIPE/pipefail hazard entirely.
+#
+# A caller holding an UNSTRIPPED path pipes it itself --
+# `grep -vE '^[[:blank:]]*#' <path> | ...` -- rather than reaching for a
+# second predicate: an uncalled unstripped twin over the same F_DIRECT_RE
+# was shipped by task 6291 and REMOVED in its review amendment, because two
+# near-identical predicates with only one of them live is a drift hazard (a
+# future tightening of the direct grammar could land on the dead copy and
+# look like it had taken effect while the derivation was unchanged).
 _f_direct_capable_stripped() {
     local _n
     _n="$(grep -cE -- "$F_DIRECT_RE" "$1" || true)"
@@ -1842,9 +1843,10 @@ echo ""
 echo "--- FC4: the edge predicate must be a CAPABILITY predicate, not a path-MENTION one ---"
 
 # This is F3's discipline extended to the closure, and it is the assert that
-# decides whether the derivation is worth having. Every fixture below
-# reproduces a shape MEASURED in the real tree, and every one of them is
-# admitted by some plausible-looking widening of the edge grammar. A
+# decides whether the derivation is worth having. Every NEGATIVE fixture below
+# -- (i) through (v) -- reproduces a shape MEASURED in the real tree, and
+# every one of them is admitted by some plausible-looking widening of the edge
+# grammar; (vi) is the positive control that keeps their count honest. A
 # derivation that admits them would force roster entries whose measured
 # justification reads "not actually deadline-capable" -- which empties
 # D_ROSTER's meaning, and is exactly why Section F's SCOPE paragraph records
@@ -1933,13 +1935,30 @@ cat > "$F_CLOSURE_NEG_DIR/test_c_inert.sh" <<'C4INERTEOF'
 echo "inert: this suite reaches no deadline by any route"
 C4INERTEOF
 
+# (vi) THE SENTINEL -- one plainly-capable file, so FC4b's count is a
+# DISCRIMINATION and not an absence. Without it every fixture in this dir is
+# expected to be rejected, and "the grammar correctly rejected all five
+# measured shapes" would be indistinguishable from "the derivation returned
+# nothing at all here" (an early return out of _f_scan_fwd_libs or
+# _f_edge_exists, an empty memo, a mis-set F_CLOSURE_NEG_DIR). Same pairing
+# F2/F3 use, and the same reason FC5 keeps its positive and its two negatives
+# in ONE fixture dir.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_control.sh" <<'C4CTRLEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/run_all.sh"
+C4CTRLEOF
+F_CLOSURE_NEG_EXPECT=1
+
 # Basenames are safe to print; the ADMITTED list is precomputed into a plain
 # variable so a RED names exactly which shape got through (E1's discipline).
+F_FC4_CTRL_ROUTE="$(_f_route_of "$F_CLOSURE_NEG_DIR" test_c_neg_control.sh)"
 F_FC4_COUNT="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -cE '^test_' || true)"
 F_FC4_ADMITTED="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
 
-assert "FC4: none of the five measured non-invocation shapes is an edge -- bind-only inspection target, exec verb inside a case PATTERN, copy-list element, git pathspec, and a real invocation of a NON-capable node (expected 0, got $F_FC4_COUNT: ${F_FC4_ADMITTED:-<none>})" \
-    test "$F_FC4_COUNT" -eq 0
+assert "FC4a: positive control -- the one fixture here that DOES invoke the seed node is admitted, so FC4b's count cannot be satisfied by a wholesale derivation failure over this dir (expected via:run_all.sh, got ${F_FC4_CTRL_ROUTE:-<underived>})" \
+    test "$F_FC4_CTRL_ROUTE" = "via:run_all.sh"
+assert "FC4b: none of the five measured non-invocation shapes is an edge -- bind-only inspection target, exec verb inside a case PATTERN, copy-list element, git pathspec, and a real invocation of a NON-capable node (expected $F_CLOSURE_NEG_EXPECT derived, the sentinel and nothing else, got $F_FC4_COUNT: ${F_FC4_ADMITTED:-<none>})" \
+    test "$F_FC4_COUNT" -eq "$F_CLOSURE_NEG_EXPECT"
 
 echo ""
 echo "--- FC5/FC6: the second-order route -- a node-bound variable handed to an exec-forwarding helper ---"
@@ -2043,6 +2062,20 @@ assert "FC6b: test_verify_env_ambient_isolation.sh derives through the suite it 
 # natural repair -- declaring it -- would silently produce a member whose
 # measured justification reads "not actually deadline-capable". Named here,
 # a future widening that re-admits it fails against a stated reason.
+#
+# FC7a BEFORE FC7b, the same ordering and for the same reason as D4a before
+# D4b. `_f_route_of` prints the empty string for a node that is derived with
+# no route (impossible) AND for a node that is not in the node set AT ALL, so
+# FC7b's `-z` alone would go green for the wrong reason the moment
+# test_verify_release_delta_skip.sh is renamed, deleted, or simply stops
+# binding run_all.sh -- and the file's one real-tree pin against re-admitting
+# the bind-only shape would evaporate silently. FC7a keys on the bind line
+# itself (measured today at :521, inspected at :523/:530/:536), so any of
+# those three goes RED here instead. Counts only, never the matched line
+# (D1's discipline); stderr is discarded so a vanished file reports through
+# the assert rather than as noise in the merge-gate verify log.
+F_FC7_DELTA_BIND="$(grep -cE '^[[:blank:]]*ACT_RUN_ALL=[^[:blank:]]*/run_all\.sh' \
+    "$SCRIPT_DIR/test_verify_release_delta_skip.sh" 2>/dev/null || true)"
 F_FC7_DELTA_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_release_delta_skip.sh)"
 # REAL-TREE NON-VACUITY PIN. run_all.sh being a DIRECT seed is what makes
 # three of the five transitive members capable at all. If it silently stopped
@@ -2051,9 +2084,11 @@ F_FC7_DELTA_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_release_delta_skip.sh
 # failure mode D4a's own non-vacuity assert exists to catch one level down.
 F_FC7_RUNALL_ROUTE="$(_f_route_of "$SCRIPT_DIR" run_all.sh)"
 
-assert "FC7a: test_verify_release_delta_skip.sh is NOT derived -- it binds run_all.sh purely as an inspection target, and admitting it is the measured failure that sank the run_all alternation (expected <underived>, got ${F_FC7_DELTA_ROUTE:-<underived>})" \
+assert "FC7a: test_verify_release_delta_skip.sh still BINDS run_all.sh, so FC7b is pinning the bind-only shape and not an absent file (non-vacuity; got ${F_FC7_DELTA_BIND:-0})" \
+    test "${F_FC7_DELTA_BIND:-0}" -ge 1
+assert "FC7b: test_verify_release_delta_skip.sh is NOT derived -- it binds run_all.sh purely as an inspection target, and admitting it is the measured failure that sank the run_all alternation (expected <underived>, got ${F_FC7_DELTA_ROUTE:-<underived>})" \
     test -z "$F_FC7_DELTA_ROUTE"
-assert "FC7b: run_all.sh is derived as a DIRECT seed node, so the three members that reach a deadline only through it are not vacuously absent (expected direct, got ${F_FC7_RUNALL_ROUTE:-<underived>})" \
+assert "FC7c: run_all.sh is derived as a DIRECT seed node, so the three members that reach a deadline only through it are not vacuously absent (expected direct, got ${F_FC7_RUNALL_ROUTE:-<underived>})" \
     test "$F_FC7_RUNALL_ROUTE" = "direct"
 
 
