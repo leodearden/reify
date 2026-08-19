@@ -132,4 +132,10 @@ export const reifyHighlighting = styleTags({
   // Delimiters
   "( )": t.paren,
   "{ }": t.brace,
+  // The destructured import's opener is the combined token `ImportItemsOpen`
+  // (`.{`), not a `{` node, so the selector above cannot reach it — see the
+  // ImportDeclaration comment in reify.grammar. It is still a brace and styles
+  // as one, which is what keeps the opener and closer of
+  // `import a.b.{C, D}` symmetric.
+  ImportItemsOpen: t.brace,
 });
