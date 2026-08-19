@@ -264,3 +264,4 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - `feedback_blocked_vs_pending_semantics` — scheduler handles unmet-deps tasks.
 - `feedback_trickle_ticket_submissions` — don't switch off planning_mode to paper over a closed gate.
 - `project_phantom_done_metadata_files_strip_may09` — the "metadata.files missing" decompose edge case.
+- topic `docs-prd-terminal-status` (canonical, 2026-08-19) — the "Code anchors in PRD prose" and "PRD terminal status" sections above (prevention: cite-by-symbol-or-dated-SHA; closed terminal vocabulary + mandatory decompose-close leaf). Detection is owned elsewhere, not by this overlay: `reify-audit --pattern PPRDSTATUS` (#6346).
