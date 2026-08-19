@@ -8,14 +8,11 @@
 //! `reify-audit`'s repo-targeting git commands — and only this direction is
 //! reachable without inverting the edge.
 //!
-//! This module is the ENTRY POINT for what the sanitizer removes and why it
-//! exists, including the measured evidence — a reader starting here needs
-//! nothing from above the dependency edge. `reify_audit::git_env` re-exports
-//! both items and adds what is local to it: the `git -C <root>` constructor
-//! (`reify_audit::git_env::command`), the workspace rule that every
-//! repo-targeting git invocation be built through that constructor, and the
-//! call-site sweep enforcing the rule. Those are further reading, not a
-//! prerequisite for this module.
+//! This module is the ENTRY POINT: what the sanitizer removes, why, and the
+//! measured evidence are all below, so a reader needs nothing from above the
+//! edge. `reify_audit::git_env` re-exports both items and adds the
+//! `git -C <root>` constructor plus the workspace rule and call-site sweep
+//! enforcing its use — further reading, not a prerequisite.
 //!
 //! # The failure mode this prevents
 //!
@@ -120,24 +117,19 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
 /// audit at the script level (`scripts/audit-orphan-producers.sh`'s
 /// `EXCLUDE_CRATES`, whose Rust mirror is `crate::orphan_audit`'s own
 /// `EXCLUDE_CRATES`), and `discover_sources` skips any path containing that
-/// segment, so neither the literal-scope nor the glob-scope sweep reaches here
-/// and a `// G-allow:` marker would be dead ceremony. The `pub` is justified by
-/// the re-export in `reify_audit::git_env` and its callers, not by a gate: if
-/// that consumer ever goes away, this item should be demoted or deleted in the
-/// same change, because no sweep will say so.
+/// segment, so a `// G-allow:` marker here would be dead ceremony. The `pub` is
+/// justified by the re-export in `reify_audit::git_env` and its callers, not by
+/// a gate: if that consumer goes away, demote or delete this item in the same
+/// change, because no sweep will say so.
 ///
-/// That exclusion is a DELIBERATE blind spot for this item, not an
-/// assumed-safe one. The script excludes this crate on the premise that a
-/// test-support crate's publics are reached only from test files (which the
-/// caller search skips), so they would all look like orphans. This item does not
-/// fit that premise — it is reached from `reify-audit`'s PRODUCTION path via the
-/// re-export — and it is not the first: `crate::ignore_hygiene`'s
-/// `extract_ignore_reason` is called from `reify-audit`'s production `ptodo`
-/// reader for the same reason (`crates/reify-audit/Cargo.toml` records why this
-/// crate is a normal rather than a dev dependency there). The narrower
-/// alternative — a dep-free `reify-git-env` leaf crate the sweep does cover —
-/// buys a gate for two items at the price of a crate, and was declined on the
-/// same grounds that `Cargo.toml` note declines it for `extract_ignore_reason`.
+/// The exclusion assumes a test-support crate's publics are reached only from
+/// test files. Two items now break that assumption — this one and
+/// `crate::ignore_hygiene::extract_ignore_reason` — both reached from
+/// `reify-audit`'s PRODUCTION path. Whether that warrants a dep-free
+/// `reify-git-env` leaf crate the sweep does cover, or a narrower
+/// `EXCLUDE_CRATES`, is tracked as follow-up ticket
+/// `tkt_0RSN6D9381MSERHKK41GP3GE72` (filed from task 5657's review); decide it
+/// there rather than re-deriving an answer at each new item.
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
         cmd.env_remove(var);
@@ -151,8 +143,10 @@ pub fn sanitize(cmd: &mut Command) -> &mut Command {
 ///
 /// Shared with `crate::orphan_audit`'s
 /// `build_audit_command_removes_every_repo_redirect_var` rather than inlined at
-/// each assertion site: both assert against the same `(key, None)` encoding, so
-/// one helper is one place to fix if that encoding ever changes.
+/// each assertion site, so this crate's two assertion sites read that encoding
+/// through one place. IN-CRATE only: `#[cfg(test)] pub(crate)` is invisible to
+/// dependent crates, so `reify_audit::git_env`'s tests keep their own copy and
+/// this is not the workspace's single reader of the `(key, None)` encoding.
 #[cfg(test)]
 pub(crate) fn removed_vars(cmd: &Command) -> Vec<String> {
     cmd.get_envs()

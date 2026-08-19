@@ -1,16 +1,11 @@
 //! The single constructor for git invocations that target a SPECIFIC
 //! repository.
 //!
-//! **Start one crate down for the *why*.** The sanitized variable set
-//! ([`REPO_REDIRECT_VARS`]), the sanitizer ([`sanitize`]), the failure mode they
-//! exist to prevent and the measured evidence for it are defined and argued
-//! once, in `reify_test_support::git_env`; this module re-exports the two items
-//! rather than restating the argument. What is local to HERE, and what the rest
-//! of this doc covers, is the `git -C <root>` shape [`command`] builds, the
-//! workspace rule that every repo-targeting invocation be built through it, and
-//! the call-site sweep that enforces the rule. That deferral is one-directional:
-//! the definition site is self-contained about the *why* and names this module
-//! only as further reading, so a reader is never bounced back and forth.
+//! [`REPO_REDIRECT_VARS`] and [`sanitize`] are defined one crate down, in
+//! `reify_test_support::git_env` (the dependency direction); see there for the
+//! failure mode and the evidence. This module adds the `git -C <root>` shape
+//! [`command`] builds, the workspace rule that every repo-targeting invocation
+//! be built through it, and the call-site sweep enforcing that rule.
 //!
 //! # The rule
 //!
@@ -20,13 +15,17 @@
 //! fixture helper that shells `git init` into a tempdir is exactly as
 //! vulnerable as the shipped binary.
 //!
-//! **Carve-out:** a bare `git --version` availability probe opens no
-//! repository, so no redirect var can affect it and it is exempt. The line is
-//! sharp — anything with `-C`, a repository path, or an implicit cwd
-//! repository is NOT exempt. (The exempt probes in this workspace are
+//! **Carve-outs:** a bare `git --version` availability probe opens no
+//! repository, so no redirect var can affect it and it is exempt; so is a
+//! `Command` that is never spawned at all, built only to be read back through
+//! `get_envs()`/`get_args()`. The line is sharp — anything with `-C`, a
+//! repository path, or an implicit cwd repository is NOT exempt. (The exempt
+//! sites in this workspace are the `git --version` probes in
 //! `tests/g_allow_repo_wide_hard_gate.rs`, `tests/ptodo_baseline.rs` and
-//! `reify-test-support`'s `orphan_audit.rs` and `git_env.rs`, all
-//! `git --version`.)
+//! `reify-test-support`'s `orphan_audit.rs` and `git_env.rs`, plus two
+//! never-spawned metadata fixtures in `reify-test-support`'s `git_env.rs`
+//! tests — `sanitize_removes_every_repo_redirect_var` and
+//! `sanitize_returns_the_command_for_chaining`.)
 //!
 //! **Sites below the dependency edge:** `orphan_audit.rs` reaches
 //! [`reify_test_support::git_env::sanitize`] directly rather than through this
@@ -43,11 +42,11 @@
 //! ## Sweep status
 //!
 //! `git grep -n 'Command::new("git")' -- '*.rs'` over the whole workspace
-//! returns, besides this module and prose references to it, the `git --version`
-//! probes covered by the carve-out above. Every repo-targeting *git* site in
-//! this crate — the three `RealGitOps` methods (`spawn_once`, `is_gitignored`,
-//! `is_ancestor`) and the six fixture helpers in `tests/cli.rs` and
-//! `tests/real_git_ops.rs` — is routed through [`command`].
+//! returns, besides this module and prose references to it, only sites the
+//! carve-outs above cover. Every repo-targeting *git* site in this crate — the
+//! three `RealGitOps` methods (`spawn_once`, `is_gitignored`, `is_ancestor`)
+//! and the six fixture helpers in `tests/cli.rs` and `tests/real_git_ops.rs` —
+//! is routed through [`command`].
 //!
 //! Below the edge, in `reify-test-support`, four non-exempt sites are routed
 //! through the shared [`reify_test_support::git_env::sanitize`] instead, for the
@@ -64,8 +63,8 @@
 //! The grep does NOT catch the orphan-audit *script spawn*, because that site
 //! spawns a *shell script* that runs git internally rather than calling `git`
 //! directly; a sweep for new call sites must consider both shapes. Re-run the
-//! grep when adding a git call site: a new hit that is neither a `--version`
-//! probe nor one of the sites named above is a defect.
+//! grep when adding a git call site: a new hit that is neither carved out above
+//! nor one of the sites named above is a defect.
 
 use std::path::Path;
 use std::process::Command;
@@ -73,20 +72,14 @@ use std::process::Command;
 /// The sanitized variable set and the sanitizer itself, re-exported from
 /// `reify_test_support::git_env`.
 ///
-/// The definitions live one crate DOWN because the dependency edge runs
-/// `reify-audit` -> `reify-test-support` (see this crate's `Cargo.toml`), and
-/// `reify-test-support`'s own `orphan_audit` spawn needs the same sanitizer —
-/// so only that direction lets both sides share one item without inverting the
-/// edge. The re-export keeps `reify_audit::git_env::{REPO_REDIRECT_VARS,
-/// sanitize, command}` intact for every caller above it, and [`command`] below
-/// builds the `git -C <root>` shape on top.
-///
-/// Everything about the set itself — why removal rather than assignment, why
-/// an enumerated set rather than a wholesale `GIT_*` clear, the deletion guard
-/// that stops an entry being dropped silently, and the real-git proof that the
-/// removals actually defeat an ambient redirect var — lives with the definition.
-/// This module's tests below cover only what is local here: that [`command`]
-/// builds the `git -C <root>` shape and applies the sanitizer to it.
+/// They live one crate DOWN because the dependency edge runs `reify-audit` ->
+/// `reify-test-support` (see this crate's `Cargo.toml`) and that crate's own
+/// `orphan_audit` spawn needs the same sanitizer, so only that direction lets
+/// both sides share one item without inverting the edge. The re-export keeps
+/// `reify_audit::git_env::{REPO_REDIRECT_VARS, sanitize, command}` intact for
+/// every caller above it, and [`command`] below builds the `git -C <root>`
+/// shape on top. Everything about the set itself is argued at the definition;
+/// this module's tests cover only the wiring local here.
 pub use reify_test_support::git_env::{REPO_REDIRECT_VARS, sanitize};
 
 /// A pre-sanitized `git -C <root>` command.
@@ -113,6 +106,11 @@ mod tests {
     /// Collect the vars a `Command` has marked for REMOVAL. `std` encodes an
     /// `env_remove` as a `(key, None)` pair in `get_envs()`; an overwrite would
     /// be `(key, Some(value))`.
+    ///
+    /// `reify_test_support::git_env` has a twin of this, used by that crate's
+    /// own two assertion sites. It is `#[cfg(test)] pub(crate)`, which no
+    /// dependent crate can see, so this copy stays rather than making a test
+    /// helper part of that crate's public API for one caller.
     fn removed_vars(cmd: &Command) -> Vec<String> {
         cmd.get_envs()
             .filter(|(_, v)| v.is_none())
@@ -141,19 +139,11 @@ mod tests {
     /// thing a dropped `sanitize(&mut cmd)` line in [`command`] would break
     /// without any other unit test here noticing.
     ///
-    /// Deliberately does NOT re-assert that [`sanitize`] itself removes every
-    /// entry, nor that it defeats a real ambient redirect var: both are asserted
-    /// at the definition site (`reify_test_support::git_env`'s own tests), and a
-    /// second loop through a caller-built command here only re-ran the same
-    /// self-referential check one crate up. Re-export reachability needs no test
-    /// of its own either — [`command`]'s body calls [`sanitize`] and this
-    /// module's `use super::{REPO_REDIRECT_VARS, command};` names the const, so
-    /// the crate fails to COMPILE if the `pub use` stops carrying either name.
-    ///
     /// Self-referential by construction — it asserts the code removes exactly
     /// what the same constant lists, so it stays green through a DELETION from
-    /// [`REPO_REDIRECT_VARS`]. The guard against that lives with the
-    /// definition, in `reify_test_support::git_env`'s tests.
+    /// [`REPO_REDIRECT_VARS`]. The guard against that, and the proof that the
+    /// removals defeat a real ambient redirect var, are both at the definition
+    /// site (`reify_test_support::git_env`'s tests).
     #[test]
     fn command_removes_every_repo_redirect_var() {
         let cmd = command(Path::new("/some/root"));
