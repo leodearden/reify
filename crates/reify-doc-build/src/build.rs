@@ -514,7 +514,14 @@ fn lower_type_alias(a: &CompiledTypeAlias) -> ItemDoc {
         // passes `""` as source, so a span-slicing strategy would render
         // every stdlib alias as the empty string.
         (None, Some(te)) => te.to_string(),
-        (None, None) => "<parameterized>".to_string(),
+        // Reachable only via a synthetic fixture (e.g. a hand-built
+        // CompiledTypeAlias in a test): a real alias carries neither a
+        // resolved type nor a body, which says nothing about whether it is
+        // parametric — so the old "<parameterized>" sentinel was actively
+        // misleading here. "<unresolved>" is accurate and matches the house
+        // `<...>` sentinel style already used by reify_core::Type's Display
+        // for Type::Error ("<error>", ty.rs:660).
+        (None, None) => "<unresolved>".to_string(),
     };
 
     ItemDoc {
