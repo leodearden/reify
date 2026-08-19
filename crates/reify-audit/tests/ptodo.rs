@@ -1127,6 +1127,14 @@ mod tests {
 
     /// (iii) DELEGATION — `check` stays a pure projection of `check_with_stats`,
     /// so the four existing call sites see byte-identical behaviour.
+    ///
+    /// Today `check` is literally `check_with_stats(ctx).0`, so this can only
+    /// go RED if someone reimplements it as a SEPARATE sweep — which is exactly
+    /// the drift it guards, and the only shape that could diverge silently.  It
+    /// therefore compares whole `Finding`s (`Finding: PartialEq`), not just
+    /// their summaries: a second sweep could agree on every summary while
+    /// diverging on `severity`, `task_id`, `pattern` or `evidence`, and a
+    /// summaries-only assert would wave that through.
     #[test]
     fn check_is_the_findings_projection_of_check_with_stats() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1149,17 +1157,11 @@ mod tests {
         let (with_stats, _stats) = reify_audit::ptodo::check_with_stats(&ctx);
         let plain = reify_audit::ptodo::check(&ctx);
 
+        // Whole-value equality: same order, same count, and every field of
+        // every Finding — not just the summaries.
         assert_eq!(
-            with_stats.len(),
-            plain.len(),
-            "check() must return the same finding count as check_with_stats().0; \
-             with_stats={with_stats:?} plain={plain:?}"
-        );
-        let with_stats_summaries: Vec<&str> = with_stats.iter().map(|f| f.summary.as_str()).collect();
-        let plain_summaries: Vec<&str> = plain.iter().map(|f| f.summary.as_str()).collect();
-        assert_eq!(
-            with_stats_summaries, plain_summaries,
-            "check() must preserve the exact finding order and content"
+            with_stats, plain,
+            "check() must be the exact findings projection of check_with_stats()"
         );
         // Guard against a vacuous comparison: the fixture does produce findings.
         assert!(

@@ -229,6 +229,16 @@ and were read successfully; `markers_examined` counts `scan_file`-classified mar
 across exactly those files. The line never goes to stdout, which is the baseline stream: a
 leak there would corrupt `ptodo-baseline.txt` on the next regen.
 
+Two rules make that grammar a contract rather than a shape, and both consumers implement
+them. **Multiplicity: exactly one line per run.** The Rust contract test
+(`crates/reify-audit/tests/ptodo_baseline.rs`) is the strict consumer and asserts it; the
+shell floor is the tolerant one and reads only the first match (`grep -m1`), because its job
+is to prove the sweep ran, not to police the emitter. **Extensibility: the field list is OPEN
+for additive extension.** `files_scanned` and `markers_examined` are REQUIRED and must parse
+as integers; any further `key=value` token is IGNORED by both consumers. So a later counter
+can be appended without a lockstep edit to either gate, while a missing or unparseable
+required field still fails loud in both.
+
 The floor passes iff that line is present with `files_scanned >= 1`. That oracle is
 **structural, not tuned, and debt-independent**: a repository cannot have zero swept tracked
 files, so no amount of burning the debt down can make it fire — while a binary predating this

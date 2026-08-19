@@ -514,7 +514,18 @@ fn run_generator(root: &Path) -> std::process::Output {
 }
 
 /// Extract the single `@@PTODO_SCAN@@` line's counters from `stderr`, asserting
-/// there is EXACTLY one such line and that both fields are well formed.
+/// there is EXACTLY one such line and that both REQUIRED fields are well formed.
+///
+/// Mirrors the PRD §6.6 grammar rules exactly, so the two consumers of this
+/// machine contract agree on how strict it is:
+///   - MULTIPLICITY: exactly one line per run.  This is the strict consumer and
+///     asserts it; the shell floor deliberately reads only the first (`grep -m1`
+///     in `tests/infra/test_reify_audit_ptodo.sh`) rather than policing the count.
+///   - EXTENSIBILITY: the field list is OPEN for additive extension.  An
+///     unrecognised `key=value` token is IGNORED, so appending a future counter
+///     stays backward compatible and cannot turn this contract test RED.  Only a
+///     MISSING required field (`files_scanned` / `markers_examined`) or an
+///     unparseable value panics.
 fn parse_scan_line(stderr: &str) -> (usize, usize) {
     let lines: Vec<&str> = stderr
         .lines()
@@ -541,9 +552,9 @@ fn parse_scan_line(stderr: &str) -> (usize, usize) {
             markers = Some(v.parse().unwrap_or_else(|e| {
                 panic!("markers_examined must be an integer ({v:?}): {e}")
             }));
-        } else {
-            panic!("unexpected field {field:?} on the scan line: {line:?}");
         }
+        // else: an unrecognised token is an ADDITIVE extension of the grammar —
+        // ignored by contract, never a failure (PRD §6.6).
     }
     (
         files.unwrap_or_else(|| panic!("scan line lacks files_scanned: {line:?}")),

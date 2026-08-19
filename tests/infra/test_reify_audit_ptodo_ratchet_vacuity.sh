@@ -20,7 +20,8 @@
 # THE GAP BEING PINNED: scenario (a)'s oracle is subset-of, which the empty set
 # satisfies trivially, so it must be preconditioned on evidence the detector
 # RAN — the generator's `@@PTODO_SCAN@@ files_scanned=<N> …` stderr line — not
-# on what it FOUND.  See PRD 6.6, "Vacuity floor on the live set", for the full
+# on what it FOUND.  See PRD §6.6 (cited by section number: a paragraph title
+# is not a stable anchor) for the full
 # argument.  Invocation 1 drives the generator into the no-scan-evidence state
 # and requires a RED; invocation 2 supplies valid scan evidence with ZERO
 # fingerprints and requires a GREEN.
@@ -36,8 +37,10 @@
 #   - STUB GENERATOR via the documented REIFY_PTODO_GEN_BIN seam
 #     (test_reify_audit_ptodo.sh:138-143).  Being executable, it also
 #     short-circuits the `[ ! -x "$GEN" ]` cargo-build branch, so this test is
-#     cold-build-free.  The stub is --project-root AWARE: zero lines for the
-#     repo root (driving scenario (a) into the vacuous state) and one
+#     cold-build-free.  The stub is --project-root AWARE: for the repo root it
+#     emits zero fingerprints on stdout AND no scan evidence on stderr — it is
+#     the MISSING @@PTODO_SCAN@@ line that drives scenario (a)'s floor, exactly
+#     as a stale pre-#6241 binary would — and one
 #     synthetic untracked line for any other root, so scenario (b) — which
 #     drives the same binary against a hermetic fixture and asserts its output
 #     is non-empty — still passes.  An unconditionally-silent stub would take
@@ -52,8 +55,11 @@
 #     could not tell apart from "the generator never ran".
 #
 # Assertions (invocation 1 — no scan evidence):
-#   (1) test_reify_audit_ptodo.sh exits 1 — a zero-fingerprint generator run
-#       must NOT report green.
+#   (1) test_reify_audit_ptodo.sh exits 1 — a generator that emitted NO scan
+#       evidence must NOT report green.  The trigger is the ABSENT
+#       @@PTODO_SCAN@@ line, NOT the zero fingerprints: zero fingerprints WITH
+#       scan evidence is a PASS under this floor, which is precisely what
+#       invocation 2 below pins.
 #   (2) it exits 1 for THAT reason: the floor's @@RATCHET_VACUITY_FIRED@@
 #       machine token appears in the captured output.  Same discrimination
 #       discipline the sibling meta-tests state at
@@ -205,8 +211,9 @@ echo "--- End captured output ---"
 echo ""
 echo "--- Assertions ---"
 
-# (1) A zero-fingerprint generator run must not report green.
-assert "zero-fingerprint generator run makes test_reify_audit_ptodo.sh exit 1 (not a vacuous green)" \
+# (1) A generator that emitted no scan evidence must not report green.  Zero
+# fingerprints alone is NOT the trigger — invocation 2 asserts that state PASSES.
+assert "generator emitting NO scan evidence makes test_reify_audit_ptodo.sh exit 1 (not a vacuous green)" \
     bash -c '[ "$1" -eq 1 ]' -- "$RVM_EXIT"
 
 # (2) ...and for the right reason.  Without this, any unrelated failure would

@@ -75,8 +75,10 @@
 # That is why no detector-kind knowledge lives in this file any more, and why
 # the PRD 6.6 derivation invariant above holds in full: the helper reads a
 # field off generator-emitted text, it derives nothing.  Rationale and known
-# limits live in ONE place — PRD 6.6, "Vacuity floor on the live set"
-# (docs/prds/reify-audit-ptodo-detector.md); do not restate them here.  The
+# limits live in ONE place — PRD §6.6
+# (docs/prds/reify-audit-ptodo-detector.md); do not restate them here.  Cited by
+# SECTION NUMBER only, deliberately: a bolded paragraph title is not a stable
+# anchor (#6241's retitle stranded six such cites at once), a section number is.  The
 # in-file meta-test below pins its SEMANTICS; the WIRING into scenario (a),
 # which that meta-test cannot observe, is pinned in BOTH directions (fires
 # without scan evidence, silent with it) by
@@ -143,7 +145,8 @@ _ratchet_check_subset() {
 # generator RAN at all, and the empty set is a subset of everything.  This is
 # the precondition that makes that subset assertion meaningful.
 # WHY it keys on run evidence rather than on the live finding count, and what
-# it does not cover: PRD 6.6, "Vacuity floor on the live set" — the single home
+# it does not cover: PRD §6.6 (section number, not a paragraph title — the
+# latter is not a stable anchor) — the single home
 # for that argument, not restated here.
 #
 # Local contract:
@@ -161,6 +164,14 @@ _ratchet_check_subset() {
 #   matched-but-unparseable count falls to the firing branch DELIBERATELY —
 #   loud over silent-disarm, the discipline the retired kind list applied to an
 #   unrecognised kind.
+#
+#   MULTIPLICITY + EXTENSIBILITY (PRD §6.6 grammar).  The generator emits
+#   EXACTLY ONE scan line per run; this helper reads only the FIRST (grep -m1)
+#   rather than policing that count — the strict consumer is the Rust contract
+#   test crates/reify-audit/tests/ptodo_baseline.rs, which asserts exactly one.
+#   The field list is OPEN for additive extension, and this parse honours that
+#   by construction: it reads the files_scanned= token and ignores every other
+#   token on the line, so a future counter cannot turn the gate RED.
 #
 #   @@RATCHET_VACUITY_FIRED@@ leads the failing diagnostic and is a MACHINE
 #   TOKEN — the deliberate contract with
@@ -207,7 +218,8 @@ _ratchet_check_scan_evidence() {
         printf '  `cargo build --release -p reify-audit`, then re-run.\n'
         printf '  Generator stderr as captured:\n'
         printf '%s\n' "$_stderr" | sed 's/^/    | /'
-        printf '  Background and the emitted grammar: PRD 6.6, "Vacuity floor on the live set".\n'
+        printf '  Background and the emitted grammar: PRD §6.6\n'
+        printf '  (docs/prds/reify-audit-ptodo-detector.md).\n'
     } >&2
     return 1
 }
@@ -232,7 +244,7 @@ assert "ratchet check is silent + rc0 when live set is empty" \
 # VACUITY-FLOOR meta-test (task #6241) — pins what
 # _ratchet_check_scan_evidence DOES.  Why the floor exists at all, and why it
 # keys on generator-emitted SCAN EVIDENCE rather than on the live fingerprint
-# count: PRD 6.6, "Vacuity floor on the live set" — not restated here.  Its
+# count: PRD §6.6 — not restated here.  Its
 # WIRING into scenario (a), which this hermetic block cannot see, is pinned by
 # tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh.
 #
@@ -299,6 +311,21 @@ assert "vacuity floor fires on a malformed files_scanned count (loud, never sile
              [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
              case "$1" in *"abc"*) exit 0 ;; *) exit 1 ;; esac' \
     -- "$_SCAN_MALFORMED_DIAG" "$_SCAN_MALFORMED_RC"
+
+# (v) FIRES when the line is present but carries NO files_scanned field at all
+# — the helper's fifth branch, distinct from (iv): the sed yields the EMPTY
+# string rather than an unparseable one, and without its own guard that empty
+# would fall through to the numeric `-lt` test and emit a raw bash error while
+# the branch itself shipped untested.
+_SCAN_ERR_NOFIELD='@@PTODO_SCAN@@ markers_examined=0'
+_SCAN_NOFIELD_RC=0
+_SCAN_NOFIELD_DIAG="$(_ratchet_check_scan_evidence "$_SCAN_ERR_NOFIELD" 2>&1 1>/dev/null)" \
+    || _SCAN_NOFIELD_RC=$?
+assert "vacuity floor fires when the scan line carries no files_scanned field" \
+    bash -c '[ "$2" -eq 1 ] || exit 1
+             [ "$(printf "%s\n" "$1" | head -n1)" = "@@RATCHET_VACUITY_FIRED@@" ] || exit 1
+             case "$1" in *"no files_scanned field"*) exit 0 ;; *) exit 1 ;; esac' \
+    -- "$_SCAN_NOFIELD_DIAG" "$_SCAN_NOFIELD_RC"
 
 # -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
@@ -527,7 +554,7 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
         >"$LIVE_TMP" 2>"$GEN_ERR_TMP"
 
     # VACUITY FLOOR (task #6241) — the precondition that makes the subset
-    # assertion below meaningful (PRD 6.6, "Vacuity floor on the live set").
+    # assertion below meaningful (PRD §6.6).
     # Reported FIRST, deliberately: a reader who saw only the subset assert fail
     # would draw the wrong conclusion about why.  The wiring here (not just the
     # helper) is pinned by tests/infra/test_reify_audit_ptodo_ratchet_vacuity.sh,
