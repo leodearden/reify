@@ -224,6 +224,32 @@ fn helix_bare_radius_drops_op_dimensioned_builds() {
 }
 
 // ---------------------------------------------------------------------------
+// The VARIADIC curve constructors (task 5658, R2) — same leaf signal, one
+// layer further out
+//
+// `interp` / `bezier` / `nurbs` take an arity-open flat coordinate stream that
+// the compiler names positionally (`c0`…`cN`). Only this file can show that the
+// DISPLAY names the gate mints (`x1`, `y1`, …) are what a `.ri` author actually
+// sees, because the unit tests hand-build the `CompiledGeometryOp` and so never
+// exercise parse → compile → build agreement on an arity-open signature.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn interp_bare_coordinate_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "interp",
+        "x1",
+        r#"structure def BareInterp {
+            let w = interp(0, 0, 0, 10, 0, 0, 20, 0, 0)
+        }"#,
+        r#"structure def DimInterp {
+            let w = interp(0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 20mm, 0mm, 0mm)
+        }"#,
+        |op| matches!(op, GeometryOp::InterpCurve { .. }),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The desugaring cross-check — the highest-risk unknown in task 5623
 // ---------------------------------------------------------------------------
 

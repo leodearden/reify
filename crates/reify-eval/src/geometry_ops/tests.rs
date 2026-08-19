@@ -6737,6 +6737,108 @@
     }
 
     // ---------------------------------------------------------------------------
+    // `interp`'s VARIADIC coordinate triples (task 5658, R2 sweep)
+    //
+    // `interp(x1, y1, z1, x2, y2, z2, …)` is arity-open: every position is a
+    // coordinate of a point in space, so EVERY position is gated and there is
+    // no dimensionless neighbour at all.
+    //
+    // Two things distinguish this family from R1's named-arg rows. First it
+    // reaches the Contract C chokepoint through `accept_variadic_length_args`
+    // rather than `eval_named_arg_length`, so this row is what proves the two
+    // routes mint byte-identical wording. Second the compiler names these args
+    // positionally (`c0`…`cN`), which is useless in a diagnostic — the gated
+    // names below are the DISPLAY names `coord_display` mints, and asserting
+    // them is what keeps a rejection reading like every other Contract C one.
+    // ---------------------------------------------------------------------------
+
+    /// Build a variadic `Curve` op of `kind` from a flat coordinate stream,
+    /// under the positional `c0`…`cN` names the compiler actually mints.
+    fn variadic_curve(
+        kind: CurveKind,
+        c: &[reify_ir::CompiledExpr],
+    ) -> CompiledGeometryOp {
+        CompiledGeometryOp::Curve {
+            kind,
+            args: c
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (format!("c{i}"), e.clone()))
+                .collect(),
+        }
+    }
+
+    /// Build an `interp` op from its six gated coordinates (2 points), in gate
+    /// order.
+    fn interp_with_coords(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        variadic_curve(CurveKind::InterpCurve, c)
+    }
+
+    /// `interp`'s row in the shared gate table.
+    const INTERP_GATE: LengthGateCase = LengthGateCase {
+        label: "interp",
+        build: interp_with_coords,
+        // DISPLAY names, not the inert `c0`…`c5` the compiler mints.
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_interp_length_gate_rejects_every_coordinate() {
+        assert_length_gated(INTERP_GATE);
+    }
+
+    /// Six DISTINCT Length coordinates are accepted and land in their own IR
+    /// slots, in order. Distinctness pins the flat-stream → `chunks_exact(3)`
+    /// grouping (an all-equal fixture could not see a transposed triple), and
+    /// the SI values are exactly what the bare form would have misread as
+    /// 12/34/56/78/90/11 **metres**.
+    #[test]
+    fn compile_geometry_op_interp_length_coordinates_accepted() {
+        let values = ValueMap::new();
+
+        let op = interp_with_coords(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::InterpCurve { points }) => {
+                assert_eq!(points, vec![[0.012, 0.034, 0.056], [0.078, 0.090, 0.011]]);
+            }
+            other => panic!(
+                "expected Ok(InterpCurve) for six Length coordinates, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length coordinates are the fully clean path and must emit \
+             no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: ALL FAILURES AT ONCE, across every R1 family
     // ---------------------------------------------------------------------------
 
@@ -6748,6 +6850,11 @@
     /// and covers the two widest sets — `line_segment`'s six endpoint
     /// coordinates and `arc`'s centre-plus-radius four — alongside the triples,
     /// so no family can be quietly split back into chained reads.
+    ///
+    /// R2's variadic rows (task 5658) ride the same loop, and for them the
+    /// count assertion is doing a second job: their builders supply their own
+    /// un-gated neighbours, so `reported == gated.len()` also goes red if the
+    /// variadic gate OVER-reaches past its coordinate span.
     #[test]
     fn compile_geometry_op_length_gate_reports_every_bare_position_in_one_build() {
         for case in [
@@ -6757,6 +6864,7 @@
             LINE_SEGMENT_GATE,
             HELIX_GATE,
             ARC_GATE,
+            INTERP_GATE,
         ] {
             assert_every_bare_position_reported(case);
         }
