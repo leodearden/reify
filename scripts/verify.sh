@@ -1007,6 +1007,13 @@ is_occt_crate() {
 #     gate.rs's corpus_files()), geometry_let_selector_consumer_edit.ri,
 #     stdlib_ns_buckling_mode_coexist.ri, unit_nm_torque_immediate.ri
 #     (read via std::fs::read_to_string by torque_unit_tests.rs, task 5786)
+#   compile-time embeds (include_str! bakes the bytes straight into the test
+#   binary — a tighter coupling than a runtime read, since the fixture is a
+#   build input of the target, not just a file it happens to open):
+#     indexed_sub_coll_arm_baseline.ri, indexed_sub_forall_range_baseline.ri,
+#     indexed_sub_inst_arm_baseline.ri, indexed_sub_spec_arm_baseline.ri
+#     (the four sub-arm baselines held as indexed_sub_grammar_tests.rs's
+#     existing_sub_arms_regression_floor, task 5481)
 #   conservative, doc-comment mentions only today (listing a name is cheap, and
 #   a doc mention is usually the first trace of a read about to exist):
 #     compiler_type_hygiene_trait_args_silent_accept.ri, stdlib_ns_mode_member.ri
@@ -1022,7 +1029,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" compiler_type_hygiene_trait_args_silent_accept.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri unit_nm_torque_immediate.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
