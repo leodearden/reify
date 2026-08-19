@@ -187,13 +187,11 @@ fn drain_bounded(
 /// least make that hang reachable by two named tests (see their doc
 /// comments), rather than proof against it.
 ///
-/// `crates/reify-cli/tests/harness_cli/mcp_integration.rs`'s `mcp_roundtrip`
-/// has the same class of pipe-backpressure exposure (it writes every
-/// request to stdin before reading anything, with stdout/stderr both piped
-/// but undrained until `wait_with_output()` runs after its poll loop) and
-/// does not yet apply this spawn-before-write/wait pattern as of this
-/// writing; #5389 tracks bringing it there. This file reimplements the
-/// pattern locally rather than sharing a helper.
+/// `crates/reify-cli/tests/harness_cli/mcp_integration.rs` is in the same
+/// exposure class; see #5389. (Deliberately a bare pointer: describing that
+/// file's current internals here would go stale the moment #5389 lands, and
+/// nothing gates it.) This file reimplements the pattern locally rather than
+/// sharing a helper.
 fn spawn_pipe_reader(
     mut pipe: impl io::Read + Send + 'static,
 ) -> thread::JoinHandle<(Vec<u8>, Option<io::Error>)> {
@@ -494,29 +492,20 @@ fn wait_for_response(rx: &mpsc::Receiver<serde_json::Value>, id: u64) -> serde_j
 /// between. Returns the matched notification so the caller can assert on
 /// its `params` (e.g. `diagnostics`).
 ///
-/// Used as a deterministic barrier in place of a fixed-duration sleep: e.g.
-/// after sending a `didChange`, waiting for the matching
-/// `publishDiagnostics` notification proves the server actually finished
-/// processing that change — `did_change` in crates/reify-lsp/src/server.rs
-/// always calls `publish_diagnostics` as its last step (after the
-/// unknown-URI `eprintln!` and the diagnostics computation) — rather than
-/// hoping a wall-clock delay was long enough under CPU load. Note that
-/// `ClientSink::publish_diagnostics` (crates/reify-lsp/src/server.rs)
-/// schedules the actual send via `tokio::spawn` rather than sending
-/// inline; this does not weaken the barrier, since that spawn is itself
-/// sequenced strictly after the eprintln/computation within the same
-/// `did_change` invocation, so seeing the notification on stdout still
-/// proves everything before it in that invocation already ran.
+/// Used as a deterministic barrier in place of a fixed-duration sleep:
+/// observing the notification the server published *for the exact
+/// uri+version just sent* proves it finished handling that message, rather
+/// than hoping a wall-clock delay was long enough under CPU load. (What
+/// reify-lsp does internally between receiving the message and publishing
+/// is deliberately not restated here — that is production control flow, and
+/// the phase-4b assertion in `lsp_full_interactive_loop_through_binary` is
+/// the actual proof.)
 ///
 /// `version` is required, not optional, for correctness: the mpsc channel
 /// is a FIFO of every notification the server has already published, so
-/// for a `uri` that was published before (true for every phase in
-/// `lsp_full_interactive_loop_through_binary` except phase 4b's once-only
-/// huge URI) a `method`+`uri`-only match can return a *stale*
-/// already-queued notification and provide no barrier at all. The server
-/// always passes `Some(version)` through
-/// `NotificationSink::publish_diagnostics` (crates/reify-lsp/src/server.rs),
-/// so every call site here can supply the version number it just sent.
+/// for a `uri` that was published before, a `method`+`uri`-only match can
+/// return a *stale* already-queued notification and provide no barrier at
+/// all.
 ///
 /// Same 30s timeout and CPU-saturation rationale as `wait_for_response`
 /// above.
@@ -583,14 +572,14 @@ fn error_diagnostics(notification: &serde_json::Value) -> Vec<serde_json::Value>
 /// (crates/reify-lsp/src/server.rs) fire — the URI verbatim, one ~160 KiB
 /// write to the child's stderr pipe, entirely client-controlled.
 ///
-/// Measured A/B on this binary (target/debug/reify):
-///   - undrained (pre-fix) shape: stderr piped but never taken/drained —
-///     child does not exit within 20s; the main thread parks in
-///     `wchan=pipe_write` (same signature as the stdout hang task 5389
-///     root-caused).
-///   - drained (post-fix) shape: reader thread spawned before the
-///     write/wait phase — child exits `rc=0` in 0.05s with 163_895 bytes of
-///     stderr captured.
+/// Measured A/B on this binary (target/debug/reify): with stderr piped but
+/// never taken/drained the child does not exit and the main thread parks in
+/// `wchan=pipe_write` (the same signature as the stdout hang #5389
+/// root-caused); with the reader thread spawned before the write/wait phase
+/// it exits `rc=0` promptly with the full stderr captured. The measured
+/// byte count is not repeated here — it lives in the non-vacuity
+/// assertion's message at the end of this function, which is where it would
+/// actually be read.
 ///
 /// The assertions below on the returned `stderr` are therefore load-bearing,
 /// not diagnostic: they prove the drain actually ran to completion under
@@ -603,11 +592,14 @@ fn error_diagnostics(notification: &serde_json::Value) -> Vec<serde_json::Value>
 /// delay is not a reliable proxy for "the server has processed this
 /// specific message" under the CPU-saturation conditions this file already
 /// designs around (see `wait_for_response`'s doc comment). Phases 2-4 also
-/// assert on the received diagnostics themselves (mirroring
-/// `diagnostics::stateful_diagnostics_three_phase_lifecycle`'s valid →
-/// violating → valid shape), so this test would fail if the LSP stopped
-/// wiring `did_open`/`did_change` to the diagnostics engine, not just if it
-/// stopped draining stderr.
+/// assert ERROR diagnostics are absent/present/absent across the
+/// valid → violating → valid sequence, so this test would fail if the LSP
+/// stopped wiring `did_open`/`did_change` to the diagnostics engine, not
+/// just if it stopped draining stderr. That is deliberately the *wiring*
+/// only — the diagnostic semantics are owned in-process by
+/// `reify-lsp`'s `diagnostics` tests, and both payloads come from the
+/// `reify_test_support` fixtures those tests use, so the two cannot drift
+/// apart.
 ///
 /// This test's chatty-stderr trigger is coupled to reify-lsp's current
 /// behavior: the exact `eprintln!` wording in server.rs, and the fact that
@@ -691,22 +683,15 @@ fn lsp_full_interactive_loop_through_binary() {
     });
     send_jsonrpc(&mut stdin, &initialized.to_string());
 
-    // 2) didOpen with valid bracket source
-    let valid_source = r#"structure Bracket {
-    param width: Length = 80mm
-    param height: Length = 100mm
-    param thickness: Length = 5mm
-    param fillet_radius: Length = 3mm
-    param hole_diameter: Length = 6mm
-
-    let volume = width * height * thickness
-
-    constraint thickness > 2mm
-    constraint thickness < width / 4
-    constraint hole_diameter < thickness * 2
-
-    let body = box(width, height, thickness)
-}"#;
+    // 2) didOpen with valid bracket source.
+    //
+    // Both payloads come from `reify_test_support`, not a local literal, so
+    // this e2e test and the in-process diagnostics tests provably drive the
+    // *same* source. The literal that used to live here had already drifted
+    // from the fixture (`structure Bracket` vs the fixture's `structure def
+    // Bracket`) with nothing to catch it, and the phase assertions below
+    // are the first thing to depend on it being semantically equivalent.
+    let valid_source = reify_test_support::bracket_source();
 
     let did_open = serde_json::json!({
         "jsonrpc": "2.0",
@@ -738,11 +723,9 @@ fn lsp_full_interactive_loop_through_binary() {
         diag_open["params"]["diagnostics"]
     );
 
-    // 3) didChange with violating source (thickness=1mm violates thickness > 2mm)
-    let violating_source = valid_source.replace(
-        "param thickness: Length = 5mm",
-        "param thickness: Length = 1mm",
-    );
+    // 3) didChange with violating source (the fixture sets thickness=1mm,
+    // violating the `thickness > 2mm` constraint the valid source declares).
+    let violating_source = reify_test_support::bracket_source_violating();
     let did_change_violating = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didChange",
@@ -757,29 +740,23 @@ fn lsp_full_interactive_loop_through_binary() {
     send_jsonrpc(&mut stdin, &did_change_violating.to_string());
 
     // Deterministic barrier: block for this didChange's own
-    // publishDiagnostics (version 2). Violating source must produce at
-    // least one ERROR diagnostic reporting the violated constraint
-    // (mirrors
-    // diagnostics::stateful_violating_source_always_produces_constraint_violation).
+    // publishDiagnostics (version 2). Asserting only that the violating
+    // fixture reaches the diagnostics engine at all — i.e. the didChange ->
+    // publishDiagnostics *wiring*, which only an out-of-process test can
+    // cover. What the resulting diagnostic says is owned by
+    // reify-lsp's in-process
+    // `diagnostics::stateful_violating_source_always_produces_constraint_violation`,
+    // and re-deriving that message predicate here would just duplicate it.
     let diag_violating = wait_for_notification(
         &rx,
         "textDocument/publishDiagnostics",
         "file:///tmp/test_bracket.ri",
         2,
     );
-    let violating_errors = error_diagnostics(&diag_violating);
     assert!(
-        !violating_errors.is_empty(),
+        !error_diagnostics(&diag_violating).is_empty(),
         "phase 3 (didChange, violating source): expected at least one ERROR diagnostic, got {:#?}",
         diag_violating["params"]["diagnostics"]
-    );
-    assert!(
-        violating_errors.iter().any(|d| {
-            let message = d["message"].as_str().unwrap_or_default().to_lowercase();
-            message.contains("constraint") && message.contains("violated")
-        }),
-        "phase 3 (didChange, violating source): expected a 'constraint ... violated' ERROR \
-         diagnostic, got {violating_errors:#?}"
     );
 
     // 4) didChange back to valid source
