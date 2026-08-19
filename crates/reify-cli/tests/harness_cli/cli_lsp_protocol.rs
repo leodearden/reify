@@ -233,6 +233,49 @@ fn drain(reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>, label: &str) 
     }
 }
 
+/// Drives `drain`'s `Some(e)` arm — the one path a real child pipe will
+/// essentially never take, and which therefore had no coverage at all while
+/// it was still plumbed out through a `bool` return.
+///
+/// Pins both halves of the fold: bytes read before the failure survive, and
+/// the error is appended as a trailing marker (trailing specifically so
+/// `elide`'s tail window keeps it for a capture too large to print whole).
+#[test]
+fn drain_folds_a_mid_read_failure_into_the_returned_text() {
+    /// Yields `remaining` across as many `read` calls as it takes, then
+    /// fails — the shape of a pipe that hits EIO/EBADF partway through.
+    struct FailsAfterBytes {
+        remaining: &'static [u8],
+    }
+    impl io::Read for FailsAfterBytes {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.remaining.is_empty() {
+                return Err(io::Error::other("simulated EIO"));
+            }
+            let n = buf.len().min(self.remaining.len());
+            buf[..n].copy_from_slice(&self.remaining[..n]);
+            self.remaining = &self.remaining[n..];
+            Ok(n)
+        }
+    }
+
+    let text = drain(
+        spawn_pipe_reader(FailsAfterBytes {
+            remaining: b"partial capture",
+        }),
+        "stderr",
+    );
+
+    assert!(
+        text.starts_with("partial capture"),
+        "bytes read before the failure must survive the fold, got {text:?}"
+    );
+    assert!(
+        text.ends_with("[stderr read failed before EOF: simulated EIO]"),
+        "the io::Error must be appended as a trailing marker, got {text:?}"
+    );
+}
+
 /// Render a possibly-huge diagnostic string for inclusion in a panic/assert
 /// message: the first and last 512 bytes plus the total length, instead of
 /// the whole thing. Phase 4b of `lsp_full_interactive_loop_through_binary`
@@ -262,6 +305,53 @@ fn elide(s: &str) -> String {
         &s[..head_end],
         &s[tail_start..]
     )
+}
+
+/// Unit-pins `elide`, which is otherwise fed only ASCII by both call sites
+/// (160 KiB of `'a'` from phase 4b, a 25-byte marker from the timeout stub)
+/// and so never executes its two `is_char_boundary` walk loops in an
+/// end-to-end run. Those loops are the only non-trivial thing in the
+/// function, and they run one decrementing and one incrementing — an
+/// inverted `+=`/`-=` would ship green and only surface later as a
+/// `byte index is not a char boundary` panic *inside* some other test's
+/// failure message, i.e. exactly when someone is already debugging
+/// something else.
+#[test]
+fn elide_passes_short_input_through_and_walks_to_char_boundaries() {
+    // (a) At or below the 2 * HEAD_TAIL threshold: verbatim, no header.
+    assert_eq!(elide(""), "");
+    assert_eq!(elide("hello"), "hello");
+    let at_threshold = "a".repeat(1024);
+    assert_eq!(elide(&at_threshold), at_threshold);
+
+    // (b) One byte over: elided, reporting the true total and a full
+    // 512-byte head/tail (all-ASCII, so neither walk loop moves).
+    let over = "a".repeat(1025);
+    let rendered = elide(&over);
+    assert_eq!(
+        rendered.lines().next(),
+        Some("1025 bytes total (showing first 512 and last 512 bytes):"),
+        "full rendering: {rendered:?}"
+    );
+
+    // (c) All 3-byte codepoints, so both cut points land mid-codepoint:
+    // 512 % 3 == 2 and (len - 512) % 3 == 1. The head walk must shrink
+    // 512 -> 510 and the tail walk must grow len-512 -> len-510, and
+    // neither slice may panic. U+FFFD is not arbitrary: it is what
+    // `String::from_utf8_lossy` in `drain` emits for a child that died
+    // mid-sequence, which is the input shape that motivated the loops.
+    let lossy = "\u{FFFD}".repeat(500);
+    assert_eq!(lossy.len(), 1500, "500 * 3-byte codepoints");
+    assert!(
+        !lossy.is_char_boundary(512) && !lossy.is_char_boundary(1500 - 512),
+        "premise: both cut points must land mid-codepoint for this case to bite"
+    );
+    let rendered = elide(&lossy);
+    assert_eq!(
+        rendered.lines().next(),
+        Some("1500 bytes total (showing first 510 and last 510 bytes):"),
+        "full rendering: {rendered:?}"
+    );
 }
 
 /// Read all JSON-RPC messages from stdout in a background thread.
