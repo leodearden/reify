@@ -1013,97 +1013,166 @@ fn shaper_trait_exists_with_no_params() {
     );
 }
 
-// ─── step-31: JointLimit param shape ─────────────────────────────────────────
+// ─── task 6096: the actuator-limit duality — one table, two halves ───────────
+//
+// `JointLimit` (prismatic) and `RevoluteJointLimit` (revolute) are the two
+// halves of the per-joint-kind actuator-limit duality: same trait, same param
+// NAMES, same canonical order, same positivity constraint — differing ONLY in
+// the declared dimension of `max_force`. That is the `spring_rate` precedent
+// this task extends (`Prismatic.spring_rate : Option<TranslationalStiffness>`
+// vs `Revolute.spring_rate : Option<RotationalStiffness>`, kinematic.ri
+// 147/165).
+//
+// The two halves are therefore asserted by ONE shared body per concern, driven
+// by the `ActuatorLimitHalf` row below, so an edit to one half's contract
+// cannot be silently missing from the other's test — the halves execute the
+// SAME assertions. Only the per-kind rows differ. Each `#[test]` stays a
+// separate named wrapper so a failure names the half that broke.
 
-/// `JointLimit` is the per-joint actuator constraint consumed by TOTSShaper
-/// (PRD §5.2). It must declare exactly two params:
-///
-///   - `joint     : Real`  (TODO(joint-type) placeholder for the future // ptodo:allow doc reference to a placeholder marker - not tracked debt
-///     kinematic-completion Joint type)
-///   - `max_force : Scalar<Force>`  (task 4580: tightened from Real)
-///
-/// Both fields are caller-supplied — no canonical defaults. Constraint
-/// `max_force > 0` is asserted separately in step-33.
-///
-/// JointLimit refines the `ActuatorLimit` marker trait (task 6096). It
-/// previously refined NO trait; that contract changed deliberately when 6096
-/// introduced the per-joint-kind actuator-limit duality, so that the two
-/// halves — `JointLimit` (prismatic/translational, `Scalar<Force>`) and
-/// `RevoluteJointLimit` (revolute/rotational, `Scalar<Torque>`) — are unified
-/// in the TYPE SYSTEM rather than only in prose. The shaper half of the same
-/// duality gets this for free via the pre-existing `trait Shaper`.
-///
-/// Mirrors `waypoint_struct_has_correct_param_shape` (step-9) and
-/// `rayleigh_damping_param_shape` in modal_options_validation_tests.rs.
-#[test]
-fn joint_limit_struct_has_correct_param_shape() {
-    let template = find_structure("JointLimit");
+/// One row of the actuator-limit duality table.
+#[derive(Clone, Copy)]
+struct ActuatorLimitHalf {
+    /// Structure name as declared in `trajectory.ri`.
+    struct_name: &'static str,
+    /// Joint kind this half serves — assertion-message prose only.
+    kind: &'static str,
+    /// The dimension THIS half declares for `max_force`.
+    max_force_dim: DimensionVector,
+    /// The OTHER half's dimension. The collapse guard asserts `max_force` is
+    /// NOT this — the two halves must never converge onto one vector, which
+    /// is the whole point of the duality.
+    other_max_force_dim: DimensionVector,
+    /// How this half's dimension is spelled in the decl (message prose).
+    max_force_spelling: &'static str,
+}
 
-    // JointLimit refines the ActuatorLimit family marker (task 6096) — and
-    // ONLY that (it is still not a BoundaryCondition, not a Profile, not a
-    // Shaper). Tight equality, not `contains`, so an accidental extra
-    // refinement is caught here.
+/// The PRISMATIC / translational half: `JointLimit.max_force : Scalar<Force>`.
+fn prismatic_limit_half() -> ActuatorLimitHalf {
+    ActuatorLimitHalf {
+        struct_name: "JointLimit",
+        kind: "prismatic/translational",
+        max_force_dim: DimensionVector::FORCE,
+        other_max_force_dim: DimensionVector::TORQUE,
+        max_force_spelling: "Scalar<Force> (m·kg·s⁻²)",
+    }
+}
+
+/// The REVOLUTE / rotational half: `RevoluteJointLimit.max_force :
+/// Scalar<Torque>`.
+///
+/// TORQUE is read from the registry const and NEVER composed as FORCE·LENGTH:
+/// Reify's τ carries an explicit Angle⁻¹ slot (N·m/rad), which is what makes
+/// it a DISTINCT vector from ENERGY (see `DimensionVector::TORQUE` docs) —
+/// hand-composing it would silently assert the wrong thing.
+fn revolute_limit_half() -> ActuatorLimitHalf {
+    ActuatorLimitHalf {
+        struct_name: "RevoluteJointLimit",
+        kind: "revolute/rotational",
+        max_force_dim: DimensionVector::TORQUE,
+        other_max_force_dim: DimensionVector::FORCE,
+        max_force_spelling: "Scalar<Torque> (m²·kg·s⁻²·rad⁻¹)",
+    }
+}
+
+/// Shared param-shape body for one actuator-limit half.
+///
+/// Asserts, for `half.struct_name`:
+///   (a) it refines EXACTLY `["ActuatorLimit"]` — the family marker (task
+///       6096). Tight equality, not `contains`, so an accidental extra
+///       refinement is caught. `JointLimit` previously refined NO trait; that
+///       contract changed deliberately when 6096 introduced the duality.
+///   (b) exactly 2 params, in canonical order `(joint, max_force)`;
+///   (c) `joint : Real` — the entity-handle placeholder, IDENTICAL across the
+///       halves (the per-kind variation is confined to `max_force`);
+///   (d) `max_force : Scalar<half.max_force_dim>`;
+///   (e) the collapse guard: `max_force` is NOT the other half's dimension;
+///   (f) neither field has a default — both are caller-supplied (there is no
+///       canonical "default max force"/"default max torque").
+fn assert_actuator_limit_param_shape(half: ActuatorLimitHalf) {
+    let ActuatorLimitHalf {
+        struct_name,
+        kind,
+        max_force_dim,
+        other_max_force_dim,
+        max_force_spelling,
+    } = half;
+    let template = find_structure(struct_name);
+
+    // (a) refines exactly the ActuatorLimit family marker.
     assert_eq!(
         template.trait_bounds,
         vec!["ActuatorLimit".to_string()],
-        "JointLimit must refine exactly the ActuatorLimit marker trait \
-         (task 6096: the prismatic/translational half of the per-joint-kind \
-         actuator-limit duality); got trait_bounds: {:?}",
+        "{struct_name} must refine exactly the ActuatorLimit marker trait \
+         (task 6096: the {kind} half of the per-joint-kind actuator-limit \
+         duality) — not a Shaper, not a BoundaryCondition, not a Profile; \
+         got trait_bounds: {:?}",
         template.trait_bounds
     );
 
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
 
+    // (b) tight param count.
     assert_eq!(
         params.len(),
         2,
-        "JointLimit should have exactly 2 param cells (joint, max_force); \
-         got: {:?}",
-        names
+        "{struct_name} should have exactly 2 param cells (joint, max_force); \
+         got: {names:?}"
     );
 
     let expected: &[(&str, Type)] = &[
+        // `joint` is a dimensionless joint INDEX, identical in both halves.
         ("joint", Type::dimensionless_scalar()),
         (
             "max_force",
             Type::Scalar {
-                dimension: DimensionVector::FORCE,
+                dimension: max_force_dim,
             },
         ),
     ];
 
-    // Param declaration order is part of the contract.
+    // (b) param declaration order is part of the contract.
     let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
     assert_eq!(
         names, expected_names,
-        "JointLimit params must be in canonical order (joint, max_force); \
-         got: {:?}",
-        names
+        "{struct_name} params must be in canonical order (joint, max_force); \
+         got: {names:?}"
     );
 
+    // (c)/(d) type assertion per param.
     for (member, expected_ty) in expected {
         let cell = params
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!(
-                    "JointLimit missing required param '{}'; got: {:?}",
-                    member, names
-                )
+                panic!("{struct_name} missing required param '{member}'; got: {names:?}")
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
-            "JointLimit.{} should be {:?}, got {:?}",
-            member, expected_ty, cell.cell_type
+            "{struct_name}.{member} should be {expected_ty:?}, got {:?}",
+            cell.cell_type
         );
     }
 
-    // Both fields are caller-supplied — no canonical defaults.
+    // (e) collapse guard — the halves must NOT converge onto one vector.
+    let max_force = params
+        .iter()
+        .find(|vc| vc.id.member == "max_force")
+        .expect("checked above");
+    assert_ne!(
+        max_force.cell_type,
+        Type::Scalar {
+            dimension: other_max_force_dim,
+        },
+        "{struct_name}.max_force must NOT carry the OTHER joint kind's \
+         dimension — the {kind} half carries {max_force_spelling} (task 6096)"
+    );
+
+    // (f) both fields are caller-supplied — no canonical defaults.
     for cell in &params {
         assert!(
             cell.default_expr.is_none(),
-            "JointLimit.{} should have no default_expr (caller-supplied); \
+            "{struct_name}.{} should have no default_expr (caller-supplied); \
              got: {:?}",
             cell.id.member,
             cell.default_expr
@@ -1111,42 +1180,48 @@ fn joint_limit_struct_has_correct_param_shape() {
     }
 }
 
-// ─── step-33: JointLimit max_force positivity constraint ─────────────────────
-
-/// `JointLimit` must declare exactly one constraint: `max_force > 0`.
+/// Shared `max_force > 0` constraint body for one actuator-limit half.
 ///
 /// A "max force" of zero or negative is physically degenerate — only positive
-/// values are meaningful as an actuator limit. The bare `0` RHS is coerced
-/// to `Scalar<Force>(0.0)` at compile time by the task-4485/β polymorphic-zero
-/// rewrite (esc-3115-112 resolved — a dimensioned `0 * 1N` is no longer
-/// needed). Making the contract explicit in production code (task #2544
-/// convention) rather than relying solely on test coverage.
+/// values are meaningful as an actuator limit — and that is true of a revolute
+/// joint for exactly the same reason it is of a prismatic one. Making the
+/// contract explicit in production code (task #2544 convention) rather than
+/// relying solely on test coverage.
 ///
 /// Tight count == 1 is a regression gate: `joint : Real` is explicitly NOT
 /// constrained (it is an entity-handle placeholder — no meaningful scalar
 /// predicate on a handle).
 ///
-/// Mirrors `modal_options_constrains_positivity_invariants` in
-/// modal_options_validation_tests.rs and
-/// `piecewise_polynomial_profile_constrains_waypoints_nonempty` (step-19).
+/// The RHS bare `0` is coerced PER FIELD to `Scalar<half.max_force_dim>(0.0)`
+/// at compile time by the task-4485/β polymorphic-zero rewrite (esc-3115-112
+/// resolved — a dimensioned `0 * 1N` is no longer needed). Its dimension is
+/// pinned for BOTH halves: the constraint SOURCE TEXT is byte-identical across
+/// them, so the coerced literal's dimension is the only thing in this test
+/// that varies per joint kind — a regression coercing `RevoluteJointLimit`'s
+/// `0` to FORCE would otherwise leave every assertion green.
 ///
 /// These constraint declarations feed the SIR-α generic constraint-firing
 /// pipeline, which is pinned end-to-end by
 /// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// (constraint → `Satisfaction::Violated` diagnostic) and the
 /// `Value::StructureInstance` round-trip in
-/// `crates/reify-eval/tests/structure_instance_e2e.rs`. A JointLimit-specific
+/// `crates/reify-eval/tests/structure_instance_e2e.rs`. A per-structure
 /// construction-time firing test would duplicate that generic coverage.
-#[test]
-fn joint_limit_constrains_max_force_positive() {
-    let template = find_structure("JointLimit");
+fn assert_actuator_limit_constrains_max_force_positive(half: ActuatorLimitHalf) {
+    let ActuatorLimitHalf {
+        struct_name,
+        max_force_dim,
+        max_force_spelling,
+        ..
+    } = half;
+    let template = find_structure(struct_name);
 
     // Tight count: exactly 1 constraint (regression-gate against accidental
     // over-declaration of a constraint on `joint`).
     assert_eq!(
         template.constraints.len(),
         1,
-        "JointLimit should declare exactly 1 constraint (max_force > 0); \
+        "{struct_name} should declare exactly 1 constraint (max_force > 0); \
          got {} constraints: {:?}",
         template.constraints.len(),
         template
@@ -1161,212 +1236,89 @@ fn joint_limit_constrains_max_force_positive() {
     // Constraint must be BinOp::Gt.
     let (left, right, op) = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
-        other => panic!("JointLimit constraint should be a BinOp; got: {:?}", other),
+        other => panic!("{struct_name} constraint should be a BinOp; got: {other:?}"),
     };
     assert_eq!(
         *op,
         BinOp::Gt,
-        "JointLimit constraint should use BinOp::Gt (max_force > 0); \
-         got: {:?}",
-        op
+        "{struct_name} constraint should use BinOp::Gt (max_force > 0); got: {op:?}"
     );
 
     // LHS must reference `max_force`.
     let lhs_refs = collect_value_ref_members(left);
     assert!(
         lhs_refs.iter().any(|m| m.as_str() == "max_force"),
-        "JointLimit constraint LHS should reference `max_force`; \
-         got refs: {:?}",
-        lhs_refs
+        "{struct_name} constraint LHS should reference `max_force`; \
+         got refs: {lhs_refs:?}"
     );
 
-    // RHS must be a zero Scalar<Force> literal. After task-4485/β polymorphic-zero
-    // rewrite, `constraint max_force > 0` coerces the bare `0` to
-    // Literal(Value::Scalar{si_value:0.0, dimension:FORCE}) at compile time
-    // (esc-3115-112 resolved — the old dimensioned-zero form `0 * 1N` is gone).
+    // RHS must be a zero literal carrying THIS half's dimension.
     let rhs_ok = matches!(
         &right.kind,
         CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-            if *si_value == 0.0 && *dimension == DimensionVector::FORCE
+            if *si_value == 0.0 && *dimension == max_force_dim
     );
     assert!(
         rhs_ok,
-        "JointLimit constraint RHS should be Literal(Scalar{{si_value:0.0, dim:FORCE}}) \
-         (bare `0` coerced by task-4485/β polymorphic-zero rewrite, esc-3115-112 resolved); \
+        "{struct_name} constraint RHS should be Literal(Scalar{{si_value:0.0, \
+         dim:{max_force_spelling}}}) — the bare `0` coerced per-field by the \
+         task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved); \
          got: {:?}",
         right.kind
     );
 }
 
+// ─── step-31/33 + task 6096: the two halves, one shared body each ────────────
+
+/// `JointLimit` — the PRISMATIC half's param shape (PRD §5.2, step-31).
+///
+/// `joint : Real` is a placeholder for the future kinematic-completion Joint
+/// type; `max_force : Scalar<Force>` was tightened from Real by task 4580.
+/// Refinement, shape, order, per-kind dimension, collapse guard and
+/// default-freeness are all asserted by
+/// [`assert_actuator_limit_param_shape`], shared verbatim with the revolute
+/// half so the two cannot drift.
+///
+/// Mirrors `waypoint_struct_has_correct_param_shape` (step-9) and
+/// `rayleigh_damping_param_shape` in modal_options_validation_tests.rs.
+#[test]
+fn joint_limit_struct_has_correct_param_shape() {
+    assert_actuator_limit_param_shape(prismatic_limit_half());
+}
+
+/// `JointLimit` must declare exactly one constraint: `max_force > 0`
+/// (step-33, tightened by task 4580). Body shared with the revolute half —
+/// see [`assert_actuator_limit_constrains_max_force_positive`].
+#[test]
+fn joint_limit_constrains_max_force_positive() {
+    assert_actuator_limit_constrains_max_force_positive(prismatic_limit_half());
+}
+
 // ─── task 6096: RevoluteJointLimit — the revolute half of the duality ────────
 
-/// `RevoluteJointLimit` is the REVOLUTE/rotational half of the per-joint-kind
-/// actuator-limit duality (task 6096). It mirrors `JointLimit` exactly —
-/// same param names, same canonical order, same positivity constraint — and
-/// differs ONLY in the declared dimension of `max_force`:
+/// `RevoluteJointLimit` — the REVOLUTE half's param shape (task 6096).
+///
+/// Mirrors `JointLimit` exactly (same shared body), differing ONLY in the
+/// declared dimension of `max_force`:
 ///
 ///   - `JointLimit.max_force        : Scalar<Force>`   (m·kg·s⁻², prismatic)
 ///   - `RevoluteJointLimit.max_force: Scalar<Torque>`  (m²·kg·s⁻²·rad⁻¹)
 ///
-/// This is the same shape as the `spring_rate` precedent this task extends —
-/// `Prismatic.spring_rate : Option<TranslationalStiffness>` vs
-/// `Revolute.spring_rate : Option<RotationalStiffness>` (kinematic.ri:147/165)
-/// are likewise two sibling structures sharing a field NAME and varying only
-/// the dimension. The name stays `max_force` (not `max_torque`) for exactly
-/// that reason, and so the dimension-blind `field_f64(data, "max_force", ..)`
-/// marshalling readers stay uniform across both kinds.
-///
-/// TORQUE is read from the registry const and NEVER composed as FORCE·LENGTH:
-/// Reify's τ carries an explicit Angle⁻¹ slot (N·m/rad), which is what makes
-/// it a DISTINCT vector from ENERGY (see `DimensionVector::TORQUE` docs) —
-/// hand-composing it would silently assert the wrong thing.
+/// The name stays `max_force` (not `max_torque`) because the `spring_rate`
+/// precedent keeps ONE name across joint kinds and varies only the dimension,
+/// and so the dimension-blind `field_f64(data, "max_force", ..)` marshalling
+/// readers stay uniform across both kinds.
 #[test]
 fn revolute_joint_limit_struct_has_correct_param_shape() {
-    let template = find_structure("RevoluteJointLimit");
-
-    // Refines the shared ActuatorLimit family marker — this is what pins the
-    // duality in the type system rather than in a comment.
-    assert_eq!(
-        template.trait_bounds,
-        vec!["ActuatorLimit".to_string()],
-        "RevoluteJointLimit must refine exactly the ActuatorLimit marker \
-         trait (task 6096); got trait_bounds: {:?}",
-        template.trait_bounds
-    );
-
-    let params = param_cells(template);
-    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
-
-    assert_eq!(
-        params.len(),
-        2,
-        "RevoluteJointLimit should have exactly 2 param cells \
-         (joint, max_force) — the same shape as JointLimit (task 6096); \
-         got: {:?}",
-        names
-    );
-
-    let expected: &[(&str, Type)] = &[
-        // `joint` is a dimensionless joint INDEX, identical to JointLimit's —
-        // the per-kind variation is confined to `max_force`.
-        ("joint", Type::dimensionless_scalar()),
-        (
-            "max_force",
-            Type::Scalar {
-                dimension: DimensionVector::TORQUE,
-            },
-        ),
-    ];
-
-    // Param declaration order is part of the contract (mirrors JointLimit).
-    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
-    assert_eq!(
-        names, expected_names,
-        "RevoluteJointLimit params must be in canonical order \
-         (joint, max_force) (task 6096); got: {:?}",
-        names
-    );
-
-    for (member, expected_ty) in expected {
-        let cell = params
-            .iter()
-            .find(|vc| vc.id.member == *member)
-            .unwrap_or_else(|| {
-                panic!(
-                    "RevoluteJointLimit missing required param '{}' (task 6096); got: {:?}",
-                    member, names
-                )
-            });
-        assert_eq!(
-            cell.cell_type, *expected_ty,
-            "RevoluteJointLimit.{} should be {:?}, got {:?} (task 6096)",
-            member, expected_ty, cell.cell_type
-        );
-    }
-
-    // The whole point of the duality: the two halves must NOT collapse onto
-    // the same vector. TORQUE carries an Angle⁻¹ slot that FORCE does not.
-    let revolute_max_force = params
-        .iter()
-        .find(|vc| vc.id.member == "max_force")
-        .expect("checked above");
-    assert_ne!(
-        revolute_max_force.cell_type,
-        Type::Scalar {
-            dimension: DimensionVector::FORCE,
-        },
-        "RevoluteJointLimit.max_force must NOT be Scalar<Force> — that is the \
-         PRISMATIC half's dimension; the revolute half carries Torque \
-         (m²·kg·s⁻²·rad⁻¹) (task 6096)"
-    );
-
-    // Both fields are caller-supplied — no canonical defaults (mirrors
-    // JointLimit: there is no canonical "default max torque" either).
-    for cell in &params {
-        assert!(
-            cell.default_expr.is_none(),
-            "RevoluteJointLimit.{} should have no default_expr \
-             (caller-supplied) (task 6096); got: {:?}",
-            cell.id.member,
-            cell.default_expr
-        );
-    }
+    assert_actuator_limit_param_shape(revolute_limit_half());
 }
 
-/// `RevoluteJointLimit` must declare exactly one constraint: `max_force > 0`.
-///
-/// Mirrors `joint_limit_constrains_max_force_positive` above — a zero or
-/// negative actuator limit is degenerate for a revolute joint for exactly the
-/// same physical reason it is for a prismatic one. Tight count == 1 is the
-/// regression gate: `joint : Real` is explicitly NOT constrained (it is an
-/// entity-handle placeholder — no meaningful scalar predicate on a handle).
-///
-/// The RHS bare `0` is coerced per-field by the task-4485/β polymorphic-zero
-/// rewrite; its concrete dimension is NOT pinned here (the linear counterpart
-/// pins FORCE) because the constraint's contract at this level is the
-/// predicate shape, and the field's dimension is already pinned tightly by
-/// `revolute_joint_limit_struct_has_correct_param_shape` above.
+/// `RevoluteJointLimit` must declare exactly one constraint: `max_force > 0`
+/// (task 6096), with the bare `0` coerced to a TORQUE-dimensioned literal —
+/// the one thing in that shared body that varies per joint kind.
 #[test]
 fn revolute_joint_limit_constrains_max_force_positive() {
-    let template = find_structure("RevoluteJointLimit");
-
-    assert_eq!(
-        template.constraints.len(),
-        1,
-        "RevoluteJointLimit should declare exactly 1 constraint \
-         (max_force > 0) (task 6096); got {} constraints: {:?}",
-        template.constraints.len(),
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
-
-    let constraint = &template.constraints[0];
-
-    let (left, op) = match &constraint.expr.kind {
-        CompiledExprKind::BinOp { op, left, .. } => (left.as_ref(), op),
-        other => panic!(
-            "RevoluteJointLimit constraint should be a BinOp (task 6096); got: {:?}",
-            other
-        ),
-    };
-    assert_eq!(
-        *op,
-        BinOp::Gt,
-        "RevoluteJointLimit constraint should use BinOp::Gt (max_force > 0) \
-         (task 6096); got: {:?}",
-        op
-    );
-
-    let lhs_refs = collect_value_ref_members(left);
-    assert!(
-        lhs_refs.iter().any(|m| m.as_str() == "max_force"),
-        "RevoluteJointLimit constraint LHS should reference `max_force` \
-         (task 6096); got refs: {:?}",
-        lhs_refs
-    );
+    assert_actuator_limit_constrains_max_force_positive(revolute_limit_half());
 }
 
 // ─── task 6096: actuator-limit field-READ dimensional signal ─────────────────
@@ -1469,19 +1421,111 @@ structure def ActuatorLimitReadProbe {{
     }
 }
 
-// ─── step-35: TOTSShaper param shape ─────────────────────────────────────────
+// ─── task 6096: the TOTS-shaper duality — one table, two halves ──────────────
+//
+// `TOTSShaper` (prismatic/linear) and `RevoluteTOTSShaper` (revolute) are the
+// shaper half of the per-joint-kind duality: same `Shaper` refinement, same 7
+// params in the same canonical order, same 6 constraints, same two defaults —
+// differing ONLY in the three per-joint-kind cells (`actuator_limits` element
+// type, `velocity_limit`, `acceleration_limit`).
+//
+// As with the actuator-limit halves above, the two are asserted by ONE shared
+// body per concern driven by the `TotsShaperHalf` row, so an edit to one
+// half's contract cannot be silently missing from the other's test. Each
+// `#[test]` stays a separate named wrapper so a failure names the half.
 
-/// `TOTSShaper` is the time-optimal trajectory shaper value type (PRD §5.2).
-/// It must refine the `Shaper` marker trait and declare exactly 7 params in
-/// canonical order:
+/// The rad·s⁻² vector, composed the same way the .ri decl composes it:
+/// `Rate<AngularVelocity>` = AngularVelocity / Time.
 ///
-///   - `modes             : List<Mode>`        (cross-module: Mode from std.modal.analysis)
-///   - `actuator_limits   : List<JointLimit>`  (JointLimit declared in this file above)
-///   - `velocity_limit    : Scalar<Velocity>`   (task 4580: tightened from Real)
-///   - `acceleration_limit: Scalar<Acceleration>` (task 4580: tightened from Real)
-///   - `vibration_tolerance: Real`             (genuinely dimensionless residual fraction)
-///   - `max_iters         : Int`               (solver iteration cap)
-///   - `tol               : Real`              (convergence threshold)
+/// Built from the registry constants rather than hand-spelled slot exponents
+/// so that if `ANGULAR_VELOCITY` is ever corrected, this pin follows it
+/// instead of silently pinning a stale vector. There is deliberately NO
+/// `DimensionVector::ANGULAR_ACCELERATION` to read here: that name is
+/// chartered to `docs/prds/v0_6/angle-dimension-completion.md` leaf δ and has
+/// not landed (zero hits repo-wide), which is exactly why the decl spells the
+/// field `Rate<AngularVelocity>`. When δ lands, both the decl and this helper
+/// should collapse onto the named constant.
+fn angular_acceleration_vector() -> DimensionVector {
+    DimensionVector::ANGULAR_VELOCITY.div(&DimensionVector::TIME)
+}
+
+/// One row of the TOTS-shaper duality table.
+#[derive(Clone, Copy)]
+struct TotsShaperHalf {
+    /// Structure name as declared in `trajectory.ri`.
+    struct_name: &'static str,
+    /// Joint kind this half serves — assertion-message prose only.
+    kind: &'static str,
+    /// Element type of `actuator_limits` for THIS half.
+    limit_struct_name: &'static str,
+    /// Element type of `actuator_limits` for the OTHER half (collapse guard).
+    other_limit_struct_name: &'static str,
+    /// `velocity_limit`'s declared dimension for THIS half.
+    velocity_dim: DimensionVector,
+    /// `acceleration_limit`'s declared dimension for THIS half.
+    acceleration_dim: DimensionVector,
+    /// The OTHER half's `velocity_limit` dimension (collapse guard).
+    other_velocity_dim: DimensionVector,
+    /// The OTHER half's `acceleration_limit` dimension (collapse guard).
+    other_acceleration_dim: DimensionVector,
+    /// How this half spells `velocity_limit` in the decl (message prose).
+    velocity_spelling: &'static str,
+    /// How this half spells `acceleration_limit` in the decl (message prose).
+    acceleration_spelling: &'static str,
+}
+
+/// The PRISMATIC / linear half (PRD §5.2; dimensions tightened by task 4580).
+fn linear_tots_half() -> TotsShaperHalf {
+    TotsShaperHalf {
+        struct_name: "TOTSShaper",
+        kind: "prismatic/linear",
+        limit_struct_name: "JointLimit",
+        other_limit_struct_name: "RevoluteJointLimit",
+        velocity_dim: DimensionVector::VELOCITY,
+        acceleration_dim: DimensionVector::ACCELERATION,
+        other_velocity_dim: DimensionVector::ANGULAR_VELOCITY,
+        other_acceleration_dim: angular_acceleration_vector(),
+        velocity_spelling: "Scalar<Velocity> (m·s⁻¹)",
+        acceleration_spelling: "Scalar<Acceleration> (m·s⁻²)",
+    }
+}
+
+/// The REVOLUTE half (task 6096).
+///
+/// `acceleration_limit` is spelled `Rate<AngularVelocity>` rather than a named
+/// `AngularAcceleration` because no such dimension const exists yet — see
+/// [`angular_acceleration_vector`].
+fn revolute_tots_half() -> TotsShaperHalf {
+    TotsShaperHalf {
+        struct_name: "RevoluteTOTSShaper",
+        kind: "revolute/rotational",
+        limit_struct_name: "RevoluteJointLimit",
+        other_limit_struct_name: "JointLimit",
+        velocity_dim: DimensionVector::ANGULAR_VELOCITY,
+        acceleration_dim: angular_acceleration_vector(),
+        other_velocity_dim: DimensionVector::VELOCITY,
+        other_acceleration_dim: DimensionVector::ACCELERATION,
+        velocity_spelling: "Scalar<AngularVelocity> (rad·s⁻¹)",
+        acceleration_spelling: "Rate<AngularVelocity> (rad·s⁻²)",
+    }
+}
+
+/// Shared param-shape body for one TOTS-shaper half.
+///
+/// Asserts, for `half.struct_name`:
+///   (a) it refines EXACTLY `["Shaper"]` — the shaper half of the duality
+///       needs no new marker (contrast the limit half, which gained
+///       `trait ActuatorLimit`);
+///   (b) exactly 7 params, in canonical order;
+///   (c) the four SHARED cells — `modes : List<Mode>` (cross-module: Mode from
+///       std.modal.analysis), `vibration_tolerance : Real` (a genuinely
+///       dimensionless residual fraction), `max_iters : Int`, `tol : Real`.
+///       `Real`-declared params normalize to `Type::dimensionless_scalar()`,
+///       NOT `Type::Real`;
+///   (d) the three PER-KIND cells — `actuator_limits`' element type and the
+///       two kinematic-limit dimensions, from the row;
+///   (e) the collapse guards: none of the three per-kind cells may carry the
+///       OTHER half's spelling.
 ///
 /// `Mode` resolves via the growing-prelude cross-module mechanism —
 /// std.modal.analysis is loaded at slot 16 BEFORE std.trajectory at slot 17
@@ -1499,139 +1543,192 @@ structure def ActuatorLimitReadProbe {{
 /// coexistence; if name-shadowing ever surfaces as a problem, the fallback is a
 /// one-line rename in `trajectory.ri`.
 ///
-/// Does NOT assert defaults (step-37) or constraints (step-39).
+/// Does NOT assert defaults or constraints — those are the other two bodies.
 /// Mirrors `piecewise_polynomial_profile_has_correct_param_shape` (step-17)
 /// and `modal_options_struct_has_correct_param_shape` in
 /// modal_options_validation_tests.rs.
-#[test]
-fn tots_shaper_struct_has_correct_param_shape() {
-    let template = find_structure("TOTSShaper");
+fn assert_tots_shaper_param_shape(half: TotsShaperHalf) {
+    let TotsShaperHalf {
+        struct_name,
+        kind,
+        limit_struct_name,
+        other_limit_struct_name,
+        velocity_dim,
+        acceleration_dim,
+        other_velocity_dim,
+        other_acceleration_dim,
+        velocity_spelling,
+        acceleration_spelling,
+    } = half;
+    let template = find_structure(struct_name);
 
-    // (a) refines Shaper marker trait.
+    // (a) refines exactly the Shaper marker trait.
     assert_eq!(
         template.trait_bounds,
         vec!["Shaper".to_string()],
-        "TOTSShaper must refine Shaper; got trait_bounds: {:?}",
+        "{struct_name} must refine exactly Shaper; got trait_bounds: {:?}",
         template.trait_bounds
     );
 
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
 
-    // (b) tight param count.
+    // (b) tight param count — the same 7 in both halves.
     assert_eq!(
         params.len(),
         7,
-        "TOTSShaper should have exactly 7 params \
+        "{struct_name} should have exactly 7 params \
          (modes, actuator_limits, velocity_limit, acceleration_limit, \
-          vibration_tolerance, max_iters, tol); got: {:?}",
-        names
+          vibration_tolerance, max_iters, tol); got: {names:?}"
     );
 
     let expected: &[(&str, Type)] = &[
+        // Shared across the halves:
         (
             "modes",
             Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
         ),
+        // Per-kind: the limit element type follows the joint kind.
         (
             "actuator_limits",
-            Type::List(Box::new(Type::StructureRef("JointLimit".to_string()))),
+            Type::List(Box::new(Type::StructureRef(
+                limit_struct_name.to_string(),
+            ))),
         ),
+        // Per-kind: m·s⁻¹ vs rad·s⁻¹.
         (
             "velocity_limit",
             Type::Scalar {
-                dimension: DimensionVector::VELOCITY,
+                dimension: velocity_dim,
             },
         ),
+        // Per-kind: m·s⁻² vs rad·s⁻².
         (
             "acceleration_limit",
             Type::Scalar {
-                dimension: DimensionVector::ACCELERATION,
+                dimension: acceleration_dim,
             },
         ),
+        // Shared across the halves — solver knobs are joint-kind-independent.
         ("vibration_tolerance", Type::dimensionless_scalar()),
         ("max_iters", Type::Int),
         ("tol", Type::dimensionless_scalar()),
     ];
 
-    // (c) Param declaration order is part of the contract.
+    // (b) param declaration order is part of the contract.
     let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
     assert_eq!(
         names, expected_names,
-        "TOTSShaper params must be in canonical order; got: {:?}",
-        names
+        "{struct_name} params must be in canonical order; got: {names:?}"
     );
 
-    // (d) type assertion per param.
+    // (c)/(d) type assertion per param.
     for (member, expected_ty) in expected {
         let cell = params
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!(
-                    "TOTSShaper missing required param '{}'; got: {:?}",
-                    member, names
-                )
+                panic!("{struct_name} missing required param '{member}'; got: {names:?}")
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
-            "TOTSShaper.{} should be {:?}, got {:?}",
-            member, expected_ty, cell.cell_type
+            "{struct_name}.{member} should be {expected_ty:?}, got {:?}",
+            cell.cell_type
         );
     }
+
+    // (e) collapse guards: the whole point of the duality is that the two
+    //     halves must NOT converge. rad·s⁻¹ ≠ m·s⁻¹ and rad·s⁻² ≠ m·s⁻²
+    //     (the Angle slot is what separates them), and the limit element type
+    //     follows the joint kind.
+    let cell = |member: &str| {
+        params
+            .iter()
+            .find(|vc| vc.id.member == member)
+            .expect("checked above")
+    };
+
+    assert_ne!(
+        cell("actuator_limits").cell_type,
+        Type::List(Box::new(Type::StructureRef(
+            other_limit_struct_name.to_string(),
+        ))),
+        "{struct_name}.actuator_limits must NOT be List<{other_limit_struct_name}> \
+         — that is the OTHER joint kind's limit type; the {kind} half carries \
+         List<{limit_struct_name}> (task 6096)"
+    );
+    assert_ne!(
+        cell("velocity_limit").cell_type,
+        Type::Scalar {
+            dimension: other_velocity_dim,
+        },
+        "{struct_name}.velocity_limit must NOT carry the OTHER joint kind's \
+         dimension; the {kind} half carries {velocity_spelling} (task 6096)"
+    );
+    assert_ne!(
+        cell("acceleration_limit").cell_type,
+        Type::Scalar {
+            dimension: other_acceleration_dim,
+        },
+        "{struct_name}.acceleration_limit must NOT carry the OTHER joint \
+         kind's dimension; the {kind} half carries {acceleration_spelling} \
+         (task 6096)"
+    );
 }
 
-// ─── step-37: TOTSShaper param defaults ──────────────────────────────────────
-
-/// `TOTSShaper` declares two param defaults per PRD §5.2:
+/// Shared param-defaults body for one TOTS-shaper half.
+///
+/// Both halves declare exactly two defaults per PRD §5.2:
 ///   - `max_iters : Int = 100`         — solver iteration cap
-///   - `tol       : Real = 0.000001`   — convergence threshold (= 1e-6 in decimal)
+///   - `tol       : Real = 0.000001`   — convergence threshold (= 1e-6)
 ///
 /// The other five params (modes, actuator_limits, velocity_limit,
-/// acceleration_limit, vibration_tolerance) are required at construction —
-/// no canonical default exists for these caller-supplied values.
+/// acceleration_limit, vibration_tolerance) are required at construction — no
+/// canonical default exists for these caller-supplied values.
+///
+/// These are solver-loop knobs, entirely independent of the joint kind, so the
+/// two halves must NOT diverge here — which is exactly what a shared body
+/// guarantees mechanically.
 ///
 /// Decimal-encoding discipline: Reify's grammar has no scientific notation,
 /// so 1e-6 is spelled as `0.000001` (same convention as modal_analysis.ri
 /// tol = 0.000000001 = 1e-9 at modal_analysis.ri:356). IEEE-754
-/// round-to-nearest of these exact decimal literals is deterministic.
+/// round-to-nearest of these exact decimal literals is deterministic, so
+/// strict equality is safe.
 ///
 /// Mirrors `modal_options_param_defaults_match_spec` in
 /// modal_options_validation_tests.rs.
-#[test]
-fn tots_shaper_param_defaults_match_spec() {
-    let template = find_structure("TOTSShaper");
+fn assert_tots_shaper_param_defaults(half: TotsShaperHalf) {
+    let struct_name = half.struct_name;
+    let template = find_structure(struct_name);
 
     // max_iters = 100 per PRD §5.2 explicit default.
     let max_iters_default = require_default(template, "max_iters");
     match &max_iters_default.kind {
-        CompiledExprKind::Literal(Value::Int(v)) => {
-            assert_eq!(*v, 100, "max_iters default should be 100, got: {}", v)
-        }
+        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
+            *v, 100,
+            "{struct_name}.max_iters default should be 100, got: {v}"
+        ),
         other => panic!(
-            "max_iters default should be Literal(Value::Int(100)), got: {:?}",
-            other
+            "{struct_name}.max_iters default should be Literal(Value::Int(100)), \
+             got: {other:?}"
         ),
     }
 
-    // tol = 0.000001 = 1e-6 per PRD §5.2; decimal-encoding (no sci notation
-    // in Reify grammar). Strict-equality safe — IEEE-754 deterministic.
+    // tol = 0.000001 = 1e-6 per PRD §5.2.
     let tol_default = require_default(template, "tol");
     match &tol_default.kind {
         CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
             *v, 0.000001,
-            "tol default should be exactly 0.000001 (= 1e-6), got: {}",
-            v
+            "{struct_name}.tol default should be exactly 0.000001 (= 1e-6), got: {v}"
         ),
         other => panic!(
-            "tol default should be Literal(Value::Real(0.000001)), got: {:?}",
-            other
+            "{struct_name}.tol default should be Literal(Value::Real(0.000001)), \
+             got: {other:?}"
         ),
     }
 
-    // The other five params are required at construction — no canonical
-    // default (caller must supply modes, actuator_limits, velocity_limit,
-    // acceleration_limit, vibration_tolerance).
+    // The other five params are required at construction.
     for member in [
         "modes",
         "actuator_limits",
@@ -1643,33 +1740,34 @@ fn tots_shaper_param_defaults_match_spec() {
             .value_cells
             .iter()
             .find(|vc| vc.id.member == member)
-            .unwrap_or_else(|| panic!("TOTSShaper.{} missing", member));
+            .unwrap_or_else(|| panic!("{struct_name}.{member} missing"));
         assert!(
             cell.default_expr.is_none(),
-            "TOTSShaper.{} should have NO default_expr (required at \
+            "{struct_name}.{member} should have NO default_expr (required at \
              construction), but got: {:?}",
-            member,
             cell.default_expr
         );
     }
 }
 
-// ─── step-39: TOTSShaper design-param positivity/range constraints ────────────
-
-/// `TOTSShaper` must declare exactly 6 constraints per PRD §5.2 + §11 Phase 2:
+/// Shared design-param constraint body for one TOTS-shaper half.
 ///
-///   constraint velocity_limit      > 0   (bare 0 → Scalar<Velocity>; task-4485/β)
-///   constraint acceleration_limit  > 0   (bare 0 → Scalar<Acceleration>; task-4485/β)
+/// Both halves must declare exactly 6 constraints per PRD §5.2 + §11 Phase 2:
+///
+///   constraint velocity_limit      > 0   (bare 0 → this half's velocity dim)
+///   constraint acceleration_limit  > 0   (bare 0 → this half's accel dim)
 ///   constraint vibration_tolerance > 0   (dimensionless: plain `> 0`)
 ///   constraint vibration_tolerance <= 1  (upper bound: (0,1] interval)
 ///   constraint max_iters           > 0
 ///   constraint tol                 > 0
 ///
-/// velocity_limit and acceleration_limit use bare `0` RHS — coerced to
-/// Scalar<Velocity>(0.0) / Scalar<Acceleration>(0.0) at compile time by the
+/// The two kinematic-limit RHSs are bare `0`, coerced PER FIELD by the
 /// task-4485/β polymorphic-zero rewrite (esc-3115-112 resolved; the old
-/// dimensioned-zero form `0 * 1m/1s` / `0 * 1m/(1s*1s)` is gone).
-/// vibration_tolerance/max_iters/tol remain plain (dimensionless params).
+/// dimensioned-zero form `0 * 1m/1s` is gone). Their dimension is pinned from
+/// the row: the constraint SOURCE TEXT is byte-identical across the halves, so
+/// the coerced literal's dimension is the only per-kind signal here — a
+/// regression coercing the revolute half's zeros to the LINEAR vectors would
+/// otherwise leave every assertion green.
 ///
 /// The `vibration_tolerance ∈ (0, 1]` interval decomposes into two scalar
 /// predicates because Reify's constraint grammar admits BinOp predicates but
@@ -1677,104 +1775,84 @@ fn tots_shaper_param_defaults_match_spec() {
 ///
 /// Tight count == 6 regression-gates against accidental over/under-declaration.
 /// Explicitly NOT constrained (collection invariants deferred to κ-task):
-///   `modes : List<Mode>` and `actuator_limits : List<JointLimit>`.
+/// `modes : List<Mode>` and `actuator_limits : List<*JointLimit>`.
 ///
 /// Mirrors `modal_options_constrains_positivity_invariants` in
-/// modal_options_validation_tests.rs.
-///
-/// These declarations feed the SIR-α generic constraint-firing pipeline; the
-/// construction-time `Satisfaction::Violated` signal is pinned end-to-end by
+/// modal_options_validation_tests.rs. These declarations feed the SIR-α
+/// generic constraint-firing pipeline; the construction-time
+/// `Satisfaction::Violated` signal is pinned end-to-end by
 /// `crates/reify-eval/tests/harness_fea_solver_e2e/stress_error_messages.rs::constraint_violation_diagnostic`
 /// and `crates/reify-eval/tests/structure_instance_e2e.rs` — no duplicate
-/// TOTSShaper-specific construction-time firing test is needed here.
-#[test]
-fn tots_shaper_constrains_design_param_invariants() {
-    let template = find_structure("TOTSShaper");
+/// shaper-specific construction-time firing test is needed here.
+fn assert_tots_shaper_constrains_design_param_invariants(half: TotsShaperHalf) {
+    let TotsShaperHalf {
+        struct_name,
+        velocity_dim,
+        acceleration_dim,
+        velocity_spelling,
+        acceleration_spelling,
+        ..
+    } = half;
+    let template = find_structure(struct_name);
+
+    let constraint_kinds = || {
+        template
+            .constraints
+            .iter()
+            .map(|c| &c.expr.kind)
+            .collect::<Vec<_>>()
+    };
 
     // Tight count: exactly 6 constraints.
     assert_eq!(
         template.constraints.len(),
         6,
-        "TOTSShaper should declare exactly 6 constraints; \
-         got {} constraints: {:?}",
+        "{struct_name} should declare exactly 6 constraints; got {} constraints: {:?}",
         template.constraints.len(),
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
+        constraint_kinds()
     );
 
-    // velocity_limit: positivity constraint. After task-4485/β polymorphic-zero
-    // rewrite, `constraint velocity_limit > 0` coerces the bare `0` to
-    // Literal(Value::Scalar{si_value:0.0, dimension:VELOCITY}) at compile time
-    // (esc-3115-112 resolved — the old dimensioned form `0 * 1m/1s` is gone).
-    // Dimension-pin: check that the coerced literal carries VELOCITY so a
-    // wrong-dimension regression (e.g. accidentally adopting ACCELERATION)
-    // is still caught here.
-    let velocity_matched = template.constraints.iter().any(|c| match &c.expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            *op == BinOp::Gt
-                && collect_value_ref_members(left)
-                    .iter()
-                    .any(|m| m.as_str() == "velocity_limit")
-                && matches!(
-                    &right.kind,
-                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::VELOCITY
-                )
-        }
-        _ => false,
-    });
-    assert!(
-        velocity_matched,
-        "TOTSShaper should declare `constraint velocity_limit > 0` \
-         (bare `0` coerced to Literal(Scalar{{VELOCITY}}) by task-4485/β, esc-3115-112 resolved); \
-         got constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
+    // The two DIMENSIONED positivity constraints, each pinned to the vector
+    // its field carries in THIS half.
+    for (member, expected_dim, spelling) in [
+        ("velocity_limit", velocity_dim, velocity_spelling),
+        (
+            "acceleration_limit",
+            acceleration_dim,
+            acceleration_spelling,
+        ),
+    ] {
+        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                *op == BinOp::Gt
+                    && collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == member)
+                    && matches!(
+                        &right.kind,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                            if *si_value == 0.0 && *dimension == expected_dim
+                    )
+            }
+            _ => false,
+        });
+        assert!(
+            matched,
+            "{struct_name} should declare `constraint {member} > 0` with the bare \
+             `0` coerced to a {spelling} literal by task-4485/β (esc-3115-112 \
+             resolved); got constraints: {:?}",
+            constraint_kinds()
+        );
+    }
 
-    // acceleration_limit: same pattern as velocity_limit above.
-    // task-4485/β coerces `> 0` to Literal(Scalar{0.0, ACCELERATION}).
-    let accel_matched = template.constraints.iter().any(|c| match &c.expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            *op == BinOp::Gt
-                && collect_value_ref_members(left)
-                    .iter()
-                    .any(|m| m.as_str() == "acceleration_limit")
-                && matches!(
-                    &right.kind,
-                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::ACCELERATION
-                )
-        }
-        _ => false,
-    });
-    assert!(
-        accel_matched,
-        "TOTSShaper should declare `constraint acceleration_limit > 0` \
-         (bare `0` coerced to Literal(Scalar{{ACCELERATION}}) by task-4485/β, esc-3115-112 resolved); \
-         got constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
-
-    // vibration_tolerance, max_iters, tol: plain positivity constraints (> 0),
-    // dimensionless params — plain `Literal(Int(0))` RHS.
-    for required in &["vibration_tolerance", "max_iters", "tol"] {
+    // The three DIMENSIONLESS positivity constraints — plain Int/Real 0 RHS.
+    for required in ["vibration_tolerance", "max_iters", "tol"] {
         let matched = template.constraints.iter().any(|c| match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
                 if *op != BinOp::Gt
                     || !collect_value_ref_members(left)
                         .iter()
-                        .any(|m| m.as_str() == *required)
+                        .any(|m| m.as_str() == required)
                 {
                     return false;
                 }
@@ -1788,14 +1866,9 @@ fn tots_shaper_constrains_design_param_invariants() {
         });
         assert!(
             matched,
-            "TOTSShaper should declare `constraint {} > 0` (dimensionless plain RHS); \
-             got constraints: {:?}",
-            required,
-            template
-                .constraints
-                .iter()
-                .map(|c| &c.expr.kind)
-                .collect::<Vec<_>>()
+            "{struct_name} should declare `constraint {required} > 0` \
+             (dimensionless plain RHS); got constraints: {:?}",
+            constraint_kinds()
         );
     }
 
@@ -1820,372 +1893,72 @@ fn tots_shaper_constrains_design_param_invariants() {
     });
     assert!(
         le_matched,
-        "TOTSShaper should declare `constraint vibration_tolerance <= 1` \
+        "{struct_name} should declare `constraint vibration_tolerance <= 1` \
          (upper bound completing the (0,1] interval per PRD §11 Phase 2 ε); \
          got constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
+        constraint_kinds()
     );
+}
+
+// ─── step-35/37/39 + task 6096: the two halves, one shared body each ─────────
+
+/// `TOTSShaper` — the PRISMATIC/linear half's param shape (PRD §5.2, step-35).
+/// Body shared with the revolute half: [`assert_tots_shaper_param_shape`].
+#[test]
+fn tots_shaper_struct_has_correct_param_shape() {
+    assert_tots_shaper_param_shape(linear_tots_half());
+}
+
+/// `TOTSShaper` param defaults (PRD §5.2, step-37).
+/// Body shared with the revolute half: [`assert_tots_shaper_param_defaults`].
+#[test]
+fn tots_shaper_param_defaults_match_spec() {
+    assert_tots_shaper_param_defaults(linear_tots_half());
+}
+
+/// `TOTSShaper` design-param positivity/range constraints (PRD §5.2 + §11
+/// Phase 2, step-39). Body shared with the revolute half:
+/// [`assert_tots_shaper_constrains_design_param_invariants`].
+#[test]
+fn tots_shaper_constrains_design_param_invariants() {
+    assert_tots_shaper_constrains_design_param_invariants(linear_tots_half());
 }
 
 // ─── task 6096: RevoluteTOTSShaper — the revolute half of the shaper duality ──
 
-/// The rad·s⁻² vector, composed the same way the .ri decl composes it:
-/// `Rate<AngularVelocity>` = AngularVelocity / Time.
+/// `RevoluteTOTSShaper` — the REVOLUTE half's param shape (task 6096).
 ///
-/// Built from the registry constants rather than hand-spelled slot exponents
-/// so that if `ANGULAR_VELOCITY` is ever corrected, this pin follows it
-/// instead of silently pinning a stale vector. There is deliberately NO
-/// `DimensionVector::ANGULAR_ACCELERATION` to read here: that name is
-/// chartered to `docs/prds/v0_6/angle-dimension-completion.md` leaf δ and has
-/// not landed (zero hits repo-wide), which is exactly why the decl spells the
-/// field `Rate<AngularVelocity>`. When δ lands, both the decl and this helper
-/// should collapse onto the named constant.
-fn angular_acceleration_vector() -> DimensionVector {
-    DimensionVector::ANGULAR_VELOCITY.div(&DimensionVector::TIME)
-}
-
-/// `RevoluteTOTSShaper` is the REVOLUTE half of the TOTS-shaper duality
-/// (task 6096). It mirrors `TOTSShaper` exactly — same 7 params in the same
-/// canonical order, same `Shaper` refinement, same 6 constraints — and
-/// differs ONLY in the three per-joint-kind cells:
+/// Same shared body as `TOTSShaper`, differing only in the three per-kind
+/// cells the row supplies:
 ///
 ///   - `actuator_limits    : List<RevoluteJointLimit>` (vs `List<JointLimit>`)
 ///   - `velocity_limit     : Scalar<AngularVelocity>`  (rad·s⁻¹, vs m·s⁻¹)
 ///   - `acceleration_limit : Rate<AngularVelocity>`    (rad·s⁻², vs m·s⁻²)
 ///
-/// The four shared cells (`modes`, `vibration_tolerance`, `max_iters`, `tol`)
-/// are copied verbatim from `tots_shaper_struct_has_correct_param_shape`
-/// above, so the two halves stay visibly symmetric and any future edit to one
-/// is obviously missing from the other.
+/// It refines the PRE-EXISTING `Shaper` marker — the shaper half of the
+/// duality needs no new marker (contrast the limit half, which gains
+/// `trait ActuatorLimit`).
 #[test]
 fn revolute_tots_shaper_struct_has_correct_param_shape() {
-    let template = find_structure("RevoluteTOTSShaper");
-
-    // (a) refines the pre-existing Shaper marker trait — the shaper half of
-    //     the duality needs no new marker (contrast the limit half, which
-    //     gains `trait ActuatorLimit`).
-    assert_eq!(
-        template.trait_bounds,
-        vec!["Shaper".to_string()],
-        "RevoluteTOTSShaper must refine exactly Shaper (task 6096); \
-         got trait_bounds: {:?}",
-        template.trait_bounds
-    );
-
-    let params = param_cells(template);
-    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
-
-    // (b) tight param count — same 7 as the linear half.
-    assert_eq!(
-        params.len(),
-        7,
-        "RevoluteTOTSShaper should have exactly 7 params \
-         (modes, actuator_limits, velocity_limit, acceleration_limit, \
-          vibration_tolerance, max_iters, tol) — the same shape as \
-         TOTSShaper (task 6096); got: {:?}",
-        names
-    );
-
-    let expected: &[(&str, Type)] = &[
-        // Shared with the linear half, verbatim:
-        (
-            "modes",
-            Type::List(Box::new(Type::StructureRef("Mode".to_string()))),
-        ),
-        // Per-kind: the limit element type follows the joint kind.
-        (
-            "actuator_limits",
-            Type::List(Box::new(Type::StructureRef(
-                "RevoluteJointLimit".to_string(),
-            ))),
-        ),
-        // Per-kind: rad·s⁻¹, not m·s⁻¹.
-        (
-            "velocity_limit",
-            Type::Scalar {
-                dimension: DimensionVector::ANGULAR_VELOCITY,
-            },
-        ),
-        // Per-kind: rad·s⁻², not m·s⁻².
-        (
-            "acceleration_limit",
-            Type::Scalar {
-                dimension: angular_acceleration_vector(),
-            },
-        ),
-        // Shared with the linear half, verbatim. `Real`-declared params
-        // normalize to `Type::dimensionless_scalar()`, NOT `Type::Real`.
-        ("vibration_tolerance", Type::dimensionless_scalar()),
-        ("max_iters", Type::Int),
-        ("tol", Type::dimensionless_scalar()),
-    ];
-
-    // (c) Param declaration order is part of the contract.
-    let expected_names: Vec<&str> = expected.iter().map(|(m, _)| *m).collect();
-    assert_eq!(
-        names, expected_names,
-        "RevoluteTOTSShaper params must be in canonical order (task 6096); \
-         got: {:?}",
-        names
-    );
-
-    // (d) type assertion per param.
-    for (member, expected_ty) in expected {
-        let cell = params
-            .iter()
-            .find(|vc| vc.id.member == *member)
-            .unwrap_or_else(|| {
-                panic!(
-                    "RevoluteTOTSShaper missing required param '{}' (task 6096); got: {:?}",
-                    member, names
-                )
-            });
-        assert_eq!(
-            cell.cell_type, *expected_ty,
-            "RevoluteTOTSShaper.{} should be {:?}, got {:?} (task 6096)",
-            member, expected_ty, cell.cell_type
-        );
-    }
-
-    // (e) The whole point of the duality: the angular and linear halves must
-    //     NOT collapse onto the same vectors. rad·s⁻¹ ≠ m·s⁻¹ and
-    //     rad·s⁻² ≠ m·s⁻² (the Angle slot is what separates them).
-    let velocity_limit = params
-        .iter()
-        .find(|vc| vc.id.member == "velocity_limit")
-        .expect("checked above");
-    assert_ne!(
-        velocity_limit.cell_type,
-        Type::Scalar {
-            dimension: DimensionVector::VELOCITY,
-        },
-        "RevoluteTOTSShaper.velocity_limit must NOT be Scalar<Velocity> — \
-         that is the PRISMATIC half's dimension; the revolute half carries \
-         AngularVelocity (rad·s⁻¹) (task 6096)"
-    );
-
-    let acceleration_limit = params
-        .iter()
-        .find(|vc| vc.id.member == "acceleration_limit")
-        .expect("checked above");
-    assert_ne!(
-        acceleration_limit.cell_type,
-        Type::Scalar {
-            dimension: DimensionVector::ACCELERATION,
-        },
-        "RevoluteTOTSShaper.acceleration_limit must NOT be \
-         Scalar<Acceleration> — that is the PRISMATIC half's dimension; the \
-         revolute half carries Rate<AngularVelocity> (rad·s⁻²) (task 6096)"
-    );
+    assert_tots_shaper_param_shape(revolute_tots_half());
 }
 
 /// `RevoluteTOTSShaper` declares the same two param defaults as the linear
 /// half (task 6096): `max_iters : Int = 100` and `tol : Real = 0.000001`.
-///
-/// Mirrors `tots_shaper_param_defaults_match_spec` above. The defaults are
-/// solver-loop knobs, entirely independent of the joint kind, so the two
-/// halves must NOT diverge here — that is what this test gates.
+/// They are solver-loop knobs, independent of the joint kind, so the halves
+/// must not diverge — the shared body is what guarantees that.
 #[test]
 fn revolute_tots_shaper_param_defaults_match_spec() {
-    let template = find_structure("RevoluteTOTSShaper");
-
-    let max_iters_default = require_default(template, "max_iters");
-    match &max_iters_default.kind {
-        CompiledExprKind::Literal(Value::Int(v)) => assert_eq!(
-            *v, 100,
-            "RevoluteTOTSShaper.max_iters default should be 100 — the same \
-             solver iteration cap as the linear half (task 6096); got: {}",
-            v
-        ),
-        other => panic!(
-            "RevoluteTOTSShaper.max_iters default should be \
-             Literal(Value::Int(100)) (task 6096), got: {:?}",
-            other
-        ),
-    }
-
-    // 0.000001 = 1e-6, spelled as a decimal literal because Reify's
-    // number-literal grammar has no scientific notation. Strict-equality safe
-    // — IEEE-754 round-to-nearest of this exact decimal is deterministic.
-    let tol_default = require_default(template, "tol");
-    match &tol_default.kind {
-        CompiledExprKind::Literal(Value::Real(v)) => assert_eq!(
-            *v, 0.000001,
-            "RevoluteTOTSShaper.tol default should be exactly 0.000001 \
-             (= 1e-6), matching the linear half (task 6096); got: {}",
-            v
-        ),
-        other => panic!(
-            "RevoluteTOTSShaper.tol default should be \
-             Literal(Value::Real(0.000001)) (task 6096), got: {:?}",
-            other
-        ),
-    }
-
-    // The other five params are required at construction.
-    for member in [
-        "modes",
-        "actuator_limits",
-        "velocity_limit",
-        "acceleration_limit",
-        "vibration_tolerance",
-    ] {
-        let cell = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id.member == member)
-            .unwrap_or_else(|| panic!("RevoluteTOTSShaper.{} missing", member));
-        assert!(
-            cell.default_expr.is_none(),
-            "RevoluteTOTSShaper.{} should have NO default_expr (required at \
-             construction, same as the linear half) (task 6096); got: {:?}",
-            member,
-            cell.default_expr
-        );
-    }
+    assert_tots_shaper_param_defaults(revolute_tots_half());
 }
 
-/// `RevoluteTOTSShaper` must declare the same 6 constraints as the linear
-/// half (task 6096):
-///
-///   constraint velocity_limit      > 0   (bare 0 → Scalar<AngularVelocity>)
-///   constraint acceleration_limit  > 0   (bare 0 → Scalar<rad·s⁻²>)
-///   constraint vibration_tolerance > 0
-///   constraint vibration_tolerance <= 1
-///   constraint max_iters           > 0
-///   constraint tol                 > 0
-///
-/// The two kinematic-limit RHSs are bare `0` coerced per-field by the
-/// task-4485/β polymorphic-zero rewrite, exactly as `TOTSShaper`'s are — and
-/// the coerced literal's dimension is pinned here, so a regression that
-/// coerced them to the LINEAR vectors would be caught even though the source
-/// text of the two constraint lines is byte-identical across the halves.
-///
-/// Mirrors `tots_shaper_constrains_design_param_invariants` above.
+/// `RevoluteTOTSShaper` must declare the same 6 constraints as the linear half
+/// (task 6096), with the two kinematic-limit zeros coerced to the ANGULAR
+/// vectors — the only per-kind signal in that body, since the constraint
+/// source text is byte-identical across the halves.
 #[test]
 fn revolute_tots_shaper_constrains_design_param_invariants() {
-    let template = find_structure("RevoluteTOTSShaper");
-
-    assert_eq!(
-        template.constraints.len(),
-        6,
-        "RevoluteTOTSShaper should declare exactly 6 constraints — the same \
-         set as the linear half (task 6096); got {} constraints: {:?}",
-        template.constraints.len(),
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
-
-    // The two dimensioned positivity constraints, each pinned to the ANGULAR
-    // vector its field carries.
-    for (member, expected_dim, spelling) in [
-        (
-            "velocity_limit",
-            DimensionVector::ANGULAR_VELOCITY,
-            "Scalar<AngularVelocity> (rad·s⁻¹)",
-        ),
-        (
-            "acceleration_limit",
-            angular_acceleration_vector(),
-            "Rate<AngularVelocity> (rad·s⁻²)",
-        ),
-    ] {
-        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                *op == BinOp::Gt
-                    && collect_value_ref_members(left)
-                        .iter()
-                        .any(|m| m.as_str() == member)
-                    && matches!(
-                        &right.kind,
-                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                            if *si_value == 0.0 && *dimension == expected_dim
-                    )
-            }
-            _ => false,
-        });
-        assert!(
-            matched,
-            "RevoluteTOTSShaper should declare `constraint {} > 0` with the \
-             bare `0` coerced to a {} literal by task-4485/β (task 6096); \
-             got constraints: {:?}",
-            member,
-            spelling,
-            template
-                .constraints
-                .iter()
-                .map(|c| &c.expr.kind)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    // The three dimensionless positivity constraints.
-    for required in &["vibration_tolerance", "max_iters", "tol"] {
-        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt
-                    || !collect_value_ref_members(left)
-                        .iter()
-                        .any(|m| m.as_str() == *required)
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
-            }
-            _ => false,
-        });
-        assert!(
-            matched,
-            "RevoluteTOTSShaper should declare `constraint {} > 0` \
-             (dimensionless plain RHS) (task 6096); got constraints: {:?}",
-            required,
-            template
-                .constraints
-                .iter()
-                .map(|c| &c.expr.kind)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    // The (0, 1] upper bound on vibration_tolerance.
-    let le_matched = template.constraints.iter().any(|c| match &c.expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            if *op != BinOp::Le
-                || !collect_value_ref_members(left)
-                    .iter()
-                    .any(|m| m.as_str() == "vibration_tolerance")
-            {
-                return false;
-            }
-            match &right.kind {
-                CompiledExprKind::Literal(Value::Int(1)) => true,
-                CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
-                _ => false,
-            }
-        }
-        _ => false,
-    });
-    assert!(
-        le_matched,
-        "RevoluteTOTSShaper should declare `constraint vibration_tolerance \
-         <= 1` (task 6096); got constraints: {:?}",
-        template
-            .constraints
-            .iter()
-            .map(|c| &c.expr.kind)
-            .collect::<Vec<_>>()
-    );
+    assert_tots_shaper_constrains_design_param_invariants(revolute_tots_half());
 }
 
 /// The shaper half's user-observable COMPILE-TIME signal, both polarities,
