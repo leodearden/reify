@@ -181,6 +181,7 @@ test_sn_gate.sh pool
 test_stash_guard.sh pool
 test_sync_comments_grep.sh pool
 test_target_per_lane_independence.sh pool
+test_test_binary_concurrency_sampler.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
 test_test_run_semaphore.sh pool
