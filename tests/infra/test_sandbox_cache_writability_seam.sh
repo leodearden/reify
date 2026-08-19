@@ -315,15 +315,23 @@ KNOWN_DISPATCH_ROLES="architect implementer debugger merger steward deep_reviewe
 
 # The residual UNCOVERED dispatch roles -- the members of
 # KNOWN_DISPATCH_ROLES that CACHE_REDIRECT_ROLES does NOT redirect, i.e. the
-# roles still resolving the DEFAULT ~/.cargo and ~/.npm.
+# roles whose CARGO_HOME/npm_config_cache still resolve to the DEFAULT
+# ~/.cargo and ~/.npm. Same accepted shape as CACHE_REDIRECT_ROLES and
+# KNOWN_DISPATCH_ROLES themselves: a hand-maintained mirror, kept honest by
+# the (C) assertion below rather than by anything reify can observe.
 #
-# SEEDED FROM THIS REPO'S OWN PROSE, DELIBERATELY: the value below is what
-# dark-factory-orchestrator.yaml (":NOT covered: merger, steward,
-# deep_reviewer") and this file's own second COUPLING section ("namely
-# MERGER, STEWARD or DEEP_REVIEWER") both still assert in comment text. The
-# assertion in (C) below computes the set for real and compares. If the two
-# disagree, the prose is false -- which is the whole point of pinning it.
-UNCOVERED_DISPATCH_ROLES="merger steward deep_reviewer"
+# WHAT THIS PIN CANNOT OBSERVE (same disclosure habit as the "WHAT (D)+(E)
+# STILL CANNOT OBSERVE" section above): it constrains REIFY'S DECLARED
+# COVERED SET against reify's own mirror of the role registry -- nothing
+# more. It does NOT read DF's roles.py, so a DF-side author flipping
+# sandboxed=True on `steward` or `deep_reviewer` still gets NO red here;
+# that role would begin running under landlock with an unwritable ~/.cargo
+# and this suite would stay green. What the pin does buy is that the
+# reify-side coverage set can no longer change SILENTLY: adding a role to
+# (or removing one from) CACHE_REDIRECT_ROLES now fails until the author
+# consciously edits this line, which drags them back to the prose that
+# describes the split.
+UNCOVERED_DISPATCH_ROLES="steward deep_reviewer"
 
 # ---------------------------------------------------------------------------
 # (A) STRUCTURE -- parse YAML and assert key/value shape
