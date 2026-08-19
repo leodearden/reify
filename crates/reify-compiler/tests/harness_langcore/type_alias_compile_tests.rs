@@ -1342,3 +1342,103 @@ mod alias_to_entity_type_parity {
         );
     }
 }
+
+// ─── task 6259: the two OTHER `unresolved type` emit sites ──────────────────
+//
+// Both consume the SAME resolver chain as a plain struct param
+// (`resolve_type_expr_with_aliases` → `resolve_type_expr_with_aliases_kinded`),
+// so the deferred use-site arm covers them with no per-call-site change. They
+// get their own locks because each fails DIFFERENTLY, and worse, than the plain
+// param arm:
+//
+//   * guarded-group param (`src/guards.rs`, `register_guarded_names`): its
+//     unresolved fallback is `Type::dimensionless_scalar()`, NOT the
+//     `Type::Error` poison — so a regression here leaves a WRONG DIMENSIONED
+//     type behind rather than a poisoned one.
+//
+//   * port param (`src/entity.rs`): emits the differently-worded
+//     `unresolved type name '{}' in port parameter`, so a lock written against
+//     the plain arm's message would not cover it.
+//
+// These two are DIAGNOSTIC-ONLY locks, deliberately: neither member reaches
+// `TopologyTemplate.value_cells`, so there is no compiled cell to assert parity
+// on. Measured on this fixture, `D`'s cells are exactly `[("active", Bool)]`
+// for the guarded case and `[]` for the port case — a guarded-group param and a
+// port param live only in the pre-pass scope (`scope.names`, the port one under
+// the composite name `pt.q`). Do NOT "strengthen" these by asserting a
+// `value_cells` entry: `find(...)` would yield `None` on both sides and the
+// comparison would pass vacuously.
+//
+// The diagnostic assertion is not weak here — it is the same signal the
+// production code emits alongside the bad fallback, and it was MEASURED red:
+// with the deferred arm disabled these fail with `unresolved type: AL` and
+// `unresolved type name 'AL' in port parameter` respectively.
+//
+// If either goes RED while the plain-param parity tests above stay GREEN, the
+// deferred arm has been moved onto a path these two sites do not reach — fix
+// the insertion point, do not special-case the call sites.
+mod alias_to_entity_type_other_emit_sites {
+    use super::*;
+    use reify_test_support::compile_source_with_stdlib;
+
+    fn error_messages(source: &str) -> Vec<String> {
+        let module = compile_source_with_stdlib(source);
+        errors_only(&module)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    /// Assert the alias spelling of a body compiles as cleanly as the direct
+    /// spelling of the same body at this use site.
+    fn assert_alias_resolves_like_direct(direct_src: &str, alias_src: &str, what: &str) {
+        let direct_errs = error_messages(direct_src);
+        assert!(
+            direct_errs.is_empty(),
+            "[{what}] DIRECT baseline must compile cleanly for this lock to mean \
+             anything; got: {direct_errs:?}\n--- source ---\n{direct_src}"
+        );
+        let alias_errs = error_messages(alias_src);
+        assert!(
+            alias_errs.is_empty(),
+            "[{what}] `type AL = Zq` used here must resolve exactly as the direct \
+             `Zq` spelling does; got: {alias_errs:?}\n--- source ---\n{alias_src}"
+        );
+    }
+
+    #[test]
+    fn alias_to_enum_resolves_in_a_guarded_group_param() {
+        let direct_src = "enum Zq { Close, Medium }\n\
+                          structure def D {\n\
+                          \x20   param active : Bool = true\n\
+                          \x20   where active {\n\
+                          \x20       param p : Zq\n\
+                          \x20   }\n\
+                          }\n";
+        let alias_src = "enum Zq { Close, Medium }\n\
+                         type AL = Zq\n\
+                         structure def D {\n\
+                         \x20   param active : Bool = true\n\
+                         \x20   where active {\n\
+                         \x20       param p : AL\n\
+                         \x20   }\n\
+                         }\n";
+        assert_alias_resolves_like_direct(direct_src, alias_src, "guarded-group param");
+    }
+
+    #[test]
+    fn alias_to_enum_resolves_in_a_port_param() {
+        let direct_src = "enum Zq { Close, Medium }\n\
+                          trait Tq { param d : Length }\n\
+                          structure def D {\n\
+                          \x20   port pt : out Tq { param q : Zq }\n\
+                          }\n";
+        let alias_src = "enum Zq { Close, Medium }\n\
+                         type AL = Zq\n\
+                         trait Tq { param d : Length }\n\
+                         structure def D {\n\
+                         \x20   port pt : out Tq { param q : AL }\n\
+                         }\n";
+        assert_alias_resolves_like_direct(direct_src, alias_src, "port param");
+    }
+}
