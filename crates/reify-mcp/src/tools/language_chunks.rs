@@ -107,6 +107,74 @@ pub fn chunk_corpus() -> &'static [(&'static str, &'static str)] {
     CORPUS
 }
 
+/// `true` when `b` is an ASCII word byte (`[A-Za-z0-9_]`) — the alphabet for
+/// the word-boundary check in [`contains_word`]. Mirrors
+/// `reify_audit::pdoccover::is_word_byte`
+/// (`crates/reify-audit/src/pdoccover.rs:247`); reproduced rather than
+/// linked because reify-mcp must not depend on reify-audit for a two-line
+/// predicate.
+///
+/// `#[cfg(test)]`: every caller of this helper is a corpus-invariant guard
+/// test (transitively, via [`contains_word`] and [`corpus_contains_word`]),
+/// so it is cfg-gated the same way rather than shipping as unreachable code
+/// in the binary.
+#[cfg(test)]
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// `true` when `needle` occurs in `haystack` with a non-word byte (or a
+/// string edge) on both flanks — so `curl` matches the comma-separated list
+/// in units.md:92 but never `curling` or `uncurl`.
+///
+/// Mirrors `reify_audit::pdoccover::contains_word`
+/// (`crates/reify-audit/src/pdoccover.rs:945`) exactly, including its
+/// char-stepped retry: after a boundary-rejected candidate, the scan must
+/// advance by a whole CHARACTER, not a byte, or a multi-byte character in
+/// chunk prose (`—`, `·`, `π`, `θ`) can be sliced into and panic. See
+/// `contains_word_retry_is_char_stepped_not_byte_stepped`
+/// (`crates/reify-audit/src/pdoccover.rs:2343`) for the regression this
+/// mirrors, and `contains_word_matches_word_boundaries_only` below for this
+/// module's copy of that lesson.
+///
+/// `#[cfg(test)]`: see [`is_word_byte`] — this is test-only infrastructure.
+#[cfg(test)]
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let idx = start + rel;
+        let after = idx + needle.len();
+        let left_ok = idx == 0 || !is_word_byte(hb[idx - 1]);
+        let right_ok = after >= hb.len() || !is_word_byte(hb[after]);
+        if left_ok && right_ok {
+            return true;
+        }
+        // Advance past this occurrence's first CHARACTER, not past a single
+        // byte: a byte-stepped retry can land inside a multi-byte character
+        // and panic on the next slice.
+        start = idx + haystack[idx..].chars().next().map_or(1, char::len_utf8);
+        if start >= haystack.len() {
+            break;
+        }
+    }
+    false
+}
+
+/// `true` when `needle` has a word-boundary mention (see [`contains_word`])
+/// anywhere in [`chunk_corpus`].
+///
+/// `#[cfg(test)]`: see [`is_word_byte`] — this is test-only infrastructure.
+#[cfg(test)]
+fn corpus_contains_word(needle: &str) -> bool {
+    chunk_corpus()
+        .iter()
+        .any(|(_, content)| contains_word(content, needle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +267,36 @@ mod tests {
                  this."
             );
         }
+    }
+
+    /// Focused coverage for the word-boundary matcher the guard above
+    /// depends on. Mirrors the shape (not the code) of
+    /// `reify_audit::pdoccover`'s own `contains_word` coverage — see
+    /// `crates/reify-audit/src/pdoccover.rs:2343` for the char-stepped-retry
+    /// regression the last case here reproduces.
+    #[test]
+    fn contains_word_matches_word_boundaries_only() {
+        // Exact match.
+        assert!(contains_word("curl", "curl"));
+
+        // Rejected substring inside a longer word: neither a longer prefix
+        // nor a longer suffix vouches for the shorter word.
+        assert!(!contains_word("curling stays outside INV-AD-2", "curl"));
+        assert!(!contains_word("cannot uncurl a manifold edge", "curl"));
+
+        // Punctuation-flanked, exactly as in units.md:92's comma-separated
+        // list ("gradient, divergence, curl and laplacian").
+        assert!(contains_word(
+            "gradient, divergence, curl and laplacian stay pure quotient",
+            "curl"
+        ));
+
+        // A multi-byte-char haystack whose first candidate is
+        // boundary-rejected, forcing a retry that starts INSIDE the
+        // multi-byte `µ`. A byte-stepped retry would panic here (slicing at
+        // a non-char-boundary index); a char-stepped retry instead finds
+        // the second, boundary-clean occurrence.
+        assert!(contains_word("aµm µm", "µm"));
+        assert!(!contains_word("aµm", "µm"));
     }
 }
