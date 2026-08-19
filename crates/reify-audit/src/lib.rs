@@ -372,6 +372,23 @@ pub trait GitOps {
     /// changed between the two refs.
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String>;
 
+    /// Returns the paths changed by commit `commit` itself, i.e.
+    /// `git diff --name-only <commit>^1..<commit>`. For a standard `--no-ff`
+    /// merge commit M (first parent M^1 = pre-merge main tip, result = M) this
+    /// is exactly the task's net delta. Deletions are reported like any other
+    /// change. Fail-safe: returns an empty vec on any git error — unreachable
+    /// or recycled SHA, a root commit with no `^1`, or a non-repo.
+    ///
+    /// The `--name-only` sibling of [`GitOps::diff_added_lines_in_commit`], and
+    /// it exists for the same reason. `diff_changed_paths(main, X)` is
+    /// DEGENERATE once `X` is an ancestor of main: `main..X` is a two-point
+    /// TREE diff, so the paths the two trees agree on — which, post-merge, are
+    /// exactly the paths `X` introduced — are excluded by construction, and
+    /// what comes back is the reverse-delta of whatever landed after `X`. A
+    /// leg built on it can therefore never corroborate a landed task. Post-merge
+    /// the correct question is "what did this commit change".
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String>;
+
     /// `git check-ignore <path>` — true iff `path` is gitignored
     /// (or matches a negated rule that re-ignores).
     fn is_gitignored(&self, path: &str) -> bool;
@@ -739,6 +756,22 @@ impl GitOps for RealGitOps {
             .collect()
     }
 
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        // Goes through run_or_warn (not Command::output directly) so the
+        // single-RealGitOps-instance breadcrumb dedup stays intact.
+        let Some(stdout) = self.run_or_warn(
+            "diff --name-only",
+            &["diff", "--name-only", &format!("{}^1..{}", commit, commit)],
+        ) else {
+            return vec![];
+        };
+        stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|s| s.to_string())
+            .collect()
+    }
+
     fn is_gitignored(&self, path: &str) -> bool {
         // `git check-ignore` exit code 0 = ignored, 1 = not ignored.
         // Any other outcome (spawn error, exit code other than 0/1) is a git
@@ -921,6 +954,7 @@ impl GitOps for RealGitOps {
 pub struct MockGitOps {
     log_grep: HashMap<(String, String), Vec<GitCommit>>,
     diff_changed_paths: HashMap<(String, String), Vec<String>>,
+    changed_paths_in_commit: HashMap<String, Vec<String>>,
     is_gitignored: HashMap<String, bool>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
@@ -991,6 +1025,11 @@ impl MockGitOps {
     }
 
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_changed_paths_in_commit(&mut self, commit: &str, paths: Vec<String>) {
+        self.changed_paths_in_commit.insert(commit.to_string(), paths);
+    }
+
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_file_lines_on(
         &mut self,
         reference: &str,
@@ -1024,6 +1063,13 @@ impl GitOps for MockGitOps {
     fn diff_changed_paths(&self, from: &str, to: &str) -> Vec<String> {
         self.diff_changed_paths
             .get(&(from.to_string(), to.to_string()))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        self.changed_paths_in_commit
+            .get(commit)
             .cloned()
             .unwrap_or_default()
     }
