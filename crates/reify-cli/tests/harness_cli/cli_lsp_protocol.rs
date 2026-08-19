@@ -51,7 +51,22 @@ fn send_jsonrpc(stdin: &mut impl Write, body: &str) {
 /// since `wait_for_exit` itself kills+reaps on its own timeout path, and a
 /// clean exit is already reaped by the time `try_wait` observes it — is a
 /// harmless no-op: the OS reports ESRCH/ECHILD, which `.ok()` discards.
+///
+/// `Deref`/`DerefMut` forward to the wrapped `Child` so call sites read as
+/// ordinary `Child` usage (`child.stdin.take()`, `wait_for_exit(&mut child,
+/// ..)`) rather than threading `.0` through every access.
 struct KillOnDrop(Child);
+impl std::ops::Deref for KillOnDrop {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         self.0.kill().ok();
@@ -59,40 +74,52 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// Budget for each post-deadline cleanup step in `wait_for_exit`'s timeout
+/// branch (reaping the killed child, then joining the stderr reader). Both
+/// steps run *after* the deadline has already expired, so neither may be
+/// unbounded: see `wait_for_exit`'s doc comment.
+const CLEANUP_BUDGET: Duration = Duration::from_secs(5);
+
 /// Wait for a child process to exit with a timeout.
 /// Panics with a clear message if the deadline expires instead of hanging CI.
 ///
 /// Also joins `stderr_reader` (the background thread draining the child's
 /// stderr pipe — see `spawn_pipe_reader`'s doc comment for the load-bearing
 /// ordering it must be spawned under) and returns its captured text
-/// alongside the exit status, plus a `bool` that is `true` if the reader's
-/// own pipe read failed before reaching EOF (see `drain`'s doc comment) —
-/// callers that need to distinguish that from "the child just wrote
-/// little/nothing" should check it. `reify lsp`'s stderr is the only
-/// channel it uses to report startup/runtime failures, so discarding it
-/// would make any future failure of this test a black box. On the timeout
-/// path the child is killed and then reaped: `kill()` only queues the
-/// signal asynchronously, and `wait()` blocks until the process has
-/// actually terminated — which is when the kernel closes its stderr write
-/// end — so joining the reader thread afterward is guaranteed to see EOF
-/// rather than racing the child's actual death.
+/// alongside the exit status. `reify lsp`'s stderr is the only channel it
+/// uses to report startup/runtime failures, so discarding it would make any
+/// future failure of this test a black box.
+///
+/// On the timeout path the child is killed, then reaped, then the reader is
+/// joined — in that order. `kill()` only queues the signal asynchronously;
+/// the process's stderr write end is not closed by the kernel until it has
+/// actually terminated, so reaping first is what lets the join see EOF
+/// instead of racing the child's death.
+///
+/// Both of those post-deadline steps are bounded by `CLEANUP_BUDGET`, so
+/// this guard cannot itself become the hang it exists to prevent. Two ways
+/// it otherwise could: a child wedged in uninterruptible sleep never reaps,
+/// and — more realistically — a child that forked a grandchild inheriting
+/// its stderr leaves the pipe's write end open forever, so `read_to_end` in
+/// the reader thread never reaches EOF no matter how dead the direct child
+/// is. Neither applies to today's callers (`reify lsp` does not fork; the
+/// stub child `exec`s), which is why this is belt-and-braces rather than a
+/// live bug fix. On expiry the panic still fires, carrying a placeholder in
+/// place of the stderr it could not collect.
 fn wait_for_exit(
     child: &mut Child,
     timeout_secs: u64,
     stderr_reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>,
-) -> (ExitStatus, String, bool) {
+) -> (ExitStatus, String) {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait().expect("try_wait failed") {
-            Some(status) => {
-                let (stderr, read_failed) = drain(stderr_reader, "stderr");
-                return (status, stderr, read_failed);
-            }
+            Some(status) => return (status, drain(stderr_reader, "stderr")),
             None => {
                 if Instant::now() >= deadline {
                     child.kill().ok();
-                    child.wait().ok();
-                    let (stderr, _read_failed) = drain(stderr_reader, "stderr");
+                    reap_bounded(child, CLEANUP_BUDGET);
+                    let stderr = drain_bounded(stderr_reader, "stderr", CLEANUP_BUDGET);
                     panic!(
                         "child process did not exit within {timeout_secs}s\n\
                          --- child stderr ---\n{}\n--- end child stderr ---",
@@ -103,6 +130,41 @@ fn wait_for_exit(
             }
         }
     }
+}
+
+/// Poll `try_wait` until the (already-killed) child is reaped or `budget`
+/// expires, instead of blocking in `wait()` forever. Returning without
+/// having reaped is not an error here: the caller is on its way to
+/// panicking, and `KillOnDrop` retries the reap as the stack unwinds.
+fn reap_bounded(child: &mut Child, budget: Duration) {
+    let deadline = Instant::now() + budget;
+    loop {
+        match child.try_wait() {
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            // Reaped, errored (ECHILD — already reaped), or out of budget.
+            _ => return,
+        }
+    }
+}
+
+/// `drain` with a bound on the join: hands the reader to a helper thread and
+/// waits at most `budget` for its text, falling back to a placeholder.
+///
+/// The helper thread is deliberately detached rather than joined — if the
+/// reader is wedged on a pipe whose write end outlived the child, joining it
+/// is exactly the unbounded wait being avoided. It leaks for the remainder
+/// of the test binary's life, which is bounded and only reachable on a path
+/// that is already panicking.
+fn drain_bounded(
+    reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>,
+    label: &'static str,
+    budget: Duration,
+) -> String {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || tx.send(drain(reader, label)).ok());
+    rx.recv_timeout(budget).unwrap_or_else(|_| {
+        format!("<{label} drain did not complete within {budget:?}; capture unavailable>")
+    })
 }
 
 /// Spawn a background thread that reads a child's pipe (stdout/stderr) to
@@ -148,33 +210,26 @@ fn spawn_pipe_reader(
 ///
 /// Never panics on the read itself. If the underlying read failed partway
 /// through (e.g. EIO/EBADF — distinct from the child simply writing
-/// little/nothing), the error is folded into the returned text inline
-/// (`"...captured bytes...\n[<label> read failed before EOF: <err>]"`) *and*
-/// surfaced via the second return value, so a caller can decide how much it
-/// matters. `wait_for_exit`'s timeout branch, for instance, must not let a
-/// secondary read error preempt its own "child did not exit" diagnosis, so
-/// it folds the flag into the interpolated text and otherwise ignores it;
-/// the phase-4b non-vacuity guard in `lsp_full_interactive_loop_through_binary`
-/// is the one caller for which a swallowed read error would be actively
-/// misleading (a short capture could then mean either "the trigger moved"
-/// or "the read broke", which call for different fixes), so it is the one
-/// that gates an assertion on the flag directly.
+/// little/nothing), the error is folded into the returned text inline as a
+/// trailing `[<label> read failed before EOF: <err>]` marker. Every caller
+/// here already interpolates the captured text into whatever message it
+/// fails with, so the marker reaches the reader of that failure without a
+/// separate out-of-band flag — and because it is appended last, `elide`'s
+/// tail window preserves it even for a 160 KiB capture. Pinned by
+/// `drain_folds_a_mid_read_failure_into_the_returned_text`.
 ///
 /// (`reader.join()` failing — the thread itself panicking, as opposed to
 /// the read it performed returning an `io::Error` — is a distinct, harder
 /// failure and still hard-panics here: it means `spawn_pipe_reader`'s own
 /// closure broke, not that the child said something unexpected.)
-fn drain(reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>, label: &str) -> (String, bool) {
+fn drain(reader: thread::JoinHandle<(Vec<u8>, Option<io::Error>)>, label: &str) -> String {
     let (bytes, err) = reader
         .join()
         .unwrap_or_else(|_| panic!("{label} reader thread panicked"));
     let text = String::from_utf8_lossy(&bytes).into_owned();
     match err {
-        Some(e) => (
-            format!("{text}\n[{label} read failed before EOF: {e}]"),
-            true,
-        ),
-        None => (text, false),
+        Some(e) => format!("{text}\n[{label} read failed before EOF: {e}]"),
+        None => text,
     }
 }
 
@@ -494,9 +549,9 @@ fn lsp_full_interactive_loop_through_binary() {
             .expect("failed to spawn reify lsp"),
     );
 
-    let mut stdin = child.0.stdin.take().expect("stdin");
-    let stdout = child.0.stdout.take().expect("stdout");
-    let stderr_pipe = child.0.stderr.take().expect("stderr");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let stderr_pipe = child.stderr.take().expect("stderr");
 
     // Spawn the stdout AND stderr reader threads immediately after spawn(),
     // before any stdin writes — see `spawn_pipe_reader`'s doc comment for
@@ -723,7 +778,7 @@ fn lsp_full_interactive_loop_through_binary() {
     // wait_for_response's CPU-saturation rationale above), not a
     // shutdown-speed assertion: a genuine hang still exceeds this bound
     // and fails, so widening it loses no discrimination.
-    let (status, stderr, stderr_read_failed) = wait_for_exit(&mut child.0, 30, stderr_reader);
+    let (status, stderr) = wait_for_exit(&mut child, 30, stderr_reader);
     // Elided once and reused in every message below: phase 4b deliberately
     // makes `stderr` ~160 KiB, and interpolating that whole blob into each
     // of the (up to four) assertions below would bury genuinely useful
@@ -735,22 +790,6 @@ fn lsp_full_interactive_loop_through_binary() {
         "reify lsp should exit cleanly after full interactive loop (stderr: {stderr_summary})"
     );
 
-    // Gates the non-vacuity guard below on `drain`'s own error flag (see
-    // its doc comment): a stderr pipe read that failed mid-capture and a
-    // chatty-stderr trigger that simply moved both shrink the captured
-    // byte count, but they call for different fixes (this file's harness
-    // vs. reify-lsp's logging), so conflating them would misdirect
-    // whoever responds to this failing. `wait_for_exit` itself never lets
-    // this flag preempt a `status.success()`-relevant diagnosis; it is
-    // checked here, not there, because this non-vacuity guard is the one
-    // place a swallowed read error would be actively misleading.
-    assert!(
-        !stderr_read_failed,
-        "the stderr pipe read failed before reaching EOF (see the inline marker in the \
-         captured stderr below), so the byte-count and marker assertions that follow cannot \
-         be trusted to mean 'the chatty-stderr trigger moved'. Captured stderr: {stderr_summary}"
-    );
-
     // Non-vacuity guard: proves phase 4b's huge-URI didChange really did put
     // the child's stderr pipe under backpressure. Without this, a future
     // reify-lsp change that stops logging unknown-URI didChange calls would
@@ -760,9 +799,10 @@ fn lsp_full_interactive_loop_through_binary() {
     assert!(
         stderr.len() >= 128 * 1024,
         "expected >=128KiB of captured stderr from phase 4b's huge-URI didChange \
-         (measured 163_895 bytes when this guard was written), got {} bytes. This means \
-         the chatty-stderr trigger has moved (reify-lsp's unknown-URI didChange path no \
-         longer logs ~160KiB to stderr) and this regression guard needs re-pointing — it \
+         (measured 163_895 bytes when this guard was written), got {} bytes. Absent a \
+         trailing `[stderr read failed before EOF: ...]` marker in the capture below, this \
+         means the chatty-stderr trigger has moved (reify-lsp's unknown-URI didChange path \
+         no longer logs ~160KiB to stderr) and this regression guard needs re-pointing — it \
          does NOT mean the stderr drain is broken. Captured stderr: {stderr_summary}",
         stderr.len()
     );
@@ -789,10 +829,23 @@ fn lsp_full_interactive_loop_through_binary() {
 ///
 /// The stub is `/bin/sh -c "printf 'REIFY_6161_TIMEOUT_MARKER\n' >&2; exec
 /// sleep 30"`: it writes a recognisable marker to stderr and then blocks
-/// well past the 1s deadline given to `wait_for_exit`. `exec` preserves the
+/// well past the deadline given to `wait_for_exit`. `exec` preserves the
 /// pid, so the pid `wait_for_exit` kills is exactly the process holding the
 /// stderr write end, which is what guarantees the reader thread reaches
 /// EOF instead of blocking forever.
+///
+/// That deadline is 5s, not the ~1s this test's own runtime needs. The
+/// `should_panic` match below requires the marker to have *already reached
+/// the stderr pipe* by the time the deadline expires, so the deadline is
+/// doing double duty as a start-up budget for `/bin/sh` — and a 1s budget
+/// contradicts the CPU-saturation rationale the rest of this file is
+/// designed around (see `wait_for_response`'s 30s). Under a 24-way-parallel
+/// nextest run, a fork/exec that has not been scheduled far enough to run
+/// `printf` within ~1s would be killed with an empty pipe, and
+/// `should_panic(expected = ...)` would report a *failure* that reads as
+/// "the drain broke" when the child was merely slow to start. 5s keeps that
+/// margin while staying far below the stub's 30s sleep, so the branch under
+/// test is still the timeout branch.
 ///
 /// `#[should_panic(expected = ...)]` matching the marker pins three things
 /// at once: the timeout branch panics rather than looping forever, the
@@ -801,8 +854,9 @@ fn lsp_full_interactive_loop_through_binary() {
 /// interpolated into the panic message.
 ///
 /// Measured premise (direct experiment, not assumed): the stub does not
-/// exit before a 1s deadline; kill() then wait() then joining the reader
-/// returns exactly "REIFY_6161_TIMEOUT_MARKER\n" in 1.01s.
+/// exit on its own before the deadline; kill → reap → join then returns
+/// exactly "REIFY_6161_TIMEOUT_MARKER\n", with the whole test costing
+/// marginally more than the deadline itself.
 ///
 /// Precedent: crates/reify-fdm/tests/slice.rs:326-358 and :371-400 already
 /// drive `/bin/sh -c '...; exec sleep 30'` stub children from Rust tests
@@ -815,8 +869,8 @@ fn lsp_full_interactive_loop_through_binary() {
 /// than a mock of it.
 ///
 /// Does not take `acquire_lsp_test_lock()`: this stub is not an LSP
-/// process, needs no tokio runtime, and taking the lock would serialise a
-/// 1s test behind the 30s LSP test for no benefit.
+/// process, needs no tokio runtime, and taking the lock would serialise
+/// this short test behind the 30s LSP test for no benefit.
 ///
 /// The stub child is wrapped in the module-level `KillOnDrop` (see its doc
 /// comment) so that IF the timeout branch instead regressed to returning
@@ -842,8 +896,8 @@ fn wait_for_exit_timeout_branch_drains_and_reports_stderr() {
         .expect("failed to spawn /bin/sh stub");
     let mut guard = KillOnDrop(child);
 
-    let stderr_pipe = guard.0.stderr.take().expect("stderr");
+    let stderr_pipe = guard.stderr.take().expect("stderr");
     let stderr_reader = spawn_pipe_reader(stderr_pipe);
 
-    wait_for_exit(&mut guard.0, 1, stderr_reader);
+    wait_for_exit(&mut guard, 5, stderr_reader);
 }
