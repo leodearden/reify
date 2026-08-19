@@ -1125,6 +1125,86 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Medium);
     }
 
+    /// Defect 2, on the SWEEP path: a task whose claimed commit has LANDED
+    /// must corroborate via that commit's own delta, not via `main..<commit>`.
+    ///
+    /// `main..<commit>` is a two-point TREE diff. Once `<commit>` is an
+    /// ancestor of main the two trees agree on exactly the paths the commit
+    /// introduced, so the task's own files are EXCLUDED by construction and
+    /// what comes back is the reverse-delta of whatever landed afterwards.
+    /// MEASURED on the live repo: for merge `bc8f74a4d4`, `main..M` returned
+    /// 6 paths and all six of that task's own files were absent from the set.
+    ///
+    /// The fixture reproduces exactly that shape: the claimed commit IS an
+    /// ancestor, the degenerate reverse-delta names only an unrelated later
+    /// merge's file, and there is no sibling rescue available — so the primary
+    /// leg alone must decide, and it must decide correctly.
+    #[test]
+    fn landed_ancestor_commit_corroborates_via_its_own_delta() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "6345A");
+
+        let mut git = MockGitOps::new();
+        // The claimed commit is on main.
+        git.set_is_ancestor("mergesha", "main", true);
+        // The degenerate reverse-delta: an unrelated later merge's file, and
+        // NOT the task's own.
+        git.set_diff_changed_paths(
+            "main",
+            "mergesha",
+            vec!["crates/reify-other/src/unrelated.rs".to_string()],
+        );
+        // The true delta.
+        git.set_changed_paths_in_commit(
+            "mergesha",
+            vec!["crates/reify-x/src/landed.rs".to_string()],
+        );
+        // No sibling rescue — the primary leg alone must decide.
+        git.set_log_grep("main", "6345A", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "6345A".to_string(),
+            TaskMetadata {
+                task_id: "6345A".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-x/src/landed.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("mergesha".to_string()),
+                    note: None,
+                }),
+                title: "A task whose merge commit has landed".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        assert!(
+            findings.is_empty(),
+            "a task whose landed merge commit's own delta covers metadata.files must \
+             produce no finding — reading the degenerate main..<commit> instead is the \
+             false-High this fix removes; got {:?}",
+            findings
+        );
+    }
+
     /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
     /// unreachable AND no sibling-FF covers the missing set, but every
     /// metadata.files entry resolves to a tracked path on main (dir-aware,
