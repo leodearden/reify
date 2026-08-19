@@ -192,10 +192,11 @@ slot_emit_timeout() {
 #                  Defaulting to `fatal` keeps every pre-existing caller's wire
 #                  shape meaning exactly what it did before this field existed.
 #                  NOTE (cross-repo): dark-factory's SEMAPHORE_TIMEOUT detector
-#                  is presence/line-anchored and does NOT yet read this field,
-#                  so a soft deadline is still classified as a starvation
-#                  verdict today; the field exists so the DF side CAN gate on it
-#                  without a second reify-side wire change.
+#                  reads this field as of dark-factory task 4212 (closed
+#                  2026-08-19): a `soft` deadline is advisory and falls through
+#                  to per-tool dispatch instead of being classified as a
+#                  starvation verdict; a sentinel with no `disposition=` field
+#                  keeps DF's pre-4212 classify behavior.
 #
 #   On success  — SLOT_ACQUIRE_SLOT=<N>, SLOT_ACQUIRE_ELAPSED=<secs>,
 #                 FD 9 held open, slot_emit_event ACQUIRE called; returns 0.

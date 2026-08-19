@@ -360,6 +360,15 @@ cases only when the following character satisfies `is_unit_start` (`scanner.c:10
 changes: `_unit_div_op` stays `/`, exponent stays `^`, `signed_integer` stays `/-?\d+/`. `·`
 outside a `unit_expr` remains an error (there is no general `·` operator in Reify).
 
+> **CORRECTION 2026-08-19 (Leo, via esc-5784-5).** The sentence "Nothing else changes" above is
+> **wrong**, and is left in place only so the record of what task 5784 was planned against stays
+> intact. Widening the scanner to accept U+00B7 is **not sufficient on its own**: with only the
+> scanner change the declaration is silently **DROPPED**, because `ts_parser.rs` lowering must be
+> updated too. The rest of the paragraph stands — `_unit_div_op`, the exponent token and
+> `signed_integer` genuinely do not change, and `·` outside a `unit_expr` genuinely stays an error.
+> The correction was measured while planning task 5784 and is folded into that task's plan; it is
+> recorded here so a future reader of C2 does not repeat the omission.
+
 ### C3 — Torque dimension
 
 ```rust
