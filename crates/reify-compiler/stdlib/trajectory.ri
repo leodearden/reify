@@ -504,6 +504,24 @@ trait Shaper { }
 // pre-existing `trait Shaper { }` above (TOTSShaper / RevoluteTOTSShaper);
 // without this marker the limit half would be the asymmetric one.
 //
+// CONSUMERS — be honest about the asymmetry with `trait Shaper`: Shaper is
+// LOAD-BEARING (it is the declared param type of `pub fn input_shape(profile:
+// Profile, shaper: Shaper)` below), whereas NO signature, param or alias is
+// declared `ActuatorLimit` today, and the shaper halves deliberately declare
+// the CONCRETE element type (`List<JointLimit>` / `List<RevoluteJointLimit>`)
+// — they must, since the element type is exactly what follows the joint kind.
+// So this marker is currently a declaration of family membership, not a
+// dispatch surface, and it is pinned only by the two `trait_bounds ==
+// ["ActuatorLimit"]` assertions in trajectory_stdlib_compile.rs.
+//
+// The named candidate first consumer is task #6240 — the wrong-kind PAIRING
+// diagnostic descoped from #6096 (dep-gated on strictness leaf #5627). Its
+// brief is to answer "is this limit the wrong KIND for this joint?", and a
+// family root is where that question is answerable without hard-coding the
+// member list at the asking site. If #6240 lands without needing it, delete
+// this trait and let the per-half param-shape tests carry the duality — an
+// empty marker with no consumer is not worth keeping on its own.
+//
 // Kept empty by design, same marker-trait discipline as `trait Shaper { }`,
 // `trait Profile { }` and `trait BoundaryCondition { }`.
 trait ActuatorLimit { }
@@ -530,10 +548,16 @@ trait ActuatorLimit { }
 //   - joint     : Real   — TODO(joint-type): placeholder for the future // ptodo:allow type-placeholder; no live owner (future type-system PRD)
 //                          kinematic-completion PRD's Joint type. Same
 //                          encoding as `PiecewisePolynomialProfile.mechanism :
-//                          Real` (its TODO(mechanism-type) note) — both reference // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          Real` (its TODO(mechanism-type) note) and as // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          `RevoluteJointLimit.joint` below (task 6096) —
+//                          THREE sites, all referencing
 //                          kinematic-completion-PRD-owned types that have not
-//                          yet landed. When kinematic-completion lands, both
-//                          retarget via the same refactor sweep.
+//                          yet landed. When kinematic-completion lands, all
+//                          three retarget via the same refactor sweep. The
+//                          sweep set is discovered by grepping the placeholder
+//                          markers, so every member carries its own marker —
+//                          adding a fourth placeholder without one silently
+//                          drops it from the sweep.
 //   - max_force : Scalar<Force>  — the TRANSLATIONAL actuator limit
 //                                  (m·kg·s⁻²). Tightened from Real by task
 //                                  4580; the per-joint-kind counterpart is
@@ -593,6 +617,20 @@ structure def JointLimit : ActuatorLimit {
 // uniform across both kinds as a result.
 //
 // No defaults: both fields are caller-supplied (same rationale as JointLimit).
+//
+// Fields:
+//   - joint     : Real   — TODO(joint-type): the SAME entity-handle // ptodo:allow type-placeholder; no live owner (future type-system PRD)
+//                          placeholder as `JointLimit.joint` above (and as
+//                          `PiecewisePolynomialProfile.mechanism`). It carries
+//                          its OWN marker deliberately: the
+//                          kinematic-completion retarget sweep is discovered by
+//                          grepping these markers, so a third placeholder
+//                          without one would be invisible to the sweep that is
+//                          supposed to retire it.
+//   - max_force : Scalar<Torque> — the ROTATIONAL actuator limit
+//                                  (m²·kg·s⁻²·rad⁻¹); the per-joint-kind
+//                                  counterpart of `JointLimit.max_force :
+//                                  Scalar<Force>`.
 structure def RevoluteJointLimit : ActuatorLimit {
     param joint : Real
     param max_force : Scalar<Torque>
