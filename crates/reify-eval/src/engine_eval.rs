@@ -1742,10 +1742,20 @@ impl<'t> CellReadIndex<'t> {
         // populated ONLY from `value_cells` that are non-auto AND carry a
         // `default_expr`, and every instance-path-keyed `ValueCellDecl` the
         // compiler mints is an `Auto` with `default_expr: None`. So `cell_map`
-        // keys — hence `cells_reaching`'s reverse-map keys — are always
-        // template-keyed. The ids this adds are exactly those whose
-        // normalisation DIFFERS, i.e. instance-path ones, which therefore always
-        // miss `cell_map.get(id)` at stage (e) and always miss `reaches_auto`.
+        // keys — hence the reader ids `cells_reaching` RETURNS — are always
+        // template-keyed.
+        //
+        // Its reverse-map KEYS are deliberately NOT template-keyed, and saying
+        // so was the falsehood this comment carried until task #5467 step-19:
+        // those keys are read DEPS, and they now carry the raw spelling
+        // alongside the normalised one, which is exactly what lets a RAW
+        // instance-path seed find its readers at all. Keys are what you look
+        // UP; elements are what comes BACK — and only the latter bounds the
+        // argument being made here.
+        //
+        // The ids this adds are exactly those whose normalisation DIFFERS,
+        // i.e. instance-path ones, which therefore always miss
+        // `cell_map.get(id)` at stage (e) and always miss `reaches_auto`.
         // `dependent_cells` is unchanged by CONSTRUCTION, not by luck.
         //
         // `normalize` is the identity for an already-template-keyed id, so the
