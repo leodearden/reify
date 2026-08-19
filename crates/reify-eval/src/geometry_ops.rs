@@ -3681,15 +3681,18 @@ fn curve_bezier_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let coords = eval_all_args_to_f64(
+    // EVERY position is a coordinate of a control point, so every position is
+    // gated (task 5658's R2 sweep). Like `interp` and `line_segment`, `bezier`
+    // has no dimensionless neighbour — no direction vector, no count, no angle
+    // — so the gate closure is unconditional.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+    let coords = accept_variadic_length_args(
         "bezier",
         args,
-        values,
-        functions,
-        meta_map,
+        &vals,
+        &|i| Some(coord_display(i)),
         diagnostics,
-    )
-    .ok_or_else(|| "failed to evaluate all bezier args to f64".to_string())?;
+    )?;
     let control_points: Vec<[f64; 3]> =
         coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
     Ok(reify_ir::GeometryOp::BezierCurve { control_points })
