@@ -256,7 +256,6 @@ pub fn __resolve_function_overload_for_parity_test(
     }
 }
 
-
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
