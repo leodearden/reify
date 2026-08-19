@@ -328,6 +328,17 @@ pub(crate) fn point3_length(p: [f64; 3]) -> Value {
     Value::Point(vec![length(p[0]), length(p[1]), length(p[2])])
 }
 
+/// A Velocity-dimensioned Scalar (SI metres per second).
+pub(crate) fn velocity(m_per_s: f64) -> Value {
+    scalar(m_per_s, DimensionVector::VELOCITY)
+}
+
+/// A Temperature-dimensioned Scalar (SI kelvin — never °C: `degC` is an affine
+/// unit, so a Temperature Scalar's `si_value` is always absolute).
+pub(crate) fn temperature(kelvin: f64) -> Value {
+    scalar(kelvin, DimensionVector::TEMPERATURE)
+}
+
 /// A 3-component `Value::Vector` of Length-dimensioned Scalars.
 ///
 /// The displacement-field analogue of [`point3_length`]: a displacement is a

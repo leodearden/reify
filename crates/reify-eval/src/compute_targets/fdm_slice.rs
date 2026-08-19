@@ -42,6 +42,16 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// explicit `* 1000.0` (see `export_body_stl` / `read_slice_settings`).
 const MM_TO_M: f64 = 1.0e-3;
 
+/// G-code feedrate mm·min⁻¹ → SI m·s⁻¹ (1e-3 metres per millimetre ÷ 60 seconds
+/// per minute).
+const MM_PER_MIN_TO_M_PER_S: f64 = 1.0 / 60_000.0;
+
+/// °C → K. Not a free choice: this is the offset the language itself declares
+/// for `degC` (`crates/reify-compiler/stdlib/units.ri`, `pub unit degC :
+/// Temperature = 1 offset 273.15`). Naming it keeps the affine conversion
+/// traceable to that declaration rather than a magic number.
+const DEG_C_TO_K_OFFSET: f64 = 273.15;
+
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
 /// whose `beads` / `layers` Lists hold nested `Bead` / `Layer` structures and
 /// whose `in_layer_adjacency` / `inter_layer_adjacency` Lists hold `(lo, hi)`
@@ -54,11 +64,19 @@ const MM_TO_M: f64 = 1.0e-3;
 ///
 /// # Units: the DSL-visible surface is SI and dimensioned
 ///
-/// This projection converts at the boundary. Geometry scalars (`width` /
-/// `height` / `layer_z`, `Layer.z`) and the centerline coordinates are emitted
-/// as LENGTH-dimensioned `Value::Scalar`s in SI metres — the centerline as a
-/// `Point3<Length>`, the shape `resolve_point3_length_arg` requires of any
-/// point passed to a geometry builtin.
+/// This projection converts at the boundary, and does so for EVERY dimensional
+/// field — a half-SI surface would leave the rule unstatable:
+///
+/// - `width` / `height` / `layer_z` / `Layer.z` → `Length` (SI metres)
+/// - the centerline → `Point3<Length>`, the shape `resolve_point3_length_arg`
+///   requires of any point passed to a geometry builtin
+/// - `speed` → `Velocity` (m·s⁻¹, from mm·min⁻¹)
+/// - `nominal_temp` → `Temperature` (K, from °C via the +273.15 the language
+///   itself declares for `degC`)
+///
+/// `layer_index` / `index` / `bead_indices` stay `Int`: dimensionless by
+/// nature. Because each field's declared type now names its own unit, there is
+/// no carve-out left to remember or to document.
 ///
 /// `reify_fdm::Toolpath` deliberately stays in native G-code millimetres /
 /// mm·min⁻¹: it is a *parser* output whose job is lossless fidelity to the
@@ -113,8 +131,11 @@ fn bead_to_value(b: &Bead) -> Value {
             ("role", bead_role_value(b.role)),
             ("layer_index", Value::Int(b.layer_index as i64)),
             ("layer_z", super::length(b.layer_z * MM_TO_M)),
-            ("nominal_temp", Value::Real(b.nominal_temp)),
-            ("speed", Value::Real(b.speed)),
+            (
+                "nominal_temp",
+                super::temperature(b.nominal_temp + DEG_C_TO_K_OFFSET),
+            ),
+            ("speed", super::velocity(b.speed * MM_PER_MIN_TO_M_PER_S)),
         ],
     )
 }
