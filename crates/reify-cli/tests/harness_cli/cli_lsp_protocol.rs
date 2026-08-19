@@ -185,7 +185,7 @@ fn drain_bounded(
 /// each NEW pipe to a single page, and a 24-way-parallel workspace nextest
 /// run does this routinely (`F_GETPIPE_SZ` measured at 8192 bytes mid-run).
 /// A regression in this ordering surfaces as a hang, not a failed assertion
-/// — `lsp_full_interactive_loop_through_binary`'s phase 4b and
+/// — `stderr_drain_survives_backpressure_from_a_chatty_stub_child` and
 /// `wait_for_exit_timeout_branch_drains_and_reports_stderr` are what at
 /// least make that hang reachable by two named tests (see their doc
 /// comments), rather than proof against it.
@@ -216,8 +216,9 @@ fn spawn_pipe_reader(
 /// here already interpolates the captured text into whatever message it
 /// fails with, so the marker reaches the reader of that failure without a
 /// separate out-of-band flag — and because it is appended last, `elide`'s
-/// tail window preserves it even for a 160 KiB capture. Pinned by
-/// `drain_folds_a_mid_read_failure_into_the_returned_text`.
+/// tail window preserves it even for a 256 KiB capture (see
+/// `stderr_drain_survives_backpressure_from_a_chatty_stub_child`). Pinned
+/// by `drain_folds_a_mid_read_failure_into_the_returned_text`.
 ///
 /// (`reader.join()` failing — the thread itself panicking, as opposed to
 /// the read it performed returning an `io::Error` — is a distinct, harder
@@ -279,10 +280,10 @@ fn drain_folds_a_mid_read_failure_into_the_returned_text() {
 
 /// Render a possibly-huge diagnostic string for inclusion in a panic/assert
 /// message: the first and last 512 bytes plus the total length, instead of
-/// the whole thing. Phase 4b of `lsp_full_interactive_loop_through_binary`
-/// deliberately captures ~160 KiB of stderr; interpolating it whole into
+/// the whole thing. `stderr_drain_survives_backpressure_from_a_chatty_stub_child`
+/// deliberately captures ~256 KiB of stderr; interpolating it whole into
 /// every failure message would bury genuinely useful signal (e.g. an
-/// unrelated `status.success()` failure) under a repeated 160 KiB dump.
+/// unrelated `status.success()` failure) under a repeated 256 KiB dump.
 fn elide(s: &str) -> String {
     const HEAD_TAIL: usize = 512;
     if s.len() <= HEAD_TAIL * 2 {
@@ -308,15 +309,15 @@ fn elide(s: &str) -> String {
     )
 }
 
-/// Unit-pins `elide`, which is otherwise fed only ASCII by both call sites
-/// (160 KiB of `'a'` from phase 4b, a 25-byte marker from the timeout stub)
-/// and so never executes its two `is_char_boundary` walk loops in an
-/// end-to-end run. Those loops are the only non-trivial thing in the
-/// function, and they run one decrementing and one incrementing — an
-/// inverted `+=`/`-=` would ship green and only surface later as a
-/// `byte index is not a char boundary` panic *inside* some other test's
-/// failure message, i.e. exactly when someone is already debugging
-/// something else.
+/// Unit-pins `elide`, which is otherwise fed only ASCII by its real call
+/// sites (256 KiB of spaces from the backpressure stub, a 25-byte marker
+/// from the timeout stub) and so never executes its two `is_char_boundary`
+/// walk loops in an end-to-end run. Those loops are the only non-trivial
+/// thing in the function, and they run one decrementing and one
+/// incrementing — an inverted `+=`/`-=` would ship green and only surface
+/// later as a `byte index is not a char boundary` panic *inside* some
+/// other test's failure message, i.e. exactly when someone is already
+/// debugging something else.
 #[test]
 fn elide_passes_short_input_through_and_walks_to_char_boundaries() {
     // (a) At or below the 2 * HEAD_TAIL threshold: verbatim, no header.
@@ -604,18 +605,20 @@ fn error_diagnostics(notification: &serde_json::Value) -> Vec<serde_json::Value>
 /// `reify_test_support` fixtures those tests use, so the two cannot drift
 /// apart.
 ///
-/// This test's chatty-stderr trigger is coupled to reify-lsp's current
-/// behavior: the exact `eprintln!` wording in server.rs, and the fact that
-/// an unbounded, client-controlled URI is logged verbatim. That coupling is
-/// deliberate (see the design decision on generating backpressure through
-/// the real binary rather than a stub) and is exactly what the non-vacuity
-/// guard below is for — if reify-lsp's logging ever changes (including a
-/// fix that truncates the logged URI, which would itself be reasonable),
-/// this guard fails loudly and needs re-pointing rather than silently
-/// passing on zero bytes. The logging behavior itself — an unbounded,
-/// client-controlled URI logged verbatim while a state lock is held — is
-/// tracked as a reify-lsp production concern by task #6162, out of this
-/// file's scope.
+/// This test's chatty-stderr trigger used to be coupled to reify-lsp's
+/// exact unbounded-URI logging behavior so that phase 4b's huge-URI
+/// `didChange` would put the child's stderr pipe under real backpressure.
+/// That role has moved to
+/// `stderr_drain_survives_backpressure_from_a_chatty_stub_child`, which
+/// drives a deterministic stub instead, so a future reify-lsp logging
+/// change (including a fix that bounds the logged URI) can no longer make
+/// the drain-under-backpressure guard vacuous (task #6162). Phase 4b keeps
+/// the surviving `stderr.contains("didChange for unknown URI")` assertion
+/// as a non-vacuity anchor — proof the unknown-URI diagnostic still fires
+/// at all — and becomes the end-to-end regression guard for task #6162's
+/// fix itself: once that fix lands, this same huge-URI `didChange` is
+/// expected to produce *bounded* stderr instead of echoing the URI
+/// verbatim.
 #[test]
 fn lsp_full_interactive_loop_through_binary() {
     let _lock = acquire_lsp_test_lock();
@@ -794,9 +797,11 @@ fn lsp_full_interactive_loop_through_binary() {
 
     // 4b) didChange for a never-opened URI with a deliberately huge path.
     // DocumentStore::update returns false for any URI that was never opened
-    // via didOpen, so did_change's unknown-URI eprintln! (server.rs) fires
-    // with the URI verbatim — a ~160 KiB write to the child's stderr pipe,
-    // applying the backpressure that pins the drain fix (see rustdoc above).
+    // via didOpen, so did_change's unknown-URI eprintln! (server.rs) fires.
+    // This is the end-to-end regression guard for task #6162's fix (see
+    // rustdoc above): the resulting stderr is asserted bounded below,
+    // instead of the pipe-backpressure role this phase used to serve
+    // (that has moved to stderr_drain_survives_backpressure_from_a_chatty_stub_child).
     let huge_uri = format!("file:///tmp/{}.ri", "a".repeat(160 * 1024));
     let did_change_unknown_uri = serde_json::json!({
         "jsonrpc": "2.0",
@@ -860,22 +865,6 @@ fn lsp_full_interactive_loop_through_binary() {
         "reify lsp should exit cleanly after full interactive loop (stderr: {stderr_summary})"
     );
 
-    // Non-vacuity guard: proves phase 4b's huge-URI didChange really did put
-    // the child's stderr pipe under backpressure. Without this, a future
-    // reify-lsp change that stops logging unknown-URI didChange calls would
-    // leave this test silently pinning nothing while still passing green.
-    // A failure here means the chatty-stderr trigger has moved and this
-    // regression guard needs re-pointing — NOT that the drain itself broke.
-    assert!(
-        stderr.len() >= 128 * 1024,
-        "expected >=128KiB of captured stderr from phase 4b's huge-URI didChange \
-         (measured 163_895 bytes when this guard was written), got {} bytes. Absent a \
-         trailing `[stderr read failed before EOF: ...]` marker in the capture below, this \
-         means the chatty-stderr trigger has moved (reify-lsp's unknown-URI didChange path \
-         no longer logs ~160KiB to stderr) and this regression guard needs re-pointing — it \
-         does NOT mean the stderr drain is broken. Captured stderr: {stderr_summary}",
-        stderr.len()
-    );
     // Proves the captured bytes came from the intended production path
     // (server.rs's unknown-URI didChange handler) rather than incidental
     // noise. A failure here likewise means the trigger moved, not that the
