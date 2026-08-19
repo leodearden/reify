@@ -18,6 +18,16 @@
 # redirected here BEFORE DF confines it (task 5858 added architect,
 # reviewer_comprehensive and judge on exactly that basis).
 #
+# DF CITES IN THIS FILE ARE BY SYMBOL NAME, NOT BY LINE NUMBER, deliberately.
+# These breadcrumbs exist so a DF-side author can find the fact being claimed,
+# and line anchors rot on every DF edit: #6275's review measured four of them
+# stale at once -- `roles.py:401` (architect's Bash) was really 965,
+# `roles.py:1161` (merger's Bash) really 1368, `roles.py:1512` (the ROLES
+# registry) really 2088, `roles.py:643` (_reviewer_role) really 1184 -- with
+# every one of the underlying CLAIMS still true. A wrong anchor is worse than
+# no anchor: it sends the reader to unrelated code and quietly discredits a
+# correct claim. Cite `roles.py, MERGER.allowed_tools`, not `roles.py:1368`.
+#
 # THE WIDER ENTRIES ARE NOT UNIFORMLY "INERT UNTIL DF SANDBOXES THE ROLE".
 # workflow.py:_build_agent_env merges role_env_overrides.get(role.name, {})
 # LAST for EVERY role, sandboxed or not, so what an entry actually does
@@ -26,7 +36,8 @@
 #     The redirect is load-bearing: without it they die on the EACCES
 #     reproduced below.
 #   architect — NOT sandboxed, but holds unrestricted `Bash`
-#     (roles.py:401), so its entry is LIVE from the next orchestrator
+#     (roles.py, ARCHITECT.allowed_tools), so its entry is LIVE from the
+#     next orchestrator
 #     restart: it moves the architect's ad-hoc cargo/npm off the warm
 #     ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp pair. That is a
 #     real behaviour change on a live role, and calling it "inert" would be
@@ -35,9 +46,10 @@
 #     inherits a warm cache rather than a cold one — and its exposure to the
 #     /tmp tmpfiles age-deletion gap is exactly the one implementer already
 #     carries (ticket tkt_0RRSYZX0Y446V2HSW0GHHNRYYH).
-#   merger — NOT sandboxed either (roles.py:45 defaults sandboxed=False and
-#     MERGER does not set it), but likewise holds unrestricted `Bash`
-#     (roles.py:1161) and its system prompt rule 3 directs it to "Run tests
+#   merger — NOT sandboxed either (roles.py's AgentRole.sandboxed defaults
+#     to False and MERGER does not set it), but likewise holds unrestricted
+#     `Bash` (roles.py, MERGER.allowed_tools) and its system prompt rule 3
+#     directs it to "Run tests
 #     after resolving", so its entry is LIVE from the next orchestrator
 #     restart, on the conflict-resolution path. Accepted on exactly the
 #     architect's grounds — the /tmp pair is already warm, so merger
@@ -46,7 +58,7 @@
 #     (tkt_0RRSYZX0Y446V2HSW0GHHNRYYH). Added by #6275; see the SECOND
 #     COUPLING section below for why ADDING beat restoring the exclusion.
 #   reviewer_comprehensive / judge — allowed_tools are read-only
-#     (_READ_ONLY_TOOLS, roles.py:106 = Read/Glob/Grep/Bash(git:*), plus
+#     (roles.py, _READ_ONLY_TOOLS = Read/Glob/Grep/Bash(git:*), plus
 #     verdict/jcodemunch tools), so NEITHER can invoke cargo or npm at all.
 #     These two entries are genuinely inert today AND would stay inert after
 #     a sandboxed=True flip; they are kept as defense-in-depth against a
@@ -117,10 +129,11 @@
 #       _build_agent_env's role.name lookup silently misses.
 #     - COLLAPSED-KEY TRAP: role_key_absent forbids a `reviewer:` entry
 #       outright (cache-bearing or not). It passes DF's KNOWN_ROLE_NAMES
-#       shape guard silently -- shared/task_metadata.py:70 lists BOTH names,
-#       so _warn_unknown_role_env_overrides_keys (config.py:4003) stays mute
+#       shape guard silently -- shared/task_metadata.py's KNOWN_ROLE_NAMES
+#       lists BOTH names, so _warn_unknown_role_env_overrides_keys
+#       (config.py) stays mute
 #       -- yet delivers NO redirect, because _build_agent_env keys on
-#       role.name, which _reviewer_role (roles.py:643) builds as
+#       role.name, which _reviewer_role (roles.py) builds as
 #       f'reviewer_{name}' == 'reviewer_comprehensive'.
 #   STILL UNGUARDED: CACHE_REDIRECT_ROLES, KNOWN_DISPATCH_ROLES and
 #   UNCOVERED_DISPATCH_ROLES are all hand-maintained reify-side
@@ -302,7 +315,8 @@
 #       not read the yaml at all), two assertions:
 #       (a) SUBSET -- every CACHE_REDIRECT_ROLES member is a member of
 #           KNOWN_DISPATCH_ROLES, the hand-mirrored copy of DF's ROLES
-#           registry (roles.py:1512). Catches a misspelled member that
+#           registry (roles.py, the `ROLES` dict). Catches a misspelled
+#           member that
 #           would satisfy every value-shape assertion in (A) while
 #           _build_agent_env's role.name lookup silently missed.
 #       (b) COMPLEMENT (#6275) -- KNOWN_DISPATCH_ROLES minus
@@ -375,7 +389,8 @@ ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 # addition needs a manual update here.
 CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge merger"
 
-# Hand-mirrored copy of DF's ROLES dispatch registry (roles.py:1512) -- the
+# Hand-mirrored copy of DF's ROLES dispatch registry (roles.py, the `ROLES`
+# dict) -- the
 # exact set of names _build_agent_env can ever look up via
 # role_env_overrides.get(role.name, {}). Its only job is to catch a MISSPELLED
 # member of CACHE_REDIRECT_ROLES: a typo mirrored into both that list and the
@@ -904,7 +919,7 @@ export CACHE_REDIRECT_ROLES KNOWN_DISPATCH_ROLES UNCOVERED_DISPATCH_ROLES
 # lookup silently misses and that role gets NO redirect. This is the
 # generalized form of the collapsed-'reviewer' trap, and the only check here
 # that catches it.
-assert "every CACHE_REDIRECT_ROLES member is a real DF dispatch role name (KNOWN_DISPATCH_ROLES, mirroring the ROLES registry at roles.py:1512 -- a name not in ROLES can never be matched by _build_agent_env's role.name lookup)" \
+assert "every CACHE_REDIRECT_ROLES member is a real DF dispatch role name (KNOWN_DISPATCH_ROLES, mirroring roles.py's ROLES registry dict -- a name not in ROLES can never be matched by _build_agent_env's role.name lookup)" \
     bash -c '
         rc=0
         for r in $CACHE_REDIRECT_ROLES; do

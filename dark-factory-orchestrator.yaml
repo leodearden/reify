@@ -726,9 +726,9 @@ sandbox:
   backend: landlock
 
 # Sandbox companion (task γ6a): toolchain-cache redirect. Covers 7 of the 9
-# dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
-# debugger, simple_task, architect, reviewer_comprehensive, judge, merger.
-# NOT covered: steward, deep_reviewer.
+# dispatch roles in DF's ROLES registry (roles.py, the `ROLES` dict) —
+# implementer, debugger, simple_task, architect, reviewer_comprehensive,
+# judge, merger. NOT covered: steward, deep_reviewer.
 #   merger was added by task 6275, which re-evaluated an exclusion whose
 #   rationale task 5836 had INVERTED (5836 moved verify_env.CARGO_HOME onto
 #   /tmp, the very divergence the exclusion existed to prevent) and resolved
@@ -751,22 +751,23 @@ sandbox:
 #     implementer / debugger / simple_task — roles.py sandboxed=True TODAY;
 #       the redirect is what keeps them building at all.
 #     architect — NOT sandboxed yet, but has unrestricted Bash
-#       (roles.py:401), so this entry is LIVE from the next orchestrator
-#       restart: it moves the architect's ad-hoc cargo/npm off the warm
-#       ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp pair. Accepted
-#       because that /tmp cache is already warmed by the three sandboxed
-#       roles above (so the architect inherits a warm cache, not a cold
-#       one), and its exposure to the tmpfiles age-deletion gap below is
+#       (roles.py, ARCHITECT.allowed_tools), so this entry is LIVE from the
+#       next orchestrator restart: it moves the architect's ad-hoc cargo/npm
+#       off the warm ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp
+#       pair. Accepted because that /tmp cache is already warmed by the three
+#       sandboxed roles above (so the architect inherits a warm cache, not a
+#       cold one), and its exposure to the tmpfiles age-deletion gap below is
 #       exactly the one implementer already carries.
 #     merger — NOT sandboxed either, but likewise has unrestricted Bash
-#       (roles.py:1161) and a system prompt that directs it to run tests
-#       after resolving a conflict, so this entry is LIVE from the next
-#       orchestrator restart, on the conflict-resolution path. Accepted on
-#       exactly the architect's grounds (the /tmp pair is already warm, so
-#       merger inherits a warm cache rather than paying a cold start) and
-#       carrying exactly the same tmpfiles age-deletion exposure.
+#       (roles.py, MERGER.allowed_tools) and a system prompt that directs it
+#       to run tests after resolving a conflict, so this entry is LIVE from
+#       the next orchestrator restart, on the conflict-resolution path.
+#       Accepted on exactly the architect's grounds (the /tmp pair is already
+#       warm, so merger inherits a warm cache rather than paying a cold
+#       start) and carrying exactly the same tmpfiles age-deletion
+#       exposure.
 #     reviewer_comprehensive / judge — read-only tool grants
-#       (_READ_ONLY_TOOLS, roles.py:106; Bash scoped to `git:*`), so neither
+#       (roles.py, _READ_ONLY_TOOLS; Bash scoped to `git:*`), so neither
 #       can invoke cargo or npm at all. Genuinely inert today AND after a
 #       sandboxed=True flip; kept as defense-in-depth against a future
 #       tool-grant widening, NOT because either would otherwise die on a
