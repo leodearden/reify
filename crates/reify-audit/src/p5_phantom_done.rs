@@ -442,6 +442,27 @@ fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
     !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p))
 }
 
+/// The set of paths a claimed commit contributes, choosing the diff base by
+/// ancestry.
+///
+/// `main..<commit>` is a two-point TREE diff. Once `<commit>` is an ancestor of
+/// main the two trees agree on exactly the paths the commit introduced, so the
+/// task's own files are EXCLUDED by construction and the leg can never
+/// corroborate a landed task — what comes back is the reverse-delta of whatever
+/// landed afterwards. MEASURED on the live repo: for merge `bc8f74a4d4`,
+/// `main..M` returned 6 paths and all six of that task's own files were absent
+/// from the set. Post-merge the correct question is "what did this commit
+/// change", i.e. `<commit>^1..<commit>`.
+fn changed_paths_for_claim(ctx: &AuditContext, commit: &str) -> Vec<String> {
+    if ctx.git.is_ancestor(commit, MAIN_BASE) {
+        ctx.git.changed_paths_in_commit(commit)
+    } else {
+        // Pre-merge D-1 case: `<commit>` is an un-landed branch tip, so
+        // `main..<tip>` IS the branch delta and is correct.
+        ctx.git.diff_changed_paths(MAIN_BASE, commit)
+    }
+}
+
 /// Provenance-free landing corroboration for the D-1 pre-done hook.
 ///
 /// Reached only from [`check_one`] under [`CheckMode::PreDone`] when
@@ -723,7 +744,7 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
     // on main rather than merged through), the primary check yields
     // "everything missing" and the sibling-rescue path takes over.
     let primary_covered = match prov.commit.as_deref() {
-        Some(commit) => ctx.git.diff_changed_paths(MAIN_BASE, commit),
+        Some(commit) => changed_paths_for_claim(ctx, commit),
         None => Vec::new(),
     };
     let missing = files_missing_from(&meta.files, &primary_covered);
@@ -774,7 +795,11 @@ fn check_one(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Option
         let mut sibling_covered: Vec<String> = Vec::new();
         let mut contributing: Vec<&GitCommit> = Vec::new();
         for c in &siblings {
-            let diff = ctx.git.diff_changed_paths(MAIN_BASE, &c.sha);
+            // Via the ancestry-selecting helper, not changed_paths_in_commit
+            // directly: log_grep(main, …) only ever returns ancestors of main, but
+            // stating that as an unwritten invariant at this call site would make
+            // the code silently wrong the day a caller passes a non-ancestor.
+            let diff = changed_paths_for_claim(ctx, &c.sha);
             // Only cite siblings that contribute to closing the missing set.
             if diff.iter().any(|p| missing.contains(p)) {
                 contributing.push(c);
