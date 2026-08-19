@@ -663,10 +663,11 @@ mod tests {
     }
 
     /// Each marshalled bead carries its role (as a `BeadRole` enum value), its
-    /// geometry scalars — SI metres in dimensioned `Value::Scalar`s, converted
-    /// from the Rust struct's native G-code millimetres at this marshalling
-    /// boundary — its integer layer index, and its centerline polyline as a
-    /// List of `Point3<Length>`.
+    /// integer layer index, its centerline polyline as a List of
+    /// `Point3<Length>`, and every dimensional scalar as an SI, dimensioned
+    /// `Value::Scalar` — Length (m), Velocity (m·s⁻¹) and Temperature (K),
+    /// converted from the Rust struct's native G-code mm / mm·min⁻¹ / °C at
+    /// this marshalling boundary.
     #[test]
     fn bead_fields_carry_role_geometry_and_centerline() {
         let v = toolpath_to_value(&sample_toolpath());
@@ -699,8 +700,27 @@ mod tests {
             2.0e-4,
             "bead 0 layer_z (0.2 mm)",
         );
-        assert_eq!(field(&beads[0], "nominal_temp"), Some(&Value::Real(210.0)));
-        assert_eq!(field(&beads[0], "speed"), Some(&Value::Real(1800.0)));
+        // The SI regime is TOTAL, not Length-only: a half-converted surface
+        // would leave the rule unstatable and every field a thing to look up.
+        //
+        // 1800 mm·min⁻¹ = 1.8 m·min⁻¹ = 0.03 m·s⁻¹ (÷ 60_000).
+        assert_scalar(
+            field(&beads[0], "speed").expect("speed field"),
+            0.03,
+            DimensionVector::VELOCITY,
+            "bead 0 speed (1800 mm/min)",
+        );
+        // 210 °C = 483.15 K. The +273.15 offset is not a free choice — it is the
+        // offset the language itself declares for degC (stdlib/units.ri:41,
+        // `pub unit degC : Temperature = 1 offset 273.15`). A Temperature-
+        // dimensioned Scalar carries kelvin, so a design author writing
+        // `bead.nominal_temp > 200degC` only gets the right answer in K.
+        assert_scalar(
+            field(&beads[0], "nominal_temp").expect("nominal_temp field"),
+            483.15,
+            DimensionVector::TEMPERATURE,
+            "bead 0 nominal_temp (210 degC)",
+        );
 
         let cl0 = as_list(field(&beads[0], "centerline").expect("centerline field"));
         assert_eq!(cl0.len(), 2, "bead 0 has two centerline points");
