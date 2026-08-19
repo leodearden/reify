@@ -1184,8 +1184,20 @@ slot_acquire "$LOCK" 1 1
 INNER
 HEREDOCEOF
 F3_HEREDOC_COUNT="$(_f_deadline_capable "$F_NEG_HEREDOC_DIR" | wc -l | tr -d ' ')"
-assert "F3-known-gap: a wrapper call inside a quoted heredoc body is (mis)flagged today -- accepted, documented false positive (got $F3_HEREDOC_COUNT)" \
-    test "$F3_HEREDOC_COUNT" -eq 1
+# Informational ECHO, not a pass/fail assert: this fixture exists to make
+# the documented false-positive VISIBLE, not to fail the suite either way.
+# An `-eq 1` assert here would invert the moment someone hardens the
+# predicate with heredoc-state tracking -- a strict improvement, and the
+# natural fix for SCOPE (3) -- since the count would then correctly drop
+# to 0 and a pass/fail assert would go RED on a fix, pointing whoever
+# lands it at an assert that fails precisely because they fixed the thing
+# it documents. Whichever way the count reads, it is reported here so a
+# behaviour change is visible without being treated as a regression.
+if [ "$F3_HEREDOC_COUNT" -eq 1 ]; then
+    echo "F3-known-gap: a wrapper call inside a quoted heredoc body is (mis)flagged today -- accepted, documented false positive (unchanged, got $F3_HEREDOC_COUNT)"
+else
+    echo "F3-known-gap: heredoc-body false positive no longer reproduces (got $F3_HEREDOC_COUNT, expected 1) -- the predicate's heredoc handling changed; update Section F's SCOPE (3) to match"
+fi
 
 echo ""
 echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
