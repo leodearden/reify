@@ -48,8 +48,25 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 /// `get_default` now resolves to the `Priming` global rather than
 /// `NoSubscriber`, so no callsite can ever be cached as `never`. Per-event
 /// routing is still decided by `enabled()` on the *current thread's* default
-/// (the per-test subscriber when one is active, the no-op global otherwise),
-/// so priming widens nothing — it only prevents elision at the macro gate.
+/// — the per-test subscriber when one is active, and otherwise this global,
+/// whose `enabled()` returns `false` so the event is dropped before its
+/// arguments are formatted. Priming therefore widens nothing: it only
+/// prevents elision at the macro gate.
+///
+/// # Precondition: nothing else installs a global default
+///
+/// The guarantee above holds only while this is the *first* global default
+/// installed in the process. `set_global_default` fails if another one is
+/// already in place, and another crate's global is not interchangeable with
+/// this one: `tracing_subscriber::fmt().with_env_filter(..).init()`, for
+/// example, returns `Interest::never()` for every callsite its filter rejects
+/// and poisons the cache in exactly the same first-hit-wins way. No such
+/// global exists anywhere in this workspace today — there is no
+/// `set_global_default` / `fmt().init()` / `try_init()` call site outside this
+/// function — so the hazard is latent, not live. If one ever appears, this
+/// helper prints a loud diagnostic to stderr rather than silently no-opping,
+/// because the failure mode it degrades into (an intermittent count of zero)
+/// is expensive to rediagnose from scratch.
 ///
 /// # Usage
 ///
@@ -78,10 +95,40 @@ pub fn prime_tracing_callsite_cache() {
     struct Priming;
     impl Subscriber for Priming {
         fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
+            // `sometimes` — never `always`, never `never`. This is the entire
+            // point of the type: it keeps `NoSubscriber`'s `Interest::never`
+            // out of the callsite-registration path without widening
+            // anything, because `sometimes` defers the per-event decision to
+            // `enabled()` on the *current thread's* default subscriber.
             Interest::sometimes()
         }
         fn enabled(&self, _: &Metadata<'_>) -> bool {
-            true
+            // `false`, deliberately. This is reached only on a thread whose
+            // own default resolves to this global — i.e. one with no
+            // subscriber of its own — where the event has nowhere to go:
+            // `Priming::event()` below drops it. Returning `false` drops it
+            // one step earlier, *before* the macro formats its arguments, so
+            // a now-un-elided `tracing::debug!("{}", expensive())` in a hot
+            // loop under test costs nothing. Returning `true` could never
+            // make an extra event observable anywhere — the counting and
+            // capturing subscribers are installed thread-locally, so they are
+            // consulted via their own `enabled()`, never via this one — it
+            // would only pay to construct an event that is then discarded.
+            //
+            // This does NOT re-poison the callsite cache: the cached
+            // `Interest` comes from `register_callsite` above, never from
+            // `enabled()`.
+            //
+            // A `max_level_hint() -> Some(LevelFilter::OFF)` would trim the
+            // remaining static-gate cost as well, and is deliberately NOT
+            // implemented: `Callsites::rebuild_interest` (tracing-core 0.1.36
+            // `callsite.rs:407`) sets the process-global max level to the
+            // MAXIMUM hint over all live dispatchers, so whenever `Priming`
+            // is the only live one the global max would be `OFF` and the
+            // `level_enabled!` gate inside `tracing::warn!` would elide the
+            // callsite before `interest()` is ever consulted — re-closing the
+            // very gate this helper exists to hold open.
+            false
         }
         fn new_span(&self, _: &Attributes<'_>) -> Id {
             Id::from_u64(1)
@@ -94,11 +141,28 @@ pub fn prime_tracing_callsite_cache() {
     }
 
     INIT.call_once(|| {
-        // Errors only on a second `set_global_default` — the `Once` makes
-        // that impossible from this code path. Anything else racing us
-        // (e.g. another crate's test harness) is fine: their global
-        // already serves the same purpose.
-        let _ = tracing::subscriber::set_global_default(Priming);
+        // The `Once` makes a second call from *this* path impossible, so an
+        // error here means something else installed a global default first —
+        // and another crate's global is NOT interchangeable with ours. A
+        // `tracing_subscriber::fmt().with_env_filter(..).init()`, say,
+        // returns `Interest::never()` from `register_callsite` for every
+        // callsite its filter rejects, poisoning the cache in exactly the
+        // first-hit-wins way this helper exists to prevent. Priming would
+        // then be a silent no-op and the constructors' documented guarantee
+        // quietly false, resurfacing as an intermittent count-of-zero
+        // assertion — the original task-6273 flake. Say so loudly instead;
+        // non-fatal, because the competing global may well be benign and
+        // panicking here would take down every test in the process.
+        if tracing::subscriber::set_global_default(Priming).is_err() {
+            eprintln!(
+                "reify-test-support: prime_tracing_callsite_cache() could not install its \
+                 global tracing subscriber — another global default was installed first. \
+                 Callsite-interest priming is INACTIVE in this process, so warn-counting \
+                 and capturing assertions may intermittently observe zero events (task \
+                 6273). Remove the competing global, or install it *after* a call to \
+                 prime_tracing_callsite_cache()."
+            );
+        }
     });
 }
 
