@@ -31,6 +31,17 @@ use reify_ir::{OpaqueState, Value};
 use super::as_printed_material::{field_int, field_real, field_scalar, struct_data, structure};
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
+/// Millimetres → SI metres, the inbound half of this module's two-regime split:
+/// `reify_fdm::Toolpath` holds native G-code millimetres (lossless parse
+/// fidelity), the DSL-visible projection built below is SI and dimensioned.
+///
+/// Same name and value as the other two mm→SI boundaries in the FDM stack
+/// (`as_printed_material_r0.rs`, `reify-fdm/src/r0.rs`), so grepping `MM_TO_M`
+/// enumerates all of them. Note the OUTBOUND direction in this same file
+/// deliberately does not use it: the PrusaSlicer boundary scales m→mm by an
+/// explicit `* 1000.0` (see `export_body_stl` / `read_slice_settings`).
+const MM_TO_M: f64 = 1.0e-3;
+
 /// Marshal a [`Toolpath`] into a `Value::StructureInstance` named `"Toolpath"`
 /// whose `beads` / `layers` Lists hold nested `Bead` / `Layer` structures and
 /// whose `in_layer_adjacency` / `inter_layer_adjacency` Lists hold `(lo, hi)`
@@ -41,11 +52,22 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// marshalling): a [`Toolpath`] holds only order-stable `Vec`s, so the produced
 /// Value is byte-stable run-to-run for a given Toolpath.
 ///
-/// Geometry scalars (`width` / `height` / `layer_z` / `nominal_temp` / `speed`
-/// and the centerline coordinates) are emitted as **native-unit** `Value::Real`
-/// — raw G-code millimetres / mm·min⁻¹, NOT SI-converted. The mm→SI conversion
-/// is the downstream θ `FDMPrint` mapping's concern (PRD / `toolpath.rs` module
-/// doc); marshalling preserves the parsed values losslessly.
+/// # Units: the DSL-visible surface is SI and dimensioned
+///
+/// This projection converts at the boundary. Geometry scalars (`width` /
+/// `height` / `layer_z`, `Layer.z`) and the centerline coordinates are emitted
+/// as LENGTH-dimensioned `Value::Scalar`s in SI metres — the centerline as a
+/// `Point3<Length>`, the shape `resolve_point3_length_arg` requires of any
+/// point passed to a geometry builtin.
+///
+/// `reify_fdm::Toolpath` deliberately stays in native G-code millimetres /
+/// mm·min⁻¹: it is a *parser* output whose job is lossless fidelity to the
+/// source, and `serialize_toolpath_canonical` renders those values at 6
+/// decimals in a determinism golden. The two regimes are a deliberate split at
+/// this marshalling boundary, not an inconsistency — `reify_fdm::r0` performs
+/// its own independent mm→SI on the Rust struct (its own `MM_TO_M`) and never
+/// observes this Value, because `fdm::as_printed_material_r0` consumes raw
+/// G-code text and re-parses it.
 pub fn toolpath_to_value(tp: &Toolpath) -> Value {
     structure(
         "Toolpath",
@@ -76,16 +98,21 @@ pub(crate) fn degraded_toolpath_value() -> Value {
 
 /// Marshal one [`Bead`] into a `Bead` `StructureInstance`.
 fn bead_to_value(b: &Bead) -> Value {
-    let centerline = Value::List(b.centerline.iter().map(|p| point_raw(*p)).collect());
+    let centerline = Value::List(
+        b.centerline
+            .iter()
+            .map(|p| super::point3_length([p[0] * MM_TO_M, p[1] * MM_TO_M, p[2] * MM_TO_M]))
+            .collect(),
+    );
     structure(
         "Bead",
         vec![
             ("centerline", centerline),
-            ("width", Value::Real(b.width)),
-            ("height", Value::Real(b.height)),
+            ("width", super::length(b.width * MM_TO_M)),
+            ("height", super::length(b.height * MM_TO_M)),
             ("role", bead_role_value(b.role)),
             ("layer_index", Value::Int(b.layer_index as i64)),
-            ("layer_z", Value::Real(b.layer_z)),
+            ("layer_z", super::length(b.layer_z * MM_TO_M)),
             ("nominal_temp", Value::Real(b.nominal_temp)),
             ("speed", Value::Real(b.speed)),
         ],
@@ -104,7 +131,7 @@ fn layer_to_value(l: &Layer) -> Value {
         "Layer",
         vec![
             ("index", Value::Int(l.index as i64)),
-            ("z", Value::Real(l.z)),
+            ("z", super::length(l.z * MM_TO_M)),
             ("bead_indices", bead_indices),
         ],
     )
@@ -133,12 +160,6 @@ fn adjacency_list(pairs: &[(usize, usize)]) -> Value {
             .map(|&(lo, hi)| Value::List(vec![Value::Int(lo as i64), Value::Int(hi as i64)]))
             .collect(),
     )
-}
-
-/// A native-unit 3-D position `Value::Point` of bare `Value::Real` millimetre
-/// coordinates (no SI conversion — see [`toolpath_to_value`]).
-fn point_raw(p: [f64; 3]) -> Value {
-    Value::Point(vec![Value::Real(p[0]), Value::Real(p[1]), Value::Real(p[2])])
 }
 
 // ── ComputeNode trampoline ──────────────────────────────────────────────────
