@@ -42,6 +42,39 @@ use task_json::{done_task_fixture, task_fixture};
 // Fixture helpers
 // -----------------------------------------------------------------------
 
+/// [`task_fixture`] with a caller-controlled `files` list.
+///
+/// [`task_fixture`] hardcodes `files: ["crates/reify-audit/src/lib.rs"]`, which
+/// is tracked on main and therefore always corroborates. The pre-done landing
+/// tests need the declared deliverable set to be the variable under test.
+fn task_fixture_with_files(
+    task_id: &str,
+    status: &str,
+    kind: Option<&str>,
+    commit: Option<&str>,
+    files: &[&str],
+) -> serde_json::Value {
+    let mut v = task_fixture(task_id, status, kind, commit);
+    v["files"] = serde_json::json!(files);
+    v
+}
+
+/// Absolute path to this workspace's git repository root.
+///
+/// `CARGO_MANIFEST_DIR` is `<root>/crates/reify-audit`, so two levels up is the
+/// worktree root. Tests that exercise `path_tracked_on` must point
+/// `--project-root` at a REAL git repo — a bare `tempfile::tempdir()` is not one,
+/// so every `git ls-tree` there fails and `path_tracked_on` fail-safes to
+/// `false` for every path, which would make an "absent from main" assertion
+/// vacuously true.
+fn repo_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .canonicalize()
+        .expect("canonicalize repo root from CARGO_MANIFEST_DIR/../..")
+}
+
 /// Write tasks.json with the given task fixtures to `dir/tasks.json`.
 fn write_tasks_json(dir: &Path, tasks: &[serde_json::Value]) -> std::path::PathBuf {
     let path = dir.join("tasks.json");
@@ -269,6 +302,104 @@ mod cli {
             stdout.contains("3242"),
             "stdout summary must mention task 3242\nstdout: {}",
             stdout
+        );
+    }
+
+    /// The pre-done gate must REFUSE a done-flip whose declared deliverable is
+    /// absent from main, in the state the hook ACTUALLY sees: pre-transition
+    /// status and no persisted `done_provenance`.
+    ///
+    /// Why that is the real state: fused-memory's `task_interceptor.py` fires
+    /// the hook at step "2d" BEFORE the write, so the live `get_task` returns
+    /// "in-progress"/"review" (never "done"), and `done_provenance` is only
+    /// accumulated in the interceptor's in-memory `audit_fields` — it is not
+    /// persisted until after the hook returns. The upstream hook template
+    /// (`middleware/pre_done_hook.py`) substitutes only `{id}`, with no env
+    /// injection and no stdin, so the subprocess receives no task state beyond
+    /// the id. A gate that requires either signal is structurally unable to
+    /// fire on the transition it exists to guard.
+    ///
+    /// The control task pins the other direction: a task with no declared
+    /// deliverable (research / ops / escalation work) must never be refused.
+    #[test]
+    fn pre_done_gate_refuses_unlanded_task_without_provenance() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![
+            // (a) unlanded deliverable — must be refused.
+            task_fixture_with_files(
+                "63451",
+                "in-progress",
+                None,
+                None,
+                &["crates/reify-audit-ghost/src/lib.rs"],
+            ),
+            // (b) control: no declared deliverable — must flip freely.
+            task_fixture_with_files("63452", "in-progress", None, None, &[]),
+        ];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |task_id: &str| {
+            Command::new(bin)
+                .args([
+                    "--task",
+                    task_id,
+                    "--pre-done",
+                    "--tasks-file",
+                    tasks_file.to_str().unwrap(),
+                    "--runs-db",
+                    runs_db.to_str().unwrap(),
+                    "--project-root",
+                    root.to_str().unwrap(),
+                ])
+                .output()
+                .expect("invoke reify-audit --pre-done")
+        };
+
+        // (a) The refusal.
+        let out = run("63451");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let p5_high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            p5_high.is_some(),
+            "pre-done gate must emit P5PhantomDone/High/63451 for a deliverable \
+             absent from main; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        let code = out.status.code().unwrap_or(1);
+        assert!(
+            code >= 1,
+            "pre-done gate must exit non-zero (refusing the done-flip); got {}\n\
+             stdout: {}\nstderr: {}",
+            code,
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // (b) The control: no deliverable declared → nothing to corroborate.
+        let out = run("63452");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            findings.is_empty(),
+            "a task with an empty metadata.files must never be refused; got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "empty-files control must exit 0\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
         );
     }
 
