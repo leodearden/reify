@@ -1157,28 +1157,90 @@ _f_node_list() {
     done
 }
 
-# The EDGE grammar, expressed as ERE PREFIXES to which a node's
-# regex-escaped basename is appended.
+# The EDGE grammar: four more separately-named EREs, held apart from each
+# other and from the four direct ones for the same reason -- each keeps its
+# own rationale attached and stays independently greppable. All four are
+# PREFIXES/TEMPLATES to which a node's regex-escaped basename, or a bound
+# variable's name, is appended by _f_edge_exists below.
 #
-# DELIBERATELY NAIVE AT THIS STEP, and replaced below by the two-phase
-# grammar: this is the "add run_all to F_BIND_RE/F_EXEC_RE" shape that
-# Section F's SCOPE paragraph records as measured-and-rejected, kept here
-# only long enough for the negative controls to demonstrate WHY it is
-# rejected. It is a path-MENTION predicate, not a capability one.
-F_EDGE_NAIVE_EXEC_PRE='(bash|sh|source)[[:blank:]]+.*'
-F_EDGE_NAIVE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*'
+# (a) THE COMMAND-BOUNDARY ANCHOR, and the reason this is a capability
+# grammar rather than a path-mention one. An exec verb only STARTS a command
+# at a command boundary: start-of-line, or after a blank, `(`, `)`, `;`, `|`,
+# `&` or a backtick. MEASURED: without the anchor,
+# tests/infra/test_run_all_ambient_isolation.sh:160 --
+# `*"bash tests/infra/run_all.sh"*)`, a `case` comparison PATTERN, where the
+# verb is preceded by a double quote -- reads as an invocation, and that file
+# then derives by the WRONG route (via:run_all.sh instead of its real
+# via:test_run_all.sh). The same anchor is what rejects a copy-list element:
+# in `verify.sh run_all.sh` the `sh` that precedes the blank is the tail of
+# `verify.sh`, preceded by `.`, not by a boundary.
+F_EDGE_ANCHOR='(^|[[:blank:]();|&`])[[:blank:]]*'
+# (b) THE VERB, plus the same flag tolerance F_EXEC_RE already carries
+# (`bash -x "$X"`). The verb set is exactly {bash, sh, source}.
+# POSIX DOT-SOURCE IS DELIBERATELY EXCLUDED, measured both ways: adding `\.`
+# admits a git PATHSPEC -- `-- . ':(exclude)<path>'`, the shape at
+# tests/infra/test_orchestrator_config_canonical_path.sh:64-65 -- as an
+# invocation, and buys nothing: measured, tests/infra holds exactly TWO real
+# POSIX dot-sources of a .sh path (test_land_script.sh:43 and
+# test_verify_semaphore_wiring.sh:334) and both target hooks/main-gate-lib.sh,
+# which is not a node -- no dot-source in tests/infra targets one. Recorded as
+# a scoped gap in Section F's SCOPE paragraph, consistent with the existing
+# note that dot-source is unhandled in the direct predicate too.
+F_EDGE_VERB_RE="${F_EDGE_ANCHOR}"'(bash|sh|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*'
+# (c) A LITERAL path invocation: the anchored verb, then a path ending in
+# `/<node basename>`. The trailing boundary stops `/run_all.sh` from matching
+# inside `/run_all.sh.orig`.
+F_EDGE_PATH_SUF='([^A-Za-z0-9_]|$)'
+F_EDGE_LITERAL_PRE="${F_EDGE_VERB_RE}"'"?[^"[:blank:]]*/'
+# (d) A BIND of a variable to a path ending in `/<node basename>`. Used with
+# `grep -oE` so the VARIABLE NAME can be recovered -- a bind alone is not an
+# edge, it is only phase one of one.
+F_EDGE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*/'
+# (e) THE EXEC-POSITION test for a bound variable, appended around the
+# variable name: it must appear immediately after the anchored verb, or as
+# the line's own first command word. Requiring BOTH (d) and (e) FOR THE SAME
+# VARIABLE is precisely what rejects the bind-only inspection shape --
+# tests/infra/test_verify_release_delta_skip.sh binds ACT_RUN_ALL (:521) and
+# then only `test -f`s (:523) and greps (:530, :536) it. That single measured
+# false admission is what sank the `run_all`-alternation fix; this is the
+# rule that makes the difference. The trailing boundary keeps `$RA` from
+# matching inside `$RAX`.
+F_EDGE_VAR_PRE='"?\$\{?'
+F_EDGE_VAR_SUF='\}?([^A-Za-z0-9_]|$)'
 
 # _f_edge_exists <stripped-node-file> <target-basename> -> rc 0 if the node
 # whose comment-stripped text is in <stripped-node-file> INVOKES
 # <target-basename>. This is the one place the edge grammar lives, so
 # tightening it is a one-function change.
 #
+# TWO PHASES, because an invocation can name its target either way:
+#   A. a LITERAL path after an anchored verb;
+#   B. a BIND of the path to a variable, AND that same variable appearing in
+#      an EXEC POSITION somewhere in the file. Phase B alone is a mention,
+#      not a call -- see F_EDGE_VAR_PRE's comment for the measured shape this
+#      two-phase requirement is what rejects.
+# Line-oriented and comment-stripped, exactly like the direct predicate; the
+# two phases are per-FILE rather than per-LINE because a bind and its exec
+# are routinely lines apart (all three real run_all invokers bind at the top
+# of the file and exec 50+ lines later).
+#
 # Grepping a FILE, never downstream of a pipe, and counting rather than
 # `-q`/`-l`: doubly beyond the SIGPIPE/pipefail hazard documented above.
 _f_edge_exists() {
-    local _sf="$1" _esc="${2//./\\.}" _n
-    _n="$(grep -cE -- "$F_EDGE_NAIVE_EXEC_PRE$_esc|$F_EDGE_NAIVE_BIND_PRE$_esc" "$_sf" || true)"
-    [ "${_n:-0}" -ge 1 ]
+    local _sf="$1" _esc="${2//./\\.}" _n _v
+    local -a _vars=()
+
+    _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" || true)"
+    if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+
+    mapfile -t _vars < <(grep -oE -- "${F_EDGE_BIND_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" \
+        | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)=.*/\1/' | sort -u)
+    for _v in "${_vars[@]}"; do
+        [ -n "$_v" ] || continue
+        _n="$(grep -cE -- "${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}" "$_sf" || true)"
+        if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+    done
+    return 1
 }
 
 # Scratch for the closure: a memo of each directory's derivation, and the
