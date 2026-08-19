@@ -52,11 +52,12 @@
 # fixtures, private lock paths, no cargo and no CPU burn).
 #
 # Section F, near the end of this file, is a separate standing guard: the
-# roster of suites that are deadline-capable through a DIRECT wrapper call
-# site is DERIVED from tests/infra/test_*.sh, not hand-maintained, and
-# Section F proves the DECLARATION still matches that derivation. Its scope
-# boundary -- notably the TRANSITIVE route it does not see -- is stated in
-# full in that section's own preamble.
+# roster of deadline-capable suites -- those with a DIRECT wrapper call site,
+# plus the transitive closure of the suites that INVOKE one -- is DERIVED
+# from tests/infra/test_*.sh, not hand-maintained, and Section F proves the
+# DECLARATION still matches that derivation. Its scope boundary -- the
+# residual routes even the closure does not follow -- is stated in full in
+# that section's own preamble.
 
 set -euo pipefail
 
@@ -509,12 +510,15 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # it to the emit-adjacent sites this change turned from latent into live.
 #
 # D_MEMBERS below is NO LONGER the source of truth for "which suites can leak"
-# -- task 6255 made it the BEHAVIOURAL SUBSET of the direct-call-site
-# deadline-capable roster Section F derives (D_ROSTER). D_ROSTER also lists
-# the static-only members (test_run_all.sh, test_slot_event_log.sh,
-# test_verify_semaphore_e2e.sh); their evidence-preservation is ASSERTED IN
-# PROSE beside D_ROSTER_MODE and measured clean today, but is NOT
-# machine-checked -- generalizing D4 to cover them is tracked as #6278.
+# -- task 6255 made it the BEHAVIOURAL SUBSET of the deadline-capable roster
+# Section F derives (D_ROSTER -- direct call sites, plus their transitive
+# invocation closure since task 6291). D_ROSTER also lists EIGHT static-only
+# members (test_run_all.sh, test_slot_event_log.sh, test_verify_semaphore_e2e.sh
+# and the five transitive members 6291 added); their evidence-preservation is
+# ASSERTED IN PROSE beside D_ROSTER_MODE -- measured, and for two of the
+# transitive members measured NOT clean on the bare-variable echo/description
+# channel (recorded there in full) -- but is NOT machine-checked; generalizing
+# D4 to cover them is tracked as #6278.
 # Section F derives D_ROSTER_MODE's behavioural/static-only split directly
 # from D_MEMBERS membership (not a hand-typed parallel array), so the two
 # cannot silently diverge -- see Section F for the derivation.
@@ -847,7 +851,7 @@ assert "E1: no assert description DUMPS a whole capture file (cat/tail/head/\$(<
     test "$E1_COUNT" -eq 0
 
 echo ""
-echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardcoded ==="
+echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocation closure), not hardcoded ==="
 
 # Section D's D_MEMBERS is a hand-maintained list of suites that force a
 # finite-WAIT slot_acquire deadline. Task 6255: that list silently missed
@@ -858,13 +862,16 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # the declared list from silently falling out of step with reality again.
 #
 # SCOPE, stated rather than left implied (D1's own convention, see its
-# description above). The derivation is over DIRECT call sites ONLY: a file
-# that itself names one of the four acquire wrappers. Section F catches a
-# new DIRECTLY-deadline-capable SUITE appearing -- a file with no matching
-# entry in D_ROSTER at all. A green F1 is therefore proof that the
-# direct-call-site roster is SELF-CONSISTENT; it is NOT proof that no other
-# tests/infra suite can reach a deadline by some other route. Three gaps
-# are deliberately out of scope:
+# description above). The derivation is over DIRECT call sites -- a file that
+# itself names one of the four acquire wrappers -- AND over the TRANSITIVE
+# INVOCATION CLOSURE of those call sites: a file that invokes a capable node
+# is capable too, to a fixed point (task 6291; the closure and its edge
+# grammar are below, its controls are FC1-FC7). Section F catches a new
+# deadline-capable SUITE appearing by EITHER route -- a file with no matching
+# entry in D_ROSTER at all. A green F1 is therefore proof that the roster is
+# SELF-CONSISTENT over both routes; it is NOT proof that no tests/infra suite
+# can reach a deadline by ANY route whatsoever. Four gaps are deliberately
+# out of scope:
 #
 # (1) A new unredirected deadline SITE added inside an existing static-only
 # roster member -- D4's per-site stderr-capture check (D4a/D4b) still covers
@@ -876,33 +883,63 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # invoking line itself, which is the only shape D4's slicer can see.
 # Generalizing D4 to cover it is tracked as #6278.
 #
-# (2) TRANSITIVE capability -- a suite that reaches a deadline only by
-# invoking tests/infra/run_all.sh (whose pool worker calls slot_acquire with
-# the finite default REIFY_RUN_ALL_POOL_WAIT=1800, run_all.sh:1361), or by
-# invoking another suite that does. Adding `run_all` to F_BIND_RE/F_EXEC_RE
-# was MEASURED and REJECTED: against the real tree it is a path-MENTION
-# predicate, not a capability predicate, and it gets BOTH directions wrong.
-#   - It ADMITS a file that is not deadline-capable at all:
-#     test_verify_release_delta_skip.sh binds ACT_RUN_ALL (:521) purely as a
-#     grep TARGET -- used only by `test -f` (:523) and two source-inspection
-#     greps (:530, :536) -- and never invokes it. That is exactly the "path
-#     appears only as DATA" class F3's negative control exists to reject.
-#   - It still MISSES the real route for a file that IS capable:
-#     test_run_all_ambient_isolation.sh matches only a `case`-pattern
-#     comparison line (:160), while its actual capability is second-order --
-#     `bash "$TARGET"` with TARGET=test_run_all.sh (:93, :366) -- which no
-#     run_all alternation can see.
-#   Admitting those would force roster entries whose measured justification
-#   reads "not actually deadline-capable", emptying D_ROSTER's meaning.
-#   The three GENUINE transitive members are measured CLEAN today: each
-#   redirects the child's stderr into a file or a captured variable --
-#   test_run_all_clock_marker_sanitize.sh (:96), test_run_all_content_skip.sh
-#   (:86, :387), test_run_all_pool_lock_host_global.sh (:122, :126) -- and
-#   Section E's repo-wide scanner already covers the assert-description
-#   channel for all of them. So this is a drift-coverage gap, not a live
-#   leak. Closing it properly needs a real transitive-closure derivation (a
-#   fixed point over suite->suite invocation edges), which is out of this
-#   task's scope; filed as a follow-up during esc-6255-1 remediation.
+# (2) RESIDUAL ROUTES THE CLOSURE STILL DOES NOT FOLLOW. Task 6291 CLOSED
+# what used to stand here: a suite that reaches a deadline only by invoking
+# tests/infra/run_all.sh (whose pool worker calls slot_acquire with the finite
+# default REIFY_RUN_ALL_POOL_WAIT=1800, run_all.sh:1361), or by invoking
+# another suite that does, IS derived now, and five such members are declared
+# below. What closed it was a CAPABILITY edge grammar, not a path-MENTION
+# one. Adding a bare `run_all` alternation to F_BIND_RE/F_EXEC_RE was measured
+# and REJECTED because it got BOTH directions wrong -- it ADMITTED
+# test_verify_release_delta_skip.sh, which binds the path (:521) purely as an
+# inspection target for `test -f` (:523) and two greps (:530, :536), and it
+# still MISSED test_run_all_ambient_isolation.sh's real second-order route,
+# matching only its `case`-pattern comparison line (:160). Both measurements
+# are now PINNED against a future re-widening -- see F_EDGE_ANCHOR's comment
+# below, and the FC6a/FC7a real-tree route pins -- rather than left as prose.
+# Three residual routes remain, each stated as MEASURED rather than
+# hypothesised:
+#
+#   (i) THE scripts/ ROUTE. The node set is deliberately tests/infra-only
+#   (test_*.sh plus run_all.sh), so a suite that reaches a deadline by
+#   exec'ing scripts/verify.sh -- whose --include-infra plan segment runs
+#   `bash tests/infra/run_all.sh` (verify.sh:2701 today) -- is not derived
+#   through that hop. MEASURED over the tree today this hides NO member: the
+#   anchored-verb exec sites for scripts/verify.sh outside this file are
+#   test_occt_flock_gate.sh and test_verify_semaphore_e2e.sh -- both ALREADY
+#   roster members by their own direct call sites -- and
+#   test_verify_nextest_probe.sh, which is not a member and does not need to
+#   be: its exec (:207) is reached only through `run_verify`, and every one of
+#   that helper's call sites (:261, :280, :305, :327, :346) passes
+#   --print-plan via "$@", so verify.sh prints a plan and never runs the
+#   pipeline. Two further mentions are not invocations at all --
+#   test_verify_pipeline_guard.sh:91 feeds the STRING `scripts/verify.sh` to
+#   verify-pipeline-guard.sh as printf DATA, and test_hooks_call_verify.sh:35
+#   and :48 inspect the hook files with `bash -c "grep ... verify.sh ..."`.
+#   So this is a derivation gap, not a live hole -- but it is the one that
+#   would go unseen first, the moment a suite runs verify.sh for real with
+#   infra included.
+#
+#   (ii) POSIX DOT-SOURCE is not in the edge verb set {bash, sh, source}, and
+#   the exclusion is measured in BOTH directions: admitting `.` as a verb
+#   reads the git PATHSPEC at test_orchestrator_config_canonical_path.sh:64-65
+#   (`-- . ':(exclude)<path>'`) as an invocation, and buys nothing, because
+#   tests/infra holds exactly TWO real POSIX dot-sources of a .sh path
+#   (test_land_script.sh:43, test_verify_semaphore_wiring.sh:334) and both
+#   target hooks/main-gate-lib.sh, which is not a node. (test_seed_warm_lane.sh
+#   :5137's `. "$1"` is a HEREDOC body, i.e. gap (3), not a live dot-source.)
+#   Consistent with (4) below, which records the same omission in the DIRECT
+#   predicate.
+#
+#   (iii) DYNAMICALLY CONSTRUCTED invocations -- a path assembled at run time,
+#   or an exec through a variable holding a helper NAME rather than a path --
+#   are out of a line-oriented scanner's reach by construction. Unlike (i) and
+#   (ii) this is stated STRUCTURALLY, not as a counted absence: no cheap
+#   enumeration bounds it, so no claim is made that no suite uses the shape
+#   today. The one dynamic hop the derivation DOES follow is the deliberately
+#   narrow exec-forwarding-helper rule (`ambient_isolation_check_one
+#   "$TARGET"`); its own comment below records why widening it further was
+#   declined.
 #
 # (3) HEREDOC-EMBEDDED invocations. The derivation scans LINES, not shell
 # syntax -- it has no heredoc-state tracking, so a wrapper call written as
@@ -923,7 +960,8 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # pattern matches, not a shell parser, so they miss idiomatic shapes that
 # are semantically equivalent to ones they do match:
 #   - POSIX dot-source (`. "$path"`) is not an alternative to `source`/
-#     `bash` in F_EXEC_RE;
+#     `bash` in F_EXEC_RE -- the same omission the edge grammar makes, for
+#     the same measured reason ((2)(ii) above);
 #   - a call guarded by a keyword or operator on the same line (e.g.
 #     `if test_semaphore_acquire "$SLOT"; then`) is not matched by
 #     F_CALL_RE, which requires the call to be the line's first token.
@@ -936,15 +974,16 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # guarded calls needs statement-boundary awareness this scanner does not
 # have, and a naive widening risks matching inside an unrelated quoted
 # string instead -- the same class of hazard that sank the run_all
-# alternation in (2). No suite in tests/infra is known to use either shape
+# alternation recorded in (2) above. No suite in tests/infra is known to use either shape
 # today (F1's pass is the evidence). Net effect: F2's positive control
 # proves the derivation matches its OWN canonical fixture shapes, not the
 # full diversity of real bash call syntax, and a green F1 should be read
 # accordingly.
 
 # The declared roster: every suite this file currently knows to be
-# deadline-capable THROUGH A DIRECT WRAPPER CALL SITE (see SCOPE (2) above
-# for the transitive route this deliberately excludes), sorted
+# deadline-capable -- through a DIRECT wrapper call site, or through the
+# TRANSITIVE closure of suites that invoke one (see SCOPE (2) above for the
+# routes that remain outside even that), sorted
 # (load-bearing -- F1 compares sorted lists, so a
 # sorted declaration needs no re-sort and a human reading a RED sees the
 # same ordering the derivation produced). Declared HERE, at the head of
@@ -2019,7 +2058,7 @@ assert "FC7b: run_all.sh is derived as a DIRECT seed node, so the three members 
 
 
 echo ""
-echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
+echo "--- F1: the declared deadline-capable roster must equal the derived one ---"
 
 F_DERIVED="$(_f_deadline_capable "$SCRIPT_DIR")"
 F_DECLARED_SORTED="$(printf '%s\n' "${D_ROSTER[@]}" | sort)"
@@ -2034,10 +2073,14 @@ F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_S
 # A RED here means "a human must classify a newly deadline-
 # capable suite", not that a leak occurred -- Section D above is the leak
 # guard; this is the guard that keeps its own membership list honest.
-# Description says DIRECT-CALL-SITE, not bare "deadline-capable": a green
-# here must not be misread as completeness over the transitive route this
-# derivation cannot see (SCOPE (2) above).
-assert "F1: the DERIVED roster of suites with a DIRECT wrapper call site over tests/infra/ equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
+# The derived side now spans DIRECT call sites AND their transitive
+# invocation closure, so a green here IS the full roster claim over the node
+# set (tests/infra/test_*.sh plus run_all.sh). It is still not completeness
+# over the residual routes SCOPE (2) names -- the scripts/ hop, POSIX
+# dot-source, and dynamically constructed invocations -- which is why the
+# description scopes itself to "over tests/infra/" rather than claiming no
+# suite anywhere can reach a deadline undeclared.
+assert "F1: the DERIVED roster of deadline-capable suites over tests/infra/ (direct wrapper call sites plus their invocation closure) equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
     test "$F_DERIVED" = "$F_DECLARED_SORTED"
 
 echo ""
@@ -2047,9 +2090,14 @@ echo ""
 # instead of hand-typed, the two cannot diverge by construction -- there is
 # nothing left for a lockstep check to catch. The one part of F4's job the
 # derivation does not give for free -- that D_MEMBERS' own entries are
-# genuine direct-call-site suites, not typos or stale names -- is already
-# proved by F1 above, since a D_MEMBERS entry that were NOT a real direct
-# call site would still need to appear in D_ROSTER for F1 to pass, and
-# D_MEMBERS' three members do appear there.
+# genuine deadline-capable suites, not typos or stale names -- is already
+# proved by F1 above, since a D_MEMBERS entry that were NOT derivable at all
+# would still need to appear in D_ROSTER for F1 to pass, and D_MEMBERS' three
+# members do appear there. Note the exact strength of that: since task 6291
+# the derivation admits a suite by a DIRECT call site OR by the invocation
+# closure, so F1 proves those three are capable, not that they are capable
+# DIRECTLY. Nothing here depends on which -- Section D forks them and
+# observes real behaviour -- and their direct sites are what seeds the
+# closure in the first place.
 
 test_summary
