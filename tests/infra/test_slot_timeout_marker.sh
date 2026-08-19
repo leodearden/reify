@@ -1215,6 +1215,15 @@ _f_closure_names() {
     _f_closure "$1" | cut -d' ' -f1
 }
 
+# _f_route_of <dir> <basename> -> prints that node's route, or nothing if the
+# node is not derived at all. Plain `grep -E` (a PRINTING grep, which drains
+# its input) downstream of the pipe, never `-q`/`-l`.
+_f_route_of() {
+    local _d="$1" _b="$2" _line
+    _line="$(_f_closure "$_d" | grep -E -- "^${_b//./\\.} " || true)"
+    printf '%s' "${_line#* }"
+}
+
 echo ""
 echo "--- F2/F3: controls on the derivation predicate, before it drives anything ---"
 
@@ -1411,6 +1420,71 @@ F_FC1_COUNT="$(_f_closure_names "$F_CLOSURE_POS_DIR" | grep -cE '^test_' || true
 
 assert "FC1: one-hop closure positive control -- the seed plus all $F_CLOSURE_POS_VARIANTS invocation-edge variants (literal node path, bound-then-exec variable, suite->suite) are derived (expected $F_CLOSURE_POS_EXPECT, got $F_FC1_COUNT)" \
     test "$F_FC1_COUNT" -eq "$F_CLOSURE_POS_EXPECT"
+
+echo ""
+echo "--- FC2/FC3: the closure must be a FIXED POINT, and must terminate ---"
+
+# FC1 above proves ONE hop. A real invocation graph is deeper than that
+# (test_run_all_ambient_isolation.sh reaches its deadline through
+# test_run_all.sh, which reaches it through its own direct call site), and it
+# contains cycles. This fixture pins BOTH properties on shapes a single pass
+# provably cannot satisfy: a three-edge chain, and a mutually-invoking pair
+# that is capable of nothing.
+F_CLOSURE_CHAIN_DIR="$TMPF/fx-closure-chain"; mkdir -p "$F_CLOSURE_CHAIN_DIR"
+
+# The chain: seed <- hop1 <- hop2 <- hop3. hop2 deliberately uses the
+# bound-then-exec shape rather than a literal path, so the chain also proves
+# the bind-plus-exec-position rule composes ACROSS rounds and not merely
+# against the direct seeds.
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_seed.sh" <<'C2SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+C2SEEDEOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_hop1.sh" <<'C2HOP1EOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_seed.sh"
+C2HOP1EOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_hop2.sh" <<'C2HOP2EOF'
+#!/usr/bin/env bash
+H1="$SCRIPT_DIR/test_c_hop1.sh"
+bash "$H1" --quiet
+C2HOP2EOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_hop3.sh" <<'C2HOP3EOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_hop2.sh"
+C2HOP3EOF
+# The CYCLE: cycA <-> cycB, neither capable of anything. A fixed point that
+# propagated on MENTION rather than on CAPABILITY would either loop here or
+# wrongly admit both; propagating only FROM the capable set makes this
+# terminate with neither admitted.
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_cycA.sh" <<'C2CYCAEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_cycB.sh"
+C2CYCAEOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_cycB.sh" <<'C2CYCBEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_cycA.sh"
+C2CYCBEOF
+F_CLOSURE_CHAIN_EXPECT=4
+
+# Routes are PINNED, not just membership: a future edit that resolves a hop
+# by the wrong edge -- reaching past its real predecessor to something else
+# capable -- would leave membership and the count identical and be invisible
+# without this. Precomputed into plain variables, never a $(...) inside a
+# description (E1's discipline).
+F_FC2_HOP1_ROUTE="$(_f_route_of "$F_CLOSURE_CHAIN_DIR" test_c_hop1.sh)"
+F_FC2_HOP2_ROUTE="$(_f_route_of "$F_CLOSURE_CHAIN_DIR" test_c_hop2.sh)"
+F_FC2_HOP3_ROUTE="$(_f_route_of "$F_CLOSURE_CHAIN_DIR" test_c_hop3.sh)"
+F_FC3_COUNT="$(_f_closure_names "$F_CLOSURE_CHAIN_DIR" | grep -cE '^test_' || true)"
+
+assert "FC2a: hop 1 of the chain is derived through the seed itself (expected via:test_c_seed.sh, got ${F_FC2_HOP1_ROUTE:-<underived>})" \
+    test "$F_FC2_HOP1_ROUTE" = "via:test_c_seed.sh"
+assert "FC2b: hop 2 is derived through hop 1 -- a second round, and through a BOUND-then-exec edge (expected via:test_c_hop1.sh, got ${F_FC2_HOP2_ROUTE:-<underived>})" \
+    test "$F_FC2_HOP2_ROUTE" = "via:test_c_hop1.sh"
+assert "FC2c: hop 3 is derived through hop 2 -- a third round, so the derivation is a fixed point and not a bounded number of passes (expected via:test_c_hop2.sh, got ${F_FC2_HOP3_ROUTE:-<underived>})" \
+    test "$F_FC2_HOP3_ROUTE" = "via:test_c_hop2.sh"
+assert "FC3: the mutually-invoking pair terminates and is NOT admitted -- capability propagates only FROM the capable set, never from a mention (expected $F_CLOSURE_CHAIN_EXPECT derived, got $F_FC3_COUNT)" \
+    test "$F_FC3_COUNT" -eq "$F_CLOSURE_CHAIN_EXPECT"
 
 
 echo ""
