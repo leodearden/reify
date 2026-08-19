@@ -897,6 +897,14 @@ G_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 # the set, after the sibling suite's CACHE_REDIRECT_ROLES and the yaml's
 # role_env_overrides, and this enumeration is the copy that silently went
 # stale when merger was added.
+#
+# That last sentence used to be the ONLY thing holding this copy in sync.
+# G10-G11 near the end of this block now pin it against the sibling's
+# declaration as an order-insensitive set, so forgetting this line is a red
+# suite rather than a silent gap. The literal is deliberately kept (not
+# derived from the sibling) so the comparison is between two independent
+# statements; see the G10-G11 header for that argument and for what the pin
+# still cannot observe.
 G_CACHE_REDIRECT_ROLES="implementer debugger simple_task architect reviewer_comprehensive judge merger"
 
 # REIFY_AGENT_CACHE_ROOT is UNSET here, unlike in run_redirect: observing the
@@ -980,6 +988,83 @@ PYEOF
         echo "SKIP: sandbox.enabled is not true — the redirect is not live, skipping G7-G9"
     fi
 fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+# G10-G11 — CROSS-FILE MIRROR PIN (#6275 review amendment)
+#
+# G_CACHE_REDIRECT_ROLES above is the THIRD hand-maintained copy of the
+# redirect set, and it is the copy that silently went stale when `merger` was
+# added.  Nothing mechanically tied it to the other two: the sibling suite's
+# (C) complement pin lives INSIDE test_sandbox_cache_writability_seam.sh and
+# never reads this file, and G7-G9 above simply iterate whatever this list
+# happens to hold.  So a role added to the yaml AND to the sibling but
+# forgotten HERE leaves both suites green while that role's
+# seeder-default-vs-yaml agreement is never asserted at all — the exact
+# failure mode #6275 was filed to repair, one file over, still open after the
+# intra-file pin landed.  G10-G11 close it.
+#
+# WHY THE LITERAL IS KEPT rather than derived from the sibling by the same
+# sed (the alternative the review offered): deriving makes this file
+# vacuously agree with whatever the sibling says, including a wrong value,
+# and erases the independent second statement that is the only thing a
+# two-copy comparison can be evidence OF.  Comparing two independent literals
+# is strictly stronger than deriving one from the other; the cost is that an
+# intentional role change must be typed in both places, which is the point.
+#
+# Deliberately OUTSIDE the PyYAML / sandbox.enabled gate above — same posture
+# as the sibling's block (C) ("plain bash, always runs, does not read the yaml
+# at all").  A drifted mirror must go red on a host without PyYAML too.
+#
+# WHAT THIS PIN CANNOT OBSERVE, stated so it is not read as more coverage than
+# it has: it pins reify's two TEST-SIDE copies against each other.  It does
+# NOT pin either against the yaml's role_env_overrides keys (G7-G9 do that,
+# but only for roles this list already names, so a role missing from BOTH
+# mirrors is still invisible here), and it does NOT read DF's roles.py.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- G10-G11: cross-file redirect-role mirror pin ---"
+
+G_SEAM_SUITE="$REPO_ROOT/tests/infra/test_sandbox_cache_writability_seam.sh"
+G_SEAM_ROLES="$(sed -n 's/^CACHE_REDIRECT_ROLES="\([^"]*\)"$/\1/p' "$G_SEAM_SUITE" 2>/dev/null || true)"
+
+# Non-vacuity guard for G11: if the sibling's variable is renamed, reshaped
+# (say into an array), or gains a second declaration, the extraction stops
+# meaning what G11 assumes and G11 would otherwise compare against an empty
+# or ambiguous string.  Fail LOUD here instead of silently weakening G11.
+assert "G10: the sibling suite declares CACHE_REDIRECT_ROLES exactly once and it is extractable (a rename/reshape there goes RED here rather than vacuously green)" \
+    bash -c '
+        [ -f "$1" ] || { echo "sibling suite not found: $1" >&2; exit 1; }
+        [ -n "$2" ] || { echo "no ^CACHE_REDIRECT_ROLES=\"...\" declaration found in $1 -- renamed or reshaped?" >&2; exit 1; }
+        n=$(printf "%s\n" "$2" | wc -l)
+        [ "$n" -eq 1 ] || { echo "expected exactly 1 CACHE_REDIRECT_ROLES declaration in $1, found $n" >&2; exit 1; }
+    ' _ "$G_SEAM_SUITE" "$G_SEAM_ROLES"
+
+# Order-insensitive on BOTH sides (sorted token streams, same idiom as the
+# sibling's (C) complement assertion), so merely reordering either literal is
+# not a spurious FAIL.  The diagnostics name the drifted role in whichever
+# direction it drifted, so the failure says what to edit.
+assert "G11: this file's G_CACHE_REDIRECT_ROLES == the sibling suite's CACHE_REDIRECT_ROLES as an ORDER-INSENSITIVE set -- the cross-file drift that let merger go stale in this copy can no longer stay green" \
+    bash -c '
+        l_sorted=$(printf "%s\n" $1 | sort | tr "\n" " ")
+        r_sorted=$(printf "%s\n" $2 | sort | tr "\n" " ")
+        [ "$l_sorted" = "$r_sorted" ] && exit 0
+        echo "the two hand-maintained redirect-role mirrors drifted" >&2
+        echo "  here    (G_CACHE_REDIRECT_ROLES): $l_sorted" >&2
+        echo "  sibling (CACHE_REDIRECT_ROLES):   $r_sorted" >&2
+        for r in $1; do
+            case " $2 " in
+                *" $r "*) ;;
+                *) echo "  named here but NOT in the sibling: $r" >&2 ;;
+            esac
+        done
+        for r in $2; do
+            case " $1 " in
+                *" $r "*) ;;
+                *) echo "  in the sibling but NOT named here: $r" >&2 ;;
+            esac
+        done
+        exit 1
+    ' _ "$G_CACHE_REDIRECT_ROLES" "$G_SEAM_ROLES"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block H — boot persistence + mode separation
