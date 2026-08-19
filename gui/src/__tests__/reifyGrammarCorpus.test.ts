@@ -4275,30 +4275,78 @@ describe('reifyLanguage — fold and indent coverage', () => {
   const EXCLUDED_BRACE_NODES = ['Interpolation'];
 
   /**
-   * Every capitalised production in reify.grammar whose own body contains a
-   * literal brace-OPENING token. Scans line by line, tracking the most recent
-   * production header, and stops at `@tokens` — inside that block `"{"` is a
-   * token declaration, not a body.
+   * Names declared INSIDE the `@tokens` block whose entire body is one string
+   * literal containing a `{` — a brace opener that has been folded into a
+   * single NAMED token, such as `ImportItemsOpen { ".{" }` (#5931).
    *
-   * Two spellings count as an opener. The plain `"{"` is the common one;
-   * `".{"` is the combined token `ImportItems` uses for the canonical
-   * destructured import `import a.b.{C, D}` (#5931), where the dot had to be
-   * folded into the literal to keep lezer-generator conflict-free — see the
-   * ImportDeclaration comment in reify.grammar. Such a body is still a
-   * brace-delimited body and still needs its fold and indent entries, so the
-   * extraction must not miss it merely because the `{` is not the first
-   * character of the token.
+   * THE SINGLE-LITERAL SHAPE IS LOAD-BEARING, not incidental tightening. The
+   * looser reading — "any token declaration mentioning a braced literal" —
+   * also matches `StringChunk { (![\\\"{}] | "\\" _ | "{{" | "}}")+ }`, whose
+   * `"{{"` is a string ESCAPE and not a body opener at all, and would inject a
+   * phantom into the ledger below. Only a token that IS a brace, whole,
+   * qualifies.
+   */
+  function braceOpenerTokens(grammarSrc: string): string[] {
+    const names: string[] = [];
+    let inTokens = false;
+    for (const rawLine of grammarSrc.split('\n')) {
+      if (/^@tokens\b/.test(rawLine)) {
+        inTokens = true;
+        continue;
+      }
+      if (!inTokens) continue;
+      // Strip line comments here too — a commented-out declaration is not one.
+      const line = rawLine.replace(/\/\/.*$/, '');
+      const decl = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{\s*("(?:[^"\\]|\\.)*")\s*\}\s*$/);
+      if (decl && decl[2].includes('{')) names.push(decl[1]);
+    }
+    return names;
+  }
+
+  /**
+   * Every capitalised production in reify.grammar whose own body opens with a
+   * brace. Scans line by line, tracking the most recent production header, and
+   * stops at `@tokens` — inside that block `"{"` is a token declaration, not a
+   * body.
+   *
+   * THREE SPELLINGS COUNT AS AN OPENER, and they are not equally good:
+   *
+   *   `"{"`   the common one, an anonymous inline literal.
+   *   `".{"`  a combined anonymous literal. `ImportItems` used this for the
+   *           canonical destructured import `import a.b.{C, D}` (#5931), where
+   *           the dot had to be folded into one token to keep lezer-generator
+   *           conflict-free — see the ImportDeclaration comment in
+   *           reify.grammar.
+   *   a reference to a NAMED token from `braceOpenerTokens` above — today
+   *           `ImportItemsOpen`, which is what `ImportItems` uses now.
+   *
+   * The named token is the PREFERRED spelling, and the reason is the whole
+   * point of this ledger: an anonymous inline literal is consumed by the lexer
+   * and produces NO NODE in the tree, so `foldBody`'s `getChild` lookup misses
+   * it, the fold silently returns null, and no styleTags selector can name it
+   * either. A named token survives into the tree and keeps both affordances
+   * reachable. Either way the production is still a brace-delimited body and
+   * still needs its fold and indent entries, so the extraction must not miss it
+   * merely because the `{` is not the first character of the token — or not
+   * spelled as a literal on the body line at all.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
+    const openers = braceOpenerTokens(grammarSrc);
     const found = new Set<string>();
     let current: string | null = null;
     for (const rawLine of grammarSrc.split('\n')) {
+      // NOTE the asymmetry with `braceOpenerTokens`, which is deliberate: that
+      // pass reads the `@tokens` block, this one must STOP at it.
       if (/^@tokens\b/.test(rawLine)) break;
       // Strip line comments so prose about braces never counts as a body.
       const line = rawLine.replace(/\/\/.*$/, '');
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
-      if (current && (line.includes('"{"') || line.includes('".{"'))) found.add(current);
+      const opensWithBrace =
+        line.includes('"{"') ||
+        line.includes('".{"') ||
+        openers.some((name) => new RegExp(`\\b${name}\\b`).test(line));
+      if (current && opensWithBrace) found.add(current);
     }
     return [...found].sort();
   }
