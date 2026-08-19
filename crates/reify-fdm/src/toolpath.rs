@@ -7,10 +7,21 @@
 //! each bead carries its centerline polyline, extrusion width/height, a
 //! structural [`BeadRole`], its owning layer index + layer-Z, the nominal
 //! extruder temperature, and the active speed; the toolpath additionally
-//! records in-layer and inter-layer bead adjacency. The downstream θ
-//! `FDMPrint` constitutive mapping consumes this graph (and owns the mm→SI
-//! conversion — this module stores native G-code millimetres / mm·min⁻¹
-//! exactly as parsed, losslessly).
+//! records in-layer and inter-layer bead adjacency.
+//!
+//! This module stores native G-code millimetres / mm·min⁻¹ / °C exactly as
+//! parsed, losslessly. Its two consumers each convert for themselves, so the
+//! native units stop here and are not a unit regime anyone else inherits:
+//!
+//!   * [`crate::r0`] — the Rust-side consumer that builds the constitutive
+//!     field — reads these fields as millimetres and applies its own `MM_TO_M`;
+//!   * `reify_eval::compute_targets::fdm_slice::toolpath_to_value` — the
+//!     DSL-visible projection — converts to SI at the marshalling boundary,
+//!     emitting dimensioned `Value::Scalar`s and `Point3<Length>`.
+//!
+//! The two regimes are a deliberate split, not an inconsistency: the struct is
+//! a parser output that owes fidelity to its source, the DSL Value is a
+//! projection into model space, where the language's rule is SI + dimensioned.
 //!
 //! # Why this lives here and not in reify-gcode
 //!
@@ -87,10 +98,10 @@ pub fn role_from_prusaslicer_type(type_str: &str) -> Option<BeadRole> {
 /// constant `(role, width, height, layer)`.
 ///
 /// **Units are native G-code millimetres** (coordinates, `width`, `height`,
-/// `layer_z`) and **mm·min⁻¹** (`speed`), stored exactly as parsed — no SI
-/// conversion happens here. The downstream θ `FDMPrint` mapping owns the
-/// mm→SI conversion when it builds the constitutive field (Plan §"Design
-/// Decisions": lossless, faithful-to-source representation).
+/// `layer_z`), **mm·min⁻¹** (`speed`) and **°C** (`nominal_temp`), stored
+/// exactly as parsed — no SI conversion happens here (Plan §"Design Decisions":
+/// lossless, faithful-to-source representation). Each consumer converts for
+/// itself; see the module doc for the two that do.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bead {
     /// Ordered deposited centerline polyline in mm; the first point is the
