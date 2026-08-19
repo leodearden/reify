@@ -167,10 +167,16 @@ fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
     }
 }
 
-/// Build positional coordinate args (`c0`, `c1`, …) from a slice of f64. The
-/// production `eval_all_args_to_f64` iterates `args` in Vec order (names are
-/// inert), so this is how InterpCurve/BezierCurve/NurbsCurve/Polygon receive
-/// their flat coordinate streams.
+/// Build positional BARE coordinate args (`c0`, `c1`, …) from a slice of f64.
+/// The production reader iterates `args` in Vec order (names are inert), so
+/// this is how a variadic builtin receives its flat coordinate stream.
+///
+/// After task 5658 the only remaining BARE variadic reader is
+/// `eval_all_args_to_f64`, used by `profile_polygon`'s 2-D vertex pairs (task
+/// 5661's residual) — so Polygon is this helper's only wholesale user.
+/// InterpCurve/BezierCurve go through the length-gated
+/// `accept_variadic_length_args` and NurbsCurve gates only its pole span, so
+/// those arms are written out explicitly below.
 fn coord_args(coords: &[f64]) -> Vec<(String, CompiledExpr)> {
     coords
         .iter()
@@ -1485,17 +1491,52 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("pitch".to_string(), lit_len(0.005)),
             ("height".to_string(), lit_len(0.05)),
         ],
-        // 2 points → 6 coords.
-        CurveKind::InterpCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.02, 0.03]),
-        // 3 control points → 9 coords.
-        CurveKind::BezierCurve => coord_args(&[0.0, 0.0, 0.0, 0.01, 0.01, 0.0, 0.02, 0.0, 0.0]),
+        // 2 points → 6 coords. EVERY position is a point coordinate and so is
+        // LENGTH-gated (task 5658). The golden below is unchanged:
+        // `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
+        CurveKind::InterpCurve => vec![
+            ("c0".to_string(), lit_len(0.0)),
+            ("c1".to_string(), lit_len(0.0)),
+            ("c2".to_string(), lit_len(0.0)),
+            ("c3".to_string(), lit_len(0.01)),
+            ("c4".to_string(), lit_len(0.02)),
+            ("c5".to_string(), lit_len(0.03)),
+        ],
+        // 3 control points → 9 coords. EVERY position is a control-point
+        // coordinate and so is LENGTH-gated (task 5658). Golden unchanged.
+        CurveKind::BezierCurve => vec![
+            ("c0".to_string(), lit_len(0.0)),
+            ("c1".to_string(), lit_len(0.0)),
+            ("c2".to_string(), lit_len(0.0)),
+            ("c3".to_string(), lit_len(0.01)),
+            ("c4".to_string(), lit_len(0.01)),
+            ("c5".to_string(), lit_len(0.0)),
+            ("c6".to_string(), lit_len(0.02)),
+            ("c7".to_string(), lit_len(0.0)),
+            ("c8".to_string(), lit_len(0.0)),
+        ],
         // degree=1, n_points=2, poles(2×3), weights(2), knots(n+deg+1=4).
-        CurveKind::NurbsCurve => coord_args(&[
-            1.0, 2.0, // degree, n_points
-            0.0, 0.0, 0.0, 0.01, 0.0, 0.0, // poles
-            1.0, 1.0, // weights
-            0.0, 0.0, 1.0, 1.0, // knots
-        ]),
+        // ONLY the pole span is LENGTH-gated (task 5658) — `coord_args` cannot
+        // be swapped wholesale here. `degree` is a polynomial degree (a count),
+        // `n_points` is a count, the weights are rational blending factors and
+        // the knots are parameter-space values, so all eight stay deliberately
+        // BARE. Golden unchanged, same `as_f64` identity as above.
+        CurveKind::NurbsCurve => vec![
+            ("c0".to_string(), lit(1.0)),      // degree
+            ("c1".to_string(), lit(2.0)),      // n_points
+            ("c2".to_string(), lit_len(0.0)),  // pole 1 x
+            ("c3".to_string(), lit_len(0.0)),  // pole 1 y
+            ("c4".to_string(), lit_len(0.0)),  // pole 1 z
+            ("c5".to_string(), lit_len(0.01)), // pole 2 x
+            ("c6".to_string(), lit_len(0.0)),  // pole 2 y
+            ("c7".to_string(), lit_len(0.0)),  // pole 2 z
+            ("c8".to_string(), lit(1.0)),      // weight 1
+            ("c9".to_string(), lit(1.0)),      // weight 2
+            ("c10".to_string(), lit(0.0)),     // knot 1
+            ("c11".to_string(), lit(0.0)),     // knot 2
+            ("c12".to_string(), lit(1.0)),     // knot 3
+            ("c13".to_string(), lit(1.0)),     // knot 4
+        ],
     };
     CompiledGeometryOp::Curve { kind: k, args }
 }
