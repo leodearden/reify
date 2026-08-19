@@ -95,4 +95,36 @@ mod tests {
     fn available_topics_returns_17_entries() {
         assert_eq!(available_topics().len(), 17);
     }
+
+    /// The angle-crossing doctrine's `Hz`/`rad/s` vocabulary is a corpus
+    /// SINGLETON — both terms occur exactly once, on the same line
+    /// (`units.md:94`), so dropping them from `units.md` drops them
+    /// everywhere. `docs/notes/angle-crossing-discoverability-2026-08-10.md`
+    /// Q4 ("Hz to rad/s" / "angular frequency") measured this exact wording
+    /// as RED, and the sharpest miss in the walk, on its first pass; esc-6267-3
+    /// later caught a live removal of this vocabulary by hand, post-hoc, after
+    /// it had already shipped. This guard makes that check executable instead
+    /// of a hand-run grep. Asserted over the whole corpus (not just `UNITS`
+    /// alone) so a future task may legitimately relocate the vocabulary to
+    /// another chunk without tripping this guard. See
+    /// `docs/notes/angle-crossing-doctrine-placement-2026-08-19.md` for the
+    /// full decision record.
+    #[test]
+    fn angle_crossing_goal_vocabulary_survives_in_the_corpus() {
+        for term in ["Hz", "rad/s"] {
+            let found = chunk_corpus()
+                .iter()
+                .any(|(_, content)| content.contains(term));
+            assert!(
+                found,
+                "goal-vocabulary term `{term}` is missing from the entire chunk \
+                 corpus. `docs/notes/angle-crossing-discoverability-2026-08-10.md` \
+                 Q4 (\"Hz to rad/s\" / \"angular frequency\") found this exact \
+                 wording RED, and the sharpest miss in the walk, on its first \
+                 pass; esc-6267-3 later caught a live removal of this vocabulary \
+                 by hand, post-hoc. `{term}` is a corpus SINGLETON (units.md:94) \
+                 — dropping it from units.md drops it everywhere."
+            );
+        }
+    }
 }
