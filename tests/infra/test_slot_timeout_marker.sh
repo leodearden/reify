@@ -1599,6 +1599,109 @@ assert "FC2c: hop 3 is derived through hop 2 -- a third round, so the derivation
 assert "FC3: the mutually-invoking pair terminates and is NOT admitted -- capability propagates only FROM the capable set, never from a mention (expected $F_CLOSURE_CHAIN_EXPECT derived, got $F_FC3_COUNT)" \
     test "$F_FC3_COUNT" -eq "$F_CLOSURE_CHAIN_EXPECT"
 
+echo ""
+echo "--- FC4: the edge predicate must be a CAPABILITY predicate, not a path-MENTION one ---"
+
+# This is F3's discipline extended to the closure, and it is the assert that
+# decides whether the derivation is worth having. Every fixture below
+# reproduces a shape MEASURED in the real tree, and every one of them is
+# admitted by some plausible-looking widening of the edge grammar. A
+# derivation that admits them would force roster entries whose measured
+# justification reads "not actually deadline-capable" -- which empties
+# D_ROSTER's meaning, and is exactly why Section F's SCOPE paragraph records
+# the `run_all`-alternation fix as measured-and-REJECTED rather than shipped.
+F_CLOSURE_NEG_DIR="$TMPF/fx-closure-neg"; mkdir -p "$F_CLOSURE_NEG_DIR"
+
+# The seed NODE, so every fixture below has something real to (not) invoke.
+cat > "$F_CLOSURE_NEG_DIR/run_all.sh" <<'C4RUNALLEOF'
+#!/usr/bin/env bash
+_H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
+_H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
+slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT"
+C4RUNALLEOF
+
+# (i) BIND-ONLY -- the node path is bound to a variable and then used only as
+# an INSPECTION target. tests/infra/test_verify_release_delta_skip.sh:521 is
+# this shape verbatim (ACT_RUN_ALL, used by `test -f` at :523 and two
+# source-inspection greps at :530/:536, never invoked), and it is THE
+# measured false admission that sank the run_all alternation.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_bind_only.sh" <<'C4BINDEOF'
+#!/usr/bin/env bash
+ACT_RUN_ALL="$REPO_ROOT/tests/infra/run_all.sh"
+assert "run_all.sh exists" \
+    test -f "$ACT_RUN_ALL"
+assert "run_all.sh pins the release-delta skip" \
+    grep -qE '^[[:space:]]*export REIFY_RELEASE_DELTA_SKIP=0([[:space:]]|$)' "$ACT_RUN_ALL"
+C4BINDEOF
+
+# (ii) CASE PATTERN -- an exec verb inside a quoted COMPARISON pattern, which
+# is a datum, not a command. tests/infra/test_run_all_ambient_isolation.sh:160
+# is this shape verbatim; it is also the measured reason a path-mention
+# grammar gets that file's ROUTE wrong (it would report via:run_all.sh, when
+# the real route is via:test_run_all.sh through a forwarding helper).
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_case_pattern.sh" <<'C4CASEEOF'
+#!/usr/bin/env bash
+RUN_ALL_PLAN_LINE=""
+while IFS= read -r _line; do
+    case "$_line" in
+        *"bash tests/infra/run_all.sh"*)
+            RUN_ALL_PLAN_LINE="$_line"
+            ;;
+    esac
+done <<< "$PLAN_DUMP"
+C4CASEEOF
+
+# (iii) COPY LIST -- the node basename bare in a closure/copy-list loop, the
+# same shape F3 already guards for the direct predicate. Note the hazard is
+# not the basename but the `sh ` that the PRECEDING list element ends with:
+# "verify.sh run_all.sh" contains an unanchored exec verb followed by a
+# blank and then the node path.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_copy_list.sh" <<'C4COPYEOF'
+#!/usr/bin/env bash
+for _f in verify.sh run_all.sh test_helpers.sh; do
+    cp "$SRC/tests/infra/$_f" "$DST/tests/infra/$_f"
+done
+C4COPYEOF
+
+# (iv) GIT PATHSPEC -- `-- . ':(exclude)<path>'`. The bare `.` here is a git
+# pathspec, not a POSIX dot-source, and it is preceded by a blank, so a verb
+# set that included `\.` would read this as "source the node". Measured on
+# tests/infra/test_orchestrator_config_canonical_path.sh:64-65, which is this
+# shape verbatim. It is also a second bind-only instance: `matches` is bound
+# from the substitution and then only tested and echoed.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_pathspec.sh" <<'C4SPECEOF'
+#!/usr/bin/env bash
+assert_no_legacy_config_refs() {
+    local matches
+    matches="$(git -C "$REPO_ROOT" grep -nP '(?<!dark-factory-)orchestrator\.yaml' \
+        -- . ':(exclude)tests/infra/run_all.sh' || true)"
+    if [ -n "$matches" ]; then
+        echo "Legacy top-level config references still present (expected: none):"
+        return 1
+    fi
+}
+C4SPECEOF
+
+# (v) A REAL INVOCATION OF A NON-CAPABLE NODE. The edge is genuine; the
+# target simply has no deadline to confer. Proves the derivation asks
+# "capable?" of the TARGET rather than treating any invocation as capability.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_noncapable_target.sh" <<'C4NCEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_inert.sh"
+C4NCEOF
+cat > "$F_CLOSURE_NEG_DIR/test_c_inert.sh" <<'C4INERTEOF'
+#!/usr/bin/env bash
+echo "inert: this suite reaches no deadline by any route"
+C4INERTEOF
+
+# Basenames are safe to print; the ADMITTED list is precomputed into a plain
+# variable so a RED names exactly which shape got through (E1's discipline).
+F_FC4_COUNT="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -cE '^test_' || true)"
+F_FC4_ADMITTED="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
+
+assert "FC4: none of the five measured non-invocation shapes is an edge -- bind-only inspection target, exec verb inside a case PATTERN, copy-list element, git pathspec, and a real invocation of a NON-capable node (expected 0, got $F_FC4_COUNT: ${F_FC4_ADMITTED:-<none>})" \
+    test "$F_FC4_COUNT" -eq 0
+
 
 echo ""
 echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
