@@ -119,12 +119,21 @@ fn entity_census(surface: &Mesh) -> (usize, usize, usize) {
 /// it is checked without touching gmsh at all.
 #[test]
 fn feature_angle_is_strictly_below_a_right_dihedral() {
-    assert!(
-        CLASSIFY_FEATURE_ANGLE < std::f64::consts::FRAC_PI_2,
-        "the classify feature angle is {CLASSIFY_FEATURE_ANGLE} rad; a box's dihedral \
-         angle is EXACTLY π/2 and gmsh's sharp-edge test is strictly-greater-than, \
-         so any threshold >= π/2 fails to register a box's own edges as sharp (#6200)"
-    );
+    // Both operands are `const`, so the comparison is compile-time foldable and
+    // a runtime `assert!` on it trips `clippy::assertions_on_constants`; the
+    // `const` block pins the relationship at compile time instead. That is
+    // strictly stronger here — a regression fails the build rather than waiting
+    // for this test to be RUN on a `has_gmsh` host. The message loses the
+    // interpolated angle (a const panic takes a literal only); the offending
+    // value is `kernel_real.rs`'s `CLASSIFY_FEATURE_ANGLE`.
+    const {
+        assert!(
+            CLASSIFY_FEATURE_ANGLE < std::f64::consts::FRAC_PI_2,
+            "a box's dihedral angle is EXACTLY π/2 and gmsh's sharp-edge test is \
+             strictly-greater-than, so any CLASSIFY_FEATURE_ANGLE >= π/2 fails to \
+             register a box's own edges as sharp (#6200)"
+        )
+    };
 }
 
 /// A box's six planar faces must be separated into distinct B-rep surfaces,

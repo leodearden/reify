@@ -165,8 +165,8 @@ fn kuhn_box_volume_mesh(lx: f32, ly: f32, lz: f32) -> VolumeMesh {
     }
 }
 
-/// A "cone from the centre" decomposition of the unit cube: 9 nodes (8 corners
-/// + the body centre) and 12 tets, one per surface triangle of
+/// A "cone from the centre" decomposition of the unit cube: 9 nodes (8
+/// corners + the body centre) and 12 tets, one per surface triangle of
 /// [`unit_cube_mesh`], each wound to positive signed volume.
 ///
 /// Also a complete conforming decomposition (`Σ|V_tet| == 1.0`), but unlike
