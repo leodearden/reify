@@ -1079,24 +1079,140 @@ F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquir
 # input to produce a count, so it can never race the producer that way --
 # the same reason D4's `_d_unredirected` already uses `-c`
 # rather than `-q`/`-l` here.
+# _f_direct_capable_file <path> -> rc 0 if <path> has a DIRECT wrapper call
+# site under the four EREs above, rc 1 otherwise. Extracted verbatim from
+# _f_deadline_capable's per-file body (task 6291) so the direct predicate
+# exists in exactly ONE copy: the direct sweep below and the closure's SEED
+# round both call this, so they cannot drift apart.
+_f_direct_capable_file() {
+    local _p="$1" _n
+    _n="$(grep -vE '^[[:blank:]]*#' "$_p" \
+        | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
+    [ "${_n:-0}" -ge 1 ]
+}
+
+# _f_excluded_node <basename> -> rc 0 if <basename> is excluded from the node
+# set. test_helpers.sh matches the test_*.sh glob but is excluded by run_all's
+# own discovery. test_slot_timeout_marker.sh is RECURSION -- this file is
+# itself 17+ P3 hits and 4 knob hits of its own (the same exclusion
+# D_MEMBERS' own RECURSION comment documents, above). Shared by the direct
+# sweep and the closure so ONE list governs both.
+_f_excluded_node() {
+    case "$1" in
+        test_helpers.sh|test_slot_timeout_marker.sh) return 0 ;;
+    esac
+    return 1
+}
+
 _f_deadline_capable() {
-    local _d="$1" _f _base _n
+    local _d="$1" _f _base
     for _f in "$_d"/test_*.sh; do
         [ -e "$_f" ] || continue
         _base="${_f##*/}"
-        # test_helpers.sh matches the glob but is excluded by run_all's own
-        # discovery. test_slot_timeout_marker.sh is RECURSION -- this file
-        # is itself 17+ P3 hits and 4 knob hits of its own (the same
-        # exclusion D_MEMBERS' own RECURSION comment documents, above).
-        case "$_base" in
-            test_helpers.sh|test_slot_timeout_marker.sh) continue ;;
-        esac
-        _n="$(grep -vE '^[[:blank:]]*#' "$_f" \
-            | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
-        if [ "${_n:-0}" -ge 1 ]; then
+        if _f_excluded_node "$_base"; then continue; fi
+        if _f_direct_capable_file "$_f"; then
             printf '%s\n' "$_base"
         fi
     done | sort
+}
+
+# ---------------------------------------------------------------------------
+# THE TRANSITIVE-INVOCATION CLOSURE (task 6291).
+#
+# A suite that never names an acquire wrapper is still deadline-capable if it
+# INVOKES something that is: tests/infra/run_all.sh (direct-capable itself --
+# _H2_SLOT_ACQUIRE_LIB bind at run_all.sh:1036, bare slot_acquire call at
+# :1692 -- and running its pool worker against the finite
+# REIFY_RUN_ALL_POOL_WAIT default), or another suite that is capable. The
+# closure is the fixed point of that invocation relation over the node set.
+#
+# NODE vs ROSTER ENTRY. The node set is tests/infra/test_*.sh PLUS
+# tests/infra/run_all.sh, because run_all.sh is the hub three of the
+# transitive members reach their deadline through. It participates as a
+# capability NODE only; D_ROSTER stays a list of SUITES forked under the
+# pool, so _f_deadline_capable filters run_all.sh back out.
+#
+# _f_node_list <dir> -> one PATH per closure node, unsorted.
+_f_node_list() {
+    local _d="$1" _f _base
+    for _f in "$_d"/test_*.sh "$_d"/run_all.sh; do
+        [ -e "$_f" ] || continue
+        _base="${_f##*/}"
+        if _f_excluded_node "$_base"; then continue; fi
+        printf '%s\n' "$_f"
+    done
+}
+
+# The EDGE grammar, expressed as ERE PREFIXES to which a node's
+# regex-escaped basename is appended.
+#
+# DELIBERATELY NAIVE AT THIS STEP, and replaced below by the two-phase
+# grammar: this is the "add run_all to F_BIND_RE/F_EXEC_RE" shape that
+# Section F's SCOPE paragraph records as measured-and-rejected, kept here
+# only long enough for the negative controls to demonstrate WHY it is
+# rejected. It is a path-MENTION predicate, not a capability one.
+F_EDGE_NAIVE_EXEC_PRE='(bash|sh|source)[[:blank:]]+.*'
+F_EDGE_NAIVE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=.*'
+
+# _f_closure <dir> -> one "<basename> <route>" line per capable node,
+# sorted. route is `direct` (a wrapper call site of its own) or
+# `via:<basename>` (the capable node it reaches a deadline through).
+#
+# BASENAMES AND ROUTES ONLY -- never a matched line, same discipline as
+# _f_deadline_capable and _e_scan: this file's output is re-emitted into the
+# merge-gate verify log.
+#
+# Every membership test uses the DRAINING `grep -cE ... || true` form with a
+# count comparison, never `grep -q`/`-l` downstream of a pipe -- see the
+# SIGPIPE/pipefail note on _f_direct_capable_file above.
+_f_closure() {
+    local _d="$1" _p _base _cand _esc _n
+    local -A _cap=()
+    local -a _pend=() _seeds=()
+
+    # SEED round: the UNCHANGED four-ERE direct predicate.
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _base="${_p##*/}"
+        if _f_direct_capable_file "$_p"; then
+            _cap["$_base"]="direct"
+        else
+            _pend+=("$_p")
+        fi
+    done < <(_f_node_list "$_d")
+
+    # Candidates in SORTED order: a node reachable from two capable nodes
+    # would otherwise report whichever route bash's hash iteration happened
+    # to hand back first, making the derived route non-deterministic.
+    while IFS= read -r _cand; do
+        [ -n "$_cand" ] || continue
+        _seeds+=("$_cand")
+    done < <(printf '%s\n' "${!_cap[@]}" | sort)
+
+    # ONE pass at this step -- enough for a one-hop edge only.
+    for _p in "${_pend[@]}"; do
+        _base="${_p##*/}"
+        for _cand in "${_seeds[@]}"; do
+            _esc="${_cand//./\\.}"
+            _n="$(grep -vE '^[[:blank:]]*#' "$_p" \
+                | grep -cE -- "$F_EDGE_NAIVE_EXEC_PRE$_esc|$F_EDGE_NAIVE_BIND_PRE$_esc" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then
+                _cap["$_base"]="via:$_cand"
+                break
+            fi
+        done
+    done
+
+    for _base in "${!_cap[@]}"; do
+        printf '%s %s\n' "$_base" "${_cap[$_base]}"
+    done | sort
+}
+
+# _f_closure_names <dir> -> the closure's basenames only, sorted. The routes
+# are what the route-pinning asserts key on; the plain name list is what the
+# count/membership asserts key on.
+_f_closure_names() {
+    _f_closure "$1" | cut -d' ' -f1
 }
 
 echo ""
@@ -1241,13 +1357,24 @@ cat > "$F_CLOSURE_POS_DIR/test_c_seed.sh" <<'C1SEEDEOF'
 #!/usr/bin/env bash
 slot_acquire "$LOCK" 1 1
 C1SEEDEOF
-# (ii) run_all.sh -- a seed NODE that is not a test_*.sh suite. Mirrors the
-# real tests/infra/run_all.sh:1361 finite pool-wait default, which is the
-# whole reason invoking run_all.sh is a deadline-capable act. It is a NODE,
-# never a roster entry: D_ROSTER lists SUITES forked under the pool.
+# (ii) run_all.sh -- a seed NODE that is not a test_*.sh suite, and the
+# reason invoking run_all.sh is a deadline-capable act. It is a NODE, never a
+# roster entry: D_ROSTER lists SUITES forked under the pool.
+#
+# The body mirrors the route by which the REAL tests/infra/run_all.sh is
+# direct-capable, which was MEASURED per-ERE rather than assumed: F_BIND_RE
+# at run_all.sh:1036 (_H2_SLOT_ACQUIRE_LIB=...lib_slot_acquire.sh) and
+# F_CALL_RE at :1692 (a bare slot_acquire call). NOT F_WAIT_RE: :1361 spells
+# `"${REIFY_RUN_ALL_POOL_WAIT:-1800}"`, a `:-` default EXPANSION, and
+# F_WAIT_RE requires `_WAIT=`; the only `..._WAIT=` spelling in run_all.sh is
+# in a full-line comment at :86, which the derivation strips. The pool-wait
+# line is kept below anyway, unmatched, because it is what makes the deadline
+# FINITE and a reader looking for it should find it here (esc-6291-3).
 cat > "$F_CLOSURE_POS_DIR/run_all.sh" <<'C1RUNALLEOF'
 #!/usr/bin/env bash
+_H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
 _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
+slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT"
 C1RUNALLEOF
 # (iii) EDGE shape 1 -- a node invoked by LITERAL path.
 cat > "$F_CLOSURE_POS_DIR/test_c_lit_runall.sh" <<'C1LITEOF'
