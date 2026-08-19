@@ -264,6 +264,26 @@ fn bezier_bare_coordinate_drops_op_dimensioned_builds() {
     );
 }
 
+/// `nurbs` is the one variadic curve constructor with dimensionless
+/// neighbours, and the DIMENSIONED control here is the e2e half of the scope
+/// lock: `degree`, `n_points`, the weights and the knots are deliberately left
+/// BARE in it, so its zero-units-diagnostic assertion goes red if the gate
+/// over-reaches past the pole span.
+#[test]
+fn nurbs_bare_pole_drops_op_dimensioned_builds() {
+    assert_length_gate(
+        "nurbs",
+        "x1",
+        r#"structure def BareNurbs {
+            let w = nurbs(1, 2, 0, 0, 0, 10, 0, 0, 1, 1, 0, 0, 1, 1)
+        }"#,
+        r#"structure def DimNurbs {
+            let w = nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1, 1, 0, 0, 1, 1)
+        }"#,
+        |op| matches!(op, GeometryOp::NurbsCurve { .. }),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The desugaring cross-check — the highest-risk unknown in task 5623
 // ---------------------------------------------------------------------------

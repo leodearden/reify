@@ -6928,6 +6928,266 @@
     }
 
     // ---------------------------------------------------------------------------
+    // `nurbs`' POLE coordinates (task 5658, R2 sweep) — and the dimensionless
+    // tail it must NOT reach
+    //
+    // `nurbs(degree, n_points, poles…, weights…, knots…)` is the only variadic
+    // curve constructor with dimensionless neighbours, and they sit on BOTH
+    // sides of the gated span. Its per-arg triage:
+    //
+    //   degree    — a polynomial degree, i.e. a count      → dimensionless
+    //   n_points  — a count                                → dimensionless
+    //   poles     — coordinates of control points          → **LENGTH**
+    //   weights   — rational blending factors              → dimensionless
+    //   knots     — parameter-space values                 → dimensionless
+    //
+    // The gated span `2 .. 2 + n_points * 3` is a function of `n_points`, which
+    // is itself an argument — so it cannot be known before evaluation, which is
+    // why the production read is two-phase (structure first, then units) and
+    // why the tests below lock BOTH the gate and its boundary.
+    // ---------------------------------------------------------------------------
+
+    /// Build a `nurbs` op from its six gated POLE coordinates, supplying its own
+    /// BARE degree / n_points / weights / knots.
+    ///
+    /// degree=1, n_points=2 → 6 poles at `c2..c7`, 2 weights, and
+    /// `n_points + degree + 1 = 4` knots: 14 positional args in all.
+    ///
+    /// Supplying the un-gated neighbours HERE is what turns
+    /// [`assert_every_bare_position_reported`]'s `reported == gated.len()` count
+    /// into a genuine SCOPE LOCK — they stay bare, so the count goes red if the
+    /// gate over-reaches onto a weight, a knot, the degree or n_points.
+    fn nurbs_with_poles(c: &[reify_ir::CompiledExpr]) -> CompiledGeometryOp {
+        let mut args = vec![literal_f64(1.0), literal_f64(2.0)];
+        args.extend(c.iter().cloned());
+        args.extend([
+            literal_f64(1.0),
+            literal_f64(1.0), // weights
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0), // knots
+        ]);
+        variadic_curve(CurveKind::NurbsCurve, &args)
+    }
+
+    /// `nurbs`' row in the shared gate table — the only variadic row with
+    /// un-gated neighbours, hence the only one whose count assertion is also a
+    /// scope lock.
+    const NURBS_GATE: LengthGateCase = LengthGateCase {
+        label: "nurbs",
+        build: nurbs_with_poles,
+        // Numbered from the POLE span, not from the flat arg index: `c2` is the
+        // first control point's x, so it must read `x1`.
+        gated: &["x1", "y1", "z1", "x2", "y2", "z2"],
+        filler: 0.01,
+        step_handles: &[],
+    };
+
+    #[test]
+    fn compile_geometry_op_nurbs_length_gate_rejects_every_pole_coordinate() {
+        assert_length_gated(NURBS_GATE);
+    }
+
+    /// NEGATIVE LOCK on the triage, at a SECOND arity.
+    ///
+    /// degree=2 / n_points=3 → 9 poles at `c2..c10`, 3 weights, 6 knots. Run at
+    /// an arity different from every other nurbs fixture on purpose: the pole
+    /// span is COMPUTED from `n_points`, and a hardcoded `2..8` would pass the
+    /// whole degree-1 table and fail only here.
+    ///
+    /// The gate must not demand a dimension where a count, a rational blending
+    /// weight or a parameter-space knot legitimately has none — so a fully
+    /// valid nurbs with LENGTH poles and BARE everything else must build with
+    /// no units diagnostic at all.
+    #[test]
+    fn compile_geometry_op_nurbs_dimensionless_neighbours_still_accepted() {
+        let values = ValueMap::new();
+
+        let mut args = vec![literal_f64(2.0), literal_f64(3.0)];
+        // 9 pole coordinates, all dimensioned.
+        for i in 0..9 {
+            args.push(literal_length(0.001 * (i as f64 + 1.0)));
+        }
+        // 3 weights + 6 knots, all deliberately BARE.
+        args.extend([literal_f64(1.0), literal_f64(0.5), literal_f64(1.0)]);
+        args.extend([
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(0.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+            literal_f64(1.0),
+        ]);
+        let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            }) => {
+                assert_eq!(control_points.len(), 3);
+                assert_eq!(weights, vec![1.0, 0.5, 1.0]);
+                assert_eq!(knots, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+                assert_eq!(degree, 2);
+            }
+            other => panic!(
+                "expected Ok(NurbsCurve) for LENGTH poles with BARE degree / \
+                 n_points / weights / knots at degree=2, n_points=3 — the gated \
+                 span must be COMPUTED from n_points, not hardcoded; got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+            "a nurbs degree, n_points, weight or knot is legitimately \
+             dimensionless and must NOT be gated; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Six DISTINCT Length poles land in `control_points` in order, AND the
+    /// dimensionless tail lands verbatim.
+    ///
+    /// Pinning `weights` / `knots` / `degree` to the bare values that were
+    /// passed is the half that matters: a future refactor that widened the
+    /// gated span would start SI-converting them, and an assertion on
+    /// `control_points` alone could not see it.
+    #[test]
+    fn compile_geometry_op_nurbs_length_poles_accepted() {
+        let values = ValueMap::new();
+
+        let op = nurbs_with_poles(&[
+            literal_length(0.012),
+            literal_length(0.034),
+            literal_length(0.056),
+            literal_length(0.078),
+            literal_length(0.090),
+            literal_length(0.011),
+        ]);
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &[],
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::NurbsCurve {
+                control_points,
+                weights,
+                knots,
+                degree,
+            }) => {
+                assert_eq!(
+                    control_points,
+                    vec![[0.012, 0.034, 0.056], [0.078, 0.090, 0.011]]
+                );
+                assert_eq!(weights, vec![1.0, 1.0]);
+                assert_eq!(knots, vec![0.0, 0.0, 1.0, 1.0]);
+                assert_eq!(degree, 1);
+            }
+            other => panic!(
+                "expected Ok(NurbsCurve) for six Length poles, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics.iter().any(|d| {
+                d.message.contains("expects Length")
+                    || d.message.contains("non-finite Length")
+                    || d.message.contains("is non-finite")
+            }),
+            "six finite Length poles with a bare tail are the fully clean path \
+             and must emit no units or non-finite diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// ERROR-PRECEDENCE lock — the reason `nurbs`' production read is
+    /// two-phase.
+    ///
+    /// Both shapes pass DIMENSIONLESS scalars in what would become pole
+    /// positions, reproducing `curve_constructors_e2e.rs`'s two negative tests
+    /// (`nurbs_fewer_than_2_args_emits_diagnostic`,
+    /// `nurbs_insufficient_coordinate_args_emits_diagnostic`). If the units gate
+    /// ran before structural validation, the author would be told to dimension a
+    /// coordinate of a curve that does not have enough arguments to HAVE that
+    /// coordinate — so the ARITY diagnostic must still win.
+    #[test]
+    fn compile_geometry_op_nurbs_arity_diagnostics_precede_the_length_gate() {
+        let values = ValueMap::new();
+        let dimensionless =
+            |v: f64| literal_scalar(v, reify_core::DimensionVector::DIMENSIONLESS);
+
+        for (shape, args, want) in [
+            (
+                "only degree",
+                vec![dimensionless(3.0)],
+                "nurbs() requires at least degree and n_points arguments",
+            ),
+            (
+                "degree=3, n_points=4, 3 trailing args",
+                vec![
+                    dimensionless(3.0),
+                    dimensionless(4.0),
+                    dimensionless(0.0),
+                    dimensionless(0.0),
+                    dimensionless(0.0),
+                ],
+                "nurbs() got fewer arguments than expected",
+            ),
+        ] {
+            let op = variadic_curve(CurveKind::NurbsCurve, &args);
+
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let result = compile_geometry_op(
+                &op,
+                &values,
+                &[],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            );
+            assert!(
+                result.is_err(),
+                "a structurally invalid nurbs ({shape}) must drop the op, got: {:?}",
+                result
+            );
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(want)),
+                "the ARITY diagnostic {want:?} must still fire for {shape} — \
+                 structural validation runs BEFORE the units gate; got: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.message.contains("expects Length")),
+                "a structurally invalid nurbs ({shape}) must not also demand a \
+                 dimension on a coordinate it does not have enough arguments to \
+                 have; got: {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------
     // Test: ALL FAILURES AT ONCE, across every R1 family
     // ---------------------------------------------------------------------------
 
@@ -6955,6 +7215,7 @@
             ARC_GATE,
             INTERP_GATE,
             BEZIER_GATE,
+            NURBS_GATE,
         ] {
             assert_every_bare_position_reported(case);
         }
