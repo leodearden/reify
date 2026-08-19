@@ -876,6 +876,185 @@ fn lsp_full_interactive_loop_through_binary() {
          trigger has moved and this regression guard needs re-pointing — it does NOT mean \
          the stderr drain is broken. Captured stderr: {stderr_summary}"
     );
+
+    // Task #6162 regression guard: a 160 KiB client-supplied URI must not
+    // become 160 KiB of stderr. Derived basis: the truncated log line is at
+    // most 39 bytes of prefix + 1024 bytes of (256-char) URI + ~35 bytes of
+    // marker, i.e. < 1.15 KiB — 16 KiB leaves >14x headroom over that bound
+    // while sitting far below the measured pre-fix value of 163_895 bytes.
+    // A failure here means the truncation regressed (or never happened),
+    // NOT that the drain broke.
+    assert!(
+        stderr.len() < 16 * 1024,
+        "expected <16KiB of captured stderr from phase 4b's huge-URI didChange (derived \
+         worst case < 1.15KiB; measured 163_895 bytes pre-fix), got {} bytes. This means the \
+         did_change unknown-URI log line is not being truncated — NOT that the stderr drain \
+         is broken. Captured stderr: {stderr_summary}",
+        stderr.len()
+    );
+    // Proves the bounded-length assertion above isn't vacuously satisfied by
+    // the log line disappearing entirely — the elision marker must actually
+    // have fired.
+    assert!(
+        stderr.contains("[truncated,"),
+        "expected captured stderr to contain truncate_for_log's elision marker \
+         (\"[truncated, N bytes total]\"), proving the huge URI was actually truncated rather \
+         than the log line vanishing. Captured stderr: {stderr_summary}"
+    );
+}
+
+/// Reproduces task #6162's reported bug at the layer it was measured: a
+/// client that sends a huge unknown-URI `didChange` and never drains the
+/// server's stderr must not wedge the server process.
+///
+/// Unlike `lsp_full_interactive_loop_through_binary`, this test never spawns
+/// a reader for the child's stderr pipe. `child.stderr` is taken into the
+/// named `stderr_pipe` binding and deliberately never read. Holding the
+/// read end alive (rather than dropping it) is load-bearing: dropping it
+/// would give the child EPIPE/SIGPIPE on its next stderr write instead of
+/// pipe-full backpressure — a different failure mode that would make this
+/// test silently vacuous. The explicit `drop(stderr_pipe)` at the end
+/// documents that its lifetime must span every assertion above it, so a
+/// future refactor cannot accidentally shorten it by accident.
+///
+/// stdout IS drained via `spawn_reader` (the same helper
+/// `lsp_full_interactive_loop_through_binary` uses): a blocked stdout pipe
+/// is a different wedge, and leaving it undrained would mean this test
+/// proves nothing about stderr specifically.
+///
+/// Measured evidence (task #6162): with stderr piped but never drained, the
+/// pre-fix binary does not exit within 20s, and the main thread's
+/// `/proc/<pid>/task/<tid>/wchan` reads `pipe_write`. With stderr drained
+/// (the happy path `lsp_full_interactive_loop_through_binary` exercises) it
+/// exits `rc=0` in 0.05s having written 163_895 bytes. The primary RED
+/// tripwire below is `wait_for_notification` for the huge-URI `didChange`:
+/// pre-fix, `did_change` blocks forever inside the unknown-URI `eprintln!`'s
+/// `pipe_write` call and never reaches `publish_diagnostics`, so that call
+/// panics on its own 30s timeout. Expect this test to cost ~30s while RED —
+/// that is the notification timeout firing as designed, not a hang.
+///
+/// Deliberately does NOT assert the child's exit CODE and does NOT wait for
+/// the `shutdown` response: tower-lsp dispatches requests/notifications
+/// with concurrency > 1 (see `wait_for_response`'s doc comment), so the
+/// ordering of `shutdown`'s response relative to `exit` is not guaranteed
+/// under CPU saturation, and asserting on it would add flake without adding
+/// signal. The property the bug violates is "the process never exits at
+/// all", so process exit is the only assertion that needs to carry weight
+/// here — the `wait_for_notification` barrier above already proves the
+/// handler ran to completion.
+///
+/// Does NOT call `wait_for_exit`: that helper drains stderr via its
+/// `stderr_reader` argument, which is exactly the one thing this test must
+/// not do.
+#[cfg(unix)]
+#[test]
+fn lsp_survives_huge_unknown_uri_didchange_with_undrained_stderr() {
+    let _lock = acquire_lsp_test_lock();
+    let mut child = KillOnDrop(
+        Command::new(env!("CARGO_BIN_EXE_reify"))
+            .args(["lsp"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn reify lsp"),
+    );
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    // Taken but deliberately NEVER read — see doc comment above.
+    let stderr_pipe = child.stderr.take().expect("stderr");
+
+    // Drain stdout so a blocked stdout pipe cannot be mistaken for the
+    // stderr wedge this test targets (see doc comment above).
+    let rx = spawn_reader(stdout);
+
+    let init_request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "capabilities": {},
+            "rootUri": null
+        }
+    });
+    send_jsonrpc(&mut stdin, &init_request.to_string());
+    wait_for_response(&rx, 1);
+
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    send_jsonrpc(&mut stdin, &initialized.to_string());
+
+    // A never-opened URI with a deliberately huge (160 KiB) path, so
+    // DocumentStore::update returns false and did_change's unknown-URI
+    // eprintln! fires (see server.rs).
+    let huge_uri = format!("file:///tmp/{}.ri", "a".repeat(160 * 1024));
+    let did_change_unknown_uri = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {
+                "uri": huge_uri,
+                "version": 1
+            },
+            "contentChanges": [{ "text": reify_test_support::bracket_source() }]
+        }
+    });
+    send_jsonrpc(&mut stdin, &did_change_unknown_uri.to_string());
+
+    // Primary RED tripwire (see doc comment above): pre-fix, did_change
+    // blocks forever in pipe_write inside the unknown-URI eprintln! and
+    // never reaches publish_diagnostics, so this panics on its own 30s
+    // timeout rather than observing the notification.
+    wait_for_notification(&rx, "textDocument/publishDiagnostics", &huge_uri, 1);
+
+    let shutdown = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "shutdown",
+        "params": null
+    });
+    send_jsonrpc(&mut stdin, &shutdown.to_string());
+
+    let exit = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "exit",
+        "params": null
+    });
+    send_jsonrpc(&mut stdin, &exit.to_string());
+
+    drop(stdin);
+
+    // Deliberately NOT wait_for_exit (it drains stderr — see doc comment
+    // above), and deliberately not asserting the exit code or waiting for
+    // the shutdown response (see doc comment above): only that the process
+    // exits at all, which is exactly the property the bug violates.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let exited = loop {
+        if child.try_wait().expect("try_wait failed").is_some() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        exited,
+        "reify lsp did not exit within 30s after a huge unknown-URI didChange with stderr \
+         piped but never drained — task #6162's wedge: did_change blocks in pipe_write while \
+         holding the state write lock, so the process can never exit"
+    );
+
+    // Documents that stderr_pipe must outlive every assertion above: a
+    // future refactor cannot accidentally drop (and thus close) the read
+    // end early, which would turn this test's backpressure into EPIPE and
+    // make it silently vacuous.
+    drop(stderr_pipe);
 }
 
 /// Pins `wait_for_exit`'s timeout branch (kill → reap → join → interpolate),
