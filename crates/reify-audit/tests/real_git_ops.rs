@@ -39,13 +39,13 @@ mod common;
 /// helper's assertion message says so — always diagnose against the clean
 /// parent run first.
 ///
-/// The floor of 8 is today's selection (7 real tests + this one). It exists
+/// The floor of 9 is today's selection (8 real tests + this one). It exists
 /// because libtest exits 0 on a zero-match filter; with an empty filter that
 /// cannot happen today, but the floor also catches a test being deleted or
 /// moved out of this binary, which would silently shrink the proof.
 #[test]
 fn real_git_ops_helpers_survive_ambient_hook_git_env() {
-    common::git_env::replay_self_under_hook_git_env(&[""], 8);
+    common::git_env::replay_self_under_hook_git_env(&[""], 9);
 }
 
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
@@ -461,5 +461,91 @@ fn run_exhausts_retries_and_degrades_to_empty() {
         "ls_files must degrade to vec![] when all retry attempts are exhausted; \
          got: {:?}",
         listed,
+    );
+}
+
+// -----------------------------------------------------------------------
+// changed_paths_in_commit — the commit's OWN delta (task 6345, Defect 2)
+// -----------------------------------------------------------------------
+
+/// Pin that `changed_paths_in_commit` reports a commit's own delta, and that
+/// `diff_changed_paths("main", <commit>)` demonstrably cannot once `<commit>`
+/// is an ancestor of main.
+///
+/// `main..<commit>` is a two-point TREE diff. Once `<commit>` has been merged,
+/// main and the commit agree on exactly the paths the commit introduced, so
+/// the task's own files are EXCLUDED by construction — the reverse-delta of
+/// whatever landed AFTER it is returned instead. MEASURED on the live repo:
+/// for merge `bc8f74a4d4`, `main..M` returned 6 paths and every one of the
+/// task's own six files was absent from that set.
+///
+/// This must run against REAL git: a mock returns whatever you seeded, so it
+/// cannot catch a wrong range string. That is this binary's stated purpose.
+#[test]
+fn changed_paths_in_commit_returns_the_commits_own_delta() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let run = |args: &[&str]| git_run(root, args);
+
+    git_init(root);
+
+    // Base commit on main.
+    write_file(root, "base.txt", "base\n");
+    git_commit(root, "base commit");
+
+    // A task branch whose deliverable is `task_file.rs`, merged --no-ff.
+    run(&["checkout", "-b", "feat"]);
+    write_file(root, "task_file.rs", "fn task() {}\n");
+    git_commit(root, "feat: the task's deliverable");
+    run(&["checkout", "main"]);
+    run(&["merge", "--no-ff", "-m", "Merge task/feat into main", "feat"]);
+    let merge_sha = rev_parse_head(root);
+
+    // Main advances past M, so M is a non-tip ancestor — the production shape.
+    write_file(root, "later.txt", "unrelated later work\n");
+    git_commit(root, "unrelated commit after the merge");
+
+    let git = RealGitOps::new(root);
+
+    // The degenerate leg this fix exists to replace.
+    let reverse = git.diff_changed_paths("main", &merge_sha);
+    assert!(
+        !reverse.contains(&"task_file.rs".to_string()),
+        "main..<merge> must NOT surface the merge's own file once the merge is an \
+         ancestor of main — if it does, the premise of this fix changed; got: {:?}",
+        reverse,
+    );
+
+    // The correct leg.
+    let own = git.changed_paths_in_commit(&merge_sha);
+    assert!(
+        own.contains(&"task_file.rs".to_string()),
+        "changed_paths_in_commit({}) must contain the merge's own deliverable; got: {:?}",
+        merge_sha,
+        own,
+    );
+
+    // A DELETION is reported too. This is the property the pre-done gate's
+    // deletion/rename rescue depends on: a removed file has
+    // path_tracked_on(main, p) == false, and only the landing commit's own
+    // delta can show that the removal was the deliverable.
+    run(&["rm", "base.txt"]);
+    git_commit(root, "remove base.txt");
+    let del_sha = rev_parse_head(root);
+    let deleted = git.changed_paths_in_commit(&del_sha);
+    assert!(
+        deleted.contains(&"base.txt".to_string()),
+        "changed_paths_in_commit({}) must report the deleted path; got: {:?}",
+        del_sha,
+        deleted,
+    );
+
+    // Fail-safe: an unreachable / recycled SHA yields an empty vec rather than
+    // panicking — matching the contract of diff_added_lines_in_commit.
+    let unreachable = git.changed_paths_in_commit("0000000000000000000000000000000000000000");
+    assert!(
+        unreachable.is_empty(),
+        "changed_paths_in_commit on an unreachable SHA must fail safe to empty; got: {:?}",
+        unreachable,
     );
 }
