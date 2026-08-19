@@ -1,8 +1,37 @@
 # Kernel-Seam Contracts and Conformance
 
-Status: contract (B+H full shape). Authored 2026-07-06 in interactive `/prd` session as part of the
-bug-hotspot program (`docs/notes/bug-hotspot-survey-2026-07-05.md` §H3). Establishes/strengthens
-**INV-GEO-1..4** in `docs/invariants.md`. Owner PRD named there for those four IDs.
+**Status: SHIPPED.** All 16 decomposition leaves have landed — α #5102, β #5103, γ #5104, δ #5105,
+ε #5106, ζ #5107, η #5108, θ #5109, ι #5110, κ #5111, λ #5112, μ2 #5113, μ3 #5114, ν #5115, ξ #5116,
+plus the adopted #4876. All four **INV-GEO-1..4** rows in `docs/invariants.md` carry an
+`enforced(...)` status column; note that INV-GEO-2 is co-owned, and its row still annotates the
+`KernelHandle`-keyed-table half (#4351, engine-build-hardening) separately from the
+conformance-property-test half that this PRD delivered. Authored 2026-07-06 in an interactive `/prd` session as part of the bug-hotspot
+program (`docs/notes/bug-hotspot-survey-2026-07-05.md` §H3); B+H full shape. Owner PRD named in
+`docs/invariants.md` for those four IDs. Shipped-status recorded 2026-08-19.
+
+**Which half of this document is live.**
+
+- **LIVE — maintained, must stay true: §2, §3, §13**, plus §4's ratified fail-closed posture and §6's
+  persist/clear/rebuild classification pattern. Production rustdoc *defers* to these rather than
+  duplicating them (`Mesh::validate`/`Mesh::weldedness` cite §2/§3; the weld-keying choice cites
+  §13 Q2), so a false claim here propagates into the code.
+- **AS-AUTHORED RECORD — §§0–1, §§7–12**, and the gap/plan descriptions inside §4 and §6. These are
+  dated 2026-07-06 *pre-implementation* measurements, retained as provenance for why the
+  decomposition was shaped as it was. **They are not current statements of fact.** Their
+  present-tense gap descriptions ("no validator", "today validate nothing", "live latent bug",
+  "is un-memoized") describe the codebase **before this PRD's own leaves closed those gaps** — the
+  PRD succeeding is what made them false. Their hard `file:line` anchors were verified against main
+  `4d696e6` (2026-07-06) and have since drifted substantially.
+- **§5** was refreshed against main on 2026-08-18 (#6274); its per-arm status sentences are
+  as-of that date.
+
+**Do not "refresh" the as-authored half.** It is a snapshot; retroactively editing it destroys its
+value as a record, exactly as a dated `docs/notes/` survey must not be rewritten. **Main moves
+fast — cite-by-symbol; re-locate lines at implementation time.**
+
+**Leaf rows cite task IDs, never task status.** Status is queryable from the task record and would
+rot here; the ID is immutable. This document therefore records *which task owns a leaf*, and you
+resolve its state from fused-memory.
 
 ## §0 — Purpose, consumers, and scope
 
@@ -43,8 +72,9 @@ C7). This PRD makes the seam *correct*, not *smaller*.
 
 ## §1 — Preconditions and invariant linkage
 
-All code anchors below were re-verified against `main` (HEAD `4d696e6`, 2026-07-06); line numbers are
-current. This PRD is near-pure Rust wiring — its single `.ri` fixture (§4 signal, §11) uses **existing
+All code anchors below were re-verified against `main` (HEAD `4d696e6`, 2026-07-06) and were current
+*at that commit*; main has moved several thousand commits since, so treat every hard `file:line`
+below as dated provenance and re-locate by symbol. This PRD is near-pure Rust wiring — its single `.ri` fixture (§4 signal, §11) uses **existing
 grammar** (Boolean → `Mesh` demand), so `grammar_confirmed=true` for every leaf and the executable
 `.ri` D3 substrate-verify workflow is **N/A**; the capability manifest binds wired-on-main grep
 evidence instead (`kernel-seam-contracts.capability-manifest.md`; rationale:
@@ -74,7 +104,7 @@ requires, which the producer is not obliged to provide).
 
 **The critical content fact (why obligations 4–5 are checked on the *quotient*, not raw indices):**
 OCCT `tessellate_shape` emits **per-face vertex blocks — unwelded by design**
-(`crates/reify-kernel-occt/cpp/occt_wrapper.cpp:5847`, per-`TopAbs_FACE` loop with per-face
+(`crates/reify-kernel-occt/cpp/occt_wrapper.cpp`, the per-`TopAbs_FACE` tessellation loop with per-face
 `vertex_offset`). A naive "output indices must be welded" obligation would fail **100 % of OCCT
 output on day one**. Therefore the validator **position-welds internally** (tolerance quotient) before
 checking closed/wound, exactly as the lifted checker already does (`weld_vertices` then the
@@ -83,12 +113,13 @@ directed-edge invariant). **Weldedness of the raw indices is a *capability axis*
 **Consumer-declared capabilities:**
 - `requires_welded` — the consumer needs already-welded indices (shared vertices), not per-face
   blocks. Manifold ingest declares this and satisfies it **defensively itself** (bit-exact weld,
-  `kernel.rs:229-268`). The **gmsh attributed producer** declares it and, since task #5116 ("task
+  `ManifoldKernel::ingest_mesh` in `crates/reify-kernel-manifold/src/kernel.rs`). The **gmsh attributed producer** declares it and, since task #5116 ("task
   ξ"), **repairs on demand**: `repair_cfg` selects the weld/repair configuration (`None` uses
   `RepairConfig::default()`, gated by `surface_needs_weld` so an already-watertight raw surface is
   used as-is; an explicit `Some(cfg)` always welds) —
   `mesh_boundary.rs::mesh_surface_to_volume_with_attribution` ("# Repair / welding", as of
-  `:361-390`/`:479`), predicate `mesh_boundary.rs::surface_needs_weld` (as of `:561`). This does
+  its "# Repair / welding (task ξ, #5116)" section and the weld call inside
+  `mesh_surface_to_volume_with_attribution`), predicate `mesh_boundary.rs::surface_needs_weld`. This does
   **not** destroy attribution: the caller-supplied per-entity anchors
   (`EntityAttribution.faces`/`edges`/`vertices`, OCCT-derived positions) are metadata the weld
   never touches; the gmsh-side anchor (mean node position) is computed *after* `mesh_generate` on
@@ -100,8 +131,8 @@ directed-edge invariant). **Weldedness of the raw indices is a *capability axis*
   inability to weld unwelded (per-face-block) input **was** the cause of the 4876 SIGSEGV.
 
 The contract is documented on the trait surface — real rustdoc on `GeometryKernel::tessellate`
-(`geometry.rs:3488`, currently the single line "Tessellate a handle into a mesh.") and on
-`ingest_mesh` (`geometry.rs:3650`, doc 3610-3649) — stating producer obligations and naming
+(`GeometryKernel::tessellate` in `crates/reify-ir/src/geometry.rs`) and on
+`ingest_mesh` (`GeometryKernel::ingest_mesh`, same file) — stating producer obligations and naming
 weldedness as a consumer capability, so the "OCCT unwelded is legal" fact lives at the seam, not in
 tribal memory.
 
@@ -123,13 +154,20 @@ impl Mesh {
 }
 ```
 
-**Lift** the weld+winding+closedness checker already hand-rolled at
+**Shipped divergence (one, deliberate):** `weldedness` binds its parameter as `_tol` — welding is
+bit-exact per §13 Q2, so the tolerance is accepted for API symmetry with `validate` and is currently
+unused. Distance-tolerant welding is deferred; no consumer needs it. The sketch above shows the
+as-designed signature.
+
+**Lift** *(done at α #5102 — the OCCT test now calls `Mesh::validate` and its private
+`weld_vertices` copy is gone)* the weld+winding+closedness checker then hand-rolled at
 `crates/reify-kernel-occt/tests/harness_occt/tessellation_winding_integration.rs` (`weld_vertices` + directed-edge
 invariant + outward-normal check) into `reify-ir` as the body of `validate()`. The OCCT test then
 consumes the lifted function instead of its private copy (kills the duplicate).
 
 **Structured error** replaces the string `OperationFailed` for mesh failures. Add to
-`GeometryError` (`geometry.rs:3100`, currently only `OperationFailed(String)` @3104):
+`GeometryError` (`crates/reify-ir/src/geometry.rs`; at authoring it carried only
+`OperationFailed(String)` — the `MeshContractViolation` variant below is what α #5102 added):
 
 ```rust
 MeshContractViolation {
@@ -144,6 +182,11 @@ This is what turns "string `NotManifold` three layers downstream" and "SIGSEGV" 
 naming kernel + invariant + counts.
 
 ## §4 — Enforcement rollout (INV-GEO-1, fail-closed end-state)
+
+> **Rollout complete (δ #5105).** The ratified posture and the `REIFY_MESH_CONTRACT` knob below are
+> LIVE. The three-site descriptions are as-authored: sites 1–2 no longer "validate nothing" and are
+> no longer warn-default — `MeshContractMode` defaults to **enforce**, and site 1 validates in
+> `engine_build.rs`. Read the site list as the plan that was executed, not as current behaviour.
 
 **Leo-ratified posture (decision #5; `docs/invariants.md` header):** *fail-closed is the end-state
 everywhere.* Per-invariant rollout: written spec → **one-shot warn-mode corpus sweep** (test corpus +
@@ -162,6 +205,9 @@ Three wiring sites:
 Sites 1–2 flow through the warn-sweep→enforce rollout together (one leaf). Site 3 skips the sweep.
 
 ## §5 — Kernel-pair conformance suite (INV-GEO-2)
+
+> **Landed (ε #5106, ζ #5107, η #5108).** The per-arm pass/skip sentences below were re-verified
+> against main on 2026-08-18 (#6274) and are as-of that date.
 
 **New dedicated crate `crates/reify-kernel-conformance`** (tests-only; dev-deps: `reify-ir`,
 `reify-kernel-occt`, `reify-kernel-gmsh`, `reify-kernel-manifold`, `reify-eval`). Chosen over
@@ -194,6 +240,13 @@ the 4876 real fix (§9 ξ) is met.
 
 ## §6 — Warm-start drift guards (INV-GEO-3)
 
+> **Landed (κ #5111, λ #5112, μ2 #5113, μ3 #5114).** The persist/clear/rebuild classification
+> pattern and the exhaustive-no-wildcard-destructure requirement are LIVE — that is what
+> `reify-kernel-gmsh`/`-manifold` cite this section for. Everything framed as a defect or as work
+> to do is as-authored: the `parent_handle` bug is fixed, `owner_body_survives_warm_start` exists
+> and is green, the `reprs` doc is corrected, and `last_warm_start_failures` is on `tracing::warn`
+> with a production accessor. The per-field line numbers below are 2026-07-06 provenance.
+
 **Live latent bug (fix, do not merely guard):** `OcctKernel::with_warm_state`
 (`crates/reify-kernel-occt/src/lib.rs:4140`) clears the three `extracted_*` caches (@4188-4190) but
 **neither persists nor clears `parent_handle`** (`lib.rs:517`) → stale/**wrong `OwnerBody`** answers
@@ -218,6 +271,10 @@ persist / clear / rebuild via an exhaustive destructure, so an unclassified new 
 - gmsh (`kernel_real.rs:59`): `volume_mesh_store`(60) → `VolumeMeshStore`(67) `{next_id, meshes}`.
 
 ## §7 — Shared stub/real contract suite (INV-GEO-4)
+
+> **Landed (θ #5109, ι #5110); as-authored below.** `assert_stub_kernel_errors!` was superseded
+> by `assert_kernel_contract!`, and the bespoke OCCT-stub assertions and `assert_stub_message`
+> are gone — the adoption this section prescribes is complete, not pending.
 
 One macro/generic suite asserting the **shared observable contract**, instantiated for **real
 (`has_occt`)** and **stub (`not(has_occt)`)** from a single source:
@@ -295,6 +352,9 @@ untouched).
 
 ## §11 — Boundary-test sketch (cross-crate; facing both ways) — G5/H
 
+> **As-authored sketch.** These tests now exist (see `crates/reify-kernel-conformance/tests/`).
+> The "red on current main" annotations describe main at 2026-07-06 and are no longer true.
+
 The seam is between **`reify-ir`** (the `Mesh` type + `validate()`) and the kernel crates
 (`reify-kernel-occt/-manifold/-gmsh`) + the engine (`reify-eval`). Tests cross it from each side.
 
@@ -315,37 +375,44 @@ The seam is between **`reify-ir`** (the `Mesh` type + `validate()`) and the kern
 | **Stub ≡ real taxonomy.** Same method calls under `has_occt` and `not(has_occt)`. | §7 suite. | Identical error variants from one source; bespoke stub assertions deleted. |
 | **Warm-start round-trip.** Save→restore, then query OwnerBody. | §6. | Correct `OwnerBody` (red on current main); a new unclassified side-table field fails compile. |
 
-## §12 — Decomposition DAG (per-leaf observable signal; task IDs assigned at decompose time)
+## §12 — Decomposition DAG (per-leaf observable signal)
+
+> **As-authored decomposition record — all 16 leaves have landed.** Task IDs are backfilled below
+> (they were assigned at decompose time but never written back, which is why leaf state was
+> unresolvable from this document for six weeks). Resolve each leaf's current state from its task
+> record; do not restate status here. The *Signal:*/*Deps:*/*Files:* fields are the plan as written
+> on 2026-07-06 and are not maintained. The Greek leaf letters are **live identifiers** — production
+> comments refer to "leaf μ3", "leaves κ and μ2" — so they must never be renumbered or renamed.
 
 Style **B (vertical slice) + H (contracts + two-way boundary tests)**. α is the only pure-substrate
 leaf; it is **integration-gated** by β/γ/ν per the C-as-integration-gate escape (`gates.md` G2). Every
 leaf cites its INV and the enforcement mechanism is in its done-criteria (INV-META-1).
 
 **INV-GEO-1 — validator + wiring + rollout**
-- **α** — `MeshContract`/`ValidatedMesh` + `validate()`/`weldedness()` + `GeometryError::MeshContractViolation` in `reify-ir`; lift the OCCT-test checker; rustdoc the contract on `tessellate`/`ingest_mesh`. *Signal:* integration-gated by β; direct coverage = `validate()` rejects the 4336 reversed-winding fixture with counts and **accepts** unwelded OCCT-style input. *Files:* `crates/reify-ir/src/geometry.rs`. *Deps:* none.
-- **β** — wire `validate()` at the handoff executor (`engine_build.rs`), warn-default. *Signal (a):* `.ri` Boolean of two OCCT boxes as `Mesh` + corrupted producer → structured `MeshContractViolation` diagnostic via `reify`/e2e (not `NotManifold`, not segfault). *Files:* `crates/reify-eval/src/engine_build.rs`. *Deps:* α.
-- **γ** — wire `validate()` in Manifold ingest before `from_mesh_f64`. *Signal:* contract-violating mesh → `Err(MeshContractViolation{kernel:"manifold",..})` with counts through `manifold_cross_kernel_real.rs`; valid unwelded OCCT still ingests. *Files:* `crates/reify-kernel-manifold/src/kernel.rs`. *Deps:* α.
-- **δ** — INV-GEO-1 rollout: one-shot warn-sweep (corpus + `examples/` + `prj/`) → fix bulk producers → flip default to enforce for sites 1–2; add `REIFY_MESH_CONTRACT` knob + locking test. **Flips INV-GEO-1 → enforced** (gmsh site covered by §9 preflight). *Signal (c-adjacent):* verify green with enforce default across corpus; a known-violating fixture fails closed; `REIFY_MESH_CONTRACT=warn` downgrades to warning (locking test pins both). *Files:* `[]` (env-knob plumbing + swept producers — footprint unknown; BRE acquires). *Deps:* β, γ.
+- **α** (#5102) — `MeshContract`/`ValidatedMesh` + `validate()`/`weldedness()` + `GeometryError::MeshContractViolation` in `reify-ir`; lift the OCCT-test checker; rustdoc the contract on `tessellate`/`ingest_mesh`. *Signal:* integration-gated by β; direct coverage = `validate()` rejects the 4336 reversed-winding fixture with counts and **accepts** unwelded OCCT-style input. *Files:* `crates/reify-ir/src/geometry.rs`. *Deps:* none.
+- **β** (#5103) — wire `validate()` at the handoff executor (`engine_build.rs`), warn-default. *Signal (a):* `.ri` Boolean of two OCCT boxes as `Mesh` + corrupted producer → structured `MeshContractViolation` diagnostic via `reify`/e2e (not `NotManifold`, not segfault). *Files:* `crates/reify-eval/src/engine_build.rs`. *Deps:* α.
+- **γ** (#5104) — wire `validate()` in Manifold ingest before `from_mesh_f64`. *Signal:* contract-violating mesh → `Err(MeshContractViolation{kernel:"manifold",..})` with counts through `manifold_cross_kernel_real.rs`; valid unwelded OCCT still ingests. *Files:* `crates/reify-kernel-manifold/src/kernel.rs`. *Deps:* α.
+- **δ** (#5105) — INV-GEO-1 rollout: one-shot warn-sweep (corpus + `examples/` + `prj/`) → fix bulk producers → flip default to enforce for sites 1–2; add `REIFY_MESH_CONTRACT` knob + locking test. **Flips INV-GEO-1 → enforced** (gmsh site covered by §9 preflight). *Signal (c-adjacent):* verify green with enforce default across corpus; a known-violating fixture fails closed; `REIFY_MESH_CONTRACT=warn` downgrades to warning (locking test pins both). *Files:* `[]` (env-knob plumbing + swept producers — footprint unknown; BRE acquires). *Deps:* β, γ.
 
 **INV-GEO-2 — conformance + handle stability + extract_edges**
-- **ε** — new `crates/reify-kernel-conformance` crate + producer×consumer matrix over real fixtures (produce→validate→consume→re-validate); gmsh-attributed arm `#[ignore]` citing ξ. *Signal (c):* suite green in verify for all non-ignored kernel pairs; a contract-violating producer fails produce→validate. *Files:* `[]` (greenfield crate + workspace `Cargo.toml`). *Deps:* α.
-- **ζ** — handle-stability property tests in the conformance crate (currently-stable arms: occt faces/edges, manifold faces). *Signal:* stable-id property tests green; an unstable kernel fails. *Files:* `[]` (in the ε crate). *Deps:* ε.
-- **η** — Manifold `extract_edges` memoization (mirror the `extracted_faces` cache) + add the manifold-edges stability arm to ζ. **Flips INV-GEO-2 conformance-half → enforced** (keyed-table half tracked by #4351). *Signal:* the manifold `extract_edges` stability arm goes green (red on revert). *Files:* `crates/reify-kernel-manifold/src/kernel.rs`. *Deps:* ζ.
+- **ε** (#5106) — new `crates/reify-kernel-conformance` crate + producer×consumer matrix over real fixtures (produce→validate→consume→re-validate); gmsh-attributed arm `#[ignore]` citing ξ. *Signal (c):* suite green in verify for all non-ignored kernel pairs; a contract-violating producer fails produce→validate. *Files:* `[]` (greenfield crate + workspace `Cargo.toml`). *Deps:* α.
+- **ζ** (#5107) — handle-stability property tests in the conformance crate (currently-stable arms: occt faces/edges, manifold faces). *Signal:* stable-id property tests green; an unstable kernel fails. *Files:* `[]` (in the ε crate). *Deps:* ε.
+- **η** (#5108) — Manifold `extract_edges` memoization (mirror the `extracted_faces` cache) + add the manifold-edges stability arm to ζ. **Flips INV-GEO-2 conformance-half → enforced** (keyed-table half tracked by #4351). *Signal:* the manifold `extract_edges` stability arm goes green (red on revert). *Files:* `crates/reify-kernel-manifold/src/kernel.rs`. *Deps:* ζ.
 
 **INV-GEO-4 — shared stub/real suite**
-- **θ** — shared macro/generic contract suite (error taxonomy, `query_many` length, `extract_*` stability), instantiated under `has_occt` and `not(has_occt)`; extend `assert_stub_kernel_errors!`. *Signal:* one suite source runs green under both cfgs; a stub/real taxonomy divergence fails it. *Files:* `crates/reify-test-support/src/kernel_assertions.rs`. *Deps:* none.
-- **ι** — OCCT stub adopts the shared suite; delete bespoke `mod tests` assertions + `assert_stub_message`. **Flips INV-GEO-4 → enforced.** *Signal:* stub tests instantiate the shared suite; bespoke code deleted; verify green under `not(has_occt)`. *Files:* `crates/reify-kernel-occt/src/stubs.rs`. *Deps:* θ.
+- **θ** (#5109) — shared macro/generic contract suite (error taxonomy, `query_many` length, `extract_*` stability), instantiated under `has_occt` and `not(has_occt)`; extend `assert_stub_kernel_errors!`. *Signal:* one suite source runs green under both cfgs; a stub/real taxonomy divergence fails it. *Files:* `crates/reify-test-support/src/kernel_assertions.rs`. *Deps:* none.
+- **ι** (#5110) — OCCT stub adopts the shared suite; delete bespoke `mod tests` assertions + `assert_stub_message`. **Flips INV-GEO-4 → enforced.** *Signal:* stub tests instantiate the shared suite; bespoke code deleted; verify green under `not(has_occt)`. *Files:* `crates/reify-kernel-occt/src/stubs.rs`. *Deps:* θ.
 
 **INV-GEO-3 — warm-start drift guards**
-- **κ** — `warm_state` exhaustive-destructure (occt inventory) + **fix `parent_handle`** + `owner_body_survives_warm_start` round-trip test + fix stale `reprs` doc. **Flips INV-GEO-3 occt-portion → enforced.** *Signal:* `owner_body_survives_warm_start` returns the correct body after restore (red on current main); a new unclassified occt side-table field fails compile. *Files:* `crates/reify-kernel-occt/src/lib.rs`. *Deps:* none.
-- **λ** — promote `last_warm_start_failures` to `tracing::warn` + production accessor. *Signal:* injected restore failure emits a `tracing::warn` (captured via test subscriber) + the production accessor returns the count in a non-test build. *Files:* `crates/reify-kernel-occt/src/lib.rs`. *Deps:* κ.
-- **μ2** — manifold state-inventory drift guard (exhaustive destructure classifying `shapes`/`sub_shapes`/`extracted_faces`). *Signal:* completeness test classifies every manifold side table; an unclassified field fails. *Files:* `crates/reify-kernel-manifold/src/kernel.rs`. *Deps:* none.
-- **μ3** — gmsh state-inventory drift guard (`volume_mesh_store`/`VolumeMeshStore`). **Flips INV-GEO-3 → enforced** once κ+μ2+μ3 land. *Signal:* completeness test classifies the gmsh volume-mesh store; an unclassified field fails. *Files:* `crates/reify-kernel-gmsh/src/kernel_real.rs`. *Deps:* none.
+- **κ** (#5111) — `warm_state` exhaustive-destructure (occt inventory) + **fix `parent_handle`** + `owner_body_survives_warm_start` round-trip test + fix stale `reprs` doc. **Flips INV-GEO-3 occt-portion → enforced.** *Signal:* `owner_body_survives_warm_start` returns the correct body after restore (red on current main); a new unclassified occt side-table field fails compile. *Files:* `crates/reify-kernel-occt/src/lib.rs`. *Deps:* none.
+- **λ** (#5112) — promote `last_warm_start_failures` to `tracing::warn` + production accessor. *Signal:* injected restore failure emits a `tracing::warn` (captured via test subscriber) + the production accessor returns the count in a non-test build. *Files:* `crates/reify-kernel-occt/src/lib.rs`. *Deps:* κ.
+- **μ2** (#5113) — manifold state-inventory drift guard (exhaustive destructure classifying `shapes`/`sub_shapes`/`extracted_faces`). *Signal:* completeness test classifies every manifold side table; an unclassified field fails. *Files:* `crates/reify-kernel-manifold/src/kernel.rs`. *Deps:* none.
+- **μ3** (#5114) — gmsh state-inventory drift guard (`volume_mesh_store`/`VolumeMeshStore`). **Flips INV-GEO-3 → enforced** once κ+μ2+μ3 land. *Signal:* completeness test classifies the gmsh volume-mesh store; an unclassified field fails. *Files:* `crates/reify-kernel-gmsh/src/kernel_real.rs`. *Deps:* none.
 
 **INV-GEO-1 — 4876 cluster**
-- **ν** — characterize the 4876 OCCT fixture via the §3 validator + `weldedness()` (real input → concrete witness). *Signal:* `validate()`/`weldedness()` on the real 4876 tessellation reports the specific witness (counts); characterization committed. *Files:* `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`. *Deps:* α.
-- **#4876** (adopt) — watertightness preflight in the attributed path → `Err` → graceful degrade + diagnostic (fail-closed immediately). *Signal (b):* `fea_face_selector_bc_e2e` boundary-demand test un-ignored → graceful degrade + visible diagnostic, no SIGSEGV. *Files:* `crates/reify-kernel-gmsh/src/mesh_boundary.rs`, `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`. *Deps:* α, ν.
-- **ξ** — real fix: attribution-aware repair (vertex-merge correspondence map through `repair_surface_mesh`). *Signal:* §5 gmsh-attributed conformance arm un-ignored → real attributed volume mesh, attribution preserved. *Files:* `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-kernel-gmsh/src/mesh_boundary.rs`. *Deps:* ν, ε, #4876.
+- **ν** (#5115) — characterize the 4876 OCCT fixture via the §3 validator + `weldedness()` (real input → concrete witness). *Signal:* `validate()`/`weldedness()` on the real 4876 tessellation reports the specific witness (counts); characterization committed. *Files:* `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`. *Deps:* α.
+- **#4876** (adopted, not newly filed) — watertightness preflight in the attributed path → `Err` → graceful degrade + diagnostic (fail-closed immediately). *Signal (b):* `fea_face_selector_bc_e2e` boundary-demand test un-ignored → graceful degrade + visible diagnostic, no SIGSEGV. *Files:* `crates/reify-kernel-gmsh/src/mesh_boundary.rs`, `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-eval/tests/harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs`. *Deps:* α, ν.
+- **ξ** (#5116) — real fix: attribution-aware repair (vertex-merge correspondence map through `repair_surface_mesh`). *Signal:* §5 gmsh-attributed conformance arm un-ignored → real attributed volume mesh, attribution preserved. *Files:* `crates/reify-kernel-gmsh/src/repair.rs`, `crates/reify-kernel-gmsh/src/mesh_boundary.rs`. *Deps:* ν, ε, #4876.
 
 ### Dependency view
 ```
@@ -361,16 +428,21 @@ leaf cites its INV and the enforcement mechanism is in its done-criteria (INV-ME
 κ ─→ λ ;  μ2 ;  μ3                         (INV-GEO-3 warm-start)
 ```
 
-## §13 — Open (tactical) questions
+## §13 — Tactical questions (Q2 resolved; Q1/Q3/Q4 remain open)
 
 1. **Validator cost in production.** `validate()` is O(V+E) once per Mesh handoff (not per frame). At
    the ratified enforce-everywhere posture this runs on every realization; if a pathological
    large-mesh case shows up in profiling, the escape is `REIFY_MESH_CONTRACT=warn` plus a future
    sampled/`debug_assertions`-only mode — decide only if measured, not pre-emptively.
-2. **Weld tolerance value.** The position-quotient uses a tolerance; bit-exact (Manifold's choice)
-   vs a small epsilon changes which near-coincident verts merge. Pin the default to Manifold's
-   existing bit-exact weld for consistency; expose per-call `tol` for the tessellation path. Decide
-   at α.
+2. **Weld tolerance value — RESOLVED at α (#5102); this is the settled answer, not an open
+   question.** Recorded here because production rustdoc cites "§13 Q2" as the canonical authority
+   for the choice (`Mesh::weld_positions` in `crates/reify-ir/src/geometry.rs`). **Welding is
+   bit-exact**, keyed on `(c + 0.0f32).to_bits()` — the `+ 0.0` normalises `-0.0` to `+0.0` so
+   origin-plane corners weld — pinned to Manifold's `from_mesh_f64` default weld for cross-consumer
+   consistency. Distance-tolerant welding is **deferred**: no consumer needs it. Consequently the
+   `tol` parameter on `Mesh::weldedness` is accepted for API symmetry with `Mesh::validate` but is
+   currently **unused** (the shipped signature binds it as `_tol`); §3's sketch below shows it as
+   live, which is as-authored intent rather than shipped behaviour.
 3. **`witness` payload size.** One offending edge/triangle is enough for the diagnostic; if triage
    later wants the full offending set, widen `MeshWitness` additively. Start minimal.
 4. **State-inventory as trait vs per-kernel test.** §6/§12 implement it per-kernel (compiler-enforced
