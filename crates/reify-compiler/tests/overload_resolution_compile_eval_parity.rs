@@ -178,3 +178,148 @@ fn smoke_exact_concrete_overload_agrees() {
         "eval side must select the same sole candidate"
     );
 }
+
+// ── Ledger machinery + shared assertion engine ──────────────────────────────
+
+/// Per-row expectation. `Diverge` names the responsible disjunct/tier so the
+/// exemption ledger above the tables can be read alongside the row.
+#[derive(Debug, Clone)]
+enum Expect {
+    /// The two resolvers must reach the same answer.
+    Agree,
+    /// A documented, ledgered divergence — see the exemption ledger.
+    Diverge { ledger: &'static str },
+}
+
+/// One accept/reject row: a SINGLE-candidate overload set.
+///
+/// Single-candidate is deliberate. `resolve_function_overload`'s two
+/// narrowing tiers (`exact_matches`, `head_matches`) can only ever SELECT
+/// among candidates that already passed the `matches` tier, and an empty
+/// narrowing tier falls through to `matches`. So with exactly one candidate,
+/// compile-accept ⟺ that candidate satisfies the per-param predicate — the
+/// tie-break tiers cannot confound the axis. Selection identity, which the
+/// tiers *do* govern, is asserted separately over multi-candidate sets.
+struct Row {
+    label: &'static str,
+    params: Vec<(&'static str, Type)>,
+    type_params: Vec<&'static str>,
+    call_name: &'static str,
+    arg_types: Vec<Type>,
+    expect: Expect,
+}
+
+/// Non-panicking core of the accept/reject engine: `Ok(())` when the row
+/// behaves as its `expect` declares, `Err(message)` otherwise.
+///
+/// Split out from [`assert_accept_reject_parity`] so the table driver can
+/// report EVERY offending row in one run rather than aborting at the first —
+/// a table this size is much easier to diagnose whole.
+fn classify_accept_reject_parity(row: &Row) -> Result<(), String> {
+    let fns = vec![make_fn("f", row.params.clone(), row.type_params.clone())];
+
+    let verdict = reify_compiler::__resolve_function_overload_for_parity_test(
+        row.call_name,
+        &row.arg_types,
+        &fns,
+    );
+    let args: Vec<CompiledExpr> = row.arg_types.iter().cloned().map(arg).collect();
+    let eval_result = find_matching_compiled_function(&fns, row.call_name, &args);
+
+    // Compile-accept is `Resolved | Ambiguous`: both mean "the call selected
+    // at least one candidate". `NoMatch` and `NoUserFunctions` are rejects.
+    let compile_accepts = matches!(
+        verdict,
+        ParityOverloadVerdict::Resolved { .. } | ParityOverloadVerdict::Ambiguous { .. }
+    );
+    let eval_accepts = eval_result.is_some();
+
+    match (compile_accepts == eval_accepts, &row.expect) {
+        (true, Expect::Agree) => Ok(()),
+        (false, Expect::Diverge { .. }) => Ok(()),
+        (false, Expect::Agree) => Err(format!(
+            "{}: UNLEDGERED accept/reject divergence (compile={:?} accepts={}, eval accepts={}) \
+             — add a commented EXEMPTION LEDGER row naming the responsible disjunct, \
+             or fix the mismatch",
+            row.label, verdict, compile_accepts, eval_accepts
+        )),
+        (true, Expect::Diverge { ledger }) => Err(format!(
+            "{}: STALE ledger row '{}' — the two resolvers now AGREE \
+             (compile={:?} accepts={}, eval accepts={}); remove the ledger row and \
+             reclassify this row to Expect::Agree",
+            row.label, ledger, verdict, compile_accepts, eval_accepts
+        )),
+    }
+}
+
+/// Panicking single-row form of the accept/reject engine.
+fn assert_accept_reject_parity(row: &Row) {
+    if let Err(msg) = classify_accept_reject_parity(row) {
+        panic!("{msg}");
+    }
+}
+
+// ── Single-candidate accept/reject table ────────────────────────────────────
+
+/// Every row below is a ONE-candidate overload set. Types are built fresh per
+/// row rather than shared, so a row can never be perturbed by another's edits.
+#[rustfmt::skip]
+fn single_candidate_rows() -> Vec<Row> {
+    let trait_obj = |n: &str| Type::TraitObject(n.to_string());
+    let tp        = |n: &str| Type::TypeParam(n.to_string());
+    let sp        = |n: &str| Type::ScalarParam(n.to_string());
+    let result_of = |args: Vec<Type>| Type::Applied { name: "Result".to_string(), args };
+
+    vec![
+        // ── Concrete exact match / plain rejects ─────────────────────────────
+        Row { label: "concrete exact: f(Int) <- Int",             params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![Type::Int],                                    expect: Expect::Agree },
+        Row { label: "concrete mismatch: f(Real) <- Int",         params: vec![("x", Type::dimensionless_scalar())], type_params: vec![],    call_name: "f", arg_types: vec![Type::Int],                                    expect: Expect::Agree },
+        Row { label: "arity mismatch: f(Int, Int) <- (Int)",      params: vec![("x", Type::Int), ("y", Type::Int)],  type_params: vec![],    call_name: "f", arg_types: vec![Type::Int],                                    expect: Expect::Agree },
+        Row { label: "name mismatch: f(Int) called as g",         params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "g", arg_types: vec![Type::Int],                                    expect: Expect::Agree },
+
+        // ── Trait-object wildcard: UNGATED on genericity on both sides ───────
+        // (the esc-4093-152 shape — pinned here as a positive, non-generic.)
+        Row { label: "trait-obj param <- StructureRef arg",       params: vec![("j", trait_obj("DrivingJoint"))],    type_params: vec![],    call_name: "f", arg_types: vec![Type::StructureRef("X".to_string())],          expect: Expect::Agree },
+        Row { label: "trait-obj param <- other trait-obj arg",    params: vec![("j", trait_obj("DrivingJoint"))],    type_params: vec![],    call_name: "f", arg_types: vec![trait_obj("Other")],                          expect: Expect::Agree },
+        Row { label: "List<trait-obj> param <- List<StructRef>",  params: vec![("l", Type::List(Box::new(trait_obj("Load"))))], type_params: vec![], call_name: "f", arg_types: vec![Type::List(Box::new(Type::StructureRef("X".to_string())))], expect: Expect::Agree },
+
+        // ── Type-param wildcard: GATED on genericity on both sides ───────────
+        Row { label: "generic f<T>(T) <- Int",                    params: vec![("x", tp("T"))],                      type_params: vec!["T"], call_name: "f", arg_types: vec![Type::Int],                                    expect: Expect::Agree },
+        Row { label: "GATE: non-generic f(T) <- Int rejects",     params: vec![("x", tp("T"))],                      type_params: vec![],    call_name: "f", arg_types: vec![Type::Int],                                    expect: Expect::Agree },
+
+        // ── Dim-param wildcard: GATED on genericity on both sides ────────────
+        Row { label: "generic f<D>(Scalar<D>) <- Length",         params: vec![("x", sp("D"))],                      type_params: vec!["D"], call_name: "f", arg_types: vec![Type::length()],                                expect: Expect::Agree },
+        Row { label: "GATE: non-generic f(Scalar<D>) <- Length",  params: vec![("x", sp("D"))],                      type_params: vec![],    call_name: "f", arg_types: vec![Type::length()],                                expect: Expect::Agree },
+
+        // ── Wrapper / enum shapes carrying a nested type param ───────────────
+        Row { label: "generic f<T>(Option<T>) <- Option<Int>",    params: vec![("o", Type::Option(Box::new(tp("T"))))], type_params: vec!["T"], call_name: "f", arg_types: vec![Type::Option(Box::new(Type::Int))],        expect: Expect::Agree },
+        Row { label: "generic f<T,E>(Result<T,E>) <- Result<Int,String>", params: vec![("r", result_of(vec![tp("T"), tp("E")]))], type_params: vec!["T", "E"], call_name: "f", arg_types: vec![result_of(vec![Type::Int, Type::String])], expect: Expect::Agree },
+        // Erased subject: variant construction type-erases `Ok{..}` to `Enum("Result")`.
+        Row { label: "generic f<T,E>(Result<T,E>) <- Enum(Result)", params: vec![("r", result_of(vec![tp("T"), tp("E")]))], type_params: vec!["T", "E"], call_name: "f", arg_types: vec![Type::Enum("Result".to_string())], expect: Expect::Agree },
+
+        // ── D4: type-param-carrying ARG as a compile-only wildcard ───────────
+        // Compile's `matches` tier has a fourth disjunct `type_carries_type_param(arg_ty)`
+        // that eval's wildcard pass has no counterpart for. Expected to be the
+        // ONLY accept/reject divergence class in this table.
+        Row { label: "D4 bare: f(Int) <- TypeParam(T)",           params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![tp("T")],                                      expect: Expect::Agree },
+        Row { label: "D4 nested: f(Int) <- Result<T,E>",          params: vec![("x", Type::Int)],                    type_params: vec![],    call_name: "f", arg_types: vec![result_of(vec![tp("T"), tp("E")])],            expect: Expect::Agree },
+    ]
+}
+
+/// Axis 1 — accept/reject parity over every single-candidate row.
+#[test]
+fn single_candidate_accept_reject_parity() {
+    let rows = single_candidate_rows();
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|r| classify_accept_reject_parity(r).err())
+        .collect();
+
+    assert!(
+        failures.is_empty(),
+        "compile-vs-eval accept/reject parity failed for {}/{} row(s):\n  - {}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n  - ")
+    );
+}
