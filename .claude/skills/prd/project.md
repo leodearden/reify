@@ -178,7 +178,7 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 
 **Enforcement posture.** No deterministic guard automates this — the /prd session reading this subsection is the enforcement, at author Stage 2 and again at decompose time (same posture as "Gate-test drift-guard registration" above). Retrospective/detection half: specified but not built as of 2026-08-19 — `reify-audit` accepts no `PPRDSTATUS` arm (nor a #5872 equivalent) yet, so this subsection is the sole enforcement until #6346 (leaf/status prose) and #5872 (stale hard `path:line` cites) land.
 
-**Promotion-candidate flag.** This widening is project-agnostic and directly extends a rule that already lives in the shared skill, so its natural home is `dark-factory/skills/prd/references/`. It is written here self-contained so it can be lifted verbatim; the shared skill is deliberately **not** edited from reify. See `esc-6349-1` and follow-up ticket `tkt_0RSN6HNB2BY5T0FVP95AVCK5AE`.
+**Promotion-candidate flag.** This widening is project-agnostic and directly extends a rule that already lives in the shared skill, so its natural home is `dark-factory/skills/prd/references/`. It is written here self-contained so it can be lifted verbatim; the shared skill is deliberately **not** edited from reify. See `esc-6349-1` and follow-up task **#6357** (the promotion; the `tkt_0RSN6HNB2BY5T0FVP95AVCK5AE` submit-ticket it was created from is a curator artifact and not the durable handle).
 
 **Measured 2026-08-19** (dated context, not a live claim): 522 tracked `.md` under `docs/` carried 2,678 fully-qualified path+line cites across 571 distinct paths, 56 of which no longer exist; 285 of 352 `docs/prds/*.md` carried line anchors and only 12 recorded the commit they were true at.
 
