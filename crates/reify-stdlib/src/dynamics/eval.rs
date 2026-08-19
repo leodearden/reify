@@ -1000,13 +1000,25 @@ fn slice_generalized(arg: &Value, dof_counts: &[usize]) -> Option<Vec<Vec<f64>>>
 /// τ-arity mismatch against the kind's DOF count.
 fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
     let components = |t: &[f64]| Value::List(t.iter().map(|&x| Value::Real(x)).collect());
-    let scalar = |type_name: &str, t: &[f64]| -> Option<Value> {
+    // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
+    // / `: Torque` in stdlib/dynamics.ri (task 6098), so mint them dimensioned —
+    // same shape `make_mass_properties` already uses for `mass`. A bare
+    // `Value::Real` here would pass `reify check` but evaluate to undef with an
+    // OpContractViolation as soon as the field is read into dimensioned
+    // arithmetic.
+    let scalar = |type_name: &str, dimension: DimensionVector, t: &[f64]| -> Option<Value> {
         if t.len() != 1 {
             return None;
         }
         Some(mint_instance(
             type_name,
-            vec![("magnitude".to_string(), Value::Real(t[0]))],
+            vec![(
+                "magnitude".to_string(),
+                Value::Scalar {
+                    si_value: t[0],
+                    dimension,
+                },
+            )],
         ))
     };
     let multi = |type_name: &str, t: &[f64], dof: usize| -> Option<Value> {
@@ -1019,8 +1031,10 @@ fn joint_force_value(kind: &str, tau: &[f64]) -> Option<Value> {
         ))
     };
     match kind {
-        "revolute" => scalar("ScalarTorque", tau),
-        "prismatic" => scalar("ScalarForce", tau),
+        // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is deliberately distinct
+        // from ENERGY — use the registry vector, never a FORCE·LENGTH product.
+        "revolute" => scalar("ScalarTorque", DimensionVector::TORQUE, tau),
+        "prismatic" => scalar("ScalarForce", DimensionVector::FORCE, tau),
         "cylindrical" => multi("CylForce", tau, 2),
         "planar" => multi("PlanarForce", tau, 3),
         "spherical" => multi("SphereForce", tau, 3),
@@ -2279,6 +2293,104 @@ mod tests {
             joint_force_value("flapper", &[1.0]).is_none(),
             "unknown joint kind must be None"
         );
+    }
+
+    // ── task 6098: the minted scalar magnitudes are DIMENSIONED ───────────────
+    //
+    // `ScalarForce.magnitude` / `ScalarTorque.magnitude` are declared `: Force`
+    // / `: Torque` in stdlib/dynamics.ri.  `joint_force_value` is the sole
+    // producer of these instances, so it must mint `Value::Scalar` rather than
+    // a bare `Value::Real` — a bare Real in a dimensioned slot passes
+    // `reify check` clean but evaluates to `undef` with an
+    // `OpContractViolation` the moment the field is read into dimensioned
+    // arithmetic, i.e. the declared type would be a silent runtime lie.
+    //
+    // These assertions destructure the VARIANT deliberately.  Going through
+    // `cell_f64` / `num` would be vacuous: both already accept `Value::Scalar`
+    // and strip the dimension, so they cannot tell the two shapes apart (which
+    // is exactly why the ~17 existing read sites need no migration).
+
+    #[test]
+    fn joint_force_value_mints_dimensioned_scalar_magnitudes() {
+        // prismatic → ScalarForce { magnitude: Scalar<FORCE> }
+        let r = joint_force_value("prismatic", &[2.5]).expect("prismatic/1");
+        match field(&r, "ScalarForce", "magnitude") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 2.5).abs() < 1e-12,
+                    "ScalarForce.magnitude si_value should be τ[0] = 2.5, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::FORCE,
+                    "ScalarForce.magnitude is declared `: Force` in stdlib/dynamics.ri, \
+                     so the η dispatcher must mint it newton-dimensioned"
+                );
+            }
+            other => panic!(
+                "ScalarForce.magnitude must be a dimensioned Value::Scalar, not a \
+                 bare Real (task 6098); got {other:?}"
+            ),
+        }
+
+        // revolute → ScalarTorque { magnitude: Scalar<TORQUE> }
+        // TORQUE carries an Angle⁻¹ slot (N·m/rad) and is distinct from ENERGY;
+        // assert the registry vector directly, never a FORCE·LENGTH composition.
+        let r = joint_force_value("revolute", &[0.4905]).expect("revolute/1");
+        match field(&r, "ScalarTorque", "magnitude") {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!(
+                    (si_value - 0.4905).abs() < 1e-12,
+                    "ScalarTorque.magnitude si_value should be τ[0] = 0.4905, got {si_value}"
+                );
+                assert_eq!(
+                    *dimension,
+                    DimensionVector::TORQUE,
+                    "ScalarTorque.magnitude is declared `: Torque` in stdlib/dynamics.ri, \
+                     so the η dispatcher must mint it N·m-dimensioned"
+                );
+            }
+            other => panic!(
+                "ScalarTorque.magnitude must be a dimensioned Value::Scalar, not a \
+                 bare Real (task 6098); got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn joint_force_value_leaves_multi_component_kinds_dimensionless() {
+        // The List<Real> multi-component variants are explicitly out of scope
+        // for task 6098; this guards against the dimensioning leaking into
+        // them. All three go through the same `multi` closure, so all three
+        // are checked — a single-kind spot check would understate the guard.
+        for (kind, type_name, dof) in [
+            ("cylindrical", "CylForce", 2usize),
+            ("planar", "PlanarForce", 3),
+            ("spherical", "SphereForce", 3),
+        ] {
+            let tau: Vec<f64> = (0..dof).map(|i| 1.0 + i as f64).collect();
+            let r = joint_force_value(kind, &tau)
+                .unwrap_or_else(|| panic!("{kind}/{dof} should mint a {type_name}"));
+            match field(&r, type_name, "components") {
+                Value::List(comps) => {
+                    assert_eq!(comps.len(), dof, "{type_name} component count");
+                    for (i, c) in comps.iter().enumerate() {
+                        assert!(
+                            matches!(c, Value::Real(_)),
+                            "{type_name}.components is declared `List<Real>` and must \
+                             stay dimensionless; component {i} was {c:?}"
+                        );
+                    }
+                }
+                other => panic!("{type_name}.components must be a Value::List, got {other:?}"),
+            }
+        }
     }
 
     // ── step-7 RED: closed-chain inverse_dynamics routing smoke test ───────────
