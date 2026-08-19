@@ -39,20 +39,30 @@ export type RpcResult<T> =
  * In-band errors (Branches 4 & 5): debug handlers return Ok({error:<string>,...})
  * rather than setting MCP isError. See docs/debug-mcp-contract.md §2a.
  *
- * Branch 3 is POSITIONAL ON PURPOSE — do not "fix" it by rewriting it to
- * search for the TEXT block the way normalizeRpcEnvelope does
- * (`content.find(c => c.type === "text") ?? content[0]`). Since #5891 an image
- * response MAY carry a trailing `text` block: an `element_screenshot` that
- * matched more than one element — scoped or not, since a testId can repeat
- * within one pane — appends its pane diagnostics (`viewportId`/`matchCount`)
- * after the image (debug_server.rs `mcp_content_blocks`, which keeps the image
- * at `content[0]` for exactly this reason). This branch deliberately ignores
- * that trailing block. That TEXT-targeted rewrite lets branch 4 win ahead of
- * branch 3 and silently changes branch precedence — and `./run.ts` feeds
- * `value.data` straight into `Buffer.from(…, "base64")`, so the failure would
- * surface as corrupt PNG bytes, not a type error. Before assuming a
- * TEXT-targeted rewrite here is caught by a test, check ./rpc.test.ts's
- * "documented divergence" suite yourself.
+ * Branch 3 is POSITIONAL ON PURPOSE — do not "fix" it by rewriting `first`
+ * to search for the TEXT block: a `.find(c => c.type === "text")`, in the
+ * shape normalizeRpcEnvelope uses to locate its own text block, plus a
+ * `?? content[0]` fallback — needed here, not in normalizeRpcEnvelope, to
+ * keep this branch's image check reachable when no text block exists.
+ * Since #5891 an image response MAY carry a trailing `text` block: an
+ * `element_screenshot` that matched more than one element — scoped or not,
+ * since a testId can repeat within one pane — appends its pane diagnostics
+ * (`viewportId`/`matchCount`) after the image (debug_server.rs
+ * `mcp_content_blocks`, which keeps the image at `content[0]` for exactly
+ * this reason). This branch deliberately ignores that trailing block. That
+ * TEXT-targeted rewrite lets branch 4 win ahead of branch 3 for such a
+ * multi-match `element_screenshot`: branch 4 JSON-parses the diagnostics
+ * text into `{viewportId, matchCount}` — no `data` field — so `value.data`
+ * goes missing. A `{path:"data", op:"exists"}` assertion (`assertions.ts`'s
+ * `element_screenshot` scenario) would then fail outright, and a consumer
+ * that instead pipes `value.data` into `Buffer.from(…, "base64")` gets a
+ * TypeError on `undefined`, not corrupt PNG bytes. `./run.ts`'s own
+ * `Buffer.from` call reads the `screenshot` tool's result, whose envelope
+ * never carries a trailing text block (`mcp_content_blocks`'s residual is
+ * empty for `screenshot`/`screenshot_window`), so it is untouched by this
+ * rewrite either way. Before assuming a TEXT-targeted rewrite here is
+ * caught by a test, check ./rpc.test.ts's "documented divergence" suite
+ * yourself.
  *
  * An IMAGE-targeted `.find(c => c.type === "image")` is a different rewrite:
  * it agrees with the positional read on every envelope this contract admits,
