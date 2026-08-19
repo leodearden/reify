@@ -756,38 +756,49 @@ sandbox:
   enabled: true
   backend: landlock
 
-# Sandbox companion (task γ6a): toolchain-cache redirect. Covers 6 of the 9
-# dispatch roles in DF's ROLES registry (roles.py:1512) — implementer,
-# debugger, simple_task, architect, reviewer_comprehensive, judge. NOT
-# covered: merger, steward, deep_reviewer.
-#   merger is uncovered on a rationale task 5836 INVERTED, not merely made
-#   stale: the exclusion turned on keeping the merge agent's CARGO_HOME equal
-#   to the verify subprocess cache path, and 5836 moved verify_env onto
-#   /tmp/reify-agent-cargo-home while merger, carrying no override, still
-#   resolves the DEFAULT ~/.cargo. Deliberately NOT fixed by 5836, whose scope
-#   is the verify/agent seam. Filed as #6275; until that lands the exclusion
-#   stands on a rationale that no longer holds.
-#   The full re-analysis — the roles.py cites showing the exposure is
-#   reachable rather than theoretical, why re-adding merger must also extend
-#   CACHE_REDIRECT_ROLES, and what measurement it owes — lives in ONE place,
-#   the header of tests/infra/test_sandbox_cache_writability_seam.sh (SECOND
-#   COUPLING). Do not restate it here; the two copies drifted once already.
+# Sandbox companion (task γ6a): toolchain-cache redirect. Covers 7 of the 9
+# dispatch roles in DF's ROLES registry (roles.py, the `ROLES` dict) —
+# implementer, debugger, simple_task, architect, reviewer_comprehensive,
+# judge, merger. NOT covered: steward, deep_reviewer.
+#   merger was added by task 6275, which re-evaluated an exclusion whose
+#   rationale task 5836 had INVERTED (5836 moved verify_env.CARGO_HOME onto
+#   /tmp, the very divergence the exclusion existed to prevent) and resolved
+#   it by redirecting merger rather than restoring the exclusion.
+#   That is the conclusion only. The full re-analysis — why ADD beat
+#   restore-the-exclusion, the roles.py cites showing the exposure is
+#   reachable rather than theoretical, and merger's own measured exposure —
+#   lives in ONE place, the header of
+#   tests/infra/test_sandbox_cache_writability_seam.sh (SECOND COUPLING). Do
+#   not restate it here; the two copies drifted once already, and repairing
+#   that drift is what #6275 had to spend a commit on.
+#   The covered/uncovered split above is no longer prose-only: that suite's
+#   block (C) pins it mechanically (KNOWN_DISPATCH_ROLES minus
+#   CACHE_REDIRECT_ROLES == UNCOVERED_DISPATCH_ROLES), so adding or removing
+#   a role here without updating both sides now fails a test.
 #   EFFECT IS NOT UNIFORM, and no entry here is merely "pending the DF-side
 #   sandboxed=True flip": workflow.py:_build_agent_env merges
 #   role_env_overrides.get(role.name, {}) LAST for EVERY role, sandboxed or
-#   not. Per role, as of task 5858:
+#   not. Per role, as of tasks 5858 and 6275:
 #     implementer / debugger / simple_task — roles.py sandboxed=True TODAY;
 #       the redirect is what keeps them building at all.
 #     architect — NOT sandboxed yet, but has unrestricted Bash
-#       (roles.py:401), so this entry is LIVE from the next orchestrator
-#       restart: it moves the architect's ad-hoc cargo/npm off the warm
-#       ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp pair. Accepted
-#       because that /tmp cache is already warmed by the three sandboxed
-#       roles above (so the architect inherits a warm cache, not a cold
-#       one), and its exposure to the tmpfiles age-deletion gap below is
+#       (roles.py, ARCHITECT.allowed_tools), so this entry is LIVE from the
+#       next orchestrator restart: it moves the architect's ad-hoc cargo/npm
+#       off the warm ~/.cargo (1.3G) / ~/.npm (6.0G) onto the shared /tmp
+#       pair. Accepted because that /tmp cache is already warmed by the three
+#       sandboxed roles above (so the architect inherits a warm cache, not a
+#       cold one), and its exposure to the tmpfiles age-deletion gap below is
 #       exactly the one implementer already carries.
+#     merger — NOT sandboxed either, but likewise has unrestricted Bash
+#       (roles.py, MERGER.allowed_tools) and a system prompt that directs it
+#       to run tests after resolving a conflict, so this entry is LIVE from
+#       the next orchestrator restart, on the conflict-resolution path.
+#       Accepted on exactly the architect's grounds (the /tmp pair is already
+#       warm, so merger inherits a warm cache rather than paying a cold
+#       start) and carrying exactly the same tmpfiles age-deletion
+#       exposure.
 #     reviewer_comprehensive / judge — read-only tool grants
-#       (_READ_ONLY_TOOLS, roles.py:106; Bash scoped to `git:*`), so neither
+#       (roles.py, _READ_ONLY_TOOLS; Bash scoped to `git:*`), so neither
 #       can invoke cargo or npm at all. Genuinely inert today AND after a
 #       sandboxed=True flip; kept as defense-in-depth against a future
 #       tool-grant widening, NOT because either would otherwise die on a
@@ -795,7 +806,8 @@ sandbox:
 #   The key is `reviewer_comprehensive`, NOT the collapsed `reviewer` (which
 #   validates silently against DF's KNOWN_ROLE_NAMES yet delivers nothing).
 #   The full coupling analysis — that trap, why `judge` is safe despite
-#   workflow.py:10358, and what this seam still cannot observe — lives in
+#   workflow.py's "do not add 'judge' to role_env_overrides" comment, and
+#   what this seam still cannot observe — lives in
 #   ONE place, the header of
 #   tests/infra/test_sandbox_cache_writability_seam.sh (the file whose
 #   assertions enforce it). Do not restate it here; the two copies drifted
@@ -912,9 +924,12 @@ sandbox:
 #   redirect. (sccache is a client/server daemon; storage lives with the
 #   already-running server, which this yaml points at a redis backend via
 #   sccache.backend_env.)
-#   PER-ROLE EFFECT OF THIS PAIR (task 5909; the anchor now feeds SIX roles,
-#   not the three it fed when these two keys were written): both keys ride
-#   the shared `&sandbox_cache_env` anchor, so they reach every aliased role.
+#   PER-ROLE EFFECT OF THIS PAIR (task 5909, count updated by 6275; the
+#   anchor now feeds SEVEN roles, not the three it fed when these two keys
+#   were written): both keys ride the shared `&sandbox_cache_env` anchor, so
+#   they reach every aliased role — including any role added to the alias
+#   list later, which is how `merger` picked this pair up without 6275
+#   naming either key.
 #   The split is NOT the same as the CARGO_HOME/npm_config_cache split
 #   recorded above, so it is recorded separately rather than by reference:
 #     implementer / debugger / simple_task — load-bearing, the whole point:
@@ -927,6 +942,13 @@ sandbox:
 #       moves is derived and self-healing, and the one entry that is both
 #       large and genuinely granted (~/.cache/uv) is pinned back by
 #       UV_CACHE_DIR above.
+#     merger — LIVE from the next restart on the conflict-resolution path,
+#       and COLD for exactly the architect's reason: it rides the same
+#       unseeded /tmp/reify-agent-xdg-cache. Accepted on the same grounds
+#       (every dir moved is derived and self-healing, and ~/.cache/uv is
+#       pinned back by UV_CACHE_DIR), and the cold start is cheaper here
+#       than for architect because merger dispatches on ~1% of invocations
+#       — see the seam guard's MEASURED EXPOSURE note.
 #     reviewer_comprehensive / judge — inert, same read-only tool grants that
 #       make their CARGO_HOME/npm_config_cache entries inert.
 #   BONUS, not a regression: because XDG_CACHE_HOME is general rather than
@@ -955,6 +977,7 @@ role_env_overrides:
   architect: *sandbox_cache_env
   reviewer_comprehensive: *sandbox_cache_env
   judge: *sandbox_cache_env
+  merger: *sandbox_cache_env
 
 # Escalation
 escalation:
