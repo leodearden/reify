@@ -52,11 +52,12 @@
 # fixtures, private lock paths, no cargo and no CPU burn).
 #
 # Section F, near the end of this file, is a separate standing guard: the
-# roster of suites that are deadline-capable through a DIRECT wrapper call
-# site is DERIVED from tests/infra/test_*.sh, not hand-maintained, and
-# Section F proves the DECLARATION still matches that derivation. Its scope
-# boundary -- notably the TRANSITIVE route it does not see -- is stated in
-# full in that section's own preamble.
+# roster of deadline-capable suites -- those with a DIRECT wrapper call site,
+# plus the transitive closure of the suites that INVOKE one -- is DERIVED
+# from tests/infra/test_*.sh, not hand-maintained, and Section F proves the
+# DECLARATION still matches that derivation. Its scope boundary -- the
+# residual routes even the closure does not follow -- is stated in full in
+# that section's own preamble.
 
 set -euo pipefail
 
@@ -509,12 +510,15 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # it to the emit-adjacent sites this change turned from latent into live.
 #
 # D_MEMBERS below is NO LONGER the source of truth for "which suites can leak"
-# -- task 6255 made it the BEHAVIOURAL SUBSET of the direct-call-site
-# deadline-capable roster Section F derives (D_ROSTER). D_ROSTER also lists
-# the static-only members (test_run_all.sh, test_slot_event_log.sh,
-# test_verify_semaphore_e2e.sh); their evidence-preservation is ASSERTED IN
-# PROSE beside D_ROSTER_MODE and measured clean today, but is NOT
-# machine-checked -- generalizing D4 to cover them is tracked as #6278.
+# -- task 6255 made it the BEHAVIOURAL SUBSET of the deadline-capable roster
+# Section F derives (D_ROSTER -- direct call sites, plus their transitive
+# invocation closure since task 6291). D_ROSTER also lists EIGHT static-only
+# members (test_run_all.sh, test_slot_event_log.sh, test_verify_semaphore_e2e.sh
+# and the five transitive members 6291 added); their evidence-preservation is
+# ASSERTED IN PROSE beside D_ROSTER_MODE -- measured, and for two of the
+# transitive members measured NOT clean on the bare-variable echo/description
+# channel (recorded there in full) -- but is NOT machine-checked; generalizing
+# D4 to cover them is tracked as #6278.
 # Section F derives D_ROSTER_MODE's behavioural/static-only split directly
 # from D_MEMBERS membership (not a hand-typed parallel array), so the two
 # cannot silently diverge -- see Section F for the derivation.
@@ -847,7 +851,7 @@ assert "E1: no assert description DUMPS a whole capture file (cat/tail/head/\$(<
     test "$E1_COUNT" -eq 0
 
 echo ""
-echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardcoded ==="
+echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocation closure), not hardcoded ==="
 
 # Section D's D_MEMBERS is a hand-maintained list of suites that force a
 # finite-WAIT slot_acquire deadline. Task 6255: that list silently missed
@@ -858,13 +862,16 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # the declared list from silently falling out of step with reality again.
 #
 # SCOPE, stated rather than left implied (D1's own convention, see its
-# description above). The derivation is over DIRECT call sites ONLY: a file
-# that itself names one of the four acquire wrappers. Section F catches a
-# new DIRECTLY-deadline-capable SUITE appearing -- a file with no matching
-# entry in D_ROSTER at all. A green F1 is therefore proof that the
-# direct-call-site roster is SELF-CONSISTENT; it is NOT proof that no other
-# tests/infra suite can reach a deadline by some other route. Three gaps
-# are deliberately out of scope:
+# description above). The derivation is over DIRECT call sites -- a file that
+# itself names one of the four acquire wrappers -- AND over the TRANSITIVE
+# INVOCATION CLOSURE of those call sites: a file that invokes a capable node
+# is capable too, to a fixed point (task 6291; the closure and its edge
+# grammar are below, its controls are FC1-FC7). Section F catches a new
+# deadline-capable SUITE appearing by EITHER route -- a file with no matching
+# entry in D_ROSTER at all. A green F1 is therefore proof that the roster is
+# SELF-CONSISTENT over both routes; it is NOT proof that no tests/infra suite
+# can reach a deadline by ANY route whatsoever. Four gaps are deliberately
+# out of scope:
 #
 # (1) A new unredirected deadline SITE added inside an existing static-only
 # roster member -- D4's per-site stderr-capture check (D4a/D4b) still covers
@@ -876,33 +883,63 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # invoking line itself, which is the only shape D4's slicer can see.
 # Generalizing D4 to cover it is tracked as #6278.
 #
-# (2) TRANSITIVE capability -- a suite that reaches a deadline only by
-# invoking tests/infra/run_all.sh (whose pool worker calls slot_acquire with
-# the finite default REIFY_RUN_ALL_POOL_WAIT=1800, run_all.sh:1361), or by
-# invoking another suite that does. Adding `run_all` to F_BIND_RE/F_EXEC_RE
-# was MEASURED and REJECTED: against the real tree it is a path-MENTION
-# predicate, not a capability predicate, and it gets BOTH directions wrong.
-#   - It ADMITS a file that is not deadline-capable at all:
-#     test_verify_release_delta_skip.sh binds ACT_RUN_ALL (:521) purely as a
-#     grep TARGET -- used only by `test -f` (:523) and two source-inspection
-#     greps (:530, :536) -- and never invokes it. That is exactly the "path
-#     appears only as DATA" class F3's negative control exists to reject.
-#   - It still MISSES the real route for a file that IS capable:
-#     test_run_all_ambient_isolation.sh matches only a `case`-pattern
-#     comparison line (:160), while its actual capability is second-order --
-#     `bash "$TARGET"` with TARGET=test_run_all.sh (:93, :366) -- which no
-#     run_all alternation can see.
-#   Admitting those would force roster entries whose measured justification
-#   reads "not actually deadline-capable", emptying D_ROSTER's meaning.
-#   The three GENUINE transitive members are measured CLEAN today: each
-#   redirects the child's stderr into a file or a captured variable --
-#   test_run_all_clock_marker_sanitize.sh (:96), test_run_all_content_skip.sh
-#   (:86, :387), test_run_all_pool_lock_host_global.sh (:122, :126) -- and
-#   Section E's repo-wide scanner already covers the assert-description
-#   channel for all of them. So this is a drift-coverage gap, not a live
-#   leak. Closing it properly needs a real transitive-closure derivation (a
-#   fixed point over suite->suite invocation edges), which is out of this
-#   task's scope; filed as a follow-up during esc-6255-1 remediation.
+# (2) RESIDUAL ROUTES THE CLOSURE STILL DOES NOT FOLLOW. Task 6291 CLOSED
+# what used to stand here: a suite that reaches a deadline only by invoking
+# tests/infra/run_all.sh (whose pool worker calls slot_acquire with the finite
+# default REIFY_RUN_ALL_POOL_WAIT=1800, run_all.sh:1361), or by invoking
+# another suite that does, IS derived now, and five such members are declared
+# below. What closed it was a CAPABILITY edge grammar, not a path-MENTION
+# one. Adding a bare `run_all` alternation to F_BIND_RE/F_EXEC_RE was measured
+# and REJECTED because it got BOTH directions wrong -- it ADMITTED
+# test_verify_release_delta_skip.sh, which binds the path (:521) purely as an
+# inspection target for `test -f` (:523) and two greps (:530, :536), and it
+# still MISSED test_run_all_ambient_isolation.sh's real second-order route,
+# matching only its `case`-pattern comparison line (:160). Both measurements
+# are now PINNED against a future re-widening -- see F_EDGE_ANCHOR's comment
+# below, and the FC6a/FC7b real-tree route pins -- rather than left as prose.
+# Three residual routes remain, each stated as MEASURED rather than
+# hypothesised:
+#
+#   (i) THE scripts/ ROUTE. The node set is deliberately tests/infra-only
+#   (test_*.sh plus run_all.sh), so a suite that reaches a deadline by
+#   exec'ing scripts/verify.sh -- whose --include-infra plan segment runs
+#   `bash tests/infra/run_all.sh` (verify.sh:2701 today) -- is not derived
+#   through that hop. MEASURED over the tree today this hides NO member: the
+#   anchored-verb exec sites for scripts/verify.sh outside this file are
+#   test_occt_flock_gate.sh and test_verify_semaphore_e2e.sh -- both ALREADY
+#   roster members by their own direct call sites -- and
+#   test_verify_nextest_probe.sh, which is not a member and does not need to
+#   be: its exec (:207) is reached only through `run_verify`, and every one of
+#   that helper's call sites (:261, :280, :305, :327, :346) passes
+#   --print-plan via "$@", so verify.sh prints a plan and never runs the
+#   pipeline. Two further mentions are not invocations at all --
+#   test_verify_pipeline_guard.sh:91 feeds the STRING `scripts/verify.sh` to
+#   verify-pipeline-guard.sh as printf DATA, and test_hooks_call_verify.sh:35
+#   and :48 inspect the hook files with `bash -c "grep ... verify.sh ..."`.
+#   So this is a derivation gap, not a live hole -- but it is the one that
+#   would go unseen first, the moment a suite runs verify.sh for real with
+#   infra included.
+#
+#   (ii) POSIX DOT-SOURCE is not in the edge verb set {bash, sh, source}, and
+#   the exclusion is measured in BOTH directions: admitting `.` as a verb
+#   reads the git PATHSPEC at test_orchestrator_config_canonical_path.sh:64-65
+#   (`-- . ':(exclude)<path>'`) as an invocation, and buys nothing, because
+#   tests/infra holds exactly TWO real POSIX dot-sources of a .sh path
+#   (test_land_script.sh:43, test_verify_semaphore_wiring.sh:334) and both
+#   target hooks/main-gate-lib.sh, which is not a node. (test_seed_warm_lane.sh
+#   :5137's `. "$1"` is a HEREDOC body, i.e. gap (3), not a live dot-source.)
+#   Consistent with (4) below, which records the same omission in the DIRECT
+#   predicate.
+#
+#   (iii) DYNAMICALLY CONSTRUCTED invocations -- a path assembled at run time,
+#   or an exec through a variable holding a helper NAME rather than a path --
+#   are out of a line-oriented scanner's reach by construction. Unlike (i) and
+#   (ii) this is stated STRUCTURALLY, not as a counted absence: no cheap
+#   enumeration bounds it, so no claim is made that no suite uses the shape
+#   today. The one dynamic hop the derivation DOES follow is the deliberately
+#   narrow exec-forwarding-helper rule (`ambient_isolation_check_one
+#   "$TARGET"`); its own comment below records why widening it further was
+#   declined.
 #
 # (3) HEREDOC-EMBEDDED invocations. The derivation scans LINES, not shell
 # syntax -- it has no heredoc-state tracking, so a wrapper call written as
@@ -923,7 +960,8 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # pattern matches, not a shell parser, so they miss idiomatic shapes that
 # are semantically equivalent to ones they do match:
 #   - POSIX dot-source (`. "$path"`) is not an alternative to `source`/
-#     `bash` in F_EXEC_RE;
+#     `bash` in F_EXEC_RE -- the same omission the edge grammar makes, for
+#     the same measured reason ((2)(ii) above);
 #   - a call guarded by a keyword or operator on the same line (e.g.
 #     `if test_semaphore_acquire "$SLOT"; then`) is not matched by
 #     F_CALL_RE, which requires the call to be the line's first token.
@@ -936,15 +974,16 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 # guarded calls needs statement-boundary awareness this scanner does not
 # have, and a naive widening risks matching inside an unrelated quoted
 # string instead -- the same class of hazard that sank the run_all
-# alternation in (2). No suite in tests/infra is known to use either shape
+# alternation recorded in (2) above. No suite in tests/infra is known to use either shape
 # today (F1's pass is the evidence). Net effect: F2's positive control
 # proves the derivation matches its OWN canonical fixture shapes, not the
 # full diversity of real bash call syntax, and a green F1 should be read
 # accordingly.
 
 # The declared roster: every suite this file currently knows to be
-# deadline-capable THROUGH A DIRECT WRAPPER CALL SITE (see SCOPE (2) above
-# for the transitive route this deliberately excludes), sorted
+# deadline-capable -- through a DIRECT wrapper call site, or through the
+# TRANSITIVE closure of suites that invoke one (see SCOPE (2) above for the
+# routes that remain outside even that), sorted
 # (load-bearing -- F1 compares sorted lists, so a
 # sorted declaration needs no re-sort and a human reading a RED sees the
 # same ordering the derivation produced). Declared HERE, at the head of
@@ -955,9 +994,14 @@ echo "=== F: the DIRECT-call-site deadline-capable roster is DERIVED, not hardco
 D_ROSTER=(
     test_lane_x_flock.sh
     test_occt_flock_gate.sh
+    test_run_all_ambient_isolation.sh
+    test_run_all_clock_marker_sanitize.sh
+    test_run_all_content_skip.sh
+    test_run_all_pool_lock_host_global.sh
     test_run_all.sh
     test_slot_event_log.sh
     test_test_run_semaphore.sh
+    test_verify_env_ambient_isolation.sh
     test_verify_semaphore_e2e.sh
 )
 
@@ -1000,6 +1044,45 @@ D_ROSTER=(
 #   deliberately file-only capture grammar (D_CAPTURE_RE) excludes --
 #   including it behaviourally would force weakening that grammar for the
 #   existing three members.
+#
+#   THE FIVE TRANSITIVE MEMBERS (task 6291). None is in D_MEMBERS, so all
+#   five come out static-only and Section D's concurrent arm and its wall
+#   clock are untouched. Each is recorded with its derived ROUTE and its
+#   MEASURED leak-channel state -- the honest state, not a blanket "clean".
+#   test_run_all_clock_marker_sanitize.sh -- bucket pool; route run_all.sh
+#   (RUN_ALL bound :31, `bash "$RUN_ALL"` :96). Measured CLEAN on both
+#   channels: the child is captured to $RA_OUT_FILE (:92-96) and only
+#   grepped, and no capture variable is interpolated into any assert
+#   description.
+#   test_run_all_content_skip.sh -- bucket pool; route run_all.sh (RUN_ALL
+#   bound :25, invoked :86 and :387). Measured CLEAN: captured to $RUN_OUT
+#   (:80-87, :380-388) and only grepped; no capture interpolation in any
+#   description.
+#   test_run_all_pool_lock_host_global.sh -- bucket pool; route run_all.sh
+#   (REAL_RUN_ALL bound :69, invoked :122 and :126). Measured CLEAN: captured
+#   to $_out (:120-127), then reduced to a single `lock=` token
+#   (`_line=...grep 'lock=' | head -n1`; `_lock="${_line##*lock=}"`); the
+#   descriptions interpolate only that extracted token, which a sentinel line
+#   cannot ride.
+#   test_run_all_ambient_isolation.sh -- bucket pool; route test_run_all.sh,
+#   second-order (TARGET bound :93, handed to `ambient_isolation_check_one`
+#   :366, exec'd at run_all_ambient_isolation_lib.sh:73/:92). The capture at
+#   the exec site is correct (`bash "$_target" 2>&1` into $_amb_out), but
+#   run_all_ambient_isolation_lib.sh:106 ECHOES the whole $_amb_out on the
+#   genuine-bug (red) path. That is a bare-variable dump with no reader
+#   token, so it is outside E1's grammar in both directions -- E_CAT_RE is
+#   reader-keyed and E1 is assert-keyed, and this is a bare `echo`. Stated as
+#   a measured fact, not a defect claim against this task: the fix touches
+#   another module and belongs to the guard-widening work #6278 sits in, and
+#   is filed separately (ticket tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
+#   test_verify_env_ambient_isolation.sh -- bucket pool; route
+#   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
+#   2>&1` :177). The capture at the site is correct (into $amb_out,
+#   :172-178), but :189 interpolates the whole $amb_out into an assert
+#   DESCRIPTION on the red path -- again a bare variable with no reader to
+#   key on, which E1's own preamble names as out of its grammar. Same
+#   disposition as the entry above: measured, recorded, filed, not fixed
+#   here.
 #   test_verify_semaphore_e2e.sh -- bucket intra-run-serial (run-all-
 #   classification.manifest:56 -- mutates the invoking lane's own shared
 #   state: CoW target/, working-tree parser.c). Section D forks its members
@@ -1014,9 +1097,12 @@ D_ROSTER=(
 # D_ROSTER). Produces the identical behavioural/static-only split the
 # hand-typed array previously declared verbatim: test_lane_x_flock.sh,
 # test_occt_flock_gate.sh, test_test_run_semaphore.sh (D_MEMBERS' three
-# entries) come out `behavioural`; test_run_all.sh, test_slot_event_log.sh,
-# test_verify_semaphore_e2e.sh come out `static-only` -- see the measured
-# justification for each static-only entry in the comment block above.
+# entries) come out `behavioural`; the other EIGHT -- test_run_all.sh,
+# test_slot_event_log.sh, test_verify_semaphore_e2e.sh and the five
+# transitive members added by task 6291 -- come out `static-only`, which is
+# why growing D_ROSTER needed no edit here and left Section D's concurrent
+# arm and its wall clock untouched. See the measured justification for each
+# static-only entry in the comment block above.
 D_ROSTER_MODE=()
 for _frm_entry in "${D_ROSTER[@]}"; do
     _frm_mode="static-only"
@@ -1079,24 +1165,416 @@ F_CALL_RE='^[[:blank:]]*(test_semaphore_acquire|lane_x_flock_acquire|slot_acquir
 # input to produce a count, so it can never race the producer that way --
 # the same reason D4's `_d_unredirected` already uses `-c`
 # rather than `-q`/`-l` here.
+# The four EREs as ONE alternation -- the exact string _f_deadline_capable
+# used to pass to grep inline, named so the direct sweep and the closure's
+# SEED round cannot drift apart.
+F_DIRECT_RE="$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE"
+
+# _f_direct_capable_stripped <already-comment-stripped file> -> rc 0 if that
+# file has a DIRECT wrapper call site, rc 1 otherwise. This is the ONLY
+# direct predicate: it is _f_deadline_capable's old per-file body with the
+# comment-strip lifted out of it, because the closure strips every node once
+# up front (it needs those stripped copies for the edge scan anyway) and
+# re-stripping per node inside the SEED round would double the seed cost for
+# nothing. Grepping a FILE rather than a pipe also puts this beyond the
+# SIGPIPE/pipefail hazard entirely.
+#
+# A caller holding an UNSTRIPPED path pipes it itself --
+# `grep -vE '^[[:blank:]]*#' <path> | ...` -- rather than reaching for a
+# second predicate: an uncalled unstripped twin over the same F_DIRECT_RE
+# was shipped by task 6291 and REMOVED in its review amendment, because two
+# near-identical predicates with only one of them live is a drift hazard (a
+# future tightening of the direct grammar could land on the dead copy and
+# look like it had taken effect while the derivation was unchanged).
+_f_direct_capable_stripped() {
+    local _n
+    _n="$(grep -cE -- "$F_DIRECT_RE" "$1" || true)"
+    [ "${_n:-0}" -ge 1 ]
+}
+
+# _f_excluded_node <basename> -> rc 0 if <basename> is excluded from the node
+# set. test_helpers.sh matches the test_*.sh glob but is excluded by run_all's
+# own discovery. test_slot_timeout_marker.sh is RECURSION -- this file is
+# itself 17+ P3 hits and 4 knob hits of its own (the same exclusion
+# D_MEMBERS' own RECURSION comment documents, above). Shared by the direct
+# sweep and the closure so ONE list governs both.
+_f_excluded_node() {
+    case "$1" in
+        test_helpers.sh|test_slot_timeout_marker.sh) return 0 ;;
+    esac
+    return 1
+}
+
+# _f_deadline_capable <dir> -> the derived ROSTER: the closure restricted to
+# test_*.sh basenames, names only, sorted. run_all.sh is filtered back out
+# here, and only here -- it is a capability NODE (three roster members reach
+# their deadline only through it) but never a roster ENTRY, because D_ROSTER
+# lists SUITES forked under the pool.
+#
+# `grep -E` is a PRINTING grep, which drains its input, so it is not the
+# `-q`/`-l` shape the SIGPIPE/pipefail note above forbids; the trailing
+# `|| true` is for a legitimately empty result, not to mask a failure.
 _f_deadline_capable() {
-    local _d="$1" _f _base _n
-    for _f in "$_d"/test_*.sh; do
+    _f_closure "$1" | cut -d' ' -f1 | grep -E '^test_' || true
+}
+
+# ---------------------------------------------------------------------------
+# THE TRANSITIVE-INVOCATION CLOSURE (task 6291).
+#
+# A suite that never names an acquire wrapper is still deadline-capable if it
+# INVOKES something that is: tests/infra/run_all.sh (direct-capable itself --
+# _H2_SLOT_ACQUIRE_LIB bind at run_all.sh:1036, bare slot_acquire call at
+# :1692 -- and running its pool worker against the finite
+# REIFY_RUN_ALL_POOL_WAIT default), or another suite that is capable. The
+# closure is the fixed point of that invocation relation over the node set.
+#
+# NODE vs ROSTER ENTRY. The node set is tests/infra/test_*.sh PLUS
+# tests/infra/run_all.sh, because run_all.sh is the hub three of the
+# transitive members reach their deadline through. It participates as a
+# capability NODE only; D_ROSTER stays a list of SUITES forked under the
+# pool, so _f_deadline_capable filters run_all.sh back out.
+#
+# _f_node_list <dir> -> one PATH per closure node, unsorted.
+_f_node_list() {
+    local _d="$1" _f _base
+    for _f in "$_d"/test_*.sh "$_d"/run_all.sh; do
         [ -e "$_f" ] || continue
         _base="${_f##*/}"
-        # test_helpers.sh matches the glob but is excluded by run_all's own
-        # discovery. test_slot_timeout_marker.sh is RECURSION -- this file
-        # is itself 17+ P3 hits and 4 knob hits of its own (the same
-        # exclusion D_MEMBERS' own RECURSION comment documents, above).
-        case "$_base" in
-            test_helpers.sh|test_slot_timeout_marker.sh) continue ;;
-        esac
-        _n="$(grep -vE '^[[:blank:]]*#' "$_f" \
-            | grep -cE -- "$F_WAIT_RE|$F_BIND_RE|$F_EXEC_RE|$F_CALL_RE" || true)"
+        if _f_excluded_node "$_base"; then continue; fi
+        printf '%s\n' "$_f"
+    done
+}
+
+# The EDGE grammar: four more separately-named EREs, held apart from each
+# other and from the four direct ones for the same reason -- each keeps its
+# own rationale attached and stays independently greppable. All four are
+# PREFIXES/TEMPLATES to which a node's regex-escaped basename, or a bound
+# variable's name, is appended by _f_edge_exists below.
+#
+# (a) THE COMMAND-BOUNDARY ANCHOR, and the reason this is a capability
+# grammar rather than a path-mention one. An exec verb only STARTS a command
+# at a command boundary: start-of-line, or after a blank, `(`, `)`, `;`, `|`,
+# `&` or a backtick. MEASURED: without the anchor,
+# tests/infra/test_run_all_ambient_isolation.sh:160 --
+# `*"bash tests/infra/run_all.sh"*)`, a `case` comparison PATTERN, where the
+# verb is preceded by a double quote -- reads as an invocation, and that file
+# then derives by the WRONG route (via:run_all.sh instead of its real
+# via:test_run_all.sh). The same anchor is what rejects a copy-list element:
+# in `verify.sh run_all.sh` the `sh` that precedes the blank is the tail of
+# `verify.sh`, preceded by `.`, not by a boundary.
+F_EDGE_ANCHOR='(^|[[:blank:]();|&`])[[:blank:]]*'
+# (b) THE VERB, plus the same flag tolerance F_EXEC_RE already carries
+# (`bash -x "$X"`). The verb set is exactly {bash, sh, source}.
+# POSIX DOT-SOURCE IS DELIBERATELY EXCLUDED, measured both ways: adding `\.`
+# admits a git PATHSPEC -- `-- . ':(exclude)<path>'`, the shape at
+# tests/infra/test_orchestrator_config_canonical_path.sh:64-65 -- as an
+# invocation, and buys nothing: measured, tests/infra holds exactly TWO real
+# POSIX dot-sources of a .sh path (test_land_script.sh:43 and
+# test_verify_semaphore_wiring.sh:334) and both target hooks/main-gate-lib.sh,
+# which is not a node -- no dot-source in tests/infra targets one. Recorded as
+# a scoped gap in Section F's SCOPE paragraph, consistent with the existing
+# note that dot-source is unhandled in the direct predicate too.
+F_EDGE_VERB_RE="${F_EDGE_ANCHOR}"'(bash|sh|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*'
+# (c) A LITERAL path invocation: the anchored verb, then a path ending in
+# `/<node basename>`. The trailing boundary stops `/run_all.sh` from matching
+# inside `/run_all.sh.orig`.
+F_EDGE_PATH_SUF='([^A-Za-z0-9_]|$)'
+F_EDGE_LITERAL_PRE="${F_EDGE_VERB_RE}"'"?[^"[:blank:]]*/'
+# (d) A BIND of a variable to a path ending in `/<node basename>`. Used with
+# `grep -oE` so the VARIABLE NAME can be recovered -- a bind alone is not an
+# edge, it is only phase one of one.
+F_EDGE_BIND_PRE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*/'
+# (e) THE EXEC-POSITION test for a bound variable, appended around the
+# variable name: it must appear immediately after the anchored verb, or as
+# the line's own first command word. Requiring BOTH (d) and (e) FOR THE SAME
+# VARIABLE is precisely what rejects the bind-only inspection shape --
+# tests/infra/test_verify_release_delta_skip.sh binds ACT_RUN_ALL (:521) and
+# then only `test -f`s (:523) and greps (:530, :536) it. That single measured
+# false admission is what sank the `run_all`-alternation fix; this is the
+# rule that makes the difference. The trailing boundary keeps `$RA` from
+# matching inside `$RAX`.
+F_EDGE_VAR_PRE='"?\$\{?'
+F_EDGE_VAR_SUF='\}?([^A-Za-z0-9_]|$)'
+# (f) THE EXEC-FORWARDING-LIB rule, which is what makes the SECOND-ORDER
+# route visible. A sibling `*_lib.sh` is exec-forwarding iff it binds a
+# variable from a positional AND execs THAT SAME variable through the
+# anchored verb grammar above; every function such a lib defines is then
+# treated as a forwarding call, so passing a node-bound variable to one is an
+# edge. Same-variable is load-bearing and was measured: the looser reading
+# ("binds SOME positional and execs SOME variable") admits SIX libs, among
+# them test_affected_crates_lib.sh, which defines a function named `cargo`,
+# and test_nextest_absent_lib.sh, which defines `cleanup`.
+# MEASURED over tests/infra today, EXACTLY ONE lib qualifies --
+# run_all_ambient_isolation_lib.sh. nextest_absent_lib.sh, plan_capture_lib.sh,
+# occt_flock_gate_lib.sh, load_tolerance_lib.sh, copy_list_preflight_lib.sh,
+# lock_charter_harness_lib.sh and test_helpers.sh all fail the exec half.
+# That tightness is the whole point: it is what keeps `assert` and every
+# other ubiquitous helper out of the rule. If a future reader finds many
+# libs qualifying, the rule has stopped being tight and needs re-narrowing.
+F_FWD_POSBIND_RE='^[[:blank:]]*(local[[:blank:]]+)?[A-Za-z_][A-Za-z0-9_]*="\$[0-9]"'
+F_FWD_FNDEF_RE='^[[:blank:]]*[A-Za-z_][A-Za-z0-9_]*[[:blank:]]*\(\)'
+
+# F_FWD_LIB_MAP[<lib basename>] -> `|`-separated alternation of the function
+# names that exec-forwarding lib defines. Computed ONCE per derivation by
+# _f_scan_fwd_libs below, hoisted out of both the per-node and the per-round
+# loops, so the whole rule costs a constant handful of greps.
+declare -A F_FWD_LIB_MAP=()
+declare -A F_FWD_FN_ALT_CACHE=()
+F_FWD_FN_ALT=""
+
+_f_scan_fwd_libs() {
+    local _d="$1" _sd="$2" _l _base _n _fns _pv _fwd
+    local -a _pvars=()
+    F_FWD_LIB_MAP=()
+    F_FWD_FN_ALT_CACHE=()
+    for _l in "$_d"/*_lib.sh; do
+        [ -e "$_l" ] || continue
+        _base="${_l##*/}"
+        grep -vE '^[[:blank:]]*#' "$_l" > "$_sd/$_base" || true
+        _pvars=()
+        mapfile -t _pvars < <(grep -oE -- "$F_FWD_POSBIND_RE" "$_sd/$_base" \
+            | sed -E 's/^[[:blank:]]*(local[[:blank:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/' | sort -u)
+        if [ "${#_pvars[@]}" -eq 0 ]; then continue; fi
+        _fwd=0
+        for _pv in "${_pvars[@]}"; do
+            [ -n "$_pv" ] || continue
+            _n="$(grep -cE -- "${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_pv}${F_EDGE_VAR_SUF}" "$_sd/$_base" || true)"
+            if [ "${_n:-0}" -ge 1 ]; then _fwd=1; break; fi
+        done
+        [ "$_fwd" -eq 1 ] || continue
+        _fns="$(grep -oE -- "$F_FWD_FNDEF_RE" "$_sd/$_base" \
+            | sed -E 's/^[[:blank:]]*//; s/[[:blank:]]*\(\)$//' | sort -u | tr '\n' '|' | sed 's/|$//' || true)"
+        [ -n "$_fns" ] || continue
+        F_FWD_LIB_MAP["$_base"]="$_fns"
+    done
+}
+
+# _f_fwd_fn_alt <stripped-node-file> -> sets F_FWD_FN_ALT to the alternation
+# of forwarding function names reachable from THAT node, i.e. defined by the
+# exec-forwarding libs it actually `source`s (matched with the same anchored
+# verb grammar). Restricting to sourced libs is what stops an unsourced
+# lib's helper NAME from conferring an edge on a file that merely reuses the
+# name. Sets a global rather than printing, so its per-node memo survives:
+# a `$(...)` reader would be a subshell and the cache would be discarded.
+_f_fwd_fn_alt() {
+    local _sf="$1" _lib _n
+    if [ -n "${F_FWD_FN_ALT_CACHE[$_sf]+set}" ]; then
+        F_FWD_FN_ALT="${F_FWD_FN_ALT_CACHE[$_sf]}"
+        return 0
+    fi
+    F_FWD_FN_ALT=""
+    for _lib in "${!F_FWD_LIB_MAP[@]}"; do
+        _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_lib//./\\.}${F_EDGE_PATH_SUF}" "$_sf" || true)"
         if [ "${_n:-0}" -ge 1 ]; then
-            printf '%s\n' "$_base"
+            F_FWD_FN_ALT="${F_FWD_FN_ALT:+$F_FWD_FN_ALT|}${F_FWD_LIB_MAP[$_lib]}"
         fi
+    done
+    F_FWD_FN_ALT_CACHE["$_sf"]="$F_FWD_FN_ALT"
+}
+
+# _f_edge_exists <stripped-node-file> <target-basename> -> rc 0 if the node
+# whose comment-stripped text is in <stripped-node-file> INVOKES
+# <target-basename>. This is the one place the edge grammar lives, so
+# tightening it is a one-function change.
+#
+# TWO PHASES, because an invocation can name its target either way:
+#   A. a LITERAL path after an anchored verb;
+#   B. a BIND of the path to a variable, AND that same variable appearing in
+#      an EXEC POSITION somewhere in the file. Phase B alone is a mention,
+#      not a call -- see F_EDGE_VAR_PRE's comment for the measured shape this
+#      two-phase requirement is what rejects.
+# Line-oriented and comment-stripped, exactly like the direct predicate; the
+# two phases are per-FILE rather than per-LINE because a bind and its exec
+# are routinely lines apart (all three real run_all invokers bind at the top
+# of the file and exec 50+ lines later).
+#
+# Grepping a FILE, never downstream of a pipe, and counting rather than
+# `-q`/`-l`: doubly beyond the SIGPIPE/pipefail hazard documented above.
+_f_edge_exists() {
+    local _sf="$1" _esc="${2//./\\.}" _n _v _re
+    local -a _vars=()
+
+    _n="$(grep -cE -- "${F_EDGE_LITERAL_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" || true)"
+    if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+
+    mapfile -t _vars < <(grep -oE -- "${F_EDGE_BIND_PRE}${_esc}${F_EDGE_PATH_SUF}" "$_sf" \
+        | sed -E 's/^[[:blank:]]*([A-Za-z_][A-Za-z0-9_]*)=.*/\1/' | sort -u)
+    if [ "${#_vars[@]}" -eq 0 ]; then return 1; fi
+    _f_fwd_fn_alt "$_sf"
+    for _v in "${_vars[@]}"; do
+        [ -n "$_v" ] || continue
+        # Exec position: right after an anchored verb, or as the line's own
+        # first command word, or -- the second-order route -- on a line whose
+        # first command word is an exec-forwarding helper this file sources.
+        _re="${F_EDGE_VERB_RE}${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+        _re="$_re|^[[:blank:]]*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+        if [ -n "$F_FWD_FN_ALT" ]; then
+            _re="$_re|^[[:blank:]]*($F_FWD_FN_ALT)[[:blank:]]+([^\"[:blank:]]+[[:blank:]]+)*${F_EDGE_VAR_PRE}${_v}${F_EDGE_VAR_SUF}"
+        fi
+        _n="$(grep -cE -- "$_re" "$_sf" || true)"
+        if [ "${_n:-0}" -ge 1 ]; then return 0; fi
+    done
+    return 1
+}
+
+# Scratch for the closure: a memo of each directory's derivation, and the
+# comment-stripped copy of each node. Under $TMPF, already in _TMPDIRS.
+F_CLOSURE_CACHE_DIR="$TMPF/closure-cache"; mkdir -p "$F_CLOSURE_CACHE_DIR"
+
+_f_closure_key() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+
+# _f_closure <dir> -> one "<basename> <route>" line per capable node,
+# sorted. route is `direct` (a wrapper call site of its own) or
+# `via:<basename>` (the capable node it reaches a deadline through).
+#
+# BASENAMES AND ROUTES ONLY -- never a matched line, same discipline as
+# _f_deadline_capable and _e_scan: this file's output is re-emitted into the
+# merge-gate verify log.
+#
+# MEMOIZED THROUGH A FILE, not a shell variable, and that is load-bearing:
+# every consumer below reads the derivation inside a `$(...)` command
+# substitution, which is a SUBSHELL, so a cache held in a global array would
+# be discarded the moment each call returned and the real-tree derivation
+# would run once per assert. A file written by the subshell survives it. The
+# derivation is a pure function of the directory's contents, and every
+# fixture dir is fully written before its first read, so the memo can never
+# serve a stale answer within a run; the cache itself lives in a per-run
+# mktemp dir, so it cannot survive between runs either.
+_f_closure() {
+    local _d="$1" _cache
+    _cache="$F_CLOSURE_CACHE_DIR/$(_f_closure_key "$_d").closure"
+    if [ ! -f "$_cache" ]; then
+        _f_closure_compute "$_d" > "$_cache.part"
+        mv -f "$_cache.part" "$_cache"
+    fi
+    cat "$_cache"
+}
+
+# _f_closure_compute <dir> -> the derivation proper: a WORKLIST fixed point
+# over invocation edges.
+#
+# Three sets are maintained: CAP (capable node -> route), PEND (nodes not yet
+# capable, held as their comment-stripped copies), and DELTA (the nodes that
+# became capable in the PREVIOUS round). Each round scans only PEND, and only
+# against DELTA -- a node that already failed against the older members
+# cannot newly match them, so re-testing them is pure waste. That is the
+# difference between this and the naive all-pairs form: measured on the real
+# tree, all-pairs cost 8.6s against ~2s for this shape and ~1.4s for the
+# seed-only scan that preceded the closure, for identical output.
+#
+# THREE FILTERS, cheapest first, so the per-round cost is dominated by a
+# constant handful of greps rather than by one process per node:
+#   1. ONE multi-file `grep -cHE` for the whole round, asking which PEND
+#      nodes mention ANY newly-capable node at all. `-c` (never `-q`/`-l`)
+#      so every file is drained -- see the SIGPIPE/pipefail note above --
+#      and `-H` so the filename prefix is present even when PEND is down to
+#      a single file, which is the shape that would otherwise silently
+#      reparse a bare count as a path.
+#   2. Per survivor, ONE `grep -oE` naming exactly WHICH delta members it
+#      mentions, so the edge grammar runs against a shortlist (normally one
+#      candidate) instead of the whole of DELTA.
+#   3. The edge grammar itself, per shortlisted candidate.
+# Filters 1 and 2 are strict supersets of every edge rule (each requires the
+# target basename to appear on some line), so they can only ever skip nodes
+# that had no edge. The shortlist is sorted, so first-match still picks the
+# same route a full sorted DELTA walk would.
+#
+# TERMINATION, and why the mutually-invoking cycle fixture is not admitted:
+# capability propagates only FROM the capable set. A node becomes capable
+# only by invoking something ALREADY capable, so a pair that invokes only
+# each other never enters CAP, DELTA goes empty, and the loop stops. PEND is
+# also strictly non-increasing, which bounds the round count independently.
+_f_closure_compute() {
+    local _d="$1" _p _base _cand _esc _n _alt _hit _sd _line
+    local -A _cap=()
+    local -a _pend=() _delta=() _next=() _still=() _short=()
+
+    _sd="$F_CLOSURE_CACHE_DIR/$(_f_closure_key "$_d").stripped"
+    rm -rf "$_sd"; mkdir -p "$_sd"
+
+    # SEED round: the UNCHANGED four-ERE direct predicate. Every node is
+    # comment-stripped exactly once here, for the whole derivation -- a token
+    # mentioned only in a comment neither makes a file deadline-capable nor
+    # constitutes an invocation.
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _base="${_p##*/}"
+        grep -vE '^[[:blank:]]*#' "$_p" > "$_sd/$_base" || true
+        if _f_direct_capable_stripped "$_sd/$_base"; then
+            _cap["$_base"]="direct"
+        else
+            _pend+=("$_sd/$_base")
+        fi
+    done < <(_f_node_list "$_d")
+
+    # The exec-forwarding-lib classification, hoisted: once per derivation,
+    # never per node and never per round.
+    _f_scan_fwd_libs "$_d" "$_sd"
+
+    # DELTA starts as the seed set, SORTED. A node reachable from two capable
+    # nodes would otherwise report whichever route bash's hash iteration
+    # handed back first, making the derived route non-deterministic run to
+    # run.
+    while IFS= read -r _cand; do
+        [ -n "$_cand" ] || continue
+        _delta+=("$_cand")
+    done < <(printf '%s\n' "${!_cap[@]}" | sort)
+
+    while [ "${#_delta[@]}" -gt 0 ] && [ "${#_pend[@]}" -gt 0 ]; do
+        _alt=""
+        for _cand in "${_delta[@]}"; do
+            _esc="${_cand//./\\.}"
+            _alt="${_alt:+$_alt|}$_esc"
+        done
+        _next=(); _still=()
+        while IFS= read -r _line; do
+            [ -n "$_line" ] || continue
+            _p="${_line%:*}"; _n="${_line##*:}"
+            if [ "${_n:-0}" -eq 0 ]; then _still+=("$_p"); continue; fi
+            _base="${_p##*/}"
+            _short=()
+            mapfile -t _short < <(grep -oE -- "($_alt)" "$_p" | sort -u)
+            _hit=""
+            for _cand in "${_short[@]}"; do
+                [ -n "$_cand" ] || continue
+                if _f_edge_exists "$_p" "$_cand"; then _hit="$_cand"; break; fi
+            done
+            if [ -n "$_hit" ]; then
+                _cap["$_base"]="via:$_hit"
+                _next+=("$_base")
+            else
+                _still+=("$_p")
+            fi
+        done < <(grep -cHE -- "($_alt)" "${_pend[@]}" || true)
+        _pend=("${_still[@]}")
+        _delta=()
+        if [ "${#_next[@]}" -gt 0 ]; then
+            while IFS= read -r _cand; do
+                [ -n "$_cand" ] || continue
+                _delta+=("$_cand")
+            done < <(printf '%s\n' "${_next[@]}" | sort)
+        fi
+    done
+
+    for _base in "${!_cap[@]}"; do
+        printf '%s %s\n' "$_base" "${_cap[$_base]}"
     done | sort
+}
+
+# _f_closure_names <dir> -> the closure's basenames only, sorted. The routes
+# are what the route-pinning asserts key on; the plain name list is what the
+# count/membership asserts key on.
+_f_closure_names() {
+    _f_closure "$1" | cut -d' ' -f1
+}
+
+# _f_route_of <dir> <basename> -> prints that node's route, or nothing if the
+# node is not derived at all. Plain `grep -E` (a PRINTING grep, which drains
+# its input) downstream of the pipe, never `-q`/`-l`.
+_f_route_of() {
+    local _d="$1" _b="$2" _line
+    _line="$(_f_closure "$_d" | grep -E -- "^${_b//./\\.} " || true)"
+    printf '%s' "${_line#* }"
 }
 
 echo ""
@@ -1216,7 +1694,406 @@ else
 fi
 
 echo ""
-echo "--- F1: the declared DIRECT-call-site roster must equal the derived one ---"
+echo "--- FC1: control on the transitive-closure derivation (one hop) ---"
+
+# CLOSURE CONTROLS, same controls-first discipline F2/F3 hold for the direct
+# predicate. Section F's derivation is not only over DIRECT wrapper call
+# sites: a suite reaches a finite-WAIT deadline just as surely by INVOKING a
+# node that has one -- tests/infra/run_all.sh, whose pool worker calls
+# slot_acquire with the finite default REIFY_RUN_ALL_POOL_WAIT=1800
+# (run_all.sh:1361), or another suite that is itself capable.
+#
+# LABELLED FC<n>, not F4+: F4 was a real assert in this section and was
+# removed (see the note after F1 below). Reusing the number would make that
+# note read as if it described these.
+#
+# FC1 is the ONE-HOP positive control: a seed node plus three distinct
+# invocation-edge shapes. The fixture tree lives under $TMPF, already
+# registered in _TMPDIRS, so it is cleaned up with Section F's other
+# fixtures.
+F_CLOSURE_POS_DIR="$TMPF/fx-closure-pos"; mkdir -p "$F_CLOSURE_POS_DIR"
+
+# (i) SEED suite -- a direct wrapper call site, capable under the four EREs
+# above with no closure involved at all.
+cat > "$F_CLOSURE_POS_DIR/test_c_seed.sh" <<'C1SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+C1SEEDEOF
+# (ii) run_all.sh -- a seed NODE that is not a test_*.sh suite, and the
+# reason invoking run_all.sh is a deadline-capable act. It is a NODE, never a
+# roster entry: D_ROSTER lists SUITES forked under the pool.
+#
+# The body mirrors the route by which the REAL tests/infra/run_all.sh is
+# direct-capable, which was MEASURED per-ERE rather than assumed: F_BIND_RE
+# at run_all.sh:1036 (_H2_SLOT_ACQUIRE_LIB=...lib_slot_acquire.sh) and
+# F_CALL_RE at :1692 (a bare slot_acquire call). NOT F_WAIT_RE: :1361 spells
+# `"${REIFY_RUN_ALL_POOL_WAIT:-1800}"`, a `:-` default EXPANSION, and
+# F_WAIT_RE requires `_WAIT=`; the only `..._WAIT=` spelling in run_all.sh is
+# in a full-line comment at :86, which the derivation strips. The pool-wait
+# line is kept below anyway, unmatched, because it is what makes the deadline
+# FINITE and a reader looking for it should find it here (esc-6291-3).
+cat > "$F_CLOSURE_POS_DIR/run_all.sh" <<'C1RUNALLEOF'
+#!/usr/bin/env bash
+_H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
+_H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
+slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT"
+C1RUNALLEOF
+# (iii) EDGE shape 1 -- a node invoked by LITERAL path.
+cat > "$F_CLOSURE_POS_DIR/test_c_lit_runall.sh" <<'C1LITEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/run_all.sh" "$D"
+C1LITEOF
+# (iv) EDGE shape 2 -- a variable BOUND to a node path, then exec'd. The
+# real tree's three run_all invokers all take this shape.
+cat > "$F_CLOSURE_POS_DIR/test_c_var_runall.sh" <<'C1VAREOF'
+#!/usr/bin/env bash
+RA="$SCRIPT_DIR/run_all.sh"
+bash "$RA" "$D"
+C1VAREOF
+# (v) EDGE shape 3 -- suite -> SUITE, not suite -> run_all.sh. The real tree
+# has this route too (test_verify_env_ambient_isolation.sh invokes
+# test_occt_flock_gate.sh), so a run_all-centred closure would miss it.
+cat > "$F_CLOSURE_POS_DIR/test_c_suite.sh" <<'C1SUITEEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_seed.sh"
+C1SUITEEOF
+# The INVOKER count is held apart from the total so a narrowing edit reports
+# how many EDGE VARIANTS it stopped seeing rather than one opaque number
+# (the F_POS_VARIANTS/E_POS_VARIANTS idiom above).
+F_CLOSURE_POS_VARIANTS=3
+F_CLOSURE_POS_EXPECT=$(( F_CLOSURE_POS_VARIANTS + 1 ))
+
+# Counted with the DRAINING `grep -cE ... || true` form, never `grep -q`/`-l`
+# downstream of a pipe -- see the SIGPIPE/pipefail note on
+# _f_deadline_capable above. Restricted to test_* basenames because
+# run_all.sh is a capability NODE, not a roster SUITE. The `|| true` also
+# means that while _f_closure_names does not exist yet the count reads 0 and
+# this assert FAILS cleanly instead of aborting the suite under `set -e`.
+F_FC1_COUNT="$(_f_closure_names "$F_CLOSURE_POS_DIR" | grep -cE '^test_' || true)"
+
+assert "FC1: one-hop closure positive control -- the seed plus all $F_CLOSURE_POS_VARIANTS invocation-edge variants (literal node path, bound-then-exec variable, suite->suite) are derived (expected $F_CLOSURE_POS_EXPECT, got $F_FC1_COUNT)" \
+    test "$F_FC1_COUNT" -eq "$F_CLOSURE_POS_EXPECT"
+
+echo ""
+echo "--- FC2/FC3: the closure must be a FIXED POINT, and must terminate ---"
+
+# FC1 above proves ONE hop. A real invocation graph is deeper than that
+# (test_run_all_ambient_isolation.sh reaches its deadline through
+# test_run_all.sh, which reaches it through its own direct call site), and it
+# contains cycles. This fixture pins BOTH properties on shapes a single pass
+# provably cannot satisfy: a three-edge chain, and a mutually-invoking pair
+# that is capable of nothing.
+F_CLOSURE_CHAIN_DIR="$TMPF/fx-closure-chain"; mkdir -p "$F_CLOSURE_CHAIN_DIR"
+
+# The chain: seed <- hop1 <- hop2 <- hop3. hop2 deliberately uses the
+# bound-then-exec shape rather than a literal path, so the chain also proves
+# the bind-plus-exec-position rule composes ACROSS rounds and not merely
+# against the direct seeds.
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_seed.sh" <<'C2SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+C2SEEDEOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_hop1.sh" <<'C2HOP1EOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_seed.sh"
+C2HOP1EOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_hop2.sh" <<'C2HOP2EOF'
+#!/usr/bin/env bash
+H1="$SCRIPT_DIR/test_c_hop1.sh"
+bash "$H1" --quiet
+C2HOP2EOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_hop3.sh" <<'C2HOP3EOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_hop2.sh"
+C2HOP3EOF
+# The CYCLE: cycA <-> cycB, neither capable of anything. A fixed point that
+# propagated on MENTION rather than on CAPABILITY would either loop here or
+# wrongly admit both; propagating only FROM the capable set makes this
+# terminate with neither admitted.
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_cycA.sh" <<'C2CYCAEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_cycB.sh"
+C2CYCAEOF
+cat > "$F_CLOSURE_CHAIN_DIR/test_c_cycB.sh" <<'C2CYCBEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_cycA.sh"
+C2CYCBEOF
+F_CLOSURE_CHAIN_EXPECT=4
+
+# Routes are PINNED, not just membership: a future edit that resolves a hop
+# by the wrong edge -- reaching past its real predecessor to something else
+# capable -- would leave membership and the count identical and be invisible
+# without this. Precomputed into plain variables, never a $(...) inside a
+# description (E1's discipline).
+F_FC2_HOP1_ROUTE="$(_f_route_of "$F_CLOSURE_CHAIN_DIR" test_c_hop1.sh)"
+F_FC2_HOP2_ROUTE="$(_f_route_of "$F_CLOSURE_CHAIN_DIR" test_c_hop2.sh)"
+F_FC2_HOP3_ROUTE="$(_f_route_of "$F_CLOSURE_CHAIN_DIR" test_c_hop3.sh)"
+F_FC3_COUNT="$(_f_closure_names "$F_CLOSURE_CHAIN_DIR" | grep -cE '^test_' || true)"
+
+assert "FC2a: hop 1 of the chain is derived through the seed itself (expected via:test_c_seed.sh, got ${F_FC2_HOP1_ROUTE:-<underived>})" \
+    test "$F_FC2_HOP1_ROUTE" = "via:test_c_seed.sh"
+assert "FC2b: hop 2 is derived through hop 1 -- a second round, and through a BOUND-then-exec edge (expected via:test_c_hop1.sh, got ${F_FC2_HOP2_ROUTE:-<underived>})" \
+    test "$F_FC2_HOP2_ROUTE" = "via:test_c_hop1.sh"
+assert "FC2c: hop 3 is derived through hop 2 -- a third round, so the derivation is a fixed point and not a bounded number of passes (expected via:test_c_hop2.sh, got ${F_FC2_HOP3_ROUTE:-<underived>})" \
+    test "$F_FC2_HOP3_ROUTE" = "via:test_c_hop2.sh"
+assert "FC3: the mutually-invoking pair terminates and is NOT admitted -- capability propagates only FROM the capable set, never from a mention (expected $F_CLOSURE_CHAIN_EXPECT derived, got $F_FC3_COUNT)" \
+    test "$F_FC3_COUNT" -eq "$F_CLOSURE_CHAIN_EXPECT"
+
+echo ""
+echo "--- FC4: the edge predicate must be a CAPABILITY predicate, not a path-MENTION one ---"
+
+# This is F3's discipline extended to the closure, and it is the assert that
+# decides whether the derivation is worth having. Every NEGATIVE fixture below
+# -- (i) through (v) -- reproduces a shape MEASURED in the real tree, and
+# every one of them is admitted by some plausible-looking widening of the edge
+# grammar; (vi) is the positive control that keeps their count honest. A
+# derivation that admits them would force roster entries whose measured
+# justification reads "not actually deadline-capable" -- which empties
+# D_ROSTER's meaning, and is exactly why Section F's SCOPE paragraph records
+# the `run_all`-alternation fix as measured-and-REJECTED rather than shipped.
+F_CLOSURE_NEG_DIR="$TMPF/fx-closure-neg"; mkdir -p "$F_CLOSURE_NEG_DIR"
+
+# The seed NODE, so every fixture below has something real to (not) invoke.
+cat > "$F_CLOSURE_NEG_DIR/run_all.sh" <<'C4RUNALLEOF'
+#!/usr/bin/env bash
+_H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
+_H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
+slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT"
+C4RUNALLEOF
+
+# (i) BIND-ONLY -- the node path is bound to a variable and then used only as
+# an INSPECTION target. tests/infra/test_verify_release_delta_skip.sh:521 is
+# this shape verbatim (ACT_RUN_ALL, used by `test -f` at :523 and two
+# source-inspection greps at :530/:536, never invoked), and it is THE
+# measured false admission that sank the run_all alternation.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_bind_only.sh" <<'C4BINDEOF'
+#!/usr/bin/env bash
+ACT_RUN_ALL="$REPO_ROOT/tests/infra/run_all.sh"
+assert "run_all.sh exists" \
+    test -f "$ACT_RUN_ALL"
+assert "run_all.sh pins the release-delta skip" \
+    grep -qE '^[[:space:]]*export REIFY_RELEASE_DELTA_SKIP=0([[:space:]]|$)' "$ACT_RUN_ALL"
+C4BINDEOF
+
+# (ii) CASE PATTERN -- an exec verb inside a quoted COMPARISON pattern, which
+# is a datum, not a command. tests/infra/test_run_all_ambient_isolation.sh:160
+# is this shape verbatim; it is also the measured reason a path-mention
+# grammar gets that file's ROUTE wrong (it would report via:run_all.sh, when
+# the real route is via:test_run_all.sh through a forwarding helper).
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_case_pattern.sh" <<'C4CASEEOF'
+#!/usr/bin/env bash
+RUN_ALL_PLAN_LINE=""
+while IFS= read -r _line; do
+    case "$_line" in
+        *"bash tests/infra/run_all.sh"*)
+            RUN_ALL_PLAN_LINE="$_line"
+            ;;
+    esac
+done <<< "$PLAN_DUMP"
+C4CASEEOF
+
+# (iii) COPY LIST -- the node basename bare in a closure/copy-list loop, the
+# same shape F3 already guards for the direct predicate. Note the hazard is
+# not the basename but the `sh ` that the PRECEDING list element ends with:
+# "verify.sh run_all.sh" contains an unanchored exec verb followed by a
+# blank and then the node path.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_copy_list.sh" <<'C4COPYEOF'
+#!/usr/bin/env bash
+for _f in verify.sh run_all.sh test_helpers.sh; do
+    cp "$SRC/tests/infra/$_f" "$DST/tests/infra/$_f"
+done
+C4COPYEOF
+
+# (iv) GIT PATHSPEC -- `-- . ':(exclude)<path>'`. The bare `.` here is a git
+# pathspec, not a POSIX dot-source, and it is preceded by a blank, so a verb
+# set that included `\.` would read this as "source the node". Measured on
+# tests/infra/test_orchestrator_config_canonical_path.sh:64-65, which is this
+# shape verbatim. It is also a second bind-only instance: `matches` is bound
+# from the substitution and then only tested and echoed.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_pathspec.sh" <<'C4SPECEOF'
+#!/usr/bin/env bash
+assert_no_legacy_config_refs() {
+    local matches
+    matches="$(git -C "$REPO_ROOT" grep -nP '(?<!dark-factory-)orchestrator\.yaml' \
+        -- . ':(exclude)tests/infra/run_all.sh' || true)"
+    if [ -n "$matches" ]; then
+        echo "Legacy top-level config references still present (expected: none):"
+        return 1
+    fi
+}
+C4SPECEOF
+
+# (v) A REAL INVOCATION OF A NON-CAPABLE NODE. The edge is genuine; the
+# target simply has no deadline to confer. Proves the derivation asks
+# "capable?" of the TARGET rather than treating any invocation as capability.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_noncapable_target.sh" <<'C4NCEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/test_c_inert.sh"
+C4NCEOF
+cat > "$F_CLOSURE_NEG_DIR/test_c_inert.sh" <<'C4INERTEOF'
+#!/usr/bin/env bash
+echo "inert: this suite reaches no deadline by any route"
+C4INERTEOF
+
+# (vi) THE SENTINEL -- one plainly-capable file, so FC4b's count is a
+# DISCRIMINATION and not an absence. Without it every fixture in this dir is
+# expected to be rejected, and "the grammar correctly rejected all five
+# measured shapes" would be indistinguishable from "the derivation returned
+# nothing at all here" (an early return out of _f_scan_fwd_libs or
+# _f_edge_exists, an empty memo, a mis-set F_CLOSURE_NEG_DIR). Same pairing
+# F2/F3 use, and the same reason FC5 keeps its positive and its two negatives
+# in ONE fixture dir.
+cat > "$F_CLOSURE_NEG_DIR/test_c_neg_control.sh" <<'C4CTRLEOF'
+#!/usr/bin/env bash
+bash "$SCRIPT_DIR/run_all.sh"
+C4CTRLEOF
+F_CLOSURE_NEG_EXPECT=1
+
+# Basenames are safe to print; the ADMITTED list is precomputed into a plain
+# variable so a RED names exactly which shape got through (E1's discipline).
+F_FC4_CTRL_ROUTE="$(_f_route_of "$F_CLOSURE_NEG_DIR" test_c_neg_control.sh)"
+F_FC4_COUNT="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -cE '^test_' || true)"
+F_FC4_ADMITTED="$(_f_closure_names "$F_CLOSURE_NEG_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
+
+assert "FC4a: positive control -- the one fixture here that DOES invoke the seed node is admitted, so FC4b's count cannot be satisfied by a wholesale derivation failure over this dir (expected via:run_all.sh, got ${F_FC4_CTRL_ROUTE:-<underived>})" \
+    test "$F_FC4_CTRL_ROUTE" = "via:run_all.sh"
+assert "FC4b: none of the five measured non-invocation shapes is an edge -- bind-only inspection target, exec verb inside a case PATTERN, copy-list element, git pathspec, and a real invocation of a NON-capable node (expected $F_CLOSURE_NEG_EXPECT derived, the sentinel and nothing else, got $F_FC4_COUNT: ${F_FC4_ADMITTED:-<none>})" \
+    test "$F_FC4_COUNT" -eq "$F_CLOSURE_NEG_EXPECT"
+
+echo ""
+echo "--- FC5/FC6: the second-order route -- a node-bound variable handed to an exec-forwarding helper ---"
+
+# The remaining real route, and the one a per-file two-phase rule cannot see
+# on its own. tests/infra/test_run_all_ambient_isolation.sh never execs its
+# TARGET (bound to test_run_all.sh at :93); it hands it to
+# `ambient_isolation_check_one "$TARGET" ...` (:366), and the
+# `bash "$_target" 2>&1` lives in run_all_ambient_isolation_lib.sh:73/:92
+# behind `local _target="$1"`.
+#
+# The rule has to key on the lib ACTUALLY FORWARDING to an exec, not on
+# "any argument to any helper" -- otherwise `assert` and every other
+# ubiquitous helper becomes an edge. These fixtures are what hold that line:
+# a forwarding lib and an inert twin, and a file that sources the forwarding
+# lib but only inspects its target.
+F_CLOSURE_FWD_DIR="$TMPF/fx-closure-fwd"; mkdir -p "$F_CLOSURE_FWD_DIR"
+
+cat > "$F_CLOSURE_FWD_DIR/test_c_seed.sh" <<'C5SEEDEOF'
+#!/usr/bin/env bash
+slot_acquire "$LOCK" 1 1
+C5SEEDEOF
+# The FORWARDING lib: binds a variable from a positional AND execs a
+# variable. run_all_ambient_isolation_lib.sh:59/:73 in miniature.
+cat > "$F_CLOSURE_FWD_DIR/c_fwd_lib.sh" <<'C5FWDLIBEOF'
+#!/usr/bin/env bash
+fwd_run_one() {
+    local _t="$1" _key="$2"
+    local _out
+    _out="$(
+        export "$_key=1"
+        bash "$_t" 2>&1
+    )" || return 1
+    printf '%s\n' "$_out" > /dev/null
+}
+C5FWDLIBEOF
+# The INERT twin: binds a positional, but never execs it. Must NOT make its
+# callers' arguments into edges.
+cat > "$F_CLOSURE_FWD_DIR/c_inert_lib.sh" <<'C5INERTLIBEOF'
+#!/usr/bin/env bash
+inert_check() {
+    local _t="$1"
+    grep -qE '^#!' "$_t"
+}
+C5INERTLIBEOF
+# POSITIVE: sources the forwarding lib, binds TARGET to the seed, and only
+# ever passes it on. test_run_all_ambient_isolation.sh:91/:93/:366 in
+# miniature.
+cat > "$F_CLOSURE_FWD_DIR/test_c_fwd_pos.sh" <<'C5POSEOF'
+#!/usr/bin/env bash
+source "$SCRIPT_DIR/c_fwd_lib.sh"
+TARGET="$SCRIPT_DIR/test_c_seed.sh"
+_check_rc=0
+fwd_run_one "$TARGET" "$_key" "$MANIFEST_KEYS" || _check_rc=$?
+C5POSEOF
+# NEGATIVE: same handoff shape, but to the INERT lib. The rule must key on
+# the lib forwarding to an exec, not on the handoff.
+cat > "$F_CLOSURE_FWD_DIR/test_c_fwd_neg.sh" <<'C5NEGEOF'
+#!/usr/bin/env bash
+source "$SCRIPT_DIR/c_inert_lib.sh"
+TARGET="$SCRIPT_DIR/test_c_seed.sh"
+inert_check "$TARGET"
+C5NEGEOF
+# NEGATIVE: sources the FORWARDING lib, but never hands it the target --
+# only inspects it. Sourcing an exec-forwarding lib is not itself an edge.
+cat > "$F_CLOSURE_FWD_DIR/test_c_fwd_neg_inspect.sh" <<'C5NEGINSEOF'
+#!/usr/bin/env bash
+source "$SCRIPT_DIR/c_fwd_lib.sh"
+TARGET="$SCRIPT_DIR/test_c_seed.sh"
+test -f "$TARGET"
+grep -qE '^#!' "$TARGET"
+C5NEGINSEOF
+F_CLOSURE_FWD_EXPECT=2
+
+F_FC5_POS_ROUTE="$(_f_route_of "$F_CLOSURE_FWD_DIR" test_c_fwd_pos.sh)"
+F_FC5_COUNT="$(_f_closure_names "$F_CLOSURE_FWD_DIR" | grep -cE '^test_' || true)"
+F_FC5_DERIVED="$(_f_closure_names "$F_CLOSURE_FWD_DIR" | grep -E '^test_' | tr '\n' ' ' | sed 's/ *$//' || true)"
+
+assert "FC5a: a node-bound variable passed to an EXEC-FORWARDING helper is an edge (expected via:test_c_seed.sh, got ${F_FC5_POS_ROUTE:-<underived>})" \
+    test "$F_FC5_POS_ROUTE" = "via:test_c_seed.sh"
+assert "FC5b: the same handoff to an INERT lib, and sourcing a forwarding lib without handing it the target, are NOT edges (expected $F_CLOSURE_FWD_EXPECT derived, got $F_FC5_COUNT: ${F_FC5_DERIVED:-<none>})" \
+    test "$F_FC5_COUNT" -eq "$F_CLOSURE_FWD_EXPECT"
+
+# REAL-TREE ROUTE PINS. Membership alone would not catch a derivation that
+# reached the right file by the wrong edge, and for this file that is not
+# hypothetical: a path-mention grammar derives
+# test_run_all_ambient_isolation.sh via:run_all.sh off the `case`-pattern
+# comparison at :160, which is a datum, not a call. Pinning the route is what
+# makes the roster entry's recorded justification checkable.
+F_FC6_AMB_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_run_all_ambient_isolation.sh)"
+F_FC6_VENV_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_env_ambient_isolation.sh)"
+
+assert "FC6a: test_run_all_ambient_isolation.sh derives by its REAL second-order route, not off the case-pattern line (expected via:test_run_all.sh, got ${F_FC6_AMB_ROUTE:-<underived>})" \
+    test "$F_FC6_AMB_ROUTE" = "via:test_run_all.sh"
+assert "FC6b: test_verify_env_ambient_isolation.sh derives through the suite it actually invokes (expected via:test_occt_flock_gate.sh, got ${F_FC6_VENV_ROUTE:-<underived>})" \
+    test "$F_FC6_VENV_ROUTE" = "via:test_occt_flock_gate.sh"
+
+# REAL-TREE NEGATIVE PIN. This is the one false admission the whole two-phase
+# rule exists to prevent, so it is pinned rather than left to F1: F1 would
+# also go RED on it, but only as an unexplained extra roster entry, and the
+# natural repair -- declaring it -- would silently produce a member whose
+# measured justification reads "not actually deadline-capable". Named here,
+# a future widening that re-admits it fails against a stated reason.
+#
+# FC7a BEFORE FC7b, the same ordering and for the same reason as D4a before
+# D4b. `_f_route_of` prints the empty string for a node that is derived with
+# no route (impossible) AND for a node that is not in the node set AT ALL, so
+# FC7b's `-z` alone would go green for the wrong reason the moment
+# test_verify_release_delta_skip.sh is renamed, deleted, or simply stops
+# binding run_all.sh -- and the file's one real-tree pin against re-admitting
+# the bind-only shape would evaporate silently. FC7a keys on the bind line
+# itself (measured today at :521, inspected at :523/:530/:536), so any of
+# those three goes RED here instead. Counts only, never the matched line
+# (D1's discipline); stderr is discarded so a vanished file reports through
+# the assert rather than as noise in the merge-gate verify log.
+F_FC7_DELTA_BIND="$(grep -cE '^[[:blank:]]*ACT_RUN_ALL=[^[:blank:]]*/run_all\.sh' \
+    "$SCRIPT_DIR/test_verify_release_delta_skip.sh" 2>/dev/null || true)"
+F_FC7_DELTA_ROUTE="$(_f_route_of "$SCRIPT_DIR" test_verify_release_delta_skip.sh)"
+# REAL-TREE NON-VACUITY PIN. run_all.sh being a DIRECT seed is what makes
+# three of the five transitive members capable at all. If it silently stopped
+# seeding, those three would vanish from the derivation -- and F1 would stay
+# green against a correspondingly shrunken declaration, which is exactly the
+# failure mode D4a's own non-vacuity assert exists to catch one level down.
+F_FC7_RUNALL_ROUTE="$(_f_route_of "$SCRIPT_DIR" run_all.sh)"
+
+assert "FC7a: test_verify_release_delta_skip.sh still BINDS run_all.sh, so FC7b is pinning the bind-only shape and not an absent file (non-vacuity; got ${F_FC7_DELTA_BIND:-0})" \
+    test "${F_FC7_DELTA_BIND:-0}" -ge 1
+assert "FC7b: test_verify_release_delta_skip.sh is NOT derived -- it binds run_all.sh purely as an inspection target, and admitting it is the measured failure that sank the run_all alternation (expected <underived>, got ${F_FC7_DELTA_ROUTE:-<underived>})" \
+    test -z "$F_FC7_DELTA_ROUTE"
+assert "FC7c: run_all.sh is derived as a DIRECT seed node, so the three members that reach a deadline only through it are not vacuously absent (expected direct, got ${F_FC7_RUNALL_ROUTE:-<underived>})" \
+    test "$F_FC7_RUNALL_ROUTE" = "direct"
+
+
+echo ""
+echo "--- F1: the declared deadline-capable roster must equal the derived one ---"
 
 F_DERIVED="$(_f_deadline_capable "$SCRIPT_DIR")"
 F_DECLARED_SORTED="$(printf '%s\n' "${D_ROSTER[@]}" | sort)"
@@ -1231,10 +2108,14 @@ F_STALE="$(comm -13 <(printf '%s\n' "$F_DERIVED") <(printf '%s\n' "$F_DECLARED_S
 # A RED here means "a human must classify a newly deadline-
 # capable suite", not that a leak occurred -- Section D above is the leak
 # guard; this is the guard that keeps its own membership list honest.
-# Description says DIRECT-CALL-SITE, not bare "deadline-capable": a green
-# here must not be misread as completeness over the transitive route this
-# derivation cannot see (SCOPE (2) above).
-assert "F1: the DERIVED roster of suites with a DIRECT wrapper call site over tests/infra/ equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
+# The derived side now spans DIRECT call sites AND their transitive
+# invocation closure, so a green here IS the full roster claim over the node
+# set (tests/infra/test_*.sh plus run_all.sh). It is still not completeness
+# over the residual routes SCOPE (2) names -- the scripts/ hop, POSIX
+# dot-source, and dynamically constructed invocations -- which is why the
+# description scopes itself to "over tests/infra/" rather than claiming no
+# suite anywhere can reach a deadline undeclared.
+assert "F1: the DERIVED roster of deadline-capable suites over tests/infra/ (direct wrapper call sites plus their invocation closure) equals the DECLARED one (unlisted: ${F_UNLISTED:-<none>}) (stale: ${F_STALE:-<none>})" \
     test "$F_DERIVED" = "$F_DECLARED_SORTED"
 
 echo ""
@@ -1244,9 +2125,14 @@ echo ""
 # instead of hand-typed, the two cannot diverge by construction -- there is
 # nothing left for a lockstep check to catch. The one part of F4's job the
 # derivation does not give for free -- that D_MEMBERS' own entries are
-# genuine direct-call-site suites, not typos or stale names -- is already
-# proved by F1 above, since a D_MEMBERS entry that were NOT a real direct
-# call site would still need to appear in D_ROSTER for F1 to pass, and
-# D_MEMBERS' three members do appear there.
+# genuine deadline-capable suites, not typos or stale names -- is already
+# proved by F1 above, since a D_MEMBERS entry that were NOT derivable at all
+# would still need to appear in D_ROSTER for F1 to pass, and D_MEMBERS' three
+# members do appear there. Note the exact strength of that: since task 6291
+# the derivation admits a suite by a DIRECT call site OR by the invocation
+# closure, so F1 proves those three are capable, not that they are capable
+# DIRECTLY. Nothing here depends on which -- Section D forks them and
+# observes real behaviour -- and their direct sites are what seeds the
+# closure in the first place.
 
 test_summary
