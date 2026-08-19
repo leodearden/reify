@@ -4115,21 +4115,7 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
 /**
  * Drives `reifyLRLanguage` — the exact object the editor uses, already wired
  * with the `@external propSource` — through `highlightTree`, and collects the
- * source text of every span that received `t.keyword`.
- */
-function keywordSpans(src: string): string[] {
-  const tree = reifyLRLanguage.parser.parse(src);
-  const spans: string[] = [];
-  highlightTree(tree, classHighlighter, (from, to, classes) => {
-    if (classes.split(' ').includes('tok-keyword')) spans.push(src.slice(from, to));
-  });
-  return spans;
-}
-
-/**
- * The same measurement for punctuation — `t.brace`, `t.paren` and friends all
- * land in `tok-punctuation` under `classHighlighter`. Mirrors `keywordSpans`
- * above and differs from it only in the class it filters on.
+ * source text of every span that received the class `cls`.
  *
  * A styleTags selector names a NODE. So this helper answers, indirectly, a
  * question no other assertion in this file asks: does the token actually exist
@@ -4137,13 +4123,26 @@ function keywordSpans(src: string): string[] {
  * produces no node, and a node that does not exist cannot be selected, cannot
  * be styled, and cannot be found by CodeMirror's bracket matching either.
  */
-function punctuationSpans(src: string): string[] {
+function spansWithClass(src: string, cls: string): string[] {
   const tree = reifyLRLanguage.parser.parse(src);
   const spans: string[] = [];
   highlightTree(tree, classHighlighter, (from, to, classes) => {
-    if (classes.split(' ').includes('tok-punctuation')) spans.push(src.slice(from, to));
+    if (classes.split(' ').includes(cls)) spans.push(src.slice(from, to));
   });
   return spans;
+}
+
+/** Source text of every span the highlighter styled as a keyword. */
+function keywordSpans(src: string): string[] {
+  return spansWithClass(src, 'tok-keyword');
+}
+
+/**
+ * The same measurement for punctuation — `t.brace`, `t.paren` and friends all
+ * land in `tok-punctuation` under `classHighlighter`.
+ */
+function punctuationSpans(src: string): string[] {
+  return spansWithClass(src, 'tok-punctuation');
 }
 
 /**
@@ -4309,26 +4308,32 @@ describe('reifyLanguage — fold and indent coverage', () => {
    * stops at `@tokens` — inside that block `"{"` is a token declaration, not a
    * body.
    *
-   * THREE SPELLINGS COUNT AS AN OPENER, and they are not equally good:
+   * TWO SPELLINGS COUNT AS AN OPENER, and they are not equally good:
    *
-   *   `"{"`   the common one, an anonymous inline literal.
-   *   `".{"`  a combined anonymous literal. `ImportItems` used this for the
-   *           canonical destructured import `import a.b.{C, D}` (#5931), where
-   *           the dot had to be folded into one token to keep lezer-generator
-   *           conflict-free — see the ImportDeclaration comment in
-   *           reify.grammar.
+   *   `"{"`   the common one, an anonymous inline literal — and the only
+   *           anonymous spelling that works, because a `{` that is a token in
+   *           its own right still surfaces as a node.
    *   a reference to a NAMED token from `braceOpenerTokens` above — today
-   *           `ImportItemsOpen`, which is what `ImportItems` uses now.
+   *           `ImportItemsOpen` (`".{"`), which is what `ImportItems` uses for
+   *           the canonical destructured import `import a.b.{C, D}` (#5931),
+   *           where the dot had to be folded into the opener token to keep
+   *           lezer-generator conflict-free (see the ImportDeclaration comment
+   *           in reify.grammar).
    *
-   * The named token is the PREFERRED spelling, and the reason is the whole
-   * point of this ledger: an anonymous inline literal is consumed by the lexer
-   * and produces NO NODE in the tree, so `foldBody`'s `getChild` lookup misses
-   * it, the fold silently returns null, and no styleTags selector can name it
-   * either. A named token survives into the tree and keeps both affordances
-   * reachable. Either way the production is still a brace-delimited body and
-   * still needs its fold and indent entries, so the extraction must not miss it
-   * merely because the `{` is not the first character of the token — or not
-   * spelled as a literal on the body line at all.
+   * A COMBINED ANONYMOUS literal — `".{"` written inline in the body, which is
+   * how `ImportItems` was first ported — is deliberately NOT a third spelling
+   * this extractor accepts. The lexer consumes it and emits NO NODE, so the
+   * production has no opener the fold or a styleTags selector can reach; an
+   * extractor arm for it would have kept this ledger green for a body whose
+   * affordances were dead, which is the exact blindness the ledger exists to
+   * remove. Reintroducing that spelling is caught loudly instead, by
+   * `admits no production that opens with an anonymous combined brace literal`
+   * below.
+   *
+   * Either named or bare, the production is a brace-delimited body and still
+   * needs its fold and indent entries, so the extraction must not miss it
+   * merely because the opener is not spelled as a plain `"{"` literal on the
+   * body line.
    */
   function braceDelimitedNodeTypes(grammarSrc: string): string[] {
     const openers = braceOpenerTokens(grammarSrc);
@@ -4343,9 +4348,7 @@ describe('reifyLanguage — fold and indent coverage', () => {
       const header = line.match(/^\s*([A-Z][A-Za-z0-9_]*)\s*\{/);
       if (header) current = header[1];
       const opensWithBrace =
-        line.includes('"{"') ||
-        line.includes('".{"') ||
-        openers.some((name) => new RegExp(`\\b${name}\\b`).test(line));
+        line.includes('"{"') || openers.some((name) => new RegExp(`\\b${name}\\b`).test(line));
       if (current && opensWithBrace) found.add(current);
     }
     return [...found].sort();
@@ -4378,6 +4381,47 @@ describe('reifyLanguage — fold and indent coverage', () => {
     const declared = new Set(braceDelimitedNodeTypes(readFixture('gui/src/editor/reify.grammar')));
     const stale = [...BRACE_FIRST_BODIES, ...KEYWORD_LED_BODIES].filter((n) => !declared.has(n));
     expect(stale).toEqual([]);
+  });
+
+  /**
+   * The ledger recognises exactly two opener spellings, and the omission of a
+   * third — a COMBINED anonymous literal such as `".{"` written inline in a
+   * production body — is a decision, not an oversight, so it is asserted
+   * rather than left to the extractor to swallow.
+   *
+   * `ImportItems` was ported that way once (#5931) and the result was a body
+   * with no opener node at all: the fold returned null for every destructured
+   * import and the opener rendered unstyled, while every structural assertion
+   * in this file stayed green. An opener that is more than a bare brace must
+   * therefore be a NAMED token — the only spelling that survives into the tree,
+   * where a fold, a style rule and bracket matching can all reach it.
+   */
+  it('admits no production that opens with an anonymous combined brace literal', () => {
+    const grammarSrc = readFixture('gui/src/editor/reify.grammar');
+    const offenders: string[] = [];
+    let scanned = 0;
+    for (const rawLine of grammarSrc.split('\n')) {
+      // Same stop as `braceDelimitedNodeTypes`: inside `@tokens` a braced
+      // literal is a token declaration, which is the spelling we WANT.
+      if (/^@tokens\b/.test(rawLine)) break;
+      const line = rawLine.replace(/\/\/.*$/, '');
+      for (const [literal] of line.matchAll(/"(?:[^"\\]|\\.)*"/g)) {
+        scanned += 1;
+        const body = literal.slice(1, -1);
+        if (/[{}]/.test(body) && body !== '{' && body !== '}') offenders.push(line.trim());
+      }
+    }
+    // Sanity: the literal scan found something, so an empty match set cannot
+    // make the check below pass vacuously.
+    expect(scanned).toBeGreaterThan(50);
+    expect(
+      offenders,
+      `These production bodies in reify.grammar open with an anonymous literal ` +
+        `that is more than a bare brace. The lexer consumes such a literal ` +
+        `without emitting a node, so the body's fold returns null and its ` +
+        `opener cannot be styled or bracket-matched. Declare the opener as a ` +
+        `NAMED token in @tokens instead, as ImportItemsOpen is.`,
+    ).toEqual([]);
   });
 
   /**
