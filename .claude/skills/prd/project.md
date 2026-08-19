@@ -164,6 +164,24 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 
 **Worked case — 2026-07-24 language review:** ~40% of the printer_v01 dogfood session's CLI spend went to probing what the language can do. The static interference/clearance oracle (`interferes`/`min_clearance`/`intersects`/`distance`) had ZERO chunk presence and the session shipped mechanically-checkable interferences (#5389); phantom chunk signatures `rotate(geo,axis,angle)` / `translate(geo,vector)` cost live probe cycles (#5347/#5364). Each was language surface that landed without its doc leaf.
 
+## Code anchors in PRD prose — cite by symbol; date any hard anchor
+
+**Scope widening.** The shared skill's existing rule — `~/.claude/skills/prd/references/decompose-mode.md`, "Pattern-anchored, never `file:line`. ... Never bind a check to `file:line` — line anchors go stale the moment the file changes again" — governs capability-manifest `delivered_check`s only. In reify it applies equally to **all PRD-family prose**: the PRD `.md`, its `.capability-manifest.md`, and the `.yaml` sidecar.
+
+**Default form.** Cite the **symbol** (`Mesh::validate`, `dispatch_volume_mesh`, `_RUST_COUPLED_RI_FIXTURES`), the **file**, or the **section banner name** — never `path:line`. The symbol/banner is greppable and stable; the line number is not.
+
+**Escape hatch.** A hard `path:line` anchor is permitted only when the document's header carries an as-of commit SHA + date covering it. Canonical in-corpus form, the header of `docs/prds/v0_6/engine-build-hardening.md`: "**Code anchors** verified against main `bc3771221f` (2026-07-06). Main moves fast — cite-by-symbol; re-locate lines at implementation time." Stating that line numbers are current with no SHA is forbidden — that is the exact claim the pre-fix `kernel-seam-contracts.md` header made against a HEAD now thousands of commits back.
+
+**Never re-anchor a dated snapshot.** Once a document (or a frozen AS-AUTHORED half — see the section below) is stamped as-of a commit, its anchors are dated provenance: do not re-measure them later. Refreshing a snapshot destroys its value as a record (Leo's ratified ruling, 2026-08-19; the same principle applies to dated `docs/notes/` survey files). Staleness is fixed by freezing the half and moving any live claim out of it, never by re-anchoring the frozen half itself.
+
+**Author-mode rule (Stage 2 and Stage 10) and decompose-mode rule (the Step 1 gate re-walk):** reject/fix a PRD that carries `path:line` anchors with no as-of stamp in its header, before filing the batch.
+
+**Enforcement posture.** No deterministic guard automates this — the /prd session reading this subsection is the enforcement, at author Stage 2 and again at decompose time (same posture as "Gate-test drift-guard registration" above). Retrospective/detection half: `reify-audit --pattern PPRDSTATUS` (#6346) for leaf/status prose, and #5872 for stale hard `path:line` cites generally.
+
+**Promotion-candidate flag.** This widening is project-agnostic and directly extends a rule that already lives in the shared skill, so its natural home is `dark-factory/skills/prd/references/`. It is written here self-contained so it can be lifted verbatim; the shared skill is deliberately **not** edited from reify. See `esc-6349-1` and follow-up ticket `tkt_0RSN6HNB2BY5T0FVP95AVCK5AE`.
+
+**Measured 2026-08-19** (dated context, not a live claim): 522 tracked `.md` under `docs/` carried 2,678 fully-qualified path+line cites across 571 distinct paths, 56 of which no longer exist; 285 of 352 `docs/prds/*.md` carried line anchors and only 12 recorded the commit they were true at.
+
 ## Capability Manifest — reify evidence forms
 
 Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf* for reify. **Manifest path:** `docs/prds/<vM_N>/<slug>.capability-manifest.md` (commit beside the PRD).
