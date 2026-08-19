@@ -256,26 +256,39 @@ pub(crate) fn assert_rigid_mass_props_final(
 /// result is never served as Final") and the task-#5338 staleness post-condition
 /// ("a value whose realization re-ran and resolved to nothing is not replayed").
 ///
-/// A cell passes when it is either absent, not `determined`, or determined but
-/// still flagged non-`final` — i.e. anything except the
-/// `determined` + `freshness = "final"` + `reason = None` triple that means
-/// "this is a fresh, authoritative value". Deliberately the exact NEGATION of
-/// [`assert_rigid_mass_props_determined`]'s per-cell half, so the two cannot
-/// both hold and a regression that made retention unconditional fails here.
+/// A cell passes when it is not `determined`, or is determined but still flagged
+/// non-`final` — i.e. anything except the `determined` + `freshness = "final"`
+/// triple that means "this is a fresh, authoritative value". Deliberately the
+/// exact NEGATION of [`assert_rigid_mass_props_final`]'s per-cell half, so the two
+/// cannot both hold and a regression that made retention unconditional fails here.
+///
+/// The cell must be PRESENT. Treating absence as a pass would make every
+/// prune-safety caller green for the wrong reason: the fixtures they use always
+/// emit all four cells from the kernel-less `build_values`, so a regression that
+/// dropped the cells entirely — or a fixture rename that stopped `entity` from
+/// matching — would satisfy an absence-tolerant assertion vacuously. This mirrors
+/// the positive helpers, which already panic on absence.
 pub(crate) fn assert_rigid_mass_props_not_final(
     state: &crate::types::GuiState,
     entity: &str,
     ctx: &str,
 ) {
     for name in RIGID_MASS_PROP_CELLS {
-        let Some(cell) = state
+        let cell = state
             .values
             .iter()
             .find(|v| v.entity_path == entity && v.name == name)
-        else {
-            // Absent entirely — trivially not served as Final.
-            continue;
-        };
+            .unwrap_or_else(|| {
+                panic!(
+                    "[{ctx}] expected a `{entity}.{name}` value cell to be present (an \
+                     absent cell would make this prune-safety assertion vacuous); have: {:?}",
+                    state
+                        .values
+                        .iter()
+                        .map(|v| (v.entity_path.as_str(), v.name.as_str()))
+                        .collect::<Vec<_>>()
+                )
+            });
         assert!(
             !(cell.determinacy == "determined" && cell.freshness == "final"),
             "[{ctx}] `{entity}.{name}` must NOT be served as a fresh Final value; got \
