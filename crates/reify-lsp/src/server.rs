@@ -259,7 +259,18 @@ impl LanguageServer for ReifyLanguageServer {
         if !known {
             // The URI is client-controlled and unbounded; bound it so one
             // notification cannot emit a 160 KiB line into a pipe the client
-            // may not be draining (task #6162).
+            // may not be draining (task #6162). This bounds a SINGLE log
+            // line, not the whole class: `eprintln!` is still a synchronous
+            // blocking write on this async fn's task, so a client that sends
+            // many unknown-URI didChanges while never draining stderr can
+            // still eventually fill the pipe and park a tokio worker in
+            // `pipe_write` — degrading the runtime rather than deadlocking
+            // it (the `state` lock is no longer held across the write, so
+            // every other did_open/did_change/did_close stays unblocked).
+            // Routing this through `window/logMessage`, or rate-limiting
+            // per URI, would close that residual; it is deliberately
+            // deferred as separate follow-up work rather than folded into
+            // this fix (see task #6162's design decisions).
             eprintln!(
                 "[reify-lsp] didChange for unknown URI: {}",
                 truncate_for_log(uri.as_str())
