@@ -293,8 +293,6 @@ pub(crate) fn eval_named_arg_length(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> LengthArg {
-    use crate::arg_acceptance::{Acceptance, accept_arg, length_spec};
-
     // A missing arg is `Invalid`, not `Unresolved`: `eval_named_arg` has
     // already pushed its own missing-arg Warning naming the culprit.
     let Some(value) = eval_named_arg(
@@ -308,7 +306,35 @@ pub(crate) fn eval_named_arg_length(
     ) else {
         return LengthArg::Invalid;
     };
-    match accept_arg(&value, &length_spec()) {
+    accept_length_value(name, kind_label, &value, diagnostics)
+}
+
+/// The VALUE-LEVEL core of the Contract C length gate: classify an
+/// already-evaluated `Value` as a finite LENGTH, and push the rejection
+/// diagnostic when it is not.
+///
+/// Lifted verbatim out of [`eval_named_arg_length`] (task 5658) so the two
+/// routes into the chokepoint — the NAMED-ARG one and the VARIADIC one
+/// ([`accept_variadic_length_args`]) — share ONE `accept_arg(&value,
+/// &length_spec())` call. That is what makes their rejection wording
+/// byte-identical BY CONSTRUCTION rather than by convention, which matters
+/// because the wording is the user-facing contract (PRD decision D9): the
+/// `expects Length` phrasing and the `5mm` migration hint are minted in exactly
+/// one place, [`ArgRejection::message`](crate::arg_acceptance::ArgRejection),
+/// and a second hand-rolled copy would drift the moment either is reworded.
+///
+/// The state table is [`eval_named_arg_length`]'s, minus the missing-arg row
+/// (a variadic position cannot be missing — it is present or the arity check
+/// already failed).
+pub(crate) fn accept_length_value(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    value: &reify_ir::Value,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> LengthArg {
+    use crate::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+    match accept_arg(value, &length_spec()) {
         Acceptance::Accepted(si) if si.is_finite() => LengthArg::Length(si),
         Acceptance::Accepted(_) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -480,11 +506,38 @@ fn required_length_origin3(
     )
 }
 
-/// Evaluate all args in a variadic curve constructor to f64 values.
+/// Evaluate every positional arg of a variadic builtin to a `Value`, in arg
+/// order — the pure half of the variadic read, with no acceptance policy and no
+/// diagnostics of its own.
+///
+/// Splitting eval from acceptance (task 5658) is what lets `nurbs` gate a span
+/// it cannot compute until the args are evaluated: its pole span is
+/// `2 .. 2 + n_points * 3`, and `n_points` IS one of the args. A single fused
+/// helper taking a per-position predicate could not express that ordering.
+pub(crate) fn eval_all_args_to_values(
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+) -> Vec<reify_ir::Value> {
+    let ctx = eval_ctx_with_meta(values, functions, meta_map);
+    args.iter()
+        .map(|(_, expr)| reify_expr::eval_expr(expr, &ctx))
+        .collect()
+}
+
+/// Evaluate all args in a variadic builtin to BARE f64 values, reading each as
+/// SI with no dimension check.
 ///
 /// Returns `None` if any arg evaluates to a non-finite value, pushing a
-/// warning diagnostic for each bad arg.  Used by InterpCurve, BezierCurve,
-/// and NurbsCurve to avoid duplicating the same eval-and-collect loop.
+/// warning diagnostic for the first bad arg.
+///
+/// This is now the remaining BARE variadic reader: after task 5658 routed
+/// `interp`/`bezier`/`nurbs` through [`accept_variadic_length_args`], its only
+/// caller is `profile_polygon`'s 2-D vertex pairs — a length-semantic residual
+/// owned by task 5661, not a deliberate exemption. Its `Value::as_f64` reads a
+/// bare `Value::Real(10.0)` as **10 SI metres**, which is exactly the 1000×
+/// hazard Contract C exists to close.
 pub(crate) fn eval_all_args_to_f64(
     label: &str,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -493,21 +546,129 @@ pub(crate) fn eval_all_args_to_f64(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<f64>> {
+    // `collect()` into `Option` short-circuits at the first `None`, so only the
+    // first non-finite arg is diagnosed. Preserved deliberately: this helper's
+    // observable behaviour is unchanged by the task-5658 refactor.
     args.iter()
-        .map(|(name, expr)| {
-            let v = reify_expr::eval_expr(expr, &eval_ctx_with_meta(values, functions, meta_map));
-            match v.as_f64() {
-                Some(f) if f.is_finite() => Some(f),
+        .zip(eval_all_args_to_values(args, values, functions, meta_map))
+        .map(|((name, _), v)| match v.as_f64() {
+            Some(f) if f.is_finite() => Some(f),
+            _ => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "{} arg '{}' is non-finite",
+                    label, name
+                )));
+                None
+            }
+        })
+        .collect()
+}
+
+/// Render the flat variadic position `i` as the coordinate name an author
+/// would recognise: `x1`, `y1`, `z1`, `x2`, `y2`, `z2`, …
+///
+/// The compiler names variadic args positionally (`c0`…`cN`) and those names
+/// are inert — `c3` in a diagnostic tells a `.ri` author nothing. This mints
+/// the same naming task 5623 established for `line_segment`'s endpoints, so a
+/// variadic rejection reads like every other Contract C one.
+fn coord_display(i: usize) -> String {
+    format!("{}{}", ["x", "y", "z"][i % 3], i / 3 + 1)
+}
+
+/// Read an already-evaluated VARIADIC argument list, routing the
+/// length-semantic positions through the Contract C chokepoint and leaving the
+/// rest on the bare `as_f64` read — the variadic counterpart to
+/// [`required_length_args`].
+///
+/// `gated(i)` returns `Some(display_name)` for a position that must be a finite
+/// LENGTH, and `None` for one that is legitimately dimensionless. Per-arg
+/// triage for the three variadic curve constructors (task 5658), written down
+/// here so task 5752's closure-guard allowlist can lift it verbatim:
+///
+/// | builtin  | positions                | class         | justification                        |
+/// |----------|--------------------------|---------------|--------------------------------------|
+/// | `interp` | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a point in space       |
+/// | `bezier` | every arg (`3n`, `n>=2`) | **LENGTH**    | coordinate of a control point        |
+/// | `nurbs`  | 0 `degree`               | dimensionless | a polynomial degree, i.e. a count    |
+/// | `nurbs`  | 1 `n_points`             | dimensionless | a count                              |
+/// | `nurbs`  | `2 .. 2+3n` poles        | **LENGTH**    | coordinate of a control point        |
+/// | `nurbs`  | `2+3n .. 2+4n` weights   | dimensionless | rational blending factor             |
+/// | `nurbs`  | `2+4n ..` knots          | dimensionless | parameter-space value                |
+///
+/// Corroborated by `docs/reify-stdlib-reference.md`, which already declares the
+/// TARGET signatures as `Point<N,Length>` control points with `Real` weights and
+/// knots — this gate makes the flat positional form honour the declared types.
+///
+/// ALL FAILURES AT ONCE, for [`required_length_args`]' reason and by the same
+/// mechanism: the positions are deliberately NOT `?`-chained. A coordinate
+/// stream is written as one gesture — `interp(0, 0, 0, 10, 0, 0)` — so a bare
+/// stream is usually bare in EVERY member, and short-circuiting would hand the
+/// author one coordinate name per rebuild. Every position is therefore read
+/// (each pushing its own `Severity::Warning`) and only then is the FIRST error
+/// returned, so an `Unresolved` position cannot be masked by a later `Invalid`
+/// one.
+///
+/// The three `Err` wordings are copied from [`required_length_arg`] and
+/// `eval_all_args_to_f64` respectively, so the caller-facing text stays shared
+/// with the named-arg route rather than forking. An `Undefined` position gets
+/// the DISTINCT "unresolved (Undef)" message rather than a silent continue
+/// (PRD decision D10 / INV-SF-1): during solver iteration an Undef cell is
+/// expected transient state, and calling it "missing or non-Length" is
+/// actively misleading.
+fn accept_variadic_length_args(
+    label: &str,
+    args: &[(String, reify_ir::CompiledExpr)],
+    vals: &[reify_ir::Value],
+    gated: &dyn Fn(usize) -> Option<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Vec<f64>, String> {
+    let mut out = vec![0.0_f64; vals.len()];
+    let mut first_err: Option<String> = None;
+
+    for (i, value) in vals.iter().enumerate() {
+        let err = match gated(i) {
+            Some(display) => match accept_length_value(&display, label, value, diagnostics) {
+                LengthArg::Length(si) => {
+                    out[i] = si;
+                    None
+                }
+                LengthArg::Unresolved => Some(format!(
+                    "argument '{}' for {} is unresolved (Undef)",
+                    display, label
+                )),
+                LengthArg::Invalid => Some(format!(
+                    "missing or non-Length argument '{}' for {}",
+                    display, label
+                )),
+            },
+            // Un-gated: today's bare read, wording and all.
+            None => match value.as_f64() {
+                Some(f) if f.is_finite() => {
+                    out[i] = f;
+                    None
+                }
                 _ => {
+                    let name = args.get(i).map_or("?", |(n, _)| n.as_str());
                     diagnostics.push(Diagnostic::warning(format!(
                         "{} arg '{}' is non-finite",
                         label, name
                     )));
-                    None
+                    Some(format!("failed to evaluate all {} args to f64", label))
                 }
+            },
+        };
+        // FIRST error wins — same precedence as `required_length_args`.
+        if let Some(e) = err {
+            if first_err.is_none() {
+                first_err = Some(e);
             }
-        })
-        .collect()
+        }
+    }
+
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 /// Canonicalize sub-handle `kernel_handle` ids into the canonical edge/face
@@ -3492,15 +3653,21 @@ fn curve_interp_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let coords = eval_all_args_to_f64(
+    // EVERY position is a coordinate of a point in space, so every position is
+    // gated (task 5658's R2 sweep). `interp` is arity-open and has no
+    // dimensionless neighbour at all — no direction vector, no count, no angle
+    // — so the gate closure is unconditional.
+    //
+    // The literal `"interp"` label, not `CurveKind`'s `Display` (which renders
+    // `interp_curve`): the diagnostic must name the builtin the author wrote.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+    let coords = accept_variadic_length_args(
         "interp",
         args,
-        values,
-        functions,
-        meta_map,
+        &vals,
+        &|i| Some(coord_display(i)),
         diagnostics,
-    )
-    .ok_or_else(|| "failed to evaluate all interp args to f64".to_string())?;
+    )?;
     let points: Vec<[f64; 3]> =
         coords.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
     Ok(reify_ir::GeometryOp::InterpCurve { points })
