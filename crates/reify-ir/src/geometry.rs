@@ -2473,9 +2473,21 @@ pub enum ExportWarning {
 }
 
 /// Tessellated mesh for visualization.
+///
+/// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
+/// tessellation produces metres, and every consumer that needs another unit
+/// converts at its own boundary: [`write_3mf`] scales vertices to millimetres
+/// to match the `unit="millimeter"` it declares, while the STL writers emit
+/// metres verbatim (see their contract comments). Leaving this unstated is the
+/// root ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it
+/// here rather than at each use site.
+///
+/// `normals` carry NO length unit: they are dimensionless unit direction
+/// vectors, invariant under the uniform positive metre→millimetre scale the
+/// export writers apply, so no writer converts them (and none must).
 #[derive(Debug, Clone)]
 pub struct Mesh {
-    /// Vertex positions, flat [x0, y0, z0, x1, y1, z1, ...].
+    /// Vertex positions in SI metres, flat [x0, y0, z0, x1, y1, z1, ...].
     pub vertices: Vec<f32>,
     /// Triangle indices, flat [i0, i1, i2, i3, i4, i5, ...].
     pub indices: Vec<u32>,
@@ -3106,6 +3118,49 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
     }
 }
 
+/// Millimetres per metre — the single metre→millimetre conversion point for
+/// the 3MF writer.
+///
+/// **Export length regime.** Reify model space is SI METRES. Reify's
+/// declaration-carrying export formats emit MILLIMETRES, the CAD/3MF interop
+/// default, so that the unit a file DECLARES and the coordinates it CARRIES
+/// agree. [`write_3mf`] declares `unit="millimeter"`, so it applies this
+/// factor at the vertex-emit site; the STEP writer makes the same promise
+/// through OCCT's per-model length units (see `export_step` in
+/// `reify-kernel-occt`'s `occt_wrapper.cpp`).
+///
+/// The STL writers deliberately do NOT use this — see the contract comments on
+/// [`write_stl_binary`] / [`write_stl_ascii`].
+///
+/// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
+/// the scaling is deliberately done in the source precision. Promoting to f64
+/// first (`f64::from(v) * 1000.0`) is exact — a 24-bit significand times
+/// `1000 = 2^3·125` needs 31 bits — but exactness here is a MISFEATURE: it
+/// preserves, and then prints, all 17 digits of the f32 input's binary
+/// representation error. Multiplying in f32 instead re-rounds onto the f32
+/// grid at the millimetre magnitude, whose ulp (1.9e-6 at 30) is COARSER than
+/// the scaled input's deviation from the round decimal (6.7e-7 at 30), so the
+/// product lands back exactly on the decimal the author wrote. Measured, with
+/// `{}` (shortest round-trip) formatting:
+///
+/// | input (m) | `v * MM_PER_METRE_F32` | `f64::from(v) * 1000.0` |
+/// |---|---|---|
+/// | `0.030`  | `30`   | `29.999999329447746` |
+/// | `0.0335` | `33.5` | `33.50000083446503`  |
+/// | `0.1`    | `100`  | `100.00000149011612` |
+///
+/// The f32 route is therefore the one that emits round, diffable coordinates
+/// and keeps every value exactly f32-round-trippable (the mesh's own
+/// precision); the f64 route emits false precision, and in the measured cases
+/// above it grows each coordinate literal from 2 to 18 characters.
+///
+/// The accuracy given up is bounded by 2^-23 relative — the input's own
+/// ≤2^-24 plus one re-rounding of ≤2^-24 — so it is within a FACTOR OF TWO of
+/// the precision the `Vec<f32>` buffer already has, and cannot meaningfully
+/// degrade data that is f32 to begin with. Worst case on a 30 mm part is
+/// ~3.6e-6 mm, i.e. nanometres.
+const MM_PER_METRE_F32: f32 = 1000.0;
+
 /// Fetch the XYZ position of vertex `idx` from the flat `vertices` buffer.
 /// Returns `None` if `idx` is out of bounds.
 fn mesh_vertex(vertices: &[f32], idx: u32) -> Option<[f32; 3]> {
@@ -3141,6 +3196,19 @@ fn triangle_verts(
 }
 
 /// Write a mesh to the STL binary format.
+///
+/// **Units — deliberately asymmetric with [`write_3mf`].** STL carries no unit
+/// field, so there is no declaration to keep honest and this writer emits the
+/// caller's coordinates VERBATIM — SI metres when fed straight from a reify
+/// kernel, since [`Mesh`] is metres. A consumer expecting the de-facto
+/// millimetre STL convention must scale at the call site, as
+/// `crates/reify-eval/src/compute_targets/fdm_slice.rs` already does (×1000)
+/// before handing a mesh to PrusaSlicer. Scaling here instead would silently
+/// make that existing caller 1,000,000×.
+///
+/// TODO(#6187): unify STL into the millimetre regime — scale here and strip the
+/// caller-side ×1000 in `fdm_slice.rs` in the same change, so the divergence
+/// stays deliberate rather than becoming accidental.
 ///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
@@ -3210,6 +3278,13 @@ pub fn write_stl_binary(
 }
 
 /// Write a mesh to the STL ASCII format.
+///
+/// **Units — deliberately asymmetric with [`write_3mf`].** As with
+/// [`write_stl_binary`]: STL carries no unit field, so there is no declaration
+/// to keep honest and this writer emits the caller's coordinates VERBATIM (SI
+/// metres from a reify kernel). Callers needing the de-facto millimetre STL
+/// convention scale at the call site. TODO(#6187): unify STL into the
+/// millimetre regime alongside `write_stl_binary`.
 ///
 /// Emits `solid reify\n … endsolid reify\n`.  Each triangle produces a
 /// `facet normal …` / `outer loop` / 3× `vertex …` / `endloop` / `endfacet`
@@ -3308,6 +3383,14 @@ impl ThreeMfWarning {
 
 /// Write `mesh` to the 3MF format (OPC ZIP package).
 ///
+/// **Units:** takes a `Mesh` whose vertices are SI METRES (reify model space)
+/// and emits a package declaring `unit="millimeter"`, converting the
+/// coordinates by [`MM_PER_METRE_F32`] as it writes them. The declaration and
+/// the payload therefore agree: a 0.030 m cube is written as 30 mm and reads
+/// back as 30 mm in any 3MF consumer. Scaling here — at the site that makes
+/// the `unit=` promise — rather than in the callers is what makes the promise
+/// un-bypassable: no caller can obtain a mislabelled package.
+///
 /// Produces a valid 3MF/OPC ZIP holding three parts:
 ///
 /// - `[Content_Types].xml` — OPC content-type declarations
@@ -3330,9 +3413,10 @@ impl ThreeMfWarning {
 /// Returns [`ThreeMfWarning::NoMaterials`] when either `include_materials` or
 /// `include_colors` is set (geometry is still written).
 ///
-/// **NaN/Inf coordinates:** non-finite `f32` values are written as-is via
-/// `{}` formatting (matching `write_stl_ascii` behavior).  3MF consumers
-/// that require IEEE-finite coordinates will reject such packages.
+/// **NaN/Inf coordinates:** non-finite `f32` values stay non-finite through
+/// the metre→millimetre multiply and are written as-is via `{}` formatting
+/// (matching `write_stl_ascii` behavior).  3MF consumers that require
+/// IEEE-finite coordinates will reject such packages.
 pub fn write_3mf(
     mesh: &Mesh,
     opts: ThreeMfOptions,
@@ -3437,10 +3521,24 @@ pub fn write_3mf(
                 Error::new(ErrorKind::InvalidData, format!("vertex index {i} out of bounds"))
             })?;
             line_buf.clear();
+            // Metres → millimetres, so the emitted coordinates match the
+            // `unit="millimeter"` declared above. See `MM_PER_METRE_F32`.
+            //
+            // Multiply in f32, NOT via an `f64::from(v) * 1000.0` promotion:
+            // the f32 re-rounding is what lands `0.030 m` back on `30` instead
+            // of printing `29.999999329447746`. That is measured, and the
+            // reasoning is written out on `MM_PER_METRE_F32` — do not "fix" it
+            // to f64 without re-reading it.
+            //
             // Using std::fmt::Write on String is infallible.
             let _ = std::fmt::write(
                 &mut line_buf,
-                format_args!("<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>", v[0], v[1], v[2]),
+                format_args!(
+                    "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                    v[0] * MM_PER_METRE_F32,
+                    v[1] * MM_PER_METRE_F32,
+                    v[2] * MM_PER_METRE_F32
+                ),
             );
             zw.write_all(line_buf.as_bytes())?;
         }
@@ -10606,6 +10704,173 @@ mod tests {
         write_3mf(&mesh, ThreeMfOptions::default(), &mut buf2)
             .expect("second write_3mf should succeed");
         assert_eq!(buf, buf2, "write_3mf must be byte-deterministic");
+    }
+
+    /// Write a 30 mm cube through [`write_3mf`] and read the package back:
+    /// returns the `3D/3dmodel.model` XML plus every `<vertex>`'s parsed
+    /// `[x, y, z]`.
+    ///
+    /// The mesh is the unit cube's `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — topology unchanged. Shared by
+    /// the two tests that pin the writer's length regime: one asserts the unit
+    /// DECLARATION and the coordinate MAGNITUDES agree, the other that the
+    /// metre→millimetre conversion adds no representation noise.
+    fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
+        use std::io::Cursor;
+
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
+            .expect("write_3mf should succeed");
+
+        // `write_3mf` stores entries with CompressionMethod::Stored, so the
+        // default-features-off `zip` dependency can read them back as-is.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&buf))
+            .expect("output should be a valid ZIP archive");
+        let mut model_file = archive.by_name("3D/3dmodel.model").unwrap();
+        let mut model_xml = String::new();
+        std::io::Read::read_to_string(&mut model_file, &mut model_xml).unwrap();
+        drop(model_file);
+
+        fn attr(tail: &str, name: &str) -> f64 {
+            // Attributes appear in x, y, z order inside one element, and this
+            // element's three attributes all precede the next element's, so
+            // the FIRST match after the split point is the right one.
+            let key = format!("{name}=\"");
+            let start = tail.find(&key).expect("vertex must carry the attribute") + key.len();
+            let end = tail[start..].find('"').expect("attribute must be quoted") + start;
+            tail[start..end]
+                .parse::<f64>()
+                .unwrap_or_else(|_| panic!("vertex {name} must be a parsable number"))
+        }
+
+        let coords = model_xml
+            .split("<vertex ")
+            .skip(1)
+            .map(|tail| [attr(tail, "x"), attr(tail, "y"), attr(tail, "z")])
+            .collect();
+        (model_xml, coords)
+    }
+
+    /// 3MF export must keep its unit DECLARATION and its vertex PAYLOAD in
+    /// agreement: reify model space is SI metres, the package declares
+    /// `unit="millimeter"`, so the vertices it carries must be millimetres.
+    ///
+    /// The two halves DISAGREE today, and that asymmetry IS the defect. The
+    /// declaration half already passes — `write_3mf` hardcodes
+    /// `unit="millimeter"` — while the payload half fails, because the vertex
+    /// buffer is emitted verbatim with no metre→millimetre conversion. A 30 mm
+    /// cube is written as 0.030 and read by any 3MF consumer as 30 µm — a
+    /// 1000× shrink, the same mislabel as the STEP half of this bug.
+    ///
+    /// The 1e-5 mm bound is derived, not guessed. `Mesh::vertices` is
+    /// `Vec<f32>` and the conversion is done in f32 (see `MM_PER_METRE_F32`),
+    /// so each emitted coordinate carries at most 2^-23 relative error — the
+    /// input's own representation error plus one re-rounding at the millimetre
+    /// magnitude. Across the two AABB endpoints that is 2·30·2^-23 ≈ 7.2e-6 mm
+    /// worst case, so 1e-5 is the tightest honest bound; 1e-6 (the f64 STEP
+    /// path's bound) is NOT derivable here. In practice the error is 0.0 — the
+    /// f32 re-rounding puts `0.030 m` exactly on `30` mm and `0.0` on `0.0` —
+    /// but that exactness is pinned by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// NOT here: this test stays about the unit regime alone, so a change to
+    /// how coordinates are formatted can never fail it as a unit regression.
+    /// 1e-5 sits ~6 orders below the 0.030-vs-30.0 gap it guards, so it cannot
+    /// pass while the bug lives.
+    #[test]
+    fn write_3mf_declares_millimetres_and_scales_metre_vertices() {
+        let (model_xml, coords) = read_back_30mm_cube_3mf();
+
+        // (1) DECLARATION half — passes today, and is otherwise unasserted
+        // anywhere in the tree.
+        assert!(
+            model_xml.contains("unit=\"millimeter\""),
+            "3MF model part should declare unit=\"millimeter\""
+        );
+
+        // (2) PAYLOAD half — every <vertex x=".." y=".." z=".."/> value,
+        // folded into a per-axis AABB.
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+        let mut min = [f64::INFINITY; 3];
+        let mut max = [f64::NEG_INFINITY; 3];
+        for c in &coords {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(c[axis]);
+                max[axis] = max[axis].max(c[axis]);
+            }
+        }
+
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let extent = max[axis] - min[axis];
+            assert!(
+                (extent - 30.0).abs() < 1e-5,
+                "a 30 mm cube (0.030 m in reify model space) should span 30.0 mm on {name} in a \
+                 millimetre-declared 3MF package, but the vertex AABB extent is {extent} \
+                 (min {}, max {}) — declaration and payload disagree",
+                min[axis],
+                max[axis]
+            );
+        }
+    }
+
+    /// The metre→millimetre conversion must land EXACTLY on the millimetre
+    /// values the author wrote: the conversion arithmetic itself must add no
+    /// representation noise.
+    ///
+    /// This is what makes the f32-vs-f64 choice at the emit site a TESTED
+    /// behaviour rather than a comment. Doing the multiply as
+    /// `f64::from(v) * 1000.0` emits `29.999999329447746` for a `0.030 m`
+    /// coordinate — comfortably inside the sibling unit-regime test's 1e-5 mm
+    /// AABB tolerance, so that test stays green, while every emitted
+    /// coordinate grows from 2 to 18 characters of false precision. The
+    /// measured table and the full reasoning live on `MM_PER_METRE_F32`.
+    ///
+    /// Asserted on the PARSED values, not on the emitted decimal strings: the
+    /// property is exactness, and pinning the literal text would additionally
+    /// freeze the writer to f32 `{}` (shortest-round-trip) formatting, so a
+    /// legitimate formatting change — `{:.6}` for a picky consumer, a fixed
+    /// decimal count for byte-determinism — would fail here and read as a
+    /// precision regression when it is not.
+    ///
+    /// The `==` comparisons are exact ON PURPOSE. Both endpoints are exactly
+    /// representable in f32 and in f64, so exact equality is the correct
+    /// predicate here, and any epsilon loose enough to be worth writing would
+    /// also admit the `29.999999329447746` this test exists to reject.
+    #[test]
+    fn write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise() {
+        let (_model_xml, coords) = read_back_30mm_cube_3mf();
+        assert_eq!(coords.len(), 8, "a cube should emit 8 <vertex> elements");
+
+        // The cube's corners are [0, 0.030]^3 m, so in millimetres every
+        // emitted coordinate must be exactly 0 or exactly 30.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0 || v == 30.0,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-declared 3MF package; the metre→millimetre conversion is \
+                     introducing avoidable representation noise (see MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // ...and both values must actually OCCUR on every axis, so a collapsed
+        // or all-zero payload cannot satisfy the check above vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0),
+                "no vertex carries {name} = 30"
+            );
+        }
     }
 
     #[test]
