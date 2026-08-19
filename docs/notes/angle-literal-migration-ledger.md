@@ -14,8 +14,10 @@ hand-built `GeometryOp::Draft` fixtures, and published this ledger.
 
 ## Read this first — the numbers below are a snapshot, not the source of truth
 
-**Measured 2026-08-01 at `50bc85d168`** (the merge-base of `task/5777`; bucket 2
-and the `.ri` corpus are unchanged by α except where marked).
+**Measured 2026-08-01 at `50bc85d168`** (an in-branch ancestor of `task/5777`'s
+tip — the merge-base at measurement time, before the branch was rebased onto a
+newer `main`; bucket 2 and the `.ri` corpus are unchanged by α except where
+marked).
 
 Nothing in this repository validates a `file:line` citation, and line numbers rot
 on the first edit to the cited file. This is not hypothetical: the site list α
@@ -209,8 +211,14 @@ Already dimensioned — these are **NOT** bucket 2, do not "migrate" them:
 
 ## 3. Bucket 3 — bare angles in `.ri` source text embedded in Rust tests
 
-**14 sites across 6 files.** *(Measured at `8e2d63be17`, later than §§1–2's
+**20 sites across 7 files.** *(Measured at `cc6a903a9d`, later than §§1–2's
 `50bc85d168` — re-derive before acting.)*
+
+Originally measured at `8e2d63be17` as **14 across 6**. That is the pre-rebase
+identity of `cc6a903a9d` (same patch-id, now a dangling object that no longer
+resolves from this branch); re-measuring at the in-branch SHA added 6
+eval-chokepoint sites, all in one file that task 5623's LENGTH-gate leaf signal
+landed on `main` in between.
 
 Buckets 1 and 2 are both about angles written as **Rust values**. This third
 class is angles written as **DSL text** inside a Rust string literal, which the
@@ -222,14 +230,24 @@ that reach `compile_geometry_op` break exactly like bucket 2 does.
 
 | Where it lands | File | Sites | Leaf |
 |---|---|---|---|
-| **Eval chokepoint** (`Engine::build` → `compile_geometry_op`) | `reify-eval/tests/rotate_e2e.rs` | 1 | γ |
+| **Eval chokepoint** (`Engine::build` → `compile_geometry_op`) | `reify-eval/tests/harness_geometry/geometry_length_args_units_e2e.rs` | 6 | γ |
+| | `reify-eval/tests/rotate_e2e.rs` | 1 | γ |
 | | `reify-eval/tests/unified_dag_geometry_executors.rs` | 1 | γ |
 | | `reify-eval/tests/circular_pattern_angle.rs` | 1 | ε |
-| | **eval total — γ/δ/ε break these** | **3** | |
+| | **eval total — γ/δ/ε break these** | **9** | |
 | **Compile only** (no `Engine`, no kernel) | `reify-compiler/tests/harness_langcore/let_scope_tests.rs` | 8 | 5 γ / 3 ε |
-| | `reify-compiler/tests/geometry_profile_precondition_tests.rs` | 2 | γ |
+| | `reify-compiler/tests/harness_geometry_solver/geometry_profile_precondition_tests.rs` | 2 | γ |
 | | `reify-compiler/tests/compile_api_tests.rs` | 1 | ε |
 | | **compile total — ζ's (5782) concern, NOT γ/δ/ε's** | **11** | |
+
+**`geometry_length_args_units_e2e.rs` (6 sites) is the trap in this table.** It
+is task 5623's LENGTH-gate leaf signal, and its header comment says it leaves the
+angle bare in *both* arms of every `assert_length_gate` pair deliberately. The
+bare arm already expects an error, but the **dimensioned control** asserts *zero*
+`Error` diagnostics and no units diagnostic at all. γ's gate fires on that
+control's still-bare angle, so the break surfaces as a LENGTH-worded assertion
+failing on a form that has no bare length left in it. Migrate all six — bare arm
+included — or γ's own run reads as a length regression.
 
 The three `reify-compiler` files were checked for `Engine::new` / `engine.build`
 / `build_with_kernel` and contain **none** — they only compile, so a gate
@@ -238,13 +256,15 @@ a compile-side ANGLE `CheckableArg` slot (ζ, 5782) *would* reach them, and
 because a reader who greps for bare angles will find them and needs to know
 which leaf owns them.
 
-By builtin the 14 split γ 9 / ε 5 / **δ 0** — `draft` has no inline `.ri` test
-source at all. Bare inline **`arc`** sites: **zero**; every one writes `rad` or
-`deg`. Nothing outside `crates/` matched.
+By builtin the 20 split γ 15 / ε 5 / **δ 0** — `draft` has no inline `.ri` test
+source at all. Bare inline **`arc`** sites: **2** (was zero at `8e2d63be17`) —
+both arms of `geometry_length_args_units_e2e.rs`'s `arc` case, each bare in the
+start-angle *and* end-angle slot; every other inline `arc` writes `rad` or `deg`.
+Nothing outside `crates/` matched.
 
 ### 3.2 The two INVERTING tests
 
-Two of the three eval-chokepoint sites are not migration targets at all — the
+Two of the nine eval-chokepoint sites are not migration targets at all — the
 test's whole point is that the bare form is currently ACCEPTED, so γ and ε must
 **invert the assertion**, not add a unit suffix:
 
@@ -256,11 +276,12 @@ test's whole point is that the bare form is currently ACCEPTED, so γ and ε mus
   `circular_pattern_360deg_no_deprecation_warning` is already dimensioned and
   survives. Both share `plate_source(angle_expr)`, so the bare site is
   `format!`-built and the §"Derivation commands" regex **cannot see it** — it is
-  the +1 that makes 14 out of 13 grep-visible hits.
+  the +1 that makes 20 out of 19 grep-visible hits.
 
-The third (`unified_dag_geometry_executors.rs`, a sibling-realization *cycle*
-test) is incidental: its angle is bare only because nothing made it otherwise.
-That one is a plain retype.
+The remaining seven are plain retypes. `unified_dag_geometry_executors.rs` (a
+sibling-realization *cycle* test) is incidental — its angle is bare only because
+nothing made it otherwise — and the six in `geometry_length_args_units_e2e.rs`
+are retypes with the §3.1 caveat attached.
 
 ### 3.3 The remedy differs from bucket 2 — fix the TEXT, not a `Value`
 
@@ -274,10 +295,11 @@ converts `360deg` to radians as part of unit resolution, so writing the suffix
 and must not be carried into a `.ri` string, where `Value::angle(PI/2.0)` is not
 even expressible.
 
-### 3.4 Reproducing 14 from 18 raw hits
+### 3.4 Reproducing 20 from 22 + 2 raw hits
 
-The §"Derivation commands" regex returns 18. Five are false positives and one
-true site is invisible to it:
+The §"Derivation commands" `let … = builtin(…)` regex returns 22 and the `arc`
+regex returns 2. Of the 22, five are false positives; one true site is invisible
+to both:
 
 - **2 in `rotate_e2e.rs`** — the trailing unsuffixed numeric belongs to
   `vec3(0.0, 0.0, 1.0)` nested inside `orient_axis_angle(…, 90deg)`. The angle
@@ -289,7 +311,7 @@ true site is invisible to it:
   angle gate could fire. Not migration targets.
 - **+1 invisible**, the `format!`-built `circular_pattern_angle.rs` site (§3.2).
 
-18 − 5 + 1 = **14**.
+(22 − 5) + 2 + 1 = **20**.
 
 ---
 
