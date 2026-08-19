@@ -286,3 +286,49 @@ pub(crate) fn build_resolution_enums_from_cache(
     ctx.resolution_enums = prelude_resolution_enums.to_vec();
     ctx.resolution_enums.extend(ctx.enum_defs.iter().cloned());
 }
+
+/// Build the MODULE-LOCAL enum shadow set installed via
+/// [`crate::type_resolution::LocalEnumShadowScope`] (task #5429; PRD
+/// `docs/prds/v0_6/uniform-member-access.md` §4 M5 / D8): every module-local
+/// `enum N` whose name is NOT also a module-local structure/occurrence name.
+///
+/// The two halves each carry a rule:
+/// - **`ctx.enum_defs`, not `ctx.resolution_enums`.** The former is module-local
+///   only; the latter is prelude ++ local. A PRELUDE enum must never shadow a
+///   LOCAL structure, or a user's own `structure def ThreadSystem` would be
+///   silently retyped to the stdlib `enum ThreadSystem`
+///   (`stdlib/ports_mechanical.ri:35`). Oracle:
+///   `enum_ctor_param_binding_tests::prelude_enum_does_not_shadow_local_structure`.
+/// - **Local structure/occurrence names subtracted.** A same-module
+///   `structure def N` still beats a same-module `enum N`, so the
+///   most-local-declaration-wins rule is applied conservatively — no behaviour
+///   change where today's answer is at least defensible. Oracle:
+///   `enum_ctor_param_binding_tests::local_structure_wins_over_same_named_local_enum`.
+///
+/// **Single source of truth, called once.** `compile_with_prelude_context_checked_with_config`
+/// installs the resulting scope ONCE around the whole phase sequence rather than
+/// per-phase. That is load-bearing, not tidiness: `phase_functions` and
+/// `phase_traits` run BEFORE `phase_entities`, so a scope installed only inside
+/// `phase_entities` left a trait requirement / fn signature param at
+/// `Type::StructureRef("Fit")` while the conforming structure's param lowered to
+/// `Type::Enum("Fit")` — the two disagreed and a previously-WARNING module
+/// became a hard ERROR (esc-5429-1). Oracles:
+/// `enum_ctor_param_binding_tests::{trait_member_typed_by_shadowing_local_enum_conforms,
+/// fn_param_typed_by_shadowing_local_enum_resolves_call}`.
+///
+/// Both inputs are final from `pre_pass::collect_decl_refs` onward, so the call
+/// site only needs to sit after that (it sits after
+/// [`build_resolution_enums_from_cache`], alongside the other enum-set setup).
+pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
+    let local_structure_names: HashSet<&str> = ctx
+        .seen_entity_names
+        .iter()
+        .filter(|(_, (_, kind))| *kind == "structure" || *kind == "occurrence")
+        .map(|(name, _)| name.as_str())
+        .collect();
+    ctx.enum_defs
+        .iter()
+        .map(|e| e.name.clone())
+        .filter(|n| !local_structure_names.contains(n.as_str()))
+        .collect()
+}
