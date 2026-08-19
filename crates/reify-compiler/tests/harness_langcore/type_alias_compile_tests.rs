@@ -1114,3 +1114,231 @@ fn compiled_type_alias_parameterized_in_module_output() {
         alias.resolved_type
     );
 }
+
+// ─── task 6259: entity-typed alias bodies resolve at their use sites ─────────
+//
+// Contract established by task #6259:
+//
+//   A non-parametric `type AL = <Body>` used in a declared-type position must
+//   lower to EXACTLY the same `Type` as writing `<Body>` directly in that same
+//   position.
+//
+// Deliberately stated as alias/direct PARITY rather than "resolves to
+// `Type::Enum`": measured on `main`, the DIRECT path yields four different
+// variants depending on body kind — `Enum` for an enum, `StructureRef` for a
+// structure def AND for an occurrence def, `TraitObject` for a trait — and two
+// of those choices are contested by adjacent open tasks #5920 (enum names
+// absent from the unified entity namespace) and #5947 (silent type-namespace
+// collisions among non-enum kinds). Hard-coding the expected variant would
+// either bake in a decision belonging to those tasks or break when they land;
+// a parity assertion stays valid under today's and any future direct-path
+// semantics.
+//
+// FIXTURE CONSTRAINT: never name a fixture type `Fit` or `FitCategory` —
+// `crates/reify-compiler/stdlib/tolerancing.ri` already declares
+// `structure def Fit` (:268) and `enum FitCategory` (:22). A fixture that
+// reuses either name silently resolves against the stdlib entity (yielding
+// `StructureRef("Fit")` where the test meant `Enum("Fit")`) and masks the very
+// defect under test.
+mod alias_to_entity_type_parity {
+    use super::*;
+    use reify_test_support::compile_source_with_stdlib;
+
+    /// Compile `source` with stdlib and return the declared `Type` of
+    /// `entity`'s `member` param together with every Error-severity message.
+    ///
+    /// NOTE: params live in `TopologyTemplate.value_cells` — there is no
+    /// `.params` field on a template.
+    fn param_type_and_errors(source: &str, entity: &str, member: &str) -> (Type, Vec<String>) {
+        let module = compile_source_with_stdlib(source);
+        let errors: Vec<String> = errors_only(&module)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect();
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name == entity)
+            .unwrap_or_else(|| panic!("template `{entity}` not found; errors: {errors:?}"));
+        let cell = template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == member)
+            .unwrap_or_else(|| {
+                panic!("value cell `{entity}.{member}` not found; errors: {errors:?}")
+            });
+        (cell.cell_type.clone(), errors)
+    }
+
+    /// One parity row: a preamble of entity declarations plus the body spelling
+    /// that is written BOTH directly (`param p : <body>`) and behind an alias
+    /// (`type AL = <body>` + `param p : AL`).
+    struct ParityCase {
+        label: &'static str,
+        decls: &'static str,
+        body: &'static str,
+    }
+
+    /// The five body kinds measured as broken on `main` (each produced
+    /// `Type::Error` + one Error `unresolved type: AL` via the alias).
+    const PARITY_CASES: &[ParityCase] = &[
+        ParityCase {
+            // direct lowers to Type::Enum("Zq")
+            label: "enum",
+            decls: "enum Zq { Close, Medium }",
+            body: "Zq",
+        },
+        ParityCase {
+            // direct lowers to Type::StructureRef("Bq")
+            label: "structure def",
+            decls: "structure def Bq {\n    param w : Length = 1.0mm\n}",
+            body: "Bq",
+        },
+        ParityCase {
+            // direct lowers to Type::StructureRef("Oq") — same variant as a
+            // structure def, which is exactly why this asserts parity, not a
+            // hard-coded variant (see #5947).
+            label: "occurrence def",
+            decls: "occurrence def Oq {\n    param w : Length = 1.0mm\n}",
+            body: "Oq",
+        },
+        ParityCase {
+            // direct lowers to Type::TraitObject("Hq")
+            label: "trait",
+            decls: "trait Hq {\n    param w : Length\n}",
+            body: "Hq",
+        },
+        ParityCase {
+            // nested-in-builtin: direct lowers to Option(Enum("Zq"))
+            label: "Option<enum>",
+            decls: "enum Zq { Close, Medium }",
+            body: "Option<Zq>",
+        },
+    ];
+
+    #[test]
+    fn alias_to_entity_body_lowers_identically_to_the_direct_spelling() {
+        let mut failures: Vec<String> = Vec::new();
+
+        for case in PARITY_CASES {
+            let direct_src = format!(
+                "{decls}\nstructure def D {{\n    param p : {body}\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+            let alias_src = format!(
+                "{decls}\ntype AL = {body}\nstructure def D {{\n    param p : AL\n}}\n",
+                decls = case.decls,
+                body = case.body
+            );
+
+            // The DIRECT spelling is the oracle — if it is not clean the row
+            // says nothing about the alias path, so fail loudly on the fixture.
+            let (direct_ty, direct_errs) = param_type_and_errors(&direct_src, "D", "p");
+            assert!(
+                direct_errs.is_empty(),
+                "[{}] DIRECT baseline must compile cleanly for the parity oracle \
+                 to mean anything; got: {:?}\n--- source ---\n{}",
+                case.label,
+                direct_errs,
+                direct_src
+            );
+
+            let (alias_ty, alias_errs) = param_type_and_errors(&alias_src, "D", "p");
+            if !alias_errs.is_empty() {
+                failures.push(format!(
+                    "[{}] alias spelling produced Error diagnostics: {:?}",
+                    case.label, alias_errs
+                ));
+            }
+            if alias_ty != direct_ty {
+                failures.push(format!(
+                    "[{}] alias `type AL = {}` lowered `D.p` to {:?}, but the direct \
+                     spelling lowers it to {:?}",
+                    case.label, case.body, alias_ty, direct_ty
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "alias/direct parity violated:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn transitive_alias_to_enum_lowers_identically_to_the_direct_spelling() {
+        let direct_src = "enum Zq { Close, Medium }\n\
+                          structure def D {\n    param p : Zq\n}\n";
+        let alias_src = "enum Zq { Close, Medium }\n\
+                         type A1 = Zq\n\
+                         type A2 = A1\n\
+                         structure def D {\n    param p : A2\n}\n";
+
+        let (direct_ty, direct_errs) = param_type_and_errors(direct_src, "D", "p");
+        assert!(
+            direct_errs.is_empty(),
+            "DIRECT baseline must compile cleanly; got: {direct_errs:?}"
+        );
+
+        let (alias_ty, alias_errs) = param_type_and_errors(alias_src, "D", "p");
+        assert!(
+            alias_errs.is_empty(),
+            "transitive alias chain `A2 -> A1 -> Zq` should compile cleanly; got: {alias_errs:?}"
+        );
+        assert_eq!(
+            alias_ty, direct_ty,
+            "`type A2 = A1` / `type A1 = Zq` should lower `D.p` exactly as the direct `Zq` does"
+        );
+    }
+
+    // ── Regression locks ────────────────────────────────────────────────────
+    //
+    // Both PASS on `main` today. They are the safety net for the deferred
+    // use-site resolution added by task #6259: the first pins that the deferral
+    // terminates on a cycle instead of recursing forever, the second pins that
+    // re-resolving an alias body at each use site does not re-emit the
+    // definition-site diagnostic for that body.
+
+    #[test]
+    fn circular_alias_still_terminates_and_reports_a_cycle() {
+        // BOTH entries end up with `resolved_type: None` AND `type_expr:
+        // Some(..)`, which is precisely the shape the deferred use-site arm
+        // fires on — without a cycle guard this recurses until the compiler
+        // stack overflows.
+        let source = "type C1 = C2\n\
+                      type C2 = C1\n\
+                      structure def D {\n    param p : C1\n}\n";
+        let module = compile_source_with_stdlib(source);
+        let errs = errors_only(&module);
+        assert!(
+            errs.iter().any(|d| d.message.contains("circular type alias")),
+            "a circular alias must still report the cycle; got: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unresolvable_alias_body_reports_its_inner_error_exactly_once() {
+        // The definition-site DFS already reports `NotADim`. Re-resolving the
+        // body at the use site must NOT emit it a second time, so the deferred
+        // arm has to resolve into a scratch diagnostics vector and discard it
+        // on failure.
+        let source = "type Bad = Scalar<NotADim>\n\
+                      structure def D {\n    param p : Bad\n}\n";
+        let module = compile_source_with_stdlib(source);
+        let errs = errors_only(&module);
+        let not_a_dim_count = errs
+            .iter()
+            .filter(|d| d.message.contains("NotADim"))
+            .count();
+        assert_eq!(
+            not_a_dim_count,
+            1,
+            "the inner `NotADim` error belongs to the alias DEFINITION site and must be \
+             reported exactly once, not once per use site; got: {:?}",
+            errs.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+}
