@@ -407,3 +407,166 @@ fn d4_arg_side_type_param_divergence_is_genuine_and_ledgered() {
         expect: Expect::Diverge { ledger: "D4" },
     });
 }
+
+// ── Axis 2: selection identity over MULTI-candidate overload sets ───────────
+
+/// One selection-identity row: a multi-candidate overload set where both
+/// resolvers are expected to accept, so the question is *which* candidate
+/// each one picks.
+///
+/// This axis is not redundant with axis 1. Accept/reject is structurally
+/// blind to the worst failure mode there is here — both sides accept, but
+/// select DIFFERENT overloads, so eval silently runs the wrong function
+/// body. Declaration ORDER is load-bearing in several rows below, because
+/// eval's passes are first-match-wins while compile's are set-narrowing.
+struct SelectionRow {
+    label: &'static str,
+    fns: Vec<CompiledFunction>,
+    call_name: &'static str,
+    arg_types: Vec<Type>,
+    expect: Expect,
+}
+
+/// Non-panicking core of the selection-identity engine.
+///
+/// "Selection" is the single candidate a side committed to: compile's
+/// `Resolved { index }`, or eval's `Some(f)` mapped back to its position.
+/// `NoMatch` / `NoUserFunctions` / `Ambiguous` all mean compile committed to
+/// no single candidate, which agrees with eval only when eval also selected
+/// nothing. Reuses axis 1's four-arm `Expect` classification verbatim, so
+/// both axes share one ledger discipline.
+fn classify_selection_parity(row: &SelectionRow) -> Result<(), String> {
+    let verdict = reify_compiler::__resolve_function_overload_for_parity_test(
+        row.call_name,
+        &row.arg_types,
+        &row.fns,
+    );
+    let args: Vec<CompiledExpr> = row.arg_types.iter().cloned().map(arg).collect();
+    let eval_index = find_matching_compiled_function(&row.fns, row.call_name, &args)
+        .map(|f| index_of(&row.fns, f));
+
+    let compile_index = match verdict {
+        ParityOverloadVerdict::Resolved { index } => Some(index),
+        // No single committed candidate on the compile side.
+        ParityOverloadVerdict::NoUserFunctions
+        | ParityOverloadVerdict::NoMatch
+        | ParityOverloadVerdict::Ambiguous { .. } => None,
+    };
+
+    match (compile_index == eval_index, &row.expect) {
+        (true, Expect::Agree) => Ok(()),
+        (false, Expect::Diverge { .. }) => Ok(()),
+        (false, Expect::Agree) => Err(format!(
+            "{}: UNLEDGERED selection divergence (compile={:?} -> {:?}, eval -> {:?}) \
+             — both sides may even 'accept', but they picked DIFFERENT overloads; \
+             add a commented EXEMPTION LEDGER row naming the responsible tier, \
+             or fix the mismatch",
+            row.label, verdict, compile_index, eval_index
+        )),
+        (true, Expect::Diverge { ledger }) => Err(format!(
+            "{}: STALE ledger row '{}' — the two resolvers now AGREE \
+             (compile={:?} -> {:?}, eval -> {:?}); remove the ledger row and \
+             reclassify this row to Expect::Agree",
+            row.label, ledger, verdict, compile_index, eval_index
+        )),
+    }
+}
+
+/// Panicking single-row form of the selection-identity engine.
+fn assert_selection_parity(row: &SelectionRow) {
+    if let Err(msg) = classify_selection_parity(row) {
+        panic!("{msg}");
+    }
+}
+
+#[rustfmt::skip]
+fn selection_rows() -> Vec<SelectionRow> {
+    let trait_obj = |n: &str| Type::TraitObject(n.to_string());
+    let tp        = |n: &str| Type::TypeParam(n.to_string());
+    let result_of = |args: Vec<Type>| Type::Applied { name: "Result".to_string(), args };
+    let list_of   = |t: Type| Type::List(Box::new(t));
+    let option_of = |t: Type| Type::Option(Box::new(t));
+
+    vec![
+        // ── Exact-match-wins tie-break: BOTH sides implement it ──────────────
+        // Compile discards wildcard matches via `exact_matches`; eval's pass-1
+        // finds the exact candidate before the wildcard pass runs. Both
+        // declaration orders are listed so the row cannot be satisfied by
+        // accident through eval's first-match-wins.
+        SelectionRow {
+            label: "exact-wins (generic first): [h<T>(T), h(Int)] <- Int",
+            fns: vec![make_fn("h", vec![("x", tp("T"))], vec!["T"]),
+                      make_fn("h", vec![("x", Type::Int)], vec![])],
+            call_name: "h", arg_types: vec![Type::Int], expect: Expect::Agree,
+        },
+        SelectionRow {
+            label: "exact-wins (concrete first): [h(Int), h<T>(T)] <- Int",
+            fns: vec![make_fn("h", vec![("x", Type::Int)], vec![]),
+                      make_fn("h", vec![("x", tp("T"))], vec!["T"])],
+            call_name: "h", arg_types: vec![Type::Int], expect: Expect::Agree,
+        },
+
+        // ── Trait-object wildcard on a NON-generic candidate, with a
+        //    non-matching sibling present (the esc-4093-152 shape, pinned as
+        //    a positive: both sides must pick the trait-object overload). ────
+        SelectionRow {
+            label: "trait-obj wildcard beats non-matching sibling",
+            fns: vec![make_fn("solve", vec![("loads", list_of(trait_obj("Load")))], vec![]),
+                      make_fn("solve", vec![("loads", Type::Int)], vec![])],
+            call_name: "solve",
+            arg_types: vec![list_of(Type::StructureRef("X".to_string()))],
+            expect: Expect::Agree,
+        },
+
+        // ── Head tier (the #5685 shape) ──────────────────────────────────────
+        // Declaration order is LOAD-BEARING: the Option overload MUST be first,
+        // or eval's first-match-wins would coincidentally pick the Result one
+        // and mask the divergence.
+        //
+        // Compile: both enter `matches`; `exact` is empty; `head_matches` keeps
+        // ONLY the Result candidate — `heads_unifiable(Option<T>, Result<..>)`
+        // is false via its catch-all, while
+        // `heads_unifiable(Result<T,E>, Result<Int,String>)` is true by
+        // same-name/same-arity recursion over `(TypeParam(_), _) => true`
+        // leaves. Eval has no head tier at all, so its wildcard pass takes the
+        // first candidate.
+        SelectionRow {
+            label: "head-tier: [unwrap_or<T>(Option<T>,T), unwrap_or<T,E>(Result<T,E>,T)] <- (Result<Int,String>, Int)",
+            fns: vec![make_fn("unwrap_or", vec![("o", option_of(tp("T"))), ("d", tp("T"))], vec!["T"]),
+                      make_fn("unwrap_or", vec![("r", result_of(vec![tp("T"), tp("E")])), ("d", tp("T"))], vec!["T", "E"])],
+            call_name: "unwrap_or",
+            arg_types: vec![result_of(vec![Type::Int, Type::String]), Type::Int],
+            expect: Expect::Agree,
+        },
+
+        // ── Ambiguity model ──────────────────────────────────────────────────
+        // Two trait-object overloads both wildcard-match; compile reports
+        // `Ambiguous` (a call-site diagnostic), eval has no ambiguity concept.
+        SelectionRow {
+            label: "ambiguity: [g(TraitObject A), g(TraitObject B)] <- StructureRef",
+            fns: vec![make_fn("g", vec![("x", trait_obj("A"))], vec![]),
+                      make_fn("g", vec![("x", trait_obj("B"))], vec![])],
+            call_name: "g",
+            arg_types: vec![Type::StructureRef("X".to_string())],
+            expect: Expect::Agree,
+        },
+    ]
+}
+
+/// Axis 2 — selection-identity parity over every multi-candidate row.
+#[test]
+fn multi_candidate_selection_parity() {
+    let rows = selection_rows();
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|r| classify_selection_parity(r).err())
+        .collect();
+
+    assert!(
+        failures.is_empty(),
+        "compile-vs-eval selection-identity parity failed for {}/{} row(s):\n  - {}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n  - ")
+    );
+}
