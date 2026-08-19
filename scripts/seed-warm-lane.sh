@@ -84,8 +84,12 @@
 #
 #   PIPE-SAFE (task #6219): every DETACHED child this script forks (the
 #   orphan-trash sweep and the reseed-trash rm) holds NO descriptor of the
-#   caller's: its stdin is /dev/null (bash's own async-list default), fd 1
-#   and fd 2 are redirected away, and every OTHER inherited descriptor is
+#   caller's: fd 0, fd 1 and fd 2 are ALL redirected away EXPLICITLY
+#   (`</dev/null >/dev/null 2>&1` on the whole group -- the stdin half is
+#   spelled out rather than left to bash's async-list default, which does not
+#   reach a detach nested inside a redirected construct; see
+#   `_close_inherited_fds`'s doc-comment for the measurement, not restated
+#   here), and every OTHER inherited descriptor is
 #   closed generically by `_close_inherited_fds` (defined with the log
 #   helpers below) -- so ANY lock FD a caller holds is closed in the child,
 #   not just the two this pool's callers happen to use today (FD 9: seed's
@@ -175,16 +179,45 @@ err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 # the caller's lock held for the child's entire lifetime, even after the
 # caller itself releases and exits).
 # fd 0/1/2 are deliberately EXCLUDED (-ge 3): the group this runs inside
-# applies its own `>/dev/null 2>&1` redirect (and bash's async-list
-# /dev/null stdin default) to the WHOLE group before any statement in the
-# group body runs, so by the time this loop runs those three descriptors are
-# already the group's own, not the caller's -- closing them here would break
-# the pipe-safety this exists to provide rather than help it.
+# applies its own `</dev/null >/dev/null 2>&1` redirect to the WHOLE group
+# before any statement in the group body runs, so by the time this loop runs
+# those three descriptors are already the group's own, not the caller's --
+# closing them here would break the pipe-safety this exists to provide rather
+# than help it.
+# The stdin half is spelled EXPLICITLY at both call sites rather than left to
+# bash's async-list /dev/null default (amendment 2, correcting this
+# doc-comment's earlier claim that the default sufficed): that default applies
+# only "in the absence of any explicit redirections", and the orphan-sweep
+# detach lives inside `while IFS= read ... done < <(find ...)`, so without an
+# explicit `</dev/null` its child inherits the LOOP's redirected stdin
+# instead. MEASURED with the shipped shape: the non-loop reseed-trash detach
+# reports fd 0 = /dev/null, the loop-nested one reports fd 0 = pipe:[...] (the
+# process substitution). Benign in itself -- that pipe is seed's own,
+# already-exhausted find, not the caller's -- but it made the invariant this
+# design leans on ("a future caller's lock FD is covered automatically") false
+# for fd 0, so a future detach placed inside a construct whose stdin IS the
+# caller's would have silently reintroduced the leak class. The explicit
+# redirect makes it true by construction; Block V's V14-V17 in
+# tests/infra/test_seed_warm_lane.sh pin it behaviourally and structurally.
+#
+# `2>/dev/null` sits OUTSIDE the eval'd string, scoping it to the eval builtin
+# (amendment 2). Inside the string it is a redirection on an `exec` with NO
+# command, which bash applies PERMANENTLY to the shell that runs it --
+# silently destroying this script's whole diagnostic channel (the header's
+# "Stderr: all diagnostics, progress messages, and errors" contract, err()
+# included) for any future caller of this helper that does not already
+# pre-redirect fd 2, which the doc above actively invites. Masked until now
+# only because both call sites wrap the helper in a group that is itself
+# already `>/dev/null 2>&1`. The suppression is belt-and-braces either way:
+# bash returns 0 silently when closing an unopened descriptor. Block V's V18
+# in tests/infra/test_seed_warm_lane.sh pins this against the SHIPPED body
+# (extracted from this file, not retyped), with a mutation control that
+# re-inserts the old spelling and asserts it goes red.
 _close_inherited_fds() {
     local _fd _n
     for _fd in /proc/self/fd/*; do
         _n="${_fd##*/}"
-        [ "$_n" -ge 3 ] 2>/dev/null && eval "exec ${_n}<&- 2>/dev/null"
+        [ "$_n" -ge 3 ] 2>/dev/null && eval "exec ${_n}<&-" 2>/dev/null
     done
 }
 
@@ -905,7 +938,7 @@ if [ -n "$_should_acquire_lane_lock" ]; then
     # THIS BLOCK IS THE SINGLE SOURCE OF TRUTH for the mechanism and for the
     # measured rates. Every other site that touches FD 9 -- the --lane-lock
     # header note, _usage(), the two detached background jobs below (each
-    # spelled `{ _close_inherited_fds; rm -rf ...; } >/dev/null 2>&1 &`,
+    # spelled `{ _close_inherited_fds; rm -rf ...; } </dev/null >/dev/null 2>&1 &`,
     # task #6219 amendment), tests/infra/test_seed_lane_lock_release_soak.sh,
     # tests/infra/README.md --
     # carries a ONE-LINE POINTER here, never a copy of the argument or of the
@@ -1120,15 +1153,22 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # generically. It only NARROWS the fork-to-close window and cannot
         # close it entirely -- see the LANE-LOCK RELEASE CONTRACT block at
         # the flock acquire above (#5705).
-        # >/dev/null 2>&1 (task #6219): same rationale as the reseed-trash rm
-        # below (see its comment for the full fd-1/fd-2 argument) -- this
-        # detached child must not hold a descriptor of a pipe-capturing
-        # caller either. A failed rm here is still surfaced: this very sweep
-        # re-finds and re-warns about the entry on the lane's next seed, and
-        # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
+        # </dev/null >/dev/null 2>&1 (task #6219): same rationale as the
+        # reseed-trash rm below (see its comment for the full fd-1/fd-2
+        # argument) -- this detached child must not hold a descriptor of a
+        # pipe-capturing caller either. A failed rm here is still surfaced:
+        # this very sweep re-finds and re-warns about the entry on the lane's
+        # next seed, and warm-lane-gc-sweep.sh's _reap_stale_trash reaps it
+        # pool-wide.
+        # The </dev/null half is LOAD-BEARING AT THIS SITE SPECIFICALLY
+        # (amendment 2): this detach is nested inside the `while ... done <
+        # <(find ...)` below, so bash's async-list /dev/null stdin default
+        # does not apply and the child would otherwise inherit the loop's
+        # redirected stdin. Measurement and the general argument live in
+        # `_close_inherited_fds`'s doc-comment -- not restated here (G7).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { _close_inherited_fds; rm -rf "$_rp_orphan"; } >/dev/null 2>&1 &
+            { _close_inherited_fds; rm -rf "$_rp_orphan"; } </dev/null >/dev/null 2>&1 &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -1491,7 +1531,7 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # for. As at the orphan sweep above, the close only NARROWS the
     # fork-to-close window -- see the LANE-LOCK RELEASE CONTRACT block at the
     # flock acquire above (#5705).
-    # >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
+    # </dev/null >/dev/null 2>&1 (task #6219): this script's stdout is a single-use
     # machine-readable result channel -- exactly one echo "$LANE_TARGET" at
     # the very end (see the Stdout contract in the header) -- so a detached
     # child must never hold a descriptor of it. Without this redirect, a
@@ -1504,12 +1544,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # still reported by two other mechanisms: the orphan-trash sweep above
     # re-finds and re-warns about it on this lane's next seed, and
     # warm-lane-gc-sweep.sh's _reap_stale_trash reaps it pool-wide.
+    # The </dev/null half is redundant HERE -- this detach is not nested in a
+    # redirected construct, so bash's async-list default already gives it
+    # /dev/null -- and is spelled anyway so the two sites share ONE shape that
+    # V17's structural guard can require uniformly, rather than one that holds
+    # by construction and one that holds by a conditional bash default (see
+    # `_close_inherited_fds`'s doc-comment, amendment 2; not restated, G7).
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { _close_inherited_fds; rm -rf "$RESEED_TRASH"; } >/dev/null 2>&1 &
+            { _close_inherited_fds; rm -rf "$RESEED_TRASH"; } </dev/null >/dev/null 2>&1 &
         fi
     fi
 fi

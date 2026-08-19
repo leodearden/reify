@@ -7,7 +7,7 @@
 # WHAT IT MEASURES
 #
 # seed's two detached background jobs are spelled
-# `{ _close_inherited_fds; rm -rf ...; } >/dev/null 2>&1 &` (task #6219
+# `{ _close_inherited_fds; rm -rf ...; } </dev/null >/dev/null 2>&1 &` (task #6219
 # amendment), and that inherited-FD close runs in the forked CHILD — so for a
 # scheduling window the child still holds a dup of the open file description
 # carrying seed's exclusive flock, and the lane lock stays HELD past seed's own
@@ -356,7 +356,7 @@ while [ "$_i" -lt "$SOAK_ITERS" ]; do
     _lane="$(make_isolated_lane soak-lane)"
     # A NON-EMPTY <lane>/target is what makes seed rename into .reseed-trash
     # and therefore fork the detached
-    # `{ _close_inherited_fds; rm -rf ...; } >/dev/null 2>&1 &` whose fork
+    # `{ _close_inherited_fds; rm -rf ...; } </dev/null >/dev/null 2>&1 &` whose fork
     # window is under test. REIFY_WARM_LANE_RESEED_TRASH_SYNC is left UNSET so
     # that rm really is backgrounded (the SYNC=1 path completes in-process and
     # has no fork window at all).

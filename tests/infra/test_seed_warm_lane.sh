@@ -4348,6 +4348,22 @@ assert "U4d: the resolved base really delta-touched the changed source off the 2
 # not just carry a stdout redirect), asserted
 # separately as V13 so V8's own original, narrower assertion is unaffected
 # and stays green throughout.
+#
+# V14-V18 (task #6219 amendment 2) close the block's remaining asymmetry: fd
+# 1, fd 2 and the fd>=3 inventory were all measured, fd 0 never was -- and fd
+# 0 was exactly the half of the header's PIPE-SAFE claim that was untrue,
+# because it rested on bash's async-list /dev/null stdin default, which
+# applies only "in the absence of any explicit redirections" and so never
+# reached the orphan-sweep detach nested inside `while ... done < <(find
+# ...)`. V14/V15 assert fd 0 for both sites off the same field-4 inventory
+# the FD-8 arm already records (V15 was RED); V16 is their non-vacuity
+# control, in the SYNC/foreground harness where inheriting the caller's stdin
+# is CORRECT -- which is also why every invocation in the V0-V7 arms is now
+# wired to a REAL stdin FILE rather than the runner's ambient stdin. V17 adds
+# the matching structural criterion (a DETACH line must carry an explicit
+# `</dev/null`), and V18 pins the shipped `_close_inherited_fds` body itself:
+# its close-error suppression must scope to the eval builtin rather than
+# permanently redirecting the shell's own stderr.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block V: detached trash-rm holds no caller FD (task #6219) ---"
@@ -4582,6 +4598,57 @@ _v_fdset_missing_target() {
     return 0
 }
 
+# _v_fdset_fd_target <fdlog> <path-glob> <fdnum> [exclude-exact-path]
+# (task #6219 amendment 2) -- print the target of ONE specific descriptor
+# <fdnum> out of the fd inventory (field 4), or return 1 if the entry is
+# missing or carries no item for that descriptor. _v_fdset_has_target above
+# deliberately matches a target on ANY descriptor, which cannot express "fd 0
+# specifically": fds 1 and 2 legitimately point at /dev/null too, so
+# `_v_fdset_has_target ... /dev/null` is green whether or not fd 0 is. Same
+# IFS/glob hardening and the same no-vacuous-pass gate on _v_fdlog_has_entry
+# as _v_fdset_has_target (see its comment; not restated, G7).
+_v_fdset_fd_target() {
+    local fdlog="$1" glob="$2" fdnum="$3" exclude="${4:-}" fdset item
+    local IFS
+    _wait_until 10 _v_fdlog_has_entry "$fdlog" "$glob" "$exclude" || return 1
+    fdset="$(_v_fdlog_field "$fdlog" "$glob" 4 "$exclude")"
+    IFS=$'\t'
+    set -f
+    for item in $fdset; do
+        case "$item" in
+            "$fdnum=>"*) set +f; printf '%s' "${item#"$fdnum=>"}"; return 0 ;;
+        esac
+    done
+    set +f
+    return 1
+}
+
+# _v_fd_target_is <fdlog> <path-glob> <fdnum> <expected> [exclude-exact-path]
+# -- true iff descriptor <fdnum> of the recorded child points EXACTLY at
+# <expected>. A missing entry or a missing descriptor is a FAILURE, never a
+# vacuous pass -- same discipline as every other predicate in this block.
+# Both polarities of the fd-0 assertions below go through this one predicate
+# (detached: "/dev/null"; foreground control: the caller's own stdin file), so
+# neither can be satisfied by the descriptor simply being absent.
+_v_fd_target_is() {
+    local fdlog="$1" glob="$2" fdnum="$3" expected="$4" exclude="${5:-}" val
+    val="$(_v_fdset_fd_target "$fdlog" "$glob" "$fdnum" "$exclude")" || return 1
+    [ "$val" = "$expected" ]
+}
+
+# The caller's stdin (task #6219 amendment 2 -- V14-V16). Every invocation in
+# the V0-V7 arms below is wired to this REAL FILE rather than left to inherit
+# whatever stdin the test runner happens to have (a tty interactively,
+# /dev/null under some CI shapes) -- otherwise V16's control could not
+# distinguish "the detached child's fd 0 was redirected to /dev/null by seed"
+# from "the whole invocation's stdin was already /dev/null", and the fd-0
+# assertions would be vacuous exactly where they matter. Resolved through
+# readlink -f because /proc/PID/fd/0 reports the RESOLVED path, which would
+# not string-compare equal if any component of $_LANE_ROOT were a symlink.
+V_STDIN_FILE="$_LANE_ROOT/.v-caller-stdin"
+printf 'caller stdin\n' > "$V_STDIN_FILE"
+V_STDIN_REAL="$(readlink -f "$V_STDIN_FILE")"
+
 # ── V0-V3: the async DEFAULT path (both trash-rm sites backgrounded) ────────
 V_FDLOG="$_LANE_ROOT/.v-fdlog"
 : > "$V_FDLOG"
@@ -4589,7 +4656,8 @@ V_SINK1="$_LANE_ROOT/.v-sink1"
 
 set +e
 ( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG" \
-    bash "$SCRIPT" "$V_BASE" "$V_LANE" --fresh-checkout ) 2>&1 | cat > "$V_SINK1"
+    bash "$SCRIPT" "$V_BASE" "$V_LANE" --fresh-checkout ) \
+    < "$V_STDIN_FILE" 2>&1 | cat > "$V_SINK1"
 V0_RC="${PIPESTATUS[0]}"
 set -e
 
@@ -4602,6 +4670,19 @@ assert "V1 (RED, the defect): the detached reseed-trash rm's fd 1 is NOT the cal
     _v_field_not_pipe "$V_FDLOG" "$V_TRASH_GLOB" 1
 assert "V2 (RED, the defect): the detached reseed-trash rm's fd 2 is NOT the caller's pipe" \
     _v_field_not_pipe "$V_FDLOG" "$V_TRASH_GLOB" 2
+
+# V14 (task #6219 amendment 2): the THIRD standard descriptor. Block V
+# measured fd 1, fd 2 and the fd>=3 inventory but never fd 0, which is
+# precisely the half of the header's PIPE-SAFE claim that was untrue -- the
+# claim leaned on bash's async-list /dev/null stdin default, which applies
+# only "in the absence of any explicit redirections" and therefore does NOT
+# reach the orphan-sweep detach nested inside `while ... done < <(find ...)`
+# (V15 below is the arm that was RED). Both sites now redirect stdin
+# EXPLICITLY; see `_close_inherited_fds`'s doc-comment in
+# scripts/seed-warm-lane.sh for the argument and the measurement (G7, not
+# restated). V16 is this assertion's non-vacuity control.
+assert "V14: the detached RESEED-TRASH rm's fd 0 is /dev/null, not the caller's stdin" \
+    _v_fd_target_is "$V_FDLOG" "$V_TRASH_GLOB" 0 "/dev/null"
 
 # ── V4: the SYNC control arm — proves a pipe was genuinely connected ───────
 # A FRESH, never-before-seeded lane (V_LANE_SYNC), NOT a second run on V_LANE:
@@ -4626,7 +4707,8 @@ V_SINK2="$_LANE_ROOT/.v-sink2"
 set +e
 ( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG_SYNC" \
     REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 \
-    bash "$SCRIPT" "$V_BASE" "$V_LANE_SYNC" --fresh-checkout ) 2>&1 | cat > "$V_SINK2"
+    bash "$SCRIPT" "$V_BASE" "$V_LANE_SYNC" --fresh-checkout ) \
+    < "$V_STDIN_FILE" 2>&1 | cat > "$V_SINK2"
 V4_RC="${PIPESTATUS[0]}"
 set -e
 
@@ -4634,6 +4716,14 @@ assert "V4-fixture: the SYNC control run exits 0" \
     test "$V4_RC" -eq 0
 assert "V4 (non-vacuity, pipe really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd 1 IS the caller's pipe, proving this harness genuinely connects one" \
     _v_field_is_pipe "$V_FDLOG_SYNC" "$V_TRASH_GLOB_SYNC" 1
+
+# V16 (task #6219 amendment 2) -- the fd-0 analogue of V4's role, in the same
+# SYNC harness: with the rm forced into the FOREGROUND it legitimately
+# inherits seed's own stdin, so its fd 0 is the caller's stdin FILE. That is
+# what makes V14/V15's "/dev/null" verdict load-bearing rather than an
+# artefact of the runner's stdin already being /dev/null.
+assert "V16 (non-vacuity, caller stdin really wired): under REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 the (now-foreground) reseed-trash rm's fd 0 IS the caller's stdin file, proving this harness genuinely wires a non-/dev/null stdin" \
+    _v_fd_target_is "$V_FDLOG_SYNC" "$V_TRASH_GLOB_SYNC" 0 "$V_STDIN_REAL"
 
 # ── V5-V7: the orphan-sweep arm (:1083) ─────────────────────────────────────
 # Reuses the H4e orphan-trash plant recipe (:2553-2565) — a FRESH lane with a
@@ -4659,7 +4749,8 @@ V_SINK3="$_LANE_ROOT/.v-sink3"
 
 set +e
 ( PATH="$V_STUB:$PATH" RUSTFLAGS="" REIFY_TEST_FDLOG="$V_FDLOG2" \
-    bash "$SCRIPT" "$V_BASE" "$V_LANE2" --fresh-checkout ) 2>&1 | cat > "$V_SINK3"
+    bash "$SCRIPT" "$V_BASE" "$V_LANE2" --fresh-checkout ) \
+    < "$V_STDIN_FILE" 2>&1 | cat > "$V_SINK3"
 V5_RC="${PIPESTATUS[0]}"
 set -e
 
@@ -4672,6 +4763,17 @@ assert "V5 (RED, the defect): the detached orphan-sweep rm's fd 1 is NOT the cal
     _v_field_not_pipe "$V_FDLOG2" "$V_ORPHAN_GLOB" 1
 assert "V6 (RED, the defect): the detached orphan-sweep rm's fd 2 is NOT the caller's pipe" \
     _v_field_not_pipe "$V_FDLOG2" "$V_ORPHAN_GLOB" 2
+
+# V15 (RED, task #6219 amendment 2): the loop-nested site. Measured on the
+# pre-amendment script, this entry's fd 0 read back `pipe:[...]` -- the
+# `< <(find ...)` process substitution feeding the sweep loop -- while V14's
+# non-loop site read /dev/null, which is exactly why the async-list default
+# could not carry the invariant. Benign in itself (seed's own exhausted find
+# pipe, not the caller's) but false as a general claim, and a future detach
+# placed inside a construct whose stdin IS the caller's would have inherited
+# it silently.
+assert "V15 (RED, the defect): the detached ORPHAN-SWEEP rm's fd 0 is /dev/null, not the stdin of the loop it is nested in" \
+    _v_fd_target_is "$V_FDLOG2" "$V_ORPHAN_GLOB" 0 "/dev/null"
 
 # ── V8: structural regression guard — a behavioural test only pins the two
 # sites that exist TODAY; a future third detached job in this script would
@@ -4954,6 +5056,132 @@ assert "V13-sensitivity: the extended detector does NOT flag the { _close_inheri
 
 assert "V13: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs failing EITHER criterion (stdout redirect, _close_inherited_fds call) -- structural regression guard for the caller-lock-FD leak" \
     _v8_assert_no_offenders "$SCRIPT" '_close_inherited_fds'
+
+# ── V17: structural regression guard, explicit-stdin criterion ─────────────
+# (task #6219 amendment 2) Extends the detector with a THIRD criterion --
+# a DETACH line must ALSO carry an explicit `</dev/null` -- reusing
+# _v8_detach_offenders's existing [required-substring] mechanism verbatim, so
+# no awk change is needed. Kept as a SEPARATE assertion for the same reason
+# V13 was: V8's and V13's own narrower checks stay untouched and green.
+#
+# Why a structural criterion and not just V14/V15's behavioural pair: the
+# behavioural asserts pin the two sites that exist TODAY, and the property
+# being pinned is one bash grants CONDITIONALLY -- an async list gets
+# /dev/null on stdin only "in the absence of any explicit redirections", so a
+# future third detach placed inside any construct that redirects stdin (a
+# `while ... done < <(...)` loop, a `... < file` block) silently loses it. The
+# `_close_inherited_fds` sweep cannot cover the gap either: it deliberately
+# starts at fd 3. See `_close_inherited_fds`'s doc-comment in
+# scripts/seed-warm-lane.sh for the measurement (G7, not restated).
+#
+# Offender fixture: $V13_CLEAN is reused as-is -- it is the exact
+# `{ _close_inherited_fds; rm -rf "$X"; } >/dev/null 2>&1 &` shape that is
+# CLEAN under V8's and V13's criteria and must now be FLAGGED under this one,
+# which isolates the new criterion from both of the older ones with no new
+# fixture file. Same self-match-safety convention throughout (the shapes are
+# assembled from $_v8_amp, never written as literal detach lines here).
+V17_STDIN='</dev/null'
+V17_CLEAN="$V8_FIXTURE_DIR/explicit-stdin-twin.sh"
+printf '{ _close_inherited_fds; rm -rf "$X"; } %s >/dev/null 2>&1 %s\n' \
+    "$V17_STDIN" "$_v8_amp" > "$V17_CLEAN"
+
+V17_OFF_RC=0
+_v8_detach_offenders "$V13_CLEAN" '_close_inherited_fds' "$V17_STDIN" >/dev/null || V17_OFF_RC=$?
+assert "V17-sensitivity: the extended detector FLAGS a detach that closes inherited fds and redirects stdout but leaves stdin to bash's conditional async-list default -- proves the new criterion is not vacuously green" \
+    test "$V17_OFF_RC" -ne 0
+
+V17_CLEAN_RC=0
+_v8_detach_offenders "$V17_CLEAN" '_close_inherited_fds' "$V17_STDIN" >/dev/null || V17_CLEAN_RC=$?
+assert "V17-sensitivity: the extended detector does NOT flag the twin that adds the explicit </dev/null" \
+    test "$V17_CLEAN_RC" -eq 0
+
+assert "V17: scripts/seed-warm-lane.sh has ZERO detached (bare-&) jobs failing ANY of the three criteria (stdout redirect, _close_inherited_fds call, explicit </dev/null) -- structural regression guard for the inherited-stdin leak" \
+    _v8_assert_no_offenders "$SCRIPT" '_close_inherited_fds' "$V17_STDIN"
+
+# ── V18: _close_inherited_fds must not clobber the caller's stderr ──────────
+# (task #6219 amendment 2) The helper suppressed close errors with
+# `eval "exec ${_n}<&- 2>/dev/null"` -- the redirect INSIDE the eval'd string,
+# where it is a redirection on an `exec` with NO command, which bash applies
+# PERMANENTLY to the shell running it rather than to the close. The whole
+# diagnostic channel scripts/seed-warm-lane.sh's header contract declares
+# ("Stderr: all diagnostics, progress messages, and errors") therefore went to
+# /dev/null for the rest of the process, err() before a fail-closed abort
+# included. It was masked at both shipped call sites only because each wraps
+# the helper in a group that is already `>/dev/null 2>&1`, so the effect was
+# invisible until some future caller invoked the helper -- which its own
+# doc-comment invites -- from a path that had not pre-redirected fd 2.
+#
+# Tested against the SHIPPED function body, extracted from the real script
+# rather than retyped, so a reword of the helper cannot leave this pin
+# silently testing a stale copy. The MUTATION CONTROL below re-inserts the
+# defect literally (assembled by literal awk substring replacement, never a
+# regex, so no shell/regex metacharacter in the fd spelling can misfire) and
+# asserts the probe flips RED -- without it, "stderr survived" would pass for
+# any reason at all, including the probe never exercising the helper.
+V18_DIR="$(mktemp -d "$_LANE_ROOT/V18-XXXXXX")"
+V18_FN="$V18_DIR/fn.sh"
+sed -n '/^_close_inherited_fds() {$/,/^}$/p' "$SCRIPT" > "$V18_FN"
+
+assert "V18-fixture: the shipped _close_inherited_fds body was extracted from scripts/seed-warm-lane.sh" \
+    grep -q 'exec \${_n}<&-' "$V18_FN"
+
+# Probe: source the extracted body, open one descriptor >= 3 so the loop has
+# something real to close, call the helper, then write a sentinel to BOTH
+# stdout and stderr. The caller captures the two streams into separate files,
+# so "did the helper survive with fd 2 intact" is a plain grep, with no
+# timing, no background job and no /proc self-reference subtleties.
+V18_PROBE="$V18_DIR/probe.sh"
+cat > "$V18_PROBE" << 'V18_PROBE_EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+. "$1"
+exec 7>"$2"
+_close_inherited_fds
+echo "STDERR-ALIVE" >&2
+if [ -e /proc/self/fd/7 ]; then echo "FD7-OPEN"; else echo "FD7-CLOSED"; fi
+V18_PROBE_EOF
+chmod +x "$V18_PROBE"
+
+V18_OUT="$V18_DIR/out"
+V18_ERR="$V18_DIR/err"
+set +e
+bash "$V18_PROBE" "$V18_FN" "$V18_DIR/squat" > "$V18_OUT" 2> "$V18_ERR"
+V18_RC=$?
+set -e
+
+assert "V18-fixture: the probe exits 0" test "$V18_RC" -eq 0
+assert "V18-fixture (helper really ran): the shipped body closed the fd 7 the probe opened for it" \
+    grep -q '^FD7-CLOSED$' "$V18_OUT"
+assert "V18: the shipped _close_inherited_fds leaves the caller's stderr intact -- the close-error suppression is scoped to the eval builtin, not applied to the shell" \
+    grep -q '^STDERR-ALIVE$' "$V18_ERR"
+
+# Mutation control: put the redirect back INSIDE the eval'd string.
+_v18_close_ok='eval "exec ${_n}<&-" 2>/dev/null'
+_v18_close_bad='eval "exec ${_n}<&- 2>/dev/null"'
+V18_MUT="$V18_DIR/fn-mut.sh"
+awk -v ok="$_v18_close_ok" -v bad="$_v18_close_bad" '{
+        i = index($0, ok)
+        if (i > 0) { $0 = substr($0, 1, i - 1) bad substr($0, i + length(ok)) }
+        print
+     }' "$V18_FN" > "$V18_MUT"
+
+V18_MUT_DIFFERS=0
+cmp -s "$V18_FN" "$V18_MUT" || V18_MUT_DIFFERS=1
+assert "V18-sensitivity fixture: the mutation actually rewrote the shipped eval line (so the control below is not testing an unchanged copy)" \
+    test "$V18_MUT_DIFFERS" -eq 1
+
+V18_MUT_OUT="$V18_DIR/mut-out"
+V18_MUT_ERR="$V18_DIR/mut-err"
+set +e
+bash "$V18_PROBE" "$V18_MUT" "$V18_DIR/squat-mut" > "$V18_MUT_OUT" 2> "$V18_MUT_ERR"
+set -e
+
+V18_MUT_STDERR_RC=0
+grep -q '^STDERR-ALIVE$' "$V18_MUT_ERR" || V18_MUT_STDERR_RC=$?
+assert "V18-sensitivity: the pre-amendment spelling SWALLOWS the caller's stderr -- proves V18 is not vacuously green" \
+    test "$V18_MUT_STDERR_RC" -ne 0
+assert "V18-sensitivity: the pre-amendment spelling still closed fd 7, so the two spellings differ ONLY in the stderr clobber" \
+    grep -q '^FD7-CLOSED$' "$V18_MUT_OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block R: lane isolation guards (task 5590) — every lane created in this file
