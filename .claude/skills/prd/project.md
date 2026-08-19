@@ -176,7 +176,7 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 
 **Author-mode rule (Stage 2 and Stage 10) and decompose-mode rule (the Step 1 gate re-walk):** reject/fix a PRD that carries `path:line` anchors with no as-of stamp in its header, before filing the batch.
 
-**Enforcement posture.** No deterministic guard automates this — the /prd session reading this subsection is the enforcement, at author Stage 2 and again at decompose time (same posture as "Gate-test drift-guard registration" above). Retrospective/detection half: `reify-audit --pattern PPRDSTATUS` (#6346) for leaf/status prose, and #5872 for stale hard `path:line` cites generally.
+**Enforcement posture.** No deterministic guard automates this — the /prd session reading this subsection is the enforcement, at author Stage 2 and again at decompose time (same posture as "Gate-test drift-guard registration" above). Retrospective/detection half: specified but not built as of 2026-08-19 — `reify-audit` accepts no `PPRDSTATUS` arm (nor a #5872 equivalent) yet, so this subsection is the sole enforcement until #6346 (leaf/status prose) and #5872 (stale hard `path:line` cites) land.
 
 **Promotion-candidate flag.** This widening is project-agnostic and directly extends a rule that already lives in the shared skill, so its natural home is `dark-factory/skills/prd/references/`. It is written here self-contained so it can be lifted verbatim; the shared skill is deliberately **not** edited from reify. See `esc-6349-1` and follow-up ticket `tkt_0RSN6HNB2BY5T0FVP95AVCK5AE`.
 
@@ -191,7 +191,7 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 - **`SUPERSEDED`** — replaced by a named successor PRD; name the successor on the same line.
 - **`WITHDRAWN`** — abandoned; every leaf is `cancelled` and there is no successor.
 
-Anything else is non-terminal. The **live-side vocabulary stays free-form** — only the terminal set is closed, which is all that's needed to make terminality machine-checkable, and closing the live side would oblige a corpus-wide header migration that `esc-6232-5` ruled out. **`reify-audit --pattern PPRDSTATUS` (#6346) checks against exactly this set — the two must agree, and changing this list is a change to that detector's contract.**
+Anything else is non-terminal. The **live-side vocabulary stays free-form** — only the terminal set is closed, which is all that's needed to make terminality machine-checkable, and closing the live side would oblige a corpus-wide header migration that `esc-6232-5` ruled out. **This list is the contract source, not `reify-audit --pattern PPRDSTATUS` (#6346) — the detector is the consumer.** As of 2026-08-19 that detector is specified but not yet built (no `PPRDSTATUS` arm exists in `reify-audit`); #6346's description was reconciled to exactly this three-value set the same day (`esc-6349-1`). When built, it must check against exactly this list — changing this list is a change to that detector's contract.
 
 **Marker form.** The terminal token is ALL CAPS and appears in the first `Status` line within the first ~10 lines of the file. Both landed exemplars conform; quoted by name, not line: the header of `docs/prds/v0_6/data-carrying-enums.md` (`**Status:** **SHIPPED (v0.6)** — …`) and the header of `docs/prds/kernel-seam-contracts.md` (`**Status: SHIPPED.** All 16 decomposition leaves have landed — …`). The first form is preferred; both are accepted, so the two ratified exemplars stay conformant rather than becoming retroactively wrong.
 
@@ -264,4 +264,4 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - `feedback_blocked_vs_pending_semantics` — scheduler handles unmet-deps tasks.
 - `feedback_trickle_ticket_submissions` — don't switch off planning_mode to paper over a closed gate.
 - `project_phantom_done_metadata_files_strip_may09` — the "metadata.files missing" decompose edge case.
-- topic `docs-prd-terminal-status` (canonical, 2026-08-19) — the "Code anchors in PRD prose" and "PRD terminal status" sections above (prevention: cite-by-symbol-or-dated-SHA; closed terminal vocabulary + mandatory decompose-close leaf). Detection is owned elsewhere, not by this overlay: `reify-audit --pattern PPRDSTATUS` (#6346).
+- topic `docs-prd-terminal-status` (canonical, 2026-08-19) — the "Code anchors in PRD prose" and "PRD terminal status" sections above (prevention: cite-by-symbol-or-dated-SHA; closed terminal vocabulary + mandatory decompose-close leaf). Detection is owned elsewhere, not by this overlay: `reify-audit --pattern PPRDSTATUS` (#6346, specified but not built as of 2026-08-19).
