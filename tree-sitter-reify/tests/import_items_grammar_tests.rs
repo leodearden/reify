@@ -38,6 +38,12 @@
 //! * **(d)** REGRESSION: the other `import_path` consumers keep parsing cleanly.
 //!   `import_path` gains a GLR `conflicts` entry in step-4, so these guard
 //!   against a split-state regression.
+//! * **(e)** DIVERGENCE: interior whitespace before the brace list
+//!   (`import a . { B }`) is accepted HERE and rejected by the GUI's Lezer
+//!   port — the authoritative half of that port's one deliberate narrowing.
+//! * **(f)** LATITUDE: the empty (`import a.{}`) and trailing-comma
+//!   (`import a.{Foo,}`) item lists, which §15's EBNF does not describe but
+//!   `commaSep` admits. Added in the review round, never RED.
 //!
 //! See also: `tree-sitter-reify/test/corpus/import_items.txt` for the
 //! corpus-level CST documentation, runnable via `tree-sitter test`.
@@ -288,4 +294,89 @@ fn regression_combined_import_file_parses_cleanly() {
                   import a.{Foo}\n\
                   import parts.{Bolt, Nut}\n";
     parse_clean(source);
+}
+
+
+// ── Review round: the shapes adjacent to the settled one ────────────────
+//
+// #5931 settled the SEPARATOR. These pin the two neighbouring properties that
+// the settling left unasserted, so that neither can flip without a test
+// noticing.
+
+/// The identifiers inside the `items` field of the single import in `source`,
+/// with the parse asserted clean.
+///
+/// The enumerated tests above predate this helper and are left as they are —
+/// this is an amendment, not a refactor of the file.
+fn item_identifiers(source: &str) -> Vec<String> {
+    let tree = parse_clean(source);
+    let root = tree.root_node();
+    let kinds = collect_kinds(root);
+
+    let decl = find_node_by_kind(root, "import_declaration")
+        .unwrap_or_else(|| panic!("expected an `import_declaration` node; got kinds: {kinds:?}"));
+    let items = decl.child_by_field_name("items").unwrap_or_else(|| {
+        panic!("`{source}` must have an `items` field; kinds: {kinds:?}")
+    });
+    assert_eq!(
+        items.kind(),
+        "import_items",
+        "the `items` field must be an `import_items` node; kinds: {kinds:?}"
+    );
+    identifier_children(items, source.as_bytes())
+}
+
+/// (e) Interior whitespace before the brace list is ACCEPTED here.
+///
+/// This is the authoritative half of the GUI Lezer port's ONE deliberate
+/// narrowing. tree-sitter lexes the `.` and the `{` as two separate anonymous
+/// tokens with whitespace between them as an extra, so `import a . { B }` is
+/// well-formed. The port cannot follow: it folds both into a single
+/// `ImportItemsOpen` token to escape a shift/reduce conflict that
+/// lezer-generator, having no `conflicts` escape hatch, cannot otherwise
+/// resolve — see the ImportDeclaration comment in gui/src/editor/reify.grammar.
+///
+/// Pinning BOTH halves is what makes that divergence a decision rather than
+/// drift: the rejecting half is asserted by `rejects interior whitespace in the
+/// opener` in gui/src/__tests__/reifyGrammarCorpus.test.ts, so whichever side
+/// moves, a test fails instead of the two grammars silently parting ways.
+#[test]
+fn interior_whitespace_before_the_brace_list_is_accepted() {
+    assert_eq!(
+        item_identifiers("import a . { B }"),
+        vec!["B".to_string()],
+        "whitespace around the `.` is lexed away here, unlike in the Lezer port"
+    );
+}
+
+/// (f) The empty and trailing-comma item lists are DELIBERATE LATITUDE.
+///
+/// §15's EBNF is tighter than this rule: `'{' IDENT (',' IDENT)* '}'` requires
+/// at least one IDENT and admits no trailing comma. `import_items` is built on
+/// the shared `commaSep` helper, which admits both — as does the Lezer port's
+/// `(Identifier ("," Identifier)* ","?)?`.
+///
+/// That latitude is KEPT, and this test is what makes keeping it a decision.
+/// A trailing comma is admitted uniformly by every comma-separated list in both
+/// grammars (enum variants, meta entries, match arms, set/map literals), so
+/// rejecting it only for imports would be a local inconsistency; and an empty
+/// list is a transient state while typing `.{}` before filling it in, which an
+/// error-tolerant editing grammar should keep parsing. A diagnostic for a
+/// vacuous import belongs to the semantic layer, not to either grammar.
+///
+/// What the empty list LOWERS to — `ImportKind::Destructured(vec![])`, not
+/// `Module` and not an error — is pinned at the AST level by
+/// `empty_and_trailing_comma_destructured_imports_lower_as_written` in
+/// crates/reify-syntax/tests/harness_syntax/import_tests.rs.
+#[test]
+fn empty_and_trailing_comma_item_lists_are_deliberate_latitude() {
+    assert!(
+        item_identifiers("import a.{}").is_empty(),
+        "the empty item list is accepted and holds no identifiers"
+    );
+    assert_eq!(
+        item_identifiers("import a.{Foo,}"),
+        vec!["Foo".to_string()],
+        "a trailing comma is accepted and contributes no phantom identifier"
+    );
 }

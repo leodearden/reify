@@ -378,6 +378,53 @@ describe('reify.grammar snippets — module and import', () => {
   });
 
   /**
+   * THE ONE DELIBERATE DIVERGENCE from the authoritative tree-sitter grammar,
+   * pinned by assertion because it is a normative claim about the surface
+   * syntax this port accepts — per docs/legibility/design-invariants.md, as
+   * with the `module` placement rule below.
+   *
+   * The `.` and the `{` are folded into ONE token here (`ImportItemsOpen`),
+   * because lezer-generator has no `conflicts` escape hatch for the
+   * shift/reduce conflict the faithful transcription raises — see the
+   * ImportDeclaration comment in reify.grammar for the full argument. The price
+   * is a NARROWING: interior whitespace between the two, which tree-sitter
+   * accepts as two separate anonymous tokens, is rejected here. That is
+   * harmless for a highlighting grammar (the canonical spelling has no interior
+   * space) but it is a real divergence, and prose alone would let it flip
+   * silently the moment `ImportItemsOpen` were unfolded back into `"." "{"`.
+   *
+   * The other side of the same divergence is pinned from the authoritative side
+   * by `interior_whitespace_before_the_brace_list_is_accepted` in
+   * tree-sitter-reify/tests/import_items_grammar_tests.rs.
+   */
+  it('rejects interior whitespace in the opener `import a . { B }`', () => {
+    // Measured: 2 error nodes.
+    expect(countErrorNodes('import a . { B }')).toBeGreaterThan(0);
+  });
+
+  /**
+   * DELIBERATE LATITUDE, pinned so it stays a decision rather than becoming the
+   * next unnoticed slip. §15's EBNF requires at least one IDENT and no trailing
+   * comma (`'{' IDENT (',' IDENT)* '}'`), but BOTH grammars are more permissive
+   * than that: `commaSep` in grammar.js and the `(Identifier ("," Identifier)*
+   * ","?)?` body here admit the empty list and a trailing comma alike.
+   *
+   * That latitude is kept, for two reasons. A trailing comma is admitted
+   * uniformly by every comma-separated list in both grammars (enum variants,
+   * meta entries, match arms, set/map literals); rejecting it only for imports
+   * would be a local inconsistency with no reader benefit. And an empty list is
+   * a transient state while typing `.{}` before filling it in — an editor
+   * grammar that error-tolerates it keeps highlighting the rest of the buffer,
+   * whereas a diagnostic for a vacuous import belongs to the semantic layer,
+   * not the parser. The authoritative side is pinned identically by
+   * `empty_and_trailing_comma_item_lists_are_deliberate_latitude`.
+   */
+  it('accepts the empty and trailing-comma item lists §15 does not describe', () => {
+    expect(countErrorNodes('import a.{}')).toBe(0);
+    expect(countErrorNodes('import a.{Foo,}')).toBe(0);
+  });
+
+  /**
    * `module` is admitted ONLY at the top of `SourceFile`, never as a member of
    * `Declaration`, so the top-of-file / one-per-file rule falls out of the
    * grammar with no extra code (mirroring grammar.js:126-132). That is a
