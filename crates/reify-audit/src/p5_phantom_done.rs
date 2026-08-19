@@ -456,17 +456,35 @@ fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
 ///
 /// Returns `Some` (a refusal) only when a declared deliverable is genuinely
 /// unaccounted for on main.
+///
+/// # Deliberate divergence from the sweep
+///
+/// Gitignored entries are dropped from the declared set here, whereas the
+/// sweep's `genuinely_absent` computation deliberately KEEPS them (see the
+/// comment above the deliverable-presence rescue in [`check_one`]). Do not
+/// "unify" the two: a gitignored path can never resolve on main by
+/// construction, so blocking a state transition on one is a guaranteed false
+/// positive, and refusing a transition is a far costlier error than a Low
+/// sweep finding. The gitignored aspect already has its own channel — the
+/// `P5MetadataFilesGitignored` Medium from [`check_gitignored`]. Memory:
+/// `project_steward_metadata_files_gitignore_falsepositive.md`.
 fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Finding> {
-    // No declared deliverable → nothing to corroborate. Research, ops and
-    // escalation tasks legitimately land no files and must flip freely.
-    if meta.files.is_empty() {
+    // Nothing corroboratable → nothing to refuse. Covers both the research /
+    // ops / escalation task that legitimately lands no files, and the task
+    // whose declared entries are all gitignored (equally uncorroboratable).
+    let declared: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| !ctx.git.is_gitignored(p))
+        .cloned()
+        .collect();
+    if declared.is_empty() {
         return None;
     }
 
     // The healthy flip: every declared entry resolves to a tracked file or
     // directory on main. Costs N × `git ls-tree` and no `git log` at all.
-    let absent: Vec<String> = meta
-        .files
+    let absent: Vec<String> = declared
         .iter()
         .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
         .cloned()
