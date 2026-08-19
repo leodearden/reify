@@ -1694,16 +1694,9 @@ fn realization_entries_counts_terminal_cache_entry_once_and_not_on_cache_hit() {
 
 /// Task 4152: `realization_entries` SURVIVES `clear_realization_cache()`.
 ///
-/// The counter is a lifetime metric, not a live size. `clear_realization_cache`
-/// clears the existing cache in place via `RealizationCache::clear`, which
-/// empties the buckets and structurally cannot reach the counter, so the
-/// counter's survival holds by construction rather than by a save/restore
-/// convention at the call site. Reseating to a fresh `RealizationCache::new()`
-/// — the shape this replaced — would zero a naively-housed counter. That
-/// matters in production, not just in principle: both `Engine::edit_param` and
-/// `Engine::edit_source` call the same flush internally, so a reset-on-flush
-/// counter would return to 0 on every parameter edit and be useless for
-/// measuring realization work across edits.
+/// Counter survival is structural — see `RealizationCache::clear`
+/// (realization_cache.rs:141-153) for the mechanism and rationale, which
+/// this test pins end-to-end rather than restates.
 ///
 /// Asserts the flush genuinely emptied the cache (so this is not vacuously
 /// true), that the counter is unmoved, and that a subsequent build re-realizes
