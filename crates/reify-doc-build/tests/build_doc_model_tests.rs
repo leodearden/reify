@@ -5,11 +5,13 @@
 //! `reify_doc_build::build_doc_model(&compiled, source)` and asserts the
 //! structure of the returned `DocModel`.
 
+use reify_compiler::CompiledTypeAlias;
+use reify_core::{ContentHash, ModulePath, SourceSpan};
 use reify_doc::fmt_html::render_html;
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
 use reify_doc::model::{DocModel, ItemKind};
 use reify_doc_build::build_doc_model;
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{CompiledModuleBuilder, compile_source_with_stdlib};
 
 // ---------------------------------------------------------------------------
 // Shared helper
@@ -1044,5 +1046,53 @@ pub type MyLength = Length
             );
         }
         other => panic!("expected ItemKind::TypeAlias for 'MyLength', got {other:?}"),
+    }
+}
+
+/// Covers the `(None, None)` arm of `lower_type_alias`'s match: a
+/// `CompiledTypeAlias` with neither a resolved type nor a carried body.
+///
+/// This state is unreachable from source — both user-alias construction
+/// sites in `type_resolution.rs` set `type_expr: Some(..)` unconditionally —
+/// so the fixture is built synthetically via `CompiledModuleBuilder`.
+///
+/// A `None`/`None` alias says nothing about whether it is parametric, so the
+/// old `"<parameterized>"` sentinel is actively misleading here; the doc
+/// surface must render `"<unresolved>"` instead.
+#[test]
+fn alias_with_no_body_renders_unresolved_not_parameterized() {
+    let alias = CompiledTypeAlias {
+        name: "Bodyless".to_string(),
+        resolved_type: None,
+        type_params: vec![],
+        type_expr: None,
+        is_pub: true,
+        span: SourceSpan::new(0, 0),
+        content_hash: ContentHash::of_str("Bodyless"),
+    };
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .type_alias(alias)
+        .build();
+
+    // "" as source deliberately mirrors build_stdlib_doc_model's call
+    // (build.rs:676): proves the renderer never depends on source text.
+    let model: DocModel = build_doc_model(&compiled, "");
+    let module = &model.modules[0];
+
+    let item = find_item(module, "Bodyless");
+    match &item.kind {
+        ItemKind::TypeAlias { type_repr } => {
+            assert!(
+                !type_repr.is_empty(),
+                "Bodyless type_repr must be non-empty"
+            );
+            assert_eq!(
+                type_repr, "<unresolved>",
+                "an alias with neither resolved_type nor type_expr must render \
+                 '<unresolved>', not the misleading '<parameterized>' sentinel; \
+                 got {type_repr:?}"
+            );
+        }
+        other => panic!("expected ItemKind::TypeAlias for 'Bodyless', got {other:?}"),
     }
 }
