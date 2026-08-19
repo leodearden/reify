@@ -297,7 +297,38 @@ verify_env:
   # 2×48≈96 GiB < 125). N=2 restores that headroom. Paired with the new memory-PSI
   # admission gate (task 4861) and the pending 4839 revert (task 4862 — build back
   # inside the slot).
-  REIFY_TEST_SEMAPHORE_CONCURRENCY: "2"
+  # 2→1 (Leo, 2026-08-19): back to the lib/PRD default. The knob was only ever
+  # tuned ABOVE 1 to relieve exit-75 slot-starvation (the esc-3891-45/4673-31/4552
+  # cluster, see the head of this block). That justification is spent: the
+  # clock-stop seam (tasks 4837/4838, both done) turned a slot-starved wait into a
+  # graceful in-process hold excluded from verify_command_timeout_secs, which the
+  # 3→2 note above already recorded as "N's starvation downside is gone" — it just
+  # stopped at 2 rather than carrying the same reasoning down to 1.
+  # Three things now argue FOR 1:
+  #  (a) N=1 is the design point, not a fallback. lib_test_semaphore.sh defaults to
+  #      1, and docs/prds/test-run-concurrency-semaphore.md §5 D3 calls it "the
+  #      throughput-optimal point for a startup-dominated suite (wide single runs
+  #      amortize per-test init best) and the conservative host-load point
+  #      (1 task ≈ 1× nproc, +merge ≈ 2×)".
+  #  (b) N=2 was quietly violating the occt headroom basis. .config/nextest.toml
+  #      states it as "bounds concurrent verify runs to ≤2 (1 task slot at default
+  #      N=1 + 1 exempt merge); worst case 2 × 24 OCCT × ~2 GiB = 96 GiB < 125 GiB".
+  #      The 3→2 note's own "proven at N=2: 2×48≈96 GiB" arithmetic counts 2 runs
+  #      TOTAL and silently drops the exempt merge that the 2→3 note above had
+  #      explicitly flagged — so the real N=2 worst case is 3 × 48 ≈ 144 GiB > 125.
+  #      N=1 is the value that makes the documented basis true.
+  #  (c) Task 4862 made this slot the memory bound ON PURPOSE. verify.sh's
+  #      @@SEMAPHORE_ACQUIRE@@ block: "the held slot's whole-block serialization is
+  #      the only implicit bound on concurrent RSS-heavy link waves" (reify test
+  #      binaries statically link OCCT/OpenVDB/gmsh/manifold, ~1-3 GiB RSS per
+  #      link). Lowering N strengthens exactly the mechanism 4862 chose.
+  # ACCEPTED COST: task-role test phases now serialize host-wide (1 task + 1 exempt
+  # merge). The wait is graceful, but a waiting task still occupies a warm lane and
+  # an agent slot — so the signal to revisit is LANE OCCUPANCY / queue depth, not
+  # exit-75 (which the clock-stop seam has already made unreachable here).
+  # Nothing pins this value: every semaphore test (test_test_run_semaphore.sh,
+  # test_verify_semaphore_e2e.sh) sets its own N explicitly rather than reading it.
+  REIFY_TEST_SEMAPHORE_CONCURRENCY: "1"
   REIFY_TEST_SEMAPHORE_WAIT: "unlimited"
   REIFY_PSI_GATE_MAX_WAIT: "unlimited"
 
