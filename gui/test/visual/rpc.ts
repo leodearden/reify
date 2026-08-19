@@ -39,17 +39,27 @@ export type RpcResult<T> =
  * In-band errors (Branches 4 & 5): debug handlers return Ok({error:<string>,...})
  * rather than setting MCP isError. See docs/debug-mcp-contract.md §2a.
  *
- * Branch 3 is POSITIONAL ON PURPOSE — do not "fix" it into a
- * `.find(c => c.type === "image")`. Since #5891 an image response MAY carry a
- * trailing `text` block: an `element_screenshot` that matched more than one
- * element — scoped or not, since a testId can repeat within one pane — appends
- * its pane diagnostics (`viewportId`/`matchCount`) after the
- * image (debug_server.rs `mcp_content_blocks`, which keeps the image at
- * `content[0]` for exactly this reason). This branch deliberately ignores that
- * trailing block. Searching instead of indexing would let a text block win branch
- * 4 ahead of branch 3 and silently change branch precedence — and `./run.ts`
- * feeds `value.data` straight into `Buffer.from(…, "base64")`, so the failure
- * would surface as corrupt PNG bytes, not a type error.
+ * Branch 3 is POSITIONAL ON PURPOSE — do not "fix" it by rewriting it to
+ * search for the TEXT block the way normalizeRpcEnvelope does
+ * (`content.find(c => c.type === "text") ?? content[0]`). Since #5891 an image
+ * response MAY carry a trailing `text` block: an `element_screenshot` that
+ * matched more than one element — scoped or not, since a testId can repeat
+ * within one pane — appends its pane diagnostics (`viewportId`/`matchCount`)
+ * after the image (debug_server.rs `mcp_content_blocks`, which keeps the image
+ * at `content[0]` for exactly this reason). This branch deliberately ignores
+ * that trailing block. That TEXT-targeted rewrite lets branch 4 win ahead of
+ * branch 3 and silently changes branch precedence — and `./run.ts` feeds
+ * `value.data` straight into `Buffer.from(…, "base64")`, so the failure would
+ * surface as corrupt PNG bytes, not a type error. Measured, it fails case 4b
+ * alone (1 failed | 20 passed) — see ./rpc.test.ts's "documented divergence"
+ * suite and docs/debug-mcp-contract.md §2a, which pin the same mutation.
+ *
+ * An IMAGE-targeted `.find(c => c.type === "image")` is a different matter and
+ * is NOT what that guard catches: it agrees with the positional read on every
+ * envelope this contract admits, because §2d fixes the image at `content[0]`,
+ * so searching for it and indexing to it agree. Branch 3 stays positional to
+ * keep branch PRECEDENCE explicit at the point of reading, not because a test
+ * would catch that rewrite.
  */
 export function parseRpcResponse<T = unknown>(envelope: unknown): RpcResult<T> {
   const env = envelope as Record<string, unknown>;
