@@ -2779,7 +2779,41 @@ echo "--- G3/G1: every static-only roster member, over its own source ---"
 # that is not merely weaker but vacuous, which is exactly what G3 exists to
 # catch.
 G_EXEC_KV='([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*'
-G_EXEC_VERB_RE="${F_EDGE_ANCHOR}${G_EXEC_KV}"'(env|timeout|bash|sh|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*'
+# THE POST-VERB CLASS ADMITS A QUOTED ASSIGNMENT WORD, and its narrowness is
+# itself load-bearing. Three measurements, all taken against the real tree:
+#
+#   (a) BEFORE/AFTER -- test_slot_event_log.sh goes 7 sites -> 8, and the other
+#   seven members are byte-for-byte unchanged (test_run_all.sh 70/0,
+#   test_run_all_ambient_isolation.sh 2/0,
+#   test_run_all_clock_marker_sanitize.sh 1/0, test_run_all_content_skip.sh
+#   2/0, test_run_all_pool_lock_host_global.sh 2/0,
+#   test_verify_env_ambient_isolation.sh 1/0, test_verify_semaphore_e2e.sh
+#   11/0). 8 is the TRUE total, confirmed by enumerating that file's wrapper
+#   invocations directly.
+#
+#   (b) THE MUTATION TEST, and it is why this is a CORRECTNESS fix rather than
+#   a coverage nicety: delete only the ` 2>"$_STDERR_C"` from
+#   test_slot_event_log.sh:102 and the pre-fix scan still reports 7 sites / 0
+#   unredirected -- G3 AND G1 both stay GREEN on a site whose stderr capture
+#   was removed. The fixed scan reports 8 / 1 and G1 goes correctly RED. The
+#   hole was SILENT, and no real-tree count could have revealed it, which is
+#   precisely what G2f exists to make visible.
+#
+#   (c) WHY NARROW RATHER THAN BLANKET -- a blanket
+#   `([^[:blank:]]+[[:blank:]]+)*` also yields 8/0 on today's roster and is
+#   therefore indistinguishable from this fix by ANY real-tree count, but it
+#   steps over an intervening quoted COMMAND word: on G2f2's
+#   `timeout 600 bash "$G_WRAPPER" "$G_PROBE"` blanket matches (1) while both
+#   the old and the fixed class correctly reject it (0). The `"` exclusion is
+#   what keeps a wrapper's ARGUMENTS from reading as sites, and this fix
+#   preserves it by admitting only KEY="VAL" words, which can never be the
+#   command word. G2f2 is the standing guard on that.
+#
+# The pre-verb (G_EXEC_KV) and post-verb tolerances are deliberately DIFFERENT
+# and must stay so: G_EXEC_KV takes the unquoted `[^[:blank:]]*` value form,
+# while this class needs the explicit `="[^"]*"` alternative. Do not "unify"
+# them -- the unquoted form here would re-admit the blanket hazard in (c).
+G_EXEC_VERB_RE="${F_EDGE_ANCHOR}${G_EXEC_KV}"'(env|timeout|bash|sh|source)[[:blank:]]+((([^"[:blank:]]+)|([A-Za-z_][A-Za-z0-9_]*="[^"]*"))[[:blank:]]+)*'
 G_EXEC_FIRST_RE="^[[:blank:]]*${G_EXEC_KV}"
 
 echo ""
