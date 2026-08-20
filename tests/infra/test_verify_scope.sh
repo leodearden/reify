@@ -1373,6 +1373,15 @@ git -C "$FIX_MG_B5" commit -q -m "task changes"
 # keeps this capture's release-pass-present assertion below hermetic against
 # the ambient knob)
 PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+# MG-B5-control (see the scenario below): the SAME fixture and the SAME
+# override, captured here because --scope branch needs task-branch still
+# checked out, and the branch restore immediately below deletes it. Exactly ONE
+# variable differs from the capture above: NO DF_VERIFY_ROLE=merge, so the role-guard
+# that MG-B6a/MG-B6b prove forces scope=all is not armed and narrowing
+# engages. --profile both is retained so the release-sensitivity pass is
+# present in the control too — that is what makes its off-axis drift guard
+# meaningful.
+PLAN_MG_B5_CONTROL="$(cd "$FIX_MG_B5" && REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope branch --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
 assert "MG-B5: scope=all in plan header" \
@@ -1423,7 +1432,6 @@ assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: 
 # at instead of trusting a comment.
 echo ""
 echo "--- Scenario MG-B5-control: same fixture + same override, narrowing ACTIVE -> the axis DOES carry the override's -p (GREEN, non-vacuity control) ---"
-PLAN_MG_B5_CONTROL=""
 assert "MG-B5-control: PLAN_MG_B5_CONTROL non-empty (verify.sh exited OK)" \
     bash -c '[ -n "$1" ]' _ "$PLAN_MG_B5_CONTROL"
 assert "MG-B5-control: NARROW_ACTIVE=1 (narrowing really engaged — the -p presence below is not accidental)" \
