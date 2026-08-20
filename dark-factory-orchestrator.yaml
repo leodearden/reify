@@ -526,8 +526,30 @@ speculation_probe:
 # allowlist (dark-factory config.py RELOADABLE_FIELDS, _submodel_leaf_paths(
 # 'budgets', BudgetsConfig)), so this takes effect via the escalation MCP's
 # reload_config — no orchestrator restart required.
+#
+# implementer 10 -> 25 (2026-08-20, Leo approved, esc-5495-3). The same
+# per-call-ceiling-below-the-true-cost-of-the-call family, now the TIGHTEST
+# remaining ceiling in the table. Evidence (reify runs.db invocation_end,
+# role=implementer, 30d to 2026-08-20):
+#   - successful runs cost p50 $2.99, p90 $8.26, p95 $9.20, p99 $9.88,
+#     max $9.99 against a $10.00 ceiling. The cap sits INSIDE the 99th
+#     percentile of NORMAL SUCCESSFUL operation, which makes it a throttle,
+#     not a runaway guard — and that "max $9.99" is CENSORED BY THE CAP, so
+#     true demand is unknown and certainly higher.
+#   - 27 invocations died at error_max_budget_usd ($10.01-$10.98), burning
+#     $273.07 for zero output, then retrying. Two of them on 2026-08-20.
+#   - the routing policy rules (`large-plan-modules`, `large-plan-steps`)
+#     already grant big implementer runs 120 turns instead of 80, but they do
+#     NOT raise the dollar ceiling — so precisely the runs judged to need more
+#     turns are the ones that die on dollars. 813 of 1176 dispatches take that
+#     turn-bumped path.
+# $25 is ~2.7x p95 and matches the architect's ceiling, whose p95 ($10.64) is
+# the same order — a runaway guard normal operation never touches. Sized for
+# reify only; whether the fleet-wide default (10.0, defaults.yaml) wants the
+# same treatment is a dark-factory question, deliberately not decided here.
 budgets:
   architect: 25.0
+  implementer: 25.0
 
 # Per-role turn budgets. Raising the architect budget is a direct response to
 # silent max_turns exits on large-scope tasks (e.g. reify 1749): the architect
@@ -535,7 +557,18 @@ budgets:
 # truncating mid-tool-call.
 #
 # reviewer 30 -> 45 (2026-08-07, Leo approved, esc-5905-3): the same failure
-# mode, now measured on the reviewer.
+# mode, now measured on the reviewer. REMOVED 2026-08-20 (Leo approved,
+# esc-5495-3) — dark-factory raised the FLEET default to 60 on 2026-08-17
+# (defaults.yaml:374, commit 0156097916), so this project-local 45 stopped
+# being a raise and became a CAP BELOW THE FLEET BASELINE: reify was silently
+# opting out of a fleet-wide fix. Measured while it was still live: reviewer
+# successes ran p90=42, p95=43 against the 45 wall, and the wall fired 4 times
+# in 3 days (turns=46, one past the cap) burning $8.35/$8.09/$9.08/$10.41 —
+# firing at the p90-p95 of normal successful operation, i.e. a throttle again.
+# Deleting the key rather than restating 60 is deliberate: it means reify
+# tracks future fleet re-baselines instead of shadowing them. The commentary
+# below is retained because it documents WHY a reviewer override is spelled
+# `reviewer` — read it before ever adding one back.
 #
 # THE KEY IS THE COLLAPSED `reviewer`, NOT `reviewer_comprehensive`. routing.py's
 # _config_key() maps every role whose name starts with "reviewer" to the single
@@ -578,7 +611,6 @@ budgets:
 # reload_config — no orchestrator restart required.
 max_turns:
   architect: 180
-  reviewer: 45
 
 # Per-role agent wall-clock timeout overrides (task 5157, 2026-07-08, Leo
 # approved — verify-flakiness survey follow-up, esc-4827 class).
