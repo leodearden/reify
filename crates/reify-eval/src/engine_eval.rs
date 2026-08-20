@@ -6400,6 +6400,14 @@ impl Engine {
         let solver = self
             .lookup_solver_for_module(module)
             .expect("has_active_solver is true => solver lookup returns Some");
+        // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+        // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+        // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+        // `Value::Undef`. `from_engine(self)` reborrows `self` immutably and that borrow
+        // ends as soon as the call returns (the dispatcher owns a cloned fn-pointer map),
+        // so it neither aliases the solver borrow nor blocks the `&mut self` writes below.
+        // Mirrors the cold per-template site in `eval()`.
+        let dispatcher = OptimizedComputeDispatcher::from_engine(self);
         // γ (task #4804) pattern, generalized to the merged problem: when a
         // spanning objective is present, call `solve_ranked` for the
         // OptimalityStatus side-channel and surface
@@ -6408,7 +6416,7 @@ impl Engine {
         // engine_eval.rs's per-template branch above, B5).
         let (solve_result, optimality_status): (SolveResult, Option<OptimalityStatus>) =
             if problem.objective.is_some() {
-                match solver.solve_ranked(&problem) {
+                match solver.solve_ranked_with_dispatch(&problem, Some(&dispatcher)) {
                     RankedSolveResult::Ranked {
                         mut candidates,
                         optimality,
@@ -6434,7 +6442,7 @@ impl Engine {
                     }
                 }
             } else {
-                (solver.solve(&problem), None)
+                (solver.solve_with_dispatch(&problem, Some(&dispatcher)), None)
             };
 
         debug_assert!(
@@ -7599,10 +7607,18 @@ impl Engine {
                     // the matching note at the eval() site (~line 1235) for
                     // why this is preferred over hoisting the name outside
                     // the loop. (Task 2300 reviewer comment.)
+                    // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+                    // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+                    // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+                    // `Value::Undef`. `from_engine(self)` reborrows `self` immutably and that borrow
+                    // ends as soon as the call returns (the dispatcher owns a cloned fn-pointer map),
+                    // so it neither aliases the solver borrow nor blocks the `&mut self` writes below.
+                    // Mirrors the cold per-template site in `eval()`.
+                    let dispatcher = OptimizedComputeDispatcher::from_engine(self);
                     let solve_result = self
                         .lookup_solver_for_module(module)
                         .expect("has_active_solver is true => solver lookup returns Some")
-                        .solve(&problem);
+                        .solve_with_dispatch(&problem, Some(&dispatcher));
 
                     match solve_result {
                         SolveResult::Solved {
@@ -8181,10 +8197,18 @@ impl Engine {
         // `eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_entrypoint`
         // (tests/merged_cluster_solve.rs) for a test pinning this divergence
         // explicitly with a solver whose two entry points disagree.
+        // task #4880: an OWNED compute-dispatch snapshot so `@optimized` ComputeNodes
+        // (e.g. `solve_elastic_static`) reached from inside the solver's per-candidate
+        // cost loop dispatch through the real Engine trampoline instead of hardcoding to
+        // `Value::Undef`. `from_engine(self)` reborrows `self` immutably and that borrow
+        // ends as soon as the call returns (the dispatcher owns a cloned fn-pointer map),
+        // so it neither aliases the solver borrow nor blocks the `&mut self` writes below.
+        // Mirrors the cold per-template site in `eval()`.
+        let dispatcher = OptimizedComputeDispatcher::from_engine(self);
         let solve_result = self
             .lookup_solver_for_module(module)
             .expect("has_active_solver is true => solver lookup returns Some")
-            .solve(&problem);
+            .solve_with_dispatch(&problem, Some(&dispatcher));
 
         match solve_result {
             SolveResult::Solved {
