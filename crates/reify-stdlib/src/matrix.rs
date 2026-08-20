@@ -298,8 +298,8 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                     _ => (f64::INFINITY, f64::INFINITY),
                 };
                 ar.partial_cmp(&br)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(ai.partial_cmp(&bi).unwrap_or(std::cmp::Ordering::Equal))
+                    .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — never NaN: this arm early-returns Undef above on any non-finite re/im, and the non-Complex destructure fallback is (f64::INFINITY, f64::INFINITY), which is totally ordered
+                    .then(ai.partial_cmp(&bi).unwrap_or(std::cmp::Ordering::Equal)) // nan-safe:allow — same early-return and same totally-ordered fallback as the line above
             });
             Value::List(items)
         }),
