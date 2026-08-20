@@ -3706,40 +3706,75 @@ fn curve_nurbs_curve(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let vals = eval_all_args_to_f64(
-        "nurbs",
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
-    .ok_or_else(|| "failed to evaluate all nurbs args to f64".to_string())?;
+    // TWO-PHASE, and the phasing is load-bearing (task 5658's R2 sweep).
+    //
+    // Per-arg triage — written down so task 5752's closure guard can lift it:
+    //
+    //   0 `degree`   — a polynomial degree, i.e. a count  → dimensionless
+    //   1 `n_points` — a count                            → dimensionless
+    //   `2 .. 2+3n`  — coordinates of control points      → **LENGTH**, gated
+    //   `2+3n..2+4n` — weights, rational blending factors → dimensionless
+    //   `2+4n ..`    — knots, parameter-space values      → dimensionless
+    //
+    // Note for 5752: the gated span is ARITY-DEPENDENT (it is a function of
+    // `n_points`, itself an argument), so an allowlist that probes arities
+    // 0..=14 needs its keys per-arity — `2..8` is right only at n_points=2.
+    //
+    // WHY the phases: the span cannot be known before evaluation, so units
+    // cannot be checked first. Running structural validation first is also what
+    // keeps the ARITY diagnostics ahead of the units ones — otherwise an author
+    // whose nurbs is too short would be told to dimension a coordinate the
+    // curve does not have enough arguments to have.
+    //
+    // ONE accepted behaviour change: a non-finite WEIGHT or KNOT is now
+    // reported AFTER the degree/n_points/arity checks rather than before (same
+    // wording, same drop, later position in the order). Only `degree` and
+    // `n_points` keep their pre-checks ahead of the structural gates, because
+    // those two gates read them. Verified not to move any existing assertion.
+    let vals = eval_all_args_to_values(args, values, functions, meta_map);
+
+    // ── Phase 1: STRUCTURE ────────────────────────────────────────────────
+    // Bare read of degree/n_points only — today's read, today's wording,
+    // today's `Err`.
+    let mut head = [0.0_f64; 2];
+    for (i, slot) in head.iter_mut().enumerate().take(vals.len()) {
+        match vals[i].as_f64() {
+            Some(f) if f.is_finite() => *slot = f,
+            _ => {
+                let name = args.get(i).map_or("?", |(n, _)| n.as_str());
+                diagnostics.push(Diagnostic::warning(format!(
+                    "nurbs arg '{}' is non-finite",
+                    name
+                )));
+                return Err("failed to evaluate all nurbs args to f64".to_string());
+            }
+        }
+    }
     if vals.len() < 2 {
         diagnostics.push(Diagnostic::error(
             "nurbs() requires at least degree and n_points arguments".to_string(),
         ));
         return Err("nurbs() requires at least degree and n_points".into());
     }
-    if vals[0] < 1.0 || vals[0] != vals[0].trunc() || vals[0] > 25.0 {
+    if head[0] < 1.0 || head[0] != head[0].trunc() || head[0] > 25.0 {
         diagnostics.push(Diagnostic::error(format!(
             "nurbs() degree must be a positive integer (1..25), got {}",
-            vals[0]
+            head[0]
         )));
-        return Err(format!("nurbs() degree invalid: {}", vals[0]));
+        return Err(format!("nurbs() degree invalid: {}", head[0]));
     }
-    let degree = vals[0] as usize;
-    if vals[1] < 2.0 || vals[1] != vals[1].trunc() || vals[1] > (vals.len() as f64)
+    let degree = head[0] as usize;
+    if head[1] < 2.0 || head[1] != head[1].trunc() || head[1] > (vals.len() as f64)
     {
         diagnostics.push(Diagnostic::error(
             format!(
                 "nurbs() n_points must be a positive integer >= 2 and consistent with argument count, got {}",
-                vals[1]
+                head[1]
             ),
         ));
-        return Err(format!("nurbs() n_points invalid: {}", vals[1]));
+        return Err(format!("nurbs() n_points invalid: {}", head[1]));
     }
-    let n_points = vals[1] as usize;
+    let n_points = head[1] as usize;
     let expected_min = 2 + n_points * 3 + n_points;
     if vals.len() < expected_min {
         diagnostics.push(Diagnostic::error(format!(
@@ -3751,8 +3786,25 @@ fn curve_nurbs_curve(
             n_points
         ));
     }
+    // ── Phase 2: UNITS ────────────────────────────────────────────────────
+    // Only the pole span is gated; every other position keeps the bare
+    // `as_f64` + finiteness read the helper already performs, so the weights
+    // and knots behave exactly as before. `i - pole_start` renumbers from the
+    // span, so the first control point's x reads `x1` rather than `x2`.
     let pole_start = 2;
     let pole_end = pole_start + n_points * 3;
+    let vals = accept_variadic_length_args(
+        "nurbs",
+        args,
+        &vals,
+        &|i| {
+            (pole_start..pole_end)
+                .contains(&i)
+                .then(|| coord_display(i - pole_start))
+        },
+        diagnostics,
+    )?;
+
     let weight_end = pole_end + n_points;
     let control_points: Vec<[f64; 3]> = vals[pole_start..pole_end]
         .chunks_exact(3)
