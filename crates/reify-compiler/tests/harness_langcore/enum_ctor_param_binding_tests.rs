@@ -17,6 +17,16 @@
 //!   than into the conformance walker, which could have silenced the diagnostic
 //!   while leaving the wrong type in the IR for `match`, member typing and trait
 //!   matching to trip over later.
+//! * **RED on main (#6394 — the enum-variant PAYLOAD axis)** —
+//!   [`shadow_payload_field_lowers_to_enum_type`] and
+//!   [`shadow_payload_binder_fixture_has_no_errors`]. The `LocalEnumShadowScope`
+//!   is installed AFTER `resolve_enum_variant_payloads`, so an enum-variant
+//!   payload field typed by the shadowed name lowers to
+//!   `Type::StructureRef("Fit")` while every param/let/fn/trait position lowers
+//!   to `Type::Enum("Fit")`; passing that payload's `match` binder to a
+//!   same-typed `fn` param then fails overload resolution. The first test forces
+//!   the fix into the LOWERING, the second pins the leaf `reify check … exits 0`
+//!   signal. PRD `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1.
 //! * **Characterization (green on main, must stay green)** —
 //!   [`enum_ctor_fixture_constraint_is_satisfied`] and
 //!   [`enum_ctor_fixture_binds_the_variant`]. PRD boundary row 9's
@@ -39,7 +49,7 @@
 
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity, Type};
-use reify_ir::Value;
+use reify_ir::{Value, VariantPayload};
 use reify_test_support::{
     cell_value, check_source_with_stdlib, compile_source_with_stdlib, errors_only, make_engine,
     parse_and_compile_with_stdlib,
@@ -48,6 +58,13 @@ use reify_test_support::{
 /// The committed PRD fixture: `enum Fit` + `structure def Hole { param fit: Fit }`
 /// + `Hole(fit: Fit.Close, nominal: 4mm)`. Landed by dep #5433.
 const FIXTURE: &str = include_str!("../../../../docs/prds/v0_6/fixtures/member_enum_ctor.ri");
+
+/// The committed PRD fixture for the payload axis: `enum Fit` (shadowing the
+/// prelude's `structure def Fit`) + `enum Boxed { B { f: Fit } }` +
+/// `fn use_fit(f: Fit)`, with a `match` arm handing the payload binder to the
+/// fn. Landed with PRD `docs/prds/v0_6/enum-shadow-coherence.md`.
+const PAYLOAD_FIXTURE: &str =
+    include_str!("../../../../docs/prds/v0_6/fixtures/shadow_payload_binder.ri");
 
 /// The lowered `cell_type` of `<template>.<member>`, or a panic naming what was
 /// actually available (a silently-renamed template/member would otherwise make
@@ -76,6 +93,65 @@ fn param_cell_type(module: &CompiledModule, template: &str, member: &str) -> Typ
             )
         })
         .cell_type
+        .clone()
+}
+
+/// The RESOLVED type of `<enum_name>.<variant>`'s named payload field `<field>`,
+/// or a panic naming what WAS available at whichever level missed.
+///
+/// Mirrors [`param_cell_type`]'s idiom one level deeper (`EnumDef` →
+/// `EnumVariantDef` → `VariantPayload::Named`) and for the same reason: a
+/// silently renamed enum, variant or field must surface as a named panic rather
+/// than making the caller's `assert_eq!` vacuous. A `VariantPayload::Unit` where
+/// `Named` was expected panics too — a variant that lost its payload shape would
+/// otherwise be indistinguishable from a missing field.
+fn variant_payload_field_type(
+    module: &CompiledModule,
+    enum_name: &str,
+    variant: &str,
+    field: &str,
+) -> Type {
+    let enum_def = module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == enum_name)
+        .unwrap_or_else(|| {
+            panic!(
+                "enum {enum_name:?} not found; available: {:?}",
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        });
+    let variant_def = enum_def
+        .variants
+        .iter()
+        .find(|v| v.name == variant)
+        .unwrap_or_else(|| {
+            panic!(
+                "variant {variant:?} not found on enum {enum_name:?}; available: {:?}",
+                enum_def
+                    .variants
+                    .iter()
+                    .map(|v| &v.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    let fields = match &variant_def.payload {
+        VariantPayload::Named(fields) => fields,
+        VariantPayload::Unit => panic!(
+            "{enum_name}.{variant} carries VariantPayload::Unit, but a NAMED \
+             payload field {field:?} was expected"
+        ),
+    };
+    fields
+        .iter()
+        .find(|(name, _)| name == field)
+        .unwrap_or_else(|| {
+            panic!(
+                "payload field {field:?} not found on {enum_name}.{variant}; available: {:?}",
+                fields.iter().map(|(name, _)| name).collect::<Vec<_>>()
+            )
+        })
+        .1
         .clone()
 }
 
@@ -131,6 +207,69 @@ fn enum_ctor_emits_no_structure_ref_mismatch() {
     assert!(
         errors.is_empty(),
         "the fixture must compile without errors; got: {errors:?}"
+    );
+}
+
+// ── Enum-variant payload coherence (R4, #6394) ───────────────────────
+//
+// PRD `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1. Both are RED on
+// main: `resolve_enum_variant_payloads` runs BEFORE the `LocalEnumShadowScope`
+// install, so the payload position is the one declared-type position in the
+// module that does not see the shadow set.
+
+/// R4's root claim, pinned in the IR. `Boxed.B`'s payload field `f` must lower
+/// to `Type::Enum("Fit")`.
+///
+/// Forces the fix into the LOWERING rather than into the overload/conformance
+/// machinery, which could silence
+/// [`shadow_payload_binder_fixture_has_no_errors`] while leaving the wrong type
+/// in the IR for `match`, member typing and trait matching to trip over later.
+#[test]
+fn shadow_payload_field_lowers_to_enum_type() {
+    let module = compile_source_with_stdlib(PAYLOAD_FIXTURE);
+    let f = variant_payload_field_type(&module, "Boxed", "B", "f");
+    assert_eq!(
+        f,
+        Type::Enum("Fit".to_string()),
+        "`Boxed.B`'s payload field must lower through the SAME shadow set as \
+         every param/let/fn/trait position; on main it is \
+         `Type::StructureRef(\"Fit\")` because `resolve_enum_variant_payloads` \
+         runs before the `LocalEnumShadowScope` install; got {f:?}"
+    );
+}
+
+/// The LEAF user-observable signal: `reify check
+/// docs/prds/v0_6/fixtures/shadow_payload_binder.ri` exits 0.
+///
+/// Asserted in-process rather than by shelling out to the CLI: INV-SF-2
+/// (`error-severity-exits-nonzero`) makes "zero Error-severity diagnostics" and
+/// "exit 0" the same proposition, and the existing cross-phase oracles below
+/// assert the same way.
+#[test]
+fn shadow_payload_binder_fixture_has_no_errors() {
+    let module = compile_source_with_stdlib(PAYLOAD_FIXTURE);
+
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "the payload-binder fixture must compile without errors \
+         (`reify check …` exits 0); got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    // Severity-INDEPENDENT, on purpose: a future change that merely downgraded
+    // the overload failure to a Warning would green the check above without
+    // fixing anything.
+    let overload: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("no matching overload"))
+        .map(|d| &d.message)
+        .collect();
+    assert!(
+        overload.is_empty(),
+        "no diagnostic of ANY severity may report an overload failure for the \
+         payload binder's `use_fit(g)` call; got: {overload:?}"
     );
 }
 
