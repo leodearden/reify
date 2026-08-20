@@ -1309,9 +1309,20 @@ assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not emp
 # role=merge + --profile both + --scope all: scope=all ignores the override
 # (C1 contract: no branch-diff narrowing). But --profile both LEGITIMATELY
 # emits -p flags on the OCCT gated pass and the release-sensitivity pass.
-# Assert: reify-doc / reify-ir (override sentinels, neither OCCT nor
+# Assert: reify-doc / reify-ast (override sentinels, neither OCCT nor
 # release-sensitive) never appear; POSITIVELY permit the OCCT gated -p and
 # the release-sensitivity -p axes.
+#
+# SENTINEL REQUIREMENT (task 5166): a sentinel here must be absent from BOTH
+# scripts/occt-touching-crates.txt AND scripts/release-sensitive-crates.txt,
+# because --profile both legitimately emits ` -p <crate>` for crates on either
+# list via axes that REIFY_AFFECTED_CRATES_OVERRIDE does not narrow. reify-ir
+# was the sentinel here until it became release-sensitive (release-only
+# check_mesh_contract_welded tests), which tripped the assertion below for a
+# reason unrelated to narrowing. Its replacement must also not be a string
+# PREFIX of another sentinel (reify-doc-build would match ` -p reify-doc`).
+# Task #6391 tracks making these assertions axis-aware so the sentinel choice
+# stops being load-bearing.
 echo ""
 echo "--- Scenario MG-B5: merge gate full (both profiles); OCCT+release -p permitted, no branch-diff narrowing (GREEN, regression guard) ---"
 FIX_MG_B5=""
@@ -1324,7 +1335,7 @@ git -C "$FIX_MG_B5" commit -q -m "task changes"
 # (the file-level REIFY_RELEASE_DELTA_SKIP=0 export near the top of this file
 # keeps this capture's release-pass-present assertion below hermetic against
 # the ambient knob)
-PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ast" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
 assert "MG-B5: scope=all in plan header" \
@@ -1337,8 +1348,8 @@ assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in poo
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
-assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ir"' _ "$PLAN_MG_B5"
+assert "MG-B5: NO -p reify-ast (no branch-diff narrowing in merge gate)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ast"' _ "$PLAN_MG_B5"
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
