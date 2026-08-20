@@ -610,6 +610,47 @@ fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_disciplin
     );
 }
 
+// ── The shared engine constructor every sweep in this file uses ─────────────
+
+/// The ONE engine-construction site every sweep in this file routes through —
+/// the deliberately-undef fixture test, `run_corpus_shard`'s eval sweep,
+/// `build_surface_violations`'s build sweep and `diag_per_file_timing`.
+///
+/// It existed as three hand-copied blocks until the copies drifted (task 5578):
+/// the build sweep registered the shell-extract trampolines and the eval sweep
+/// did not, so the eval sweep was still sweeping
+/// `examples/fea_shell_too_thick_annotated.ri` on a DEGRADED dispatch —
+/// `@optimized target "shell-extract::extract": no registered compute trampoline`
+/// — which is the very defect class this file gates against. One constructor is
+/// what keeps them from drifting again.
+///
+/// The registered arm calls [`Engine::register_production_compute_fns`], the
+/// canonical bundler production uses (`reify-cli`'s `configured_eval_engine`
+/// routes through it), rather than hand-listing individual registrars: a NEW
+/// production trampoline set then reaches these sweeps automatically. The
+/// mesh-morph producer is `Unavailable` because `reify-eval`'s own tests do not
+/// depend on `reify-mesh-morph`; it is a producer-side optimization, not a
+/// dispatch target, so no `@optimized` target goes unregistered because of it.
+///
+/// `register_compute` is an explicit switch, not a convenience knob: `false` is
+/// what lets `seeded_build_surface_sweep_reports_a_planted_violation` reproduce
+/// the task-5578 defect in miniature. Only that self-test may pass `false`.
+///
+/// A fresh [`Engine`] per call, so `register_production_compute_fns`'s
+/// panic-on-double-registration contract is never at risk.
+fn gate_engine(register_compute: bool) -> reify_eval::Engine {
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(reify_test_support::MockGeometryKernel::new())),
+    );
+    if register_compute {
+        engine.register_production_compute_fns(reify_eval::MorphRegistration::Unavailable {
+            reason: "reify-eval's own test harness does not depend on reify-mesh-morph",
+        });
+    }
+    engine
+}
+
 // ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
 
 /// The four fixtures purpose-built for the undef-self-describing PRD family
@@ -649,11 +690,7 @@ fn deliberately_undef_fixtures_report_zero_violations() {
             "{name}.ri should compile without errors: {errors:#?}"
         );
 
-        let mut engine = reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
-        );
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        let mut engine = gate_engine(true);
         engine.eval(&compiled);
 
         let violations = engine.check_no_stale_undef();
@@ -817,11 +854,7 @@ fn run_corpus_shard(shard_index: usize) {
             continue;
         }
 
-        let mut engine = reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
-        );
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        let mut engine = gate_engine(true);
         engine.eval(&compiled);
         let violations = engine.check_no_stale_undef();
 
@@ -985,11 +1018,7 @@ fn diag_per_file_timing() {
         if !errors.is_empty() {
             continue;
         }
-        let mut engine = reify_eval::Engine::new(
-            Box::new(reify_constraints::SimpleConstraintChecker),
-            Some(Box::new(reify_test_support::MockGeometryKernel::new())),
-        );
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        let mut engine = gate_engine(true);
         engine.eval(&compiled);
         let _ = engine.check_no_stale_undef();
         timings.push((t0.elapsed(), display));
@@ -1075,7 +1104,8 @@ const OPTIMIZED_PROBE_SRC: &str = r#"structure def SeededOptimizedProbe {
 /// fails here immediately.
 #[test]
 fn seeded_build_surface_sweep_reports_a_planted_violation() {
-    let (violations, diagnostics) = build_surface_violations(OPTIMIZED_PROBE_SRC, false);
+    let observed = build_surface_violations(OPTIMIZED_PROBE_SRC, false);
+    let (violations, diagnostics) = (&observed.violations, &observed.diagnostics);
 
     assert!(
         diagnostics.iter().any(|d| d.contains(TRAMPOLINE_MISSING)),
@@ -1098,42 +1128,41 @@ fn seeded_build_surface_sweep_reports_a_planted_violation() {
     );
 }
 
+/// What one build()-surface probe observed. Returned as a named struct rather
+/// than a tuple because the third field is the POSITIVE half of the sweep's
+/// contract and a bare `Vec<String>` in tuple position 3 would read as noise.
+struct BuildSurfaceOutcome {
+    /// `check_no_stale_undef` over the post-`build()` engine state.
+    violations: Vec<reify_eval::StaleUndefViolation>,
+    /// Every `BuildResult` diagnostic message, in emission order.
+    diagnostics: Vec<String>,
+    /// Every ComputeNode target present in the post-build evaluation graph,
+    /// sorted + deduped — i.e. what the module actually DISPATCHED. This is
+    /// observed from the graph rather than inferred from the source text, so it
+    /// also sees engine-INSERTED nodes that no stdlib call names (notably
+    /// `shell-extract::extract`, which `elastic_static` wires upstream of itself
+    /// for a shell element and which appears in no `.ri` file at all).
+    dispatched_targets: Vec<String>,
+}
+
 /// Compile `source` through the stdlib prelude, run it through a real
-/// `Engine::build(.., ExportFormat::Step)`, and return
-/// `(post-build stale-Undef violations, the build's diagnostic messages)`.
+/// `Engine::build(.., ExportFormat::Step)`, and report what that build did.
 ///
-/// Engine wiring is `run_corpus_shard`'s, verbatim — a
-/// [`SimpleConstraintChecker`](reify_constraints::SimpleConstraintChecker) plus
-/// a default [`MockGeometryKernel`](reify_test_support::MockGeometryKernel) —
-/// with the terminal `engine.eval(&compiled)` swapped for `engine.build(..)`.
-/// That swap is the whole point: it is precisely the surface half of the
-/// coverage gap task 5578 names, since every sweep above this line only ever
-/// drives `eval()`.
+/// Engine wiring is [`gate_engine`]'s — the same constructor the eval sweep
+/// above uses — with the terminal `engine.eval(&compiled)` swapped for
+/// `engine.build(..)`. That swap is the whole point: it is precisely the surface
+/// half of the coverage gap task 5578 names, since every sweep above this line
+/// only ever drives `eval()`.
 ///
-/// `register_compute` is an explicit switch, not a convenience knob. `false` is
-/// what lets `seeded_build_surface_sweep_reports_a_planted_violation` reproduce
-/// the task-5578 defect in miniature; `true` is what the real sweep drives.
-/// Nothing else may pass `false`.
-///
-/// The registered arm installs BOTH `register_compute_fns` and
-/// `register_shell_extract_compute_fns`, matching production (`reify-cli`'s
-/// `configured_eval_engine` → `register_production_compute_fns`, which calls
-/// both). `run_corpus_shard` above installs only the first — harmless there
-/// because it never asserts on diagnostics, but the sweep below DOES, and
-/// `examples/fea_shell_too_thick_annotated.ri` measurably emits
-/// `@optimized target "shell-extract::extract": no registered compute trampoline`
-/// without the second. That is the same defect this task fixes, so it is fixed
-/// here rather than skipped.
+/// `register_compute` is forwarded to [`gate_engine`] verbatim; see its doc for
+/// why `false` exists and who may pass it.
 ///
 /// A source that fails to COMPILE panics rather than being skipped. That is
 /// deliberate and differs from `run_corpus_shard`'s printed compile-error skip:
 /// this helper only ever runs over an explicit, curated file list, so a compile
 /// error there means the LIST is stale — a defect to surface loudly, not a file
 /// to quietly drop.
-fn build_surface_violations(
-    source: &str,
-    register_compute: bool,
-) -> (Vec<reify_eval::StaleUndefViolation>, Vec<String>) {
+fn build_surface_violations(source: &str, register_compute: bool) -> BuildSurfaceOutcome {
     let compiled = reify_test_support::compile_source_with_stdlib(source);
     let errors = reify_test_support::collect_errors(&compiled.diagnostics);
     assert!(
@@ -1142,22 +1171,39 @@ fn build_surface_violations(
          compile error here means the caller's curated file list is stale: {errors:#?}"
     );
 
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_constraints::SimpleConstraintChecker),
-        Some(Box::new(reify_test_support::MockGeometryKernel::new())),
-    );
-    if register_compute {
-        reify_eval::compute_targets::register_compute_fns(&mut engine);
-        reify_eval::register_shell_extract_compute_fns(&mut engine);
-    }
+    let mut engine = gate_engine(register_compute);
     let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
-    let messages: Vec<String> = result
+    let diagnostics: Vec<String> = result
         .diagnostics
         .iter()
         .map(|d| d.message.clone())
         .collect();
 
-    (engine.check_no_stale_undef(), messages)
+    // `eval_state()` is populated by the cold `eval()` inside `build()`, and the
+    // realization loop mutates only node `produced_*` fields — never graph
+    // topology — so the post-build graph carries every ComputeNode the build
+    // planned. (Same soundness argument the differential harness's `residue_for`
+    // makes for re-reading the post-build graph.)
+    let mut dispatched_targets: Vec<String> = engine
+        .eval_state()
+        .map(|state| {
+            state
+                .snapshot
+                .graph
+                .compute_nodes
+                .iter()
+                .map(|(_, node)| node.target.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    dispatched_targets.sort();
+    dispatched_targets.dedup();
+
+    BuildSurfaceOutcome {
+        violations: engine.check_no_stale_undef(),
+        diagnostics,
+        dispatched_targets,
+    }
 }
 
 /// Non-vacuity companion to `seeded_build_surface_sweep_reports_a_planted_violation`:
@@ -1171,7 +1217,8 @@ fn build_surface_violations(
 /// meaningful.
 #[test]
 fn build_surface_probe_is_clean_when_registered() {
-    let (violations, diagnostics) = build_surface_violations(OPTIMIZED_PROBE_SRC, true);
+    let observed = build_surface_violations(OPTIMIZED_PROBE_SRC, true);
+    let (violations, diagnostics) = (&observed.violations, &observed.diagnostics);
 
     assert!(
         !diagnostics.iter().any(|d| d.contains(TRAMPOLINE_MISSING)),
@@ -1183,6 +1230,20 @@ fn build_surface_probe_is_clean_when_registered() {
         "with the trampolines registered the probe must have zero stale-Undef \
          violations — if `solved` is still reported, the registration switch is \
          not the variable this pair of tests thinks it is: {violations:?}"
+    );
+    // The same positive dispatch pin the real sweep applies per file: prove the
+    // probe still REACHES the @optimized path. Without it, a probe edited into
+    // no longer calling `form_find_free` would satisfy both absence-assertions
+    // above while testing nothing.
+    assert!(
+        observed
+            .dispatched_targets
+            .iter()
+            .any(|t| t == "solver::form_find_free"),
+        "the probe must dispatch a `solver::form_find_free` ComputeNode — \
+         without it neither arm of this pair exercises the @optimized path. \
+         dispatched: {:?}",
+        observed.dispatched_targets
     );
 }
 
@@ -1202,55 +1263,170 @@ fn build_surface_probe_is_clean_when_registered() {
 //      the cost trim the sweep's own purpose licenses: it guards the dispatch
 //      path per TARGET, so a second file hitting an already-covered target buys
 //      no new coverage. Every dropped file is listed with its measured cost and
-//      the target it duplicates in `BUILD_SURFACE_DROPPED_DUPLICATES`, and both
-//      lists are PRINTED at run time.
+//      the target it duplicates in `BUILD_SURFACE_DROPPED_DUPLICATES`.
+//   3. Where a target's ONLY example is disproportionately expensive, substitute
+//      a hand-written minimal probe for it — but only because assertion (3) in
+//      `run_build_surface_sweep` proves the probe still dispatches that exact
+//      target, so a substitution can never quietly become zero coverage. Exactly
+//      one target needed this (`solver::buckling_multi_case`).
+//   4. All three lists, and which `#[test]` runs which case, are PRINTED once by
+//      `build_surface_selection_is_reported_and_consistent` — deliberately in
+//      ONE place rather than by each sweep, so no run ever reports a covering
+//      set larger than the cases it actually built.
 //
 // Measured (debug profile, `--test-threads=1`) the full 18-file list costs
-// 136.63s; the covering set costs ~86s, ~78s of which is the single
-// `buckling_multi_case_smoke` file — which is why that one file gets its own
-// `#[test]` (see `build_surface_buckling_multi_case_has_no_stale_undef`), the
-// same "independent, concurrently-scheduled process with its own PASS/SLOW
-// line" reasoning that made the eval sweep shard into `CORPUS_SHARD_COUNT`.
+// 136.63s. The covering set as selected costs ~15.5s: ~8.5s for the six cheap
+// files plus ~7.0s for the buckling-multi-case probe, which replaced a 78.35s
+// example. The probe keeps its own `#[test]` so it schedules concurrently — the
+// same "independent process with its own PASS/SLOW line" reasoning that made the
+// eval sweep shard into `CORPUS_SHARD_COUNT`.
 //
 // Out of reach here, and deliberately not faked: `dynamics::inverse_dynamics`,
 // `fdm::slice`, `modal::*` and `trajectory::*` have NO `examples/*.ri` caller,
 // so this sweep cannot cover them. They are guarded by their own crate tests.
 
-/// The distinct-target covering set: `(example base name, the @optimized
-/// target(s) it uniquely contributes)`. See the section comment above for how
-/// it was derived and what was dropped.
-const BUILD_SURFACE_OPTIMIZED_EXAMPLES: &[(&str, &str)] = &[
-    (
-        "fea_shell_too_thick_annotated",
-        "solver::elastic_static + shell-extract::extract (15ms — the cheapest \
-         elastic-static caller, and the ONLY example that dispatches shell-extract)",
-    ),
-    ("fdm_bracket", "fdm::as_printed_material_r_fast (204ms — the only caller)"),
-    ("fea_multi_case_bracket", "solver::multi_case (1.10s)"),
-    ("buckling_column_p2", "solver::buckling (6.19s)"),
-    ("tensegrity_cable_net", "solver::form_find (9.8ms)"),
-    (
-        "tensegrity_pavilion",
-        "solver::form_find_free + solver::membrane_load (48.5ms — the only \
-         membrane_load caller)",
-    ),
+/// One member of the bounded build()-surface sweep.
+struct BuildSurfaceCase {
+    /// Base name of the `examples/<name>.ri` file this case builds — also the
+    /// display label and the `BUILD_SURFACE_KNOWN_RESIDUALS` key.
+    name: &'static str,
+    /// The ComputeNode target ids this file is CREDITED with covering.
+    ///
+    /// Structured rather than prose because the sweep ASSERTS each one is
+    /// actually present in the post-build graph. Without that positive check
+    /// both per-file assertions are absence-assertions, and a file later edited
+    /// to drop its solver call (or an engine change that stops inserting an
+    /// upstream node) would keep the sweep green while silently losing that
+    /// target's coverage — bounded coverage quietly reading as full coverage,
+    /// the exact failure this section's selection method exists to prevent.
+    targets: &'static [&'static str],
+    /// Why this file is in the covering set: measured `build()` cost plus what
+    /// it uniquely contributes.
+    why: &'static str,
+    /// `None` — build `examples/<name>.ri`, the default and the honest one.
+    ///
+    /// `Some(src)` — build this hand-written minimal source instead, for a
+    /// target whose only real example is disproportionately expensive. Allowed
+    /// ONLY because assertion (3) proves the substitute still dispatches the
+    /// credited target; a probe that drifted into not dispatching fails rather
+    /// than silently covering nothing. `name` then labels the probe, not a file.
+    probe: Option<&'static str>,
+}
+
+/// The distinct-target covering set, minus the one heavy member below. See the
+/// section comment for how it was derived and what was dropped.
+const BUILD_SURFACE_OPTIMIZED_EXAMPLES: &[BuildSurfaceCase] = &[
+    BuildSurfaceCase {
+        name: "fea_shell_too_thick_annotated",
+        targets: &["solver::elastic_static", "shell-extract::extract"],
+        why: "15ms — the cheapest elastic-static caller, and the ONLY example \
+              that reaches shell-extract (which no .ri file names: the engine \
+              inserts it upstream of a shell elastic_static solve)",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "fdm_bracket",
+        targets: &["fdm::as_printed_material_r_fast"],
+        why: "204ms — the only caller of as_printed_material",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "fea_multi_case_bracket",
+        targets: &["solver::multi_case"],
+        why: "1.10s — cheapest solve_load_cases caller",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "buckling_column_p2",
+        targets: &["solver::buckling"],
+        why: "6.19s — cheapest solve_buckling caller (P2 at a coarse \
+              cross-section; buckling_column_smoke is the same target at 43.96s)",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "tensegrity_cable_net",
+        targets: &["solver::form_find"],
+        why: "9.8ms — cheapest form_find caller",
+        probe: None,
+    },
+    BuildSurfaceCase {
+        name: "tensegrity_pavilion",
+        targets: &["solver::form_find_free", "solver::membrane_load"],
+        why: "48.5ms — the only membrane_load caller, and a form_find_free \
+              caller in the same file",
+        probe: None,
+    },
 ];
 
+/// A hand-written minimal `solver::buckling_multi_case` driver — the same
+/// two-load-case shape as `examples/buckling_multi_case_smoke.ri` on a SHORTER
+/// column, which is what the cost is dominated by (mesh element count along the
+/// span, then the eigensolve on it).
+///
+/// `worst_buckling_case` consumes the result, so a degraded dispatch still
+/// surfaces as a stale-Undef violation here exactly as it would on the real
+/// example. Argument binding is POSITIONAL (`name:` labels are cosmetic), so
+/// `BucklingOptions(n_modes: 1)` binds the FIRST declared param and leaves the
+/// rest at their defaults — see examples/buckling_column_p2.ri's header.
+const BUCKLING_MULTI_CASE_PROBE_SRC: &str = r#"structure BucklingMultiCaseProbe {
+    param length : Length = 200mm
+    param width  : Length = 20mm
+    param height : Length = 20mm
+
+    let material = Steel_AISI_1045()
+
+    let lc1 = LoadCase(
+        name:     "operating",
+        loads:    [PointLoad(point: "top", force: 1000.0)],
+        supports: [FixedSupport(target: "base")],
+    )
+    let lc2 = LoadCase(
+        name:     "overload",
+        loads:    [PointLoad(point: "top", force: 2000.0)],
+        supports: [FixedSupport(target: "base")],
+    )
+
+    let mcbr = solve_buckling_load_cases(
+        material, length, width, height, [lc1, lc2], BucklingOptions(n_modes: 1)
+    )
+    let worst = worst_buckling_case(mcbr)
+}"#;
+
 /// The single covering-set member heavy enough to warrant its own `#[test]`.
-const BUILD_SURFACE_HEAVY_EXAMPLE: &[(&str, &str)] = &[(
-    "buckling_multi_case_smoke",
-    "solver::buckling_multi_case (78.35s — the ONLY example that dispatches this \
-     target, so it cannot be dropped without losing the target entirely; isolated \
-     into its own #[test] so it runs as its own concurrently-scheduled process \
-     rather than serializing ~78s behind the cheap files)",
-)];
+const BUILD_SURFACE_HEAVY_EXAMPLE: &[BuildSurfaceCase] = &[BuildSurfaceCase {
+    name: "buckling_multi_case_probe",
+    targets: &["solver::buckling_multi_case"],
+    why: "6.98s measured, vs 78.35s for examples/buckling_multi_case_smoke.ri — \
+          the only example that reaches this target, and 9x the whole rest of \
+          this sweep for that one target. The probe is the same two-load-case \
+          shape on a 200mm rather than 800mm column; assertion (3) proves it \
+          still dispatches solver::buckling_multi_case, so the substitution \
+          cannot silently become zero coverage. The trampoline itself is \
+          separately covered by \
+          crates/reify-eval-fea-tests/tests/buckling_multi_case.rs; what this \
+          case adds is only the build()-surface half — no stale Undef and no \
+          trampoline-missing diagnostic — which is exactly what the probe \
+          exercises. Still its own #[test] so it schedules concurrently with \
+          the sweep above rather than adding ~7s to it, with its BUILD line \
+          printed BEFORE the build so the window is never a silent gap.",
+    probe: Some(BUCKLING_MULTI_CASE_PROBE_SRC),
+}];
 
 /// Candidate files dropped from the sweep because they duplicate a target the
-/// covering set already reaches. PRINTED on every run — never a silent
+/// covering set already reaches. PRINTED on every run by
+/// `build_surface_selection_is_reported_and_consistent` — never a silent
 /// truncation. Costs are the measured debug-profile `build()` wall clock.
 const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
     ("anisotropic_bar", "3.12s — solver::elastic_static, covered by fea_shell_too_thick_annotated (15ms)"),
     ("buckling_column_smoke", "43.96s — solver::buckling, covered by buckling_column_p2 (6.19s)"),
+    (
+        "buckling_multi_case_smoke",
+        "78.35s — solver::buckling_multi_case, covered by the hand-written \
+         BUCKLING_MULTI_CASE_PROBE_SRC at 6.98s (11x cheaper, same target, \
+         positively asserted). The ONLY entry in this list dropped in favour of \
+         a probe rather than another example: every other target has a cheap \
+         real caller, this one did not.",
+    ),
     ("differential_field_ops", "349ms — solver::elastic_static"),
     ("fea_cantilever_smoke", "410ms — solver::elastic_static"),
     ("fea_multi_case_smoke", "294ms — solver::elastic_static"),
@@ -1283,6 +1459,10 @@ const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
 /// than by file. Cell-level rather than file-level is a deliberate tightening:
 /// a blanket file skip would also suppress a NEW violation in that file and the
 /// trampoline-missing assertion, both of which still apply here.
+///
+/// Every entry's file MUST still be swept — `build_surface_selection_is_reported_and_consistent`
+/// fails on an orphan, so an entry cannot rot into a permanent, never-exercised
+/// exemption by having its file quietly dropped from the covering set.
 const BUILD_SURFACE_KNOWN_RESIDUALS: &[(&str, &str, &str)] = &[(
     "fdm_bracket",
     "FdmBracket.defl_print",
@@ -1298,10 +1478,107 @@ const BUILD_SURFACE_KNOWN_RESIDUALS: &[(&str, &str, &str)] = &[(
      rather than fixed here.",
 )];
 
-/// Shared driver for the build()-surface sweep. `cases` is a slice of
-/// `(example base name, why it is in the covering set)`.
+/// Reports the SELECTION once, and asserts it is internally consistent.
 ///
-/// Two assertions per file, and the second is what this task adds to the class:
+/// Separated from the sweeps deliberately (task 5578 review): a per-sweep banner
+/// printed "N of the 18 @optimized-bearing files, reduced to a covering set"
+/// followed by every DROP line, which was wrong for the heavy sweep — it built
+/// one file and reported the whole selection. The selection is one fact about
+/// the suite, so it is printed by one test; each sweep prints only the files it
+/// actually builds.
+///
+/// The assertions keep the three lists from contradicting each other:
+///
+/// - every `BUILD_SURFACE_KNOWN_RESIDUALS` entry names a file that is actually
+///   swept, so a residual cannot rot into a never-exercised exemption by having
+///   its file dropped from the covering set;
+/// - no file sits in two buckets at once (covered AND dropped);
+/// - every case credits at least one target, since the targets are what the
+///   per-file positive assertion keys off.
+#[test]
+fn build_surface_selection_is_reported_and_consistent() {
+    let covered: Vec<&BuildSurfaceCase> = BUILD_SURFACE_OPTIMIZED_EXAMPLES
+        .iter()
+        .chain(BUILD_SURFACE_HEAVY_EXAMPLE.iter())
+        .collect();
+
+    let probes = covered.iter().filter(|c| c.probe.is_some()).count();
+    eprintln!(
+        "build()-surface coverage is BOUNDED: the 18 @optimized-bearing examples/ \
+         files reduced to a distinct-target covering set of {} case(s) — {} \
+         example file(s) + {probes} hand-written probe(s).",
+        covered.len(),
+        covered.len() - probes
+    );
+    for (case, test) in BUILD_SURFACE_OPTIMIZED_EXAMPLES
+        .iter()
+        .map(|c| (c, "build_surface_optimized_examples_have_no_stale_undef"))
+        .chain(
+            BUILD_SURFACE_HEAVY_EXAMPLE
+                .iter()
+                .map(|c| (c, "build_surface_buckling_multi_case_has_no_stale_undef")),
+        )
+    {
+        let what = match case.probe {
+            Some(_) => format!("probe:{}", case.name),
+            None => format!("examples/{}.ri", case.name),
+        };
+        eprintln!("  COVER {what} {:?} [{test}] — {}", case.targets, case.why);
+    }
+    for (name, why) in BUILD_SURFACE_DROPPED_DUPLICATES {
+        eprintln!("  DROP  examples/{name}.ri — {why}");
+    }
+    for (name, cell, reason) in BUILD_SURFACE_KNOWN_RESIDUALS {
+        eprintln!("  KNOWN RESIDUAL examples/{name}.ri `{cell}` — {reason}");
+    }
+
+    let mut problems: Vec<String> = Vec::new();
+
+    for (name, cell, _) in BUILD_SURFACE_KNOWN_RESIDUALS {
+        if !covered
+            .iter()
+            .any(|c| c.name == *name && c.probe.is_none())
+        {
+            problems.push(format!(
+                "BUILD_SURFACE_KNOWN_RESIDUALS exempts `{cell}` in examples/{name}.ri, but that \
+                 file is in neither BUILD_SURFACE_OPTIMIZED_EXAMPLES nor \
+                 BUILD_SURFACE_HEAVY_EXAMPLE — the exemption is never exercised and will rot. \
+                 Either sweep the file again or delete the residual entry."
+            ));
+        }
+    }
+    for (name, _) in BUILD_SURFACE_DROPPED_DUPLICATES {
+        if covered.iter().any(|c| c.name == *name) {
+            problems.push(format!(
+                "examples/{name}.ri is listed BOTH as covered and as a dropped duplicate — the \
+                 printed selection would contradict itself."
+            ));
+        }
+    }
+    for case in &covered {
+        if case.targets.is_empty() {
+            problems.push(format!(
+                "examples/{}.ri credits no ComputeNode target — the per-file positive dispatch \
+                 assertion keys off `targets`, so an empty list silently reduces the case to two \
+                 absence-assertions.",
+                case.name
+            ));
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "the build()-surface selection lists contradict each other:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// Shared driver for the build()-surface sweep. `cases` is the slice this
+/// invocation actually builds — the printed output names exactly those files and
+/// nothing else; the full selection (covering set + drops) is reported once by
+/// `build_surface_selection_is_reported_and_consistent`.
+///
+/// THREE assertions per file, of which the third is the positive one:
 ///
 /// 1. ZERO stale-Undef violations after a real `build()`, modulo the exact,
 ///    printed `BUILD_SURFACE_KNOWN_RESIDUALS` cells.
@@ -1309,42 +1586,67 @@ const BUILD_SURFACE_KNOWN_RESIDUALS: &[(&str, &str, &str)] = &[(
 ///    4458 guard shape (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`
 ///    asserts the same absence against CLI stderr), applied here against
 ///    `BuildResult.diagnostics`. Never exempted by a residual entry.
+/// 3. Every ComputeNode target this case is CREDITED with in `targets` is
+///    actually present in the post-build graph.
 ///
 /// (2) is not redundant with (1). The trampoline-missing fallback degrades
 /// SILENTLY: it body-inlines an all-required-params sentinel, and whether that
 /// surfaces as a stale-Undef violation depends on whether anything downstream
 /// happens to read the sentinel's fields. A file whose solver result is computed
 /// but never consumed would satisfy (1) while its solver never ran.
-fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
+///
+/// (3) is not redundant with either, and it is the only assertion here that is
+/// not an ABSENCE. (1) and (2) are both satisfied vacuously by a file that
+/// dispatches nothing at all, so without (3) an example edited to drop its
+/// solver call would stay green while the covering set kept crediting it with a
+/// target it no longer reaches.
+fn run_build_surface_sweep(label: &str, cases: &[BuildSurfaceCase]) {
     let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
 
     eprintln!(
-        "{label}: BOUNDED coverage — {} of the 18 @optimized-bearing examples/ \
-         files, reduced to a distinct-target covering set:",
+        "{label}: building {} case(s) — see \
+         build_surface_selection_is_reported_and_consistent for the full covering \
+         set and what was dropped.",
         cases.len()
     );
-    for (name, why) in cases {
-        eprintln!("  COVER examples/{name}.ri — {why}");
-    }
-    for (name, why) in BUILD_SURFACE_DROPPED_DUPLICATES {
-        eprintln!("  DROP  examples/{name}.ri — {why}");
-    }
 
     let mut offenders: Vec<String> = Vec::new();
     let total = std::time::Instant::now();
 
-    for (name, _why) in cases {
-        let path = examples_dir.join(format!("{name}.ri"));
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("reading examples/{name}.ri at {}: {e}", path.display()));
+    for case in cases {
+        let name = case.name;
+        let (label, source) = match case.probe {
+            Some(src) => (format!("probe:{name}"), src.to_string()),
+            None => {
+                let path = examples_dir.join(format!("{name}.ri"));
+                let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("reading examples/{name}.ri at {}: {e}", path.display())
+                });
+                (format!("examples/{name}.ri"), src)
+            }
+        };
+
+        // PRINTED BEFORE the build, not after: a multi-second build whose line
+        // is emitted only on completion is a silent gap — the shape that tripped
+        // the verify pipeline's heartbeat-idle backstop in task 4952 and made the
+        // eval sweep shard in the first place.
+        eprintln!("  BUILD {label} {:?} — {}", case.targets, case.why);
 
         let t0 = std::time::Instant::now();
-        let (violations, diagnostics) = build_surface_violations(&source, true);
+        let observed = build_surface_violations(&source, true);
         let elapsed = t0.elapsed();
 
-        let trampoline_missing: Vec<&String> = diagnostics
+        let trampoline_missing: Vec<&String> = observed
+            .diagnostics
             .iter()
             .filter(|d| d.contains(TRAMPOLINE_MISSING))
+            .collect();
+
+        let missing_targets: Vec<&str> = case
+            .targets
+            .iter()
+            .copied()
+            .filter(|t| !observed.dispatched_targets.iter().any(|d| d == t))
             .collect();
 
         // Residuals are matched EXACTLY, by rendered cell — never by prefix and
@@ -1352,11 +1654,11 @@ fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
         // still fails, and a residual that got fixed fails too (delete it).
         let mut residual_hits: Vec<&str> = Vec::new();
         let mut unexpected: Vec<&reify_eval::StaleUndefViolation> = Vec::new();
-        for v in &violations {
+        for v in &observed.violations {
             let rendered = v.cell.to_string();
             match BUILD_SURFACE_KNOWN_RESIDUALS
                 .iter()
-                .find(|(n, cell, _)| n == name && *cell == rendered)
+                .find(|(n, cell, _)| *n == name && *cell == rendered)
             {
                 Some((_, _, reason)) => residual_hits.push(reason),
                 None => unexpected.push(v),
@@ -1364,9 +1666,10 @@ fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
         }
 
         eprintln!(
-            "  {elapsed:>10.2?}  {name}  ({} violation(s): {} known-residual, {} unexpected; \
-             {} trampoline-missing diagnostic(s))",
-            violations.len(),
+            "  {elapsed:>10.2?}  {label}  (dispatched {:?}; {} violation(s): {} known-residual, \
+             {} unexpected; {} trampoline-missing diagnostic(s))",
+            observed.dispatched_targets,
+            observed.violations.len(),
             residual_hits.len(),
             unexpected.len(),
             trampoline_missing.len()
@@ -1375,9 +1678,19 @@ fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
             eprintln!("    KNOWN RESIDUAL: {reason}");
         }
 
+        if !missing_targets.is_empty() {
+            offenders.push(format!(
+                "  {label}: credited with {missing_targets:?} but the post-build graph \
+                 dispatched none of them (it dispatched {:?}) — either the example stopped \
+                 calling that @optimized fn (its coverage is silently gone: pick another file \
+                 for that target) or the engine stopped inserting the node (a real dispatch \
+                 regression). Do NOT just edit `targets` to match.",
+                observed.dispatched_targets
+            ));
+        }
         if !trampoline_missing.is_empty() {
             offenders.push(format!(
-                "  examples/{name}.ri: {} {TRAMPOLINE_MISSING:?} diagnostic(s) — the \
+                "  {label}: {} {TRAMPOLINE_MISSING:?} diagnostic(s) — the \
                  @optimized dispatch fell back to body-inlining a never-run sentinel, \
                  so the solver did NOT run:\n{}",
                 trampoline_missing.len(),
@@ -1390,7 +1703,7 @@ fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
         }
         if !unexpected.is_empty() {
             offenders.push(format!(
-                "  examples/{name}.ri: {} unexpected stale-Undef violation(s):\n{}",
+                "  {label}: {} unexpected stale-Undef violation(s):\n{}",
                 unexpected.len(),
                 unexpected
                     .iter()
@@ -1402,8 +1715,12 @@ fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
 
         // A residual that stopped reproducing is dead weight — same rule the
         // eval-surface conventions use: delete the entry, don't leave it.
-        for (n, cell, _) in BUILD_SURFACE_KNOWN_RESIDUALS.iter().filter(|(n, _, _)| n == name) {
-            let still_present = violations
+        for (n, cell, _) in BUILD_SURFACE_KNOWN_RESIDUALS
+            .iter()
+            .filter(|(n, _, _)| *n == name)
+        {
+            let still_present = observed
+                .violations
                 .iter()
                 .any(|v| v.cell.to_string() == *cell);
             if !still_present {
@@ -1421,20 +1738,24 @@ fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
     assert!(
         offenders.is_empty(),
         "the build() surface must leave zero stale-Undef violations (modulo the \
-         exact BUILD_SURFACE_KNOWN_RESIDUALS cells) and emit no \
-         {TRAMPOLINE_MISSING:?} diagnostic for every covered example.\n\
+         exact BUILD_SURFACE_KNOWN_RESIDUALS cells), emit no \
+         {TRAMPOLINE_MISSING:?} diagnostic, and actually dispatch every target \
+         its covering-set entry credits it with.\n\
          A trampoline-missing diagnostic means the engine was constructed without \
          the compute-trampoline registrations (task 5578 / 4458); a stale-Undef \
-         violation means a demanded cell was left unevaluated. Do NOT add either \
-         to BUILD_SURFACE_KNOWN_RESIDUALS to make this pass unless the root cause \
-         is genuinely elsewhere and a follow-up task names it.\nOffenders:\n{}",
+         violation means a demanded cell was left unevaluated; a missing target \
+         means the covering set is crediting coverage that is no longer there. \
+         Do NOT add either to BUILD_SURFACE_KNOWN_RESIDUALS to make this pass \
+         unless the root cause is genuinely elsewhere and a follow-up task names \
+         it.\nOffenders:\n{}",
         offenders.join("\n")
     );
 }
 
 /// The build()-surface sweep over the cheap members of the distinct-target
-/// covering set (~7.6s measured). See `run_build_surface_sweep` for the two
-/// per-file assertions and the section comment above for how the set was chosen.
+/// covering set (~8.5s measured). See `run_build_surface_sweep` for the three
+/// per-file assertions and `build_surface_selection_is_reported_and_consistent`
+/// for the selection this slice comes from.
 #[test]
 fn build_surface_optimized_examples_have_no_stale_undef() {
     run_build_surface_sweep(
@@ -1444,10 +1765,12 @@ fn build_surface_optimized_examples_have_no_stale_undef() {
 }
 
 /// The one covering-set member heavy enough to isolate — see
-/// `BUILD_SURFACE_HEAVY_EXAMPLE`. Identical assertions; separate `#[test]` so
+/// `BUILD_SURFACE_HEAVY_EXAMPLE` for why its target cannot simply be dropped and
+/// why a hand-written probe (6.98s) stands in for the 78.35s example that is its
+/// only other dispatcher. Identical assertions; separate `#[test]` so
 /// cargo/nextest schedules it as its own process with its own PASS/SLOW line
-/// instead of adding ~78s to the sweep above (the same reasoning that sharded
-/// the eval sweep into `CORPUS_SHARD_COUNT` independent tests).
+/// instead of adding ~7s to the sweep above (the same reasoning that sharded the
+/// eval sweep into `CORPUS_SHARD_COUNT` independent tests).
 #[test]
 fn build_surface_buckling_multi_case_has_no_stale_undef() {
     run_build_surface_sweep(
