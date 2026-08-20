@@ -625,14 +625,18 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
         entries: still_absent.clone(),
     });
 
+    let severity = pre_done_refusal_severity();
     Some(Finding {
         pattern: Pattern::P5PhantomDone,
-        severity: Severity::High,
+        severity,
         task_id: meta.task_id.clone(),
         summary: format!(
-            "pre-done gate: {} declared metadata.files entr{} neither tracked on main \
+            "{}pre-done gate: {} declared metadata.files entr{} neither tracked on main \
              nor covered by a task-referencing commit's own delta — refusing the \
              done-flip for task {}",
+            // Mark a downgraded refusal so an operator reading a Low in a log
+            // can tell it apart from a naturally-Low rescue.
+            if severity == Severity::High { "" } else { "[warn-only] " },
             still_absent.len(),
             if still_absent.len() == 1 { "y is" } else { "ies are" },
             meta.task_id
@@ -651,6 +655,30 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
 /// runs when something is genuinely absent. Truncation emits a breadcrumb
 /// rather than silently reporting partial coverage as complete.
 const PRE_DONE_SIBLING_SCAN_CAP: usize = 50;
+
+/// Break-glass: `REIFY_AUDIT_PREDONE_WARN_ONLY=1` downgrades the pre-done
+/// landing refusal from High to Low, making the gate advisory without
+/// silencing it — the finding is still emitted on stderr; only the exit code,
+/// which counts Highs, changes.
+///
+/// Why this exists: the gate is fail-closed production infrastructure that had
+/// never emitted a finding until this task. Without an escape hatch, an
+/// operator hit by a misfire must edit
+/// `~/.config/systemd/user/fused-memory.service` and restart fused-memory — a
+/// red-tier restart under a dirty-start guard. Mirrors the house
+/// `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS` convention. Default
+/// is ARMED.
+///
+/// Deliberately scoped to THIS finding only. It must not widen into a general
+/// P5 mute: no sweep finding and no pre-existing High path in [`check_one`]
+/// consults it.
+fn pre_done_refusal_severity() -> Severity {
+    if std::env::var("REIFY_AUDIT_PREDONE_WARN_ONLY").is_ok_and(|v| v == "1") {
+        Severity::Low
+    } else {
+        Severity::High
+    }
+}
 
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
