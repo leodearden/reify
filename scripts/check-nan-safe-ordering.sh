@@ -18,8 +18,30 @@
 # and `.unwrap_or` sit on separate lines (e.g. modal_ops.rs
 # `frequency_ascending_order`). In practice `Ordering::Equal` as an `unwrap_or`
 # fallback is always a comparator fallback; a legitimately-guarded site opts out
-# via the escape below. `f64::total_cmp` produces no `unwrap_or`, so the
-# sanctioned fix is never flagged.
+# via the escape below.
+#
+# ACCEPTED OVER-FLAG (measured, task 5159). This header used to claim that
+# "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix is never
+# flagged". That is false. The fragment match CAN flag a comparator that
+# already uses the sanctioned `f64::total_cmp`, when the `Option<Ordering>`
+# being defaulted comes from `find`/`max_by`/`min_by` instead of from
+# `partial_cmp`:
+#     .map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Equal)
+# There the `unwrap_or` only supplies the "compared equal elementwise" answer
+# for an EXHAUSTED `find`, and no NaN hazard exists. Two such sites are live
+# today — crates/reify-ir/src/value.rs:290 and :309 — both OUTSIDE the covered
+# scope below, so the gate is green on the real tree.
+#
+# The over-flag is RETAINED DELIBERATELY. Narrowing the matcher to require a
+# nearby `partial_cmp` would trade a fail-SAFE false positive (cost: one
+# annotation) for a possible false NEGATIVE (cost: a silently-landed NaN
+# hazard) — the wrong direction for a safety gate — and would also lose the
+# multi-line form this fragment match exists to catch. `// nan-safe:allow —
+# <reason>` is the sanctioned response; for this shape the reason is true and
+# informative ("total_cmp already; unwrap_or defaults an exhausted find, not a
+# partial_cmp") rather than a rubber stamp. Pinned by block (hJ) of
+# tests/infra/test_nan_safe_ordering_guard_wired.sh; rationale recorded in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9".
 #
 # COVERED SCOPE (exactly — mirrors the task 5093 spec): the FEA numeric crates
 # reify-solver-elastic, reify-kernel-gmsh, reify-fdm, reify-shell-extract,
