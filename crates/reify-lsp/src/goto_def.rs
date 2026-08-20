@@ -263,7 +263,10 @@ fn find_type_alias_name_span(source: &str, name: &str) -> Option<SourceSpan> {
         {
             // Point to the name within the declaration, not the entire span.
             let name_offset = find_name_offset_in_decl(source, t.span.start, name);
-            return Some(SourceSpan::new(name_offset, name_offset + name.len() as u32));
+            return Some(SourceSpan::new(
+                name_offset,
+                name_offset + name.len() as u32,
+            ));
         }
     }
     None
@@ -1294,5 +1297,4 @@ mod tests {
             "same-file top-level navigation stays out of scope"
         );
     }
-
 }

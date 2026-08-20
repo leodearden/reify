@@ -2555,7 +2555,10 @@ mod tests {
                 .iter()
                 .map(|s| (s.name.as_str(), s.kind))
                 .collect::<Vec<_>>(),
-            vec![("Speed", SymbolKind::TYPE_PARAMETER), ("S", SymbolKind::STRUCT)],
+            vec![
+                ("Speed", SymbolKind::TYPE_PARAMETER),
+                ("S", SymbolKind::STRUCT)
+            ],
             "symbols must be in source order"
         );
     }

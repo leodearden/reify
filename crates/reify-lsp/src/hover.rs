@@ -1271,8 +1271,8 @@ structure Bolt {
         let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
         // Line 3 is "type F = Fit"; column 5 is the 'F' name token.
         let position = Position::new(3, 5);
-        let md = hover_markdown(source, position)
-            .expect("hover on a type-alias name must return Some");
+        let md =
+            hover_markdown(source, position).expect("hover on a type-alias name must return Some");
         assert!(
             md.contains("```reify\ntype F = Fit\n```"),
             "hover should render the alias signature fence, got: {md}"
@@ -1332,8 +1332,8 @@ structure Bolt {
     fn hover_on_simple_alias_has_no_angle_brackets() {
         let source = "type Nickname = Bool\n";
         let position = Position::new(0, 7); // on 'Nickname'
-        let md =
-            hover_markdown(source, position).expect("hover on a simple type alias must return Some");
+        let md = hover_markdown(source, position)
+            .expect("hover on a simple type alias must return Some");
         assert!(
             md.contains("type Nickname = Bool"),
             "signature must render the alias, got: {md}"
@@ -1385,7 +1385,10 @@ structure Bolt {
         let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
         let position = Position::new(3, 5); // on 'F'
         let md = hover_markdown(source, position).expect("hover must return Some");
-        assert!(md.contains("type F = Fit"), "signature must render, got: {md}");
+        assert!(
+            md.contains("type F = Fit"),
+            "signature must render, got: {md}"
+        );
         assert!(
             !md.contains("resolves to"),
             "no resolves-to line when resolved_type is None, got: {md}"
@@ -1426,12 +1429,11 @@ structure Bolt {
     fn hover_on_type_keyword_shows_description() {
         let source = "type Speed = Length / Time\n";
         let position = Position::new(0, 1); // on the 'type' token
-        let md = hover_markdown(source, position)
-            .expect("hover on the 'type' keyword must return Some");
+        let md =
+            hover_markdown(source, position).expect("hover on the 'type' keyword must return Some");
         assert!(
             md.contains("**type**"),
             "keyword hover should bold the keyword, got: {md}"
         );
     }
-
 }
