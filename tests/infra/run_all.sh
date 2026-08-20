@@ -403,6 +403,47 @@ _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 # `--scope host-infra` (H9) runner and NOT the legacy all-serial path.
 _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 
+# Rule 3 (task #6389) -- dark-factory's OTHER slot anchor: the per-wrapper
+# `<basename>.sh: failed to acquire <what> within <N>s` deadline lines
+# (verify_classify.py `_SLOT_ACQUIRE_DEADLINE_RE`, three-basename allowlist:
+# lib_test_semaphore | cargo-test-occt-gated | lib_lane_x_flock).
+#
+# WHY A THIRD RULE AND NOT A WIDER RULE 2: these lines carry no `@@` token at
+# all, so a prefix rewrite is STRUCTURALLY INAPPLICABLE to them. They are a
+# second, independent route to the same SEMAPHORE_TIMEOUT verdict, and closing
+# only the sentinel half would leave the classification fully reachable.
+#
+# MEASURED GROUNDING (esc-5623): the archived verify log that DF mislabelled as
+# a semaphore starvation contained ZERO anchored sentinels and exactly THREE of
+# these basename lines -- quoted by infra tests, not emitted by a real starved
+# acquire. Removing precisely those three lines flipped `classify_failure` from
+# `semaphore_timeout` to `test_failure`. The basename half was the whole cause.
+#
+# WHY `[quoted]` AND NOT AN INDENT: DF's matcher tolerates LEADING HORIZONTAL
+# WHITESPACE ONLY (`^[ \t]*`), so shifting the line right neutralizes nothing.
+# VERIFIED against the live regex, not assumed -- an indent still matches all
+# four grounded shapes (bare, indented, `ERROR: `-prefixed, and the
+# `within unlimiteds` wart) -- and pinned by test_slot_timeout_marker.sh H2c so
+# a future "just indent it" simplification turns RED. Inserting `[quoted]`
+# breaks the required `\.sh: failed to acquire` literal while keeping the
+# basename, the message, `LOCK=` and `N=` intact, so the diagnostic stays
+# readable and greppable for a human. Unanchored/global for the same reason the
+# clock rule is: the real HG-2 shape is a multi-line capture whose continuation
+# can land at any column.
+#
+# ACCEPTED TRADE-OFF: a GENUINE starved acquire inside a pool MEMBER now loses
+# both anchors from the re-emitted stream. That is the deliberate cost of a
+# systemic layer, and two things carry the load instead -- run_all's own fd-2
+# pool sentinel (below, never sanitized) stays the classifiable signal for the
+# runner's own starvation, and DF's failing-leg scoping means a member that
+# actually aborts on rc=75 still fails loudly with its own FAIL detail.
+#
+# Scope: the same as rules 1 and 2 -- the concurrent-pool re-emission sites
+# below only, NOT `--scope host-infra` (H9) and NOT the legacy all-serial path.
+# run_all's OWN H9 Lane-X acquire failure line uses basename `run_all.sh`,
+# which is outside DF's three-name allowlist, and is deliberately untouched.
+_RA_SLOT_BASENAME_SANITIZE='s/\(lib_test_semaphore\|cargo-test-occt-gated\|lib_lane_x_flock\)\.sh: failed to acquire /\1.sh[quoted]: failed to acquire /g'
+
 # _ra_emit_sanitized <captured-output-file>
 #   cat a captured per-test output file to stdout with the marker families
 #   above neutralized. A missing file is a silent no-op, preserving the prior
@@ -413,7 +454,7 @@ _RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
 #   this chain out of source to derive exactly which rules are applied).
 _ra_emit_sanitized() {
     [ -f "$1" ] || return 0
-    sed -e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" "$1" 2>/dev/null || true
+    sed -e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" -e "$_RA_SLOT_BASENAME_SANITIZE" "$1" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
