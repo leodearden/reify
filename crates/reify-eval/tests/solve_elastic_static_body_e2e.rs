@@ -153,6 +153,90 @@ fn sampled_field(result: &reify_ir::Value, field: &str) -> reify_ir::SampledFiel
     }
 }
 
+/// Install the MULTI-CASE fixtures' compute trampolines + VolumeMesh demand.
+///
+/// Manual registration, NOT `register_compute_fns` — see the module doc's
+/// #4876 boundary-demand rationale. The outer consumer is `solver::multi_case`
+/// (VolumeMesh-demanding, NO boundary demand); each per-case sub-solve routes
+/// through `solver::elastic_static`, so BOTH trampolines are registered.
+#[cfg(has_gmsh)]
+fn register_multi_case_trampolines(engine: &mut reify_eval::Engine) {
+    engine.register_compute_fn(
+        "solver::multi_case",
+        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::multi_case");
+}
+
+/// Install the SINGLE-CASE body fixtures' compute trampoline + VolumeMesh demand.
+///
+/// Manual registration, NOT `register_compute_fns` — see the module doc's
+/// #4876 boundary-demand rationale. Trampoline + VolumeMesh demand ONLY, no
+/// boundary demand (that routes through the #4876-SIGSEGV attributed producer,
+/// which is exactly the path a curved/seamed B-rep is most likely to crash on).
+#[cfg(has_gmsh)]
+fn register_elastic_static_body_trampoline(engine: &mut reify_eval::Engine) {
+    engine.register_compute_fn(
+        "solver::elastic_static",
+        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
+            as reify_eval::ComputeFn,
+    );
+    engine.register_volume_mesh_demand("solver::elastic_static");
+}
+
+/// The ONE realization harness every `#[cfg(has_gmsh)]` body capstone below
+/// shares: compile `source`, `build()` it through the real OCCT+gmsh path, and
+/// hand back BOTH the engine (so a caller can assert on
+/// `realization_kernel_provenance()`) and the `BuildResult`.
+///
+/// `register` installs the fixture's trampolines and demands — the one thing
+/// that genuinely differs between fixtures, and the reason this takes a callback
+/// rather than hardcoding a registration.
+///
+/// `build()` (not `eval()`) realizes geometry through the kernel and runs the
+/// post-hydration redispatch — the only path that projects a VolumeMesh into a
+/// geometry-consuming `@optimized` consumer.
+///
+/// The no-`Severity::Error` assertion lives here because every caller wants it
+/// and none wants it phrased differently; `label` names the fixture in the
+/// failure message.
+#[cfg(has_gmsh)]
+fn build_realized(
+    source: &str,
+    label: &str,
+    register: impl FnOnce(&mut reify_eval::Engine),
+) -> (reify_eval::Engine, reify_eval::BuildResult) {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
+
+    let mut engine = make_occt_engine();
+    register(&mut engine);
+    assert!(
+        engine.ensure_gmsh_kernel(),
+        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
+    );
+
+    let build_result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics from the {label} build — a tessellation or \
+         mesher failure on this fixture's geometry would surface here. got: {errors:?}"
+    );
+
+    (engine, build_result)
+}
+
 /// `cfg(has_gmsh)`: the body-arg `solve_elastic_static` runs on the realized tet
 /// VolumeMesh (task 4870 capstone).
 ///
@@ -345,8 +429,8 @@ structure FeaBodyMultiCase {
 #[cfg(has_gmsh)]
 #[test]
 fn multi_case_body_solve_shares_one_realization_across_cases() {
-    use reify_core::{KernelId, Severity, ValueCellId};
-    use reify_ir::{ExportFormat, ReprKind, Value};
+    use reify_core::{KernelId, ValueCellId};
+    use reify_ir::{ReprKind, Value};
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
@@ -356,43 +440,10 @@ fn multi_case_body_solve_shares_one_realization_across_cases() {
         return;
     }
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(MULTI_CASE_BODY_SOURCE);
-
-    let mut engine = make_occt_engine();
-    // Manual registration — see the module doc. The outer consumer is
-    // solver::multi_case (VolumeMesh-demanding, NO boundary demand); each per-case
-    // sub-solve routes through solver::elastic_static, so BOTH trampolines are
-    // registered. NOT register_compute_fns (that installs the #4876-SIGSEGV
-    // boundary-attributed producer).
-    engine.register_compute_fn(
-        "solver::multi_case",
-        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::multi_case");
-    assert!(
-        engine.ensure_gmsh_kernel(),
-        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
-    );
-
-    // build() (not eval()) realizes geometry through the kernel and runs the
-    // post-hydration redispatch — the only path that projects a VolumeMesh into a
-    // geometry-consuming @optimized consumer.
-    let build_result = engine.build(&compiled, ExportFormat::Step);
-
-    let errors: Vec<_> = build_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error diagnostics from the multi-case body build, got: {errors:?}"
+    let (engine, build_result) = build_realized(
+        MULTI_CASE_BODY_SOURCE,
+        "multi-case body",
+        register_multi_case_trampolines,
     );
 
     // ── (b) EXACTLY ONE (VolumeMesh, Gmsh) realization for the shared body ─────
@@ -686,8 +737,8 @@ structure FeaBodyNonPrismaticMultiCase {
 #[cfg(has_gmsh)]
 #[test]
 fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
-    use reify_core::{KernelId, Severity, ValueCellId};
-    use reify_ir::{ExportFormat, ReprKind, Value};
+    use reify_core::{KernelId, ValueCellId};
+    use reify_ir::{ReprKind, Value};
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
@@ -697,36 +748,12 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
         return;
     }
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(NON_PRISMATIC_BODY_SOURCE);
-
-    let mut engine = make_occt_engine();
-    // Manual registration — see the module doc. Trampoline + VolumeMesh demand
-    // ONLY; NO boundary demand (that routes through the #4876-SIGSEGV attributed
-    // producer, which is exactly the path a curved/seamed B-rep is most likely to
-    // crash on).
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::elastic_static");
-    assert!(
-        engine.ensure_gmsh_kernel(),
-        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
-    );
-
-    let build_result = engine.build(&compiled, ExportFormat::Step);
-
-    // ── (1) no Error diagnostics — the curved body tessellated and tet-meshed ──
-    let errors: Vec<_> = build_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error diagnostics from the non-prismatic body build — a mesher \
-         failure on the curved lateral surface would surface here. got: {errors:?}"
+    // ── (1) no Error diagnostics — the curved body tessellated and tet-meshed;
+    //        `build_realized` carries that assertion for every fixture here.
+    let (engine, build_result) = build_realized(
+        NON_PRISMATIC_BODY_SOURCE,
+        "non-prismatic body",
+        register_elastic_static_body_trampoline,
     );
 
     // ── (2) exactly one (VolumeMesh, Gmsh) realization ────────────────────────
@@ -789,10 +816,14 @@ fn non_prismatic_body_solve_runs_on_realized_volume_mesh() {
 /// Build a fresh OCCT+Gmsh engine with the multi-case FEA trampolines installed,
 /// run `build()` on `source`, and return `(realization_entries delta, build)`.
 ///
-/// Manual registration (`solver::multi_case` + `solver::elastic_static` +
-/// `register_volume_mesh_demand`) — NOT `register_compute_fns`, see the module
-/// doc's #4876 boundary-demand rationale. The delta is taken across the build on
-/// a FRESH engine, so it is attributable to this build alone.
+/// Registration is [`register_multi_case_trampolines`] — NOT
+/// `register_compute_fns`, see the module doc's #4876 boundary-demand rationale.
+/// The delta is taken across the build on a FRESH engine, so it is attributable
+/// to this build alone.
+///
+/// Does NOT go through [`build_realized`]: it must read `cache_stats()` on the
+/// engine BEFORE the build to establish the zero baseline, which a
+/// build-and-return helper cannot expose.
 #[cfg(has_gmsh)]
 fn build_multi_case_and_count_realizations(
     source: &str,
@@ -802,17 +833,7 @@ fn build_multi_case_and_count_realizations(
     let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
 
     let mut engine = make_occt_engine();
-    engine.register_compute_fn(
-        "solver::multi_case",
-        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::multi_case");
+    register_multi_case_trampolines(&mut engine);
     assert!(
         engine.ensure_gmsh_kernel(),
         "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
@@ -1204,61 +1225,31 @@ fn solve_elastic_static_body_e2e_skipped_without_gmsh() {
 
 /// Task #6154 — realize `MULTI_CASE_BODY_SOURCE`'s `box(1000mm, 100mm, 100mm)`
 /// through the OCCT+gmsh path and hand back the "operating" case's
-/// §7a-resampled `displacement` field.
+/// §7a-resampled `displacement` field. `None` ⇒ OCCT is unavailable and the
+/// caller skips.
 ///
-/// Shared by the two #6154 grid-miss tests below so the ~60-line realization
-/// harness is written once. `None` ⇒ OCCT is unavailable and the caller skips.
-///
-/// MEMOIZED: a full OCCT tessellation + gmsh tet-mesh + solve is the most
-/// expensive thing in this file, and every caller wants the same field off the
-/// same fixture. The `OnceLock` makes N callers cost ONE realization (and, since
-/// integration tests share a process, serialises rather than races them).
+/// Deliberately NOT memoized. A full OCCT tessellation + gmsh tet-mesh + solve is
+/// the most expensive thing in this file, so a `OnceLock` looks attractive — but
+/// in a normal run this has exactly ONE live caller
+/// (`realized_box_grid_miss_report_reconciles_with_geometry`; the other is
+/// `#[ignore]`d against #6200), so the cache would never be hit and would cost a
+/// static, a two-function split, and a `&'static` return for nothing. The
+/// realization HARNESS — which is genuinely shared, with the capstones above —
+/// is factored into [`build_realized`] instead; that is where the duplication
+/// actually was.
 #[cfg(has_gmsh)]
-fn realized_box_operating_displacement(caller: &str) -> Option<&'static reify_ir::SampledField> {
+fn realized_box_operating_displacement(caller: &str) -> Option<reify_ir::SampledField> {
+    use reify_ir::Value;
+
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!("skipping {caller}: OCCT not available (no BRep kernel to build the box body)");
         return None;
     }
 
-    static FIELD: std::sync::OnceLock<reify_ir::SampledField> = std::sync::OnceLock::new();
-    Some(FIELD.get_or_init(realize_box_operating_displacement))
-}
-
-/// The uncached realization behind [`realized_box_operating_displacement`].
-#[cfg(has_gmsh)]
-fn realize_box_operating_displacement() -> reify_ir::SampledField {
-    use reify_ir::{ExportFormat, Value};
-
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(MULTI_CASE_BODY_SOURCE);
-
-    // Same harness as `multi_case_body_solve_shares_one_realization_across_cases`
-    // above — see its comment for why the trampolines are registered manually.
-    let mut engine = make_occt_engine();
-    engine.register_compute_fn(
-        "solver::multi_case",
-        reify_eval::compute_targets::multi_case::solve_multi_case_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::multi_case");
-    assert!(
-        engine.ensure_gmsh_kernel(),
-        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
-    );
-
-    let build_result = engine.build(&compiled, ExportFormat::Step);
-    let errors: Vec<_> = build_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == reify_core::Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error diagnostics from the multi-case body build, got: {errors:?}"
+    let (_engine, build_result) = build_realized(
+        MULTI_CASE_BODY_SOURCE,
+        "multi-case body",
+        register_multi_case_trampolines,
     );
 
     let result_cell = reify_core::ValueCellId::new("FeaBodyMultiCase", "result");
@@ -1277,20 +1268,23 @@ fn realize_box_operating_displacement() -> reify_ir::SampledField {
         .get(&Value::String("operating".to_string()))
         .unwrap_or_else(|| panic!("cases map must contain \"operating\""));
 
-    sampled_field(case_val, "displacement")
+    Some(sampled_field(case_val, "displacement"))
 }
 
 /// Task #6154's CYLINDER sibling of [`realized_box_operating_displacement`] —
 /// realize `NON_PRISMATIC_BODY_SOURCE`'s `cylinder(50mm, 200mm)` and hand back
-/// its §7a-resampled `displacement` field. Memoized for the same reason.
+/// its §7a-resampled `displacement` field. Not memoized, for the same reason.
 ///
-/// Not shared with `non_prismatic_body_solve_runs_on_realized_volume_mesh`
-/// above: that test asserts on `engine.realization_kernel_provenance()` after
-/// the build, which this helper deliberately does not expose (returning the
-/// engine would hand callers a live OCCT/gmsh handle to keep alive past the
-/// `OnceLock`). Its build stays its own.
+/// Its build is not shared with `non_prismatic_body_solve_runs_on_realized_volume_mesh`
+/// above — that test asserts on `engine.realization_kernel_provenance()`, which a
+/// field-returning helper cannot hand back without keeping a live OCCT/gmsh
+/// handle alive for its caller — but the HARNESS is: both go through
+/// [`build_realized`] with the same registrar.
 #[cfg(has_gmsh)]
-fn realized_cylinder_displacement(caller: &str) -> Option<&'static reify_ir::SampledField> {
+fn realized_cylinder_displacement(caller: &str) -> Option<reify_ir::SampledField> {
+    use reify_core::ValueCellId;
+    use reify_ir::Value;
+
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
             "skipping {caller}: OCCT not available (no BRep kernel to build the cylinder body)"
@@ -1298,42 +1292,10 @@ fn realized_cylinder_displacement(caller: &str) -> Option<&'static reify_ir::Sam
         return None;
     }
 
-    static FIELD: std::sync::OnceLock<reify_ir::SampledField> = std::sync::OnceLock::new();
-    Some(FIELD.get_or_init(realize_cylinder_displacement))
-}
-
-/// The uncached realization behind [`realized_cylinder_displacement`].
-#[cfg(has_gmsh)]
-fn realize_cylinder_displacement() -> reify_ir::SampledField {
-    use reify_core::{Severity, ValueCellId};
-    use reify_ir::{ExportFormat, Value};
-
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(NON_PRISMATIC_BODY_SOURCE);
-
-    // Same harness as `non_prismatic_body_solve_runs_on_realized_volume_mesh`
-    // above — trampoline + VolumeMesh demand ONLY, no boundary demand (see that
-    // test's #4876-SIGSEGV rationale).
-    let mut engine = make_occt_engine();
-    engine.register_compute_fn(
-        "solver::elastic_static",
-        reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
-            as reify_eval::ComputeFn,
-    );
-    engine.register_volume_mesh_demand("solver::elastic_static");
-    assert!(
-        engine.ensure_gmsh_kernel(),
-        "ensure_gmsh_kernel() must acquire the gmsh adapter from the registry"
-    );
-
-    let build_result = engine.build(&compiled, ExportFormat::Step);
-    let errors: Vec<_> = build_result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no Error diagnostics from the non-prismatic body build, got: {errors:?}"
+    let (_engine, build_result) = build_realized(
+        NON_PRISMATIC_BODY_SOURCE,
+        "non-prismatic body",
+        register_elastic_static_body_trampoline,
     );
 
     let result_cell = ValueCellId::new("FeaBodyNonPrismatic", "result");
@@ -1346,7 +1308,7 @@ fn realize_cylinder_displacement() -> reify_ir::SampledField {
         "non-prismatic body result must be a populated ElasticResult, got: {result_val:?}"
     );
 
-    sampled_field(result_val, "displacement")
+    Some(sampled_field(result_val, "displacement"))
 }
 
 /// Classify a §7a displacement field's out-of-solid grid points and DUMP the
@@ -1510,10 +1472,10 @@ fn realized_box_grid_miss_report_reconciles_with_geometry() {
     else {
         return;
     };
-    let (report, _hist) = classify_and_dump_grid_misses(disp, "realized box");
+    let (report, _hist) = classify_and_dump_grid_misses(&disp, "realized box");
 
     // ── (i) the report describes THIS field, re-derived from `disp.data` ─────
-    assert_report_reconciles_with_field(disp, &report, 3, "realized box");
+    assert_report_reconciles_with_field(&disp, &report, 3, "realized box");
 
     // ── (ii) the grid is the realized one, not the synthetic 854 ────────────
     // Per-AXIS, not just the 2989 product: the interior/face/edge/corner split
@@ -1557,7 +1519,7 @@ fn realized_box_mesh_tiles_its_own_aabb() {
     else {
         return;
     };
-    let (report, hist) = classify_and_dump_grid_misses(disp, "realized box");
+    let (report, hist) = classify_and_dump_grid_misses(&disp, "realized box");
 
     assert_eq!(
         report.missed_interior, 0,
@@ -1638,7 +1600,7 @@ fn realized_cylinder_grid_miss_report_matches_closed_form() {
     else {
         return;
     };
-    let (report, _hist) = classify_and_dump_grid_misses(disp, "realized cylinder");
+    let (report, _hist) = classify_and_dump_grid_misses(&disp, "realized cylinder");
 
     let axes: Vec<usize> = disp.axis_grids.iter().map(|a| a.len()).collect();
     assert_eq!(
@@ -1648,7 +1610,7 @@ fn realized_cylinder_grid_miss_report_matches_closed_form() {
          {REALIZED_CYLINDER_GRID_AXES:?} ({REALIZED_CYLINDER_GRID_NODES} nodes) — the \
          closed form below is derived from exactly this shape; got {axes:?}",
     );
-    assert_report_reconciles_with_field(disp, &report, 3, "realized cylinder");
+    assert_report_reconciles_with_field(&disp, &report, 3, "realized cylinder");
 
     // The 4 cross-section columns whose offsets are (±1/60, ±1/60) m — the only
     // ones inside r = 0.05 m. Every OTHER (ix, iy) column is outside, at all 7
