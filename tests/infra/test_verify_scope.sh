@@ -1288,6 +1288,18 @@ assert "MG-B6a: ungated tail keeps --workspace (override narrowing defeated by r
 # here (a --profile debug merge-gate plan has no ` -p ` on the axis at all), but
 # it removes the twin landmine — MG-B6a was latently safe only because
 # --profile debug emits no release-sensitivity pass.
+#
+# Non-vacuity lower bound, carried over from MG-B5 (#6391): an ABSENCE assertion
+# over a FILTERED line subset is worthless if the filter matches nothing. Without
+# it, a plan_is_narrowing_axis_line model gone stale for the --profile debug shape
+# (say a new flag on the clippy/check/nextest lines tripping the ` --release` or
+# `--features gui` exclusion) would empty the subset and silently retire the guard
+# below, with every assertion still green. MG-B6a's --workspace assertions above
+# mitigate but do not cover this: they are whole-plan greps and never exercise the
+# classifier. >= 2 (clippy + debug nextest) is a lower bound, not an exact count,
+# so adding a narrowable command cannot false-RED it.
+assert "MG-B6a: narrowing axis non-empty (clippy + debug nextest present — the absence assertion below cannot go vacuous)" \
+    test "$(plan_narrowing_axis_count "$PLAN_MG_B6A")" -ge 2
 assert "MG-B6a: narrowing axis carries NO -p selector at all (override narrowing defeated by role-guard)" \
     refute plan_narrowing_axis_match "$PLAN_MG_B6A" " -p reify-"
 
@@ -1356,7 +1368,10 @@ assert "MG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not emp
 # PREFIX of ` -p reify-doc-build`, so a per-crate pattern would need an explicit
 # end anchor. The axis-scoped form below sidesteps this by scoping which LINES
 # are grepped instead of tightening the pattern — do not reintroduce a per-crate
-# grep here without solving the prefix problem first.
+# grep here without solving the prefix problem first. MG-B5-control below is the
+# one place a per-crate pattern IS unavoidable (its job is "THESE override crates
+# reached the axis", which cannot be said crate-agnostically); it solves the trap
+# with an explicit `( |$)` end anchor — see its header before copying its shape.
 #
 # Non-vacuity and classifier drift are covered by Scenario MG-B5-control below,
 # which reruns the SAME fixture and SAME override with only the role/scope varied.
@@ -1438,12 +1453,30 @@ assert "MG-B5-control: NARROW_ACTIVE=1 (narrowing really engaged — the -p pres
     test "$(plan_narrow_active "$PLAN_MG_B5_CONTROL")" = "1"
 assert "MG-B5-control: narrowing axis LACKS --workspace (it was narrowed, not left full)" \
     refute plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" "--workspace"
+# THE PREFIX ANCHOR, and why these three patterns carry `( |$)` while MG-B5's
+# do not. MG-B5 scopes by AXIS and greps the crate-agnostic " -p reify-", so no
+# crate name is load-bearing there. This control cannot do that — its whole job
+# is "THESE override crates reached the axis", so it must name them, which walks
+# straight back into the prefix trap MG-B5's header flags: ` -p reify-doc` is a
+# string PREFIX of ` -p reify-doc-build`, and crates/reify-doc-build is a real
+# crate in this workspace. Unanchored, an off-axis ` -p reify-doc-build` (which
+# reify-doc-build would acquire on the release-sensitivity pass the moment anyone
+# writes a release-only test in it — release sensitivity is GREP-derived, see
+# MG-B5's header) would satisfy the drift guard's pattern and false-RED this
+# scenario for a reason having nothing to do with classifier drift. That is the
+# 2026-07-20 -> 2026-08-20 infra-hold failure mode #6391 exists to retire, so it
+# is closed here rather than left to be rediscovered.
+#
+# `( |$)` is the anchor because plan_narrowing_axis_match / plan_offaxis_match
+# apply `[[ =~ ]]` PER LINE, so `$` binds to end-of-line, not end-of-dump. The
+# ` -p reify-ir` case takes the same anchor for consistency: it has no prefix
+# sibling today, but that is a fact about the current crate list, not a contract.
 assert "MG-B5-control: narrowing axis HAS -p reify-doc (the override DOES reach the axis — MG-B5's absence assertion is not vacuous)" \
-    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" " -p reify-doc"
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
 assert "MG-B5-control: narrowing axis HAS -p reify-ir (same override; a release-sensitive crate reaches the axis when narrowing is active)" \
-    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" " -p reify-ir"
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" ' -p reify-ir( |$)'
 assert "MG-B5-control: NO -p reify-doc off the narrowing axis (classifier drift guard — reify-doc is on neither declared list and on no fixed axis, so an off-axis hit means verify.sh grew a narrowing site plan_is_narrowing_axis_line does not recognise)" \
-    refute plan_offaxis_match "$PLAN_MG_B5_CONTROL" " -p reify-doc"
+    refute plan_offaxis_match "$PLAN_MG_B5_CONTROL" ' -p reify-doc( |$)'
 
 # ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
