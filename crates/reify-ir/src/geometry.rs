@@ -10656,6 +10656,87 @@ mod tests {
         );
     }
 
+    /// The binary STL writer must emit MILLIMETRES: a `[0, 0.030]^3` cube in
+    /// reify's SI-metre model space must land on exactly 0 and exactly 30 in the
+    /// payload, not on 0.03 — the de-facto STL convention every consumer
+    /// (PrusaSlicer, Cura, every mesh viewer) assumes is millimetres.
+    ///
+    /// **Why the bound is exact `==` rather than an epsilon.** The identity
+    /// `0.030_f32 * MM_PER_METRE_F32 == 30.0_f32` is MEASURED, and the table
+    /// establishing it is written out on [`MM_PER_METRE_F32`]: multiplying in
+    /// f32 re-rounds onto the f32 grid at the millimetre magnitude, whose ulp
+    /// (1.9e-6 at 30) is COARSER than the scaled input's deviation from the
+    /// round decimal (6.7e-7 at 30), so the product lands back exactly on the
+    /// decimal. The identical fixture and the identical multiply are already
+    /// pinned GREEN for the 3MF writer by
+    /// `write_3mf_emits_exact_millimetre_coordinates_without_conversion_noise`,
+    /// so the exactness transfers rather than being assumed here. Any epsilon
+    /// loose enough to be worth writing would also admit the f64-route noise
+    /// (`29.999999329447746`) that exactness exists to reject.
+    #[test]
+    fn write_stl_binary_emits_exact_millimetre_vertices() {
+        let mesh = cube_30mm_mesh();
+        let mut buf = Vec::new();
+        write_stl_binary(&mesh, &mut buf).expect("write_stl_binary should succeed");
+
+        // Binary STL: 80-byte header, u32 triangle count at 80..84, then a
+        // 50-byte record per triangle = 12-byte facet normal + 9×f32 vertices
+        // + 2-byte attribute count.
+        let tri_count = le_u32(&buf, 80) as usize;
+        assert_eq!(tri_count, 12, "a 12-triangle cube must emit 12 triangles");
+
+        let mut coords: Vec<[f32; 3]> = Vec::with_capacity(tri_count * 3);
+        for t in 0..tri_count {
+            let tri_base = 84 + t * 50 + 12; // skip the facet normal
+            for v in 0..3 {
+                let o = tri_base + v * 12;
+                coords.push([le_f32(&buf, o), le_f32(&buf, o + 4), le_f32(&buf, o + 8)]);
+            }
+        }
+
+        // (a) Every emitted coordinate is exactly 0 or exactly 30 mm.
+        for (i, c) in coords.iter().enumerate() {
+            for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+                let v = c[axis];
+                assert!(
+                    v == 0.0_f32 || v == 30.0_f32,
+                    "vertex {i} {name} = {v} — a [0, 0.030] m cube must emit exactly 0 or 30 in \
+                     a millimetre-regime binary STL; either the metre→millimetre conversion is \
+                     missing (0.03) or it is introducing avoidable representation noise (see \
+                     MM_PER_METRE_F32)"
+                );
+            }
+        }
+
+        // (b) Both values must actually OCCUR on every axis, so a collapsed or
+        // all-zero payload cannot satisfy (a) vacuously.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            assert!(
+                coords.iter().any(|c| c[axis] == 0.0_f32),
+                "no vertex carries {name} = 0"
+            );
+            assert!(
+                coords.iter().any(|c| c[axis] == 30.0_f32),
+                "no vertex carries {name} = 30"
+            );
+        }
+
+        // (c) ...and the per-axis AABB extent is exactly 30 mm — the physical
+        // quantity a consumer actually reads off the file.
+        for (axis, name) in ["x", "y", "z"].into_iter().enumerate() {
+            let min = coords.iter().map(|c| c[axis]).fold(f32::INFINITY, f32::min);
+            let max = coords
+                .iter()
+                .map(|c| c[axis])
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert_eq!(
+                max - min,
+                30.0_f32,
+                "{name} extent must be exactly 30 mm (min {min}, max {max})"
+            );
+        }
+    }
+
     // ── ASCII serializer unit tests ──────────────────────────────────────────
 
     #[test]
@@ -10843,6 +10924,23 @@ mod tests {
         Mesh { vertices, indices, normals: None }
     }
 
+    /// Helper: [`unit_cube_mesh`]'s `[0,1]^3` corners expressed in reify's
+    /// SI-metre model space as `[0, 0.030]^3` — a 30 mm cube, topology
+    /// unchanged.
+    ///
+    /// Shared by every test that pins an export writer's LENGTH REGIME (3MF and
+    /// both STL writers): 0.030 m is the fixture value whose f32 metre→mm
+    /// conversion is measured on [`MM_PER_METRE_F32`], so the same cube pins
+    /// magnitude and exactness for every writer that makes the millimetre
+    /// promise.
+    fn cube_30mm_mesh() -> Mesh {
+        let mut mesh = unit_cube_mesh();
+        for v in &mut mesh.vertices {
+            *v *= 0.030_f32;
+        }
+        mesh
+    }
+
     #[test]
     fn write_3mf_box_produces_valid_3mf_package() {
         use std::io::Cursor;
@@ -10898,10 +10996,7 @@ mod tests {
     fn read_back_30mm_cube_3mf() -> (String, Vec<[f64; 3]>) {
         use std::io::Cursor;
 
-        let mut mesh = unit_cube_mesh();
-        for v in &mut mesh.vertices {
-            *v *= 0.030_f32;
-        }
+        let mesh = cube_30mm_mesh();
 
         let mut buf = Vec::new();
         write_3mf(&mesh, ThreeMfOptions::default(), &mut buf)
