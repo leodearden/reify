@@ -196,6 +196,24 @@
 #                                       ROW4 confined burns (default: derived at runtime
 #                                       as the LAST confine-cores CPUs of this process's
 #                                       own Cpus_allowed_list; esc-4926-3 ruling)
+#   REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY   set to 1 to exit 0 immediately after the
+#                                       startup stale-slice sweep, with the EXIT
+#                                       trap already installed so teardown still
+#                                       fires (task 5930). Exists so
+#                                       test_govtest_slice_reaper.sh can prove the
+#                                       slice lifecycle is WIRED by driving this
+#                                       script for real, sub-second: a full
+#                                       REIFY_CPU_GOVERN_DISABLE=1 drive measures
+#                                       ~22s wall / ~46s CPU, far too heavy for a
+#                                       member of run_all.sh's concurrent pool.
+#                                       NEVER set in a normal run — it would make
+#                                       this suite vacuously green.
+#   REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS  space-separated pid list that replaces the
+#                                       `kill -0` liveness oracle used by the
+#                                       startup sweep (task 5930; consumed in
+#                                       govtest_slice_reaper_lib.sh). Test seam
+#                                       only — same shape as the
+#                                       REIFY_CPU_GOV_TEST_* seams above.
 
 set -euo pipefail
 
@@ -240,6 +258,19 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # shellcheck source=tests/infra/load_tolerance_lib.sh
 source "$LOAD_TOLERANCE_LIB"
 
+# govtest slice lifecycle (task 5930): owns the naming, the unconditional
+# teardown, and the startup sweep for this run's private reify-govtest$$
+# slices.  MANDATORY, same idiom as the two sources above — without it this
+# script would create systemd user units it has no way to clean up, which is
+# the leak the library exists to close.
+GOVTEST_SLICE_REAPER_LIB="$SCRIPT_DIR/govtest_slice_reaper_lib.sh"
+[ -f "$GOVTEST_SLICE_REAPER_LIB" ] || {
+    echo "ERROR: govtest_slice_reaper_lib.sh not found at $GOVTEST_SLICE_REAPER_LIB" >&2
+    exit 1
+}
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_SLICE_REAPER_LIB"
+
 echo "=== cpu-load-governance integration tests (task 4634) ==="
 
 # ---------------------------------------------------------------------------
@@ -282,10 +313,13 @@ host_supports_governance() {
 # ---------------------------------------------------------------------------
 WORK="$(mktemp -d)"
 # Tracking variables for EXIT cleanup (crash-path protection).
+#
+# NOTE (task 5930): there are deliberately no `_ROW4_*_CREATED` slice-tracking
+# variables here any more.  Slice teardown is UNCONDITIONAL — this run's three
+# unit names are fully determined by `$$` before any cycle runs, so there is
+# nothing to record.  See govtest_slice_teardown in govtest_slice_reaper_lib.sh
+# for why the flags were removed rather than repaired.
 _ALL_MIX_PIDS=""
-_ROW4_SLICE_TASK_CREATED=""
-_ROW4_SLICE_MERGE_CREATED=""
-_ROW4_CONFINE_PARENT_CREATED=""
 
 # ---------------------------------------------------------------------------
 # Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
@@ -312,21 +346,42 @@ _cleanup_all() {
             kill "$_cpid" 2>/dev/null || true
         done
     fi
-    # Stop private ROW4 test slices to avoid lingering systemd session units.
-    if [ -n "${_ROW4_SLICE_TASK_CREATED:-}" ]; then
-        systemctl --user stop "${_ROW4_SLICE_TASK_CREATED}" 2>/dev/null || true
-    fi
-    if [ -n "${_ROW4_SLICE_MERGE_CREATED:-}" ]; then
-        systemctl --user stop "${_ROW4_SLICE_MERGE_CREATED}" 2>/dev/null || true
-    fi
-    # Stop the confined-quota parent slice (H5, task 4926) last, after its
-    # children, to avoid lingering quota'd empty parent units.
-    if [ -n "${_ROW4_CONFINE_PARENT_CREATED:-}" ]; then
-        systemctl --user stop "${_ROW4_CONFINE_PARENT_CREATED}" 2>/dev/null || true
-    fi
+    # Stop this run's private test slices — children first, then the
+    # confined-quota parent (H5, task 4926) — so no lingering systemd session
+    # units are left behind.
+    #
+    # UNCONDITIONAL since task 5930.  This previously consulted three
+    # `_ROW4_*_CREATED` flags, but the parent slice is vivified from FOUR
+    # call sites of _row4_confine_apply_quota while only TWO set the parent
+    # flag, and those two sit behind branches additionally requiring
+    # `taskset` and a readable Cpus_allowed_list — so on a host with cgroup
+    # governance but no `taskset`, the parent was created and never stopped
+    # on a fully GREEN exit.  The names are derivable from `$$` alone and
+    # `systemctl --user stop` on a never-started slice is a harmless no-op,
+    # so there is nothing to track and no call site left that can forget to.
+    govtest_slice_teardown "$$"
     rm -rf "$WORK"
 }
 trap '_cleanup_all' EXIT
+
+# Startup sweep (task 5930) — install the trap FIRST (above) so the sweep
+# itself is covered, then reap any predecessor run's slices left behind by an
+# UNCATCHABLE exit.  Measured: this script's EXIT trap does run on SIGTERM,
+# SIGINT and SIGHUP, so only SIGKILL — a verify timeout, a harness reap, an
+# OOM kill — can strand units, and that residue is exactly what this clears.
+# Never touches a live run's slices (see govtest_stale_units' fail-safe
+# direction), which matters because run_all.sh schedules many lanes against
+# one shared per-user systemd session.
+govtest_reap_stale "$$"
+
+# Lifecycle-only seam (task 5930): exit HERE, after the trap is installed and
+# the sweep has run, so tests/infra/test_govtest_slice_reaper.sh can prove the
+# slice lifecycle is wired by driving this script for real without paying for
+# a full ~22s suite.  Never set in a normal run — see the knob header.
+if [ "${REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY:-0}" = "1" ]; then
+    echo "REIFY_CPU_GOV_TEST_LIFECYCLE_ONLY=1 — exiting after startup sweep (slice-lifecycle drive only)"
+    exit 0
+fi
 
 # ============================================================================
 # Cycle SELF — pure-analyzer + instrument-reuse self-tests.
@@ -1502,10 +1557,7 @@ elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
     echo "  SKIP ROW1-1: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
     _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
-    # Mark for EXIT cleanup — set BEFORE the burn starts so the trap fires
-    # even if the test is killed mid-burn (mirrors ROW4's own ordering).
-    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
-    _ROW4_CONFINE_PARENT_CREATED="$_ROW4_CONFINE_PARENT"
+    # No cleanup marking needed (task 5930): teardown is unconditional.
 
     # Discover the private task-slice cgroup rel-path BEFORE launching the
     # burn (same probe idiom as ROW4 slice discovery).
@@ -1679,11 +1731,7 @@ elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
     echo "  SKIP ROW2_3: own Cpus_allowed_list unreadable — cannot derive confined pin list"
 else
     _row4_confine_apply_quota "$_ROW4_CONFINE_PARENT" "$_ROW4_CONFINE_QUOTA"
-    # Mark for EXIT cleanup — set BEFORE the mix starts so the trap fires
-    # even if the test is killed mid-mix (mirrors ROW1-1/ROW4's ordering).
-    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
-    _ROW4_SLICE_MERGE_CREATED="$_ROW4_SLICE_MERGE"
-    _ROW4_CONFINE_PARENT_CREATED="$_ROW4_CONFINE_PARENT"
+    # No cleanup marking needed (task 5930): teardown is unconditional.
 
     # Mix width (H5, task 4926): confine-cores task-role sources + 1
     # merge-role source — footprint-bound, NOT nproc-scaled (anti-#4901;
@@ -2364,9 +2412,9 @@ EOF_CONFINE_PROBE
     timeout 10 bash "$CPU_GOV_EXEC" --role task -- bash "$WORK/confine_applied_probe.sh" \
         > "$_CONFINE_PROBE_OUT" 2>/dev/null \
         || printf 'OWN:unavailable\nPARENT:unavailable\n' > "$_CONFINE_PROBE_OUT"
-    # Mark for EXIT cleanup — this probe vivifies _ROW4_SLICE_TASK regardless
-    # of whether the main ROW4 orchestration below also runs.
-    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
+    # This probe vivifies _ROW4_SLICE_TASK regardless of whether the main ROW4
+    # orchestration below also runs; no marking needed (task 5930) since
+    # teardown is unconditional.
 
     _CONFINE_OWN_MAX="$(sed -n 's/^OWN://p' "$_CONFINE_PROBE_OUT")"
     _CONFINE_PARENT_MAX="$(sed -n 's/^PARENT://p' "$_CONFINE_PROBE_OUT")"
@@ -2699,10 +2747,7 @@ else
         cgroup_set_slice_weight "$_ROW4_SLICE_TASK" "$_ROW4_W_TASK" 2>/dev/null
         cgroup_set_slice_weight "$_ROW4_SLICE_MERGE" "$_ROW4_W_MERGE" 2>/dev/null
     ) || true
-    # Mark private slices for EXIT cleanup (set BEFORE burns start so the
-    # trap fires even if the test is killed mid-burn).
-    _ROW4_SLICE_TASK_CREATED="$_ROW4_SLICE_TASK"
-    _ROW4_SLICE_MERGE_CREATED="$_ROW4_SLICE_MERGE"
+    # No cleanup marking needed (task 5930): teardown is unconditional.
 
     # (c) Launch concurrent contention burns FIRST (before sampling), then
     #     bracket the usage_usec delta over a steady-state window only.
