@@ -1335,7 +1335,7 @@ git -C "$FIX_MG_B5" commit -q -m "task changes"
 # (the file-level REIFY_RELEASE_DELTA_SKIP=0 export near the top of this file
 # keeps this capture's release-pass-present assertion below hermetic against
 # the ambient knob)
-PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ast" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
+PLAN_MG_B5="$(cd "$FIX_MG_B5" && DF_VERIFY_ROLE=merge REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc reify-ir" bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_MG_B5" checkout -q main
 git -C "$FIX_MG_B5" branch -q -D task-branch
 assert "MG-B5: scope=all in plan header" \
@@ -1348,8 +1348,8 @@ assert "MG-B5: nextest --workspace pass has NO --exclude (task 4451: OCCT in poo
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--exclude"' _ "$PLAN_MG_B5"
 assert "MG-B5: NO -p reify-doc (no branch-diff narrowing in merge gate)" \
     bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-doc"' _ "$PLAN_MG_B5"
-assert "MG-B5: NO -p reify-ast (no branch-diff narrowing in merge gate)" \
-    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ast"' _ "$PLAN_MG_B5"
+assert "MG-B5: NO -p reify-ir (no branch-diff narrowing in merge gate)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE " -p reify-ir"' _ "$PLAN_MG_B5"
 assert "MG-B5: no cargo-test-occt-gated.sh in plan (task 4451: OCCT folded into nextest pool)" \
     bash -c '! printf "%s\n" "$1" | grep -qE "cargo-test-occt-gated\.sh"' _ "$PLAN_MG_B5"
 assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: release scope)" \
