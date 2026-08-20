@@ -113,7 +113,11 @@ fn von_mises(args: &[Value]) -> Value {
 /// minimum principal stresses (ascending eigenvalues of the symmetric stress
 /// tensor: `eigs[2]` and `eigs[0]`).
 ///
-/// Returns `f64::NAN` if eigenvalue decomposition fails (e.g. all-NaN window).
+/// Returns `f64::NAN` if eigenvalue decomposition fails. Since task #6376 that
+/// is a LIVE path, not a defensive-only one: `compute_eigenvalues_3x3` fails
+/// closed to `None` for any non-finite window (out-of-solid FEA sentinel), and
+/// this `None => f64::NAN` arm is what turns that into the NaN sentinel the
+/// downstream `is_finite()` gates already skip.
 ///
 /// `pub` so the formula has a single home — the `max_shear` builtin (below),
 /// AND the cross-crate MaxShear field reduction in
@@ -135,7 +139,17 @@ pub fn compute_max_shear_3x3(d: &[f64]) -> f64 {
 /// are computed trigonometrically and the third is recovered from the trace
 /// constraint (trace = λ₁ + λ₂ + λ₃), which avoids precision loss at repeated roots.
 ///
-/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending.
+/// Returns `Some([λ₁, λ₂, λ₃])` sorted ascending when every entry this
+/// function READS (`d[0]`, `d[1]`, `d[2]`, `d[4]`, `d[5]`, `d[8]`) is finite,
+/// and `None` when any of them is not — the out-of-solid sentinel windows the
+/// FEA elaborator emits are the motivating input. Failing closed here is what
+/// keeps a NaN out of the ascending sort below (INV-FEA-3, task #6376); every
+/// caller already maps `None` to the `f64::NAN` sentinel their downstream
+/// `is_finite()` gates skip.
+///
+/// NO `tracing::warn` on the `None` path, deliberately. A non-finite window is
+/// a DESIGNED sentinel evaluated once per grid point across millions of points,
+/// so logging it would flood rather than inform. Do not "restore" a warn here.
 ///
 /// `pub` for cross-crate reuse from:
 /// - `crates/reify-stdlib/src/fea.rs::envelope_max_principal` — per-grid-point
@@ -175,6 +189,26 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
         d[5],
         d[7]
     );
+
+    // INV-FEA-3 / task #6376 — FAIL CLOSED on a non-finite window.
+    //
+    // Guards exactly the SIX entries this function reads (d[0], d[1], d[2],
+    // d[4], d[5], d[8]).  Deliberately NOT `d.iter().take(9).all(is_finite)`:
+    // the UNREAD lower triangle (d[3], d[6], d[7]) may legitimately be NaN
+    // while the read six are finite, and rejecting that case would change
+    // existing behaviour.
+    //
+    // Placement is also deliberate — AFTER the symmetry `debug_assert!` above,
+    // so that assert keeps its explicit NaN tolerance for the unread entries.
+    if !d[0].is_finite()
+        || !d[1].is_finite()
+        || !d[2].is_finite()
+        || !d[4].is_finite()
+        || !d[5].is_finite()
+        || !d[8].is_finite()
+    {
+        return None;
+    }
 
     let a00 = d[0];
     let a11 = d[4];
