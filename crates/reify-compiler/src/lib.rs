@@ -545,6 +545,58 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     let decl_refs = compile_builder::pre_pass::collect_decl_refs(&mut compile_ctx, parsed);
 
+    // #5429 / PRD docs/prds/v0_6/uniform-member-access.md §4 M5, D8: a MODULE-LOCAL
+    // `enum N` shadows a PRELUDE `structure def N` in declared-type positions, so
+    // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than being
+    // conflated with std.tolerancing's `structure def Fit` (stdlib/tolerancing.ri:268).
+    //
+    // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
+    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
+    // `phase_entities` alone made a trait requirement / fn signature param keep
+    // `Type::StructureRef("Fit")` while the conforming structure's param became
+    // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
+    // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
+    //
+    // Installed HERE — immediately after `collect_decl_refs`, before every resolving
+    // phase — for the same reason, one notch earlier (#6394; PRD
+    // docs/prds/v0_6/enum-shadow-coherence.md §2 R4 / §3 D1). This is the earliest
+    // point at which BOTH set inputs are final: `ctx.enum_defs` and
+    // `ctx.seen_entity_names` are seeded by `pre_pass::collect_decl_refs`, and
+    // `resolve_enum_variant_payloads` rewrites payloads, never names. Installing it
+    // after that phase instead left enum-variant payload resolution as the ONE
+    // declared-type position in a module that could not see the shadow set: a payload
+    // field typed by a shadowed name lowered to `Type::StructureRef(N)` while every
+    // param/let/fn/trait position lowered to `Type::Enum(N)`, so handing that
+    // payload's `match` binder to a same-typed `fn` param failed overload resolution
+    // ("no matching overload for use_fit(Fit), candidates: use_fit(Enum(Fit))").
+    // Oracles: `enum_ctor_param_binding_tests::{shadow_payload_field_lowers_to_enum_type,
+    // shadow_payload_binder_fixture_has_no_errors}`. The phases this newly covers
+    // besides `resolve_enum_variant_payloads` are inert with respect to the override:
+    // `phase_units` does no type resolution, `phase_aliases` hard-codes empty name
+    // sets and never enters `resolve_type_expr_with_aliases_kinded` where the override
+    // lives, `build_resolution_names` only builds name sets, and
+    // `build_resolution_enums_from_cache` is a clone.
+    //
+    // The set-construction rules (local-only, minus local structure names) live in ONE
+    // place — see `enums_phase::build_local_enum_shadow_set`.
+    //
+    // Absorption note (PRD §3 D8 / C4): stdlib-namespace α #5493 folds
+    // `build_local_enum_shadow_set` into the NS-P1/P3 shared policy point, so the
+    // shadow set becomes one input to that resolver rather than a standalone
+    // thread-local. This install site is the fold target — a fold, not an excavation.
+    //
+    // Bound to a leading-underscore NAME, never `let _ = …` (which would drop the
+    // guard immediately and make the scope a silent no-op). It drops at the end of
+    // this function, leaving the ambient set empty for every other caller. This is
+    // orthogonal to the `EnumNameScope` guards that `functions.rs`/`entity.rs`
+    // install: that set is a LAST-RESORT fallback consulted only after the
+    // structure-name arm fails, whereas this one OVERRIDES that arm's result — they
+    // are separate thread-locals and compose without interfering.
+    let _local_enum_shadow_scope = crate::type_resolution::LocalEnumShadowScope::new(
+        compile_builder::enums_phase::build_local_enum_shadow_set(&compile_ctx),
+    );
+
     compile_builder::units_phase::phase_units(&mut compile_ctx, prelude_refs, &decl_refs.unit_refs);
     // Mirror the resolution_enums gate (lib.rs:270-277): when prelude_refs is
     // empty (#no_prelude pragma or empty prelude), pass &[] so prelude aliases
@@ -623,36 +675,6 @@ pub fn compile_with_prelude_context_checked_with_config(
     compile_builder::enums_phase::build_resolution_enums_from_cache(
         &mut compile_ctx,
         prelude_enums,
-    );
-
-    // #5429 / PRD docs/prds/v0_6/uniform-member-access.md §4 M5, D8: a MODULE-LOCAL
-    // `enum N` shadows a PRELUDE `structure def N` in declared-type positions, so
-    // `enum Fit` + `param fit : Fit` lowers to Type::Enum("Fit") rather than being
-    // conflated with std.tolerancing's `structure def Fit` (stdlib/tolerancing.ri:268).
-    //
-    // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
-    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
-    // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
-    // `phase_entities` alone made a trait requirement / fn signature param keep
-    // `Type::StructureRef("Fit")` while the conforming structure's param became
-    // `Type::Enum("Fit")` — conformance and overload resolution then rejected the
-    // pair, turning a previously-WARNING module into a hard ERROR (esc-5429-1).
-    //
-    // Placed here because both inputs are final: `ctx.enum_defs` and
-    // `ctx.seen_entity_names` are seeded by `pre_pass::collect_decl_refs` and
-    // `resolve_enum_variant_payloads` has already run. The set-construction rules
-    // (local-only, minus local structure names) live in ONE place — see
-    // `enums_phase::build_local_enum_shadow_set`.
-    //
-    // Bound to a leading-underscore NAME, never `let _ = …` (which would drop the
-    // guard immediately and make the scope a silent no-op). It drops at the end of
-    // this function, leaving the ambient set empty for every other caller. This is
-    // orthogonal to the `EnumNameScope` guards that `functions.rs`/`entity.rs`
-    // install: that set is a LAST-RESORT fallback consulted only after the
-    // structure-name arm fails, whereas this one OVERRIDES that arm's result — they
-    // are separate thread-locals and compose without interfering.
-    let _local_enum_shadow_scope = crate::type_resolution::LocalEnumShadowScope::new(
-        compile_builder::enums_phase::build_local_enum_shadow_set(&compile_ctx),
     );
 
     compile_builder::functions_phase::phase_functions(

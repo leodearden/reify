@@ -346,9 +346,16 @@ pub(crate) fn build_resolution_enums_from_cache(
 /// `enum_ctor_param_binding_tests::{trait_member_typed_by_shadowing_local_enum_conforms,
 /// fn_param_typed_by_shadowing_local_enum_resolves_call}`.
 ///
-/// Both inputs are final from `pre_pass::collect_decl_refs` onward, so the call
-/// site only needs to sit after that (it sits after
-/// [`build_resolution_enums_from_cache`], alongside the other enum-set setup).
+/// Both inputs are final from `pre_pass::collect_decl_refs` onward, and the call
+/// site sits immediately after it (task #6394; PRD
+/// `docs/prds/v0_6/enum-shadow-coherence.md` §2 R4 / §3 D1), so the resulting
+/// scope covers the WHOLE resolving pipeline — including
+/// [`resolve_enum_variant_payloads`], which previously ran ahead of the install
+/// and left an enum-variant payload field typed by a shadowed name at
+/// `Type::StructureRef(N)` while every other declared-type position lowered to
+/// `Type::Enum(N)`. Oracles:
+/// `enum_ctor_param_binding_tests::{shadow_payload_field_lowers_to_enum_type,
+/// shadow_payload_binder_fixture_has_no_errors}`.
 pub(crate) fn build_local_enum_shadow_set(ctx: &CompilationCtx) -> HashSet<String> {
     let local_structure_names: HashSet<&str> = ctx
         .seen_entity_names
