@@ -2285,6 +2285,95 @@ echo ""
 echo ""
 echo "=== G: every deadline-capable SITE inside a static-only roster member diverts its stderr (static) ==="
 
+# THE INVARIANT SECTION G ASSERTS, and how it differs from D4's.
+#
+# Section F derives the roster of deadline-capable suites; D_ROSTER_MODE splits
+# it into the three BEHAVIOURAL members Section D actually forks and contends,
+# and the EIGHT STATIC-ONLY ones it does not. For the behavioural three, D4
+# already reads the member's SOURCE and proves the deadline-forcing invocation
+# still captures stderr. For the static-only eight, nothing did -- Section F's
+# SCOPE (1) recorded that as a deliberate, tracked gap. Section G closes it:
+# for each static-only member, EVERY deadline-capable site in the file it
+# actually execs from must divert its stderr away from the inherited fd 2.
+#
+# TWO DELIBERATELY DIFFERENT GRAMMARS, and the difference is not an oversight:
+#   D4 (behavioural three) asserts EVIDENCE PRESERVATION. Its D_CAPTURE_RE is
+#   file-only ('2>"?\$'): `2>/dev/null` destroys the evidence a failing assert
+#   needs, and `2>&1` merges the sentinel back into the stream run_all Phase 3
+#   re-emits. Those three members are the ones whose OWN failures this suite
+#   must be able to diagnose, so the stricter property is the right one there.
+#   Section G (static-only eight) asserts only the LEAK property: the
+#   invocation's stderr does not reach the inherited fd 2. `2>/dev/null` and a
+#   `2>&1` whose stdout is itself diverted both satisfy that, and both are
+#   shapes the real members use -- six of test_slot_event_log.sh's seven sites
+#   route to /dev/null (recorded beside D_ROSTER_MODE as the exact reason
+#   including it behaviourally would have forced weakening D4's grammar).
+#   Applying D4's strict grammar here would have demanded rewriting eight
+#   suites to satisfy a property they do not need; applying G's lax grammar
+#   there would have silently weakened the three that do. G2e below pins that
+#   the two grammars did not leak into each other.
+#
+# SCOPE, stated rather than left implied. Section G is WHOLE-FILE (D4 is
+# section-sliced), and it proves diversion at the SITE. It does not prove the
+# member never re-emits a capture through some later channel -- the
+# bare-variable description channel measured at
+# run_all_ambient_isolation_lib.sh:106 and test_verify_env_ambient_isolation.sh
+# :189 is a separate, still-open leak, filed as tkt_0RSN3SGERQF3E3KD04D71G6W8R
+# / esc-6291-1 and out of scope here (see the note beside D_ROSTER_MODE).
+#
+# THE COVERAGE TABLE. Three index-aligned arrays; G_SCAN arrives in its own
+# commit below. G_SITE holds each member's deadline-capable site TARGET token,
+# NOT a whole ERE -- the exec-position anchor is prefixed to every entry by the
+# real-tree arm, so a target here can never accidentally match a `test -f
+# "$RUN_ALL"` or a `case` pattern. Each entry carries the member's derived
+# route and why that token IS its deadline-capable invocation.
+G_MEMBERS=(
+    # Second-order route via test_run_all.sh (TARGET bound :93). The site here
+    # is the FORWARDING call; step-8's G_SCAN indirection redirects the scan to
+    # the lib that actually execs it.
+    test_run_all_ambient_isolation.sh
+    # Route run_all.sh: RUN_ALL bound :31, `bash "$RUN_ALL"` :96, whose pool
+    # worker calls slot_acquire against the finite REIFY_RUN_ALL_POOL_WAIT.
+    test_run_all_clock_marker_sanitize.sh
+    # Route run_all.sh: RUN_ALL bound :25, invoked :86 and :387.
+    test_run_all_content_skip.sh
+    # Route run_all.sh under a different variable name: REAL_RUN_ALL bound :69
+    # (RUN_ALL there names a WRAPPER fixture, not the real thing -- hence the
+    # distinct target), invoked :122 and :126.
+    test_run_all_pool_lock_host_global.sh
+    # Route run_all.sh: RUN_ALL bound :19; Test 24 forces a real pool deadline
+    # every green run (30s holder on slot-1 vs REIFY_RUN_ALL_POOL_WAIT=2).
+    test_run_all.sh
+    # DIRECT route: it execs the acquire wrappers themselves, bound at :17-19
+    # (LIB=lib_slot_acquire.sh, SEM=lib_test_semaphore.sh,
+    # OCCT=cargo-test-occt-gated.sh), whose WAIT defaults are finite.
+    test_slot_event_log.sh
+    # Route test_occt_flock_gate.sh -- itself a behavioural D_MEMBERS entry --
+    # exec'd at :177 by its literal path.
+    test_verify_env_ambient_isolation.sh
+    # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
+    # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
+    # :528), but its deadline-capable INVOCATION is scripts/verify.sh -- and
+    # scripts/ is deliberately outside Section F's node set (SCOPE (2)(i)). A
+    # site predicate derived from F's node/edge grammar therefore yields ZERO
+    # sites for this file: a vacuously green check on exactly the member whose
+    # subshell-scoped capture shape (`) 2>"$C_ERR"`) is what SCOPE (1) named
+    # and what this task was filed to cover. G3's per-member non-vacuity assert
+    # is what keeps a declared target honest in place of that derivation.
+    test_verify_semaphore_e2e.sh
+)
+# Index-aligned with G_MEMBERS.
+G_SITE=(
+    'ambient_isolation_check_one[[:blank:]]'
+    '"\$RUN_ALL"'
+    '"\$RUN_ALL"'
+    '"\$REAL_RUN_ALL"'
+    '"\$RUN_ALL"'
+    '"\$(SEM|OCCT|LIB)"'
+    '"\$SCRIPT_DIR/test_occt_flock_gate\.sh"'
+    '"\$REPO_ROOT/scripts/verify\.sh"'
+)
+
 # G0 FIRST -- the COMPLETENESS assert, before any per-member check.
 #
 # Section G's per-member checks below run off a hand-declared table (G_MEMBERS
