@@ -213,6 +213,48 @@ refuse() {
     exit 1
 }
 
+# ── sqlite3 must not inherit reify's native-deps LD_LIBRARY_PATH ─────────────
+#
+# /opt/reify-deps/lib ships libsqlite3.so.3.53.1 alongside OCCT, and reify's own
+# tooling PREPENDS that directory to LD_LIBRARY_PATH (.cargo/run-with-occt.sh;
+# the merge-verify environment mirrors it). The system sqlite3 (3.45.1) is
+# dynamically linked against /lib/x86_64-linux-gnu/libsqlite3.so.0, so under that
+# environment it loads the 3.53.1 library and aborts BEFORE running any query:
+#
+#     SQLite header and source version mismatch
+#
+# exiting 1 with EMPTY stdout. Every gate below reads its answer from that
+# stdout, so an unguarded call is indistinguishable from "the query returned
+# nothing" — which is exactly the shape of a missing index, an empty husk, or a
+# zero symbol count. The gate would refuse over a perfectly healthy index.
+#
+# Measured 2026-08-20: this is precisely what failed the merge gate while this
+# same suite passed twice locally. A host whose PATH resolves a STATICALLY linked
+# sqlite3 (e.g. the Android SDK's) is immune, which is why two clean local runs
+# never saw it. Do not "simplify" this back to a bare `sqlite3` call.
+#
+# Only the native-deps entry is dropped — every other LD_LIBRARY_PATH entry is
+# preserved, so a sqlite3 installed in a custom prefix keeps resolving its own
+# libraries. Parsed without IFS/glob tricks so a path containing whitespace or a
+# glob metacharacter cannot corrupt the result.
+JC_DEPS_LIB="${REIFY_DEPS_LIB:-/opt/reify-deps/lib}"
+
+jc_sqlite3() {
+    local filtered="" rest="${LD_LIBRARY_PATH:-}" d
+    while [ -n "$rest" ]; do
+        d="${rest%%:*}"
+        if [ "$d" = "$rest" ]; then rest=""; else rest="${rest#*:}"; fi
+        if [ -n "$d" ] && [ "${d%/}" != "${JC_DEPS_LIB%/}" ]; then
+            filtered="${filtered:+$filtered:}$d"
+        fi
+    done
+    if [ -n "$filtered" ]; then
+        LD_LIBRARY_PATH="$filtered" sqlite3 "$@"
+    else
+        env -u LD_LIBRARY_PATH sqlite3 "$@"
+    fi
+}
+
 # ── The symbol-count gate ────────────────────────────────────────────────────
 #
 # PRD §4.3: index PRESENCE proves nothing. `delete-index` leaves a husk that
@@ -227,7 +269,7 @@ refuse() {
 # it. mode=ro also means we can never create the file by probing it — a
 # would-be false GREEN on a missing index.)
 db_query() {
-    sqlite3 "file:${DB_PATH}?mode=ro" "$1"
+    jc_sqlite3 "file:${DB_PATH}?mode=ro" "$1"
 }
 
 # ── The identity-hijack diagnostic (esc-6107-6/-7) ───────────────────────────
@@ -248,7 +290,7 @@ hijack_note() {
     for db in "$CODE_INDEX_DIR"/*.db; do
         [ -f "$db" ] || continue
         case "$db" in "$DB_PATH") continue ;; esac
-        meta_root="$(sqlite3 "file:${db}?mode=ro" \
+        meta_root="$(jc_sqlite3 "file:${db}?mode=ro" \
             "select value from meta where key='source_root'" 2>/dev/null)" || continue
         [ "$meta_root" = "$PROJECT_ROOT" ] || continue
         printf ' NOTE: %s already indexes this exact source_root, i.e. identity resolution landed on %s instead. Almost always one of: (a) JCODEMUNCH_GIT_ROOT_IDENTITY=0 did not reach the indexer, or (b) that pre-existing index short-circuits git_root.py:174-178 ahead of the configured mode — delete it and re-run.' \

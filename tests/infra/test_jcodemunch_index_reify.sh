@@ -135,6 +135,36 @@ check_distinct_ids() {
 # :39 symbols, :68 files with `path TEXT PRIMARY KEY`) — only the columns these
 # gates read are reproduced.
 #
+# t_sqlite3 — the fixture-side mirror of the script's jc_sqlite3.
+#
+# The fixtures below BUILD sqlite DBs, so they hit the same trap the script does:
+# under reify's native-deps LD_LIBRARY_PATH (/opt/reify-deps/lib, which ships
+# libsqlite3.so.3.53.1) a dynamically linked system sqlite3 aborts with "SQLite
+# header and source version mismatch" before executing any statement. That is
+# what turned this suite red in the merge gate on 2026-08-20 while it passed
+# locally, where PATH resolved a statically linked sqlite3.
+#
+# Deliberately a SEPARATE implementation rather than sourcing the script's copy:
+# these fixtures must keep working even if the script's helper is the thing under
+# test (or is broken), so the guard cannot depend on the artifact it guards.
+T_DEPS_LIB="${REIFY_DEPS_LIB:-/opt/reify-deps/lib}"
+
+t_sqlite3() {
+    local filtered="" rest="${LD_LIBRARY_PATH:-}" d
+    while [ -n "$rest" ]; do
+        d="${rest%%:*}"
+        if [ "$d" = "$rest" ]; then rest=""; else rest="${rest#*:}"; fi
+        if [ -n "$d" ] && [ "${d%/}" != "${T_DEPS_LIB%/}" ]; then
+            filtered="${filtered:+$filtered:}$d"
+        fi
+    done
+    if [ -n "$filtered" ]; then
+        LD_LIBRARY_PATH="$filtered" sqlite3 "$@"
+    else
+        env -u LD_LIBRARY_PATH sqlite3 "$@"
+    fi
+}
+
 # The fixture is placed at the path the UPSTREAM derivation names (via
 # recompute_repo_name), not at one the script computes. So if the script's
 # identity derivation ever drifts, it looks in the wrong place and these gates
@@ -158,7 +188,7 @@ mk_index_db() {
             echo "insert into files values('f$i.rs');"
         done
         echo 'commit;'
-    } | sqlite3 "$db" || return 1
+    } | t_sqlite3 "$db" || return 1
     printf '%s\n' "$db"
 }
 
@@ -174,6 +204,26 @@ with_index_path() {
     export CODE_INDEX_PATH="$dir"
     "$@" || rc=$?
     if [ "$had" = "set" ]; then export CODE_INDEX_PATH="$prev"; else unset CODE_INDEX_PATH; fi
+    return "$rc"
+}
+
+# with_ld_poison <ld_dir> <deps_dir> <checker> [args...] — run <checker> with
+# LD_LIBRARY_PATH pointed at <ld_dir> and REIFY_DEPS_LIB at <deps_dir>, restoring
+# both (including unset-ness) afterwards. Same shape as with_index_path above.
+#
+# Two knobs rather than one because the DIFFERENCE between them is the whole
+# test: the script strips exactly $REIFY_DEPS_LIB from LD_LIBRARY_PATH, so
+# pointing them at the same dir exercises the fix and pointing them apart
+# exercises the unprotected behaviour.
+with_ld_poison() {
+    local ld="$1" deps="$2" rc=0; shift 2
+    local had_ld="${LD_LIBRARY_PATH+set}" prev_ld="${LD_LIBRARY_PATH:-}"
+    local had_dp="${REIFY_DEPS_LIB+set}" prev_dp="${REIFY_DEPS_LIB:-}"
+    export LD_LIBRARY_PATH="$ld"
+    export REIFY_DEPS_LIB="$deps"
+    "$@" || rc=$?
+    if [ "$had_ld" = "set" ]; then export LD_LIBRARY_PATH="$prev_ld"; else unset LD_LIBRARY_PATH; fi
+    if [ "$had_dp" = "set" ]; then export REIFY_DEPS_LIB="$prev_dp"; else unset REIFY_DEPS_LIB; fi
     return "$rc"
 }
 
@@ -395,7 +445,7 @@ mk_foreign_index_db() {
         echo "insert into meta values('source_root','$root');"
         echo "insert into symbols values('s0','f0.rs','sym0');"
         echo "insert into files values('f0.rs');"
-    } | sqlite3 "$db" || return 1
+    } | t_sqlite3 "$db" || return 1
     printf '%s\n' "$db"
 }
 
@@ -880,6 +930,66 @@ else
                     expect_refusal_lacks "NOTE:" \
                         --check-only --project-root "$ID_ROOT"
         fi
+    fi
+fi
+
+echo "--- Test 13: sqlite3 is insulated from a shadowing LD_LIBRARY_PATH ---"
+
+# REGRESSION for the 2026-08-20 merge-gate failure.
+#
+# reify's own tooling PREPENDS /opt/reify-deps/lib to LD_LIBRARY_PATH
+# (.cargo/run-with-occt.sh; the merge-verify env mirrors it) and that directory
+# ships libsqlite3.so.3.53.1 next to OCCT. A dynamically linked system sqlite3
+# then loads the wrong library and aborts BEFORE running any statement:
+#
+#     SQLite header and source version mismatch
+#
+# exiting 1 with EMPTY stdout. check_index cannot tell that apart from an
+# unreadable index, so it refuses E_JC_INDEX_EMPTY over a PERFECTLY HEALTHY one —
+# a false "this index is a husk" on every host whose sqlite3 is dynamically
+# linked. This suite went green twice locally while that was true, because the
+# local PATH resolved a STATICALLY linked sqlite3 that ignores LD_LIBRARY_PATH.
+#
+# The fixture is hermetic: it poisons a temp dir with a bogus libsqlite3.so.0 and
+# never touches the real /opt/reify-deps.
+
+LD_ROOT="$(mk_tmpdir)"
+LD_INDEX="$(mk_tmpdir)"
+LD_POISON="$(mk_tmpdir)"
+
+if [ -z "$LD_ROOT" ] || [ -z "$LD_INDEX" ] || [ -z "$LD_POISON" ]; then
+    echo "  FAIL: could not mktemp -d the LD_LIBRARY_PATH fixtures"
+    FAIL=$((FAIL + 1))
+else
+    printf 'this is not an ELF shared object' > "$LD_POISON/libsqlite3.so.0"
+    # Built BEFORE the poison is applied — t_sqlite3 strips the real deps dir,
+    # not this temp one, so fixture creation must happen outside with_ld_poison.
+    mk_index_db "$LD_INDEX" "$LD_ROOT" 9 3 >/dev/null
+
+    # POSITIVE CONTROL on the FIXTURE, and the anti-vacuity guard for both
+    # assertions below: is the poison actually potent against the sqlite3 THIS
+    # host resolves? A statically linked sqlite3 ignores LD_LIBRARY_PATH
+    # entirely, and against one both assertions would pass no matter what the
+    # script did. Skip loudly rather than bank a vacuous pass.
+    if LD_LIBRARY_PATH="$LD_POISON" sqlite3 :memory: 'select 1;' >/dev/null 2>&1; then
+        echo "  SKIP: this host's sqlite3 ignores a poisoned LD_LIBRARY_PATH (statically linked), so the shadowing defect cannot be reproduced here and Test 13 would be vacuous"
+    else
+        # NEGATIVE CONTROL FIRST: with the poisoned dir NOT declared as the deps
+        # dir, nothing strips it and the healthy 9-symbol index is misreported as
+        # a husk. This is the defect verbatim, and it is what proves the positive
+        # assertion below is not passing merely because the poison was inert.
+        assert "an unstripped shadowing LD_LIBRARY_PATH misreports a healthy index as E_JC_INDEX_EMPTY" \
+            with_ld_poison "$LD_POISON" "$LD_POISON/not-the-deps-dir" \
+                with_index_path "$LD_INDEX" \
+                    expect_refusal E_JC_INDEX_EMPTY --check-only --project-root "$LD_ROOT"
+
+        # THE FIX: naming that dir as the deps dir makes jc_sqlite3 drop it from
+        # the child's LD_LIBRARY_PATH, so sqlite3 resolves its own library and the
+        # true count is read.
+        assert "stripping the deps dir insulates sqlite3 and the true count is read (9 sym)" \
+            with_ld_poison "$LD_POISON" "$LD_POISON" \
+                with_index_path "$LD_INDEX" \
+                    expect_ok_stdout "9 sym" --check-only --project-root "$LD_ROOT"
     fi
 fi
 
