@@ -315,6 +315,7 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
     ("fn", "Declares a function."),
     ("trait", "Declares a trait."),
     ("enum", "Declares an enumeration type."),
+    ("type", "Declares a type alias."),
     (
         "purpose",
         "Declares the optimization objective of the structure.",

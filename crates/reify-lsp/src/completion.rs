@@ -275,8 +275,15 @@ fn push_complex_methods(items: &mut Vec<CompletionItem>) {
 }
 
 /// Keywords that are only valid at the top level (outside structure bodies).
-pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] =
-    &["structure", "occurrence", "import", "fn", "trait", "enum"];
+pub(crate) const TOP_LEVEL_KEYWORDS: &[&str] = &[
+    "structure",
+    "occurrence",
+    "import",
+    "fn",
+    "trait",
+    "enum",
+    "type",
+];
 
 /// Keywords that start declaration lines inside a structure body.
 pub(crate) const BODY_KEYWORDS: &[&str] = &[
