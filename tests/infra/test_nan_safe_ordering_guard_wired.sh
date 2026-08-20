@@ -823,13 +823,13 @@ assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
 # not to a paraphrase here.
 #
 # EXACTLY WHAT THIS BLOCK PINS — read this before citing it as evidence:
-#   1. hK1-hK7: an UNGUARDED hazard planted at each excluded path is NOT
+#   1. hK1-hK5: an UNGUARDED hazard planted at each excluded path is NOT
 #      flagged. This detects ONE thing — a widening of SCOPE_PATHSPECS that
 #      brings that path in scope. That is the intended tripwire: the gate's
 #      pathspecs, decision 9 and these pins are meant to fail together, and a
 #      reviewer seeing one flip should be sent to decision 9's census table
 #      and its four follow-up tickets before approving.
-#   2. hK1-hK7 (second assert each): the path still EXISTS as a tracked file
+#   2. hK1-hK5 (second assert each): the path still EXISTS as a tracked file
 #      in the REAL repo. Every other assertion here runs against the
 #      synthetic $FIX repo and would keep passing against a path that had
 #      been renamed or deleted — pinning a string, not a site. This leg is
@@ -843,8 +843,8 @@ assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
 # re-measuring is a human/task job. Do not read a green hK as "the census is
 # still accurate".
 #
-# ANTI-VACUITY: hK8 writes the BYTE-IDENTICAL hazard text to a COVERED path
-# and requires exit 1. Without it, a typo in $HK_HAZARD would make all seven
+# ANTI-VACUITY: hK6 writes the BYTE-IDENTICAL hazard text to a COVERED path
+# and requires exit 1. Without it, a typo in $HK_HAZARD would make all five
 # exclusion assertions pass for the wrong reason and the pin would be
 # worthless — the same failure mode block (hI) guards at the scan-set level.
 # ===========================================================================
@@ -873,12 +873,14 @@ write_hazard_at() {
     stage
 }
 
-# The deliberately-excluded set, as measured on 2026-08-20. Line numbers
-# drift (that is the whole point of this block); the FILE-level record is
-# what is authoritative here and in decision 9.
+# The deliberately-excluded set, as measured on 2026-08-20 and SHRUNK from
+# seven to five by task #6376, which hardened reify-stdlib's analysis.rs and
+# matrix.rs and brought that crate INTO scope (see block (hL) below).
+# reify-constraints stays excluded — it is still class A pending its own
+# follow-up ticket, so this was a HALF-fired widening trigger, not a
+# discharged one. Line numbers drift (that is the whole point of this block);
+# the FILE-level record is what is authoritative here and in decision 9.
 HK_EXCLUDED=(
-    'crates/reify-stdlib/src/analysis.rs'
-    'crates/reify-stdlib/src/matrix.rs'
     'crates/reify-constraints/src/solver.rs'
     'crates/reify-eval/src/engine_build.rs'
     'crates/reify-eval/src/persistent_cache.rs'
@@ -900,17 +902,57 @@ for _hk_rel in "${HK_EXCLUDED[@]}"; do
         git -C "$REPO_ROOT" ls-files --error-unmatch "$_hk_rel"
 done
 
-# hK8 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.
+# hK6 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.
 write_hazard_at 'crates/reify-fdm/src/lib.rs'
-assert "hK8: CONTROL — the byte-identical hazard IS flagged at a COVERED path (so hK1-hK7 are not passing vacuously)" \
+assert "hK6: CONTROL — the byte-identical hazard IS flagged at a COVERED path (so hK1-hK5 are not passing vacuously)" \
     _exits_with 1 bash "$GATE" --repo-root "$FIX"
 
-# hK9 — the covered scope is still wired end-to-end: covered file, clean, green.
+# hK7 — the covered scope is still wired end-to-end: covered file, clean, green.
 write_fixture <<'RS'
 pub fn covered_but_clean() {}
 RS
 stage
-assert "hK9: CONTROL — a clean covered file alone is exit 0 (scan set non-empty and scanned)" \
+assert "hK7: CONTROL — a clean covered file alone is exit 0 (scan set non-empty and scanned)" \
     _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# ===========================================================================
+# hL — reify-stdlib is now COVERED (task #6376), the positive of (hK).
+#
+# (hK) can only ever detect that a path is OUT of scope. Widening the gate
+# without this block would move reify-stdlib from "pinned excluded" to
+# "pinned by nothing" — a silent narrowing later would go unnoticed. This is
+# the other half: the crate is in scope AND the escape still works there.
+#
+# Why the crate moved, the half-fired widening trigger, and what stays
+# excluded are recorded ONCE, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" — go there,
+# not to a paraphrase here.
+# ===========================================================================
+echo ""
+echo "--- (hL): reify-stdlib is now IN the gate's scan set (task #6376) ---"
+
+# hL1 — the path is genuinely in scope: an unguarded hazard there IS flagged.
+write_hazard_at 'crates/reify-stdlib/src/analysis.rs'
+assert "hL1: crates/reify-stdlib/src/analysis.rs is COVERED — an UNGUARDED hazard there IS flagged" \
+    _exits_with 1 bash "$GATE" --repo-root "$FIX"
+
+# hL2 — and the escape still works in the newly covered crate. Same
+# two-file shape as write_hazard_at (clean covered file first, so the scan
+# set is never empty and exit 2 can't fake a pass), with the annotation
+# appended. stage() is called explicitly: the gate is `git ls-files`-hermetic,
+# so an unstaged fixture would pass vacuously.
+rm -rf "$FIX/crates"
+mkdir -p "$FIX/crates/reify-fdm/src"
+printf 'pub fn covered_but_clean() {}\n' > "$FIX/crates/reify-fdm/src/lib.rs"
+mkdir -p "$FIX/crates/reify-stdlib/src"
+printf '%s // nan-safe:allow — guarded upstream\n' "$HK_HAZARD" \
+    > "$FIX/crates/reify-stdlib/src/analysis.rs"
+stage
+assert "hL2: ...and // nan-safe:allow still clears a site in the newly covered crate" \
+    _exits_with 0 bash "$GATE" --repo-root "$FIX"
+
+# hL3 — REAL-TREE leg, mirroring (hK)'s: the covered path still exists.
+assert "hL3: ...and crates/reify-stdlib/src/analysis.rs still exists as a tracked file in the real tree" \
+    git -C "$REPO_ROOT" ls-files --error-unmatch 'crates/reify-stdlib/src/analysis.rs'
 
 test_summary
