@@ -2872,9 +2872,6 @@ assert "G2e1: Section G accepts a 2>/dev/null site -- it asserts the LEAK proper
 assert "G2e2: D4's file-only grammar still REJECTS that same site -- G's laxer diversion rule did not leak into the evidence-preserving tier (got $G2E_D_N unredirected)" \
     test "$G2E_D_N" -eq 1
 
-echo ""
-echo "--- G3/G1: every static-only roster member, over its own source ---"
-
 # THE EXEC-POSITION ANCHOR, prefixed to every G_SITE target. NEW, separately-
 # named constants: F_EDGE_ANCHOR is reused READ-ONLY as the command-boundary
 # class, but F_EDGE_VERB_RE is deliberately NOT widened in place -- it drives
@@ -3104,6 +3101,9 @@ assert "G2g2: ... nor does one belonging to another command on the block CLOSER 
     test "$G2G2_N" -eq 1
 assert "G2g3: ... and a REVERSED 2>&1 >file still leaks, because fd 2 is aimed at the inherited stdout first (got $G2G3_N unredirected)" \
     test "$G2G3_N" -eq 1
+
+echo ""
+echo "--- G3/G1: every static-only roster member, over its own source ---"
 
 for _g_i in "${!G_MEMBERS[@]}"; do
     _g_m="${G_MEMBERS[$_g_i]}"
