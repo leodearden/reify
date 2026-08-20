@@ -12611,6 +12611,17 @@ pub(crate) enum MixedRegionError {
         /// Index of the offending interface in the input `interfaces` slice.
         interface_index: usize,
     },
+    /// A unified node coordinate (shell vertex, or tet vertex offset by
+    /// `n_shell`) is NaN or ±infinite. Left unchecked, it would poison the
+    /// interface-tying comparisons — the `dot3` projection sort that assigns
+    /// the tet top/mid/bot triple, and the `dist3_sq` nearest-node picks —
+    /// silently rather than loudly. Only checked when at least one interface
+    /// is present; the pure shell/tet merge has no comparison anywhere, so a
+    /// non-finite vertex cannot scramble it.
+    NonFiniteNodeCoordinate {
+        /// Unified index (into the merged node list) of the offending node.
+        node_index: usize,
+    },
 }
 
 impl std::fmt::Display for MixedRegionError {
@@ -12626,6 +12637,11 @@ impl std::fmt::Display for MixedRegionError {
                 "interface {interface_index} has invalid tie geometry: `normal` must be \
                  a unit vector and `thickness` must be positive \
                  (MpcRow::shell_tet_tying preconditions)"
+            ),
+            MixedRegionError::NonFiniteNodeCoordinate { node_index } => write!(
+                f,
+                "unified node {node_index} has a non-finite coordinate (NaN or ±infinity); \
+                 it would poison the interface-tying comparisons"
             ),
         }
     }
@@ -12654,6 +12670,12 @@ impl std::error::Error for MixedRegionError {}
 ///
 /// Returns [`MixedRegionError::InterfaceResolutionFailed`] if an interface
 /// cannot be resolved to tie nodes (empty shell or tet mesh on one side).
+/// Returns [`MixedRegionError::InvalidInterfaceGeometry`] if an interface's
+/// `normal`/`thickness`/`location` violate `MpcRow::shell_tet_tying`'s
+/// preconditions. Returns [`MixedRegionError::NonFiniteNodeCoordinate`] if
+/// any unified node coordinate is non-finite and at least one interface is
+/// present (the pure merge with no interfaces tolerates non-finite nodes,
+/// since it performs no comparison on them).
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
@@ -12694,6 +12716,31 @@ pub(crate) fn build_mixed_region_mesh(
             kind: UnifiedElementKind::Tet,
             connectivity: tet_conn.iter().map(|&i| n_shell + i as usize).collect(),
         });
+    }
+
+    // ── Node-coordinate finiteness guard (task 6378) ──────────────────────────
+    //
+    // A NaN/±Inf unified node coordinate would poison the interface-tying
+    // comparisons below (the `dot3` projection sort assigning the tet
+    // top/mid/bot triple, and the `dist3_sq` nearest-node picks) silently
+    // rather than loudly. Scoped to the ordering path via `!interfaces.is_
+    // empty()`: the merge above performs no comparison on `nodes`, so it
+    // tolerates non-finite coordinates when there is nothing to tie. Hoisted
+    // out of the interface loop below (checked once, O(n)) rather than
+    // re-scanned per interface.
+    if !interfaces.is_empty()
+        && let Some(node_index) = nodes.iter().position(|p| p.iter().any(|c| !c.is_finite()))
+    {
+        tracing::warn!(
+            target: "reify_eval::engine_build",
+            reason = "non_finite_node_coordinate",
+            node_index,
+            n_nodes = nodes.len(),
+            "build_mixed_region_mesh: non-finite unified node coordinate; \
+             abandoning the mixed-region build rather than emitting MPC rows \
+             from a scrambled top/mid/bot tie triple"
+        );
+        return Err(MixedRegionError::NonFiniteNodeCoordinate { node_index });
     }
 
     // ── Interface → MPC wiring (D=6 unified DOF layout) ───────────────────────
@@ -12751,7 +12798,7 @@ pub(crate) fn build_mixed_region_mesh(
         nearest3.sort_by(|&m1, &m2| {
             let p1 = dot3(nodes[n_shell + m1], iface.normal);
             let p2 = dot3(nodes[n_shell + m2], iface.normal);
-            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal)
+            p2.partial_cmp(&p1).unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all node coords finite here (non-finite → early Err from the guard at :12588-12611) and `iface.normal` unit-checked above (:12633-12641), so `dot3` is finite and `partial_cmp` never returns None
         });
         let tet_top = n_shell + nearest3[0];
         let tet_mid = n_shell + nearest3[1];
