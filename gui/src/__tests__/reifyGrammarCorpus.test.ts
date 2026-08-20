@@ -4309,6 +4309,102 @@ describe('reifyLanguage — fold and indent coverage', () => {
   );
 
   /**
+   * The raw body text of production `name` in `grammarSrc` — everything
+   * between its own header brace and the matching close, comments stripped,
+   * newlines collapsed to single spaces. Braces inside a quoted token
+   * (`"{"`/`"}"`, the LITERAL tokens the grammar matches) never affect the
+   * depth count; only the bare rule-delimiter braces do, so a production
+   * whose body itself contains several `"{"`/`"}"` pairs (`FieldSource`, say)
+   * still finds the RULE's own close rather than stopping at the first
+   * quoted `"}"`.
+   */
+  function productionBody(grammarSrc: string, name: string): string {
+    const src = grammarSrc.replace(/\/\/.*$/gm, '');
+    const header = new RegExp(`(^|\\n)${name}\\s*\\{`).exec(src);
+    if (!header) throw new Error(`production ${name} not found in reify.grammar`);
+    let depth = 1;
+    const start = header.index + header[0].length;
+    for (let i = start; i < src.length; i++) {
+      if (src.startsWith('"{"', i) || src.startsWith('"}"', i)) {
+        i += 2;
+        continue;
+      }
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') {
+        depth--;
+        if (depth === 0) return src.slice(start, i).replace(/\s+/g, ' ').trim();
+      }
+    }
+    throw new Error(`unbalanced braces in production ${name}`);
+  }
+
+  /**
+   * `body` split on its TOP-LEVEL `|` alternatives — paren-depth aware, so a
+   * NESTED `|` (`PortBody`'s `(ParamDeclaration | LetDeclaration | …)*`, say)
+   * does not fracture one arm into two.
+   */
+  function splitTopLevelArms(body: string): string[] {
+    const arms: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < body.length; i++) {
+      if (body.startsWith('"{"', i) || body.startsWith('"}"', i) || body.startsWith('"|"', i)) {
+        i += 2;
+        continue;
+      }
+      const ch = body[i];
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      else if (ch === '|' && depth === 0) {
+        arms.push(body.slice(start, i));
+        start = i + 1;
+      }
+    }
+    arms.push(body.slice(start));
+    return arms.map((arm) => arm.trim());
+  }
+
+  /**
+   * The BRACE_FIRST_BODIES/KEYWORD_LED_BODIES split is only observable
+   * downstream through the indent prop — `foldBody` above is the SAME
+   * function for both lists (reifyLanguage.ts:115-118), so every fold
+   * assertion in this file passes unchanged even if a node type sits in the
+   * wrong list. What actually differs is `delimitedIndent`'s `align`
+   * (reifyLanguage.ts:119-127): a keyword-led body misfiled into
+   * BRACE_FIRST_BODIES would align its members to the column past the
+   * leading keyword instead of one unit past the statement. This derives the
+   * correct list from the grammar SOURCE directly — the same evidence
+   * `braceDelimitedNodeTypes` above uses for list membership itself, read
+   * positionally instead of just for presence.
+   */
+  describe('BRACE_FIRST_BODIES vs KEYWORD_LED_BODIES matches the grammar', () => {
+    const grammarSrc = readFixture('gui/src/editor/reify.grammar');
+
+    it.each(BRACE_FIRST_BODIES)('%s opens its braced arm with the brace itself', (name) => {
+      const arms = splitTopLevelArms(productionBody(grammarSrc, name));
+      const braceArms = arms.filter((arm) => arm.includes('"{"'));
+      expect(braceArms.length, `${name} has no "{" token in its reify.grammar production at all`).toBeGreaterThan(
+        0,
+      );
+      expect(
+        braceArms.every((arm) => arm.startsWith('"{"')),
+        `${name} is in BRACE_FIRST_BODIES, but at least one of its arms in reify.grammar has ` +
+          `content before the "{" — it belongs in KEYWORD_LED_BODIES instead. Arms: ${JSON.stringify(braceArms)}`,
+      ).toBe(true);
+    });
+
+    it.each(KEYWORD_LED_BODIES)('%s never opens an arm with a bare brace', (name) => {
+      const arms = splitTopLevelArms(productionBody(grammarSrc, name));
+      const braceFirstArms = arms.filter((arm) => arm.startsWith('"{"'));
+      expect(
+        braceFirstArms,
+        `${name} is in KEYWORD_LED_BODIES, but reify.grammar opens at least one of its arms ` +
+          `directly with "{" — it belongs in BRACE_FIRST_BODIES instead.`,
+      ).toEqual([]);
+    });
+  });
+
+  /**
    * The behavioural half. `foldInside` — the obvious helper, and the one this
    * file used before the keyword-led bodies were added — keys off the FIRST
    * child, which is the `{` only when the brace opens the node. For
