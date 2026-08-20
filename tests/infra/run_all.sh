@@ -367,13 +367,53 @@ _RA_INTERRUPTED_EXIT_CODE=99
 # and Layer 2's anchored matcher covers their quoted-marker case regardless.
 _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 
+# Rule 2 (task #6389) -- the SLOT-TIMEOUT sentinel family, a SEPARATE variable
+# rather than a widening of the clock rule above.
+#
+# Different consumer, different failure: this one is read by dark-factory's
+# verify FAILURE CLASSIFIER (orchestrator/src/orchestrator/verify_classify.py,
+# `_SLOT_TIMEOUT_SENTINEL_RE`, consumed by classify_failure), not by the
+# clock-stop timeout parser. A live `@@REIFY_SLOT_TIMEOUT@@` anywhere in the
+# aggregated verify-leg output makes DF classify the ENTIRE leg as
+# SEMAPHORE_TIMEOUT -- an infra hold, not a branch fault -- so the merge gate
+# blocks on a phantom starvation instead of reporting the real test failure.
+# run_all is a TEST RUNNER: a sentinel that arrived inside a MEMBER's captured
+# output is that member quoting or fixture-emitting the token, never a real
+# starved acquire by run_all itself, so neutralizing it here loses no signal.
+#
+# Same two pollution shapes as the clock family, and the same reason the
+# per-source stderr-diversion patches (tasks 6255/6278/6291/6353) cannot close
+# the class on their own: they keep an AUDITED member's own capture clean, but
+# a new or unaudited member that quotes the token in assertion prose walks
+# straight past them. Prefix rewrite keeps the text human-readable while
+# breaking DF's `^[ \t]*` line-anchored matcher.
+#
+# SEAM CARVE-OUT -- deliberately NOT covered, and it must stay that way:
+# run_all's OWN pool-wait sentinel. It rides the pool worker subshell's
+# INHERITED parent fd 2 (see the note at the _H2_POOL_TIMEOUT_REASON site
+# below); the `> .out 2>&1` redirect there is scoped to the member `bash`
+# command only, so that sentinel never enters this re-emission path at all.
+# It must keep reaching DF verbatim: run_all's pool wait is the one
+# finite-WAIT path absent from DF's three-basename allowlist, which makes the
+# sentinel its ONLY classification route. Pinned behaviourally by
+# tests/infra/test_slot_timeout_marker.sh Section C (C1/C2/C5).
+#
+# Scope: identical to the clock rule -- the concurrent-pool re-emission sites
+# below, the path every per-task/merge verify actually drives. NOT the
+# `--scope host-infra` (H9) runner and NOT the legacy all-serial path.
+_RA_SLOT_SANITIZE='s/@@REIFY_SLOT_/@@REIFY_QUOTED_SLOT_/g'
+
 # _ra_emit_sanitized <captured-output-file>
-#   cat a captured per-test output file to stdout with clock-marker tokens
-#   neutralized. A missing file is a silent no-op, preserving the prior
+#   cat a captured per-test output file to stdout with the marker families
+#   above neutralized. A missing file is a silent no-op, preserving the prior
 #   `cat "$f" 2>/dev/null || true` re-emit semantics exactly.
+#   The rules are CHAINED as separate `-e` expressions rather than combined
+#   into one: each stays independently readable, independently commented, and
+#   independently extractable by name (test_slot_timeout_marker.sh A6 reads
+#   this chain out of source to derive exactly which rules are applied).
 _ra_emit_sanitized() {
     [ -f "$1" ] || return 0
-    sed "$_RA_CLOCK_SANITIZE" "$1" 2>/dev/null || true
+    sed -e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" "$1" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
