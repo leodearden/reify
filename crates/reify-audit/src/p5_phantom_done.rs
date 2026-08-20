@@ -220,6 +220,27 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 /// this wrapper O(1) rather than the O(n) linear scan that `check_with_target`
 /// does across all rows.
 ///
+/// # Two-mode contract
+///
+/// **With persisted `done_provenance`** (a direct caller, or a task whose
+/// provenance was already written) it corroborates exactly as the sweep does —
+/// `check_pre_done_equivalent_to_scoped_check` pins full `Finding` equality.
+///
+/// **Without it** — which at real hook time is EVERY invocation — it
+/// corroborates landing from `task_id` + `metadata.files` via
+/// [`check_pre_done_landing`]. Two upstream facts force that:
+///
+///   - fused-memory's `task_interceptor.py` accumulates `done_provenance` in an
+///     in-memory `audit_fields` dict and persists it only at write time, which
+///     happens AFTER this hook returns;
+///   - the hook command template (`middleware/pre_done_hook.py`) substitutes
+///     only `{id}` — no `{provenance}`/`{commit}`/`{files}` placeholder exists,
+///     and the subprocess is launched with no env injection and no stdin.
+///
+/// So the subprocess receives no task state beyond the id. For the same reason
+/// [`check_task`] skips its `status == "done"` gate in this mode: the hook fires
+/// before the status write, so the live row still reads "in-progress"/"review".
+///
 /// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
 /// hook actually invokes.
 pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
@@ -555,20 +576,81 @@ fn check_pre_done_landing(ctx: &AuditContext, meta: &TaskMetadata) -> Option<Fin
         return None;
     }
 
+    // Deletion / rename rescue. A task whose declared file was REMOVED by its
+    // landing commit has path_tracked_on == false, yet the work landed. Only
+    // the commit's OWN delta shows a deletion, which is why this leg depends on
+    // `changed_paths_for_claim` — `main..<merge>` can never show it, since a
+    // path absent from both trees is not in a two-point diff at all.
+    let mut still_absent = absent.clone();
+    let siblings = task_referencing_commits(ctx, &meta.task_id);
+    let mut contributing: Vec<&GitCommit> = Vec::new();
+    let mut scanned = 0usize;
+    for c in &siblings {
+        if still_absent.is_empty() {
+            break;
+        }
+        if scanned >= PRE_DONE_SIBLING_SCAN_CAP {
+            eprintln!(
+                "reify-audit: pre-done landing scan capped at {PRE_DONE_SIBLING_SCAN_CAP} \
+                 commits for task {} ({} candidates); {} entries left unchecked",
+                meta.task_id,
+                siblings.len(),
+                still_absent.len()
+            );
+            break;
+        }
+        scanned += 1;
+        let covered = changed_paths_for_claim(ctx, &c.sha);
+        let before = still_absent.len();
+        still_absent.retain(|p| !covered.contains(p));
+        if still_absent.len() < before {
+            contributing.push(c);
+        }
+    }
+    if still_absent.is_empty() {
+        return None;
+    }
+
+    // Cite the commits we DID inspect alongside the absent set, so an operator
+    // reading the refusal payload can inspect immediately rather than
+    // re-deriving the candidate list by hand.
+    let mut evidence: Vec<EvidenceRef> = contributing
+        .iter()
+        .map(|c| EvidenceRef::Commit {
+            sha: c.sha.clone(),
+            subject: c.subject.clone(),
+        })
+        .collect();
+    evidence.push(EvidenceRef::MetadataFiles {
+        entries: still_absent.clone(),
+    });
+
     Some(Finding {
         pattern: Pattern::P5PhantomDone,
         severity: Severity::High,
         task_id: meta.task_id.clone(),
         summary: format!(
-            "pre-done gate: {} declared metadata.files entr{} absent from main — \
-             refusing the done-flip for task {} (no landing evidence)",
-            absent.len(),
-            if absent.len() == 1 { "y is" } else { "ies are" },
+            "pre-done gate: {} declared metadata.files entr{} neither tracked on main \
+             nor covered by a task-referencing commit's own delta — refusing the \
+             done-flip for task {}",
+            still_absent.len(),
+            if still_absent.len() == 1 { "y is" } else { "ies are" },
             meta.task_id
         ),
-        evidence: vec![EvidenceRef::MetadataFiles { entries: absent }],
+        evidence,
     })
 }
+
+/// How many task-referencing commits the pre-done landing scan will inspect.
+///
+/// The hook runs INSIDE fused-memory's per-project write lock under a 30 s hard
+/// timeout (`middleware/pre_done_hook.py`), so an unbounded scan would
+/// head-of-line block every task mutation for that project. Measured on the
+/// live repo: `git log main --grep=<id>` ≈ 73 ms and `git ls-tree main -- <p>`
+/// ≈ 57 ms/path, so the cheap legs dominate the healthy case and this leg only
+/// runs when something is genuinely absent. Truncation emits a breadcrumb
+/// rather than silently reporting partial coverage as complete.
+const PRE_DONE_SIBLING_SCAN_CAP: usize = 50;
 
 /// Per-task corroboration. Returns `Some(Finding)` if the task is
 /// phantom-done, `None` if the provenance corroborates cleanly.
