@@ -1460,7 +1460,15 @@ fn assert_report_reconciles_with_field(
 ///   - any all-finite property — the sentinel is normative and must survive;
 ///   - the total miss COUNT — that count is the thing under investigation, and
 ///     pinning 1055 before the mechanism is fixed would cement a bug as a
-///     contract;
+///     contract. It would also be FLAKY: the count drifts run to run (measured
+///     2026-08-20, this fixture, same binary — 4 runs gave 1055 and 1 gave 1060;
+///     test-thread count is ruled out, the full suite reproduced 1055 both at
+///     `--test-threads=1` and at the default; the two splits differ by total +5,
+///     interior −3, face +8, with edge and corner unchanged). *Hypothesis:*
+///     gmsh/HXT's parallel tetrahedralization is not bit-reproducible under
+///     varying host load — project memory carries an independent measurement of
+///     the same effect at ~1–6% tet-count drift. Read the per-run dump above,
+///     never a number quoted in a comment;
 ///   - the bucket-sum identity — `classify_grid_misses` satisfies it by
 ///     construction, so it says nothing about this field (it is pinned in that
 ///     function's own crate-local fixtures instead).
@@ -1496,7 +1504,10 @@ fn realized_box_grid_miss_report_reconciles_with_geometry() {
 ///
 /// For a PRISMATIC body the mesh AABB **is** the solid, so every
 /// strictly-index-interior grid point must lie inside some tet. It does not:
-/// 36 of the 1475 index-interior nodes are out-of-solid. That is a COVERAGE
+/// 36 of the 1475 index-interior nodes are out-of-solid (a SNAPSHOT — one run in
+/// five on 2026-08-20 measured 33 of 1475 instead; the count drifts, the defect
+/// does not, which is why the assertion below is `== 0` and not a threshold).
+/// That is a COVERAGE
 /// defect in the realized tet mesh, not a tolerance one — the mesh's own tets
 /// sum to 8.4291e-3 m³ against a 1.0000e-2 m³ AABB (84.3% fill, 159 tets, 0
 /// interior nodes), and because `union(tets) ≤ Σ|tet vol|` that inequality is a
@@ -1511,9 +1522,26 @@ fn realized_box_grid_miss_report_reconciles_with_geometry() {
 /// The assertion is kept — not deleted, not weakened to a threshold — so that
 /// #6200 has an executable acceptance gate: unblocking it is exactly making this
 /// test pass with the `#[ignore]` removed.
+///
+/// ## `missed_interior` counts GRID points, NOT mesh nodes
+///
+/// The two are easy to conflate and behave completely differently, so read this
+/// before judging whether #6200's fix should turn this test green. #6200's own
+/// measurements record that a box's strictly-interior MESH-NODE count is purely
+/// RESOLUTION-driven — 0 at the auto mesh size even for a complete, fill = 1.0
+/// mesh, because `auto_mesh_size_from_features` makes the cross-section exactly
+/// one element wide — so an assertion keyed on THAT number would not go green
+/// from a coverage fix alone.
+///
+/// This gate is keyed on COVERAGE instead. `missed_interior` is the number of
+/// strictly-index-interior §7a GRID points that lie inside no tet, and a grid
+/// point is a query location, not a mesh entity. It reaches 0 exactly when the
+/// tets tile the AABB, at ANY mesh resolution and with ANY interior-node count —
+/// which is precisely the fill-fraction property #6200's acceptance states. So
+/// this remains a valid gate for that fix, and needs no mesh-size override.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #6200 — realized tet mesh fills only 84.3% of its AABB; missed_interior==36 is the coverage defect, not a tol issue"]
+#[ignore = "blocked on #6200 — realized tet mesh fills only 84.3% of its AABB; missed_interior is non-zero (33–36 measured across runs) — a coverage defect, not a tol issue"]
 fn realized_box_mesh_tiles_its_own_aabb() {
     let Some(disp) = realized_box_operating_displacement("realized_box_mesh_tiles_its_own_aabb")
     else {
