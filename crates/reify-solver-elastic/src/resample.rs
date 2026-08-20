@@ -354,10 +354,18 @@ pub fn resample_multi_nodal_to_grid_instrumented(
 ///   **coverage** defect, which no tolerance change can legitimately paper over.
 ///
 /// `missed_interior == 0` is only a *geometric prediction* where the AABB IS the
-/// solid, i.e. for a prismatic body. For a cylinder (or any non-convex or curved
-/// solid) index-interior grid points are legitimately outside the material, and a
-/// non-zero `missed_interior` is the CORRECT answer — do not promote it to a
-/// global invariant.
+/// solid, i.e. for a prismatic body. For a non-convex or curved solid,
+/// index-interior grid points CAN be legitimately outside the material once the
+/// grid is fine enough to sample the concavity, so a non-zero `missed_interior`
+/// there is not automatically a defect — do not promote `== 0` to a global
+/// invariant.
+///
+/// The claim is about grid RESOLUTION, not about any particular body: coarseness
+/// cuts the other way too. The `4×4×7` cylinder fixture in
+/// `reify-eval/tests/solve_elastic_static_body_e2e.rs` samples its own curvature
+/// so coarsely that every index-interior node still lands inside the material,
+/// and it measures `missed_interior == 0` on a decidedly non-prismatic body —
+/// so do not read a curved body as implying a non-zero interior count either.
 // No `Eq`: `missed_points` carries `f64` coordinates.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GridMissReport {
@@ -414,9 +422,10 @@ pub struct GridMissReport {
 ///
 /// # Panics
 ///
-/// Panics if `stride == 0`, if `sf` is not 3-axis, or if `sf.data.len()` is not
-/// `n_grid · stride` — all of which indicate the field was not produced by the
-/// `resample_*` entry points this instrument is a sibling of.
+/// Panics if `stride == 0`, if `sf` is not 3-axis, if any axis grid is EMPTY, or
+/// if `sf.data.len()` is not `n_grid · stride` — all of which indicate the field
+/// was not produced by the `resample_*` entry points this instrument is a
+/// sibling of.
 pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport {
     assert!(stride > 0, "classify_grid_misses: stride must be > 0");
     assert_eq!(
@@ -428,6 +437,18 @@ pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport 
     let nx1 = sf.axis_grids[0].len();
     let ny1 = sf.axis_grids[1].len();
     let nz1 = sf.axis_grids[2].len();
+    // Checked BEFORE `last` is computed below: an empty axis underflows
+    // `len - 1`, which is a bare "attempt to subtract with overflow" in debug
+    // and a wrap to `usize::MAX` in release (harmless only by accident, because
+    // `n_grid == 0` makes the loops no-ops). `linspace_inclusive` errors first
+    // on the `resample_*` entry points, so this is unreachable through them —
+    // but this is a public fn with a deliberately curated `# Panics` list, so
+    // the condition is checked, not assumed.
+    assert!(
+        nx1 > 0 && ny1 > 0 && nz1 > 0,
+        "classify_grid_misses: every axis grid must be non-empty, got lengths \
+         [{nx1}, {ny1}, {nz1}]",
+    );
     let n_grid = nx1 * ny1 * nz1;
     assert_eq!(
         sf.data.len(),
@@ -500,13 +521,37 @@ pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport 
 /// round-off against a face the mesh tiles, `~0.5` is a hole where an element
 /// should have been. That separation is the whole diagnostic value.
 ///
-/// Returns [`f64::NEG_INFINITY`] for an empty mesh.
+/// DEGENERATE elements are skipped, not measured against — see the loop comment.
+///
+/// Returns [`f64::NEG_INFINITY`] for an empty mesh, and for the same reason when
+/// every element is degenerate: neither leaves an element to measure against, and
+/// a caller applying the coverage-vs-round-off magnitude rule must therefore test
+/// [`f64::is_finite`] before reading the sign.
 pub fn nearest_miss_margin(nodes: &[[f64; 3]], elems: &[[usize; 4]], p: [f64; 3]) -> f64 {
     let mut best = f64::NEG_INFINITY;
     for conn in elems {
         let phys4: [[f64; 3]; 4] =
             [nodes[conn[0]], nodes[conn[1]], nodes[conn[2]], nodes[conn[3]]];
         let bary = barycentric_p1(&phys4, p);
+        // A degenerate (zero-volume, collapsed or sliver) tet yields NON-FINITE
+        // barycentric coordinates — `barycentric_p1`'s own documented behaviour,
+        // and its degeneracy guard is a `debug_assert!`, so in a RELEASE build
+        // those NaNs/infinities reach here unannounced.
+        //
+        // They must be skipped rather than folded, because `f64::min` returns the
+        // OTHER operand when one side is NaN: an all-NaN `bary` folded from
+        // `f64::INFINITY` collapses to `+INFINITY`, which is the largest possible
+        // `best` — so ONE collapsed tet anywhere in `elems` would make EVERY query
+        // point report as comfortably inside, i.e. this instrument would assert
+        // the exact opposite of the coverage defect it exists to detect.
+        //
+        // Skipping is also the geometrically correct answer: a zero-volume tet
+        // contains nothing, so it can never be the element `p` is nearest inside
+        // of, and the margin against the REST of the mesh is still what this
+        // function owes its caller.
+        if !bary.iter().all(|b| b.is_finite()) {
+            continue;
+        }
         let min_i = bary.iter().copied().fold(f64::INFINITY, f64::min);
         if min_i > best {
             best = min_i;
@@ -1352,6 +1397,119 @@ mod miss_diag_tests {
             (report.missed_interior, report.missed_face, report.missed_edge, report.missed_corner),
             (0, 0, 0, 0),
             "and it must not land in any bucket",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "every axis grid must be non-empty")]
+    fn classify_rejects_empty_axis_grid() {
+        // An empty axis slips past BOTH other malformed-input asserts — there
+        // are still 3 axis grids, and `data.len() == 0 == n_grid × stride` — and
+        // then underflows `len - 1`: a bare "attempt to subtract with overflow"
+        // in debug, a wrap to `usize::MAX` in release. Neither names the actual
+        // problem, so the condition gets its own message.
+        let mut sf = well_formed_field();
+        sf.axis_grids = vec![Vec::new(), Vec::new(), Vec::new()];
+        sf.data.clear();
+        let _ = classify_grid_misses(&sf, 3);
+    }
+
+    /// The INSIDE branch of [`nearest_miss_margin`] — untested until this
+    /// amendment, which is how the degenerate-element hole below survived.
+    ///
+    /// At the centroid of a tet the barycentric coordinates are exactly
+    /// `[¼,¼,¼,¼]`, so that element scores `min_i = ¼`. Tets in a conforming
+    /// tiling do not overlap, so every OTHER element scores `≤ 0` at an interior
+    /// point of this one, and the max over elements is that ¼ — a sharp value,
+    /// not merely a sign.
+    #[test]
+    fn nearest_miss_margin_inside_point_is_the_containing_tets_barycentric_min() {
+        let (nodes, elems) = make_box_of_tets(4);
+        let conn = elems[0];
+        let mut centroid = [0.0_f64; 3];
+        for &n in &conn {
+            for c in 0..3 {
+                centroid[c] += nodes[n][c] / 4.0;
+            }
+        }
+
+        let margin = nearest_miss_margin(&nodes, &elems, centroid);
+
+        assert!(
+            margin.is_finite(),
+            "an inside point must yield a FINITE margin; got {margin} at {centroid:?}",
+        );
+        assert!(
+            margin >= 0.0,
+            "`>= 0` is this function's documented signal for `p` is inside some \
+             element, and {centroid:?} is the centroid of elems[0]; got {margin}",
+        );
+        assert!(
+            (margin - 0.25).abs() < 1e-12,
+            "a tet centroid has barycentric coordinates [¼,¼,¼,¼], so the margin \
+             must be exactly ¼ — no other tet of a conforming tiling contains an \
+             interior point of elems[0]; got {margin}",
+        );
+    }
+
+    /// A DEGENERATE element must be SKIPPED, never folded into the reduction.
+    ///
+    /// `barycentric_p1` documents that a degenerate tet returns non-finite
+    /// barycentric coordinates, and guards the condition with a `debug_assert!`
+    /// only — so in a RELEASE build those values reach `nearest_miss_margin`.
+    /// There `f64::min` returns the OTHER operand when one side is NaN, so
+    /// folding an all-NaN `bary` from `f64::INFINITY` collapses to `+INFINITY`:
+    /// one collapsed tet anywhere in `elems` would make EVERY query point report
+    /// as comfortably inside, the exact inverse of the coverage-vs-round-off
+    /// verdict this instrument exists to deliver.
+    ///
+    /// RELEASE-ONLY by construction, for the same reason as
+    /// `miss_report_counts_partially_nan_points_without_bucketing_them` above: in
+    /// a debug profile `barycentric_p1`'s `debug_assert!` fires first (which is
+    /// the intended loud signal there), so only the release behaviour is
+    /// assertable. The verify pipeline runs both profiles, so it is exercised.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn nearest_miss_margin_skips_degenerate_elements() {
+        let (nodes, elems) = make_box_of_tets(4);
+        // Well outside [0,1]³, so the honest answer is a large negative margin.
+        let outside = [2.0, 0.5, 0.5];
+        let clean = nearest_miss_margin(&nodes, &elems, outside);
+        assert!(
+            clean.is_finite() && clean < 0.0,
+            "fixture check: {outside:?} must miss the intact mesh by a finite \
+             negative margin, got {clean}",
+        );
+
+        // (a) COLLAPSED — all four corners are the SAME node, so `J` is the zero
+        //     matrix, every cofactor is 0, and every barycentric coordinate is
+        //     `0/0 = NaN`. This is precisely the `+INFINITY` path.
+        // (b) COPLANAR — four `z = 0` nodes of the tiling, so `det J == 0` with
+        //     NON-zero cofactors: a mix of ±∞ and NaN rather than all-NaN.
+        for (label, degenerate) in
+            [("collapsed", [0usize, 0, 0, 0]), ("coplanar", [0usize, 25, 5, 30])]
+        {
+            let mut polluted = elems.clone();
+            polluted.push(degenerate);
+            let got = nearest_miss_margin(&nodes, &polluted, outside);
+            assert_eq!(
+                got.to_bits(),
+                clean.to_bits(),
+                "a {label} degenerate tet has zero volume and so contains nothing; \
+                 appending it must leave the margin BIT-identical to the intact \
+                 mesh's {clean}, got {got}",
+            );
+        }
+
+        // And a mesh of nothing BUT degenerate elements leaves no element to
+        // measure against, so it reports the same non-finite sentinel as an empty
+        // mesh — the contract a caller tests `is_finite()` for before reading the
+        // sign.
+        assert_eq!(
+            nearest_miss_margin(&nodes, &[[0, 0, 0, 0]], outside),
+            f64::NEG_INFINITY,
+            "an all-degenerate mesh must report NEG_INFINITY like an empty one, \
+             never a large POSITIVE margin claiming the point is inside",
         );
     }
 
