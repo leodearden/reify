@@ -1478,9 +1478,12 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # clock-stop parser already recognizes it. The marker rides the worker
     # subshell's inherited parent stderr (fd 2), NOT the per-member `.out`
     # capture (the `> .out 2>&1` redirect below is scoped to the member
-    # `bash` command only), so it is never rewritten by
-    # _RA_CLOCK_SANITIZE/_ra_emit_sanitized, which only touches the Phase-3
-    # `.out` re-emission.
+    # `bash` command only), so it is never rewritten by _ra_emit_sanitized --
+    # by ANY of its rules, clock or slot -- because that function only touches
+    # the Phase-3 `.out` re-emission. The same routing is what keeps this
+    # worker's @@REIFY_SLOT_TIMEOUT@@ sentinel reaching dark-factory intact
+    # even though $_RA_SLOT_SANITIZE rewrites that very prefix in member
+    # output; see that rule's own carve-out paragraph above.
     _H2_POOL_CLOCK_REASON="test_slot_starvation"
 
     # Slot-TIMEOUT reason token for the same wait (task #6024), passed as

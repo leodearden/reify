@@ -513,13 +513,20 @@ echo "=== C: run_all.sh's pool wait reaches the PARENT's stderr, unsanitized ===
 # classified. Everything else in this suite hardens a path DF could already
 # see; this section covers the one it could not.
 #
-# Two invisible facts make it work, so both are pinned here behaviourally
-# (A6 pins the first synthetically as well):
-#   1. _RA_CLOCK_SANITIZE is prefix-scoped to `@@REIFY_CLOCK_`, so it cannot
-#      rewrite this family; and
-#   2. the pool worker's slot_acquire writes to the INHERITED parent fd 2 --
-#      the `> .out 2>&1` redirect is scoped to the member `bash` command only --
-#      so the marker never enters the sanitized re-emission path at all.
+# ONE invisible fact makes it work, and it is pinned here behaviourally:
+#   the pool worker's slot_acquire writes to the INHERITED parent fd 2 -- the
+#   `> .out 2>&1` redirect is scoped to the member `bash` command only -- so
+#   the marker never enters the sanitized re-emission path at all.
+#
+# That FD-2 ROUTING is now the SOLE guarantee. Until task #6389 there was a
+# second one -- run_all's sanitizer was prefix-scoped to `@@REIFY_CLOCK_` and
+# structurally could not rewrite this family -- and that half is GONE:
+# $_RA_SLOT_SANITIZE rewrites exactly this prefix in member-captured output.
+# So C1/C2/C5 are no longer belt-and-braces; they are the only thing standing
+# between a routing change in run_all's pool worker and a silently
+# unclassifiable starved pool wait. A6 no longer pins any part of this: it now
+# pins WHICH rules run and what they do (including that they DO rewrite this
+# family), which is the opposite claim.
 #
 # RECURSION NOTE: run_all.sh is driven against a TEMP fixture dir only, never
 # the real tests/infra/ (this file is itself auto-discovered by the outer
@@ -598,12 +605,25 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # live column-0 sentinel on EVERY finite-WAIT rc=75 -- including the deadlines
 # that PRE-EXISTING infra tests force deliberately, on a normal GREEN run. Under
 # run_all.sh a member's stdout+stderr land in <n>.out and Phase 3 re-emits them
-# UNCONDITIONALLY (run_all.sh:1785/1799) through a sanitizer that is prefix-scoped
-# to `@@REIFY_CLOCK_` (:368, pinned by A6) -- so such a sentinel survives verbatim
-# at column 0 into the merge-gate verify log, and dark-factory's presence-anchored
-# classifier marks the ENTIRE merge verify as SEMAPHORE_TIMEOUT. That is precisely
-# the infra-hold misclassification this task exists to remove, reintroduced by the
-# fix. Sections A-C hold that discipline for THIS file's own emissions; D extends
+# UNCONDITIONALLY (run_all.sh:1879/1893) -- and until task #6389 that re-emission
+# passed through a sanitizer prefix-scoped to `@@REIFY_CLOCK_`, so such a sentinel
+# survived verbatim at column 0 into the merge-gate verify log and dark-factory's
+# presence-anchored classifier marked the ENTIRE merge verify as
+# SEMAPHORE_TIMEOUT. That is precisely the infra-hold misclassification this task
+# exists to remove, reintroduced by the fix.
+#
+# TWO LAYERS NOW, and this section is the FIRST one. Task #6389 added
+# $_RA_SLOT_SANITIZE / $_RA_SLOT_BASENAME_SANITIZE (run_all.sh:404/445, applied
+# at both re-emission sites, pinned by Section H), so a member-captured sentinel
+# no longer survives re-emission. That is a SYSTEMIC BACKSTOP for members nobody
+# has audited -- it is not a reason to stop diverting stderr at source. Per-site
+# diversion remains the first line of defence for reasons the backstop cannot
+# cover: it keeps the member's OWN capture clean (so its own failure output, and
+# any nested run_all it drives, are readable), it is what the F/G roster
+# machinery can actually enforce statically, and it does not depend on a
+# consumer-shaped rewrite staying in sync with a cross-repo regex. Same
+# two-layer framing the clock family uses about tasks 4802/4887/4931.
+# Sections A-C hold that discipline for THIS file's own emissions; D extends
 # it to the emit-adjacent sites this change turned from latent into live.
 #
 # D_MEMBERS below is NO LONGER the source of truth for "which suites can leak"
@@ -675,10 +695,13 @@ D_ALWAYS_DEADLINES=(
 
 _d_capture() {  # <member-basename> <outfile>
     # Combined stdout+stderr into ONE file -- byte-identical to run_all's own
-    # member capture (`bash "$INFRA_DIR/$name" > "<n>.out" 2>&1`, run_all.sh:1691),
-    # which is the stream Phase 3 re-emits. A nested run_all would add nothing:
-    # its sanitizer provably cannot touch this token family (A6), so direct
-    # capture is equally faithful at a fraction of the cost.
+    # member capture (`bash "$INFRA_DIR/$name" > "<n>.out" 2>&1`, run_all.sh:1785),
+    # which is the stream Phase 3 re-emits. Capturing DIRECTLY rather than
+    # through a nested run_all is deliberate, and since task #6389 it is also
+    # what makes this arm strictly stronger: run_all's sanitizer now DOES
+    # rewrite this token family on re-emission, so a nested run_all would mask
+    # exactly the leak D1 exists to find. This arm asserts the member's own
+    # capture is clean at source -- the property the backstop cannot give.
     #
     # Exit status is IGNORED BY DESIGN: this guard asserts OUTPUT SHAPE only, so
     # it can never double-report another suite's failure (or its load flakes) as
@@ -892,7 +915,7 @@ TMPE="$(mktemp -d)"; _TMPDIRS+=("$TMPE")
 # STDOUT captures are IN SCOPE, not just stderr ones -- the narrower _ERR-only
 # reading of this lint had a demonstrable in-tree miss. run_all.sh's Phase-3
 # re-emission writes each member's COMBINED stdout+stderr `.out` capture to its
-# OWN stdout (_ra_emit_sanitized, run_all.sh:374-377), so a nested run_all's
+# OWN stdout (_ra_emit_sanitized, run_all.sh:455-458), so a nested run_all's
 # stdout/combined capture carries member STDERR bytes -- a leaked sentinel
 # among them.
 #
