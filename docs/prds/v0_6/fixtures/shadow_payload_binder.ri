@@ -1,0 +1,29 @@
+// enum-shadow-coherence.md fixture: enum-variant payload axis (R4).
+// Local `enum Fit` shadows prelude `structure def Fit` (std.tolerancing).
+// `resolve_enum_variant_payloads` runs before the LocalEnumShadowScope install,
+// so Boxed.B's payload field `f` lowers to StructureRef("Fit") while
+// `use_fit`'s param lowers to Enum("Fit").
+// Pre-#5429 (merge-base): exit 0, 0 diagnostics (both positions StructureRef).
+// Post-#5429 (main after bc8f74a4d4): hard Error — "no matching overload for
+// use_fit(Fit), candidates: use_fit(Enum(Fit)) -> ..." (probe 2026-08-19/20).
+// Target (task alpha, scope hoist): exit 0 — the payload field lowers to
+// Enum("Fit") like every other declared-type position.
+module shadow_payload_binder
+
+enum Fit { Close, Medium }
+
+enum Boxed { B { f: Fit } }
+
+fn use_fit(f: Fit) -> Length {
+    match f {
+        Close => 1mm,
+        Medium => 2mm
+    }
+}
+
+structure def Consumer {
+    param b : Boxed
+    let d = match b {
+        B { f: g } => use_fit(g)
+    }
+}
