@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
+use reify_compiler::{CompiledModule, CompiledTypeAlias, EntityKind, ValueCellKind};
 use reify_constraints::SimpleConstraintChecker;
 use reify_eval::CheckResult;
 use reify_ast::{Declaration, ParsedModule};
@@ -230,6 +230,21 @@ impl AnalysisContext {
             }
         }
         None
+    }
+
+    /// Look up a user-declared type alias by name in the compiled module.
+    ///
+    /// Scoped to the OPEN DOCUMENT's own declarations: `TypeAliasRegistry::into_compiled`
+    /// (reify-compiler type_resolution.rs) excludes prelude-seeded aliases, so stdlib
+    /// aliases never appear here and no LSP surface built on this can leak them.
+    ///
+    /// `resolved_type` being `None` on the returned entry is expected and
+    /// non-exceptional, not an error: the alias DFS runs before structures and traits
+    /// are compiled and passes empty structure/trait name sets, so an entity-named
+    /// alias (`type F = Fit`, see #6259) and every parameterized alias resolve to
+    /// `None` while still compiling clean. Task #6341.
+    pub fn find_type_alias(&self, name: &str) -> Option<&CompiledTypeAlias> {
+        self.compiled.type_aliases.iter().find(|a| a.name == name)
     }
 
     /// Return value cell members for a specific structure/occurrence: (name, kind, type).

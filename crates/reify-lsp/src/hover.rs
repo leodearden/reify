@@ -168,6 +168,20 @@ pub fn compute_hover_in_context(
             }
             reify_ast::Declaration::TypeAlias(t) if t.name == word => {
                 let mut md = format!("```reify\n{}\n```", format_type_alias_signature(t));
+                // Surface the compiler's resolved type additively, but only when it
+                // adds information. `resolved_type` is `None` for entity-named aliases
+                // (`type F = Fit`, #6259) and for parameterized aliases — expected, not
+                // exceptional — and its Display coincides with the source spelling for
+                // aliases like `type Nickname = Bool`, where the line would be noise.
+                if let Some(resolved) = ctx
+                    .find_type_alias(&t.name)
+                    .and_then(|a| a.resolved_type.as_ref())
+                {
+                    let resolved_str = resolved.to_string();
+                    if resolved_str != t.type_expr.to_string() {
+                        md.push_str(&format!("\n\nresolves to `{resolved_str}`"));
+                    }
+                }
                 if let Some(doc) = ctx.find_entity_doc(word) {
                     md.push_str("\n\n");
                     md.push_str(doc);
