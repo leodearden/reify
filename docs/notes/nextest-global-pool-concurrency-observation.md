@@ -140,9 +140,14 @@ pass, covering both (a) the re-run over a full execution phase and (b) the
 prefilter→confirm race fix.  Cited here deliberately and by number.  This
 residual is the same one task 5984 carried and that "was tracked nowhere until
 2026-08-05" (esc-5984-2); a prose "see the follow-up below" pointer naming no
-task is how it went missing the first time, and reify-audit's PTODO gate cannot
-catch that in a document with no TODO marker.  If #6375 is ever closed without
-a conclusive window, this section — not the task — is the thing to re-read.
+task is how it went missing the first time, and nothing automated would have
+caught it — reify-audit's PTODO gate excludes markdown from its sweep entirely
+(`docs/prds/reify-audit-ptodo-detector.md` §6.8: swept extensions are
+`.rs .ri .sh .py .ts .tsx .js`), so a stale pointer in a doc like this one is
+invisible to it whether or not it carries a marker.  Citing a live task by
+number is the only thing keeping this residual findable.  If #6375 is ever
+closed without a conclusive window, this section — not the task — is the thing
+to re-read.
 
 1. A window covering a **full** `scripts/verify.sh --scope all --profile both`
    execution phase, not a scoped 5-crate pass.
