@@ -1205,6 +1205,155 @@ mod tests {
         );
     }
 
+    /// A `log_grep` rescue must only fire on a commit that references the task
+    /// id as a WHOLE NUMBER.
+    ///
+    /// `git log --grep=<id>` is a bare substring match, so `--grep=593` matches
+    /// "Merge task/5937 into main". The pure-reachability fallback fires
+    /// whenever `siblings` is non-empty, so a short or colliding id silently
+    /// downgrades a genuine phantom-done to Low — a FALSE NEGATIVE. (The code
+    /// comments recorded this as an accepted task-4464 bias toward fewer
+    /// false-Highs; this task is explicitly the false-negative direction, so
+    /// the bias is now inverted.)
+    ///
+    /// The positive control in the same test proves the filter NARROWS the
+    /// match rather than disabling the rescue.
+    #[test]
+    fn log_grep_rescue_requires_task_id_digit_boundary() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "593");
+        insert_task_completed_event(&conn, "5937");
+
+        let mut git = MockGitOps::new();
+
+        // --- the collision: `--grep=593` also matches 5937 and 5930 ---
+        git.set_log_grep(
+            "main",
+            "593",
+            vec![
+                GitCommit {
+                    sha: "c7f659fd6a".to_string(),
+                    subject: "Merge task/5937 into main".to_string(),
+                },
+                GitCommit {
+                    sha: "aa11bb22".to_string(),
+                    subject: "Merge task/5930 into main".to_string(),
+                },
+            ],
+        );
+        // Neither colliding commit covers task 593's deliverable.
+        git.set_diff_changed_paths(
+            "main",
+            "c7f659fd6a",
+            vec!["crates/reify-other/src/a.rs".to_string()],
+        );
+        git.set_diff_changed_paths(
+            "main",
+            "aa11bb22",
+            vec!["crates/reify-other/src/b.rs".to_string()],
+        );
+        // The claimed commit covers nothing.
+        git.set_diff_changed_paths("main", "staleref", vec![]);
+
+        // --- the positive control: task 5937's OWN landing commit ---
+        git.set_log_grep(
+            "main",
+            "5937",
+            vec![GitCommit {
+                sha: "c7f659fd6a".to_string(),
+                subject: "Merge task/5937 into main".to_string(),
+            }],
+        );
+        git.set_diff_changed_paths("main", "staleref5937", vec![]);
+
+        // `path_tracked_on` and `is_ancestor` stay at their `false` defaults for
+        // every path/commit — no other rescue is available to either task.
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "593".to_string(),
+            TaskMetadata {
+                task_id: "593".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-x/src/never_landed.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("staleref".to_string()),
+                    note: None,
+                }),
+                title: "A genuine phantom-done with a short id".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        task_metadata.insert(
+            "5937".to_string(),
+            TaskMetadata {
+                task_id: "5937".to_string(),
+                status: "done".to_string(),
+                files: vec!["crates/reify-y/src/landed_via_sibling.rs".to_string()],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("staleref5937".to_string()),
+                    note: None,
+                }),
+                title: "The task the colliding subject actually names".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let jc = MockJCodemunchOps::new();
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+
+        let for_593: Vec<&Finding> = findings.iter().filter(|f| f.task_id == "593").collect();
+        assert_eq!(
+            for_593.len(),
+            1,
+            "expected exactly one finding for task 593; got {:?}",
+            for_593
+        );
+        assert_eq!(for_593[0].pattern, Pattern::P5PhantomDone);
+        assert_eq!(
+            for_593[0].severity,
+            Severity::High,
+            "\"Merge task/5937 into main\" must NOT rescue task 593 — a substring \
+             collision is not landing evidence; got {:?}",
+            for_593[0]
+        );
+
+        let for_5937: Vec<&Finding> = findings.iter().filter(|f| f.task_id == "5937").collect();
+        assert_eq!(
+            for_5937.len(),
+            1,
+            "expected exactly one finding for task 5937; got {:?}",
+            for_5937
+        );
+        assert_eq!(
+            for_5937[0].severity,
+            Severity::Low,
+            "the filter must NARROW the rescue, not disable it: the same subject \
+             \"Merge task/5937 into main\" must still rescue task 5937; got {:?}",
+            for_5937[0]
+        );
+    }
+
     /// Fix 1 downgrade (RED — S1): when the claimed provenance commit is
     /// unreachable AND no sibling-FF covers the missing set, but every
     /// metadata.files entry resolves to a tracked path on main (dir-aware,
