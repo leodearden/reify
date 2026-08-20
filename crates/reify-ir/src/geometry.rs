@@ -2476,11 +2476,14 @@ pub enum ExportWarning {
 ///
 /// **Units:** `vertices` are in SI METRES — reify model space. Every kernel
 /// tessellation produces metres, and every consumer that needs another unit
-/// converts at its own boundary: [`write_3mf`] scales vertices to millimetres
-/// to match the `unit="millimeter"` it declares, while the STL writers emit
-/// metres verbatim (see their contract comments). Leaving this unstated is the
-/// root ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it
-/// here rather than at each use site.
+/// converts at its own boundary. In particular every export writer that carries
+/// a unit DECLARATION or targets a format with a settled unit CONVENTION scales
+/// to millimetres at its own vertex-emit site — [`write_3mf`] to match the
+/// `unit="millimeter"` it declares, [`write_stl_binary`] / [`write_stl_ascii`]
+/// to match STL's de-facto millimetre convention — so callers hand these
+/// writers metres and never pre-scale. Leaving this unstated is the root
+/// ambiguity that produced the 1000× STEP/3MF unit mislabel, so state it here
+/// rather than at each use site.
 ///
 /// `normals` carry NO length unit: they are dimensionless unit direction
 /// vectors, invariant under the uniform positive metre→millimetre scale the
@@ -3291,18 +3294,17 @@ fn compute_facet_normal(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> [f32; 3] {
 }
 
 /// Millimetres per metre — the single metre→millimetre conversion point for
-/// the 3MF writer.
+/// the 3MF and STL writers.
 ///
-/// **Export length regime.** Reify model space is SI METRES. Reify's
-/// declaration-carrying export formats emit MILLIMETRES, the CAD/3MF interop
-/// default, so that the unit a file DECLARES and the coordinates it CARRIES
-/// agree. [`write_3mf`] declares `unit="millimeter"`, so it applies this
-/// factor at the vertex-emit site; the STEP writer makes the same promise
-/// through OCCT's per-model length units (see `export_step` in
+/// **Export length regime.** Reify model space is SI METRES. Reify's export
+/// formats emit MILLIMETRES, the CAD/3MF/STL interop default, so that the unit
+/// a file DECLARES — or, where the format carries no unit field, the unit its
+/// consumers universally ASSUME — and the coordinates it CARRIES agree.
+/// [`write_3mf`] declares `unit="millimeter"`, so it applies this factor at the
+/// vertex-emit site; [`write_stl_binary`] / [`write_stl_ascii`] apply it at
+/// theirs against STL's de-facto millimetre convention; the STEP writer makes
+/// the same promise through OCCT's per-model length units (see `export_step` in
 /// `reify-kernel-occt`'s `occt_wrapper.cpp`).
-///
-/// The STL writers deliberately do NOT use this — see the contract comments on
-/// [`write_stl_binary`] / [`write_stl_ascii`].
 ///
 /// **Why this is `f32` and not `f64`.** [`Mesh::vertices`] is `Vec<f32>`, and
 /// the scaling is deliberately done in the source precision. Promoting to f64
@@ -3369,18 +3371,15 @@ fn triangle_verts(
 
 /// Write a mesh to the STL binary format.
 ///
-/// **Units — deliberately asymmetric with [`write_3mf`].** STL carries no unit
-/// field, so there is no declaration to keep honest and this writer emits the
-/// caller's coordinates VERBATIM — SI metres when fed straight from a reify
-/// kernel, since [`Mesh`] is metres. A consumer expecting the de-facto
-/// millimetre STL convention must scale at the call site, as
-/// `crates/reify-eval/src/compute_targets/fdm_slice.rs` already does (×1000)
-/// before handing a mesh to PrusaSlicer. Scaling here instead would silently
-/// make that existing caller 1,000,000×.
-///
-/// TODO(#6187): unify STL into the millimetre regime — scale here and strip the
-/// caller-side ×1000 in `fdm_slice.rs` in the same change, so the divergence
-/// stays deliberate rather than becoming accidental.
+/// **Units:** takes a [`Mesh`] whose vertices are SI METRES (reify model space)
+/// and emits MILLIMETRES, converting the coordinates by [`MM_PER_METRE_F32`] as
+/// it writes them. STL carries no unit field, so there is no declaration to
+/// keep honest — but every STL consumer (PrusaSlicer, Cura, every mesh viewer)
+/// reads the coordinates as millimetres, so that de-facto convention IS the
+/// promise this writer makes, and a 0.030 m cube is written as 30 mm. Scaling
+/// here — at the site that makes the promise — rather than in the callers is
+/// what makes the promise un-bypassable: no caller can obtain a 1000×-shrunk
+/// file, and callers must NOT pre-scale (doing so is 1,000,000×).
 ///
 /// **Format** (LITTLE-ENDIAN):
 /// - 80-byte header (fixed ASCII label, NOT starting with "solid")
@@ -3433,13 +3432,29 @@ pub fn write_stl_binary(
     // once per triangle, avoiding one tiny syscall per field for unbuffered sinks.
     for chunk in mesh.indices.chunks_exact(3) {
         let (v0, v1, v2) = triangle_verts(&mesh.vertices, chunk)?;
+        // Computed from the UNSCALED verts on purpose. The normal is a
+        // dimensionless unit direction, invariant under the uniform positive
+        // metre→millimetre scale (see [`Mesh`]), so scaling first would change
+        // nothing but the arithmetic — while magnifying the cross product by
+        // 1e6 and risking an f32 overflow on large meshes. Normalising the
+        // unscaled cross product keeps these bytes bit-identical.
         let n = compute_facet_normal(v0, v1, v2);
 
         // Pack: 3×f32 normal + 3×(3×f32) vertices = 48 bytes, then 2-byte attr count.
         let mut tri = [0u8; 50];
         let mut off = 0usize;
-        for &c in n.iter().chain(v0.iter()).chain(v1.iter()).chain(v2.iter()) {
+        for &c in n.iter() {
             tri[off..off + 4].copy_from_slice(&c.to_le_bytes());
+            off += 4;
+        }
+        // Vertices convert SI metres → millimetres AT THE EMIT SITE — no `Mesh`
+        // clone, no extra allocation, exactly as `write_3mf` does. Multiply in
+        // f32, NOT via an `f64::from(v) * 1000.0` promotion: the f32
+        // re-rounding is what lands `0.030 m` back on `30` instead of
+        // `29.999999329447746`. That is measured on `MM_PER_METRE_F32` — do not
+        // "fix" it to f64 without re-reading it.
+        for &c in v0.iter().chain(v1.iter()).chain(v2.iter()) {
+            tri[off..off + 4].copy_from_slice(&(c * MM_PER_METRE_F32).to_le_bytes());
             off += 4;
         }
         // tri[48..50] = attribute byte count 0 (already zero-initialized)
@@ -10582,17 +10597,19 @@ mod tests {
             "|nz| should be ≈1 for z=0 triangle, got {nz}"
         );
 
-        // Vertex 0 at bytes 96..108: must round-trip exactly
+        // Vertices must round-trip exactly, converted to the writer's
+        // millimetre regime: the 1 m fixture edges emit as 1000 mm.
+        // Vertex 0 at bytes 96..108
         assert_eq!(le_f32(&buf, 96), 0.0_f32, "v0.x");
         assert_eq!(le_f32(&buf, 100), 0.0_f32, "v0.y");
         assert_eq!(le_f32(&buf, 104), 0.0_f32, "v0.z");
         // Vertex 1 at bytes 108..120
-        assert_eq!(le_f32(&buf, 108), 1.0_f32, "v1.x");
+        assert_eq!(le_f32(&buf, 108), 1000.0_f32, "v1.x");
         assert_eq!(le_f32(&buf, 112), 0.0_f32, "v1.y");
         assert_eq!(le_f32(&buf, 116), 0.0_f32, "v1.z");
         // Vertex 2 at bytes 120..132
         assert_eq!(le_f32(&buf, 120), 0.0_f32, "v2.x");
-        assert_eq!(le_f32(&buf, 124), 1.0_f32, "v2.y");
+        assert_eq!(le_f32(&buf, 124), 1000.0_f32, "v2.y");
         assert_eq!(le_f32(&buf, 128), 0.0_f32, "v2.z");
 
         // Attribute byte count at bytes 132..134 must be 0

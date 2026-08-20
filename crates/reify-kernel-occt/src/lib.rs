@@ -8602,7 +8602,14 @@ mod tests {
         );
 
         // AABB check: parse all vertex positions from the binary body and assert
-        // each axis extent ≈ 10.0 (within 1e-2).
+        // each axis extent ≈ 10000.0 (within 10.0).
+        //
+        // The box is 10 MODEL units = 10 SI metres, and `write_stl_binary` emits
+        // millimetres (task #6187), so the expected extent and its tolerance are
+        // BOTH the same physical quantities this test has always verified — 10 m
+        // and 0.01 m — merely re-expressed in the writer's millimetre regime.
+        // The tolerance is scaled alongside the value on purpose: tightening it
+        // would pin a fidelity nothing here has measured.
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
         for tri in 0..count as usize {
@@ -8627,8 +8634,8 @@ mod tests {
         for axis in 0..3usize {
             let extent = max[axis] - min[axis];
             assert!(
-                (extent - 10.0).abs() < 1e-2,
-                "axis {} extent should be ≈10.0, got {extent}",
+                (extent - 10000.0).abs() < 10.0,
+                "axis {} extent should be ≈10000.0 mm, got {extent}",
                 axis
             );
         }
