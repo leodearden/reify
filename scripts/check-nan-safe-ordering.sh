@@ -47,6 +47,27 @@
 # reify-solver-elastic, reify-kernel-gmsh, reify-fdm, reify-shell-extract,
 # reify-mesh-morph, plus reify-eval's compute_targets/ and modal_ops.rs.
 #
+# THE RULE behind that list (so a new crate can be judged, not guessed): the
+# covered scope is the PHYSICAL/GEOMETRIC NUMERIC SOLVE PATH. Cache-eviction
+# scores, warm-pool cost ordering, version/event ordering and IR `Value`
+# ordering are deliberately OUT — a mis-sorted eviction candidate costs a
+# cache miss, a mis-sorted principal stress is a wrong engineering answer.
+#
+# Which crates and modules are deliberately excluded, the per-site census
+# behind that call, and the condition under which the scope widens are
+# recorded in docs/prds/compute-fea-hardening.md "Resolved design decision 9"
+# (task 5159). Do NOT add or remove a SCOPE_PATHSPECS entry without updating
+# decision 9 AND the (hK) exclusion pins in
+# tests/infra/test_nan_safe_ordering_guard_wired.sh — they are meant to fail
+# together.
+#
+# WARNING: this scope is NARROWER than INV-FEA-3's registry wording used to
+# suggest ("numeric crates"). The 2026-08-20 census found genuinely
+# UNGUARDED sites outside it — in reify-stdlib, reify-constraints and
+# reify-eval's engine_build.rs. Those are owned by filed follow-up hardening
+# work cited in decision 9, NOT by this gate. Do not read this gate's green
+# as evidence that they are safe.
+#
 # PRODUCTION-CODE VIEW: each raw line is reduced to its production code by a
 # single LEFT-TO-RIGHT LEXER (`_strip_line`), not a comment-tail regex strip.
 # Comment text is DROPPED; string, char-literal and raw-string CONTENTS are
@@ -119,6 +140,13 @@ fi
 
 # Covered-scope pathspecs. Single-star git pathspecs are NOT path-boundary-aware,
 # so 'crates/reify-fdm/*.rs' matches every tracked .rs at any depth under it.
+#
+# Scope rule: the physical/geometric numeric solve path (see COVERED SCOPE in
+# the header). Adding or removing an entry here requires updating
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" and the
+# (hK) pins in tests/infra/test_nan_safe_ordering_guard_wired.sh in the same
+# change — those pins assert the current exclusions and will fail if this
+# list moves without them.
 SCOPE_PATHSPECS=(
     'crates/reify-solver-elastic/*.rs'
     'crates/reify-kernel-gmsh/*.rs'
