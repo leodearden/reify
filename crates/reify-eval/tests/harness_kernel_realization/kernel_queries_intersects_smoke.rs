@@ -34,82 +34,21 @@
 //! assertion pattern) and `crates/reify-eval/tests/harness_kernel_realization/kernel_queries_distance_smoke.rs`
 //! (unconditional compile check + OCCT-gated value assertions).
 //!
-//! The `read_and_compile_fixture`/`compile_and_build_with_occt` scaffolding
-//! below is `pub(crate)` and shared with the sibling
-//! `best_practices_clearance_oracle` module (task #5982 split out of #5674's
-//! co-tenancy fallback), which pins `examples/best_practices/clearance_oracle.ri`'s
-//! eval-surface answers using the same read/compile/skip-without-OCCT pattern.
+//! The read/compile/skip-without-OCCT scaffolding this test runs on lives in
+//! the neutral sibling `fixture_scaffolding` module, not here: it is also used
+//! by `best_practices_clearance_oracle` (task #5982), and a shared helper owned
+//! by whichever pin test happened to define it first would make narrowing or
+//! deleting THIS test silently break an unrelated one.
 
-use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
-use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_ir::Value;
+
+use super::fixture_scaffolding::compile_and_build_with_occt;
 
 const INTERSECTS_SMOKE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/kernel_queries/intersects_smoke.ri"
 );
-
-/// Reads `path` and parses+compiles it against the stdlib, asserting it
-/// compiles cleanly. Runs unconditionally — no OCCT dependency — so a
-/// missing fixture or a grammar/compile regression fails on every runner.
-///
-/// Extracted out of `compile_and_build_with_occt` so the read/compile/
-/// assert-clean scaffolding has exactly one implementation shared by every
-/// pin test that uses it — including the sibling `best_practices_clearance_oracle`
-/// module's `clearance_oracle_check_surface_reports_indeterminate_geometry_constraints`
-/// and `indeterminate_ids_on_check_surface`, which need a compiled fixture
-/// but never touch OCCT — instead of the risk of two copies (one here, one
-/// inlined in a kernel-less test) silently drifting under copy-paste.
-/// `pub(crate)` so the sibling module can reuse it (task #5982 split).
-pub(crate) fn read_and_compile_fixture(path: &str, what: &str) -> reify_compiler::CompiledModule {
-    // Read the fixture unconditionally so a missing file is caught even on
-    // OCCT-less runners — fixture presence is a CI contract independent of OCCT.
-    let source = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{what} should exist at {path}: {e}"));
-
-    // Validate fixture compilation unconditionally — a grammar/compile regression
-    // should fail on every runner.
-    let compiled = parse_and_compile_with_stdlib(&source);
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "{what} should compile with no error-severity diagnostics, got:\n{:#?}",
-        errors_only(&compiled)
-    );
-    compiled
-}
-
-/// Shared scaffolding for the real-OCCT pin tests in this module: compiles
-/// `path` via `read_and_compile_fixture`, then either builds it with a real
-/// OCCT kernel and returns the `BuildResult`, or, when OCCT is not
-/// available, emits the standard skip line (naming `what`) and returns
-/// `None`.
-///
-/// Extracted so `intersects_smoke_evals_expected_booleans` and the sibling
-/// `best_practices_clearance_oracle` module's
-/// `clearance_oracle_evals_expected_fouls_and_gap` cannot drift against each
-/// other on the skip/build scaffolding — the piece most likely to diverge
-/// silently under copy-paste. `pub(crate)` so the sibling module can reuse
-/// it (task #5982 split).
-pub(crate) fn compile_and_build_with_occt(
-    path: &str,
-    what: &str,
-) -> Option<reify_eval::BuildResult> {
-    let compiled = read_and_compile_fixture(path, what);
-
-    // Skip the OCCT-dependent kernel build if OCCT is not built.
-    if !reify_kernel_occt::OCCT_AVAILABLE {
-        eprintln!("skipping real-OCCT assertions for {what}: OCCT not available");
-        return None;
-    }
-
-    // Build with real OCCT kernel (SingleKernelHolder + OcctKernelHandle::spawn).
-    let checker = SimpleConstraintChecker;
-    let mut planner = reify_geometry::SingleKernelHolder::new();
-    planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
-    Some(engine.build(&compiled, ExportFormat::Step))
-}
 
 /// Pins the user-observable signal for KGQ-γ: `intersects(Geometry, Geometry)`
 /// on two 10 mm boxes must evaluate to `Value::Bool(true)` when the boxes have

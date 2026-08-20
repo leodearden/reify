@@ -8,12 +8,25 @@
 //! unchanged. Explicit `#[path]` is required: this harness root is an integration-test crate
 //! root, where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`.
 //!
+//! TWO ENTRIES ARE NOT FORMER FILES, so the stem-name ↔ former-file mapping
+//! above holds for every module except these (both purpose-named, task #5982):
+//! `best_practices_clearance_oracle` holds the two `clearance_oracle.ri`
+//! eval-surface pins split out of `kernel_queries_intersects_smoke` — that
+//! split DID rename their module paths (`kernel_queries_intersects_smoke::
+//! clearance_oracle_*` → `best_practices_clearance_oracle::clearance_oracle_*`);
+//! no in-repo filterset, script or doc referenced the old paths, but an
+//! out-of-repo nextest selector would need updating. `fixture_scaffolding`
+//! holds the read/compile/build-with-OCCT helpers those two modules share and
+//! contains NO `#[test]` fn, so it contributes no test path at all.
+//!
 //! EXCLUDED (kept standalone): realization_cache_alloc.rs and
 //! realization_cache_alloc_rotating_options_hash.rs each install a process-wide
 //! `#[global_allocator]`; two in one binary is a compile error, and one shared across siblings
 //! would corrupt their alloc-count delta assertions.
 #[path = "harness_kernel_realization/best_practices_clearance_oracle.rs"]
 mod best_practices_clearance_oracle;
+#[path = "harness_kernel_realization/fixture_scaffolding.rs"]
+mod fixture_scaffolding;
 #[path = "harness_kernel_realization/kernel_attribute_hook_wiring.rs"]
 mod kernel_attribute_hook_wiring;
 #[path = "harness_kernel_realization/kernel_pin_enforcement.rs"]
