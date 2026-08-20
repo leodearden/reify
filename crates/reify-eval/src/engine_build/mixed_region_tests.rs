@@ -362,6 +362,129 @@
         );
     }
 
+    // ── Site 2: `three_nearest_node_indices` fail-closed ordering (task 6378) ─
+
+    /// A NaN-poisoned node's squared distance is NaN, so it must never win the
+    /// pick. `nodes[0]` is poisoned; the true 3 finite-nearest (by ascending
+    /// distance) are nodes 2, 3, 1 (dist² = 0, 1, 16 respectively) and must be
+    /// returned in that order with the poisoned node excluded entirely.
+    ///
+    /// Currently RED: the `partial_cmp(...).unwrap_or(Ordering::Equal)`
+    /// insertion sort ranks the NaN-poisoned node FIRST (`[0, 2, 3]`) instead.
+    #[test]
+    fn three_nearest_node_indices_excludes_nan_poisoned_node() {
+        let nodes = [
+            [f64::NAN, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![2, 3, 1],
+            "the 3 true finite-nearest nodes, ascending by distance, with the \
+             NaN-poisoned node excluded entirely"
+        );
+    }
+
+    /// A *negatively*-signed NaN coordinate (the x86_64 "real indefinite" QNaN
+    /// bit pattern `0xFFF8_0000_0000_0000`) must not win the pick either. Bare
+    /// `total_cmp` alone ranks a negative-signed NaN BELOW every finite value,
+    /// so without an explicit NaN → `+INFINITY` normalization applied before
+    /// `total_cmp`, this exact case would select the poisoned node first — the
+    /// fail-open a bare-`total_cmp` rewrite would (wrongly) produce. Mirrors
+    /// `nearest_node_picks_true_finite_nearest_over_negative_signed_nan`
+    /// (modal_ops.rs).
+    #[test]
+    fn three_nearest_node_indices_picks_true_finite_nearest_over_negative_signed_nan() {
+        let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000);
+        assert!(neg_nan.is_nan(), "fixture must actually be NaN");
+        assert!(
+            neg_nan.is_sign_negative(),
+            "fixture must be a negative-signed NaN"
+        );
+
+        let nodes = [[neg_nan, 0.0, 0.0], [5.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![2, 1, 0],
+            "true finite nodes (dist² = 0, 16) must rank ahead of the \
+             negative-signed-NaN-poisoned node — bare total_cmp alone would \
+             wrongly rank it first"
+        );
+    }
+
+    /// `+infinity`/`-infinity` node coordinates must also rank behind every
+    /// finite node — the general non-finite case `dist3_sq` can produce
+    /// alongside NaN (e.g. from an overflowing or already-infinite
+    /// coordinate).
+    #[test]
+    fn three_nearest_node_indices_ranks_infinite_coordinate_nodes_behind_finite_nodes() {
+        let nodes = [
+            [f64::INFINITY, 0.0, 0.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ];
+        let target = [0.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![2, 3, 0],
+            "both infinite-coordinate nodes must rank behind every finite \
+             node (idx0 fills the truncated 3rd slot ahead of idx1 only via \
+             the stable sort's original-order tie-break between two equal \
+             +infinity keys)"
+        );
+    }
+
+    /// A non-finite `target` (e.g. an unguarded `iface.location`) makes every
+    /// key non-finite; the pick must still degrade deterministically to
+    /// exactly 3 indices rather than panicking or returning a different
+    /// cardinality.
+    #[test]
+    fn three_nearest_node_indices_returns_three_indices_without_panicking_on_non_finite_target() {
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ];
+        let target = [f64::NAN, 0.0, 0.0];
+
+        let result = three_nearest_node_indices(&nodes, target);
+        assert_eq!(
+            result.len(),
+            3,
+            "deterministic degrade: still exactly 3 indices, no panic"
+        );
+    }
+
+    /// On equal finite distances the lowest index still wins first — pinning
+    /// that the fail-closed rewrite does not perturb the existing
+    /// deterministic tie-break the seam relies on (`slice::sort_by` is
+    /// stable).
+    #[test]
+    fn three_nearest_node_indices_preserves_lowest_index_tie_break() {
+        let nodes = [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+        ];
+        let target = [0.0, 0.0, 0.0];
+
+        assert_eq!(
+            three_nearest_node_indices(&nodes, target),
+            vec![0, 1, 2],
+            "tied finite distances resolve to the lowest indices, in order"
+        );
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
