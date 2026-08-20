@@ -792,10 +792,10 @@ fn capstan_active_band_is_covered_by_the_fairlead_stroke() {
 
     let band = capstan_cell(&result.values, "band", DimensionVector::LENGTH);
     let lead = capstan_cell(&result.values, "lead", DimensionVector::LENGTH);
-    let active_turns = entity_real(result, CAPSTAN_ENTITY, "active_turns");
-    let dead_total = entity_real(result, CAPSTAN_ENTITY, "dead_total");
+    let active_turns = entity_real(&result.values, CAPSTAN_ENTITY, "active_turns");
+    let dead_total = entity_real(&result.values, CAPSTAN_ENTITY, "dead_total");
     let groove_len = capstan_cell(&result.values, "groove_len", DimensionVector::LENGTH);
-    let stroke = entity_cell(result, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
+    let stroke = entity_cell(&result.values, FAIRLEAD_ENTITY, "stroke", DimensionVector::LENGTH);
 
     // ---- (1) `band` is the ACTIVE migration, not the total grooved extent ----
     let band_expected = lead * active_turns;
