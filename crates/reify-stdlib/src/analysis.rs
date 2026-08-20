@@ -773,6 +773,103 @@ mod tests {
         );
     }
 
+    /// `compute_eigenvalues_3x3` must FAIL CLOSED on a non-finite window:
+    /// any non-finite entry among the six it actually reads
+    /// (`d[0], d[1], d[2], d[4], d[5], d[8]`) yields `None`, not a
+    /// NaN-bearing `Some`. Out-of-solid FEA sentinel windows are the
+    /// motivating input (INV-FEA-3, task #6376).
+    ///
+    /// RED before the guard lands: every one of these four windows returns
+    /// `Some(..)` today — the diagonal branch sorts NaNs straight through and
+    /// the general branch propagates them via `q`/`p`/`phi`.
+    #[test]
+    fn compute_eigenvalues_3x3_non_finite_window_returns_none() {
+        // (a) all-NaN → GENERAL branch: p1 is NaN, so `NaN <= 1e-30` is false.
+        let all_nan = [f64::NAN; 9];
+        assert!(
+            compute_eigenvalues_3x3(&all_nan).is_none(),
+            "all-NaN window must return None, got {:?}",
+            compute_eigenvalues_3x3(&all_nan)
+        );
+
+        // (b) NaN diagonal, zero off-diagonals → DIAGONAL branch (p1 == 0.0).
+        let nan_diag = [
+            f64::NAN,
+            0.0,
+            0.0,
+            0.0,
+            f64::NAN,
+            0.0,
+            0.0,
+            0.0,
+            f64::NAN,
+        ];
+        assert!(
+            compute_eigenvalues_3x3(&nan_diag).is_none(),
+            "NaN-diagonal window must return None, got {:?}",
+            compute_eigenvalues_3x3(&nan_diag)
+        );
+
+        // (c) non-NaN non-finite (+∞) on the diagonal → DIAGONAL branch.
+        let inf_diag = [f64::INFINITY, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0];
+        assert!(
+            compute_eigenvalues_3x3(&inf_diag).is_none(),
+            "+inf-diagonal window must return None, got {:?}",
+            compute_eigenvalues_3x3(&inf_diag)
+        );
+
+        // (d) only ONE entry poisoned, non-zero off-diagonals → GENERAL branch.
+        let partial_nan = [1.0, 4.0, 5.0, 4.0, f64::NAN, 6.0, 5.0, 6.0, 3.0];
+        assert!(
+            compute_eigenvalues_3x3(&partial_nan).is_none(),
+            "single-NaN symmetric window must return None, got {:?}",
+            compute_eigenvalues_3x3(&partial_nan)
+        );
+    }
+
+    /// Positive control for the fail-closed guard: a finite symmetric window
+    /// still decomposes and still comes back ascending.
+    ///
+    /// Asserts ORDERING only, deliberately not eigenvalue magnitudes — the
+    /// magnitudes are already pinned by `principal_stresses_symmetric_tensor`,
+    /// and this control exists solely to prove the guard did not swallow the
+    /// happy path.
+    #[test]
+    fn compute_eigenvalues_3x3_finite_window_still_returns_sorted_some() {
+        // Same tensor as `principal_stresses_symmetric_tensor`:
+        // [[2,1,0],[1,3,1],[0,1,2]].
+        let finite = [2.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0];
+        let eigs = compute_eigenvalues_3x3(&finite)
+            .expect("finite symmetric window must still decompose");
+        assert!(
+            eigs[0] <= eigs[1] && eigs[1] <= eigs[2],
+            "eigenvalues must be ascending, got {:?}",
+            eigs
+        );
+    }
+
+    /// DSL-visible consequence of the fail-closed guard: `principal_stresses`
+    /// on an all-NaN tensor returns `Undef` ITSELF, not `List([Undef; 3])`.
+    ///
+    /// RED before the guard lands: `compute_eigenvalues_3x3` returns
+    /// `Some([NaN; 3])`, so each element sanitizes separately into a list.
+    #[test]
+    fn principal_stresses_all_nan_tensor_returns_undef() {
+        let nan_tensor = make_dimensioned_matrix(
+            &[
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+                &[f64::NAN, f64::NAN, f64::NAN],
+            ],
+            DimensionVector::PRESSURE,
+        );
+        let result = eval_analysis("principal_stresses", &[nan_tensor]).unwrap();
+        assert!(
+            result.is_undef(),
+            "principal_stresses(all-NaN tensor) must be Undef itself, not a List, got {:?}",
+            result
+        );
+    }
     // ── rotate_stress_3x3 kernel tests (step-1) ─────────────────────────────
 
     /// Identity rotation is a no-op: `R = I` ⟹ `R·σ·Rᵀ = σ`, bit-for-bit.
