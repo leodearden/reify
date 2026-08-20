@@ -21,7 +21,7 @@
 #                       knob flips to 1 (H3). See docs/prds/run-all-host-
 #                       infra-partition.md §3 for the full rationale.
 #
-# Conservative-first, refine-later (PRD §3): the 4 host-exclusive entries
+# Conservative-first, refine-later (PRD §3): the host-exclusive entries
 # below start whole-file host-exclusive as a conservative default; H5-H7
 # refine them (moving hermetic portions into pool) by editing ONLY this
 # manifest — the drift-guard (tests/infra/test_run_all_classification.sh)
