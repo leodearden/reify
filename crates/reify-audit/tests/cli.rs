@@ -403,6 +403,108 @@ mod cli {
         );
     }
 
+    /// `REIFY_AUDIT_PREDONE_WARN_ONLY=1` makes the pre-done refusal advisory:
+    /// the finding is still emitted, at Low, and the exit code drops to 0.
+    ///
+    /// Why the hatch exists: this gate is fail-closed production infrastructure
+    /// that had never emitted a finding before this task. Without an escape
+    /// hatch, an operator hit by a misfire must edit
+    /// `~/.config/systemd/user/fused-memory.service` and restart fused-memory —
+    /// a red-tier restart under a dirty-start guard. Mirrors the house
+    /// `REIFY_MAIN_GATE_BYPASS` / `REIFY_STASH_GUARD_BYPASS` convention.
+    ///
+    /// This must be a subprocess test, not a library one: `std::env::set_var`
+    /// is process-global and would race sibling tests under `cargo test`'s
+    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// documents at length for `GIT_DIR`).
+    #[test]
+    fn pre_done_warn_only_env_downgrades_refusal_to_low() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let root = repo_root();
+
+        let tasks = vec![task_fixture_with_files(
+            "63451",
+            "in-progress",
+            None,
+            None,
+            &["crates/reify-audit-ghost/src/lib.rs"],
+        )];
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let run = |warn_only: bool| {
+            let mut cmd = Command::new(bin);
+            cmd.args([
+                "--task",
+                "63451",
+                "--pre-done",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                root.to_str().unwrap(),
+            ]);
+            if warn_only {
+                cmd.env("REIFY_AUDIT_PREDONE_WARN_ONLY", "1");
+            } else {
+                cmd.env_remove("REIFY_AUDIT_PREDONE_WARN_ONLY");
+            }
+            cmd.output().expect("invoke reify-audit --pre-done")
+        };
+
+        // Break-glass active: advisory.
+        let out = run(true);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let low = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        let low = low.unwrap_or_else(|| {
+            panic!(
+                "warn-only must PRESERVE the finding, only drop its blocking effect; \
+                 got:\n{:#}",
+                serde_json::Value::Array(findings.clone())
+            )
+        });
+        assert_eq!(
+            low["severity"].as_str(),
+            Some("Low"),
+            "warn-only must downgrade the refusal to Low; got:\n{:#}",
+            low
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "warn-only must exit 0 (the exit code counts Highs)\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            stderr
+        );
+
+        // Default is ARMED.
+        let out = run(false);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let findings = parse_findings_from_stderr(&stderr);
+        let high = findings.iter().find(|f| {
+            f["pattern"].as_str() == Some("P5PhantomDone")
+                && f["severity"].as_str() == Some("High")
+                && f["task_id"].as_str() == Some("63451")
+        });
+        assert!(
+            high.is_some(),
+            "without the env var the gate must stay ARMED (High); got:\n{:#}",
+            serde_json::Value::Array(findings.clone())
+        );
+        assert!(
+            out.status.code().unwrap_or(1) >= 1,
+            "armed default must exit non-zero; got {:?}",
+            out.status.code()
+        );
+    }
+
     /// `--task <id>` (no `--pre-done`) runs all three detectors; P5 finds the
     /// phantom-done; a pending-status task yields zero findings.
     ///
