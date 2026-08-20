@@ -1097,3 +1097,361 @@ fn seeded_build_surface_sweep_reports_a_planted_violation() {
         violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
     );
 }
+
+/// Compile `source` through the stdlib prelude, run it through a real
+/// `Engine::build(.., ExportFormat::Step)`, and return
+/// `(post-build stale-Undef violations, the build's diagnostic messages)`.
+///
+/// Engine wiring is `run_corpus_shard`'s, verbatim — a
+/// [`SimpleConstraintChecker`](reify_constraints::SimpleConstraintChecker) plus
+/// a default [`MockGeometryKernel`](reify_test_support::MockGeometryKernel) —
+/// with the terminal `engine.eval(&compiled)` swapped for `engine.build(..)`.
+/// That swap is the whole point: it is precisely the surface half of the
+/// coverage gap task 5578 names, since every sweep above this line only ever
+/// drives `eval()`.
+///
+/// `register_compute` is an explicit switch, not a convenience knob. `false` is
+/// what lets `seeded_build_surface_sweep_reports_a_planted_violation` reproduce
+/// the task-5578 defect in miniature; `true` is what the real sweep drives.
+/// Nothing else may pass `false`.
+///
+/// The registered arm installs BOTH `register_compute_fns` and
+/// `register_shell_extract_compute_fns`, matching production (`reify-cli`'s
+/// `configured_eval_engine` → `register_production_compute_fns`, which calls
+/// both). `run_corpus_shard` above installs only the first — harmless there
+/// because it never asserts on diagnostics, but the sweep below DOES, and
+/// `examples/fea_shell_too_thick_annotated.ri` measurably emits
+/// `@optimized target "shell-extract::extract": no registered compute trampoline`
+/// without the second. That is the same defect this task fixes, so it is fixed
+/// here rather than skipped.
+///
+/// A source that fails to COMPILE panics rather than being skipped. That is
+/// deliberate and differs from `run_corpus_shard`'s printed compile-error skip:
+/// this helper only ever runs over an explicit, curated file list, so a compile
+/// error there means the LIST is stale — a defect to surface loudly, not a file
+/// to quietly drop.
+fn build_surface_violations(
+    source: &str,
+    register_compute: bool,
+) -> (Vec<reify_eval::StaleUndefViolation>, Vec<String>) {
+    let compiled = reify_test_support::compile_source_with_stdlib(source);
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "build_surface_violations: the source must compile without errors — a \
+         compile error here means the caller's curated file list is stale: {errors:#?}"
+    );
+
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        Some(Box::new(reify_test_support::MockGeometryKernel::new())),
+    );
+    if register_compute {
+        reify_eval::compute_targets::register_compute_fns(&mut engine);
+        reify_eval::register_shell_extract_compute_fns(&mut engine);
+    }
+    let result = engine.build(&compiled, reify_ir::ExportFormat::Step);
+    let messages: Vec<String> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.message.clone())
+        .collect();
+
+    (engine.check_no_stale_undef(), messages)
+}
+
+/// Non-vacuity companion to `seeded_build_surface_sweep_reports_a_planted_violation`:
+/// the SAME probe, same helper, with the trampolines REGISTERED, must produce
+/// neither half of the failure signature.
+///
+/// Without this, the seeded self-test could pass for the wrong reason — a probe
+/// that is stale-Undef under BOTH arms (say, a typo'd field name) would satisfy
+/// it while proving nothing about the registration switch. Pinning the two arms
+/// to OPPOSITE outcomes is what makes the switch, and therefore the sweep below,
+/// meaningful.
+#[test]
+fn build_surface_probe_is_clean_when_registered() {
+    let (violations, diagnostics) = build_surface_violations(OPTIMIZED_PROBE_SRC, true);
+
+    assert!(
+        !diagnostics.iter().any(|d| d.contains(TRAMPOLINE_MISSING)),
+        "with the trampolines registered the probe must NOT emit \
+         {TRAMPOLINE_MISSING:?}: {diagnostics:#?}"
+    );
+    assert!(
+        violations.is_empty(),
+        "with the trampolines registered the probe must have zero stale-Undef \
+         violations — if `solved` is still reported, the registration switch is \
+         not the variable this pair of tests thinks it is: {violations:?}"
+    );
+}
+
+// ── The bounded build()-surface sweep ────────────────────────────────────────
+//
+// Selection method, stated so bounded coverage never reads as full coverage:
+//
+//   1. Grep every `@optimized`-annotated stdlib fn name (`as_printed_material`,
+//      `displacement_at`, `fdm_slice`, `form_find`, `form_find_free`,
+//      `input_shape`, `inverse_dynamics`, `mechanism_modal_analysis`,
+//      `membrane_load`, `modal_analysis`, `simulate_trajectory`,
+//      `solve_buckling`, `solve_buckling_load_cases`, `solve_elastic_static`,
+//      `solve_load_cases`, `transient_response`) against `examples/`. That
+//      yields 18 candidate files.
+//   2. Reduce to a DISTINCT-TARGET covering set — one file per `@optimized`
+//      dispatch target, choosing the cheapest measured file for each. That is
+//      the cost trim the sweep's own purpose licenses: it guards the dispatch
+//      path per TARGET, so a second file hitting an already-covered target buys
+//      no new coverage. Every dropped file is listed with its measured cost and
+//      the target it duplicates in `BUILD_SURFACE_DROPPED_DUPLICATES`, and both
+//      lists are PRINTED at run time.
+//
+// Measured (debug profile, `--test-threads=1`) the full 18-file list costs
+// 136.63s; the covering set costs ~86s, ~78s of which is the single
+// `buckling_multi_case_smoke` file — which is why that one file gets its own
+// `#[test]` (see `build_surface_buckling_multi_case_has_no_stale_undef`), the
+// same "independent, concurrently-scheduled process with its own PASS/SLOW
+// line" reasoning that made the eval sweep shard into `CORPUS_SHARD_COUNT`.
+//
+// Out of reach here, and deliberately not faked: `dynamics::inverse_dynamics`,
+// `fdm::slice`, `modal::*` and `trajectory::*` have NO `examples/*.ri` caller,
+// so this sweep cannot cover them. They are guarded by their own crate tests.
+
+/// The distinct-target covering set: `(example base name, the @optimized
+/// target(s) it uniquely contributes)`. See the section comment above for how
+/// it was derived and what was dropped.
+const BUILD_SURFACE_OPTIMIZED_EXAMPLES: &[(&str, &str)] = &[
+    (
+        "fea_shell_too_thick_annotated",
+        "solver::elastic_static + shell-extract::extract (15ms — the cheapest \
+         elastic-static caller, and the ONLY example that dispatches shell-extract)",
+    ),
+    ("fdm_bracket", "fdm::as_printed_material_r_fast (204ms — the only caller)"),
+    ("fea_multi_case_bracket", "solver::multi_case (1.10s)"),
+    ("buckling_column_p2", "solver::buckling (6.19s)"),
+    ("tensegrity_cable_net", "solver::form_find (9.8ms)"),
+    (
+        "tensegrity_pavilion",
+        "solver::form_find_free + solver::membrane_load (48.5ms — the only \
+         membrane_load caller)",
+    ),
+];
+
+/// The single covering-set member heavy enough to warrant its own `#[test]`.
+const BUILD_SURFACE_HEAVY_EXAMPLE: &[(&str, &str)] = &[(
+    "buckling_multi_case_smoke",
+    "solver::buckling_multi_case (78.35s — the ONLY example that dispatches this \
+     target, so it cannot be dropped without losing the target entirely; isolated \
+     into its own #[test] so it runs as its own concurrently-scheduled process \
+     rather than serializing ~78s behind the cheap files)",
+)];
+
+/// Candidate files dropped from the sweep because they duplicate a target the
+/// covering set already reaches. PRINTED on every run — never a silent
+/// truncation. Costs are the measured debug-profile `build()` wall clock.
+const BUILD_SURFACE_DROPPED_DUPLICATES: &[(&str, &str)] = &[
+    ("anisotropic_bar", "3.12s — solver::elastic_static, covered by fea_shell_too_thick_annotated (15ms)"),
+    ("buckling_column_smoke", "43.96s — solver::buckling, covered by buckling_column_p2 (6.19s)"),
+    ("differential_field_ops", "349ms — solver::elastic_static"),
+    ("fea_cantilever_smoke", "410ms — solver::elastic_static"),
+    ("fea_multi_case_smoke", "294ms — solver::elastic_static"),
+    ("fea_pressure_smoke", "286ms — solver::elastic_static"),
+    ("fea_shell_flexure", "138ms — solver::elastic_static"),
+    ("fea_shell_too_thick_auto", "41ms — solver::elastic_static"),
+    (
+        "multi_load_bracket",
+        "2.06s — solver::multi_case, covered by fea_multi_case_bracket (1.10s). \
+         Also carries a KNOWN_RESIDUAL_SKIPS entry on the eval surface \
+         (MultiLoadBracket.critical_case, a worst_case/lambda-dispatch product \
+         limitation), so importing it here would add a known-broken case for zero \
+         added target coverage.",
+    ),
+    ("tensegrity_membrane_formfind", "13ms — solver::form_find, covered by tensegrity_cable_net (9.8ms)"),
+    (
+        "tensegrity_t_prism",
+        "45ms — solver::form_find_free, covered by tensegrity_pavilion (48.5ms). \
+         This is task 5578's own reproducer, and it is pinned STRICTLY harder \
+         elsewhere: harness_engine's \
+         `optimized_compute_outputs_are_definite_on_build_surface` builds it under \
+         BOTH schedulers and asserts TPrism.{solved,forces} are DEFINITE, which a \
+         zero-violations sweep cannot.",
+    ),
+];
+
+/// Build-surface counterpart of `KNOWN_RESIDUAL_SKIPS` — same convention
+/// (reasoned per entry, matched exactly, PRINTED never silent), but keyed
+/// `(example base name, EXACT cell rendered as "Entity.member", reason)` rather
+/// than by file. Cell-level rather than file-level is a deliberate tightening:
+/// a blanket file skip would also suppress a NEW violation in that file and the
+/// trampoline-missing assertion, both of which still apply here.
+const BUILD_SURFACE_KNOWN_RESIDUALS: &[(&str, &str, &str)] = &[(
+    "fdm_bracket",
+    "FdmBracket.defl_print",
+    "`let defl_print = max(r_print.displacement)` where `r_print` comes from the \
+     6-arg Field overload of `solve_elastic_static` (per-element \
+     DiscreteCellField dispatch, task #4757). Its sibling `defl_solid` — the \
+     7-arg ConstitutiveLaw overload — resolves fine, and the file emits ZERO \
+     trampoline-missing diagnostics, so the @optimized dispatch itself ran: this \
+     is a Field-overload/`max`-reduction product limitation on the build surface \
+     specifically (the eval-surface sweep above is green on this same file). \
+     Pre-existing and unrelated to task 5578; filed as a follow-up (fused-memory \
+     ticket tkt_0RSNHY2F9Y7C7SEVJ04ZEAECNG, escalation_id agent-followup-5578) \
+     rather than fixed here.",
+)];
+
+/// Shared driver for the build()-surface sweep. `cases` is a slice of
+/// `(example base name, why it is in the covering set)`.
+///
+/// Two assertions per file, and the second is what this task adds to the class:
+///
+/// 1. ZERO stale-Undef violations after a real `build()`, modulo the exact,
+///    printed `BUILD_SURFACE_KNOWN_RESIDUALS` cells.
+/// 2. NO diagnostic containing "no registered compute trampoline" — the task
+///    4458 guard shape (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`
+///    asserts the same absence against CLI stderr), applied here against
+///    `BuildResult.diagnostics`. Never exempted by a residual entry.
+///
+/// (2) is not redundant with (1). The trampoline-missing fallback degrades
+/// SILENTLY: it body-inlines an all-required-params sentinel, and whether that
+/// surfaces as a stale-Undef violation depends on whether anything downstream
+/// happens to read the sentinel's fields. A file whose solver result is computed
+/// but never consumed would satisfy (1) while its solver never ran.
+fn run_build_surface_sweep(label: &str, cases: &[(&str, &str)]) {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+
+    eprintln!(
+        "{label}: BOUNDED coverage — {} of the 18 @optimized-bearing examples/ \
+         files, reduced to a distinct-target covering set:",
+        cases.len()
+    );
+    for (name, why) in cases {
+        eprintln!("  COVER examples/{name}.ri — {why}");
+    }
+    for (name, why) in BUILD_SURFACE_DROPPED_DUPLICATES {
+        eprintln!("  DROP  examples/{name}.ri — {why}");
+    }
+
+    let mut offenders: Vec<String> = Vec::new();
+    let total = std::time::Instant::now();
+
+    for (name, _why) in cases {
+        let path = examples_dir.join(format!("{name}.ri"));
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading examples/{name}.ri at {}: {e}", path.display()));
+
+        let t0 = std::time::Instant::now();
+        let (violations, diagnostics) = build_surface_violations(&source, true);
+        let elapsed = t0.elapsed();
+
+        let trampoline_missing: Vec<&String> = diagnostics
+            .iter()
+            .filter(|d| d.contains(TRAMPOLINE_MISSING))
+            .collect();
+
+        // Residuals are matched EXACTLY, by rendered cell — never by prefix and
+        // never by file — so a NEW violation in a file that carries a residual
+        // still fails, and a residual that got fixed fails too (delete it).
+        let mut residual_hits: Vec<&str> = Vec::new();
+        let mut unexpected: Vec<&reify_eval::StaleUndefViolation> = Vec::new();
+        for v in &violations {
+            let rendered = v.cell.to_string();
+            match BUILD_SURFACE_KNOWN_RESIDUALS
+                .iter()
+                .find(|(n, cell, _)| n == name && *cell == rendered)
+            {
+                Some((_, _, reason)) => residual_hits.push(reason),
+                None => unexpected.push(v),
+            }
+        }
+
+        eprintln!(
+            "  {elapsed:>10.2?}  {name}  ({} violation(s): {} known-residual, {} unexpected; \
+             {} trampoline-missing diagnostic(s))",
+            violations.len(),
+            residual_hits.len(),
+            unexpected.len(),
+            trampoline_missing.len()
+        );
+        for reason in &residual_hits {
+            eprintln!("    KNOWN RESIDUAL: {reason}");
+        }
+
+        if !trampoline_missing.is_empty() {
+            offenders.push(format!(
+                "  examples/{name}.ri: {} {TRAMPOLINE_MISSING:?} diagnostic(s) — the \
+                 @optimized dispatch fell back to body-inlining a never-run sentinel, \
+                 so the solver did NOT run:\n{}",
+                trampoline_missing.len(),
+                trampoline_missing
+                    .iter()
+                    .map(|d| format!("    {d}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        if !unexpected.is_empty() {
+            offenders.push(format!(
+                "  examples/{name}.ri: {} unexpected stale-Undef violation(s):\n{}",
+                unexpected.len(),
+                unexpected
+                    .iter()
+                    .map(|v| format!("    {:?}: {}", v.cell, v.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
+        // A residual that stopped reproducing is dead weight — same rule the
+        // eval-surface conventions use: delete the entry, don't leave it.
+        for (n, cell, _) in BUILD_SURFACE_KNOWN_RESIDUALS.iter().filter(|(n, _, _)| n == name) {
+            let still_present = violations
+                .iter()
+                .any(|v| v.cell.to_string() == *cell);
+            if !still_present {
+                offenders.push(format!(
+                    "  examples/{n}.ri: BUILD_SURFACE_KNOWN_RESIDUALS lists `{cell}` but it \
+                     no longer reproduces — the underlying defect was fixed; delete the entry \
+                     rather than leaving a stale exemption behind."
+                ));
+            }
+        }
+    }
+
+    eprintln!("  {label} total: {:.2?}", total.elapsed());
+
+    assert!(
+        offenders.is_empty(),
+        "the build() surface must leave zero stale-Undef violations (modulo the \
+         exact BUILD_SURFACE_KNOWN_RESIDUALS cells) and emit no \
+         {TRAMPOLINE_MISSING:?} diagnostic for every covered example.\n\
+         A trampoline-missing diagnostic means the engine was constructed without \
+         the compute-trampoline registrations (task 5578 / 4458); a stale-Undef \
+         violation means a demanded cell was left unevaluated. Do NOT add either \
+         to BUILD_SURFACE_KNOWN_RESIDUALS to make this pass unless the root cause \
+         is genuinely elsewhere and a follow-up task names it.\nOffenders:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The build()-surface sweep over the cheap members of the distinct-target
+/// covering set (~7.6s measured). See `run_build_surface_sweep` for the two
+/// per-file assertions and the section comment above for how the set was chosen.
+#[test]
+fn build_surface_optimized_examples_have_no_stale_undef() {
+    run_build_surface_sweep(
+        "build_surface_optimized_examples_have_no_stale_undef",
+        BUILD_SURFACE_OPTIMIZED_EXAMPLES,
+    );
+}
+
+/// The one covering-set member heavy enough to isolate — see
+/// `BUILD_SURFACE_HEAVY_EXAMPLE`. Identical assertions; separate `#[test]` so
+/// cargo/nextest schedules it as its own process with its own PASS/SLOW line
+/// instead of adding ~78s to the sweep above (the same reasoning that sharded
+/// the eval sweep into `CORPUS_SHARD_COUNT` independent tests).
+#[test]
+fn build_surface_buckling_multi_case_has_no_stale_undef() {
+    run_build_surface_sweep(
+        "build_surface_buckling_multi_case_has_no_stale_undef",
+        BUILD_SURFACE_HEAVY_EXAMPLE,
+    );
+}
