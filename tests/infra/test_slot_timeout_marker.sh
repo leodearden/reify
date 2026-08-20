@@ -42,7 +42,7 @@
 #       this file's source nor in any assert description;
 #     - every captured marker stays in a mktemp file and is never cat/echoed;
 #     - all assert checkers are QUIET grep predicates, so assert's on-FAIL
-#       captured-output dump (tests/infra/test_helpers.sh:52-56) stays empty.
+#       captured-output dump (tests/infra/test_helpers.sh) stays empty.
 #   Same idiom as tests/infra/test_run_all_clock_marker_sanitize.sh:38-42 (CP=)
 #   for the @@REIFY_CLOCK_* family; the identical hazard there is a recorded
 #   incident (tests/infra/test_test_run_semaphore.sh:61-69, esc-3940-81).
@@ -731,19 +731,25 @@ echo "=== E: no assert DESCRIPTION dumps a whole capture file (stderr OR stdout)
 
 # THE SECOND, SNEAKIER LEAK CHANNEL. Section D covers a child's stderr reaching
 # the console; this covers evidence smuggled through assert's own description.
-# assert() (tests/infra/test_helpers.sh:42-57) echoes "  PASS: $desc" /
-# "  FAIL: $desc" with NO sanitizing, and indents only the CHECKER's captured
-# output (l.54, `sed 's/^/  | /'`). Anything inside $desc prints RAW -- so lines
-# 2+ of a multi-line interpolation start at COLUMN 0, on a PASSING assertion,
-# and the `$(cat ...)` is evaluated on EVERY run even when only the printing is
-# conditional. A captured stderr that carries a live sentinel therefore reaches
-# the verify log through a green assert.
+# assert() (tests/infra/test_helpers.sh) USED TO echo "  PASS: $desc" /
+# "  FAIL: $desc" with NO sanitizing, indenting only the CHECKER's captured
+# output in its on-FAIL dump. Anything inside $desc printed RAW -- so lines 2+
+# of a multi-line interpolation started at COLUMN 0, on a PASSING assertion, and
+# a captured stderr carrying a live sentinel reached the verify log through a
+# GREEN assert. That emitter half is now closed structurally -- see THE
+# STRUCTURAL FIX below -- and E4 at the end of this section is its behavioural
+# pin. (Cited by SYMBOL, not line number: every line-number cite into
+# test_helpers.sh this preamble used to carry went stale the moment that fix
+# landed. _assert_emit_desc and assert's on-FAIL capture dump survive edits.)
 #
-# Unlike Section D this channel is not observable on demand -- it prints only
-# when that specific assert runs, under the contention that produced the
+# What the fix does NOT change, and what E1 below therefore still exists for:
+# a `$(cat ...)` inside a description is EVALUATED on every run even when only
+# the printing is conditional, and it is a shape a reviewer should not have to
+# reason about at all. The channel is also not observable on demand -- it prints
+# only when that specific assert runs, under the contention that produced the
 # deadline (test_test_run_semaphore.sh's HG-2 deadlines only when the parent
 # verify.sh holds the host-global lock, which is exactly the merge-gate case).
-# So the guard is STATIC, in the same genre as the existing
+# So E1 is STATIC, in the same genre as the existing
 # tests/infra/test_no_new_wallclock_upper_bounds.sh scanner: a machine-checkable
 # output-safety property, not a documentation-wording grep.
 
@@ -876,13 +882,29 @@ echo "--- E4: assert() sanitizes a multi-line description (structural closure) -
 # see the bare-variable shape: a variable holding text captured on an EARLIER
 # line has no reader to key on. E4 is the BEHAVIOURAL pin that closes that gap
 # from the other side -- it drives the real assert() and checks the emitted
-# bytes against D_ANCHOR, the verbatim dark-factory classifier anchor this file
-# owns (l.538). That is what makes it non-duplicative of
-# tests/infra/test_test_helpers.sh's own multi-line coverage: that file pins the
-# `  | ` PREFIX contract, E4 pins the SENTINEL property. A future change that
-# prefixed with plain INDENTATION would satisfy the prefix contract in spirit
-# and still fail here, which is exactly the distinction D2b and the
-# SELF-POLLUTION DISCIPLINE at the top of this file exist to make.
+# bytes against D_ANCHOR.
+#
+# OVERLAP, stated plainly rather than overclaimed. tests/infra/test_test_helpers.sh
+# (checks 6353-c1/c2) already drives the real assert() with a multi-line
+# sentinel-shaped description and asserts the same absence, spelling the
+# `^[[:blank:]]*` anchor literally. E4 is therefore NOT the only pin of that
+# property, and the two things it does add are the whole reason it lives in
+# THIS file:
+#   - E4b is a LIVENESS control for the ANCHOR ITSELF: it rebuilds the pre-6353
+#     raw emitter and requires the probe to FLAG it. Its counterpart controls
+#     only for the token being PRESENT (6353-c1); nothing there proves the
+#     anchored pattern would fire on an unfiltered emitter, so a typo'd anchor
+#     would read green forever. E4b is that proof.
+#   - E4 evaluates against D_ANCHOR -- this file's SINGLE spelling of
+#     dark-factory's classifier anchor, defined once beside the
+#     `[[:blank:]]`-not-`\t` gotcha that makes spelling it by hand hazardous.
+#     Binding the behavioural claim to that definition means a change to the
+#     anchor propagates here automatically, instead of leaving a hand-copied
+#     literal in a sibling silently stale.
+# A future change that prefixed with plain INDENTATION would satisfy a
+# prefix-shaped reading of the contract and still fail here, which is exactly
+# the distinction D2b and the SELF-POLLUTION DISCIPLINE at the top of this file
+# exist to make.
 #
 # Hermetic: no lock, no cargo, no host state -- this file is classified `pool`.
 

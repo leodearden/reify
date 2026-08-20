@@ -289,8 +289,9 @@ fi
 check "6353-a: multi-line FAIL desc keeps line 1 byte-identical and prefixes lines 2+ with '  | ' (col0=$_ad_f_col0 want 0; prefixed=$_ad_f_pfx want 2; line1=$_ad_f_l1 want 1)" "$ok"
 
 # Sub-check 2: MULTI-LINE PASS. The leak fires on a PASSING assertion too
-# (test_slot_timeout_marker.sh:733 records exactly this), so fixing only the
-# FAIL branch would leave the channel wide open.
+# (test_slot_timeout_marker.sh's Section E preamble records exactly this --
+# cited by section, not line number, so the cite survives edits there), so
+# fixing only the FAIL branch would leave the channel wide open.
 _ad_pass_out=$(bash -c "
     source '$HELPER_FILE'
     assert \"\$1\" true
