@@ -1344,4 +1344,62 @@ structure Bolt {
         );
     }
 
+    /// The resolved type is surfaced additively when it ADDS information.
+    #[test]
+    fn hover_on_resolvable_alias_appends_resolved_type() {
+        let source = "type Speed = Length / Time\n";
+        let position = Position::new(0, 6); // on 'Speed'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            md.contains("Scalar[m\u{b7}s^-1]"),
+            "resolved type must be surfaced, got: {md}"
+        );
+    }
+
+    /// `resolved_type` is None for an entity-named alias (#6259 phase ordering), so
+    /// there is nothing to add and no resolves-to line may appear.
+    #[test]
+    fn hover_on_unresolvable_alias_omits_resolved_line() {
+        let source = "structure Fit {\n    param d: Length = 5mm\n}\ntype F = Fit\n";
+        let position = Position::new(3, 5); // on 'F'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(md.contains("type F = Fit"), "signature must render, got: {md}");
+        assert!(
+            !md.contains("resolves to"),
+            "no resolves-to line when resolved_type is None, got: {md}"
+        );
+    }
+
+    #[test]
+    fn hover_on_parameterized_alias_omits_resolved_line() {
+        let source = "pub type Vel2<Q: Dimension> = Q / Time\n";
+        let position = Position::new(0, 10); // on 'Vel2'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            !md.contains("resolves to"),
+            "a parameterized alias has no resolved_type, got: {md}"
+        );
+    }
+
+    /// When the resolved Display is byte-identical to the source spelling the line
+    /// is pure noise, so it is suppressed.
+    #[test]
+    fn hover_on_alias_omits_redundant_resolved_line() {
+        let source = "type Nickname = Bool\n";
+        let position = Position::new(0, 7); // on 'Nickname'
+        let md = hover_markdown(source, position).expect("hover must return Some");
+        assert!(
+            md.contains("type Nickname = Bool"),
+            "signature must render, got: {md}"
+        );
+        assert!(
+            !md.contains("resolves to"),
+            "a redundant resolves-to line must be suppressed, got: {md}"
+        );
+    }
+
 }

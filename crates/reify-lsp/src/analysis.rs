@@ -1352,6 +1352,49 @@ mod tests {
         assert_eq!(ctx.find_entity_doc("Speed"), None);
     }
 
+    // --- task #6341: compiled type-alias lookup ---
+
+    #[test]
+    fn find_type_alias_returns_compiled_entry() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        let alias = ctx
+            .find_type_alias("Speed")
+            .expect("Speed must be present in compiled.type_aliases");
+        assert_eq!(alias.name, "Speed");
+        assert_eq!(
+            alias.resolved_type.as_ref().map(|t| t.to_string()),
+            Some("Scalar[m\u{b7}s^-1]".to_string())
+        );
+    }
+
+    #[test]
+    fn find_type_alias_returns_none_for_unknown_name() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(ctx.find_type_alias("NoSuchAlias").is_none());
+    }
+
+    /// No-leakage contract: `TypeAliasRegistry::into_compiled` filters prelude-seeded
+    /// names, so a document that declares no aliases has an EMPTY `type_aliases` —
+    /// even though `Rate` is a real stdlib prelude alias. Every LSP surface built on
+    /// this accessor is therefore scoped to the open document. Task #6341.
+    #[test]
+    fn find_type_alias_returns_none_for_stdlib_alias() {
+        let source = reify_test_support::bracket_source();
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert!(
+            ctx.compiled.type_aliases.is_empty(),
+            "a document declaring no aliases must have no compiled aliases, got: {:?}",
+            ctx.compiled
+                .type_aliases
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(ctx.find_type_alias("Rate").is_none());
+    }
+
     #[test]
     fn find_entity_doc_returns_none_for_undocumented() {
         let source = reify_test_support::bracket_source();
