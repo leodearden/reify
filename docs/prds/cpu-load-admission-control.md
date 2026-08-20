@@ -203,7 +203,7 @@ Mirrors the existing `DF_AGENT_CPU_NICE` / `_cpu_priority_prefix` mechanism exac
 
 - **DF-1.** dark-factory prepends `cpu-governed-exec.sh --role task --` to the agent
   spawn, gated by a new `DF_AGENT_CPU_GOVERN` env (reify-owned value in
-  `dark-factory-orchestrator.yaml`), at `shared/src/shared/cli_invoke.py:1125` alongside the nice
+  `dark-factory-orchestrator.yaml`), at `shared/src/shared/cli_invoke.py`'s `_cpu_priority_prefix` alongside the nice
   prefix.
 - **DF-2.** dark-factory prepends reify's `scripts/agent-bin` to the agent's **PATH**
   via `_build_agent_env` / `env_overrides`, so the cargo shim is active for ad-hoc
@@ -249,7 +249,7 @@ Mirrors the existing `DF_AGENT_CPU_NICE` / `_cpu_priority_prefix` mechanism exac
 | PSI `/proc/pressure/cpu` (`avg10`) | ✅ present | live read; already consumed by `psi_gate`/`compile_gate` |
 | `nproc` = 32 | ✅ | sizing reference (weights are nproc-independent %/ratios) |
 | Existing PSI/semaphore primitives to generalize | ✅ present | `verify.sh` `psi_gate`/`compile_gate`; `lib_test_semaphore.sh` |
-| dark-factory agent spawn seam (the §7 insertion point) | ✅ mapped | `cli_invoke.py:1125` `spawn_cmd = _cpu_priority_prefix(env) + cmd`; `start_new_session=True`; **no cgroups in dark-factory today** |
+| dark-factory agent spawn seam (the §7 insertion point) | ✅ mapped | `cli_invoke.py` `spawn_cmd = _cpu_priority_prefix(env) + cmd`; `start_new_session=True`; **no cgroups in dark-factory today** |
 
 **No novel substrate is invented** — every layer composes capabilities verified above.
 G3 verdict: PASS (the only "new" element, cgroup placement, rests on a confirmed,
