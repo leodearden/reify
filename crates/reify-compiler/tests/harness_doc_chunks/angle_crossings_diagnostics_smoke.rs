@@ -308,6 +308,69 @@ fn expected_code_for(declaration: &str) -> DiagnosticCode {
     }
 }
 
+/// The `s / r` ratio case, shared by the `let` and `param` transcriptions:
+/// two `Length` params whose quotient is dimensionless, annotated `Angle`.
+const RATIO_LET_FIXTURE: &str = "\
+structure S {
+  param r : Length = 2mm
+  param s : Length = 5mm
+  let theta : Angle = s / r
+}";
+
+/// As [`RATIO_LET_FIXTURE`], but the annotated binding is a `param` — which is
+/// a different compiler check (`entity.rs:486` vs. `:570`) reached by a
+/// different path, hence a separate fixture rather than a reused one.
+const RATIO_PARAM_FIXTURE: &str = "\
+structure S {
+  param r : Length = 2mm
+  param s : Length = 5mm
+  param theta : Angle = s / r
+}";
+
+/// The arc-length case: `Length * Angle` is `Scalar[m·rad]`, not a `Length`.
+const ARC_LENGTH_FIXTURE: &str = "\
+structure S {
+  param r : Length = 2mm
+  param theta : Angle = 0.5rad
+  let arc : Length = r * theta
+}";
+
+/// The minimal source that provokes the diagnostic transcribed for
+/// `declaration`.
+///
+/// These are the fixtures measured against a built `reify check` when the
+/// exemplar's wording was verified, minus their `module` line: the helpers here
+/// parse under `ModulePath::single("test")`, so a `module` header naming
+/// anything else injects an unrelated `E_MODULE_PATH_MISMATCH` error into
+/// `errors_only`. The absent header costs only a `W_MODULE_DECL_MISSING`
+/// *warning*, which `errors_only` filters out.
+///
+/// Keyed on the whitespace-NORMALIZED declaration, because the exemplar pads
+/// its declarations for column alignment (`let   theta`, `arc   :`) and that
+/// padding must not be load-bearing for lookup.
+///
+/// # Panics
+///
+/// On a declaration with no fixture — deliberately, and this is the point:
+/// adding a fifth diagnostic to the CANONICAL COPY block without adding its
+/// fixture must fail loudly rather than be skipped silently. A gate that
+/// quietly ignores what it does not recognise is the failure mode this whole
+/// module exists to remove.
+fn fixture_for(declaration: &str) -> &'static str {
+    let normalized = normalize_whitespace(declaration);
+    match normalized.as_str() {
+        "let theta : Angle = s / r" => RATIO_LET_FIXTURE,
+        "param theta : Angle = s / r" => RATIO_PARAM_FIXTURE,
+        "let arc : Length = r * theta" => ARC_LENGTH_FIXTURE,
+        other => panic!(
+            "the CANONICAL COPY block in examples/best_practices/angle_crossings.ri \
+             transcribes a diagnostic for `{other}`, but this module has no fixture that \
+             provokes it, so it would go unchecked. Add one to `fixture_for` (and its \
+             row to TRANSCRIBED) in the same diff that added the transcription."
+        ),
+    }
+}
+
 /// Every compile-layer transcription equals what the compiler actually emits.
 ///
 /// This is the assertion the exemplar's "compile-gated" claim was making on
