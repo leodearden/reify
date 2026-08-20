@@ -238,12 +238,17 @@ fi
 # `sqlite3` lint) is the structural guard.
 #
 # The scrub token is matched as a LITERAL substring, single-quoted here so
-# `$REIFY_AMBIENT_LD_LIBRARY_PATH` stays a variable NAME. That is deliberate on
-# both sides: verify.sh emits the name (not its value), so --print-plan remains
-# a hermetic, host-independent oracle with no absolute host path baked into
-# plan text, and the restore happens at EXECUTION time.
+# `${REIFY_AMBIENT_LD_LIBRARY_PATH-}` stays a variable NAME. That is deliberate
+# on both sides: verify.sh emits the name (not its value), so --print-plan
+# remains a hermetic, host-independent oracle with no absolute host path baked
+# into plan text, and the restore happens at EXECUTION time.
+#
+# Must stay byte-identical to verify.sh's own _LD_SCRUB. The `${VAR-}` default
+# form is load-bearing there (a plan line pasted into a `set -u` shell would
+# otherwise abort on an unbound variable), so it is pinned here too — this
+# assertion is what catches the two drifting apart.
 # ---------------------------------------------------------------------------
-LD_SCRUB='export LD_LIBRARY_PATH="$REIFY_AMBIENT_LD_LIBRARY_PATH"; '
+LD_SCRUB='export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
 
 # Second capture: role=task, action=all, --include-infra. Reaches the plan lines
 # the merge-role test capture does not carry — the backgrounded node lane, the
@@ -398,12 +403,83 @@ expect_unscrubbed "$PLAN_DUMP"      'cargo build --release -p reify-audit' 'merg
 expect_unscrubbed "$PLAN_DUMP"      'cargo build --release -p reify-cli'   'merge test'
 
 # UNTOUCHED BY DESIGN — do not "fix" this apparent gap.
-# The gui-feature compile-check line is MIXED: it runs a shell script AND cargo
+# The gui-feature lines are MIXED: each runs a shell script AND cargo
 # (`if test -f gui/src-tauri/Cargo.toml; then ./scripts/ensure-gui-sidecar-placeholder.sh
-# && ... cargo check -p reify-gui --features gui --tests; fi`). The rule is
-# conservative: ANY line that reaches cargo keeps the export, because losing the
-# OCCT search dir on a Rust line is a hard link/load failure across the whole
-# gate, whereas an unscrubbed shell helper is at worst the status quo ante.
-expect_unscrubbed "$PLAN_ALL" 'ensure-gui-sidecar-placeholder.sh' 'all+infra / MIXED shell+cargo, untouched by design'
+# && ... cargo ...; fi`). The rule is conservative: ANY line that reaches cargo
+# keeps the export, because losing the OCCT search dir on a Rust line is a hard
+# link/load failure across the whole gate, whereas an unscrubbed shell helper is
+# at worst the status quo ante.
+#
+# Needled on the CARGO half, not on 'ensure-gui-sidecar-placeholder.sh': task
+# 5076 added a second line running that same helper (the gui-feature TEST pass
+# at verify.sh:2312, alongside the long-standing compile check at :2565), so the
+# bare helper name now matches TWO plan lines. _none_scrubbed still passed, but
+# the needle no longer isolated the line this comment describes, and a future
+# scrub of either would surface as a baffling 1/2 failure.
+expect_unscrubbed "$PLAN_ALL" 'cargo check -p reify-gui' \
+    'all+infra / MIXED shell+cargo compile check, untouched by design'
+expect_unscrubbed "$PLAN_ALL" 'nextest run -p reify-gui' \
+    'all+infra / MIXED shell+cargo gui-feature test pass (task 5076), untouched by design'
+
+echo ""
+echo "--- Section E: every plain-add() site is accounted for (enumerating) ---"
+
+# THE STRUCTURAL GUARD PROPER. Sections C/D above needle SPECIFIC plan lines by
+# name, which cannot catch what it has never heard of: task 5076 added the
+# INV-FEA-1 trampoline line with plain add() and no needle named it, so it rode
+# unscrubbed through a guard that claimed to prevent exactly that. This section
+# closes that class by ENUMERATING every plain-`add` call site in verify.sh and
+# requiring each to fall into a documented neutral bucket.
+#
+# Source-level rather than plan-level on purpose: several sites are unreachable
+# from any hermetic capture (scope-gated, role-gated, or host-gated), so a plan
+# oracle can never enumerate them. Reading the emitter is the only exhaustive
+# view. Fork-free, matching the selective-infra check above.
+#
+# A NEW tool line added with plain `add` lands in _ADD_UNCLASSIFIED and fails
+# here BY NAME, with its text printed — no needle required. To add a genuinely
+# neutral line, extend the case list below and say why.
+_ADD_TOTAL=0
+_ADD_UNCLASSIFIED=0
+_ADD_UNCLASSIFIED_TEXT=""
+while IFS= read -r _line; do
+    # Strip leading whitespace so the `add ` test is anchored at the statement.
+    _t="${_line#"${_line%%[![:space:]]*}"}"
+    case "$_t" in
+        'add "'*|"add '"*) ;;
+        *) continue ;;
+    esac
+    _ADD_TOTAL=$((_ADD_TOTAL + 1))
+    case "$_t" in
+        # Reaches cargo literally — must keep the OCCT export.
+        *cargo*)                  continue ;;
+        # Reaches cargo via a variable, so the literal test above misses it:
+        # `$cmd` is emit_nextest_pass's built nextest/cargo command, and
+        # `${_gui_feat_cmd}` is the task-5076 gui-feature nextest command.
+        *'$cmd 9<&-'*)            continue ;;
+        *'_gui_feat_cmd'*)        continue ;;
+        # Executor sentinels — intercepted by a `case` and never eval'd at all.
+        *'@@SEMAPHORE_'*)         continue ;;
+        # The backgrounded node lane carries _LD_SCRUB inside its own
+        # `{ ... ; } &` braces (it is main-shell eval'd, so a head-of-line
+        # export would leak forward).
+        *'_LD_SCRUB'*)            continue ;;
+        # `wait "$_VERIFY_NODE_BG_PID"` — a builtin, and also main-shell
+        # eval'd; must never take a head-of-line export.
+        *'_VERIFY_NODE_BG_PID'*)  continue ;;
+        # Shell builtins only (echo/test/false) — no external binary to shadow.
+        *"echo 'RELEASE-PASS"*)   continue ;;
+        *"echo 'ERROR(#4624)"*)   continue ;;
+    esac
+    _ADD_UNCLASSIFIED=$((_ADD_UNCLASSIFIED + 1))
+    _ADD_UNCLASSIFIED_TEXT="$_ADD_UNCLASSIFIED_TEXT
+    $_t"
+done < "$REPO_ROOT/scripts/verify.sh"
+
+assert "non-vacuity: found plain add() call sites to classify in scripts/verify.sh (a rename of add() must fail HERE, not silently pass an empty enumeration)" \
+    test "$_ADD_TOTAL" -ge 10
+
+assert "every plain add() site either reaches cargo or is a documented neutral (builtin/sentinel/self-scrubbed) — an unclassified site is a TOOL line that must use add_tool():$_ADD_UNCLASSIFIED_TEXT" \
+    test "$_ADD_UNCLASSIFIED" -eq 0
 
 test_summary

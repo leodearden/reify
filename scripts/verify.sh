@@ -1504,16 +1504,42 @@ add() { PLAN+=("$1"); }
 #
 # A leading `export ...;` STATEMENT is shape-agnostic — it composes ahead of
 # `if`, `{`, `(` and `for` alike, so no plan line needs restructuring — and it
-# cannot leak forward, because reaper_run_in_pgroup runs each plan line in its
-# own background subshell (`set -m; eval "$cmd" &`). The ONE exception is the
-# backgrounded node lane, which is eval'd in the executor's main shell; it puts
-# the export inside its own `{ ... ; } &` braces instead and so does not use
-# add_tool. Placement also matters at the head of the line specifically: see
-# the run_all.sh emission site for the ledger-guard constraint.
+# does not leak forward, because reaper_run_in_pgroup normally runs each plan
+# line in its own background subshell (`set -m; eval "$cmd" &`).
 #
-# Enforced by tests/infra/test_verify_ld_library_path_scope.sh — a new tool
-# plan line added with plain `add` fails that guard.
-_LD_SCRUB='export LD_LIBRARY_PATH="$REIFY_AMBIENT_LD_LIBRARY_PATH"; '
+# That containment is NOT unconditional. Under the break-glass knob
+# REIFY_PROC_REAPER_DISABLE=1, lib_proc_reaper.sh evaluates each plan line in
+# the MAIN shell instead, so a head-of-line export leaks forward into every
+# later line — including the cargo ones, which would then lose the OCCT dir
+# for the rest of the gate. The knob is unset by default and is documented as
+# break-glass only (docs/notes/orphaned-test-binary-reaper.md); it is called
+# out here so the invariant is not read as absolute.
+#
+# The executor also routes any plan line whose text CONTAINS the substring
+# `_VERIFY_NODE_BG_PID` to a main-shell eval. That is two lines today — the
+# backgrounded node lane and the `wait` that joins it. The node lane puts the
+# export inside its own `{ ... ; } &` braces instead of using add_tool; the
+# `wait` is a builtin needing no scrub. Never route a line matching that
+# substring through add_tool.
+#
+# Placement also matters at the head of the line specifically: see the
+# run_all.sh emission site for the ledger-guard constraint.
+#
+# Enforced by tests/infra/test_verify_ld_library_path_scope.sh, which
+# ENUMERATES every plain-`add` call site in this file and fails on any whose
+# payload neither reaches cargo nor appears in its documented neutral
+# allowlist — so a NEW tool plan line added with plain `add` fails the guard
+# even though the guard has never heard of its name. (Before task 5730's
+# review pass the guard was a hardcoded needle list, and this comment
+# overclaimed: the INV-FEA-1 trampoline line added by task 5076 slipped
+# through unscrubbed precisely because no needle named it.)
+# `${VAR-}` (not a bare `$VAR`) so a plan line stays replayable OUTSIDE this
+# script. Inside verify.sh the variable is always set — apply_env() runs
+# unconditionally before any plan line executes — but --print-plan output is
+# routinely pasted into a shell by hand and consumed by dark-factory, and under
+# `set -u` a bare reference would abort with "unbound variable". The `-` form
+# degrades to an empty loader path, which is the intended scrub anyway.
+_LD_SCRUB='export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
 add_tool() { PLAN+=("${_LD_SCRUB}$1"); }
 
 # Release-sensitive crate flags: ALL release-sensitive crates in one nextest -p set.
@@ -1946,14 +1972,14 @@ add_test_passes() {
     # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
     # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
     if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
-        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
+        add_tool "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
     fi
 
     # PSI gate: must pass before any cargo test work starts.
     # In execute mode: eval runs this as a subprocess that inherits DF_VERIFY_ROLE
     # and REIFY_PSI_GATE_*; exit 75 (EX_TEMPFAIL) propagates → orchestrator retries.
     # In --print-plan mode: printed faithfully as a normal plan line.
-    add "./scripts/verify.sh psi-gate"
+    add_tool "./scripts/verify.sh psi-gate"
 
     # Compile-phase PSI admission gate (task 4853, repositioned by task 4862):
     # block-entry LOAD gate for the unified build+test block — sits after psi-gate
@@ -1966,7 +1992,7 @@ add_test_passes() {
     # Emitted ROLE-INVARIANTLY; DF_VERIFY_ROLE=merge bypasses at RUNTIME inside
     # compile_gate()->cpu_admit so the merge gate NEVER waits.  Soft stagger:
     # admit-on-timeout, NEVER exit 75.  Bare string so W7 stays green.
-    add "./scripts/verify.sh compile-gate"
+    add_tool "./scripts/verify.sh compile-gate"
 
     # Acquire the test-run semaphore slot after psi-gate and compile-gate.
     # Task 4862 revert: the slot now wraps the ENTIRE build+execution block
@@ -2364,7 +2390,7 @@ build_plan() {
     # the plan line is still emitted in merge plans so the plan shape is
     # role-invariant (mirrors the psi-gate idiom).
     if [ "$RUN_RUST" -eq 1 ] && { [ "$DO_LINT" -eq 1 ] || [ "$DO_TYPECHECK" -eq 1 ]; }; then
-        add "./scripts/verify.sh compile-gate"
+        add_tool "./scripts/verify.sh compile-gate"
     fi
 
     # typecheck (cargo check) only when NOT also linting — clippy --all-targets
@@ -2717,7 +2743,7 @@ build_plan() {
         # task 5139: dropped -q and merged stderr into stdout via 2>&1 (same
         # rationale as the reify-audit pre-step above).
         add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
-        add "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
+        add_tool "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
