@@ -522,6 +522,140 @@
         capture.assert_count(0);
     }
 
+    // ── Site 1: `build_mixed_region_mesh` node-coordinate guard (task 6378) ──
+
+    /// A NaN shell vertex, with one otherwise-valid interface present, makes
+    /// the build fail closed instead of silently scrambling the tet
+    /// top/mid/bot assignment at the `dot3` projection sort. Shell vertices
+    /// keep their index in the unified node list (shell nodes are first), so
+    /// poisoning shell vertex 1 must report `node_index: 1`.
+    ///
+    /// Currently RED (does not compile until step-6 adds the variant):
+    /// `MixedRegionError::NonFiniteNodeCoordinate` does not exist yet.
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_shell_node() {
+        let mut shell = make_shell_mesh();
+        shell.vertices[1] = [f64::NAN, 0.0, 0.0];
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("a NaN shell vertex must be rejected before the ordering hazard");
+        assert_eq!(
+            err,
+            MixedRegionError::NonFiniteNodeCoordinate { node_index: 1 },
+            "unified node index must equal the shell vertex's own index"
+        );
+    }
+
+    /// An infinite TET vertex likewise errors, and the reported `node_index`
+    /// carries the `n_shell +` offset the merge applies — pinning that the
+    /// reported index is in UNIFIED space, not tet-local space, which is the
+    /// detail a consumer would otherwise mis-read.
+    ///
+    /// Currently RED (does not compile until step-6 adds the variant).
+    #[test]
+    fn build_mixed_region_mesh_errors_on_non_finite_tet_node_with_unified_index() {
+        let shell = make_shell_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let mut tet = make_tie_tet_mesh();
+        tet.vertices[0] = f32::INFINITY; // x of tet local node 0 ("top")
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let err = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+            .expect_err("an infinite tet vertex must be rejected before the ordering hazard");
+        assert_eq!(
+            err,
+            MixedRegionError::NonFiniteNodeCoordinate {
+                node_index: n_shell // 3
+            },
+            "reported index must be tet local node 0 offset by n_shell (unified space), \
+             not the tet-local index 0"
+        );
+    }
+
+    /// The node-coordinate guard is SCOPED to the interface-tying (ordering)
+    /// path: with no interfaces, the same NaN-poisoned mesh still merges
+    /// successfully, exactly as
+    /// `build_mixed_region_mesh_merges_shell_then_tet_nodes_and_elements`
+    /// expects for a clean mesh. This is the regression pin for the
+    /// deliberate `!interfaces.is_empty()` gate — the pure merge has no
+    /// comparison anywhere, so a non-finite vertex cannot scramble it, and a
+    /// later refactor must not silently widen the guard to reject it.
+    #[test]
+    fn build_mixed_region_mesh_with_no_interfaces_tolerates_non_finite_node() {
+        let mut shell = make_shell_mesh();
+        shell.vertices[1] = [f64::NAN, 0.0, 0.0];
+        let tet = make_p1_tet_mesh();
+        let n_shell = shell.vertices.len(); // 3
+        let n_tet = tet.vertices.len() / 3; // 4
+
+        let result = build_mixed_region_mesh(&shell, &tet, &[])
+            .expect("no interfaces → no ordering hazard → the guard must not fire");
+
+        assert_eq!(
+            result.nodes.len(),
+            n_shell + n_tet,
+            "merge still concatenates the full node list"
+        );
+        assert!(
+            result.nodes[1][0].is_nan(),
+            "the poisoned coordinate is preserved verbatim by the pure merge"
+        );
+        assert!(result.mpc_rows.is_empty(), "no interfaces → no MPC rows");
+    }
+
+    /// Telemetry: the erroring non-finite-node call emits exactly one WARN
+    /// containing "non-finite", and an all-finite interface-bearing happy
+    /// path (the same fixture as
+    /// `build_mixed_region_mesh_wires_interface_mpc_rows_in_d6_layout`)
+    /// stays quiet.
+    ///
+    /// Currently RED (does not compile until step-6 adds the variant).
+    #[test]
+    fn build_mixed_region_mesh_warns_once_on_non_finite_node_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let mut poisoned_shell = make_shell_mesh();
+        poisoned_shell.vertices[1] = [f64::NAN, 0.0, 0.0];
+        let tet = make_tie_tet_mesh();
+        let interface = ShellTetInterface {
+            shell_region: 0,
+            tet_region: 1,
+            normal: [0.0, 0.0, 1.0],
+            thickness: 0.1,
+            location: [0.0, 0.0, 0.0],
+        };
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = build_mixed_region_mesh(&poisoned_shell, &tet, std::slice::from_ref(&interface));
+        });
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let shell = make_shell_mesh();
+            let _ = build_mixed_region_mesh(&shell, &tet, std::slice::from_ref(&interface))
+                .expect("all-finite fixture should succeed");
+        });
+        capture.assert_count(0);
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
