@@ -54,6 +54,8 @@ pub struct MeshSurfaceToVolumeReport {
     /// `None` exactly when that function finds the mesh not measurable as tets:
     /// non-tet (`Hex` / `Wedge`) connectivity, a vertex or index buffer whose
     /// length is not a whole number of elements, or an out-of-range index.
+    /// That case is *also* logged at `warn!`, so it leaves a trace even for the
+    /// callers that keep only [`Self::volume`] and drop this wrapper.
     ///
     /// **Reported, never enforced.** No threshold is applied here and a low
     /// fill is never an `Err`, because no fill floor exists that is
@@ -221,17 +223,31 @@ pub fn mesh_surface_to_volume_with_diagnostics(
     // Stage 5: fill / coverage measurement. Deliberately computed from the SAME
     // `volume` binding that is moved into the report below, so the reported
     // numbers can never describe a different mesh than the caller receives.
-    // Diagnostic only — a low fill is logged, never an error. A `None` here is
-    // surfaced through the field itself rather than as a second log site.
+    // Diagnostic only — a low fill is logged, never an error.
+    //
+    // The two arms are at deliberately different levels. A measured fill is
+    // routine bookkeeping (`debug!`). A `None`, on a mesh gmsh has just
+    // produced, is not: it means non-tet connectivity, a ragged index buffer,
+    // or an out-of-range node index — a corrupt readback, strictly more
+    // alarming than any low fill, and the case a human reading the log most
+    // wants to see. It is also the case a caller is likeliest to miss, since
+    // the trait method at `kernel_real.rs` discards the report wrapper and
+    // keeps only `volume`, so the field alone would leave no trace.
     let fill = crate::fill_metrics::tet_fill_report(&volume);
-    if let Some(f) = fill.as_ref() {
-        tracing::debug!(
+    match fill.as_ref() {
+        Some(f) => tracing::debug!(
             target: "reify_kernel_gmsh::mesh_volume",
             n_tets = f.n_tets,
             n_nodes = f.n_nodes,
             aabb_fill_fraction = f.aabb_fill_fraction(),
             "volume mesh fill measured"
-        );
+        ),
+        None => tracing::warn!(
+            target: "reify_kernel_gmsh::mesh_volume",
+            n_nodes = volume.vertices.len() / 3,
+            "produced volume mesh is not measurable as tets — non-tet \
+             connectivity, a ragged index buffer, or an out-of-range node index"
+        ),
     }
 
     Ok(MeshSurfaceToVolumeReport {
