@@ -1222,6 +1222,25 @@ mod tests {
         );
     }
 
+    /// `type` declares a top-level type alias, so it belongs in TOP_LEVEL_KEYWORDS
+    /// alongside structure/fn/trait/enum. Task #6341.
+    #[test]
+    fn completion_top_level_offers_type_keyword() {
+        let source = "structure Foo {\n    param x: Length = 1mm\n}\n";
+        let items = compute_completions(source, &test_uri(), Position::new(3, 0));
+
+        let keyword_labels: Vec<&str> = items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
+            .map(|k| k.label.as_str())
+            .collect();
+
+        assert!(
+            keyword_labels.contains(&"type"),
+            "top-level should include the 'type' keyword, got: {keyword_labels:?}"
+        );
+    }
+
     #[test]
     fn completion_inside_body_excludes_top_level_keywords() {
         let source = reify_test_support::bracket_source();

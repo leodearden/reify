@@ -1416,4 +1416,18 @@ structure Bolt {
         );
     }
 
+    /// The `type` keyword itself must have a hover description, like every other
+    /// declaration-introducing keyword. Task #6341.
+    #[test]
+    fn hover_on_type_keyword_shows_description() {
+        let source = "type Speed = Length / Time\n";
+        let position = Position::new(0, 1); // on the 'type' token
+        let md = hover_markdown(source, position)
+            .expect("hover on the 'type' keyword must return Some");
+        assert!(
+            md.contains("**type**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
 }
