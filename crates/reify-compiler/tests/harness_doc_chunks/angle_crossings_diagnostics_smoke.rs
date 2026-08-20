@@ -179,13 +179,29 @@ struct TranscribedDiagnostic {
 /// vanish while the text (not cosmetic) survives. Each rendered diagnostic is
 /// then split once on the first `": "` into its renderer prefix (`error`,
 /// `Parse error`) and the message body.
+///
+/// # Panics
+///
+/// On a missing marker, on a block that scrapes to zero entries, and on a
+/// `-> ` line with no declaration above it. All three are structural drift, and
+/// all three would otherwise degrade this module to a vacuous pass rather than
+/// a failure — which is the exact defect the module was written to remove. The
+/// messages name the file and say what to do; each contains the literal
+/// `CANONICAL COPY`, which `scraper_panics_when_the_block_is_absent` keys on.
 fn canonical_copy_entries_from(text: &str) -> Vec<TranscribedDiagnostic> {
     let lines: Vec<&str> = text.lines().collect();
     let Some(start) = lines.iter().position(|line| {
         line.strip_prefix("//")
             .is_some_and(|body| body.trim_start().starts_with(CANONICAL_COPY_MARKER))
     }) else {
-        return Vec::new();
+        panic!(
+            "no `{CANONICAL_COPY_MARKER}` block found in \
+             examples/best_practices/angle_crossings.ri — the marker was renamed or the \
+             block was removed. This module pins that block's four transcribed \
+             diagnostics against the real compiler and parser; without the marker it \
+             would scrape nothing and every test here would pass vacuously. Re-point the \
+             scraper at the new marker rather than deleting the test."
+        )
     };
 
     let mut entries: Vec<TranscribedDiagnostic> = Vec::new();
@@ -213,9 +229,16 @@ fn canonical_copy_entries_from(text: &str) -> Vec<TranscribedDiagnostic> {
             current = Some((content.to_string(), Vec::new()));
         } else if indent == DIAGNOSTIC_INDENT {
             if let Some(rendered) = content.strip_prefix(DIAGNOSTIC_ARROW) {
-                if let Some((_, fragments)) = current.as_mut() {
-                    fragments.push(rendered.to_string());
-                }
+                let Some((_, fragments)) = current.as_mut() else {
+                    panic!(
+                        "malformed CANONICAL COPY block in \
+                         examples/best_practices/angle_crossings.ri: the rendered \
+                         diagnostic `{content}` has no declaration above it, so this \
+                         module cannot tell which source provokes it. Every `-> ` line \
+                         must sit under the declaration it belongs to."
+                    )
+                };
+                fragments.push(rendered.to_string());
             }
         } else if indent == CONTINUATION_INDENT {
             if let Some((_, fragments)) = current.as_mut() {
@@ -225,6 +248,16 @@ fn canonical_copy_entries_from(text: &str) -> Vec<TranscribedDiagnostic> {
         // Any other indent is prose inside the marker paragraph; ignored.
     }
     flush(&mut current, &mut entries);
+
+    assert!(
+        !entries.is_empty(),
+        "the `{CANONICAL_COPY_MARKER}` marker is present in \
+         examples/best_practices/angle_crossings.ri but its block scraped to zero \
+         entries — the block was emptied, or its indentation was reflowed away from the \
+         {DECLARATION_INDENT}/{DIAGNOSTIC_INDENT}/{CONTINUATION_INDENT}-column shape this \
+         reader expects. Re-point the scraper at the new shape rather than deleting the \
+         test: a block that scrapes to nothing pins nothing."
+    );
     entries
 }
 
