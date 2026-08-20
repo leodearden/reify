@@ -514,11 +514,19 @@ echo "=== D: no deadline-forcing infra test leaks a live sentinel into the verif
 # Section F derives (D_ROSTER -- direct call sites, plus their transitive
 # invocation closure since task 6291). D_ROSTER also lists EIGHT static-only
 # members (test_run_all.sh, test_slot_event_log.sh, test_verify_semaphore_e2e.sh
-# and the five transitive members 6291 added); their evidence-preservation is
-# ASSERTED IN PROSE beside D_ROSTER_MODE -- measured, and for two of the
-# transitive members measured NOT clean on the bare-variable echo/description
-# channel (recorded there in full) -- but is NOT machine-checked; generalizing
-# D4 to cover them is tracked as #6278.
+# and the five transitive members 6291 added). Their per-SITE stderr diversion
+# IS machine-checked now, by SECTION G at the end of this file (task 6278):
+# G1 proves every deadline-capable site in each of the eight diverts stderr off
+# the inherited fd 2, G3 that no member passes vacuously, and G0 that those
+# eight remain the WHOLE static-only slice as the roster grows.
+# D4 deliberately stays what it is -- the SECTION-SLICED, EVIDENCE-PRESERVING
+# arm over the three behavioural D_MEMBERS. Section G asserts the weaker LEAK
+# property over whole files, and Section G's own preamble records why the two
+# grammars must stay apart rather than being unified.
+# STILL ONLY MEASURED IN PROSE, beside D_ROSTER_MODE: the OTHER channel. Two of
+# the transitive members are measured NOT clean on the bare-variable
+# echo/description path -- recorded there in full, filed separately, and
+# outside what Section G asserts.
 # Section F derives D_ROSTER_MODE's behavioural/static-only split directly
 # from D_MEMBERS membership (not a hand-typed parallel array), so the two
 # cannot silently diverge -- see Section F for the derivation.
@@ -674,22 +682,44 @@ D_INVOKE=('"\$LIB"' 'test_semaphore_acquire' '"\$WRAPPER"')
 # failing assert needs.
 D_CAPTURE_RE='2>"?\$'
 
+# _d_join_logical <file> -> that file's LOGICAL command lines, one per line.
+# THE one logical-line builder, shared by D4's section slicer below and by
+# Section G's whole-file scan -- deliberately not two near-identical copies,
+# the drift hazard this file already records beside _f_direct_capable_stripped
+# (a future tightening could land on the dead copy and look like it had taken
+# effect).
+#
+# Continuations are joined FIRST, then comment / assert lines are dropped. Both
+# halves and their ORDER are load-bearing:
+#   - joining first is what makes each logical command ONE line: HG-2 puts its
+#     `2>` on the continuation line, not on the line naming the acquire, and a
+#     line-at-a-time scan would call that unredirected;
+#   - stripping after the join is what removes a WHOLE `assert "..." \` +
+#     continuation as one unit. Both name an entry point in PROSE without
+#     invoking it (test_test_run_semaphore.sh:859 is exactly that shape).
+#     MEASURED, and the reason the order is not free to flip: stripping BEFORE
+#     the join deletes the `assert` line but leaves its continuation orphaned at
+#     top level -- 75 such lines in test_run_all.sh, 81 in
+#     test_verify_semaphore_e2e.sh, 27 in test_slot_event_log.sh -- each a
+#     candidate false positive for Section G. The mirror hazard of joining first
+#     (a full-line comment ending in `\` swallowing the real line after it)
+#     occurs ZERO times across every file either arm scans.
+_d_join_logical() {  # <file> -> logical command lines
+    sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+        | grep -vE '^[[:blank:]]*(#|assert )' || true
+}
+
 _d_section_cmds() {  # <member-file> <output-header-anchor> -> that section's commands
-    # Continuations are joined FIRST so each logical command is ONE line: HG-2
-    # puts its `2>` on the continuation line, not on the line naming the acquire,
-    # and a line-at-a-time scan would call that unredirected.
-    # Then the section is sliced header-to-next-header, and comment / assert
-    # lines are dropped -- both name the entry point in PROSE without invoking it
-    # (test_test_run_semaphore.sh:859 is exactly that shape).
+    # The logical lines, sliced header-to-next-header. Output is byte-identical
+    # to the pre-refactor inline pipeline over every section D4 slices today.
     local _src
     _src="echo \"${2#^}"
-    sed -e :a -e '/\\$/N; s/\\\n//; ta' "$1" \
+    _d_join_logical "$1" \
         | awk -v s="$_src" '
             !inb && index($0, s) { inb = 1; next }
             inb && /^echo "---/ { exit }
             inb { print }
-          ' \
-        | grep -vE '^[[:blank:]]*(#|assert )' || true
+          ' || true
 }
 
 _d_unredirected() {  # <cmds-file> <invocation-ERE> -> count of invocations with no capture
@@ -1016,18 +1046,32 @@ echo "=== F: the deadline-capable roster is DERIVED (direct call sites + invocat
 # deadline-capable SUITE appearing by EITHER route -- a file with no matching
 # entry in D_ROSTER at all. A green F1 is therefore proof that the roster is
 # SELF-CONSISTENT over both routes; it is NOT proof that no tests/infra suite
-# can reach a deadline by ANY route whatsoever. Four gaps are deliberately
-# out of scope:
+# can reach a deadline by ANY route whatsoever. Of the four gaps recorded here,
+# (1) is now CLOSED -- by Section G at the end of this file -- and (2), (3) and
+# (4) remain deliberately out of scope. The numbering is RETAINED rather than
+# compacted because this file cites these gaps by number from several places.
 #
 # (1) A new unredirected deadline SITE added inside an existing static-only
-# roster member -- D4's per-site stderr-capture check (D4a/D4b) still covers
-# only the three behavioural D_MEMBERS. Generalizing D4 to the static-only
-# members was declined here because it needs subshell-block analysis D4's
-# line-oriented section slicer (_d_section_cmds) cannot do:
+# roster member. CLOSED by SECTION G (task 6278). What stood here recorded that
+# generalizing D4 had been declined because it needs subshell-block analysis
+# D4's line-oriented section slicer (_d_section_cmds) cannot do:
 # test_verify_semaphore_e2e.sh captures at `) 2>"$C_ERR"`, on the subshell's
 # closing line, several lines after the invocation it guards -- not on the
-# invoking line itself, which is the only shape D4's slicer can see.
-# Generalizing D4 to cover it is tracked as #6278.
+# invoking line itself, which is the only shape D4's slicer can see. Section G
+# supplies that analysis: a two-pass block scan over subshell, command-
+# substitution and inline `bash -c` bodies, so a new unredirected
+# deadline-capable site inside ANY static-only member now goes RED.
+# WHAT REMAINS HAND-MAINTAINED, stated so the closure is not over-read: the
+# per-member (scan-file, site-target) DECLARATION. Section G does not DERIVE
+# which token is a member's deadline-capable site, and for the motivating
+# member it could not -- test_verify_semaphore_e2e.sh's site is
+# scripts/verify.sh, outside this section's node set by (2)(i), so a derived
+# predicate yields ZERO sites for it and would be vacuously green. Two asserts
+# bound that declaration instead: G0 checks the declared coverage still equals
+# the DERIVED static-only slice, so roster growth is loud rather than silent;
+# G3 checks each member's declared site still resolves to at least one real
+# site, so a moved invocation is loud too. The scan-file indirection for the
+# one second-order member is likewise declared, not derived from F_FWD_LIB_MAP.
 #
 # (2) RESIDUAL ROUTES THE CLOSURE STILL DOES NOT FOLLOW. Task 6291 CLOSED
 # what used to stand here: a suite that reaches a deadline only by invoking
@@ -1171,6 +1215,11 @@ D_ROSTER=(
 # a future reader needs in order to decide whether the exclusion still
 # holds. (The three behavioural entries need none: their justification is
 # that they ARE run, inside Section D's concurrent arm.)
+# READ THESE WITH SECTION G IN HAND (task 6278): every static-only entry's
+# SITE-level stderr diversion is now ASSERTED there, not merely measured in
+# this prose. What these notes still carry that no assert does is the OTHER
+# channel -- the bare-variable echo/description dumps recorded below -- which
+# Section G deliberately does not cover.
 #   test_run_all.sh -- bucket pool; DOES force a deadline every green run
 #   (Test 24, test_run_all.sh:2235-2320: a 30s holder on slot-1 against
 #   REIFY_RUN_ALL_POOL_WAIT=2), but measured clean on both leak channels:
@@ -1219,8 +1268,11 @@ D_ROSTER=(
 #   token, so it is outside E1's grammar in both directions -- E_CAT_RE is
 #   reader-keyed and E1 is assert-keyed, and this is a bare `echo`. Stated as
 #   a measured fact, not a defect claim against this task: the fix touches
-#   another module and belongs to the guard-widening work #6278 sits in, and
-#   is filed separately (ticket tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
+#   another module. Note the distinction Section G does NOT erase -- G asserts
+#   SITE-level stderr diversion, and this site's capture is correct (G1 passes
+#   on it, scanning the lib); what leaks is the DESCRIPTION channel one step
+#   later, which stays out of scope here and is filed separately (ticket
+#   tkt_0RSN3SGERQF3E3KD04D71G6W8R, esc-6291-1).
 #   test_verify_env_ambient_isolation.sh -- bucket pool; route
 #   test_occt_flock_gate.sh (`bash "$SCRIPT_DIR/test_occt_flock_gate.sh"
 #   2>&1` :177). The capture at the site is correct (into $amb_out,
@@ -2280,5 +2332,809 @@ echo ""
 # DIRECTLY. Nothing here depends on which -- Section D forks them and
 # observes real behaviour -- and their direct sites are what seeds the
 # closure in the first place.
+
+
+echo ""
+echo "=== G: every deadline-capable SITE inside a static-only roster member diverts its stderr (static) ==="
+
+# THE INVARIANT SECTION G ASSERTS, and how it differs from D4's.
+#
+# Section F derives the roster of deadline-capable suites; D_ROSTER_MODE splits
+# it into the three BEHAVIOURAL members Section D actually forks and contends,
+# and the EIGHT STATIC-ONLY ones it does not. For the behavioural three, D4
+# already reads the member's SOURCE and proves the deadline-forcing invocation
+# still captures stderr. For the static-only eight, nothing did -- Section F's
+# SCOPE (1) recorded that as a deliberate, tracked gap. Section G closes it:
+# for each static-only member, EVERY deadline-capable site in the file it
+# actually execs from must divert its stderr away from the inherited fd 2.
+#
+# TWO DELIBERATELY DIFFERENT GRAMMARS, and the difference is not an oversight:
+#   D4 (behavioural three) asserts EVIDENCE PRESERVATION. Its D_CAPTURE_RE is
+#   file-only ('2>"?\$'): `2>/dev/null` destroys the evidence a failing assert
+#   needs, and `2>&1` merges the sentinel back into the stream run_all Phase 3
+#   re-emits. Those three members are the ones whose OWN failures this suite
+#   must be able to diagnose, so the stricter property is the right one there.
+#   Section G (static-only eight) asserts only the LEAK property: the
+#   invocation's stderr does not reach the inherited fd 2. `2>/dev/null` and a
+#   `2>&1` whose stdout is itself diverted both satisfy that, and both are
+#   shapes the real members use -- six of test_slot_event_log.sh's seven sites
+#   route to /dev/null (recorded beside D_ROSTER_MODE as the exact reason
+#   including it behaviourally would have forced weakening D4's grammar).
+#   Applying D4's strict grammar here would have demanded rewriting eight
+#   suites to satisfy a property they do not need; applying G's lax grammar
+#   there would have silently weakened the three that do. G2e below pins that
+#   the two grammars did not leak into each other.
+#
+# SCOPE, stated rather than left implied. Section G is WHOLE-FILE (D4 is
+# section-sliced), and it proves diversion at the SITE. It does not prove the
+# member never re-emits a capture through some later channel -- the
+# bare-variable description channel measured at
+# run_all_ambient_isolation_lib.sh:106 and test_verify_env_ambient_isolation.sh
+# :189 is a separate, still-open leak, filed as tkt_0RSN3SGERQF3E3KD04D71G6W8R
+# / esc-6291-1 and out of scope here (see the note beside D_ROSTER_MODE).
+#
+# THE COVERAGE TABLE. Three index-aligned arrays -- G_MEMBERS, G_SITE and
+# G_SCAN. G_SITE holds each member's deadline-capable site TARGET token,
+# NOT a whole ERE -- the exec-position anchor is prefixed to every entry by the
+# real-tree arm, so a target here can never accidentally match a `test -f
+# "$RUN_ALL"` or a `case` pattern. Each entry carries the member's derived
+# route and why that token IS its deadline-capable invocation.
+G_MEMBERS=(
+    # Second-order route via test_run_all.sh (TARGET bound :93). The site that
+    # must divert is NOT in this file -- see G_SCAN below.
+    test_run_all_ambient_isolation.sh
+    # Route run_all.sh: RUN_ALL bound :31, `bash "$RUN_ALL"` :96, whose pool
+    # worker calls slot_acquire against the finite REIFY_RUN_ALL_POOL_WAIT.
+    test_run_all_clock_marker_sanitize.sh
+    # Route run_all.sh: RUN_ALL bound :25, invoked :86 and :387.
+    test_run_all_content_skip.sh
+    # Route run_all.sh under a different variable name: REAL_RUN_ALL bound :69
+    # (RUN_ALL there names a WRAPPER fixture, not the real thing -- hence the
+    # distinct target), invoked :122 and :126.
+    test_run_all_pool_lock_host_global.sh
+    # Route run_all.sh: RUN_ALL bound :19; Test 24 forces a real pool deadline
+    # every green run (30s holder on slot-1 vs REIFY_RUN_ALL_POOL_WAIT=2).
+    test_run_all.sh
+    # DIRECT route: it execs the acquire wrappers themselves, bound at :17-19
+    # (LIB=lib_slot_acquire.sh, SEM=lib_test_semaphore.sh,
+    # OCCT=cargo-test-occt-gated.sh), whose WAIT defaults are finite.
+    test_slot_event_log.sh
+    # Route test_occt_flock_gate.sh -- itself a behavioural D_MEMBERS entry --
+    # exec'd at :177 by its literal path.
+    test_verify_env_ambient_isolation.sh
+    # DECLARED, NOT DERIVABLE, and this is the member Section G exists for. Its
+    # capability route is F_WAIT_RE (`export REIFY_TEST_SEMAPHORE_WAIT="$wait"`
+    # :528), but its deadline-capable INVOCATION is scripts/verify.sh -- and
+    # scripts/ is deliberately outside Section F's node set (SCOPE (2)(i)). A
+    # site predicate derived from F's node/edge grammar therefore yields ZERO
+    # sites for this file: a vacuously green check on exactly the member whose
+    # subshell-scoped capture shape (`) 2>"$C_ERR"`) is what SCOPE (1) named
+    # and what this task was filed to cover. G3's per-member non-vacuity assert
+    # is what keeps a declared target honest in place of that derivation.
+    test_verify_semaphore_e2e.sh
+)
+# Index-aligned with G_MEMBERS.
+G_SITE=(
+    '"\$_target"'
+    '"\$RUN_ALL"'
+    '"\$RUN_ALL"'
+    '"\$REAL_RUN_ALL"'
+    '"\$RUN_ALL"'
+    '"\$(SEM|OCCT|LIB)"'
+    '"\$SCRIPT_DIR/test_occt_flock_gate\.sh"'
+    '"\$REPO_ROOT/scripts/verify\.sh"'
+)
+# Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
+# member's deadline-capable invocation. EMPTY means "the member itself", which
+# is the case for seven of the eight.
+#
+# THE ONE INDIRECTION, and why it is not optional.
+# test_run_all_ambient_isolation.sh reaches its deadline SECOND-ORDER: TARGET is
+# bound at :93, handed to `ambient_isolation_check_one` at :366, and exec'd at
+# run_all_ambient_isolation_lib.sh:73/:92 as `bash "$_target" 2>&1` inside an
+# `_amb_out="$(` command substitution. The forwarding call in the member
+# therefore CORRECTLY carries no redirect -- there is nothing there to divert.
+# Asserting on the member's own line would be a false RED that pressures a
+# future reader into adding a redundant redirect at the wrong level, which is
+# strictly worse than not checking at all. MEASURED both ways: scanning the
+# member itself gives 1 site / 1 unredirected; scanning the lib for the site it
+# really execs gives 2 sites / 0 unredirected.
+#
+# THE HONEST LIMITATION: this indirection is DECLARED, not derived from Section
+# F's exec-forwarding-lib rule (F_FWD_LIB_MAP), which already knows how to
+# recognise such a lib. A new forwarding hop therefore needs a human edit here.
+# What keeps that from being SILENT is the pair G0 (a new static-only member
+# cannot go uncovered) and G3 (a member whose site moved cannot pass
+# vacuously) -- the same two guards that make the whole declared table
+# acceptable.
+G_SCAN=(
+    run_all_ambient_isolation_lib.sh
+    '' '' '' '' '' '' ''
+)
+
+# G0 FIRST -- the COMPLETENESS assert, before any per-member check.
+#
+# Section G's per-member checks below run off a hand-declared table (G_MEMBERS
+# and its index-aligned site targets). A hand-declared table over a DERIVED
+# roster is exactly the silent-drift shape task 6255 was filed to close, one
+# level down: Section F can start deriving a ninth static-only member and
+# Section G would simply never look at it, staying green while its coverage
+# quietly stopped being total. G0 is what makes that growth LOUD -- it compares
+# the members Section G declares coverage for against the static-only slice of
+# D_ROSTER, re-derived here from D_ROSTER_MODE (which is itself derived from
+# D_MEMBERS membership, so there is no hand-typed classification anywhere in
+# this chain). A new static-only member turns G0 RED until a human declares its
+# site target, which is the correct outcome: what site is deadline-capable in a
+# new suite is a judgement, not something this scanner can guess.
+#
+# Basenames only in the description, and both difference lists are precomputed
+# into plain variables above the assert -- never a $(...) inside the
+# description text -- so this assert can never itself become an instance of
+# what Section E's E1 forbids (E1 scans SCRIPT_DIR/*.sh, which includes this
+# file).
+G_DERIVED_STATIC="$(
+    for _g_i in "${!D_ROSTER[@]}"; do
+        [ "${D_ROSTER_MODE[$_g_i]}" = "static-only" ] || continue
+        printf '%s\n' "${D_ROSTER[$_g_i]}"
+    done | sort
+)"
+G_DECLARED_SORTED="$(printf '%s\n' "${G_MEMBERS[@]}" | sort)"
+# uncovered: a static-only roster member Section G declares no site for.
+# stale: a G_MEMBERS entry that is no longer a static-only roster member
+# (renamed, deleted, or promoted into D_MEMBERS and hence behavioural).
+G_UNCOVERED="$(comm -23 <(printf '%s\n' "$G_DERIVED_STATIC") <(printf '%s\n' "$G_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
+G_STALE="$(comm -13 <(printf '%s\n' "$G_DERIVED_STATIC") <(printf '%s\n' "$G_DECLARED_SORTED") | tr '\n' ' ' | sed 's/ *$//')"
+
+assert "G0: Section G covers EVERY static-only roster member -- the declared coverage list equals the static-only slice of D_ROSTER (uncovered: ${G_UNCOVERED:-<none>}) (stale: ${G_STALE:-<none>})" \
+    test "$G_DECLARED_SORTED" = "$G_DERIVED_STATIC"
+
+# --- Section G's two predicates, both over _d_join_logical's output.
+#
+# G_CAPTURE_RE is the DIVERSION grammar, deliberately laxer than D4's
+# D_CAPTURE_RE ('2>"?\$', file-only). `2>[^&]` accepts a capture to a file
+# (`2>"$VAR"`) AND to /dev/null, because Section G asserts only that the site's
+# stderr does not reach the inherited fd 2 -- the LEAK property. D4 additionally
+# asserts EVIDENCE PRESERVATION on the three behavioural members, whose own
+# failures this suite must be able to diagnose, which is why /dev/null is
+# excluded there and admitted here. The `[^&]` is what still rejects a bare
+# `2>&1`: merging stderr into an INHERITED stdout is not a diversion at all.
+# G2e below pins that the two grammars stay separate.
+G_CAPTURE_RE='2>[^&]'
+
+# _g_scan <logical-lines-file> <site-ERE> -> "<sites> <unredirected>", the ONE
+# analysis both predicates below read, so their two counts can never disagree.
+#
+# WHY AWK AND NOT A GREP. A line-local predicate cannot see either multi-line
+# capture shape the real roster members use -- the subshell closer and the
+# command-substitution opener sit on DIFFERENT lines from the site, with no
+# backslash continuation for _d_join_logical to merge. That is exactly why
+# Section F's SCOPE (1) declined to generalize D4's line-oriented slicer, and
+# it is what this two-pass block analysis supplies.
+#
+# THE SITE ERE AND THE CAPTURE ERE REACH AWK THROUGH THE ENVIRONMENT, read with
+# ENVIRON[]. NOT `awk -v`, and this is MEASURED, not stylistic: `-v` runs escape
+# processing over the value, so `\.` collapses to `.`, `\$` becomes the regex
+# END-OF-STRING anchor and `\{`/`\}` become literals. Handing these EREs over
+# with -v silently reduced EVERY member to sites=0, with nothing on stderr but
+# an `awk: warning: escape sequence ...`. ENVIRON does no escape processing and
+# is POSIX, so this is portable. G_CAPTURE_RE is passed rather than re-spelled
+# inside the program, so there stays exactly ONE diversion grammar in Section G.
+#
+# OUTPUT IS COUNTS ONLY -- never a matched line. Same discipline as D1, D4b and
+# _e_scan: this file's output is re-emitted verbatim into the merge-gate verify
+# log, so printing the offending line would BE the leak. Reading the file by
+# NAME rather than through a pipe also puts this beyond the `-q`/SIGPIPE/
+# pipefail hazard recorded above _f_deadline_capable: awk drains to EOF by
+# construction.
+#
+# NO APOSTROPHE APPEARS INSIDE THE AWK PROGRAM, comments included -- the whole
+# program is a single-quoted shell string, so one would end it. The single
+# quote the body rule needs is BUILT (SQ, below) for the same reason.
+_g_scan() {  # <logical-lines-file> <site-ERE> -> "<sites> <unredirected>"
+    G_AWK_SITE="$2" G_AWK_CAP="$G_CAPTURE_RE" awk '
+    BEGIN {
+        SITE = ENVIRON["G_AWK_SITE"]
+        CAP  = ENVIRON["G_AWK_CAP"]
+        SQ = sprintf("%c", 39)   # the single quote, built not written
+        DQ = sprintf("%c", 34)   # the double quote, built for symmetry
+        n = 0; top = 0; sites = 0; unred = 0
+    }
+
+    # ---- COMMAND SEGMENTATION. Capture attribution has to be COMMAND-scoped,
+    # not LINE-scoped: a `2>` merely present somewhere on a line says nothing
+    # about which of that lines commands it belongs to. Three real shapes are
+    # silent greens under a line-scoped rule, and all three are pinned by G2g:
+    #   `bash "$P" & echo $! 2>/dev/null`   the redirect is the echos
+    #   `) || kill "$pid" 2>/dev/null`      the redirect is the kills
+    #   `bash "$P" 2>&1 >"$OUT"`            reversed pair -- fd 2 is aimed at
+    #                                       the INHERITED stdout, then fd 1
+    #                                       moves; stderr leaks
+    #
+    # nextsep() walks from `from` to the first UNQUOTED command separator and
+    # leaves SEP/SEPLEN describing it. segat() returns the segment HOLDING a
+    # position (a site line); segfrom() the segment STARTING at one (a block
+    # closer, scanned from just past the closing token). SEP survives the call
+    # because a terminating pipe is itself a stdout diversion -- see PASS 2.
+    #
+    # A REDIRECT AMPERSAND IS NOT A SEPARATOR: `2>&1` and `>&2` carry `>` (or
+    # `<`) immediately before the `&`, and bashs `&>` carries `>` immediately
+    # after it. Quote tracking is per-line and deliberately simple; an
+    # unbalanced quote merely stops the scan, which yields the whole remainder
+    # as one segment -- i.e. exactly the old line-scoped behaviour, so it
+    # degrades toward the previous rule and never toward hiding a leak.
+    function nextsep(s, from,   i, c, p, q, ln) {
+        SEP = ""; SEPLEN = 0
+        ln = length(s); q = ""
+        for (i = from; i <= ln; i++) {
+            c = substr(s, i, 1)
+            if (q != "") { if (c == q) q = ""; continue }
+            if (c == "\\") { i++; continue }
+            if (c == SQ || c == DQ) { q = c; continue }
+            if (c == ";") { SEP = ";"; SEPLEN = 1; return i }
+            if (c == "|") {
+                if (substr(s, i + 1, 1) == "|") { SEP = "||"; SEPLEN = 2 }
+                else                            { SEP = "|";  SEPLEN = 1 }
+                return i
+            }
+            if (c == "&") {
+                p = (i > 1) ? substr(s, i - 1, 1) : ""
+                if (p == ">" || p == "<") continue
+                if (substr(s, i + 1, 1) == ">") continue
+                if (substr(s, i + 1, 1) == "&") { SEP = "&&"; SEPLEN = 2 }
+                else                            { SEP = "&";  SEPLEN = 1 }
+                return i
+            }
+        }
+        return 0
+    }
+
+    function segat(s, pos,   from, k) {
+        from = 1
+        while (1) {
+            k = nextsep(s, from)
+            if (k == 0)   return substr(s, from)
+            if (pos < k)  return substr(s, from, k - from)
+            from = k + SEPLEN
+        }
+    }
+
+    function segfrom(s, from,   k) {
+        k = nextsep(s, from)
+        if (k == 0) return substr(s, from)
+        return substr(s, from, k - from)
+    }
+
+    # ---- PASS 1: block structure. For every line, record the innermost
+    # enclosing opener (encl[]); for every opener, record its kind and, once the
+    # closer is seen, that closer disposition (stamp[] = "<kind>:<disp>").
+    # THREE OPENER KINDS, each a real in-tree shape:
+    #   subst    a line ending in $( -- stdout is diverted into a variable,
+    #            which is what makes an inner 2>&1 a diversion rather than a
+    #            leak. Shape at test_run_all_content_skip.sh:80-87 and :380-388,
+    #            and test_verify_env_ambient_isolation.sh:172-178.
+    #   body     a line ending in "bash -c" plus a quote -- an inline script
+    #            body, closed by a line starting with that quote, whose capture
+    #            sits on that closing line. A real in-tree shape
+    #            (test_test_run_semaphore.sh) -- but an HONEST NOTE, because the
+    #            earlier claim here was measured on a file Section G does not
+    #            read: that file is a BEHAVIOURAL D_MEMBERS entry and is never
+    #            in G_MEMBERS, so no member scanned today reaches this branch.
+    #            MEASURED: stubbing the branch out leaves all eight per-member
+    #            counts byte-identical. It is kept because the shape is one a
+    #            static-only member can adopt at any time and the alternative
+    #            is a false RED (same class as SCOPE (3) of Section F, but
+    #            louder), and G2c3/G2c4 below are the live guard that keeps the
+    #            branch exercised rather than merely present.
+    #   subshell a line ending in a bare ( -- the shape SCOPE (1) of Section F
+    #            names, captured on the closing ) line. 8 of the 11 sites in
+    #            test_verify_semaphore_e2e.sh are captured only this way.
+    # ORDER MATTERS: $( is tested before the bare ( so a command substitution is
+    # never misread as a subshell, and $(( arithmetic is excluded explicitly.
+    # FAIL-SAFE BY CONSTRUCTION: a closer arriving on an empty stack is ignored,
+    # and an opener still unclosed at EOF never gets a stamp, so it counts as
+    # NOT captured. Both degrade toward flagging, never toward hiding.
+    {
+        line[++n] = $0
+        isopen = 0; k = ""
+        if      ($0 ~ /\$\($/)                                      { isopen = 1; k = "subst" }
+        else if ($0 ~ "(bash|sh)[[:blank:]]+-c[[:blank:]]+" SQ "$") { isopen = 1; k = "body" }
+        else if ($0 ~ /\($/ && $0 !~ /\$\(\($/)                     { isopen = 1; k = "subshell" }
+
+        isclose = 0
+        if (top > 0) {
+            ok = stack[top]
+            if (bk[ok] == "body") { if ($0 ~ "^[[:blank:]]*" SQ) isclose = 1 }
+            else                  { if ($0 ~ /^[[:blank:]]*\)/)  isclose = 1 }
+        }
+
+        if (isclose) {
+            ok = stack[top--]
+            # Only the CLOSERS OWN segment can capture the block. Scan from
+            # just past the closing token, stepping over the `"` of a `)"` that
+            # closes a `"$( ... )"` so the segment scanner does not read the
+            # rest of the line as quoted text.
+            if (bk[ok] == "body") match($0, "^[[:blank:]]*" SQ)
+            else                  match($0, /^[[:blank:]]*\)/)
+            cfrom = RSTART + RLENGTH
+            if (substr($0, cfrom, 1) == DQ) cfrom++
+            cseg = segfrom($0, cfrom)
+            d = (cseg ~ CAP) ? "err" : (bk[ok] == "subst" ? "out" : "none")
+            stamp[ok] = bk[ok] ":" d
+            encl[n] = (top > 0) ? stack[top] : 0
+        } else if (isopen) {
+            encl[n] = (top > 0) ? stack[top] : 0
+            stack[++top] = n; bk[n] = k
+        } else {
+            encl[n] = (top > 0) ? stack[top] : 0
+        }
+    }
+
+    # ---- PASS 2. Everything below is asked of the sites OWN SEGMENT (segat),
+    # never of the whole line -- see the segmentation block above. A site is
+    # captured iff any of
+    #   (a) its segment carries a diversion (CAP: 2> to a file or to /dev/null);
+    #   (b) its segment carries a 2>&1 AND its stdout is itself diverted -- by a
+    #       `>` EARLIER IN THE SEGMENT that is not part of 2> or >&, by an
+    #       inline $( earlier in the segment, by the segment ending in a PIPE,
+    #       or by an enclosing subst block. Without that precondition 2>&1
+    #       merges the sentinel back into the stream run_all Phase 3 re-emits,
+    #       which is the leak and not a fix. THE ORDER TEST IS THE POINT: the
+    #       same two tokens reversed (`2>&1 >file`) aim fd 2 at the inherited
+    #       stdout and only then move fd 1, so that shape still leaks (G2g3);
+    #   (c) an enclosing block whose closer segment carried 2> (stamp ending
+    #       :err) -- the subshell and inline-body shapes.
+    END {
+        for (i = 1; i <= n; i++) {
+            if (line[i] !~ SITE) continue
+            sites++
+            match(line[i], SITE)
+            seg = segat(line[i], RSTART)
+            sep = SEP
+            cap = 0
+            if (seg ~ CAP) cap = 1
+            else if (match(seg, /2>&1/)) {
+                pre = substr(seg, 1, RSTART - 1)
+                if (pre ~ /(^|[^2>&])>[^&]/ || pre ~ /\$\(/ || sep == "|") cap = 1
+                else for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /^subst:/) { cap = 1; break }
+            }
+            if (!cap) for (e = encl[i]; e != 0; e = encl[e]) if (stamp[e] ~ /:err$/) { cap = 1; break }
+            if (!cap) unred++
+        }
+        printf "%d %d\n", sites, unred
+    }
+    ' "$1"
+}
+
+# _g_sites <logical-lines-file> <site-ERE> -> how many deadline-capable sites
+# that file holds. Drives G3's per-member non-vacuity arm.
+_g_sites() {
+    local _r
+    _r="$(_g_scan "$1" "$2")"
+    echo "${_r%% *}"
+}
+
+# _g_unredirected <logical-lines-file> <site-ERE> -> how many of those sites do
+# NOT divert their stderr. Drives G1.
+_g_unredirected() {
+    local _r
+    _r="$(_g_scan "$1" "$2")"
+    echo "${_r##* }"
+}
+
+echo ""
+echo "--- G2: controls on the site/capture predicate, on synthetic fixtures ---"
+
+# CONTROLS FIRST, this file's own convention throughout (D2 before D1, D4c
+# before D4b, E2/E3 before E1, FC* before F1). G1 below asserts a ZERO, and an
+# absence-assert whose predicate is typo'd is green forever -- G2a is what makes
+# G1's zero mean something. G2b is its mirror: a predicate that flagged a
+# CORRECTLY captured site would make Section G unsatisfiable.
+#
+# Fixtures are PRINTF'd into a mktemp dir, never written as a heredoc: Section
+# F's SCOPE (3) records that a heredoc body reads as a live invocation to a
+# line-oriented scanner. Harmless for F (this file is excluded from its node set
+# by _f_excluded_node) but the habit is worth keeping, and the fixtures stay out
+# of Section G's own scan by construction since G reads only declared members.
+TMPG="$(mktemp -d)"; _TMPDIRS+=("$TMPG")
+
+G_CTRL_BARE="$TMPG/ctrl-same-line-bare.cmds"
+G_CTRL_CAP="$TMPG/ctrl-same-line-captured.cmds"
+G_CTRL_SITE='"\$G_PROBE"'
+printf 'bash "$G_PROBE" --pool || _rc=$?\n' > "$G_CTRL_BARE"
+printf 'bash "$G_PROBE" --pool 2>"$G_ERR" || _rc=$?\n' > "$G_CTRL_CAP"
+
+G2A_N="$(_g_unredirected "$G_CTRL_BARE" "$G_CTRL_SITE")"
+G2B_N="$(_g_unredirected "$G_CTRL_CAP" "$G_CTRL_SITE")"
+
+# Counts only, never the fixture line itself -- the same rule D1/D4b/_e_scan
+# follow, and the reason `test` is the checker here: assert dumps a FAILING
+# checker's captured output.
+assert "G2a: positive control -- a deadline-capable site with NO redirect at all is flagged (got $G2A_N unredirected)" \
+    test "$G2A_N" -eq 1
+assert "G2b: the same site capturing to a file is NOT flagged (got $G2B_N unredirected)" \
+    test "$G2B_N" -eq 0
+
+# --- G2c/G2d: the BLOCK-SCOPE controls. Both fixtures are shapes the real
+# roster members use, and neither is visible to a line-local predicate even
+# after continuation-joining -- which is exactly why Section F's SCOPE (1)
+# declined to generalize D4 rather than doing it cheaply.
+#
+# TWO HALVES EACH, and the second half of each pair is what stops block
+# tolerance from being BLANKET tolerance: a predicate that simply ignored
+# anything inside a `(` or `$(` would pass the first half of both and be
+# useless. The negative half pins that an UNCAPTURED enclosing block is still
+# flagged.
+G_CTRL_SUB_CAP="$TMPG/ctrl-subshell-captured.cmds"
+G_CTRL_SUB_BARE="$TMPG/ctrl-subshell-bare.cmds"
+G_CTRL_BODY_CAP="$TMPG/ctrl-body-captured.cmds"
+G_CTRL_BODY_BARE="$TMPG/ctrl-body-bare.cmds"
+G_CTRL_MERGE_BARE="$TMPG/ctrl-merge-stdout-inherited.cmds"
+G_CTRL_MERGE_SUBST="$TMPG/ctrl-merge-stdout-diverted.cmds"
+G_CTRL_MERGE_PIPE="$TMPG/ctrl-merge-stdout-piped.cmds"
+
+# The shape at test_verify_semaphore_e2e.sh: the invocation is inside a
+# subshell and the capture is on the subshell's CLOSING line, several lines
+# later. Eight of that member's eleven sites are captured only this way, and
+# this is the shape Section F's SCOPE (1) names verbatim.
+printf '%s\n' \
+    '_C_RC=0' \
+    '(' \
+    '    bash "$G_PROBE" --pool' \
+    ') 2>"$G_ERR" || _C_RC=$?' \
+    > "$G_CTRL_SUB_CAP"
+printf '%s\n' \
+    '_C_RC=0' \
+    '(' \
+    '    bash "$G_PROBE" --pool' \
+    ') || _C_RC=$?' \
+    > "$G_CTRL_SUB_BARE"
+
+# The INLINE-BODY block kind, the third opener _g_scan recognises and until now
+# the only one with no control of its own. Same closer-stamped shape as the
+# subshell pair above (the capture sits on the line that CLOSES the body), so
+# the same two halves apply. Double-quoted printf args here because a
+# single-quoted shell string cannot contain the very quote the fixture needs.
+printf '%s\n' \
+    "bash -c '" \
+    '    bash "$G_PROBE" --pool' \
+    "' 2>\"\$G_ERR\" || _rc=\$?" \
+    > "$G_CTRL_BODY_CAP"
+printf '%s\n' \
+    "bash -c '" \
+    '    bash "$G_PROBE" --pool' \
+    "' || _rc=\$?" \
+    > "$G_CTRL_BODY_BARE"
+
+# The merge rule and its STDOUT PRECONDITION. `2>&1` is a diversion only if
+# stdout is itself diverted; with stdout inherited it is the leak, not a fix
+# (the same reason D4's grammar rejects it outright). The positive shape is at
+# test_run_all_content_skip.sh:80-87 and :380-388 and
+# test_verify_env_ambient_isolation.sh:172-178 -- `2>&1` IS on the invocation
+# line, but its legitimacy is only knowable from the enclosing `$(` opener,
+# and these carry no backslash continuation for the joiner to merge.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>&1 || _rc=$?' \
+    > "$G_CTRL_MERGE_BARE"
+printf '%s\n' \
+    'G_OUT="$(' \
+    '    bash "$G_PROBE" --pool 2>&1' \
+    ')" || _rc=$?' \
+    > "$G_CTRL_MERGE_SUBST"
+# A PIPE is a stdout diversion too, and it is the third way the precondition
+# can be met. `cmd 2>&1 | reader` sends both streams into the pipe -- the
+# pipeline fds are installed before the command's own redirections -- so the
+# site does not leak, and flagging it would be a false RED that pressures a
+# reader into adding a redundant redirect. Same argument the G_SCAN preamble
+# makes for the forwarding-lib indirection.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>&1 | grep -q "$G_MARKER"' \
+    > "$G_CTRL_MERGE_PIPE"
+
+G2C1_N="$(_g_unredirected "$G_CTRL_SUB_CAP" "$G_CTRL_SITE")"
+G2C2_N="$(_g_unredirected "$G_CTRL_SUB_BARE" "$G_CTRL_SITE")"
+G2C3_N="$(_g_unredirected "$G_CTRL_BODY_CAP" "$G_CTRL_SITE")"
+G2C4_N="$(_g_unredirected "$G_CTRL_BODY_BARE" "$G_CTRL_SITE")"
+G2D1_N="$(_g_unredirected "$G_CTRL_MERGE_BARE" "$G_CTRL_SITE")"
+G2D2_N="$(_g_unredirected "$G_CTRL_MERGE_SUBST" "$G_CTRL_SITE")"
+G2D3_N="$(_g_unredirected "$G_CTRL_MERGE_PIPE" "$G_CTRL_SITE")"
+
+assert "G2c1: a site whose capture is on its enclosing SUBSHELL's closing line is NOT flagged (got $G2C1_N unredirected)" \
+    test "$G2C1_N" -eq 0
+assert "G2c2: ... but the same site in a subshell whose closer carries NO redirect still IS (block tolerance is not blanket; got $G2C2_N unredirected)" \
+    test "$G2C2_N" -eq 1
+assert "G2c3: a site whose capture is on its enclosing inline BODY's closing line is NOT flagged (got $G2C3_N unredirected)" \
+    test "$G2C3_N" -eq 0
+assert "G2c4: ... but the same site in a body whose closer carries NO redirect still IS (got $G2C4_N unredirected)" \
+    test "$G2C4_N" -eq 1
+assert "G2d1: a bare 2>&1 with stdout INHERITED is flagged -- merging into the re-emitted stream is the leak, not a fix (got $G2D1_N unredirected)" \
+    test "$G2D1_N" -eq 1
+assert "G2d2: ... but the same 2>&1 inside a multi-line command substitution is NOT, because stdout is diverted there (got $G2D2_N unredirected)" \
+    test "$G2D2_N" -eq 0
+assert "G2d3: ... and neither is a 2>&1 whose stdout is diverted by a PIPE -- both streams go into the pipe, not to fd 2 (got $G2D3_N unredirected)" \
+    test "$G2D3_N" -eq 0
+
+# --- G2e: THE TIER-SEPARATION PIN. Green on arrival by design, kept as a
+# standing regression guard: Section G's laxer DIVERSION grammar must not have
+# leaked into D4's deliberately file-only D_CAPTURE_RE. A single
+# `2>/dev/null` site is the one input that tells the two grammars apart -- G
+# accepts it (stderr is diverted, which is all G claims), D4 rejects it (the
+# evidence a failing assert needs is destroyed). Asserted as two separate
+# checks so "G got lax" and "D4 got lax" stay distinguishable failures.
+G_CTRL_DEVNULL="$TMPG/ctrl-devnull.cmds"
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>/dev/null || _rc=$?' \
+    > "$G_CTRL_DEVNULL"
+G2E_G_N="$(_g_unredirected "$G_CTRL_DEVNULL" "$G_CTRL_SITE")"
+G2E_D_N="$(_d_unredirected "$G_CTRL_DEVNULL" "$G_CTRL_SITE")"
+
+assert "G2e1: Section G accepts a 2>/dev/null site -- it asserts the LEAK property, and stderr is diverted (got $G2E_G_N unredirected)" \
+    test "$G2E_G_N" -eq 0
+assert "G2e2: D4's file-only grammar still REJECTS that same site -- G's laxer diversion rule did not leak into the evidence-preserving tier (got $G2E_D_N unredirected)" \
+    test "$G2E_D_N" -eq 1
+
+# THE EXEC-POSITION ANCHOR, prefixed to every G_SITE target. NEW, separately-
+# named constants: F_EDGE_ANCHOR is reused READ-ONLY as the command-boundary
+# class, but F_EDGE_VERB_RE is deliberately NOT widened in place -- it drives
+# F1's derivation, and adding `env`/`timeout` to it could change the derived
+# roster. Section G needs a laxer verb set than the closure does precisely
+# because it is asking a different question (is this line an exec position?)
+# than the closure asks (does this file invoke that node?).
+#
+# TWO ALTERNATIVES, both measured NECESSARY:
+#   VERB form -- the site follows an anchored exec verb, with the same
+#   flag tolerance F_EXEC_RE already carries. `env`/`timeout` are in the set
+#   here because a real site is written `timeout 600 bash "$RUN_ALL" ...`.
+#   COMMAND-WORD form -- the site IS the command word, e.g.
+#   `"$WRAPPER" bash -c true` or a bare `ambient_isolation_check_one "$TARGET"`.
+#
+# THE BOUNDARY ON THE COMMAND-WORD FORM IS COMMAND-START, NOT ANY BLANK, and
+# both halves of that choice were measured.
+#
+#   WHY NOT ANY BLANK (precision). Allowing F_EDGE_ANCHOR here admits `test -f
+#   "$RUN_ALL"`, `[ -f "$REAL_RUN_ALL" ]` and `if [ -f "$RUN_ALL" ]; then` as
+#   invocations -- in test_run_all.sh alone that is 101 site matches instead of
+#   70, and 29 of the 31 extra read as unredirected: 29 false REDs on a file
+#   whose real sites are all correctly captured. G2f4 is the standing guard on
+#   that number.
+#
+#   WHY NOT LINE-INITIAL EITHER (recall). A `^`-only form sees a command word
+#   only at the start of a logical line. `cd "$d" && "$SITE" ...`, `if "$SITE"
+#   ...; then` and `export X=1; "$SITE" ...` are all real exec positions and
+#   all read as ZERO sites under it -- and a site the scan cannot see is a site
+#   G1 stays green over, the same SILENT class as the quoted-assignment hole
+#   G2f1 pins. This matters most for test_slot_event_log.sh, whose declared
+#   targets ARE bare command words; its 8 sites are all line-initial TODAY,
+#   which is a fact about the file, not a property of the check. G2f3 is the
+#   standing guard on that.
+#
+#   The middle ground is the set below: start of line, immediately after a
+#   `&&`/`||`/`;`/`|`/`&`/`(`/`{`, or at the head of an if/then/elif/else/do/
+#   while/until clause. A token after a WORD (`-f`, `case`, `grep`) is never a
+#   command word, which is exactly what the precision measurement above is
+#   about. MEASURED on the real tree: all eight per-member counts are
+#   byte-for-byte identical to the `^`-only form, so this is pure recall.
+#
+# THE KEY=VAL PREFIX TOLERANCE IS EQUALLY LOAD-BEARING, and was measured the
+# other way: test_slot_event_log.sh, test_lane_x_flock.sh and
+# test_occt_flock_gate.sh all write `DF_VERIFY_ROLE=task REIFY_...=... "$SEM"
+# bash -c true`, where the wrapper is not the line's first word. Drop the
+# KEY=VAL prefix and test_slot_event_log.sh falls from 7 sites to 0 -- a check
+# that is not merely weaker but vacuous, which is exactly what G3 exists to
+# catch.
+G_EXEC_KV='([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*'
+# THE POST-VERB CLASS ADMITS A QUOTED ASSIGNMENT WORD, and its narrowness is
+# itself load-bearing. Three measurements, all taken against the real tree:
+#
+#   (a) BEFORE/AFTER -- test_slot_event_log.sh goes 7 sites -> 8, and the other
+#   seven members are byte-for-byte unchanged (test_run_all.sh 70/0,
+#   test_run_all_ambient_isolation.sh 2/0,
+#   test_run_all_clock_marker_sanitize.sh 1/0, test_run_all_content_skip.sh
+#   2/0, test_run_all_pool_lock_host_global.sh 2/0,
+#   test_verify_env_ambient_isolation.sh 1/0, test_verify_semaphore_e2e.sh
+#   11/0). 8 is the TRUE total, confirmed by enumerating that file's wrapper
+#   invocations directly.
+#
+#   (b) THE MUTATION TEST, and it is why this is a CORRECTNESS fix rather than
+#   a coverage nicety: delete only the ` 2>"$_STDERR_C"` from
+#   test_slot_event_log.sh:102 and the pre-fix scan still reports 7 sites / 0
+#   unredirected -- G3 AND G1 both stay GREEN on a site whose stderr capture
+#   was removed. The fixed scan reports 8 / 1 and G1 goes correctly RED. The
+#   hole was SILENT, and no real-tree count could have revealed it, which is
+#   precisely what G2f exists to make visible.
+#
+#   (c) WHY NARROW RATHER THAN BLANKET -- a blanket
+#   `([^[:blank:]]+[[:blank:]]+)*` also yields 8/0 on today's roster and is
+#   therefore indistinguishable from this fix by ANY real-tree count, but it
+#   steps over an intervening quoted COMMAND word: on G2f2's
+#   `timeout 600 bash "$G_WRAPPER" "$G_PROBE"` blanket matches (1) while both
+#   the old and the fixed class correctly reject it (0). The `"` exclusion is
+#   what keeps a wrapper's ARGUMENTS from reading as sites, and this fix
+#   preserves it by admitting only KEY="VAL" words, which can never be the
+#   command word. G2f2 is the standing guard on that.
+#
+# The pre-verb (G_EXEC_KV) and post-verb tolerances are deliberately DIFFERENT
+# and must stay so: G_EXEC_KV takes the unquoted `[^[:blank:]]*` value form,
+# while this class needs the explicit `="[^"]*"` alternative. Do not "unify"
+# them -- the unquoted form here would re-admit the blanket hazard in (c).
+G_EXEC_VERB_RE="${F_EDGE_ANCHOR}${G_EXEC_KV}"'(env|timeout|bash|sh|source)[[:blank:]]+((([^"[:blank:]]+)|([A-Za-z_][A-Za-z0-9_]*="[^"]*"))[[:blank:]]+)*'
+G_EXEC_CMDSTART='(^[[:blank:]]*|[[:blank:]]*(&&|\|\||[;|&({])[[:blank:]]*|'"${F_EDGE_ANCHOR}"'(if|then|elif|else|do|while|until)[[:blank:]]+)'
+G_EXEC_FIRST_RE="${G_EXEC_CMDSTART}${G_EXEC_KV}"
+
+echo ""
+echo "--- G2f: controls on the exec-position anchor ---"
+
+# G2a-G2e above exercise only the CAPTURE half of the predicate: every one of
+# them calls _g_unredirected with a BARE G_CTRL_SITE and never constructs the
+# exec anchor at all. A hole in the anchor itself was therefore invisible to
+# every control in this section -- the G3/G1 loop below is the only consumer of
+# G_EXEC_VERB_RE/G_EXEC_FIRST_RE, and its real-tree counts cannot distinguish
+# "this member has N sites" from "this member has N+1 sites and one is
+# unreachable". G2f closes that, and asserts with _g_sites rather than
+# _g_unredirected because the property under test is site DETECTION, not
+# capture. Controls-first still holds: these sit above the arm they guard.
+G_CTRL_ENVKV="$TMPG/ctrl-exec-env-quoted-kv.cmds"
+G_CTRL_WRAP="$TMPG/ctrl-exec-wrapper-shadowed.cmds"
+G_CTRL_CMDSTART="$TMPG/ctrl-exec-command-start.cmds"
+G_CTRL_TESTHEAD="$TMPG/ctrl-exec-test-builtin-head.cmds"
+
+# The real in-tree shape, at test_slot_event_log.sh:98-102 (joined logical line
+# 59): that section's own forced-acquire control, run at CONCURRENCY=1 against
+# a held lock, i.e. a genuine deadline-capable acquire site. What makes it hard
+# is that the `env` verb is followed by a QUOTED assignment word before the
+# wrapper is reached, and the FIRST-WORD form cannot rescue it because the
+# line's first word is `env`, not a KEY=VAL.
+printf '%s\n' \
+    'env -u REIFY_SLOT_EVENT_LOG DF_VERIFY_ROLE=task REIFY_LOCK="$G_LOCK" "$G_PROBE" bash -c true 2>"$G_ERR" || _rc=$?' \
+    > "$G_CTRL_ENVKV"
+
+# THE WRAPPER-SHADOWING PIN. Here the real exec is "$G_WRAPPER" and "$G_PROBE"
+# is a mere ARGUMENT, so this line is not a site at all. Green on arrival by
+# design, and kept for a specific reason recorded beside G_EXEC_VERB_RE: the
+# blanket relaxation `([^[:blank:]]+[[:blank:]]+)*` is INDISTINGUISHABLE from
+# the correct fix on today's roster -- both produce the same eight per-member
+# counts -- yet it steps over an intervening quoted COMMAND word and turns this
+# fixture into a false positive. Without G2f2 a future "simplification" to
+# blanket would land silently. The hazard is live in the tree, not
+# hypothetical: it is the same wrapper-vs-real distinction that
+# test_run_all_pool_lock_host_global.sh's G_SITE entry already exists to encode.
+printf '%s\n' \
+    'timeout 600 bash "$G_WRAPPER" "$G_PROBE" --pool 2>"$G_ERR" || _rc=$?' \
+    > "$G_CTRL_WRAP"
+
+# THE RECALL HALF. A site can be a command word without being the LINE's first
+# word and without following an exec verb -- after `&&`/`||`/`;`/`|`/`&`, or as
+# the head of an `if`/`while`/`until`/`then`/`do`/`else` clause. All three lines
+# below are genuine invocations; a scan that cannot see them stays green while
+# a new unredirected site sits in plain sight, which is the same SILENT class
+# as the quoted-assignment hole G2f1 pins. Three separate lines, so the count
+# also says WHICH boundary class regressed.
+printf '%s\n' \
+    'cd "$G_DIR" && "$G_PROBE" bash -c true' \
+    'if "$G_PROBE" bash -c true; then :; fi' \
+    'export G_X=1; "$G_PROBE" bash -c true' \
+    > "$G_CTRL_CMDSTART"
+
+# ITS LOAD-BEARING MIRROR, and the reason the boundary set is COMMAND-START
+# rather than any blank. `test -f "$X"`, `[ -f "$X" ]`, a `case` subject and a
+# `grep` argument all put the token after a WORD, not after a command start, so
+# none of them is an exec position. Measured on the real tree when the anchor
+# was first written: admitting a bare blank boundary turns test_run_all.sh from
+# 70 site matches into 101, and 29 of the 31 extra read as unredirected -- 29
+# false REDs on a file whose real sites are all correctly captured. This
+# fixture is what keeps any future widening from re-buying that.
+printf '%s\n' \
+    'test -f "$G_PROBE" && echo yes' \
+    'if [ -f "$G_PROBE" ]; then :; fi' \
+    '[ -x "$G_PROBE" ] || exit 1' \
+    'case "$G_PROBE" in *) :;; esac' \
+    'grep -q "$G_PROBE" "$G_LOG"' \
+    > "$G_CTRL_TESTHEAD"
+
+# Built exactly as the G3/G1 loop below builds it, so these controls exercise
+# the predicate the real arm uses rather than a lookalike.
+G_CTRL_EXEC_RE="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_CTRL_SITE}"
+G2F1_N="$(_g_sites "$G_CTRL_ENVKV" "$G_CTRL_EXEC_RE")"
+G2F2_N="$(_g_sites "$G_CTRL_WRAP" "$G_CTRL_EXEC_RE")"
+G2F3_N="$(_g_sites "$G_CTRL_CMDSTART" "$G_CTRL_EXEC_RE")"
+G2F4_N="$(_g_sites "$G_CTRL_TESTHEAD" "$G_CTRL_EXEC_RE")"
+
+# Counts only, precomputed into plain variables, `test` as the checker -- the
+# same E1/D1 output-safety discipline as every other assert in this section.
+assert "G2f1: an exec verb followed by a QUOTED assignment word still reaches its site (got $G2F1_N sites)" \
+    test "$G2F1_N" -eq 1
+assert "G2f2: ... but a site SHADOWED by an intervening quoted command word is NOT one (a blanket relaxation would flag it; got $G2F2_N sites)" \
+    test "$G2F2_N" -eq 0
+assert "G2f3: a site that is the command word after &&, after ;, or at the head of an if clause is still an exec position (got $G2F3_N of 3 sites)" \
+    test "$G2F3_N" -eq 3
+assert "G2f4: ... but a token after a WORD is not -- test -f, [ -f, a case subject and a grep argument are all non-sites (got $G2F4_N sites)" \
+    test "$G2F4_N" -eq 0
+
+echo ""
+echo "--- G2g: capture attribution is COMMAND-scoped, not line-scoped ---"
+
+# THE ATTRIBUTION HAZARD, and why it needs controls of its own. G2a-G2d ask
+# whether a redirect is RECOGNISED; G2g asks whether it belongs to the command
+# under test at all. A `2>` merely PRESENT somewhere on a line says nothing --
+# a shell line can hold several commands, and only the segment the site (or the
+# block closer) actually sits in can capture it. All three fixtures below are
+# genuinely leaking sites, so all three must be FLAGGED; a predicate that reads
+# the whole line accepts every one of them and G1 stays green over a real leak.
+# That is the same silent-pass class as the exec-anchor hole G2f pins, on the
+# other half of the predicate.
+G_CTRL_ATTR_SAME="$TMPG/ctrl-attr-same-line.cmds"
+G_CTRL_ATTR_CLOSER="$TMPG/ctrl-attr-closer.cmds"
+G_CTRL_ATTR_REVERSED="$TMPG/ctrl-attr-reversed-merge.cmds"
+
+# SAME-LINE: the site is backgrounded and the `2>/dev/null` belongs to the
+# `echo` after the `&`. The site's own stderr still reaches the inherited fd 2.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool & echo $! 2>/dev/null' \
+    > "$G_CTRL_ATTR_SAME"
+
+# CLOSER LINE: the subshell closes with NO redirect -- the `2>/dev/null` on
+# that line belongs to the `kill` in the `||` branch, which runs only after the
+# subshell has already written to fd 2. The block-scope rule must not read it
+# as the subshell's own capture.
+printf '%s\n' \
+    '_C_RC=0' \
+    '(' \
+    '    bash "$G_PROBE" --pool' \
+    ') || kill "$G_PID" 2>/dev/null' \
+    > "$G_CTRL_ATTR_CLOSER"
+
+# ORDER WITHIN THE SEGMENT: `2>&1 >file` is the classic reversed pair. fd 2 is
+# pointed at whatever fd 1 is AT THAT MOMENT -- the inherited stdout -- and only
+# then is fd 1 moved to the file. Stderr leaks; the same two tokens in the
+# other order (G2d1s mirror, `>file 2>&1`) do not. The merge rule therefore has
+# to compare POSITIONS, not merely observe that both tokens are present.
+printf '%s\n' \
+    'bash "$G_PROBE" --pool 2>&1 >"$G_OUT"' \
+    > "$G_CTRL_ATTR_REVERSED"
+
+G2G1_N="$(_g_unredirected "$G_CTRL_ATTR_SAME" "$G_CTRL_SITE")"
+G2G2_N="$(_g_unredirected "$G_CTRL_ATTR_CLOSER" "$G_CTRL_SITE")"
+G2G3_N="$(_g_unredirected "$G_CTRL_ATTR_REVERSED" "$G_CTRL_SITE")"
+
+assert "G2g1: a redirect belonging to ANOTHER command on the same line does not capture the site (got $G2G1_N unredirected)" \
+    test "$G2G1_N" -eq 1
+assert "G2g2: ... nor does one belonging to another command on the block CLOSER line (got $G2G2_N unredirected)" \
+    test "$G2G2_N" -eq 1
+assert "G2g3: ... and a REVERSED 2>&1 >file still leaks, because fd 2 is aimed at the inherited stdout first (got $G2G3_N unredirected)" \
+    test "$G2G3_N" -eq 1
+
+echo ""
+echo "--- G3/G1: every static-only roster member, over its own source ---"
+
+for _g_i in "${!G_MEMBERS[@]}"; do
+    _g_m="${G_MEMBERS[$_g_i]}"
+    # Empty G_SCAN entry means "scan the member itself" (seven of eight).
+    _g_f="${G_SCAN[$_g_i]:-$_g_m}"
+    # Shown in both descriptions only when it differs, so a RED names the file
+    # a reader must actually open. Basenames, so this stays safe to print.
+    _g_via=""
+    [ "$_g_f" = "$_g_m" ] || _g_via=" -> $_g_f"
+    _g_j="$TMPG/${_g_m}.logical"
+    _d_join_logical "$SCRIPT_DIR/$_g_f" > "$_g_j"
+    _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
+    _g_nsites="$(_g_sites "$_g_j" "$_g_re")"
+    _g_nbare="$(_g_unredirected "$_g_j" "$_g_re")"
+
+    # G3 BEFORE G1, the D4a analogue: G1 asserts a ZERO, and a stale or
+    # typo'd site target would make that zero green forever. This is the arm
+    # that catches a member whose invocation shape MOVED -- the failure mode a
+    # declared (rather than derived) table is exposed to, and the reason a
+    # declared table is acceptable at all.
+    assert "G3 [$_g_m$_g_via]: its declared deadline-capable site is still there (non-vacuity; got $_g_nsites sites)" \
+        test "$_g_nsites" -ge 1
+
+    # Counts and the member BASENAME only -- never a matched source line, and
+    # `test` as the checker for the same reason D1 and D4b use it: assert dumps
+    # a FAILING checker's captured output, so printing the offending line would
+    # BE the leak this section exists to prevent. Both counts are precomputed
+    # into plain variables above, never a $(...) inside the description, so
+    # neither assert can become an instance of what E1 forbids.
+    assert "G1 [$_g_m$_g_via]: every one of its deadline-capable sites diverts stderr off the inherited fd 2 (got $_g_nsites sites, $_g_nbare unredirected)" \
+        test "$_g_nbare" -eq 0
+done
 
 test_summary
