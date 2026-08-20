@@ -50,3 +50,88 @@
 //! What is NOT pinned: the exemplar's surrounding prose, its `ANTI-PATTERN`
 //! sketch (lines 26-29, which are abbreviated by design, not verbatim), and
 //! `units.md`'s paraphrase of the error SHAPE. Those are read, not executed.
+
+/// The best-practices exemplar whose `CANONICAL COPY` block this module pins,
+/// read out of the repo's `examples/` tree at compile time.
+///
+/// `include_str!` (not `fs::read_to_string`) so a moved or renamed exemplar is
+/// a BUILD error rather than a runtime panic — the same choice
+/// `enums_chunk_option_smoke.rs:58-61` makes for the chunk it pins.
+const ANGLE_CROSSINGS_EXEMPLAR: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/best_practices/angle_crossings.ri"
+));
+
+/// The exemplar's `CANONICAL COPY` block transcribes exactly these four
+/// diagnostics, in this order, with this wording.
+///
+/// This table is the ONE place in the module where the expected text is typed
+/// out rather than scraped. It exists so that a silent *deletion* from the
+/// block cannot pass: the scraper alone would happily return three entries and
+/// every downstream test would still be green. Everything else compares
+/// scraped text against the real compiler, never against a literal.
+///
+/// Each row is `(declaration, renderer, message)`. `declaration` keeps the
+/// exemplar's column-alignment padding verbatim (`let   theta`, `arc   :`) —
+/// the scraper does not normalize it away, so a reflow of the block is visible
+/// here rather than silently absorbed.
+const TRANSCRIBED: [(&str, &str, &str); 4] = [
+    (
+        "let   theta : Angle = s / r",
+        "error",
+        "let binding 'theta' declared `Scalar[rad]` but its initializer evaluates to \
+         `Real`; declared type and initializer type must agree",
+    ),
+    (
+        "param theta : Angle = s / r",
+        "error",
+        "parameter 'theta' declared `Scalar[rad]` but its initializer evaluates to \
+         `Real`; declared type and initializer dimension must agree",
+    ),
+    (
+        "let   arc   : Length = r * theta",
+        "error",
+        "let binding 'arc' declared `Scalar[m]` but its initializer evaluates to \
+         `Scalar[m·rad]`; declared type and initializer type must agree",
+    ),
+    ("let   x = 2.5 * 1 rad", "Parse error", "syntax error: rad"),
+];
+
+/// The `CANONICAL COPY` block scrapes to exactly the four measured entries.
+///
+/// This is the module's foundation: every other test consumes the scraper's
+/// output, so if the block's shape drifts (a reflow, a fifth entry, a deleted
+/// one) it must surface HERE, loudly, rather than as a quietly shrinking set
+/// of downstream assertions.
+#[test]
+fn canonical_copy_block_yields_the_four_transcribed_diagnostics() {
+    let entries = canonical_copy_entries_from(ANGLE_CROSSINGS_EXEMPLAR);
+
+    assert_eq!(
+        entries.len(),
+        TRANSCRIBED.len(),
+        "the CANONICAL COPY block in examples/best_practices/angle_crossings.ri must \
+         transcribe exactly {} diagnostics; scraped {}: {:#?}. If a diagnostic was \
+         genuinely added or removed, update TRANSCRIBED here and add its fixture to \
+         `fixture_for` in the same diff.",
+        TRANSCRIBED.len(),
+        entries.len(),
+        entries
+    );
+
+    for (index, (declaration, renderer, message)) in TRANSCRIBED.iter().enumerate() {
+        let entry = &entries[index];
+        assert_eq!(
+            entry.declaration, *declaration,
+            "CANONICAL COPY entry {index}: declaration text drifted"
+        );
+        assert_eq!(
+            entry.renderer, *renderer,
+            "CANONICAL COPY entry {index}: renderer prefix drifted"
+        );
+        assert_eq!(
+            entry.message, *message,
+            "CANONICAL COPY entry {index}: transcribed message drifted"
+        );
+    }
+}
