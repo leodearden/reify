@@ -76,6 +76,67 @@ plan_narrow_active() {
     fi
 }
 
+# plan_is_narrowing_axis_line <line>
+#
+# Returns 0 iff <line> sits on the NARROWING AXIS — the set of plan lines whose
+# crate selector is substituted from verify.sh's $AFFECTED_ALL_FLAGS, i.e. the
+# only lines that branch-diff narrowing (or REIFY_AFFECTED_CRATES_OVERRIDE) can
+# move. Returns non-zero for every other line.
+#
+# THE NARROWING AXIS IS EXACTLY THREE verify.sh CONSTRUCTION SITES (#6391):
+#   verify.sh:2133 — the DEBUG nextest pass (via emit_nextest_pass, rel="")
+#   verify.sh:2414 — `cargo check $AFFECTED_ALL_FLAGS --tests` (typecheck action)
+#   verify.sh:2563 — `cargo clippy $AFFECTED_ALL_FLAGS --all-targets`
+# Each emits `--workspace` when NARROW_ACTIVE=0 and ` -p <crate>...` when it is 1,
+# so BOTH shapes are on-axis; "no ` -p ` on the axis" is what proves no narrowing.
+#
+# EVERY OTHER ` -p `-bearing plan line is a fixed-crate or independently-scoped
+# axis that this function must classify as OFF-axis:
+#   - the release-sensitivity nextest pass (verify.sh:2098-2128) — scoped by
+#     scripts/release-sensitive-crates.txt, and deliberately NOT narrowed
+#     ("NARROW_ACTIVE is intentionally not applied to the release pass");
+#   - the fixed `-p reify-gui --features gui` compile-check and nextest pass;
+#   - the fixed `cargo build --release -p reify-audit` / `-p reify-cli` pre-builds.
+# Conflating those with a narrowing leak is exactly the defect this function
+# retires: a blanket whole-plan `grep -qE " -p <crate>"` could not tell
+# "appeared via narrowing" from "appeared at all" (it stalled task 5166 in
+# infra-hold 2026-07-20 -> 2026-08-20).
+#
+# Classification is therefore two flag exclusions over a cargo-subcommand
+# allowlist: ` --release` excludes the release pass AND both release pre-builds;
+# `--features gui` excludes both fixed gui-feature lines. `cargo build` is
+# deliberately absent from the allowlist, so the pre-builds are excluded twice
+# over.
+#
+# This function encodes a MODEL of verify.sh, so it can go stale. The BEHAVIOURAL
+# drift guard is tests/infra/test_verify_scope.sh Scenario MG-B5-control, which
+# captures a real narrowing-ACTIVE plan and fails if the override's crates ever
+# reach a line this classifier does not recognise as on-axis. Do not rely on this
+# comment alone to keep the model true.
+#
+# Fork-free — pure bash `case` on a single argument (no pipe, no subshell, no
+# external grep), preserving the esc-4574-42 rationale documented above.
+plan_is_narrowing_axis_line() {
+    local _line="$1"
+    # 1. Comment and blank lines are never commands.
+    case "$_line" in
+        '#'* | '') return 1 ;;
+    esac
+    # 2/3. Off-axis flag exclusions (release-sensitivity + fixed gui-feature axes).
+    case "$_line" in
+        *' --release'*)    return 1 ;;
+        *'--features gui'*) return 1 ;;
+    esac
+    # 4. Narrowable cargo subcommands (the three AFFECTED_ALL_FLAGS sites, plus
+    #    emit_nextest_pass's NEXTEST=0 `cargo test` fallback twin).
+    case "$_line" in
+        *'cargo clippy '* | *'cargo check '* | *'cargo test '* | *'cargo nextest run '*)
+            return 0 ;;
+    esac
+    # 5. Everything else (non-cargo tool lines, cargo build, npm blocks, ...).
+    return 1
+}
+
 # capture_print_plan <out_var> <max_attempts> <cmd...>
 #
 # Runs <cmd...> up to <max_attempts> times until plan_capture_complete
