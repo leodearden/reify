@@ -79,6 +79,26 @@ source "$SCRIPT_DIR/test_helpers.sh"
 SP='@@REIFY_SLOT_'
 SENTINEL="${SP}TIMEOUT@@"
 
+# dark-factory's OTHER slot anchor, the per-wrapper deadline line, as a POSIX
+# ERE. Transcribed ONCE, here, because two sections read it: A6d (synthetic,
+# over the rules run_all.sh actually applies) and Section H2/H3 (behavioural,
+# over real re-emitted output).
+#
+# TRANSCRIPTION of the live `_SLOT_ACQUIRE_DEADLINE_RE` in
+# orchestrator/src/orchestrator/verify_classify.py, with two deliberate
+# spelling differences, both verified to preserve match semantics over all four
+# grounded shapes (bare, indented, `ERROR: `-prefixed, `within unlimiteds`):
+# `[[:blank:]]*` for `^[ \t]*` (GNU grep -E does not honour `\t` inside a
+# bracket expression -- the same trap Section D's D_ANCHOR records), and
+# `([^[:alnum:]]|$)` for the trailing `\b`, which is if anything LOOSER, the
+# safe direction for an assertion that a count is ZERO.
+#
+# CROSS-REPO: a transcription, never the source of truth. If either side moves
+# -- DF's allowlist growing past three basenames, or a wrapper's message
+# changing -- this anchor AND run_all.sh's $_RA_SLOT_BASENAME_SANITIZE must
+# both be re-verified against verify_classify.py.
+H_DF_ANCHOR='^[[:blank:]]*(ERROR: )?(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock)\.sh: failed to acquire .{1,40}? within [^[:space:]]+s([^[:alnum:]]|$)'
+
 _TMPDIRS=()
 _HOLDERS=()
 cleanup() {
@@ -276,21 +296,98 @@ assert "A5b: WAIT=unlimited emits NO sentinel (the deadline branch is unreachabl
     _lacks_text "$A5_ERR" "$SENTINEL"
 
 echo ""
-echo "--- A6: the sentinel survives run_all.sh's clock sanitizer (drift guard) ---"
+echo "--- A6: what run_all.sh's re-emission sanitizer does to this family (drift guard) ---"
 
-# EXTRACTED from run_all.sh, never hardcoded: that is what makes this a real
-# guard. Survival is true today only because _RA_CLOCK_SANITIZE is PREFIX-scoped
-# to `@@REIFY_CLOCK_`; broadening it to `s/@@REIFY_/.../` later would silently
-# neuter the cross-repo seam, and turns this assertion RED instead.
+# DERIVED from run_all.sh, never hardcoded -- that is what makes this a guard
+# rather than a restatement. It reads _ra_emit_sanitized's BODY to recover the
+# ORDERED list of rule VARIABLE NAMES the `sed -e "$..." -e "$..."` chain
+# actually applies, then resolves each name to its own `^<NAME>='...'`
+# definition. Keying off the parsed chain (not a hardcoded name, and not a
+# hardcoded count) is the whole point: a FOURTH sibling rule added tomorrow is
+# picked up automatically and cannot bypass this guard.
+#
+# WHY THAT MATTERS, historically: this assertion used to extract exactly one
+# name, _RA_CLOCK_SANITIZE, and assert the sentinel survived it. Its comment
+# warned only about BROADENING that one rule to `s/@@REIFY_/.../`. Task 6389
+# then added two SIBLING rules (_RA_SLOT_SANITIZE, _RA_SLOT_BASENAME_SANITIZE),
+# which walked straight past the guard: A6 would have gone on asserting "the
+# sentinel survives" while _ra_emit_sanitized no longer let it. A6 is the only
+# thing in this repo that reads the sanitizer out of source, so a false green
+# here is silent.
+#
+# THE POST-CHANGE TRUTH about the cross-repo seam, which A6 no longer states
+# and must not be read as stating: survival of run_all's OWN pool-wait sentinel
+# is guaranteed by FD-2 ROUTING -- the pool worker writes to the inherited
+# parent fd 2, so it never enters this re-emission path at all -- and NOT by
+# the sanitizer's prefix scope. That is pinned behaviourally, on real run_all
+# output, by C1/C2/C5. A6 now pins something narrower and still worth pinning:
+# exactly WHICH rules run, and what each of them does to this family.
+A6_FN_BODY="$(sed -n '/^_ra_emit_sanitized() {$/,/^}$/p' "$RUN_ALL")"
+A6_RULE_NAMES=()
+while IFS= read -r _a6_n; do
+    [ -n "$_a6_n" ] || continue
+    A6_RULE_NAMES+=("$_a6_n")
+done < <(printf '%s\n' "$A6_FN_BODY" \
+    | grep -oE -- '-e "\$[A-Za-z_][A-Za-z0-9_]*"' \
+    | sed 's/^-e "\$//; s/"$//' || true)
+
+# Resolve each parsed NAME to its definition. A name that resolves to nothing
+# is dropped here and shows up as an arity mismatch in A6a -- which is exactly
+# how an unwired or renamed rule is caught.
+A6_EXPRS=()
+for _a6_n in "${A6_RULE_NAMES[@]+"${A6_RULE_NAMES[@]}"}"; do
+    _a6_e="$(sed -n "s/^${_a6_n}='\(.*\)'\$/\1/p" "$RUN_ALL" | head -1)"
+    [ -n "$_a6_e" ] || continue
+    A6_EXPRS+=("$_a6_e")
+done
+A6_N_NAMES="${#A6_RULE_NAMES[@]}"
+A6_N_EXPRS="${#A6_EXPRS[@]}"
+
+A6_SED_ARGS=()
+for _a6_e in "${A6_EXPRS[@]+"${A6_EXPRS[@]}"}"; do A6_SED_ARGS+=(-e "$_a6_e"); done
+# Identity fallback so a derivation failure surfaces as A6a's RED rather than
+# as a sed usage error that aborts the suite.
+[ "$A6_N_EXPRS" -gt 0 ] || A6_SED_ARGS=(-e 's/^//')
+
+_a6_arity_ok() {  # <resolved> <parsed> <minimum>
+    [ "$1" -eq "$2" ] && [ "$1" -ge "$3" ]
+}
+
+assert "A6a: every rule _ra_emit_sanitized applies resolved to a definition, and at least the three expected are wired (parsed $A6_N_NAMES, resolved $A6_N_EXPRS)" \
+    _a6_arity_ok "$A6_N_EXPRS" "$A6_N_NAMES" 3
+
+# A6b, PRESERVED VERBATIM IN INTENT: the CLOCK rule alone, extracted by its
+# exact name, still leaves this family untouched at column 0. It is what keeps
+# _RA_CLOCK_SANITIZE prefix-scoped to `@@REIFY_CLOCK_`, and it still turns RED
+# on the `s/@@REIFY_/.../` broadening its own rationale block warns about --
+# a broadening that would collapse three separately-scoped, separately-
+# documented rules into one and silently take the basename half with it.
 RA_SANITIZE_EXPR="$(sed -n "s/^_RA_CLOCK_SANITIZE='\(.*\)'\$/\1/p" "$RUN_ALL" | head -1)"
 A6_OUT="$TMPA/a6.out"
 printf '%sTIMEOUT@@ reason=run_all_pool_starvation slots=1 waited=3 disposition=soft lock=/tmp/x.lock\n' "$SP" \
     | sed "${RA_SANITIZE_EXPR:-s/^//}" > "$A6_OUT"
 
-assert "A6a: run_all.sh's clock-sanitizer expression was extracted (non-vacuity)" \
-    test -n "$RA_SANITIZE_EXPR"
-assert "A6b: the sentinel survives that sanitizer unrewritten, still at column 0" \
+assert "A6b: the CLOCK rule alone leaves the sentinel unrewritten, still at column 0 (its prefix scope)" \
     _has_line "$A6_OUT" "^${SP}TIMEOUT@@ "
+
+# A6c/A6d: the NEW contract, over the FULL derived chain -- both halves of
+# dark-factory's slot classification are neutralized by the rules run_all
+# actually applies. Synthetic and cheap; Section H proves the same properties
+# behaviourally, on real re-emitted output, which is what makes these two a
+# fast drift guard rather than the primary evidence.
+A6_FULL_OUT="$TMPA/a6-full.out"
+printf '%sTIMEOUT@@ reason=run_all_pool_starvation slots=1 waited=3 disposition=soft lock=/tmp/x.lock\n' "$SP" \
+    | sed "${A6_SED_ARGS[@]}" > "$A6_FULL_OUT"
+
+A6_DEADLINE_OUT="$TMPA/a6-deadline.out"
+printf 'lib_test_semaphore.sh: failed to acquire test slot within 0s (LOCK=/tmp/l, N=1)\n' \
+    | sed "${A6_SED_ARGS[@]}" > "$A6_DEADLINE_OUT"
+A6D_N="$(grep -acE -- "$H_DF_ANCHOR" "$A6_DEADLINE_OUT" || true)"
+
+assert "A6c: the sentinel piped through the FULL applied chain IS rewritten to the quoted form" \
+    _has_text "$A6_FULL_OUT" "@@REIFY_QUOTED_SLOT_TIMEOUT@@"
+assert "A6d: a basename deadline line through the same chain no longer matches DF's anchor (got $A6D_N)" \
+    test "$A6D_N" -eq 0
 
 echo ""
 echo "=== B: each wrapper declares its OWN timeout reason, additively ==="
@@ -3268,18 +3365,10 @@ assert "H1b: ZERO re-emitted lines still match DF's live sentinel anchor (got $H
 echo ""
 echo "--- H2: the BASENAME deadline half, DF's other slot anchor ---"
 
-# POSIX-ERE TRANSCRIPTION of dark-factory's live `_SLOT_ACQUIRE_DEADLINE_RE`
-# (orchestrator/src/orchestrator/verify_classify.py). Two deliberate spelling
-# differences, both verified to preserve match semantics over the four grounded
-# shapes above: `[[:blank:]]*` for `^[ \t]*` (GNU grep -E does not honour `\t`
-# inside a bracket expression -- the same trap Section D's D_ANCHOR records),
-# and `([^[:alnum:]]|$)` for the trailing `\b`, which is if anything LOOSER --
-# the safe direction for an assertion that a count is ZERO.
-# CROSS-REPO: this is a transcription, not the source of truth. If either side
-# moves -- DF's allowlist growing past three basenames, or a wrapper's message
-# changing -- both this anchor and run_all.sh's $_RA_SLOT_BASENAME_SANITIZE must
-# be re-verified against verify_classify.py.
-H_DF_ANCHOR='^[[:blank:]]*(ERROR: )?(lib_test_semaphore|cargo-test-occt-gated|lib_lane_x_flock)\.sh: failed to acquire .{1,40}? within [^[:space:]]+s([^[:alnum:]]|$)'
+# $H_DF_ANCHOR is dark-factory's live basename-deadline anchor, transcribed
+# ONCE near the top of this file (beside $SP) because A6d needs it too --
+# duplicating a cross-repo regex is precisely the drift this suite exists to
+# catch.
 
 H2_LIVE_N="$(grep -acE -- "$H_DF_ANCHOR" "$H_OUT" || true)"
 
