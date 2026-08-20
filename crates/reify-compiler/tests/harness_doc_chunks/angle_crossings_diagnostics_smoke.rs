@@ -97,6 +97,138 @@ const TRANSCRIBED: [(&str, &str, &str); 4] = [
     ("let   x = 2.5 * 1 rad", "Parse error", "syntax error: rad"),
 ];
 
+/// Marker line that opens the block this module scrapes.
+const CANONICAL_COPY_MARKER: &str = "CANONICAL COPY:";
+
+/// Column at which a *declaration* line sits inside the comment body (i.e.
+/// after the leading `//` has been stripped): `//     let   theta : ...`.
+const DECLARATION_INDENT: usize = 5;
+
+/// Column at which the `-> ` that opens a rendered diagnostic sits:
+/// `//         -> error: ...`.
+const DIAGNOSTIC_INDENT: usize = 9;
+
+/// Column at which a wrapped continuation of a rendered diagnostic sits:
+/// `//            initializer evaluates to ...`.
+const CONTINUATION_INDENT: usize = 12;
+
+/// Token that introduces a rendered diagnostic under its declaration.
+const DIAGNOSTIC_ARROW: &str = "-> ";
+
+/// One `(declaration, rendered diagnostic)` pair transcribed in the exemplar's
+/// `CANONICAL COPY` block, with the renderer prefix already split off.
+///
+/// `declaration` keeps the exemplar's column-alignment padding verbatim;
+/// `message` has the block's cosmetic line-wrapping normalized away (see
+/// [`canonical_copy_entries_from`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TranscribedDiagnostic {
+    declaration: String,
+    renderer: String,
+    message: String,
+}
+
+/// Scrape the `CANONICAL COPY` block out of `text`.
+///
+/// The block's shape (measured at `examples/best_practices/angle_crossings.ri`
+/// lines 34-53) is regular, and this reader is deliberately strict about it so
+/// that a reflow is *visible* rather than silently absorbed:
+///
+/// - the block opens at the line whose comment body starts with
+///   [`CANONICAL_COPY_MARKER`];
+/// - a body indented [`DECLARATION_INDENT`] opens a new entry's declaration;
+/// - a body indented [`DIAGNOSTIC_INDENT`] and beginning [`DIAGNOSTIC_ARROW`]
+///   opens that entry's rendered diagnostic;
+/// - a body indented [`CONTINUATION_INDENT`] continues it;
+/// - the block ends at the first blank comment line *after* at least one entry
+///   has been collected — the marker paragraph itself is followed by a blank
+///   comment line, which must not terminate the scan — or at the first line
+///   that is not a `//` comment at all.
+///
+/// Continuation fragments are joined with a single space and internal
+/// whitespace runs are collapsed, so the comment's wrap points (cosmetic)
+/// vanish while the text (not cosmetic) survives. Each rendered diagnostic is
+/// then split once on the first `": "` into its renderer prefix (`error`,
+/// `Parse error`) and the message body.
+fn canonical_copy_entries_from(text: &str) -> Vec<TranscribedDiagnostic> {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|line| {
+        line.strip_prefix("//")
+            .is_some_and(|body| body.trim_start().starts_with(CANONICAL_COPY_MARKER))
+    }) else {
+        return Vec::new();
+    };
+
+    let mut entries: Vec<TranscribedDiagnostic> = Vec::new();
+    // The entry under construction: its declaration, plus the rendered
+    // diagnostic's fragments in wrap order.
+    let mut current: Option<(String, Vec<String>)> = None;
+
+    for line in &lines[start + 1..] {
+        let Some(body) = line.strip_prefix("//") else {
+            break;
+        };
+        let content = body.trim();
+        if content.is_empty() {
+            // Blank comment line. Before the first entry this is the gap
+            // between the marker paragraph and the block; after it, the end.
+            if entries.is_empty() && current.is_none() {
+                continue;
+            }
+            break;
+        }
+        let indent = body.len() - body.trim_start().len();
+
+        if indent == DECLARATION_INDENT && !content.starts_with(DIAGNOSTIC_ARROW) {
+            flush(&mut current, &mut entries);
+            current = Some((content.to_string(), Vec::new()));
+        } else if indent == DIAGNOSTIC_INDENT {
+            if let Some(rendered) = content.strip_prefix(DIAGNOSTIC_ARROW) {
+                if let Some((_, fragments)) = current.as_mut() {
+                    fragments.push(rendered.to_string());
+                }
+            }
+        } else if indent == CONTINUATION_INDENT {
+            if let Some((_, fragments)) = current.as_mut() {
+                fragments.push(content.to_string());
+            }
+        }
+        // Any other indent is prose inside the marker paragraph; ignored.
+    }
+    flush(&mut current, &mut entries);
+    entries
+}
+
+/// Finish the entry under construction (if any) and append it to `entries`.
+///
+/// Splitting the rendered diagnostic here — rather than at each fragment —
+/// is what lets the renderer prefix survive a wrap: `error: ` is only ever
+/// recoverable from the *joined* text.
+fn flush(current: &mut Option<(String, Vec<String>)>, entries: &mut Vec<TranscribedDiagnostic>) {
+    let Some((declaration, fragments)) = current.take() else {
+        return;
+    };
+    let rendered = fragments.join(" ");
+    let rendered = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (renderer, message) = match rendered.split_once(": ") {
+        Some(split) => split,
+        // No renderer prefix at all. Recorded rather than dropped, so the
+        // step-1 triple assertion reports it against the expected wording
+        // instead of the entry vanishing from the count.
+        None => ("", rendered.as_str()),
+    };
+    entries.push(TranscribedDiagnostic {
+        declaration,
+        renderer: renderer.to_string(),
+        message: message.to_string(),
+    });
+}
+
+/// The four entries of the real exemplar's `CANONICAL COPY` block.
+fn canonical_copy_entries() -> Vec<TranscribedDiagnostic> {
+    canonical_copy_entries_from(ANGLE_CROSSINGS_EXEMPLAR)
+}
+
 /// The `CANONICAL COPY` block scrapes to exactly the four measured entries.
 ///
 /// This is the module's foundation: every other test consumes the scraper's
