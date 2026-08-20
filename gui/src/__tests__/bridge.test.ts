@@ -51,7 +51,14 @@ import {
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
 import { open, ask as pluginAsk } from '@tauri-apps/plugin-dialog';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as bridgeAll from '../bridge';
+import {
+  readEventChannelInventory,
+  parseEventChannelRows,
+  classifyEventChannelRows,
+} from './eventChannelConsumerContract';
 
 const mockOpen = vi.mocked(open);
 const mockPluginAsk = vi.mocked(pluginAsk);
@@ -550,6 +557,91 @@ describe('bridge event listeners', () => {
     await onKernelStatus(callback);
 
     expect(callback).toHaveBeenCalledWith(sample);
+  });
+});
+
+/**
+ * bridge.ts source, read from disk so the pin below can assert the absence of a
+ * `diagnostics` SUBSCRIPTION rather than the absence of one export name.
+ * Precedent for reading a target's source in a guard: `bridgeMockCoverage.test.ts`.
+ */
+const BRIDGE_SOURCE = readFileSync(join(__dirname, '..', 'bridge.ts'), 'utf-8');
+
+/**
+ * Every place bridge.ts names `channel` in a registration position, covering both
+ * shapes it uses today: the direct `listen<T>('<channel>', ...)` call (~30 sites)
+ * and the `['<channel>', mapper]` tuple entries `subscribeToClaudeEvents` feeds to
+ * a loop over `listen(name, mapper)` (bridge.ts:457) — a bare `listen('` match
+ * would miss the second entirely. Requiring a `(` or `[` immediately before the
+ * quote keeps prose and identifiers out.
+ */
+function channelRegistrationsIn(source: string, channel: string): string[] {
+  const pattern = new RegExp(`[([]\\s*(['"\`])${channel}\\1`, 'g');
+  return [...source.matchAll(pattern)].map((m) => m[0]);
+}
+
+/**
+ * Code↔doc pin for the deliberately consumer-less `diagnostics` channel (task 6227).
+ *
+ * NOT redundant with the task-6236 guard. `eventChannelConsumerCoverage.test.ts`
+ * check (b) (`unknownConsumers`) enforces only doc→code: a consumer NAMED in the
+ * Consumer column must be a real runtime export of bridge.ts. Nothing enforces
+ * code→doc. After 6227 the `diagnostics` row asserts an ABSENCE (`*(none)*`) and
+ * that suite's `DELIBERATELY_CONSUMERLESS['diagnostics']` entry records why — but
+ * re-adding an `onDiagnostics` subscriber to bridge.ts would silently falsify both
+ * while every existing check stayed green: an EXTRA export is never compared
+ * against the doc, `uncoveredRows` / `staleConsumerlessEntries` read only rows, and
+ * `bridgeMockCoverage`'s `notExports` looks the other way (factory key → export).
+ *
+ * The ROW itself must stay: `main.rs::TauriNotificationSink` still emits
+ * `diagnostics` for LSP `textDocument/publishDiagnostics`, so the channel is live
+ * and `scripts/check_event_inventory.sh` — which keys on column 1 only — would
+ * report an orphan channel if the row were deleted. Only its Consumer cell moved.
+ *
+ * Resolved through the harness's own parsers rather than a hardcoded fixture, so
+ * the assertion tracks the real docs/gui-event-channels.md and cannot pass against
+ * a stale copy of it.
+ *
+ * The code side asserts the CHANNEL, not the export NAME: a subscriber re-added
+ * under any other name (`onLspDiagnostics`), or buried inside an already-exported
+ * helper, would satisfy an `Object.keys` check while still contradicting
+ * `*(none)*`. `Object.keys(bridgeAll)` is kept only as a cheaper secondary signal
+ * naming the exact export this row lost.
+ */
+describe('diagnostics channel is deliberately consumer-less', () => {
+  it('the §1 doc row asserts no consumer and bridge.ts subscribes to no `diagnostics` channel', () => {
+    const row = classifyEventChannelRows(parseEventChannelRows(readEventChannelInventory())).find(
+      (r) => r.channel === 'diagnostics',
+    );
+
+    // Non-vacuity: a find() that silently returned undefined would make the
+    // kind assertion unreachable rather than failing.
+    expect(row, 'no `diagnostics` row in docs/gui-event-channels.md §1/§2').toBeDefined();
+    expect(
+      row!.kind,
+      'docs/gui-event-channels.md `diagnostics` Consumer cell must be `*(none)*`',
+    ).toBe('explicit-none');
+
+    // Non-vacuity for the source matcher, one live channel per registration
+    // shape: a mis-typed pattern that matched nothing would make the assertion
+    // below vacuously green.
+    expect(
+      channelRegistrationsIn(BRIDGE_SOURCE, 'file-changed'),
+      'channel matcher found no direct `listen<T>(...)` registration in bridge.ts',
+    ).not.toStrictEqual([]);
+    expect(
+      channelRegistrationsIn(BRIDGE_SOURCE, 'claude-text-delta'),
+      'channel matcher found no tuple-entry registration in bridge.ts',
+    ).not.toStrictEqual([]);
+
+    expect(
+      channelRegistrationsIn(BRIDGE_SOURCE, 'diagnostics'),
+      "bridge.ts must not subscribe to the 'diagnostics' channel while the doc row says `*(none)*`",
+    ).toStrictEqual([]);
+    expect(
+      Object.keys(bridgeAll),
+      'bridge.ts must not re-grow an `onDiagnostics` export while the doc row says `*(none)*`',
+    ).not.toContain('onDiagnostics');
   });
 });
 
