@@ -121,6 +121,29 @@ const CONTINUATION_INDENT: usize = 12;
 /// Token that introduces a rendered diagnostic under its declaration.
 const DIAGNOSTIC_ARROW: &str = "-> ";
 
+/// The renderer prefix the exemplar shows on its parse-layer transcription.
+///
+/// # This prefix is CLI presentation, not parser output
+///
+/// The split matters, because a reader of the exemplar sees one string where
+/// the codebase has two producers:
+///
+/// - the **parser** produces the bare message — `syntax error: rad` — at
+///   `crates/reify-syntax/src/ts_parser.rs:511` and its sibling ERROR arms
+///   (`:2141`, `:2175`, `:2289`), all `format!("syntax error: {}", ...)`;
+/// - the **CLI** adds `Parse error: ` when it prints, at
+///   `crates/reify-cli/src/main.rs:195` (and the same `eprintln!` at `:254`);
+/// - `reify-test-support`'s `parse_errors_as_diagnostics`
+///   (`helpers.rs:261-270`) forwards `e.message` verbatim with **no** prefix,
+///   so nothing at the library layer ever emits it either.
+///
+/// A test in the `reify-compiler` crate cannot invoke the CLI, so the prefix is
+/// pinned here as a constant and reconstructed onto the live parser message;
+/// that the CLI really prints it is pinned end-to-end at
+/// `crates/reify-cli/tests/harness_cli/cli_check.rs:51`. Between the two, a
+/// rename on either side is caught.
+const CLI_PARSE_ERROR_PREFIX: &str = "Parse error";
+
 /// One `(declaration, rendered diagnostic)` pair transcribed in the exemplar's
 /// `CANONICAL COPY` block, with the renderer prefix already split off.
 ///
@@ -338,6 +361,13 @@ structure S {
   let arc : Length = r * theta
 }";
 
+/// The spaced-unit-literal case. Unlike the other three this is rejected at the
+/// PARSE layer, so it never reaches the type checker at all.
+const SPACED_UNIT_LITERAL_FIXTURE: &str = "\
+structure S {
+  let x = 2.5 * 1 rad
+}";
+
 /// The minimal source that provokes the diagnostic transcribed for
 /// `declaration`.
 ///
@@ -365,6 +395,7 @@ fn fixture_for(declaration: &str) -> &'static str {
         "let theta : Angle = s / r" => RATIO_LET_FIXTURE,
         "param theta : Angle = s / r" => RATIO_PARAM_FIXTURE,
         "let arc : Length = r * theta" => ARC_LENGTH_FIXTURE,
+        "let x = 2.5 * 1 rad" => SPACED_UNIT_LITERAL_FIXTURE,
         other => panic!(
             "the CANONICAL COPY block in examples/best_practices/angle_crossings.ri \
              transcribes a diagnostic for `{other}`, but this module has no fixture that \
@@ -489,7 +520,10 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
     // must reconstruct, byte for byte, the line the exemplar actually shows.
     // This is what justifies transcribing a CLI-rendered form in a file whose
     // gate runs at the library layer.
-    let rendered = format!("{DIAGNOSTIC_ARROW}{CLI_PARSE_ERROR_PREFIX}: {}", matched.message);
+    let rendered = format!(
+        "{DIAGNOSTIC_ARROW}{CLI_PARSE_ERROR_PREFIX}: {}",
+        matched.message
+    );
     assert!(
         ANGLE_CROSSINGS_EXEMPLAR.contains(&rendered),
         "the exemplar should transcribe `{rendered}` — the parser's own message under \
