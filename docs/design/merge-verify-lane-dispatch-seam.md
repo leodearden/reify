@@ -13,16 +13,17 @@ Sibling documents: `warm-lane-ref-visibility-seam.md`,
 This upgrades esc-5363-5's hypothesis to a code-level finding, traced read-only
 through dark-factory.
 
-`<worktree_base>/<lane>.lock` is **one inode** — `verify_cancel.py:373-387`
-`lane_lock_path()` is `lane_dir.with_name(lane_dir.name + '.lock')`, i.e. a
-*sibling* of the lane directory. Three dark-factory call sites acquire it, on
+`<worktree_base>/<lane>.lock` is **one inode** — `verify_cancel.py`'s
+`def lane_lock_path(lane_dir: Path) -> Path:` returns
+`lane_dir.with_name(lane_dir.name + '.lock')`, i.e. a *sibling* of the lane
+directory. Three dark-factory call sites acquire it, on
 three different waits:
 
 | Acquirer | Wait | On timeout |
 |---|---|---|
-| `GitOps.merge_verify_lease` (`git_ops.py:2299-2313`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py:484-491` `BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
-| `GitOps.reset_persistent_merge_worktree` (`git_ops.py:9017-9029`) | 30s (`_SEED_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py:371`) | plain `RuntimeError` → `merge_queue.py:13846-13864` generic handler → `MergeOutcome('blocked', 'Verification error: Timed out after 30s...')` → `workflow.py:8417-8444` `category='merge_error'` → `_mark_blocked` → **escalation. Terminal, never requeued** |
-| `_seed_warm_lane` (`git_ops.py:3495-3505`) | `flock -x -w 30 -E 124` | same 30s constant |
+| `GitOps.merge_verify_lease` (`git_ops.py`, `_MERGE_VERIFY_LEASE_WAIT_SECS`) | 300s, then **holds for the whole verify** (1–2h) | `MergeVerifyLeaseContended` → `workflow_types.py` `MergeVerifyLeaseContended: BlockDisposition(requeue_kind=REQUEUE, counts_against_requeue_cap=False)` → **retryable**, no escalation |
+| `GitOps.reset_persistent_merge_worktree` (`git_ops.py`, `async def reset_persistent_merge_worktree(`) | 30s (`_SEED_WARM_LANE_LOCK_WAIT_SECS`, `git_ops.py`) | plain `RuntimeError` → `merge_queue.py`'s generic `f'Verification error: {exc}'` handler in `_run_inflight_verify` → `MergeOutcome('blocked', 'Verification error: Timed out after 30s...')` → `workflow.py` `category = 'merge_error'` → `_mark_blocked` → **escalation. Terminal, never requeued** |
+| `_seed_warm_lane` (`git_ops.py`, `async def _seed_warm_lane(`) | `flock -x -w 30 -E 124` | same 30s constant |
 
 **The defect is that asymmetry on one inode**, not speculation about load: a
 lease held for ~2h starves a 30s waiter, and the two paths disagree about what a
@@ -43,10 +44,12 @@ Speculative dispatch is **not** required to reproduce the failure, and
 provisioning more verify lanes does **not** fix it.
 
 `git.merge_spec_warm_lane_pool: true` has been live since task 4941
-(`dark-factory-orchestrator.yaml:627`). With it, `merge_liveness.py:697-708`
-routes SPECULATIVE items to `_spec-N` lanes — **not** to `_merge-verify`. Only
-the serial-head path (`merge_liveness.py:712-720`) and the periodic safety valve
-touch `_merge-verify` at all.
+(`dark-factory-orchestrator.yaml:627`). With it, `merge_liveness.py`'s
+`lane_path, warm = await git_ops.acquire_spec_lane(merge_commit)` routes
+SPECULATIVE items to `_spec-N` lanes — **not** to `_merge-verify`. Only the
+serial-head path (`merge_liveness.py`, `await
+git_ops.reset_persistent_merge_worktree(merge_commit)`) and the periodic
+safety valve touch `_merge-verify` at all.
 
 So the candidate remediation "provision verify lanes to match
 `speculation.depth`" is already live and did not prevent this. Recorded here so
