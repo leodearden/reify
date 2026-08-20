@@ -268,4 +268,204 @@ assert "C6a: empty listing => no output, exit 0" \
 assert "C6b: whitespace-and-blank-lines-only listing => no output, exit 0" \
     _expect_stale_rc0 999 "$_ALIVE_NONE" "$(printf '\n   \n\t\n\n')"
 
+# ---------------------------------------------------------------------------
+# Block D — govtest_reap_stale: the ACTUATOR.
+#
+# Driven against a STUBBED `systemctl` placed first on PATH, so the
+# assertions observe exactly which units the sweep would stop without ever
+# contacting the real systemd user session. Each scenario runs in a CHILD
+# shell (invoked via "$BASH", an absolute path, so the PATH restriction
+# cannot break the interpreter lookup itself) which keeps the PATH override
+# from leaking into the rest of this file.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Block D: govtest_reap_stale actuator (stubbed systemctl) ---"
+
+_STUB_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/govtest-reaper.XXXXXX")"
+# Own EXIT trap — this file installs no other, so no chaining is needed.
+trap 'rm -rf "$_STUB_ROOT"' EXIT
+
+mkdir -p "$_STUB_ROOT/bin-ok" "$_STUB_ROOT/bin-fail" "$_STUB_ROOT/bin-none"
+
+_REAP_LOG="$_STUB_ROOT/stub.log"
+_REAP_LISTING="$_STUB_ROOT/listing.txt"
+_REAP_STDERR="$_STUB_ROOT/driver.err"
+_REAP_DRIVER="$_STUB_ROOT/driver.sh"
+_REAP_ALIVE="$_ALIVE_NONE"
+_REAP_ADD_SELF=0
+_REAP_RC=0
+
+# The OK stub: record the full argv, and answer `list-units` from the fixture
+# file. Shebang is /bin/bash (absolute), NOT /usr/bin/env bash, because the
+# systemctl-absent scenario restricts PATH to an empty dir — `env bash` would
+# then fail to resolve the interpreter and the stub would misreport.
+cat > "$_STUB_ROOT/bin-ok/systemctl" <<'STUBEOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GOVTEST_STUB_LOG"
+for _a in "$@"; do
+    if [ "$_a" = "list-units" ]; then
+        [ -s "${GOVTEST_STUB_LISTING_FILE:-/nonexistent}" ] && cat "$GOVTEST_STUB_LISTING_FILE"
+        exit 0
+    fi
+done
+exit 0
+STUBEOF
+
+# The FAILING stub: every invocation exits non-zero, standing in for a broken
+# or unavailable systemd user session.
+cat > "$_STUB_ROOT/bin-fail/systemctl" <<'STUBEOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GOVTEST_STUB_LOG"
+exit 1
+STUBEOF
+
+chmod +x "$_STUB_ROOT/bin-ok/systemctl" "$_STUB_ROOT/bin-fail/systemctl"
+
+# The driver runs in the child shell under `set -euo pipefail` — the SAME
+# discipline test_cpu_load_governance.sh runs under — so a reaper that lets a
+# failing systemctl escape as a non-zero status is caught here rather than in
+# production as an aborted governance suite.
+cat > "$_REAP_DRIVER" <<'DRIVEREOF'
+#!/bin/bash
+set -euo pipefail
+# shellcheck source=tests/infra/govtest_slice_reaper_lib.sh
+source "$GOVTEST_DRIVER_LIB"
+if [ "${GOVTEST_DRIVER_ADD_SELF:-0}" = "1" ]; then
+    # Append THIS child's own three units to the fixture, so the run has a
+    # chance to (wrongly) reap itself.
+    printf 'reify-govtest%s-agents.slice loaded active active Slice /reify/govtest%s/agents\n' "$$" "$$" >> "$GOVTEST_STUB_LISTING_FILE"
+    printf 'reify-govtest%s-merge.slice  loaded active active Slice /reify/govtest%s/merge\n' "$$" "$$" >> "$GOVTEST_STUB_LISTING_FILE"
+    printf 'reify-govtest%s.slice        loaded active active Slice /reify/govtest%s\n' "$$" "$$" >> "$GOVTEST_STUB_LISTING_FILE"
+fi
+echo "SELF_PID=$$" >&2
+_rc=0
+if [ "$#" -ge 1 ]; then
+    govtest_reap_stale "$1" || _rc=$?
+else
+    govtest_reap_stale || _rc=$?
+fi
+exit "$_rc"
+DRIVEREOF
+chmod +x "$_REAP_DRIVER"
+
+# _stub_reap <bindir> <listing> [self_pid]
+#   Truncate the log, seed the listing fixture, run the driver. Sets _REAP_RC.
+_stub_reap() {
+    local bindir="$1" listing="$2"
+    shift 2
+    : > "$_REAP_LOG"
+    printf '%s\n' "$listing" > "$_REAP_LISTING"
+    _REAP_RC=0
+    GOVTEST_STUB_LOG="$_REAP_LOG" \
+    GOVTEST_STUB_LISTING_FILE="$_REAP_LISTING" \
+    GOVTEST_DRIVER_LIB="$REAPER_LIB" \
+    GOVTEST_DRIVER_ADD_SELF="$_REAP_ADD_SELF" \
+    REIFY_GOVTEST_REAP_FAKE_ALIVE_PIDS="$_REAP_ALIVE" \
+    PATH="$bindir" \
+    "$BASH" "$_REAP_DRIVER" "$@" >/dev/null 2>"$_REAP_STDERR" || _REAP_RC=$?
+    return 0
+}
+
+# Every unit the stub was asked to `stop`, in invocation order.
+_reap_stopped_units() {
+    sed -n 's/^--user stop //p' "$_REAP_LOG" 2>/dev/null || true
+}
+
+# _expect_reap_stops <bindir> <alive> <add_self> <listing> <want> [self_pid]
+_expect_reap_stops() {
+    local bindir="$1" alive="$2" add_self="$3" listing="$4" want="$5"
+    shift 5
+    _REAP_ALIVE="$alive"
+    _REAP_ADD_SELF="$add_self"
+    _stub_reap "$bindir" "$listing" "$@"
+    if [ "$_REAP_RC" -ne 0 ]; then
+        echo "govtest_reap_stale rc=$_REAP_RC, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    local got
+    got="$(_reap_stopped_units)"
+    if [ "$got" != "$want" ]; then
+        printf 'stopped:\n%s\n--- want ---\n%s\n--- full stub log ---\n' "$got" "$want"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+_D_DEAD_ONLY="$(_listing_triple 111)"
+
+assert "D1: dead predecessor => exactly one stop, of the PARENT slice" \
+    _expect_reap_stops "$_STUB_ROOT/bin-ok" "$_ALIVE_NONE" 0 "$_D_DEAD_ONLY" \
+        "reify-govtest111.slice" 999
+
+# D2 exercises the no-argument form, so self_pid defaults to the child's own
+# $$ — and the child injects its OWN three units into the listing first. A
+# reaper that forgot the default (or the self check) would stop its own
+# parent slice out from under the very run doing the sweep.
+_D2_LISTING="$(_listing_triple 111)
+$(_listing_triple 222)
+reify-governed-agents.slice     loaded active active Slice /reify/governed/agents"
+assert "D2: live pid, own pid (via default \$\$) and production slice all skipped; only the dead parent stopped" \
+    _expect_reap_stops "$_STUB_ROOT/bin-ok" "222" 1 "$_D2_LISTING" \
+        "reify-govtest111.slice"
+
+# D3 — the enumeration must be GLOB-SCOPED. The per-user systemd session is
+# shared host-wide, so a sweep that listed every unit and filtered afterwards
+# would have a blast radius bounded only by the name grammar. The glob is the
+# outer of the two belt-and-braces bounds (the grammar re-filter is the
+# inner), matching dark-factory's verify.py:3492/3503 pairing.
+_expect_glob_scoped() {
+    _REAP_ALIVE="$_ALIVE_NONE"
+    _REAP_ADD_SELF=0
+    _stub_reap "$_STUB_ROOT/bin-ok" "$_D_DEAD_ONLY" 999
+    if ! grep -qF -- 'list-units --all --plain --no-legend reify-govtest*.slice' "$_REAP_LOG"; then
+        echo "no glob-scoped list-units invocation in stub log:"
+        cat "$_REAP_LOG" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "D3: enumeration is glob-scoped to reify-govtest*.slice, never the whole session" \
+    _expect_glob_scoped
+
+# D4 — systemctl absent entirely. The governance suite must still run on a
+# host with no systemd user session at all.
+_expect_reap_noop_without_systemctl() {
+    _REAP_ALIVE="$_ALIVE_NONE"
+    _REAP_ADD_SELF=0
+    _stub_reap "$_STUB_ROOT/bin-none" "$_D_DEAD_ONLY" 999
+    if [ "$_REAP_RC" -ne 0 ]; then
+        echo "rc=$_REAP_RC, want 0"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    if [ -s "$_REAP_LOG" ]; then
+        printf 'expected an empty stub log, got:\n'
+        cat "$_REAP_LOG"
+        return 1
+    fi
+    return 0
+}
+assert "D4: systemctl absent from PATH => exit 0, nothing attempted" \
+    _expect_reap_noop_without_systemctl
+
+# D5 — a systemd fault must never change the governance suite's verdict. The
+# sweep runs at the very top of that script under `set -euo pipefail`, so an
+# escaping non-zero status would abort it before a single row ran and be
+# reported as a governance regression.
+_expect_reap_survives_failing_systemctl() {
+    _REAP_ALIVE="$_ALIVE_NONE"
+    _REAP_ADD_SELF=0
+    _stub_reap "$_STUB_ROOT/bin-fail" "$_D_DEAD_ONLY" 999
+    if [ "$_REAP_RC" -ne 0 ]; then
+        echo "rc=$_REAP_RC, want 0 (a failing systemctl must be swallowed)"
+        cat "$_REAP_STDERR" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+assert "D5: systemctl failing every call => still exit 0 (fail-soft)" \
+    _expect_reap_survives_failing_systemctl
+
 test_summary
