@@ -658,10 +658,10 @@ fn accept_variadic_length_args(
             },
         };
         // FIRST error wins — same precedence as `required_length_args`.
-        if let Some(e) = err {
-            if first_err.is_none() {
-                first_err = Some(e);
-            }
+        if let Some(e) = err
+            && first_err.is_none()
+        {
+            first_err = Some(e);
         }
     }
 
