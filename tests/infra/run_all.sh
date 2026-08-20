@@ -475,6 +475,14 @@ _ra_emit_sanitized() {
 # whitespace permitted), so it never matches this script's own indented
 # "  RESULT: FAIL (name)" lines.
 #
+# Sanitized with the SAME rule chain as _ra_emit_sanitized, and for a sharper
+# reason: this region is what verify.sh and dark-factory's merge-gate block
+# reason quote VERBATIM, so a marker token surviving here is quoted straight
+# into a block reason. Applying the rules at both sites is also what keeps the
+# two paths from drifting -- pinned by test_slot_timeout_marker.sh H3 and by
+# test_run_all.sh's T30e for the clock family. The collector's own grep anchors
+# are a SEPARATE contract from the sanitizer and are deliberately untouched.
+#
 # Fail-open: a missing/unreadable captured file, or zero matches, is a
 # silent no-op -- this is pure observability layered on the failure path and
 # must never itself become a new failure source or change any exit code
@@ -487,7 +495,7 @@ _ra_collect_fail_detail() {
     [ -f "$_file" ] || return 0
 
     local _matched
-    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed "$_RA_CLOCK_SANITIZE" || true)"
+    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed -e "$_RA_CLOCK_SANITIZE" -e "$_RA_SLOT_SANITIZE" -e "$_RA_SLOT_BASENAME_SANITIZE" || true)"
     [ -n "$_matched" ] || return 0
 
     local _count
