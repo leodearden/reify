@@ -1728,11 +1728,17 @@ impl Engine {
             // (four entry points; six write-back arms, because `eval` and
             // `eval_cached` each take a mutually exclusive merged-cluster branch
             // through `dispatch_merged_cluster_solve` / `..._cached`, task #5118).
-            // Every one writes the resolved auto into `values` and the snapshot map
-            // as `Determined` and records a cache entry; keep them in sync when
-            // modifying warm Resolution back-prop.  A fifth arm,
-            // `resolve_concurrent_edit`, was removed with `concurrent.rs` in
-            // ffb85f0627 (task ο, #5065).
+            // All six write the resolved auto into `values`, the snapshot map
+            // as `Determined`, and a cache entry.  Two legs are NOT uniform
+            // across the six: `edit_param`/`edit_source` additionally write
+            // `self.param_overrides`, and `eval_cached`/`edit_source` emit no
+            // journal events (the other four do, via `commit_cell_result` or
+            // hand-rolled Started/Completed pairs).  Check all five legs when
+            // modifying warm Resolution back-prop.  A further arm,
+            // `resolve_concurrent_edit` — the fourth member of this roster's
+            // original four-site form, before `edit_source` and the
+            // merged-cluster branches were added — was removed with
+            // `concurrent.rs` in ffb85f0627 (task ο, #5065).
             let mut entity_groups: HashMap<String, (Vec<AutoParam>, HashSet<ValueCellId>)> =
                 HashMap::new();
 
