@@ -698,6 +698,19 @@ if [ -x "$REIFY_AUDIT_BIN" ]; then
     # LD_LIBRARY_PATH="" so sqlite3 uses the system lib, not /opt/reify-deps/lib's
     # newer libsqlite3 (set by verify.sh) which would crash with a header/source
     # version mismatch (esc-4581-87).
+    #
+    # STILL NEEDED, but no longer the primary mechanism (task 5730). verify.sh
+    # now scrubs the loader path structurally: apply_env() captures the
+    # pre-OCCT ambient into REIFY_AMBIENT_LD_LIBRARY_PATH and every non-cargo
+    # plan line is emitted via add_tool(), which restores it — so under the gate
+    # this suite no longer inherits the conda prefix at all. These six inline
+    # scrubs are retained as DEFENCE IN DEPTH for the one case that fix cannot
+    # reach: a bare `bash tests/infra/test_reify_audit_ptodo.sh` run from a
+    # shell that already carries a hostile ambient loader path. They cost
+    # nothing, so do not "clean them up" — but equally, do not copy this
+    # per-call-site pattern into new code. A new verify.sh tool plan line
+    # belongs on add_tool(); see docs/notes/verify-pipeline-knobs.md
+    # ("Loader path") and tests/infra/test_verify_ld_library_path_scope.sh.
     LD_LIBRARY_PATH="" sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" "
 CREATE TABLE tasks (
     tag TEXT NOT NULL DEFAULT 'master',
@@ -736,6 +749,8 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
         bash -c '[ "$1" -eq 1 ]' -- "$_exit_orphan"
 
     # (d-control) UPDATE task status to pending → live cite → no High → exit 0.
+    # LD_LIBRARY_PATH="" — see the (d) seed site above (defence-in-depth for a
+    # standalone run; the gate itself is fixed structurally, task 5730).
     LD_LIBRARY_PATH="" sqlite3 "$FIX_D/.taskmaster/tasks/tasks.db" \
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID};"
 
@@ -797,6 +812,8 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID}, 'done');
     # Schema mirrors crates/reify-audit/tests/common/schema.rs TASKS_DB_SCHEMA.
     mkdir -p "$FIX_E/.taskmaster/tasks"
     # LD_LIBRARY_PATH="" so sqlite3 uses the system lib (esc-4581-87).
+    # Defence-in-depth only since task 5730 — verify.sh now scrubs the loader
+    # path structurally via add_tool(); see the (d) seed site above.
     LD_LIBRARY_PATH="" sqlite3 "$FIX_E/.taskmaster/tasks/tasks.db" "
 CREATE TABLE tasks (
     tag TEXT NOT NULL DEFAULT 'master',
@@ -837,6 +854,8 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_E}, 'done');
         bash -c '[ "$1" -eq 1 ]' -- "$_exit_gallow_orphan"
 
     # (e-control) UPDATE task status to pending → live cite → no High → exit 0.
+    # LD_LIBRARY_PATH="" — see the (d) seed site above (defence-in-depth for a
+    # standalone run; the gate itself is fixed structurally, task 5730).
     LD_LIBRARY_PATH="" sqlite3 "$FIX_E/.taskmaster/tasks/tasks.db" \
         "UPDATE tasks SET status='pending' WHERE id=${CITE_ID_E};"
 
