@@ -785,6 +785,93 @@ mod tests {
         }
     }
 
+    /// NaN on the DIAGONAL of an otherwise-symmetric matrix must yield
+    /// `Value::Undef` itself, not `List([Undef, Undef, Undef])`.
+    ///
+    /// This is the exact hole: the symmetry test in the `eigenvalues` arm
+    /// compares only strict off-diagonal pairs (`(i+1..n)`), so the DIAGONAL
+    /// is never inspected and a NaN there reaches the symmetric branch's sort.
+    /// `sanitize_value` runs AFTER that sort, per element, which is what
+    /// produces the list-of-Undef instead of a single Undef.
+    ///
+    /// RED before the input guard lands (INV-FEA-3, task #6376).
+    #[test]
+    fn eigenvalues_nan_on_diagonal_symmetric_returns_undef() {
+        let m = make_matrix(&[
+            &[f64::NAN, 1.0, 2.0],
+            &[1.0, f64::NAN, 3.0],
+            &[2.0, 3.0, f64::NAN],
+        ]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        assert!(
+            result.is_undef(),
+            "eigenvalues(NaN-diagonal symmetric matrix) must be Undef itself, \
+             not a List, got {:?}",
+            result
+        );
+    }
+
+    /// ±Inf entries must also fail closed, on BOTH branches.
+    ///
+    /// (b) is the adjacent narrow hole recorded in decision 9: the general
+    /// branch's classification predicate reads
+    /// `|im| <= 1e-9*(re.hypot(im) + 1.0)`, and `f64::NAN.hypot(f64::INFINITY)`
+    /// is `inf`, so `inf <= inf` is true and a NaN real part can reach the
+    /// sort. An INPUT guard closes it regardless of whether nalgebra can
+    /// actually emit that pair.
+    ///
+    /// RED before the input guard lands (INV-FEA-3, task #6376).
+    #[test]
+    fn eigenvalues_non_finite_entry_returns_undef() {
+        // (a) symmetric branch: +inf on the diagonal.
+        let sym = make_matrix(&[
+            &[f64::INFINITY, 1.0, 0.0],
+            &[1.0, 2.0, 0.0],
+            &[0.0, 0.0, 3.0],
+        ]);
+        let sym_result = eval_builtin("eigenvalues", &[sym]);
+        assert!(
+            sym_result.is_undef(),
+            "eigenvalues(symmetric matrix with +inf) must be Undef, got {:?}",
+            sym_result
+        );
+
+        // (b) general branch: NON-symmetric (data[0*3+1] != data[1*3+0])
+        // carrying +inf.
+        let general = make_matrix(&[
+            &[1.0, 2.0, 0.0],
+            &[7.0, f64::INFINITY, 0.0],
+            &[0.0, 0.0, 3.0],
+        ]);
+        let general_result = eval_builtin("eigenvalues", &[general]);
+        assert!(
+            general_result.is_undef(),
+            "eigenvalues(non-symmetric matrix with +inf) must be Undef, got {:?}",
+            general_result
+        );
+    }
+
+    /// Positive control: the input guard must not over-reject the happy path.
+    ///
+    /// Reuses the input from `eigenvalues_symmetric_3x3`; asserts the result
+    /// is still a `List` of the expected length in ascending order.
+    #[test]
+    fn eigenvalues_finite_symmetric_still_returns_sorted_list() {
+        let m = make_matrix(&[&[2.0, 1.0, 0.0], &[1.0, 3.0, 1.0], &[0.0, 1.0, 2.0]]);
+        let result = eval_builtin("eigenvalues", &[m]);
+        if let Value::List(items) = result {
+            assert_eq!(items.len(), 3);
+            let eigs: Vec<f64> = items.iter().map(|v| v.as_f64().unwrap()).collect();
+            assert!(
+                eigs[0] <= eigs[1] && eigs[1] <= eigs[2],
+                "eigenvalues must be ascending, got {:?}",
+                eigs
+            );
+        } else {
+            panic!("expected List, got {:?}", result);
+        }
+    }
+
     #[test]
     fn eigenvalues_1x1() {
         let m = make_matrix(&[&[42.0]]);
