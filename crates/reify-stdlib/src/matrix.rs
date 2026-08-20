@@ -204,6 +204,25 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             if n != ncols {
                 return Value::Undef;
             }
+            // INV-FEA-3 / task #6376 — FAIL CLOSED on non-finite INPUT.
+            // Mirrors this file's own precedent: the sibling
+            // "complex_eigenvalues" arm below already does exactly this, for
+            // the same reason.
+            //
+            // On the INPUT rather than the eigenvalue output, deliberately:
+            //   - it covers the symmetric AND general branches in one place;
+            //   - nalgebra is never handed a NaN matrix;
+            //   - it closes the ordering hazard where `sanitize_value` runs
+            //     per element AFTER the sort, turning a NaN spectrum into
+            //     List([Undef, ...]) instead of a single Undef.
+            // It cannot live upstream: `rank2_components` validates shape and
+            // dimension only, and `Value::as_f64` passes NaN/±Inf straight
+            // through. Scoped to THIS arm — pushing it into
+            // `matrix_components_f64`/`rank2_components` would silently change
+            // determinant/inverse/transpose/outer/trace too.
+            if data.iter().any(|x| !x.is_finite()) {
+                return Value::Undef;
+            }
             let make_val = |x: f64| -> Value {
                 if dim == DimensionVector::DIMENSIONLESS {
                     sanitize_value(Value::Real(x))
@@ -220,7 +239,7 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
             if is_symmetric {
                 // Symmetric tridiagonalization + QR: guaranteed-real, exact to ~1e-14.
                 let mut eigs: Vec<f64> = m.symmetric_eigenvalues().iter().copied().collect();
-                eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                eigs.sort_by(|a, b| a.total_cmp(b));
                 Value::List(eigs.into_iter().map(make_val).collect())
             } else {
                 // General path: real-input Schur → complex eigenvalues.
@@ -235,8 +254,7 @@ pub(crate) fn eval_matrix(name: &str, args: &[Value]) -> Option<Value> {
                 if complex_eigs.iter().all(|c| c.im.abs() <= 1e-9 * (c.re.hypot(c.im) + 1.0)) {
                     // Project to reals: imaginary parts are numerical noise.
                     let mut real_eigs: Vec<f64> = complex_eigs.iter().map(|c| c.re).collect();
-                    real_eigs
-                        .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    real_eigs.sort_by(|a, b| a.total_cmp(b));
                     Value::List(real_eigs.into_iter().map(make_val).collect())
                 } else {
                     // Genuinely complex spectrum: documented Undef (not silent).
