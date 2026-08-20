@@ -2343,16 +2343,15 @@ echo "=== G: every deadline-capable SITE inside a static-only roster member dive
 # :189 is a separate, still-open leak, filed as tkt_0RSN3SGERQF3E3KD04D71G6W8R
 # / esc-6291-1 and out of scope here (see the note beside D_ROSTER_MODE).
 #
-# THE COVERAGE TABLE. Three index-aligned arrays; G_SCAN arrives in its own
-# commit below. G_SITE holds each member's deadline-capable site TARGET token,
+# THE COVERAGE TABLE. Three index-aligned arrays -- G_MEMBERS, G_SITE and
+# G_SCAN. G_SITE holds each member's deadline-capable site TARGET token,
 # NOT a whole ERE -- the exec-position anchor is prefixed to every entry by the
 # real-tree arm, so a target here can never accidentally match a `test -f
 # "$RUN_ALL"` or a `case` pattern. Each entry carries the member's derived
 # route and why that token IS its deadline-capable invocation.
 G_MEMBERS=(
-    # Second-order route via test_run_all.sh (TARGET bound :93). The site here
-    # is the FORWARDING call; step-8's G_SCAN indirection redirects the scan to
-    # the lib that actually execs it.
+    # Second-order route via test_run_all.sh (TARGET bound :93). The site that
+    # must divert is NOT in this file -- see G_SCAN below.
     test_run_all_ambient_isolation.sh
     # Route run_all.sh: RUN_ALL bound :31, `bash "$RUN_ALL"` :96, whose pool
     # worker calls slot_acquire against the finite REIFY_RUN_ALL_POOL_WAIT.
@@ -2386,7 +2385,7 @@ G_MEMBERS=(
 )
 # Index-aligned with G_MEMBERS.
 G_SITE=(
-    'ambient_isolation_check_one[[:blank:]]'
+    '"\$_target"'
     '"\$RUN_ALL"'
     '"\$RUN_ALL"'
     '"\$REAL_RUN_ALL"'
@@ -2394,6 +2393,33 @@ G_SITE=(
     '"\$(SEM|OCCT|LIB)"'
     '"\$SCRIPT_DIR/test_occt_flock_gate\.sh"'
     '"\$REPO_ROOT/scripts/verify\.sh"'
+)
+# Index-aligned with G_MEMBERS: the file whose SOURCE actually holds that
+# member's deadline-capable invocation. EMPTY means "the member itself", which
+# is the case for seven of the eight.
+#
+# THE ONE INDIRECTION, and why it is not optional.
+# test_run_all_ambient_isolation.sh reaches its deadline SECOND-ORDER: TARGET is
+# bound at :93, handed to `ambient_isolation_check_one` at :366, and exec'd at
+# run_all_ambient_isolation_lib.sh:73/:92 as `bash "$_target" 2>&1` inside an
+# `_amb_out="$(` command substitution. The forwarding call in the member
+# therefore CORRECTLY carries no redirect -- there is nothing there to divert.
+# Asserting on the member's own line would be a false RED that pressures a
+# future reader into adding a redundant redirect at the wrong level, which is
+# strictly worse than not checking at all. MEASURED both ways: scanning the
+# member itself gives 1 site / 1 unredirected; scanning the lib for the site it
+# really execs gives 2 sites / 0 unredirected.
+#
+# THE HONEST LIMITATION: this indirection is DECLARED, not derived from Section
+# F's exec-forwarding-lib rule (F_FWD_LIB_MAP), which already knows how to
+# recognise such a lib. A new forwarding hop therefore needs a human edit here.
+# What keeps that from being SILENT is the pair G0 (a new static-only member
+# cannot go uncovered) and G3 (a member whose site moved cannot pass
+# vacuously) -- the same two guards that make the whole declared table
+# acceptable.
+G_SCAN=(
+    run_all_ambient_isolation_lib.sh
+    '' '' '' '' '' '' ''
 )
 
 # G0 FIRST -- the COMPLETENESS assert, before any per-member check.
@@ -2728,8 +2754,14 @@ G_EXEC_FIRST_RE="^[[:blank:]]*${G_EXEC_KV}"
 
 for _g_i in "${!G_MEMBERS[@]}"; do
     _g_m="${G_MEMBERS[$_g_i]}"
+    # Empty G_SCAN entry means "scan the member itself" (seven of eight).
+    _g_f="${G_SCAN[$_g_i]:-$_g_m}"
+    # Shown in both descriptions only when it differs, so a RED names the file
+    # a reader must actually open. Basenames, so this stays safe to print.
+    _g_via=""
+    [ "$_g_f" = "$_g_m" ] || _g_via=" -> $_g_f"
     _g_j="$TMPG/${_g_m}.logical"
-    _d_join_logical "$SCRIPT_DIR/$_g_m" > "$_g_j"
+    _d_join_logical "$SCRIPT_DIR/$_g_f" > "$_g_j"
     _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
     _g_nsites="$(_g_sites "$_g_j" "$_g_re")"
     _g_nbare="$(_g_unredirected "$_g_j" "$_g_re")"
@@ -2739,7 +2771,7 @@ for _g_i in "${!G_MEMBERS[@]}"; do
     # that catches a member whose invocation shape MOVED -- the failure mode a
     # declared (rather than derived) table is exposed to, and the reason a
     # declared table is acceptable at all.
-    assert "G3 [$_g_m]: its declared deadline-capable site is still there (non-vacuity; got $_g_nsites sites)" \
+    assert "G3 [$_g_m$_g_via]: its declared deadline-capable site is still there (non-vacuity; got $_g_nsites sites)" \
         test "$_g_nsites" -ge 1
 
     # Counts and the member BASENAME only -- never a matched source line, and
@@ -2748,7 +2780,7 @@ for _g_i in "${!G_MEMBERS[@]}"; do
     # BE the leak this section exists to prevent. Both counts are precomputed
     # into plain variables above, never a $(...) inside the description, so
     # neither assert can become an instance of what E1 forbids.
-    assert "G1 [$_g_m]: every one of its deadline-capable sites diverts stderr off the inherited fd 2 (got $_g_nsites sites, $_g_nbare unredirected)" \
+    assert "G1 [$_g_m$_g_via]: every one of its deadline-capable sites diverts stderr off the inherited fd 2 (got $_g_nsites sites, $_g_nbare unredirected)" \
         test "$_g_nbare" -eq 0
 done
 
