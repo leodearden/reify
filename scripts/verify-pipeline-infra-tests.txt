@@ -229,3 +229,14 @@ crates/reify-eval/src/test_runner.rs                tests/infra/test_compute_tra
 # the gate script selected zero infra tests. Mirrors the
 # check-compute-trampoline-registration.sh row above.
 scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
+
+# Task 6107 (β): the single `watch --once` index primitive. Its guard is
+# hermetic (temp CODE_INDEX_PATH, synthetic sqlite DBs, stub indexer), so it is
+# cheap enough to run as a per-task fail-fast pole — and it needs to, because
+# every regression this script can suffer is SILENT at runtime: a drifted
+# invocation still exits 0 while writing the wrong index identity, and a
+# dropped truncation guard still exits 0 over a half-indexed repo (the
+# max_folder_files cap warning never reaches stdout/stderr on the `watch --once`
+# path at all — it is written into index_folder's result dict, which
+# watcher.py::sync_folders never prints).
+scripts/jcodemunch-index-reify.sh    tests/infra/test_jcodemunch_index_reify.sh

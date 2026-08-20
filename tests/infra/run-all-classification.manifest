@@ -101,6 +101,7 @@ test_harness_kloc_cap.sh pool
 test_heavy_filter_atoms.sh pool
 test_hooks_call_verify.sh pool
 test_infra_classification_manifest_gate.sh pool
+test_jcodemunch_index_reify.sh pool
 test_jobserver_acceptance.sh pool
 test_jobserver_balancer.sh pool
 test_jobserver_canary.sh pool
