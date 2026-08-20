@@ -12604,9 +12604,15 @@ pub(crate) enum MixedRegionError {
     },
     /// An interface's tie geometry violates `MpcRow::shell_tet_tying`'s
     /// preconditions — a non-unit `normal` or a non-positive `thickness`, both
-    /// of which that builder asserts on (and would panic). `partition_body`
-    /// guarantees these invariants, so this only arises for an interface
-    /// constructed directly by a caller that bypasses the partition layer.
+    /// of which that builder asserts on (and would panic) — or has a
+    /// non-finite `location`, which `shell_tet_tying` never sees (only the
+    /// resolved DOF indices are passed downstream) but which would instead
+    /// poison this function's own nearest-node tie resolution.
+    /// `partition_body` guarantees the `normal`/`thickness` invariants, so
+    /// this only arises for an interface constructed directly by a caller
+    /// that bypasses the partition layer; [`ShellTetInterface`] documents no
+    /// invariant for `location` at all, so its finiteness is checked here
+    /// rather than assumed.
     InvalidInterfaceGeometry {
         /// Index of the offending interface in the input `interfaces` slice.
         interface_index: usize,
@@ -12635,8 +12641,8 @@ impl std::fmt::Display for MixedRegionError {
             MixedRegionError::InvalidInterfaceGeometry { interface_index } => write!(
                 f,
                 "interface {interface_index} has invalid tie geometry: `normal` must be \
-                 a unit vector and `thickness` must be positive \
-                 (MpcRow::shell_tet_tying preconditions)"
+                 a unit vector, `thickness` must be positive \
+                 (MpcRow::shell_tet_tying preconditions), and `location` must be finite"
             ),
             MixedRegionError::NonFiniteNodeCoordinate { node_index } => write!(
                 f,
@@ -12763,13 +12769,39 @@ pub(crate) fn build_mixed_region_mesh(
         // exactly, so any interface passing here also passes `shell_tet_tying`;
         // binding to booleans first keeps a NaN normal/thickness rejected (NaN
         // comparisons are false) without tripping clippy::neg_cmp_op_on_partial_ord.
+        // `location` gets the same treatment even though `shell_tet_tying` never
+        // sees it (only the resolved DOF indices are passed downstream) — it
+        // feeds this function's own `nearest_node_index` / `three_nearest_node_
+        // indices` tie resolution below, and `ShellTetInterface`
+        // (reify-shell-extract/src/partition.rs:57-71) documents invariants for
+        // `normal` and `thickness` only, so `location`'s finiteness is checked
+        // here rather than assumed.
         let normal_mag = (iface.normal[0] * iface.normal[0]
             + iface.normal[1] * iface.normal[1]
             + iface.normal[2] * iface.normal[2])
             .sqrt();
         let thickness_ok = iface.thickness > 0.0;
         let normal_is_unit = (normal_mag - 1.0).abs() < 1e-9;
-        if !thickness_ok || !normal_is_unit {
+        let location_is_finite = iface.location.iter().all(|c| c.is_finite());
+        if !thickness_ok || !normal_is_unit || !location_is_finite {
+            let reason_detail = if !location_is_finite {
+                "non-finite `location`"
+            } else if !thickness_ok {
+                "non-positive `thickness`"
+            } else {
+                "non-unit `normal`"
+            };
+            tracing::warn!(
+                target: "reify_eval::engine_build",
+                reason = "invalid_interface_geometry",
+                interface_index,
+                thickness_ok,
+                normal_is_unit,
+                location_is_finite,
+                "build_mixed_region_mesh: interface {interface_index} has invalid tie \
+                 geometry ({reason_detail}); rejecting rather than emitting an MPC row \
+                 from invalid geometry"
+            );
             return Err(MixedRegionError::InvalidInterfaceGeometry { interface_index });
         }
 
