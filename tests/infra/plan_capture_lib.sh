@@ -108,6 +108,14 @@ plan_narrow_active() {
 # deliberately absent from the allowlist, so the pre-builds are excluded twice
 # over.
 #
+# ORDER MATTERS, and is a KNOWN LIMITATION: the flag exclusions are applied
+# BEFORE the allowlist, so a narrowable subcommand that also carried ` --release`
+# would classify OFF-axis. Sound today (AFFECTED_ALL_FLAGS reaches nextest only in
+# the DEBUG branch at verify.sh:2133, and the check/clippy sites never take
+# --release), but it is an assumption about verify.sh. Pinned as unit case (p) in
+# test_plan_capture_lib.sh; the behavioural backstop is the drift guard named in
+# the next paragraph.
+#
 # This function encodes a MODEL of verify.sh, so it can go stale. The BEHAVIOURAL
 # drift guard is tests/infra/test_verify_scope.sh Scenario MG-B5-control, which
 # captures a real narrowing-ACTIVE plan and fails if the override's crates ever

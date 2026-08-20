@@ -357,6 +357,25 @@ assert "plan_is_narrowing_axis_line (n): comment line is OFF-axis" \
 assert "plan_is_narrowing_axis_line (o): empty line is OFF-axis" \
     refute plan_is_narrowing_axis_line ""
 
+# (p) ORDERING CONTRACT — the one KNOWN LIMITATION of the classifier, pinned
+# here so it is discoverable rather than implicit. Unlike (a)-(o) this line shape
+# is SYNTHETIC: verify.sh emits nothing like it today. The ` --release` exclusion
+# runs BEFORE the cargo-subcommand allowlist, so a narrowable subcommand that
+# ALSO carries ` --release` classifies OFF-axis. That is correct for verify.sh as
+# it stands — $AFFECTED_ALL_FLAGS reaches nextest only in the DEBUG branch
+# (verify.sh:2133, rel=""), and the check/clippy sites never take --release — but
+# it is an assumption about verify.sh, not a property of the line, and it is
+# fragile in exactly one direction: a future --release-bearing narrowing site
+# would be silently misclassified as off-axis, quietly emptying the axis subset
+# that MG-B5/MG-B6a assert an absence over.
+#
+# The BEHAVIOURAL backstop is test_verify_scope.sh Scenario MG-B5-control: with
+# narrowing active it requires the override's crates ON the axis and ABSENT off
+# it, so such a site would RED there. This unit case does not defend the
+# ordering; it records that the ordering is deliberate and names what does. (#6391)
+assert "plan_is_narrowing_axis_line (p): a --release-bearing clippy classifies OFF-axis (flag exclusion precedes the subcommand allowlist — known limitation, backstopped by MG-B5-control)" \
+    refute plan_is_narrowing_axis_line "timeout --kill-after=60 45m nice -n 5 cargo clippy -p reify-doc --release --all-targets -- -D warnings"
+
 # ---------------------------------------------------------------------------
 # Section 7: plan_narrowing_axis_match / plan_offaxis_match /
 #            plan_narrowing_axis_count — dump-level axis predicates
