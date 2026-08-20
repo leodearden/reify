@@ -1,5 +1,5 @@
 //! Acceptance guard: `mesh_to_volume` must produce a COMPLETE
-//! tetrahedralization of a prismatic body (#6200).
+//! tetrahedralization of the body it is handed (#6200).
 //!
 //! Only compiled / run when `cfg(has_gmsh)` is set by `build.rs`. On stub
 //! builds this file is empty and the test binary contains zero tests —
@@ -19,6 +19,15 @@
 //!
 //! The companion guard `tests/classify_feature_angle.rs` pins the same defect
 //! at its ROOT CAUSE (the B-rep entity census) rather than at this symptom.
+//!
+//! # Curved geometry
+//!
+//! Most fixtures here are prismatic, because that is where the defect was
+//! measured and where `aabb_fill_fraction` is a valid invariant. But
+//! `CLASSIFY_FEATURE_ANGLE` is a GLOBAL parameter — lowering it makes gmsh
+//! split MORE, so it also changes how curved bodies are decomposed.
+//! `tessellated_cylinder_is_completely_tetrahedralized` covers that half,
+//! against the geometry-agnostic `surface_match_ratio` rather than the AABB.
 
 #![cfg(has_gmsh)]
 
@@ -40,117 +49,31 @@ const REL: f64 = 1e-6;
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
+//
+// Shared with `tests/fill_metrics_tests.rs` and
+// `tests/classify_feature_angle.rs` through `tests/common/mod.rs`, so the three
+// views of #6200 (arithmetic / symptom / mechanism) cannot drift apart on what
+// "a box" is.
 
-/// Inline copy of `crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:13-48`
-/// (itself a copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`),
-/// generalised to arbitrary extents.
-///
-/// 8 vertices / 12 outward-wound triangles; enclosed volume exactly
-/// `lx * ly * lz`. Duplicated rather than dev-dep'ing on
-/// `reify-kernel-manifold` to avoid an awkward layering — the crate already
-/// carries three such cross-referenced copies. The winding is vetted outward
-/// (unlike `through_thickness_tests.rs`'s `slab_surface_mesh`), which is a
-/// precondition for every signed-volume assertion below.
-fn prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            lx, 0.0, 0.0, // 1
-            lx, ly, 0.0, // 2
-            0.0, ly, 0.0, // 3
-            0.0, 0.0, lz, // 4
-            lx, 0.0, lz, // 5
-            lx, ly, lz, // 6
-            0.0, ly, lz, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
-
-/// Per-face UNWELDED box: 24 vertices (each face carrying its own 4
-/// bit-identical corner copies) / 12 triangles, same outward winding as
-/// [`prismatic_box_mesh`].
-///
-/// This is the shape `OcctKernel::tessellate` actually emits for a
-/// planar-faced solid (`kernel_real.rs:452`), i.e. what the production
-/// surface→volume path receives BEFORE `RepairConfig`'s weld pre-stage runs.
-fn unwelded_prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
-    let c = [
-        [0.0, 0.0, 0.0],
-        [lx, 0.0, 0.0],
-        [lx, ly, 0.0],
-        [0.0, ly, 0.0],
-        [0.0, 0.0, lz],
-        [lx, 0.0, lz],
-        [lx, ly, lz],
-        [0.0, ly, lz],
-    ];
-    // Per-face corner quads, in the same cyclic order the welded fixture uses.
-    let faces: [[usize; 4]; 6] = [
-        [0, 1, 2, 3], // -Z
-        [4, 5, 6, 7], // +Z
-        [0, 1, 5, 4], // -Y
-        [3, 7, 6, 2], // +Y
-        [0, 4, 7, 3], // -X
-        [1, 2, 6, 5], // +X
-    ];
-    // Face-local triangle slots, matching the welded fixture's winding face
-    // for face. Only the -Z face differs, because its welded form is written
-    // (0,2,1) (0,3,2) rather than the (0,1,2) (0,2,3) the others use.
-    let tri_slots: [[usize; 6]; 6] = [
-        [0, 2, 1, 0, 3, 2], // -Z
-        [0, 1, 2, 0, 2, 3], // +Z
-        [0, 1, 2, 0, 2, 3], // -Y
-        [0, 1, 2, 0, 2, 3], // +Y
-        [0, 1, 2, 0, 2, 3], // -X
-        [0, 1, 2, 0, 2, 3], // +X
-    ];
-
-    let mut vertices = Vec::with_capacity(24 * 3);
-    let mut indices = Vec::with_capacity(36);
-    for (f, quad) in faces.iter().enumerate() {
-        let base = (f * 4) as u32;
-        for &corner in quad {
-            vertices.extend_from_slice(&c[corner]);
-        }
-        for &slot in &tri_slots[f] {
-            indices.push(base + slot as u32);
-        }
-    }
-    Mesh {
-        vertices,
-        indices,
-        normals: None,
-    }
-}
+mod common;
+use common::{
+    prismatic_box_mesh, tessellated_cylinder_mesh, tessellated_cylinder_volume,
+    unwelded_prismatic_box_mesh,
+};
 
 // ---------------------------------------------------------------------------
 // Shared assertion body
 // ---------------------------------------------------------------------------
 
+/// [`common::assert_rel`] bound to this file's derived [`REL`] tolerance.
+///
+/// A thin binding, not a second implementation: the comparison itself lives in
+/// exactly one place. A call site needing a different band (the curved fixture
+/// below) calls `common::assert_rel` directly with its own stated tolerance,
+/// rather than loosening `REL` for everyone.
 #[track_caller]
 fn assert_rel(actual: f64, expected: f64, what: &str) {
-    let err = (actual - expected).abs() / expected.abs().max(f64::MIN_POSITIVE);
-    assert!(
-        err <= REL,
-        "{what}: got {actual:.12e}, expected {expected:.12e} \
-         (relative error {err:.3e} > {REL:.3e})"
-    );
+    common::assert_rel(actual, expected, REL, what);
 }
 
 /// Every completeness assertion #6200 turns on, for one already-meshed body.
@@ -161,7 +84,9 @@ fn assert_rel(actual: f64, expected: f64, what: &str) {
 /// volume mismatch.
 #[track_caller]
 fn assert_complete_prismatic_fill(report: &TetFillReport, surface: &Mesh, label: &str) {
-    let surface_volume = enclosed_volume_of_surface(surface);
+    let surface_volume = enclosed_volume_of_surface(surface).unwrap_or_else(|| {
+        panic!("{label}: the input surface is not measurable as a triangle soup")
+    });
     let fill = report.aabb_fill_fraction();
     let match_ratio = report.surface_match_ratio(surface_volume);
 
@@ -280,6 +205,169 @@ fn millimetre_scale_box_is_completely_tetrahedralized() {
     let surface = prismatic_box_mesh(1000.0, 100.0, 100.0);
     let report = fill_report_for(&surface, "box 1000x100x100 mm");
     assert_complete_prismatic_fill(&report, &surface, "box 1000x100x100 mm");
+}
+
+// ---------------------------------------------------------------------------
+// Curved geometry — the non-prismatic half of the constant's blast radius
+// ---------------------------------------------------------------------------
+
+/// Cylinder fixture: radius, height, tessellation segments.
+const CYL_R: f64 = 0.5;
+const CYL_H: f64 = 1.0;
+const CYL_SEGMENTS: usize = 24;
+
+/// The two mesh sizes the curved guard meshes at.
+///
+/// Both are COARSER than the fixture's auto size (0.1305, the rim edge) so the
+/// pair costs less wall-clock than the single auto-size reading it replaces.
+const CYL_COARSE: f64 = 0.25;
+const CYL_FINE: f64 = 0.13;
+
+/// Completeness band for the curved fixture at [`CYL_FINE`].
+///
+/// Deliberately four orders looser than [`REL`], and for a different reason.
+/// [`REL`] budgets f32 coordinate storage only, which is the whole error budget
+/// for a box: gmsh's B-rep decomposition of a planar-faced solid reproduces the
+/// input faces exactly, so the meshed volume is the input volume up to storage.
+/// A curved body carries a second, much larger term. `create_geometry`
+/// reparametrizes the barrel and `mesh_generate(3)` lays a NEW surface mesh on
+/// that parametrization, whose cross-section is inscribed inside the input
+/// polygon — so the meshed solid is slightly smaller than the input polyhedron
+/// by a chord residual, not by round-off.
+///
+/// Derived from the measured residual, not tuned to it. Measured
+/// `1 - surface_match_ratio` on this branch (n = 12 / 24 / 48 segments, so the
+/// residual is a function of the MESH size, essentially not of the fixture's
+/// tessellation density):
+///
+/// | mesh size | n=12     | n=24     | n=48     |
+/// |-----------|----------|----------|----------|
+/// | 0.25      | 2.14e-2  | 2.31e-2  | 2.46e-2  |
+/// | 0.13      | 5.76e-3  | 6.19e-3  | 6.85e-3  |
+/// | 0.09      | 2.73e-3  | 2.94e-3  | 3.18e-3  |
+///
+/// i.e. ~h^2, as a chord residual must be. 1.5e-2 clears the 6.19e-3 reading at
+/// [`CYL_FINE`] by ~2.4x while still sitting ~17x below the ~26% defect #6200
+/// guards against.
+const CURVED_REL: f64 = 1.5e-2;
+
+/// A closed CURVED body must be completely tetrahedralized too.
+///
+/// `CLASSIFY_FEATURE_ANGLE` is a GLOBAL production parameter: #6200's
+/// `π/2 → π/4` change alters the B-rep decomposition of every body
+/// `mesh_to_volume` meshes, not just boxes. Every other fixture in this file
+/// and in `tests/classify_feature_angle.rs` is axis-aligned and prismatic, so
+/// nothing here covered the direction the change actually makes *more*
+/// aggressive: a lower threshold splits MORE, and a coarsely-tessellated curved
+/// face (a low-segment fillet, a small hole) can now be decomposed into many
+/// patches that `create_geometry` must reparametrize individually. On this
+/// fixture the two cap rims are genuine 90° feature edges — registered as sharp
+/// only AFTER the fix — while the barrel's 15°-per-facet turn stays smooth.
+///
+/// This is also the only test that exercises `surface_match_ratio` on the
+/// geometry it was built for. The module docs advertise it as "the
+/// geometry-agnostic one… the ratio worth reporting on a production path",
+/// while `aabb_fill_fraction` is documented prismatic-only — a cylinder
+/// legitimately reads ≈ π/4. Both halves of that claim are checked below, so
+/// the docs are pinned by measurement rather than asserted in prose.
+///
+/// # Why two resolutions
+///
+/// A single loose-tolerance reading cannot tell a *discretization residual*
+/// (harmless, converges away) from an *incomplete decomposition* (#6200, which
+/// does not). The pre-#6200 box refined to only 0.926 fill at 4x resolution —
+/// the defect stayed put under refinement. So the guard pins CONVERGENCE as
+/// well as magnitude: halving the mesh size must shrink the residual severalfold.
+#[test]
+fn tessellated_cylinder_is_completely_tetrahedralized() {
+    let label = "cylinder r=0.5 h=1.0 x24";
+    let surface = tessellated_cylinder_mesh(CYL_R as f32, CYL_H as f32, CYL_SEGMENTS);
+    let surface_volume =
+        enclosed_volume_of_surface(&surface).expect("cylinder fixture must be well-formed");
+
+    // The reference itself is first checked against a CLOSED FORM, so a fixture
+    // bug cannot quietly move the target the mesh is compared against. A prism
+    // over an INSCRIBED regular n-gon — not pi*r^2*h.
+    let closed_form = tessellated_cylinder_volume(CYL_R, CYL_H, CYL_SEGMENTS);
+    assert_rel(
+        surface_volume,
+        closed_form,
+        "enclosed volume of the cylinder fixture vs its closed form",
+    );
+
+    let coarse = fill_report_at(&surface, Some(CYL_COARSE), label);
+    let fine = fill_report_at(&surface, Some(CYL_FINE), label);
+
+    for (report, size) in [(&coarse, CYL_COARSE), (&fine, CYL_FINE)] {
+        // No inverted elements, and no orientation cancellation, at either
+        // resolution. Unlike the volume totals these are exact properties —
+        // the chord residual cannot excuse a negatively-wound element.
+        assert_eq!(
+            report.inverted_tets, 0,
+            "{label} @ {size}: {} of {} tets are inverted (negative signed volume)",
+            report.inverted_tets, report.n_tets
+        );
+        common::assert_rel(
+            report.signed_volume_sum.abs(),
+            report.abs_volume_sum,
+            REL,
+            &format!(
+                "{label} @ {size}: |signed volume sum| vs abs volume sum — a mismatch \
+                 means inverted elements are cancelling real volume"
+            ),
+        );
+        // The prismatic-only caveat, demonstrated rather than asserted in prose:
+        // this body is COMPLETE and still reads well below 1.0 here. A fill
+        // floor on the production path would reject it, which is why
+        // `mesh_surface_to_volume_with_diagnostics` reports and never enforces.
+        let fill = report.aabb_fill_fraction();
+        assert!(
+            (0.70..0.85).contains(&fill),
+            "{label} @ {size}: aabb_fill_fraction = {fill:.6}, expected ~0.7765 (the \
+             inscribed 24-gon's area over its 2r x 2r bounding square; pi/4 ~ 0.7854 \
+             in the smooth limit). This ratio is PRISMATIC-ONLY — a value near 1.0 \
+             here would mean the fixture stopped being curved, not that the mesh \
+             improved."
+        );
+    }
+
+    // 1. The geometry-agnostic completeness check — the one assertion in this
+    //    file valid for a curved or non-convex body.
+    let fine_ratio = fine.surface_match_ratio(surface_volume);
+    common::assert_rel(
+        fine.abs_volume_sum,
+        surface_volume,
+        CURVED_REL,
+        &format!(
+            "{label} @ {CYL_FINE}: meshed volume vs enclosed input-surface volume — \
+             surface_match_ratio = {fine_ratio:.6} ({} tets, {} nodes)",
+            fine.n_tets, fine.n_nodes
+        ),
+    );
+
+    // 2. CONVERGENCE — what separates a chord residual from an under-fill.
+    //    Measured 2.31e-2 -> 6.19e-3, a factor of 3.73 for a mesh-size ratio of
+    //    1.92 (i.e. ~h^2). The bar is 2x, well inside that, but far outside the
+    //    flat-under-refinement behaviour of the #6200 defect itself.
+    let coarse_residual = (1.0 - coarse.surface_match_ratio(surface_volume)).abs();
+    let fine_residual = (1.0 - fine_ratio).abs();
+    assert!(
+        fine_residual * 2.0 < coarse_residual,
+        "{label}: refining {CYL_COARSE} -> {CYL_FINE} shrank the completeness residual \
+         only from {coarse_residual:.3e} to {fine_residual:.3e} (< 2x). A chord \
+         residual converges as ~h^2; a residual that does NOT converge is an \
+         incomplete decomposition, which is #6200 — the pre-fix box still read \
+         0.926 fill at 4x resolution."
+    );
+
+    // 3. The AABB ratio tracks the fixture's own closed-form area ratio, so the
+    //    prismatic-only reading is not merely "some number below 1".
+    common::assert_rel(
+        fine.aabb_fill_fraction(),
+        closed_form / (2.0 * CYL_R * 2.0 * CYL_R * CYL_H),
+        CURVED_REL,
+        &format!("{label} @ {CYL_FINE}: aabb_fill_fraction vs the n-gon's area ratio"),
+    );
 }
 
 // ---------------------------------------------------------------------------

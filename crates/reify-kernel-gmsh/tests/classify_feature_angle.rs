@@ -37,38 +37,12 @@
 use reify_ir::Mesh;
 use reify_kernel_gmsh::{CLASSIFY_CURVE_ANGLE, CLASSIFY_FEATURE_ANGLE, ffi, init};
 
-/// Inline copy of `crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:13-48`,
-/// generalised to arbitrary extents. 8 vertices / 12 outward-wound triangles.
-fn prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            lx, 0.0, 0.0, // 1
-            lx, ly, 0.0, // 2
-            0.0, ly, 0.0, // 3
-            0.0, 0.0, lz, // 4
-            lx, 0.0, lz, // 5
-            lx, ly, lz, // 6
-            0.0, ly, lz, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
+// The box fixture is shared with `tests/fill_metrics_tests.rs` and
+// `tests/volume_fill_fraction.rs` through `tests/common/mod.rs`: this guard and
+// the symptom guard must agree on what "a box" is, or one can go green against
+// geometry the other never meshes.
+mod common;
+use common::prismatic_box_mesh;
 
 /// Entity census after classify + createGeometry, as `(dim0, dim1, dim2)`.
 ///

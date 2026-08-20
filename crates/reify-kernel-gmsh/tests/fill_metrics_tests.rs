@@ -14,112 +14,14 @@ use reify_kernel_gmsh::fill_metrics::{
     TetFillReport, enclosed_volume_of_surface, tet_fill_report, tet_signed_volume,
 };
 
+mod common;
+use common::{
+    F32_STORAGE_REL, assert_rel, prismatic_box_mesh, unit_cube_mesh, unwelded_prismatic_box_mesh,
+};
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
-
-/// Inline copy of `crates/reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:13-48`
-/// (itself a copy of `crates/reify-kernel-manifold/src/test_fixtures.rs:37-67`),
-/// generalised to arbitrary extents.
-///
-/// 8 vertices / 12 outward-wound triangles. Enclosed volume is exactly
-/// `lx * ly * lz`. The winding is vetted outward (unlike
-/// `through_thickness_tests.rs`'s `slab_surface_mesh`), which is a precondition
-/// for the signed-volume assertions below.
-fn prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
-    Mesh {
-        vertices: vec![
-            0.0, 0.0, 0.0, // 0
-            lx, 0.0, 0.0, // 1
-            lx, ly, 0.0, // 2
-            0.0, ly, 0.0, // 3
-            0.0, 0.0, lz, // 4
-            lx, 0.0, lz, // 5
-            lx, ly, lz, // 6
-            0.0, ly, lz, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
-
-/// The unit cube — `prismatic_box_mesh(1.0, 1.0, 1.0)`, enclosed volume 1.0.
-fn unit_cube_mesh() -> Mesh {
-    prismatic_box_mesh(1.0, 1.0, 1.0)
-}
-
-/// Per-face UNWELDED box: 24 vertices (each of the 6 faces carries its own 4
-/// bit-identical corner copies) / 12 triangles, same outward winding as
-/// [`prismatic_box_mesh`].
-///
-/// This is the shape `OcctKernel::tessellate` actually emits for a planar-faced
-/// solid (see `kernel_real.rs:452`), so it is what the production
-/// surface→volume path receives BEFORE the repair pre-stage welds it. Enclosed
-/// volume must be identical to the welded form: the divergence-theorem sum is a
-/// per-triangle integral against the origin and so is welding-independent.
-fn unwelded_prismatic_box_mesh(lx: f32, ly: f32, lz: f32) -> Mesh {
-    // Corner coordinates, indexed exactly as in `prismatic_box_mesh`.
-    let c = [
-        [0.0, 0.0, 0.0],
-        [lx, 0.0, 0.0],
-        [lx, ly, 0.0],
-        [0.0, ly, 0.0],
-        [0.0, 0.0, lz],
-        [lx, 0.0, lz],
-        [lx, ly, lz],
-        [0.0, ly, lz],
-    ];
-    // Per-face corner quads, in the same cyclic order the welded fixture uses.
-    let faces: [[usize; 4]; 6] = [
-        [0, 1, 2, 3], // -Z
-        [4, 5, 6, 7], // +Z
-        [0, 1, 5, 4], // -Y
-        [3, 7, 6, 2], // +Y
-        [0, 4, 7, 3], // -X
-        [1, 2, 6, 5], // +X
-    ];
-    // Per-face triangle pattern, expressed in face-local corner slots. Matches
-    // the welded fixture's winding face for face.
-    let tri_slots: [[usize; 6]; 6] = [
-        [0, 2, 1, 0, 3, 2], // -Z: (0,2,1) (0,3,2)
-        [0, 1, 2, 0, 2, 3], // +Z: (4,5,6) (4,6,7)
-        [0, 1, 2, 0, 2, 3], // -Y: (0,1,5) (0,5,4)
-        [0, 1, 2, 0, 2, 3], // +Y: (3,7,6) (3,6,2)
-        [0, 1, 2, 0, 2, 3], // -X: (0,4,7) (0,7,3)
-        [0, 1, 2, 0, 2, 3], // +X: (1,2,6) (1,6,5)
-    ];
-
-    let mut vertices = Vec::with_capacity(24 * 3);
-    let mut indices = Vec::with_capacity(36);
-    for (f, quad) in faces.iter().enumerate() {
-        let base = (f * 4) as u32;
-        for &corner in quad {
-            vertices.extend_from_slice(&c[corner]);
-        }
-        for &slot in &tri_slots[f] {
-            indices.push(base + slot as u32);
-        }
-    }
-    Mesh {
-        vertices,
-        indices,
-        normals: None,
-    }
-}
 
 /// The reference tet [(0,0,0), (1,0,0), (0,1,0), (0,0,1)], signed volume +1/6.
 const REFERENCE_TET: [[f64; 3]; 4] = [
@@ -208,16 +110,6 @@ fn p1_tet_mesh(vertices: Vec<f32>, indices: Vec<u32>) -> VolumeMesh {
         normals: None,
         boundary: None,
     }
-}
-
-/// Assert `actual` matches `expected` to within `rel` RELATIVE error.
-#[track_caller]
-fn assert_rel(actual: f64, expected: f64, rel: f64, what: &str) {
-    let err = (actual - expected).abs() / expected.abs().max(f64::MIN_POSITIVE);
-    assert!(
-        err <= rel,
-        "{what}: got {actual:.12e}, expected {expected:.12e} (relative error {err:.3e} > {rel:.3e})"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +217,120 @@ fn centre_cone_unit_cube_reports_complete_fill() {
 }
 
 // ---------------------------------------------------------------------------
+// (b′) the DETECTION direction — an incomplete decomposition must read < 1.0
+// ---------------------------------------------------------------------------
+//
+// Every fixture in (b) is a COMPLETE decomposition and reads fill 1.0, and the
+// accessor tests in (e) only restate the formula. Neither direction pins that
+// the metric actually FIRES. Without the two tests below, a refactor that
+// normalised `abs_volume_sum` against the referenced-node hull, or accumulated
+// the AABB over only the elements it visited, would keep every other assertion
+// in this file green while making the metric report 1.0 unconditionally — and
+// only the `has_gmsh`-gated `tests/volume_fill_fraction.rs` would notice, which
+// does not run on stub hosts.
+
+/// Keep the first `keep` elements of a P1 tet mesh, dropping the rest and
+/// leaving the vertex buffer untouched.
+///
+/// This is the pre-#6200 signature in miniature: gmsh handed back a mesh whose
+/// nodes spanned the whole box while its elements filled only part of it.
+fn with_tets_truncated(vm: &VolumeMesh, keep: usize) -> VolumeMesh {
+    let mut out = vm.clone();
+    if let VolumeConnectivity::Tet { indices, .. } = &mut out.connectivity {
+        indices.truncate(keep * 4);
+    }
+    out
+}
+
+#[test]
+fn a_half_complete_decomposition_reads_fill_one_half() {
+    // The Kuhn cube's first three tets reference nodes {0,1,2,3,5,6}, which
+    // still span [0,1] on all three axes — so the AABB is the whole unit cube
+    // while only 3 of the 6 unit-volume-sixths remain.
+    let partial = with_tets_truncated(&kuhn_box_volume_mesh(1.0, 1.0, 1.0), 3);
+    let r = tet_fill_report(&partial).expect("a truncated tet buffer is still well-formed");
+
+    assert_eq!(r.n_tets, 3, "three of the six Kuhn tets survive");
+    assert_eq!(r.n_nodes, 8, "the vertex buffer is untouched");
+    assert_rel(
+        r.aabb_volume,
+        1.0,
+        1e-12,
+        "the surviving tets still span the full unit cube, so the AABB is unchanged",
+    );
+    assert_rel(
+        r.abs_volume_sum,
+        0.5,
+        1e-12,
+        "three Kuhn tets of volume 1/6 each",
+    );
+    assert_rel(
+        r.aabb_fill_fraction(),
+        0.5,
+        1e-12,
+        "aabb_fill_fraction must FIRE on an incomplete decomposition, not read 1.0",
+    );
+    assert_rel(
+        r.surface_match_ratio(
+            enclosed_volume_of_surface(&unit_cube_mesh()).expect("well-formed"),
+        ),
+        0.5,
+        1e-12,
+        "surface_match_ratio must fire on the same input, against the \
+         geometry-agnostic reference",
+    );
+}
+
+#[test]
+fn dropping_one_tet_moves_the_fill_fraction_by_exactly_that_tet() {
+    // Monotonicity, on the same fixture: each element removed costs exactly its
+    // own share. A metric that saturated at 1.0, or that rescaled itself to the
+    // surviving elements, could not produce this ladder.
+    let full = kuhn_box_volume_mesh(1.0, 1.0, 1.0);
+    for keep in [6usize, 5, 4] {
+        let r = tet_fill_report(&with_tets_truncated(&full, keep)).expect("well-formed");
+        assert_rel(
+            r.aabb_fill_fraction(),
+            keep as f64 / 6.0,
+            1e-12,
+            &format!("fill fraction with {keep} of 6 Kuhn tets"),
+        );
+    }
+}
+
+#[test]
+fn an_orphan_node_outside_the_mesh_does_not_inflate_the_aabb() {
+    // The AABB is documented as taken over TET-REFERENCED nodes only, "because
+    // including [orphans] would inflate the box and understate the fill
+    // fraction on an otherwise-correct mesh". The existing orphan test has ZERO
+    // tets, so it exercises the `indices.is_empty()` early return rather than
+    // the exclusion inside the AABB accumulation — this one has both.
+    let mut vm = kuhn_box_volume_mesh(1.0, 1.0, 1.0);
+    vm.vertices.extend_from_slice(&[10.0, 10.0, 10.0]);
+
+    let r = tet_fill_report(&vm).expect("an unreferenced node is not a malformed mesh");
+    assert_eq!(r.n_nodes, 9, "n_nodes counts the vertex buffer, orphans included");
+    assert_eq!(r.n_tets, 6, "the element buffer is untouched");
+    assert_rel(
+        r.aabb_volume,
+        1.0,
+        1e-12,
+        "a (10,10,10) orphan would make the AABB 1000x if it were counted",
+    );
+    assert_rel(
+        r.aabb_fill_fraction(),
+        1.0,
+        1e-12,
+        "excluding the orphan keeps an otherwise-complete mesh reading 1.0",
+    );
+    assert_eq!(
+        r.strictly_interior_nodes, 0,
+        "the orphan is unreferenced and outside the box; it must not be counted \
+         as an interior node either"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // (c) inverted tets and the no-orientation-cancellation discriminator
 // ---------------------------------------------------------------------------
 
@@ -390,28 +396,15 @@ fn mixed_orientation_mesh_shows_signed_sum_below_abs_sum() {
 fn enclosed_volume_of_unit_cube_is_exactly_one() {
     assert_eq!(
         enclosed_volume_of_surface(&unit_cube_mesh()),
-        1.0,
+        Some(1.0),
         "the divergence-theorem sum is exact for polyhedra with integral coordinates"
     );
 }
 
-/// Non-dyadic extents get the f32-storage-derived 1e-6 bound, NOT the 1e-12
-/// used for integral-coordinate fixtures.
-///
-/// `Mesh::vertices` is `Vec<f32>`, and 0.1 is not representable in binary: it
-/// stores as 0.100000001490116…, so a 1.0x0.1x0.1 box measures
-/// 1.000000029802e-2 against an exact 1e-2 — relative 2.98e-8, pure storage
-/// round-off on the coordinate rather than any error in the summation. (#6154
-/// independently measured the identical 1.0000000298e-2 for the realized
-/// fixture's AABB.) The derived ceiling is ≈ 3 × 2^-23 ≈ 3.6e-7 for a
-/// degree-3 form in the coordinates; 1e-6 clears it ~3x while sitting five
-/// orders of magnitude below the ~26% defect #6200 is guarding against.
-const F32_STORAGE_REL: f64 = 1e-6;
-
 #[test]
 fn enclosed_volume_of_thin_box_matches_closed_form() {
     assert_rel(
-        enclosed_volume_of_surface(&prismatic_box_mesh(1.0, 0.1, 0.1)),
+        enclosed_volume_of_surface(&prismatic_box_mesh(1.0, 0.1, 0.1)).expect("well-formed"),
         0.01,
         F32_STORAGE_REL,
         "enclosed volume of a 1.0x0.1x0.1 box",
@@ -431,8 +424,8 @@ fn enclosed_volume_is_independent_of_vertex_welding() {
     );
     assert_eq!(welded.vertices.len() / 3, 8, "welded fixture is 8 vertices");
 
-    let v_welded = enclosed_volume_of_surface(&welded);
-    let v_unwelded = enclosed_volume_of_surface(&unwelded);
+    let v_welded = enclosed_volume_of_surface(&welded).expect("well-formed");
+    let v_unwelded = enclosed_volume_of_surface(&unwelded).expect("well-formed");
     assert_rel(
         v_unwelded,
         0.01,
@@ -452,8 +445,59 @@ fn enclosed_volume_is_independent_of_vertex_welding() {
 fn enclosed_volume_of_unwelded_unit_cube_is_exactly_one() {
     assert_eq!(
         enclosed_volume_of_surface(&unwelded_prismatic_box_mesh(1.0, 1.0, 1.0)),
-        1.0
+        Some(1.0)
     );
+}
+
+/// A malformed surface must be `None`, NOT a quiet partial sum.
+///
+/// This is the asymmetry the reviewer of #6200 flagged: `enclosed_volume_of_surface`
+/// used to `continue` past any triangle carrying an out-of-range index. Because
+/// its result is the REFERENCE that `surface_match_ratio` divides by, dropping
+/// triangles shrinks the reference in the same direction as an under-filled
+/// volume mesh — so a real under-fill could divide out to ≈ 1.0 and read as
+/// healthy. `tet_fill_report` already returned `None` on the same class of
+/// input; these tests pin that the two are now symmetric.
+#[test]
+fn out_of_range_triangle_index_yields_none() {
+    let mut m = unit_cube_mesh();
+    m.indices[0] = 99;
+    assert_eq!(
+        enclosed_volume_of_surface(&m),
+        None,
+        "an out-of-range triangle index must be None, not a sum over the \
+         triangles that happened to be in range"
+    );
+}
+
+#[test]
+fn ragged_triangle_buffer_yields_none() {
+    let mut m = unit_cube_mesh();
+    m.indices.pop(); // 35 indices — not a whole number of triangles
+    assert_eq!(
+        enclosed_volume_of_surface(&m),
+        None,
+        "a ragged index buffer must be None; chunks_exact(3) would otherwise \
+         silently drop the tail"
+    );
+}
+
+#[test]
+fn ragged_vertex_buffer_yields_none() {
+    let mut m = unit_cube_mesh();
+    m.vertices.pop(); // 23 floats — not a whole number of XYZ triples
+    assert_eq!(enclosed_volume_of_surface(&m), None);
+}
+
+/// An empty surface is well-formed, just empty — `Some(0.0)`, not `None`.
+#[test]
+fn empty_surface_encloses_zero_volume() {
+    let m = Mesh {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        normals: None,
+    };
+    assert_eq!(enclosed_volume_of_surface(&m), Some(0.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +520,8 @@ fn ratio_accessors_match_their_definitions() {
         "surface_match_ratio(v) is abs_volume_sum / v"
     );
     // And against the geometry-agnostic reference for this very box.
-    let surface_volume = enclosed_volume_of_surface(&prismatic_box_mesh(2.0, 1.0, 1.0));
+    let surface_volume =
+        enclosed_volume_of_surface(&prismatic_box_mesh(2.0, 1.0, 1.0)).expect("well-formed");
     assert_rel(
         r.surface_match_ratio(surface_volume),
         1.0,

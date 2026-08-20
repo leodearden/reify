@@ -159,25 +159,41 @@ pub fn tet_signed_volume(c: &[[f64; 3]; 4]) -> f64 {
 /// crates; dev-depending on `reify-kernel-manifold` from here would invert the
 /// intended layering.
 ///
-/// A mesh whose winding is inconsistent, or which is not closed, produces a
-/// meaningless number — not an error. Callers must supply a vetted closed
-/// outward-wound surface.
-pub fn enclosed_volume_of_surface(m: &Mesh) -> f64 {
+/// Returns `None` when the mesh is not measurable as a triangle soup:
+/// - an index buffer whose length is not a whole number of triangles;
+/// - any index out of range for the vertex buffer;
+/// - a vertex buffer whose length is not a multiple of 3.
+///
+/// **Why `Option`, and not a skip-the-bad-triangle sum.** This number is the
+/// geometry-agnostic REFERENCE that completeness is judged against
+/// ([`TetFillReport::surface_match_ratio`], and the acceptance guard in
+/// `tests/volume_fill_fraction.rs`). Dropping a malformed triangle shrinks the
+/// reference in the *same direction* as an under-filled volume mesh, so a real
+/// under-fill would divide out to a ratio near 1.0 — a structurally plausible
+/// number carrying a wrong answer, which is exactly the failure mode this
+/// module exists to catch. The signature is therefore symmetric with
+/// [`tet_fill_report`]: malformed connectivity is `None`, never a quiet
+/// approximation.
+///
+/// A mesh whose winding is inconsistent, or which is not closed, is a
+/// *different* class of input: it is well-formed connectivity that produces a
+/// meaningless number, and cannot be detected here. Callers must supply a
+/// vetted closed outward-wound surface.
+pub fn enclosed_volume_of_surface(m: &Mesh) -> Option<f64> {
+    if !m.vertices.len().is_multiple_of(3) || !m.indices.len().is_multiple_of(3) {
+        return None;
+    }
     let n_nodes = m.vertices.len() / 3;
     let mut det_sum = 0.0f64;
     for tri in m.indices.chunks_exact(3) {
-        let (Some(a), Some(b), Some(c)) = (
-            node_at(&m.vertices, tri[0] as usize, n_nodes),
-            node_at(&m.vertices, tri[1] as usize, n_nodes),
-            node_at(&m.vertices, tri[2] as usize, n_nodes),
-        ) else {
-            continue;
-        };
+        let a = node_at(&m.vertices, tri[0] as usize, n_nodes)?;
+        let b = node_at(&m.vertices, tri[1] as usize, n_nodes)?;
+        let c = node_at(&m.vertices, tri[2] as usize, n_nodes)?;
         // a · (b × c)
         det_sum += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
             + a[2] * (b[0] * c[1] - b[1] * c[0]);
     }
-    det_sum / 6.0
+    Some(det_sum / 6.0)
 }
 
 /// Read node `i` from a flat f32 XYZ buffer, widened to f64. `None` if out of
