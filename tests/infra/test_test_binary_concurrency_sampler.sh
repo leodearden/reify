@@ -368,4 +368,121 @@ assert "A9b: no nextest INVOCATION (run/list/show-config) anywhere in the sample
 assert "A9c: the sampler is executable" \
     bash -c '[ -x "'"$SAMPLER"'" ]'
 
+# ---------------------------------------------------------------------------
+# A10 (THE CWD-DEPENDENCE FIX).  `for glob in $DEPS_GLOB` was unquoted, so the
+# expansion underwent BOTH word-splitting (intended — DEPS_GLOB is a
+# space-separated pattern LIST) and pathname expansion (never intended).  The
+# default `*/target/*/deps/*` is itself a live glob, so whenever the sampler's
+# cwd happened to contain a matching tree the loop variable bound to REAL
+# RELATIVE PATHS instead of the pattern, and `case "$exe" in ($glob)` could
+# never match an absolute /proc/<pid>/exe target.
+#
+# WHY THIS BLOCKED.  Measured on the identical fixture: peak=1 nonzero_samples=1
+# from a lane root, peak=0 nonzero_samples=0 from a cwd containing a matching
+# target/*/deps tree.  A cwd-induced zero is TEXTUALLY INDISTINGUISHABLE from the
+# genuine defect-(b) INCONCLUSIVE reading this instrument exists to expose — a
+# silently wrong measurement in the one place the instrument was built to be
+# trustworthy.  The sampler is HOST-WIDE and may be launched from any directory,
+# so its result must be cwd-independent.
+#
+# DELIBERATELY NOT ASSERTED: wall-clock cost.  The expansion is also a real
+# per-sample performance blowup (it materialises every matching path on every
+# pid, every tick), but this suite runs in bucket `pool` — CONCURRENTLY with
+# other suites — so any timing assert would be load-flaky.  A10a covers the same
+# root cause; the perf regression cannot recur without A10a going red.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- A10: the match set is cwd-independent (DEPS_GLOB is split, never pathname-expanded) ---"
+
+assert "A10a: a real test binary still counts when the sampler runs from a cwd that the DEFAULT glob matches (peak=1 — the reading must not depend on where it was launched)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _pids_cmd_file _field)"'
+        _mk_proc "$root" 801=/home/u/lanes/_lane-9/target/debug/deps/reify_lsp-2f1c9ab4
+        _pids_cmd_file "$d/pids" 801
+        # ONE matching path is sufficient to trigger pathname expansion — the
+        # 840k-path host directory that made this visible in production is not
+        # needed and would make the assert slow and non-hermetic.
+        mkdir -p "$d/cwd/lane/target/debug/deps"
+        : > "$d/cwd/lane/target/debug/deps/x"
+        cd "$d/cwd"
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" REIFY_SAMPLER_PIDS_CMD="bash $d/pids" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0)
+        [ "$(_field "$out" peak)" = "1" ]
+    '
+
+# A10b pins that the fix disables PATHNAME EXPANSION ONLY.  DEPS_GLOB is
+# documented as a space-separated pattern list, so the word-splitting half must
+# survive: a "fix" that merely quoted "$DEPS_GLOB" would collapse the two
+# patterns into one literal string and count nothing.
+#
+# Measured pre-fix value here is peak=1, not 0: the first pattern is destroyed by
+# the cwd match, while the second (`*/build/*/tests/*`) happens to match nothing
+# on disk and so survives literally under bash's default (nullglob off).  The
+# assert is peak=2 either way — one of the two patterns is silently lost.
+assert "A10b: two space-separated --deps-glob patterns BOTH still match from a glob-matching cwd (peak=2 — word-splitting must survive the fix)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _pids_cmd_file _field)"'
+        _mk_proc "$root" \
+            801=/home/u/lanes/_lane-9/target/debug/deps/reify_lsp-2f1c9ab4 \
+            802=/home/u/build/v1/tests/t-9999
+        _pids_cmd_file "$d/pids" 801 802
+        mkdir -p "$d/cwd/lane/target/debug/deps"
+        : > "$d/cwd/lane/target/debug/deps/x"
+        cd "$d/cwd"
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" REIFY_SAMPLER_PIDS_CMD="bash $d/pids" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 \
+              --deps-glob "*/target/*/deps/* */build/*/tests/*")
+        [ "$(_field "$out" peak)" = "2" ]
+    '
+
+# A10c: silent-zero hardening.  `[ -n "$DEPS_GLOB" ]` passes on whitespace, and
+# splitting whitespace yields ZERO patterns — after which every sample counts 0
+# forever and the summary line looks exactly like an honest empty host.  Same
+# silent-wrong-measurement class as A10a, so it must be rejected loudly at parse
+# time rather than reported as data.
+assert "A10c: a whitespace-only --deps-glob is REJECTED with a diagnostic (non-zero exit), not silently accepted as zero patterns" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _pids_cmd_file _field)"'
+        _mk_proc "$root" 801=/home/u/lanes/_lane-9/target/debug/deps/reify_lsp-2f1c9ab4
+        _pids_cmd_file "$d/pids" 801
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" REIFY_SAMPLER_PIDS_CMD="bash $d/pids" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 --deps-glob "   " 2>"$d/err") \
+            && rc=0 || rc=$?
+        # Non-zero exit, no summary line on stdout, and a diagnostic naming the flag.
+        [ "$rc" -ne 0 ] || exit 1
+        [ -z "$out" ] || exit 1
+        grep -q "deps-glob" "$d/err"
+    '
+
+# A10d: the fix must not OVERREACH.  Disabling pathname expansion for the whole
+# script would silently break any REIFY_SAMPLER_PIDS_CMD that legitimately relies
+# on globbing — and it would fail by returning ZERO candidates, i.e. as another
+# silent zero.  Globbing must be suppressed around the DEPS_GLOB split ALONE.
+#
+# NOTE FOR THE READER: this assert is GREEN BOTH BEFORE AND AFTER the fix by
+# design — it is a regression guard on the fix, not a demonstration of the bug.
+# Do not go hunting for a missing RED here.
+assert "A10d: a REIFY_SAMPLER_PIDS_CMD that itself relies on globbing still works (peak=1 — globbing is suppressed only around the pattern split)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _field)"'
+        _mk_proc "$root" 801=/home/u/lanes/_lane-9/target/debug/deps/reify_lsp-2f1c9ab4
+        echo 801 > "$d/pidlist-a"
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" REIFY_SAMPLER_PIDS_CMD="cat $d/pidlist-*" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0)
+        [ "$(_field "$out" peak)" = "1" ]
+    '
+
+
 test_summary
