@@ -916,4 +916,57 @@ assert "nextest.toml: exactly ONE line matches gen-nextest-config.sh's '^test-th
         [ \"\$n\" = \"1\" ]
     "
 
+# ---------------------------------------------------------------------------
+# Test 17l (task 6018, REVIEW-AMENDMENT pass): the no-nproc last-resort constant
+# in gen-nextest-config.sh and the in-file test-threads literal are ONE constant
+# duplicated in two files — assert they are equal.
+#
+# THE DUPLICATION IS REAL AND IS ONLY DOCUMENTED, NOT CHECKED, WITHOUT THIS.
+# gen-nextest-config.sh's HARD_CAP default is `${_nproc:-32}`; that 32 is reached
+# only when NEITHER `nproc` NOR `getconf _NPROCESSORS_ONLN` resolves.  Three
+# separate comment blocks in that script say it must stay coupled to the
+# `test-threads = 32` literal in .config/nextest.toml, but only the toml side was
+# pinned (Test 17a).  A future host-class change re-points 17a and the toml
+# together — the natural, obvious edit — and silently leaves the script's fallback
+# behind, with no test anywhere going red.
+#
+# The coupling also became a RISKIER guess in task 6018 than it was under 5984: a
+# host where neither tool resolves used to land on 16 and now lands on 32, so a
+# stale fallback now OVERSUBSCRIBES rather than merely narrowing.  That is exactly
+# the task 4621 failure this whole derivation exists to avoid, on the one code
+# path that cannot consult the host.
+#
+# BOTH SIDES ARE EXTRACTED, NEITHER IS HARDCODED HERE — the test-quality standard
+# Tests 16c/17h/17i were amended to meet.  An assert with a literal on either side
+# would just become a third copy of the same constant to keep in sync.
+#
+# Falsifiability was checked before this assert was added, not assumed: it goes
+# RED when the script constant is changed alone (32 -> 16), RED when the toml
+# literal is changed alone (32 -> 24), and RED when the `${_nproc:-N}` form is
+# removed from the script entirely (extractor returns empty, caught by the
+# non-empty guards rather than passing vacuously).
+#
+# The extractor deliberately does not spell the `"` or `$` of `"${_nproc:-N}"`:
+# a double quote cannot appear in this file's `bash -c "..."` assert form without
+# terminating the string.  Anchoring on `tt_hard_cap=` ... `_nproc:-<digits>}` is
+# specific enough — it matches exactly one line in the script today.
+#
+# Compile-free: sed/awk over two tracked files, no cargo, no nextest.  If a future
+# change moves the toml literal to a non-integer (e.g. nextest's `"num-cpus"`),
+# this assert must be re-pointed or re-based in the SAME commit — _DEFAULT_TT_AWK
+# extracts `[0-9]+` and would return empty, so it fails loudly rather than
+# silently.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 17l (task 6018 review amendment): the no-nproc fallback constant is coupled to the in-file literal ---"
+
+_TT_FALLBACK_SED='s/.*tt_hard_cap=.*_nproc:-\([0-9][0-9]*\)}.*/\1/p'
+
+assert "gen-nextest-config.sh's no-nproc last-resort HARD_CAP constant equals .config/nextest.toml's [profile.default] test-threads literal (one constant duplicated across two files; BOTH extracted, neither hardcoded here)" \
+    bash -c "
+        script_const=\$(sed -n '${_TT_FALLBACK_SED}' '$GEN_CFG')
+        toml_lit=\$(awk '${_DEFAULT_TT_AWK}' '$NEXTEST_TOML')
+        [ -n \"\$script_const\" ] && [ -n \"\$toml_lit\" ] && [ \"\$script_const\" = \"\$toml_lit\" ]
+    "
+
 test_summary

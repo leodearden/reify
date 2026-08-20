@@ -337,7 +337,7 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #   failfast_order    40 nextest-less /  40 ambient (2 recovered by widening,
 #                                                    both halves of each
 #                                                    compound assert)
-#   occt_gated_scope  59 nextest-less /  60 ambient (1 guarded: Test 9's
+#   occt_gated_scope  60 nextest-less /  61 ambient (1 guarded: Test 9's
 #                                                    --config-file assert is
 #                                                    genuinely nextest-only.
 #                                                    Otherwise already clean —
@@ -369,12 +369,32 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #                                                    global pool un-narrowed from
 #                                                    a fixed 16 to host nproc)
 #                                                    rather than retiring any of
-#                                                    them, so this row is
-#                                                    UNCHANGED at 59/60 and no
-#                                                    floor re-pin was needed.
+#                                                    them, so that pass left the
+#                                                    row UNCHANGED at 59/60 and
+#                                                    needed no floor re-pin.
 #                                                    Re-measured, not assumed: 60
 #                                                    ambient before AND after,
-#                                                    baseline at bc8f74a4d4)
+#                                                    baseline at bc8f74a4d4.
+#                                                    RAISED to 60/61 by that
+#                                                    task's REVIEW-AMENDMENT
+#                                                    pass, which added 1 more
+#                                                    (17l: the no-nproc
+#                                                    last-resort HARD_CAP
+#                                                    constant in
+#                                                    gen-nextest-config.sh
+#                                                    equals the in-file
+#                                                    test-threads literal — one
+#                                                    constant duplicated across
+#                                                    two files, previously
+#                                                    documented in three comment
+#                                                    blocks but checked nowhere).
+#                                                    Also sed/awk over the same
+#                                                    two tracked files, so again
+#                                                    both counts rose by the same
+#                                                    1 and the 1-assert delta is
+#                                                    UNCHANGED. Re-measured under
+#                                                    nx_run, not computed: 60
+#                                                    nextest-less / 61 ambient)
 #   release_mode       9 nextest-less /   9 ambient (already clean — the
 #                                                    alternation was already
 #                                                    used throughout)
@@ -390,7 +410,7 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 #                                                    in this suite)
 #
 # DATA-DRIVEN FLOORS. Not every floor is a fixed constant, and a drop below one
-# is not automatically a defect. occt_gated_scope's 59 = 44 fixed asserts + 15
+# is not automatically a defect. occt_gated_scope's 60 = 45 fixed asserts + 15
 # per-crate asserts driven by scripts/occt-touching-crates.txt (5 declared
 # crates x 3 loops: workspace-membership, nextest.toml package() filter, and
 # the no---exclude check). Only the FIXED half moved when task 5984 raised this
@@ -398,10 +418,14 @@ echo "--- S: covered suites reach test_summary with rc=0 / 0 FAIL / >= pass floo
 # loop, so the data-driven 15 is unchanged. Only the FIXED half moved again in
 # that task's review-amendment pass, 57 to 59 (42 -> 44): Tests 17j/17k are two
 # more fixed asserts, likewise adding no per-crate loop, so the data-driven 15
-# is STILL 15. Task 6018 moved NEITHER half: it re-pointed three EXISTING asserts
-# (17a/17e/17i) to the un-narrowed pool value and inverted 17i's comparison, so
-# the split stays 44 fixed + 15 data-driven and this floor stays 59 — measured,
-# not computed. The next reader does not have to re-derive that. Legitimately REMOVING a crate from that manifest
+# is STILL 15. Task 6018's implementation pass moved NEITHER half: it re-pointed
+# three EXISTING asserts (17a/17e/17i) to the un-narrowed pool value and inverted
+# 17i's comparison, so the split stayed 44 fixed + 15 data-driven and the floor
+# stayed 59 — measured, not computed. Its REVIEW-AMENDMENT pass then moved only
+# the FIXED half again, 59 to 60 (44 -> 45): Test 17l is one more fixed assert
+# (the no-nproc HARD_CAP constant vs the in-file test-threads literal), adding no
+# per-crate loop, so the data-driven 15 is STILL 15 and the floor is re-pinned to
+# 60. The next reader does not have to re-derive that. Legitimately REMOVING a crate from that manifest
 # drops this suite's count by 3 and trips S7 with a "COVERAGE SHRANK" message
 # whose (a) branch does not apply — re-pin the floor here with the new split
 # rather than hunting for a nextest guard that does not exist. The other eight
@@ -470,8 +494,8 @@ assert "S6: test_verify_failfast_order.sh reaches test_summary with rc=0 / 0 FAI
 # The residual limitation stands, though: if you must guard an assert, guard it
 # OUTSIDE the assert call. Same reasoning as _suite_is_clean_without_nextest's
 # own "WHY THE FLOOR" note.
-assert "S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 59 passed on a nextest-less host" \
-    _suite_is_clean_without_nextest test_occt_gated_scope.sh 59
+assert "S7: test_occt_gated_scope.sh reaches test_summary with rc=0 / 0 FAIL / >= 60 passed on a nextest-less host" \
+    _suite_is_clean_without_nextest test_occt_gated_scope.sh 60
 
 assert "S8: test_release_mode_in_test_command.sh reaches test_summary with rc=0 / 0 FAIL / >= 9 passed on a nextest-less host" \
     _suite_is_clean_without_nextest test_release_mode_in_test_command.sh 9
