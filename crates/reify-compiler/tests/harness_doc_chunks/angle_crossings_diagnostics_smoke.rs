@@ -51,6 +51,9 @@
 //! sketch (lines 26-29, which are abbreviated by design, not verbatim), and
 //! `units.md`'s paraphrase of the error SHAPE. Those are read, not executed.
 
+use reify_core::diagnostics::DiagnosticCode;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
+
 /// The best-practices exemplar whose `CANONICAL COPY` block this module pins,
 /// read out of the repo's `examples/` tree at compile time.
 ///
@@ -264,6 +267,94 @@ fn canonical_copy_block_yields_the_four_transcribed_diagnostics() {
         assert_eq!(
             entry.message, *message,
             "CANONICAL COPY entry {index}: transcribed message drifted"
+        );
+    }
+}
+
+/// Collapse every run of whitespace in `text` to a single space.
+///
+/// Used to key fixtures and expectations off a declaration whose exemplar form
+/// carries column-alignment padding (`let   theta`, `arc   :`). The padding is
+/// preserved in the scraped entry — a reflow must stay visible in the step-1
+/// triple assertion — but it must not be load-bearing for lookup.
+fn normalize_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The typed [`DiagnosticCode`] a compile-layer entry must carry, derived from
+/// the entry's own declaration keyword rather than from its position in the
+/// block — so reordering the block cannot silently re-pair a message with the
+/// wrong code.
+///
+/// `crates/reify-compiler/src/entity.rs:577` emits
+/// `LetAnnotationTypeMismatch` for an annotated `let`; `:493` emits
+/// `ParamDefaultTypeMismatch` for an annotated `param`. The two messages differ
+/// only in their tail ("initializer **type** must agree" vs. "initializer
+/// **dimension** must agree"), which is exactly the kind of near-collision a
+/// message-only assertion can wave through.
+fn expected_code_for(declaration: &str) -> DiagnosticCode {
+    let normalized = normalize_whitespace(declaration);
+    if normalized.starts_with("let ") {
+        DiagnosticCode::LetAnnotationTypeMismatch
+    } else if normalized.starts_with("param ") {
+        DiagnosticCode::ParamDefaultTypeMismatch
+    } else {
+        panic!(
+            "CANONICAL COPY declaration `{normalized}` is neither a `let` nor a `param` \
+             binding, so this module cannot say which DiagnosticCode it should carry. \
+             Extend `expected_code_for` alongside `fixture_for` when the block grows a \
+             new declaration form."
+        )
+    }
+}
+
+/// Every compile-layer transcription equals what the compiler actually emits.
+///
+/// This is the assertion the exemplar's "compile-gated" claim was making on
+/// credit. Each `error:` entry is scraped, its minimal fixture compiled for
+/// real, and the produced `Diagnostic::message` compared for EXACT equality —
+/// not `contains`, which would let a truncated or reworded transcription pass.
+#[test]
+fn transcribed_compile_diagnostics_match_the_real_compiler() {
+    let compile_layer: Vec<TranscribedDiagnostic> = canonical_copy_entries()
+        .into_iter()
+        .filter(|entry| entry.renderer == "error")
+        .collect();
+    assert_eq!(
+        compile_layer.len(),
+        3,
+        "expected three compile-layer transcriptions in the CANONICAL COPY block; \
+         got {compile_layer:#?}"
+    );
+
+    for entry in &compile_layer {
+        let module = compile_source_with_stdlib(fixture_for(&entry.declaration));
+        let produced = errors_only(&module);
+        let messages: Vec<&str> = produced.iter().map(|d| d.message.as_str()).collect();
+
+        let matched = produced.iter().find(|d| d.message == entry.message);
+        let Some(matched) = matched else {
+            panic!(
+                "the CANONICAL COPY block in examples/best_practices/angle_crossings.ri \
+                 transcribes, for `{}`:\n  {}\nbut the compiler produced:\n  {:#?}\n\
+                 The compiler wording changed: re-measure with `reify check` and update \
+                 the CANONICAL COPY block in examples/best_practices/angle_crossings.ri, \
+                 then let crates/reify-mcp/src/tools/chunks/units.md follow — that is the \
+                 precedence the exemplar itself states.",
+                entry.declaration, entry.message, messages
+            )
+        };
+
+        let expected_code = expected_code_for(&entry.declaration);
+        assert_eq!(
+            matched.code,
+            Some(expected_code),
+            "`{}` produces the transcribed wording but under code {:?}, not {:?}. Same \
+             text, different cause — the transcription is stale even though it still \
+             matches by string.",
+            entry.declaration,
+            matched.code,
+            expected_code
         );
     }
 }
