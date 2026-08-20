@@ -39,21 +39,25 @@ source "$SCRIPT_DIR/plan_capture_lib.sh"
 
 echo "=== verify.sh LD_LIBRARY_PATH scope guard (task 5730) ==="
 
-# Fork-free "haystack does NOT contain needle" predicate. A function (not a
-# pipeline) so `assert` runs it in this shell with only a redirect, and so no
+# Fork-free "haystack contains needle" predicate. A function (not a pipeline)
+# so `assert` runs it in this shell with only a redirect, and so no
 # pipe/subshell EINTR surface is introduced (esc-4574-42).
-not_contains() {
-    case "$1" in
-        *"$2"*) return 1 ;;
-        *)      return 0 ;;
-    esac
-}
+#
+# The `not_contains` twin that stood here was removed with the two
+# absent-substring ambient assertions it served (esc-5730-2): those are now
+# equality/reconstruction assertions, and nothing else needed the negation.
 contains() {
     case "$1" in
         *"$2"*) return 0 ;;
         *)      return 1 ;;
     esac
 }
+
+# Host OCCT dirs — the two apply_env() may prepend (scripts/verify.sh).
+# Named once so the Section-A reconstruction below and the Section-B sqlite3
+# probe cannot drift apart.
+SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
+DEPS_OCCT_LIB="/opt/reify-deps/lib"
 
 # ---------------------------------------------------------------------------
 # Capture: merge-role plan. DF_VERIFY_ROLE=merge selects the tier carrying the
@@ -62,9 +66,25 @@ contains() {
 # belt-and-braces for an in-pool capture (mirrors
 # test_run_all_ambient_isolation.sh:153-155).
 # ---------------------------------------------------------------------------
+# AMBIENT PIN (esc-5730-2). The captured-ambient assertions in Section A are
+# claims about WHEN apply_env() reads LD_LIBRARY_PATH, not about what the
+# operator's loader path happens to hold. Pinning the child's ambient to a
+# sentinel makes them a function of verify.sh alone: an in-pool run whose own
+# ambient IS /opt/reify-deps/lib (a .cargo/run-with-occt.sh parent, a
+# run-gui.sh dev shell, or a nested gate) no longer flips them red for
+# behaving exactly as designed. The sentinel is a NON-EXISTENT directory, so
+# the loader silently skips it — and --print-plan is hermetic, so nothing in
+# this capture resolves a library through it. Section B already pins its own
+# probes this way (LD_LIBRARY_PATH="" / =/opt/reify-deps/lib); Section A now
+# matches, as does the sibling ambient-isolation family
+# (tests/infra/run_all_ambient_isolation_lib.sh), which always SETS the
+# ambient it reasons about rather than asserting on an inherited one.
+LD_AMBIENT_SENTINEL="/nonexistent/reify-ld-ambient-sentinel-5730"
+
 PLAN_DUMP=""
 capture_print_plan PLAN_DUMP 3 \
-    env -u REIFY_INFRA_SUITE_ACTIVE DF_VERIFY_ROLE=merge REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
+    env -u REIFY_INFRA_SUITE_ACTIVE LD_LIBRARY_PATH="$LD_AMBIENT_SENTINEL" \
+    DF_VERIFY_ROLE=merge REIFY_NEXTEST_PROBE_RETRY_SLEEP=0 \
     bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true
 
 echo ""
@@ -77,26 +97,55 @@ echo "--- Section A: --print-plan environment block ---"
 assert "env block still carries the OCCT '# export LD_LIBRARY_PATH=' line (non-vacuity: a plan-format change must fail HERE, not silently empty the extractions below)" \
     plan_match "$PLAN_DUMP" '^# export LD_LIBRARY_PATH='
 
-# Extract the ambient-capture line, fork-free (no sed/awk/pipe/subshell).
+# Extract BOTH loader-path env lines, fork-free (no sed/awk/pipe/subshell).
+# The two case patterns are disjoint: the ambient line's prefix diverges at
+# "REIFY_", so "# export LD_LIBRARY_PATH=" cannot capture it.
 AMBIENT_ENV_LINE=""
+FINAL_ENV_LINE=""
 while IFS= read -r _line; do
     case "$_line" in
         "# export REIFY_AMBIENT_LD_LIBRARY_PATH="*) AMBIENT_ENV_LINE="$_line" ;;
+        "# export LD_LIBRARY_PATH="*)               FINAL_ENV_LINE="$_line" ;;
     esac
 done <<< "$PLAN_DUMP"
+
+AMBIENT_VAL="${AMBIENT_ENV_LINE#'# export REIFY_AMBIENT_LD_LIBRARY_PATH='}"
+FINAL_VAL="${FINAL_ENV_LINE#'# export LD_LIBRARY_PATH='}"
 
 assert "env block carries '# export REIFY_AMBIENT_LD_LIBRARY_PATH=' (apply_env() captures the pre-OCCT loader path as the single source of truth for restoring a clean one)" \
     test -n "$AMBIENT_ENV_LINE"
 
-# The whole point of the captured value: it is the loader path as it stood on
-# ENTRY to apply_env(), i.e. BEFORE either OCCT prepend. If the conda prefix
-# leaked into it, the capture ran too late and every scrub built from it would
-# be a no-op.
-assert "captured ambient value does NOT contain /opt/reify-deps/lib (capture must happen BEFORE the OCCT prepends, else every scrub built from it is a no-op)" \
-    not_contains "$AMBIENT_ENV_LINE" '/opt/reify-deps/lib'
+# (c) The capture must read LD_LIBRARY_PATH on ENTRY to apply_env(), BEFORE
+# either OCCT prepend — otherwise every scrub built from it is a no-op.
+# Asserted as EQUALITY against the pinned sentinel, NOT as "does not contain
+# /opt/reify-deps/lib": the absent-substring form conflated "verify.sh added
+# the OCCT path" with "the OCCT path was present at all", so it went red on a
+# legitimately hostile ambient while verify.sh behaved exactly as designed
+# (esc-5730-2). Equality is also STRICTLY STRONGER — it fails on a capture
+# taken after the prepends (an OCCT dir would sit in front of the sentinel),
+# on a capture hardcoded to "", and on any other mangling of the operator's
+# path; the substring form caught none of the latter two. It is the ONLY form
+# that actively tests apply_env()'s documented promise that a legitimate
+# operator loader path is preserved verbatim.
+assert "captured ambient is EXACTLY the pinned pre-OCCT loader path (capture must precede the OCCT prepends, else every scrub built from it is a no-op; got '$AMBIENT_VAL')" \
+    test "$AMBIENT_VAL" = "$LD_AMBIENT_SENTINEL"
 
-assert "captured ambient value does NOT contain the snap OCCT dir either (same reason)" \
-    not_contains "$AMBIENT_ENV_LINE" '/snap/freecad/current/usr/lib'
+# (d) The other half of the same invariant: the process-wide export IS that
+# captured value with only the OCCT dirs prepended. Reconstructed from
+# apply_env()'s OWN two host conditions so it stays correct on a host with
+# neither OCCT dir — where nothing is prepended and final == ambient is the
+# RIGHT answer. That case is exactly why a bare "ambient != final" assertion
+# cannot be used: it would go red on every OCCT-less host. Fork-free glob
+# rather than `ls` (esc-4574-42 house style); an unmatched glob leaves the
+# literal pattern, which `-e` rejects.
+_expect_final="$LD_AMBIENT_SENTINEL"
+[ -d "$SNAP_OCCT_LIB" ] && _expect_final="$SNAP_OCCT_LIB${_expect_final:+:$_expect_final}"
+_tk_glob=( "$DEPS_OCCT_LIB"/libTKernel.so* )
+if [ -d "$DEPS_OCCT_LIB" ] && [ -e "${_tk_glob[0]}" ]; then
+    _expect_final="$DEPS_OCCT_LIB${_expect_final:+:$_expect_final}"
+fi
+assert "post-prepend LD_LIBRARY_PATH == <OCCT dirs present on this host> ++ captured ambient (so the captured value is the pre-OCCT path verbatim and the scrub restores it faithfully; expected '$_expect_final', got '$FINAL_VAL')" \
+    test "$FINAL_VAL" = "$_expect_final"
 
 # ---------------------------------------------------------------------------
 # Section B: behavioural half — the original bite, host-gated.
@@ -120,13 +169,24 @@ assert "captured ambient value does NOT contain the snap OCCT dir either (same r
 echo ""
 echo "--- Section B: behavioural reproduction (host-gated) ---"
 
-DEPS_SQLITE_SO="/opt/reify-deps/lib/libsqlite3.so.0"
+DEPS_SQLITE_SO="$DEPS_OCCT_LIB/libsqlite3.so.0"
 _skip_reason=""
 
 if [ ! -e "$DEPS_SQLITE_SO" ]; then
     _skip_reason="$DEPS_SQLITE_SO absent (no conda libsqlite3 to shadow with)"
 elif ! command -v sqlite3 >/dev/null 2>&1; then
     _skip_reason="no sqlite3 CLI on PATH"
+elif ! ldd "$(command -v sqlite3)" 2>/dev/null | grep -q 'libsqlite3\.so'; then
+    # LINKAGE precondition. The version comparison below is necessary but NOT
+    # sufficient: the shadowing hazard needs the resolved CLI to DYNAMICALLY
+    # LINK libsqlite3.so at all. A statically-linked sqlite3 earlier on PATH —
+    # e.g. Android SDK platform-tools, which ships one — reports a version that
+    # differs from the deps soname (so the version gate opens) yet can never
+    # load the conda lib, and the hostile-probe assertions below then fail on a
+    # host that is behaving perfectly. That is the "differently-ordered
+    # sqlite3" case this section's header already promises to SKIP; without
+    # this check the promise was unimplemented and the skip never fired.
+    _skip_reason="resolved sqlite3 ($(command -v sqlite3)) does not dynamically link libsqlite3.so — cannot be shadowed by the conda prefix (differently-ordered CLI on PATH)"
 fi
 
 SCRUBBED_OUT=""
