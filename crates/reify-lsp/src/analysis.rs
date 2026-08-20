@@ -207,7 +207,8 @@ impl AnalysisContext {
         None
     }
 
-    /// Look up the doc comment for a top-level entity (structure, fn, trait, or enum) by name.
+    /// Look up the doc comment for a top-level entity (structure, fn, trait, enum, or
+    /// type alias) by name.
     ///
     /// Returns `None` if the entity has no doc comment or doesn't exist.
     pub fn find_entity_doc(&self, name: &str) -> Option<&str> {
@@ -224,6 +225,7 @@ impl AnalysisContext {
                 }
                 reify_ast::Declaration::Trait(t) if t.name == name => return t.doc.as_deref(),
                 reify_ast::Declaration::Enum(e) if e.name == name => return e.doc.as_deref(),
+                reify_ast::Declaration::TypeAlias(t) if t.name == name => return t.doc.as_deref(),
                 _ => {}
             }
         }

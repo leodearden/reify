@@ -167,7 +167,11 @@ pub fn compute_hover_in_context(
                 return Some(make_hover_markdown(md));
             }
             reify_ast::Declaration::TypeAlias(t) if t.name == word => {
-                let md = format!("```reify\n{}\n```", format_type_alias_signature(t));
+                let mut md = format!("```reify\n{}\n```", format_type_alias_signature(t));
+                if let Some(doc) = ctx.find_entity_doc(word) {
+                    md.push_str("\n\n");
+                    md.push_str(doc);
+                }
                 return Some(make_hover_markdown(md));
             }
             _ => {}
