@@ -67,8 +67,12 @@ trait Defaultable {
 /// (which is not in scope during compilation of a neutral fn body) must yield
 /// an `UnresolvedName` diagnostic naming the offending member.
 ///
-/// RED today: trait fn bodies are never compiled (`compile_trait` only stores
-/// the `FnDef`), so no error fires for the member reference.
+/// Trait-STATIC assoc-fn bodies are compiled eagerly at trait-declaration
+/// time (in a neutral, non-conformer scope), unlike trait `param` defaults,
+/// `let` values and `constraint` expressions, which are only compiled once
+/// per conformer. The neutral scope means a body referencing a trait member
+/// (e.g. `diameter`) produces an `UnresolvedName` diagnostic naming the
+/// member, with no extra code needed — which is exactly what this test pins.
 #[test]
 fn static_assoc_fn_body_referencing_trait_member_errors() {
     let source = r#"
