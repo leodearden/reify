@@ -171,7 +171,7 @@ struct TranscribedDiagnostic {
 /// Scrape the `CANONICAL COPY` block out of `text`.
 ///
 /// The block's shape (measured at `examples/best_practices/angle_crossings.ri`
-/// lines 34-53) is regular, and this reader is deliberately strict about it so
+/// lines 34-62) is regular, and this reader is deliberately strict about it so
 /// that a reflow is *visible* rather than silently absorbed:
 ///
 /// - the block opens at the line whose comment body starts with
@@ -190,6 +190,11 @@ struct TranscribedDiagnostic {
 /// vanish while the text (not cosmetic) survives. Each rendered diagnostic is
 /// then split once on the first `": "` into its renderer prefix (`error`,
 /// `Parse error`) and the message body.
+///
+/// The scan starts strictly AFTER the marker line, and that matters: the
+/// exemplar's `ANTI-PATTERN` sketch at lines 26-29 is indented identically to a
+/// declaration, so a reader that scanned the whole file would pick up its three
+/// abbreviated lines as entries. Starting at the marker is what keeps them out.
 ///
 /// # Panics
 ///
