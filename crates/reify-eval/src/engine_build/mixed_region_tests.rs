@@ -485,6 +485,43 @@
         );
     }
 
+    /// Non-finite node/target coordinates latch a single WARN per call (not
+    /// once per non-finite node), and an all-finite call stays quiet. Mirrors
+    /// `nearest_node_warns_once_on_non_finite_and_is_quiet_on_finite`
+    /// (modal_ops.rs:4292-4311).
+    ///
+    /// Currently RED: `three_nearest_node_indices` emits no tracing events at
+    /// all, so the first assertion sees 0 instead of 1.
+    #[test]
+    fn three_nearest_node_indices_warns_once_on_non_finite_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            // Two non-finite nodes (indices 0 and 1) in one call must still
+            // latch exactly one WARN, not one per poisoned node.
+            let nodes = [
+                [f64::NAN, 0.0, 0.0],
+                [f64::INFINITY, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ];
+            let _ = three_nearest_node_indices(&nodes, [1.0, 0.0, 0.0]);
+        });
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+            let _ = three_nearest_node_indices(&nodes, [1.9, 0.0, 0.0]);
+        });
+        capture.assert_count(0);
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
