@@ -764,37 +764,24 @@ assert "hI1: ...and prints a diagnostic naming the stale scope" \
 # ===========================================================================
 # hJ — CHARACTERIZATION pin of an ACCEPTED OVER-FLAG (task 5159).
 #
-# The gate flags the fragment `unwrap_or( … Ordering::Equal … )`. That also
-# matches a comparator built the SANCTIONED way, when the `Option<Ordering>`
-# being defaulted comes from `Iterator::find`/`max_by`/`min_by` rather than
-# from `partial_cmp`:
+# WHAT IS PINNED: the gate flags the fragment `unwrap_or( … Ordering::Equal
+# … )` even when the `Option<Ordering>` being defaulted comes from
+# `Iterator::find` on an ALREADY-`total_cmp`-based comparator, where no NaN
+# hazard exists. Flagged (hJ1); cleared by the escape (hJ2).
 #
-#     .map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Equal)
+# PINNED AS ACCEPTED, NOT AS A DEFECT TO BE TIDIED UP. Why the matcher stays
+# fragment-based, and why narrowing it is rejected, is recorded ONCE,
+# canonically, in docs/prds/compute-fea-hardening.md "Resolved design
+# decision 9" §G — read that before proposing a narrower regex. It is not
+# restated here on purpose: three copies of one argument is the drift
+# decision 9 exists to stop.
 #
-# Here `total_cmp` is ALREADY the fix — the `unwrap_or` only supplies the
-# "both sequences compared equal elementwise" answer for an exhausted `find`.
-# No NaN hazard exists. The gate flags it anyway.
-#
-# THIS IS PINNED AS ACCEPTED, NOT AS A DEFECT TO BE TIDIED UP. The matcher is
-# fragment-based on purpose: it must catch the MULTI-LINE form where
-# `.partial_cmp` and `.unwrap_or` sit on separate lines (e.g. reify-eval's
-# modal_ops.rs `frequency_ascending_order`), which a
-# `partial_cmp(...).unwrap_or(...)`-on-one-line matcher would miss. Narrowing
-# the regex to require a nearby `partial_cmp` would trade a fail-SAFE false
-# positive (cost: one annotation) for a possible false NEGATIVE (cost: a
-# silently-landed NaN hazard). For a safety gate that is the wrong direction,
-# so the narrowing is REJECTED — see docs/prds/compute-fea-hardening.md
-# "Resolved design decision 9".
-#
-# The shape below is read verbatim from crates/reify-ir/src/value.rs:284-291.
-# Two live instances of it exist today (value.rs:290 and :309); BOTH are
-# outside the covered scope, so the gate is green on the real tree and this
-# over-flag costs the tree nothing at present. It would cost exactly two
-# annotations if reify-ir were ever brought in scope.
-#
-# NOTE this block also disproves what the gate header asserted before task
-# 5159: that "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix
-# is never flagged." It can, and here it does.
+# The shape below is read verbatim from `impl Ord for SampledField` in
+# crates/reify-ir/src/value.rs, where two live instances sit (the nested
+# `cmp_floats` helper and the `axis_grids` leg). BOTH are outside the covered
+# scope, so the gate is green on the real tree and this over-flag costs the
+# tree nothing today — it would cost exactly two annotations if reify-ir were
+# ever brought in scope.
 # ===========================================================================
 echo ""
 echo "--- (hJ): the total_cmp().find().unwrap_or() over-flag is deliberate and escapable ---"
@@ -829,28 +816,32 @@ assert "hJ2: ...and the sanctioned response is the escape, which clears it" \
 # hK — the KEEP-SCOPED decision, pinned executably (task 5159).
 #
 # These crates/modules are OUT of SCOPE_PATHSPECS by RECORDED DECISION, not
-# by oversight: docs/prds/compute-fea-hardening.md "Resolved design decision
-# 9". The scope RULE is "the physical/geometric numeric solve path"; the
-# 2026-08-20 per-site census behind the call, and the condition under which
-# the scope widens, live there.
+# by oversight. The scope RULE ("the physical/geometric numeric solve path"),
+# the 2026-08-20 per-site census, why widening today is not honestly
+# executable, and the widening trigger are recorded ONCE, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" — go there,
+# not to a paraphrase here.
 #
-# WHY PIN AN ABSENCE. The 2026-07-09 census that prompted task 5159 drifted
-# in six weeks without anyone noticing (a new site appeared in
-# reify-constraints; every cited line number moved). Prose cannot notice
-# that. These assertions can: they turn "we deliberately do not scan here"
-# into something that FAILS when it stops being true.
+# EXACTLY WHAT THIS BLOCK PINS — read this before citing it as evidence:
+#   1. hK1-hK7: an UNGUARDED hazard planted at each excluded path is NOT
+#      flagged. This detects ONE thing — a widening of SCOPE_PATHSPECS that
+#      brings that path in scope. That is the intended tripwire: the gate's
+#      pathspecs, decision 9 and these pins are meant to fail together, and a
+#      reviewer seeing one flip should be sent to decision 9's census table
+#      and its four follow-up tickets before approving.
+#   2. hK1-hK7 (second assert each): the path still EXISTS as a tracked file
+#      in the REAL repo. Every other assertion here runs against the
+#      synthetic $FIX repo and would keep passing against a path that had
+#      been renamed or deleted — pinning a string, not a site. This leg is
+#      what makes a crate split or module move fail loudly instead of
+#      silently hollowing the block out.
 #
-# The census also found that the out-of-scope sites are NOT all guarded —
-# 7 of the 14 gate-visible ones are not provably NaN-safe. Widening today
-# would therefore force either 6-7 FALSE `// nan-safe:allow` rationales (which
-# destroys the escape's only value — that a reader can trust the stated
-# reason) or 6-7 fail-closed fixes across 3 crates. Those fixes are owned by
-# filed follow-up work, cited in decision 9, NOT by this gate.
-#
-# A change that flips ANY assertion below is the intended tripwire.
-# SCOPE_PATHSPECS and these pins are meant to fail together: send the
-# reviewer to decision 9's census table and its follow-up tickets before
-# approving it.
+# WHAT IT DOES *NOT* PIN: general census drift. A NEW unguarded site
+# appearing in an already-excluded file (which is how the 2026-07-09 census
+# went stale) leaves every assertion here green. Nothing in this suite
+# re-runs the census; decision 9's file-level record is the authority, and
+# re-measuring is a human/task job. Do not read a green hK as "the census is
+# still accurate".
 #
 # ANTI-VACUITY: hK8 writes the BYTE-IDENTICAL hazard text to a COVERED path
 # and requires exit 1. Without it, a typo in $HK_HAZARD would make all seven
@@ -901,6 +892,12 @@ for _hk_rel in "${HK_EXCLUDED[@]}"; do
     write_hazard_at "$_hk_rel"
     assert "hK$_hk_i: $_hk_rel is OUT of scope by decision — an UNGUARDED hazard there is not flagged" \
         _exits_with 0 bash "$GATE" --repo-root "$FIX"
+    # REAL-TREE leg: the assertion above is entirely synthetic ($FIX), so it
+    # would keep passing against a path that no longer exists. Fail loudly on
+    # a rename/move/delete instead, and send the reader to decision 9 to
+    # re-site the row rather than to delete the pin.
+    assert "hK$_hk_i: ...and $_hk_rel still exists as a tracked file in the real tree (census path not renamed — re-site it in decision 9, do not drop the pin)" \
+        git -C "$REPO_ROOT" ls-files --error-unmatch "$_hk_rel"
 done
 
 # hK8 — ANTI-VACUITY CONTROL. Same bytes, covered path, must flag.

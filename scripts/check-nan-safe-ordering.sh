@@ -22,26 +22,21 @@
 #
 # ACCEPTED OVER-FLAG (measured, task 5159). This header used to claim that
 # "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix is never
-# flagged". That is false. The fragment match CAN flag a comparator that
-# already uses the sanctioned `f64::total_cmp`, when the `Option<Ordering>`
-# being defaulted comes from `find`/`max_by`/`min_by` instead of from
-# `partial_cmp`:
+# flagged". THAT IS FALSE: the fragment match also flags a comparator built
+# the sanctioned way, when the `Option<Ordering>` being defaulted comes from
+# `find`/`max_by`/`min_by` instead of from `partial_cmp`:
 #     .map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Equal)
-# There the `unwrap_or` only supplies the "compared equal elementwise" answer
-# for an EXHAUSTED `find`, and no NaN hazard exists. Two such sites are live
-# today — crates/reify-ir/src/value.rs:290 and :309 — both OUTSIDE the covered
-# scope below, so the gate is green on the real tree.
+# Live instances: `impl Ord for SampledField` in crates/reify-ir/src/value.rs
+# (two — the nested `cmp_floats` helper and the `axis_grids` leg), both
+# OUTSIDE the covered scope below, so the gate is green on the real tree.
 #
-# The over-flag is RETAINED DELIBERATELY. Narrowing the matcher to require a
-# nearby `partial_cmp` would trade a fail-SAFE false positive (cost: one
-# annotation) for a possible false NEGATIVE (cost: a silently-landed NaN
-# hazard) — the wrong direction for a safety gate — and would also lose the
-# multi-line form this fragment match exists to catch. `// nan-safe:allow —
-# <reason>` is the sanctioned response; for this shape the reason is true and
-# informative ("total_cmp already; unwrap_or defaults an exhausted find, not a
-# partial_cmp") rather than a rubber stamp. Pinned by block (hJ) of
-# tests/infra/test_nan_safe_ordering_guard_wired.sh; rationale recorded in
-# docs/prds/compute-fea-hardening.md "Resolved design decision 9".
+# The over-flag is RETAINED DELIBERATELY — do not "tidy" the matcher. The
+# reasoning is recorded once, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" §G; it is
+# NOT restated here, because three copies of one argument is the drift the
+# same decision exists to stop. Behaviour you need at this file: the site is
+# flagged, and `// nan-safe:allow — <reason>` is the sanctioned response.
+# Pinned by block (hJ) of tests/infra/test_nan_safe_ordering_guard_wired.sh.
 #
 # COVERED SCOPE (exactly — mirrors the task 5093 spec): the FEA numeric crates
 # reify-solver-elastic, reify-kernel-gmsh, reify-fdm, reify-shell-extract,
@@ -53,20 +48,19 @@
 # ordering are deliberately OUT — a mis-sorted eviction candidate costs a
 # cache miss, a mis-sorted principal stress is a wrong engineering answer.
 #
-# Which crates and modules are deliberately excluded, the per-site census
-# behind that call, and the condition under which the scope widens are
-# recorded in docs/prds/compute-fea-hardening.md "Resolved design decision 9"
-# (task 5159). Do NOT add or remove a SCOPE_PATHSPECS entry without updating
-# decision 9 AND the (hK) exclusion pins in
-# tests/infra/test_nan_safe_ordering_guard_wired.sh — they are meant to fail
-# together.
+# The excluded set, the per-site census behind the call, and the condition
+# under which the scope widens are recorded ONCE, canonically, in
+# docs/prds/compute-fea-hardening.md "Resolved design decision 9" (task
+# 5159) — read it before touching SCOPE_PATHSPECS. Do NOT add or remove an
+# entry without updating decision 9 AND the (hK) exclusion pins in
+# tests/infra/test_nan_safe_ordering_guard_wired.sh — the three are meant to
+# fail together.
 #
 # WARNING: this scope is NARROWER than INV-FEA-3's registry wording used to
-# suggest ("numeric crates"). The 2026-08-20 census found genuinely
-# UNGUARDED sites outside it — in reify-stdlib, reify-constraints and
-# reify-eval's engine_build.rs. Those are owned by filed follow-up hardening
-# work cited in decision 9, NOT by this gate. Do not read this gate's green
-# as evidence that they are safe.
+# suggest ("numeric crates"), and decision 9's 2026-08-20 census found
+# genuinely UNGUARDED sites outside it (reify-stdlib, reify-constraints,
+# reify-eval's engine_build.rs) owned by filed follow-up hardening, NOT by
+# this gate. Do not read this gate's green as evidence that they are safe.
 #
 # PRODUCTION-CODE VIEW: each raw line is reduced to its production code by a
 # single LEFT-TO-RIGHT LEXER (`_strip_line`), not a comment-tail regex strip.

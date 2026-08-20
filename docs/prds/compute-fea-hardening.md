@@ -11,7 +11,7 @@ Four independently-landable hardening slices, all long-standing repeated-omissio
 1. **INV-FEA-1 (registration).** One canonical bundling point for compute-trampoline registration, replacing three independently hand-assembled, already-drifted bundlers (CLI, GUI, test_runner).
 2. **INV-FEA-1 (LSP posture).** The LSP's trampoline-free posture becomes documented + locked (mirroring `cmd_check`'s existing posture) instead of silently dropping FEA-constraint truth; a hint diagnostic tells the user why.
 3. **INV-FEA-2 (panic boundary).** The compute-dispatch boundary converts a trampoline panic into a structured `ComputeOutcome::Failed` instead of an uncaught process crash (CLI has **zero** `catch_unwind` today), then works down the ~30 panic-based Value-shape asserts that make the panic reachable in the first place.
-4. **INV-FEA-3 (NaN ordering).** Every `partial_cmp(...).unwrap_or(Ordering::Equal)` site in the numeric crates gets an explicit, reasoned NaN policy (fail-closed guard or `total_cmp`), plus a grep gate so a new unguarded site can't reappear silently.
+4. **INV-FEA-3 (NaN ordering).** Every `partial_cmp(...).unwrap_or(Ordering::Equal)` site **on the FEA numeric solve path** gets an explicit, reasoned NaN policy (fail-closed guard or `total_cmp`), plus a grep gate so a new unguarded site can't reappear silently. Scoped deliberately: the covered scope, the deliberately-excluded set and the widening trigger are **Resolved design decision 9** — this is narrower than "all numeric crates", and the 2026-08-20 census found unguarded sites outside it that are owned by filed follow-up work, not by this gate.
 
 ## Background
 
@@ -123,7 +123,7 @@ A grep-gate script (mirroring `scripts/check_event_inventory.sh`'s established p
 
    **B. Provably NaN-safe, honestly annotatable today (5).** `matrix.rs:283` and `:284` (explicit `is_finite` early-return at `:261`); `stackup.rs:589` (`validate_dimensioned_scalar`, `helpers.rs:238`); `persistent_cache.rs:1228` (`eviction_score` is structurally finite); `warm_pool.rs:449` (clamped at `:371-375`, the sole `PoolEntry` construction site). These are the sites a widening *could* annotate truthfully.
 
-   **C. Gate false positives — not the hazard at all (2).** `reify-ir/src/value.rs:290` and `:309` read `.map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Ordering::Equal)`: the `unwrap_or` defaults an **exhausted `Iterator::find`**, not a `partial_cmp`. They already use the sanctioned fix. See G below.
+   **C. Gate false positives — not the hazard at all (2).** Both live in `impl Ord for SampledField` in `crates/reify-ir/src/value.rs` — one in its nested `cmp_floats` helper, one in the `axis_grids` leg — and read `.map(|(x, y)| x.total_cmp(y)).find(|o| !o.is_eq()).unwrap_or(Ordering::Equal)`: the `unwrap_or` defaults an **exhausted `Iterator::find`**, not a `partial_cmp`. They already use the sanctioned fix. See G below.
 
    **D. Already exempt (1).** `reify-stdlib/src/fea.rs:5424` sits inside that file's `#[cfg(test)] mod tests` (opened at `:1911`) and is correctly skipped by the gate's own test-module skipper.
 
@@ -131,9 +131,20 @@ A grep-gate script (mirroring `scripts/check_event_inventory.sh`'s established p
 
    **The scope RULE** (replacing the site list, so the next census has a criterion instead of a list to re-derive): the covered scope is the **physical/geometric numeric solve path**. Cache-eviction scores, warm-pool cost ordering, version/event ordering and IR `Value` ordering stay out — a mis-sorted eviction candidate costs a cache miss; a mis-sorted principal stress is a wrong engineering answer. Note this rule *reclassifies* `engine_build.rs:12621`/`:12685` as in-domain (see the corrected Out-of-scope bullet); they remain out of `SCOPE_PATHSPECS` only for the class-A reason above.
 
-   **The widening trigger.** When the follow-up hardening lands, widen to `crates/reify-stdlib/*.rs` and `crates/reify-constraints/*.rs` and annotate the then-provably-safe class-B sites. Filed follow-ups — these are **curator ticket ids, not task ids**; the curator resolves them asynchronously, so look them up rather than assuming a task number: `tkt_0RSNHF643224BNS68VK857YH6N` (reify-stdlib, 3 sites), `tkt_0RSNHFG67K1G73BK4XJJK7CY9N` (reify-constraints `solve_ranked`), `tkt_0RSNHFTV5AHHX092ZBA6EF9CEE` (reify-eval `engine_build`, 2 sites).
+   **The widening trigger.** When the follow-up hardening lands, widen to `crates/reify-stdlib/*.rs` and `crates/reify-constraints/*.rs` and annotate the then-provably-safe class-B sites.
 
-   **G. The accepted over-flag.** The class-C shape is a real false-positive class and is **retained deliberately**. Narrowing the matcher to require a nearby `partial_cmp` would trade a fail-safe false positive (cost: one annotation) for a possible false negative (cost: a silently-landed NaN hazard), and would lose the multi-line form the fragment match exists to catch. The gate header carries the corrected statement — it previously claimed "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix is never flagged", which class C disproves.
+   Filed follow-ups — these are **curator ticket ids, not task ids**; the curator resolves them asynchronously, so look them up rather than assuming a task number. Four tickets, spanning **all 7** class-A sites (the whole point of listing them: the KEEP-SCOPED argument rests on "these fixes are owned", so an uncited hazard would read as a dropped one):
+
+   | ticket | covers | class-A sites |
+   |---|---|---|
+   | `tkt_0RSNHF643224BNS68VK857YH6N` | reify-stdlib | `analysis.rs:194`, `analysis.rs:222`, `matrix.rs:223` (3) |
+   | `tkt_0RSNK3M5QXP0Q6JZ6490E9DP34` | reify-stdlib — `matrix.rs:239` `hypot(NaN, inf)` hole | `matrix.rs:239` (1) |
+   | `tkt_0RSNHFG67K1G73BK4XJJK7CY9N` | reify-constraints `solve_ranked` | `solver.rs:2763` (1) |
+   | `tkt_0RSNHFTV5AHHX092ZBA6EF9CEE` | reify-eval `engine_build` | `engine_build.rs:12621`, `:12685` (2) |
+
+   `tkt_0RSNK3M5QXP0Q6JZ6490E9DP34` is separate from the reify-stdlib ticket above it because `matrix.rs:239` was missed by task 5159's plan-time table and classified only during implementation — after the reify-stdlib ticket had already been filed for 3 sites.
+
+   **G. The accepted over-flag — canonical statement; the gate header and the (hJ) test block point here rather than restating it.** The class-C shape is a real false-positive class and is **retained deliberately**. Narrowing the matcher to require a nearby `partial_cmp` would trade a fail-safe false positive (cost: one annotation) for a possible false negative (cost: a silently-landed NaN hazard), and would lose the multi-line form the fragment match exists to catch (reify-eval's `modal_ops.rs` `frequency_ascending_order` is the live instance of that form). The escape's rationale for this shape is true and informative rather than a rubber stamp: `// nan-safe:allow — total_cmp already; unwrap_or defaults an exhausted find, not a partial_cmp`. The gate header's pre-5159 claim that "`f64::total_cmp` produces no `unwrap_or`, so the sanctioned fix is never flagged" is what class C disproves; the header now carries the corrected statement.
 
    **Executable baseline.** This decision is machine-checked, not only prose: `tests/infra/test_nan_safe_ordering_guard_wired.sh` block **(hJ)** pins the accepted over-flag and its escape, and block **(hK)** pins all seven exclusions — with an anti-vacuity control asserting the byte-identical hazard *is* flagged at a covered path. `SCOPE_PATHSPECS`, this decision, and the (hK) pins are meant to fail together; a change that flips any (hK) assertion is the intended tripwire, and the reviewer should be sent to this census and the three tickets above before approving it. **Measured widening-cost baseline:** the gate scans 121 files in ~1.5–1.8 s warm (3.8 s cold); adding reify-stdlib + reify-ir + reify-constraints would add **88** scan files (59 + 18 + 11), taking it to 209 — roughly a 1.7× scan set.
 
