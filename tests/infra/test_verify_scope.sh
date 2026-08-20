@@ -1398,6 +1398,46 @@ assert "MG-B5: release-sensitivity pass present with -p reify- (permitted axis: 
     bash -c 'printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) .*-p reify-.*--release"' _ "$PLAN_MG_B5"
 
 # ---------------------------------------------------------------------------
+# Scenario MG-B5-control: the non-vacuity + classifier-drift control for MG-B5
+# ---------------------------------------------------------------------------
+# MG-B5 proves an ABSENCE on the narrowing axis. An absence assertion is worth
+# nothing if the axis filter matches no lines, or if the override's crates could
+# never have reached the plan in the first place. This scenario is the positive
+# control: it runs the SAME fixture with the SAME override and varies exactly one
+# thing — the merge role / scope — so narrowing actually engages and the very
+# same ` -p ` selectors MG-B5 asserts are absent show up on the very same axis.
+#
+# (Scenario B2-narrow above used to serve as that control for reify-ir. It no
+# longer covers MG-B5's override, and being a separate fixture with a different
+# profile it was never a single-variable control for it.)
+#
+# The last assertion is the load-bearing one: plan_is_narrowing_axis_line
+# (tests/infra/plan_capture_lib.sh) encodes a MODEL of verify.sh's three
+# $AFFECTED_ALL_FLAGS sites, and a model can go stale. reify-doc is on neither
+# declared list (occt-touching-crates.txt, release-sensitive-crates.txt) and on
+# no fixed axis, so under an active override it can ONLY reach the plan via
+# narrowing. Finding it OFF the axis therefore means verify.sh grew a narrowing
+# site the classifier does not recognise — which would silently turn MG-B5's
+# absence assertion vacuous. This is the behavioural guard that stops that
+# (#6391); it is what MG-B5 and plan_is_narrowing_axis_line's header both point
+# at instead of trusting a comment.
+echo ""
+echo "--- Scenario MG-B5-control: same fixture + same override, narrowing ACTIVE -> the axis DOES carry the override's -p (GREEN, non-vacuity control) ---"
+PLAN_MG_B5_CONTROL=""
+assert "MG-B5-control: PLAN_MG_B5_CONTROL non-empty (verify.sh exited OK)" \
+    bash -c '[ -n "$1" ]' _ "$PLAN_MG_B5_CONTROL"
+assert "MG-B5-control: NARROW_ACTIVE=1 (narrowing really engaged — the -p presence below is not accidental)" \
+    test "$(plan_narrow_active "$PLAN_MG_B5_CONTROL")" = "1"
+assert "MG-B5-control: narrowing axis LACKS --workspace (it was narrowed, not left full)" \
+    refute plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" "--workspace"
+assert "MG-B5-control: narrowing axis HAS -p reify-doc (the override DOES reach the axis — MG-B5's absence assertion is not vacuous)" \
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" " -p reify-doc"
+assert "MG-B5-control: narrowing axis HAS -p reify-ir (same override; a release-sensitive crate reaches the axis when narrowing is active)" \
+    plan_narrowing_axis_match "$PLAN_MG_B5_CONTROL" " -p reify-ir"
+assert "MG-B5-control: NO -p reify-doc off the narrowing axis (classifier drift guard — reify-doc is on neither declared list and on no fixed axis, so an off-axis hit means verify.sh grew a narrowing site plan_is_narrowing_axis_line does not recognise)" \
+    refute plan_offaxis_match "$PLAN_MG_B5_CONTROL" " -p reify-doc"
+
+# ---------------------------------------------------------------------------
 # Scenario MG-hook: pre-merge-commit hook drift guard (GREEN now)
 # ---------------------------------------------------------------------------
 echo ""
