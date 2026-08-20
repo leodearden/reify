@@ -133,6 +133,26 @@ pub fn compute_max_shear_3x3(d: &[f64]) -> f64 {
     }
 }
 
+/// Ascending total-order comparator for the 3×3 eigenvalue sorts in
+/// [`compute_eigenvalues_3x3`].
+///
+/// `total_cmp` gives a NaN-safe IEEE-754 total order, so the ascending sort
+/// stays panic-free and deterministic regardless of input (INV-FEA-3, task
+/// #6376). Pulled out to a NAMED function — rather than inlined in the sort
+/// closure — so `eig_ascending_cmp_is_a_total_order_on_nan_bearing_values`
+/// can assert THIS exact comparator's total-order postcondition instead of
+/// only re-testing `f64::total_cmp` itself: reverting this body back to
+/// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks that test.
+///
+/// After the finite guard in [`compute_eigenvalues_3x3`] the inputs here are
+/// already non-NaN, so this is defense-in-depth — it also keeps the two sort
+/// sites clean under the widened `check-nan-safe-ordering.sh` scope with no
+/// escape comment to maintain.
+#[inline]
+fn eig_ascending_cmp(a: &f64, b: &f64) -> std::cmp::Ordering {
+    a.total_cmp(b)
+}
+
 /// Compute eigenvalues of a symmetric 3×3 matrix.
 ///
 /// Uses the closed-form formula optimized for symmetric matrices: two eigenvalues
@@ -225,7 +245,7 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     if p1 <= 1e-30 {
         // Matrix is (effectively) diagonal — eigenvalues are the diagonal entries
         let mut eigs = [a00, a11, a22];
-        eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        eigs.sort_by(eig_ascending_cmp);
         return Some(eigs);
     }
 
@@ -253,7 +273,7 @@ pub fn compute_eigenvalues_3x3(d: &[f64]) -> Option<[f64; 3]> {
     let eig2 = 3.0 * q - eig1 - eig3;
 
     let mut eigs = [eig1, eig2, eig3];
-    eigs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    eigs.sort_by(eig_ascending_cmp);
     Some(eigs)
 }
 
