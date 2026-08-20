@@ -2690,4 +2690,66 @@ assert "G2e1: Section G accepts a 2>/dev/null site -- it asserts the LEAK proper
 assert "G2e2: D4's file-only grammar still REJECTS that same site -- G's laxer diversion rule did not leak into the evidence-preserving tier (got $G2E_D_N unredirected)" \
     test "$G2E_D_N" -eq 1
 
+echo ""
+echo "--- G3/G1: every static-only roster member, over its own source ---"
+
+# THE EXEC-POSITION ANCHOR, prefixed to every G_SITE target. NEW, separately-
+# named constants: F_EDGE_ANCHOR is reused READ-ONLY as the command-boundary
+# class, but F_EDGE_VERB_RE is deliberately NOT widened in place -- it drives
+# F1's derivation, and adding `env`/`timeout` to it could change the derived
+# roster. Section G needs a laxer verb set than the closure does precisely
+# because it is asking a different question (is this line an exec position?)
+# than the closure asks (does this file invoke that node?).
+#
+# TWO ALTERNATIVES, both measured NECESSARY:
+#   VERB form -- the site follows an anchored exec verb, with the same
+#   flag tolerance F_EXEC_RE already carries. `env`/`timeout` are in the set
+#   here because a real site is written `timeout 600 bash "$RUN_ALL" ...`.
+#   FIRST-WORD form -- the site IS the command word, e.g.
+#   `"$WRAPPER" bash -c true` or a bare `ambient_isolation_check_one "$TARGET"`.
+#
+# THE `^` ON THE FIRST-WORD FORM IS LOAD-BEARING, and was measured: allowing
+# any blank/`(`/`;` boundary there (i.e. F_EDGE_ANCHOR) admits `test -f
+# "$RUN_ALL"`, `[ -f "$REAL_RUN_ALL" ]` and `if [ -f "$RUN_ALL" ]; then` as
+# invocations -- in test_run_all.sh alone that is 101 site matches instead of
+# 70, and 29 of the 31 extra read as unredirected: 29 false REDs, on a file
+# whose real sites are all correctly captured.
+#
+# THE KEY=VAL PREFIX TOLERANCE IS EQUALLY LOAD-BEARING, and was measured the
+# other way: test_slot_event_log.sh, test_lane_x_flock.sh and
+# test_occt_flock_gate.sh all write `DF_VERIFY_ROLE=task REIFY_...=... "$SEM"
+# bash -c true`, where the wrapper is not the line's first word. Drop the
+# KEY=VAL prefix and test_slot_event_log.sh falls from 7 sites to 0 -- a check
+# that is not merely weaker but vacuous, which is exactly what G3 exists to
+# catch.
+G_EXEC_KV='([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*'
+G_EXEC_VERB_RE="${F_EDGE_ANCHOR}${G_EXEC_KV}"'(env|timeout|bash|sh|source)[[:blank:]]+([^"[:blank:]]+[[:blank:]]+)*'
+G_EXEC_FIRST_RE="^[[:blank:]]*${G_EXEC_KV}"
+
+for _g_i in "${!G_MEMBERS[@]}"; do
+    _g_m="${G_MEMBERS[$_g_i]}"
+    _g_j="$TMPG/${_g_m}.logical"
+    _d_join_logical "$SCRIPT_DIR/$_g_m" > "$_g_j"
+    _g_re="(${G_EXEC_VERB_RE}|${G_EXEC_FIRST_RE})${G_SITE[$_g_i]}"
+    _g_nsites="$(_g_sites "$_g_j" "$_g_re")"
+    _g_nbare="$(_g_unredirected "$_g_j" "$_g_re")"
+
+    # G3 BEFORE G1, the D4a analogue: G1 asserts a ZERO, and a stale or
+    # typo'd site target would make that zero green forever. This is the arm
+    # that catches a member whose invocation shape MOVED -- the failure mode a
+    # declared (rather than derived) table is exposed to, and the reason a
+    # declared table is acceptable at all.
+    assert "G3 [$_g_m]: its declared deadline-capable site is still there (non-vacuity; got $_g_nsites sites)" \
+        test "$_g_nsites" -ge 1
+
+    # Counts and the member BASENAME only -- never a matched source line, and
+    # `test` as the checker for the same reason D1 and D4b use it: assert dumps
+    # a FAILING checker's captured output, so printing the offending line would
+    # BE the leak this section exists to prevent. Both counts are precomputed
+    # into plain variables above, never a $(...) inside the description, so
+    # neither assert can become an instance of what E1 forbids.
+    assert "G1 [$_g_m]: every one of its deadline-capable sites diverts stderr off the inherited fd 2 (got $_g_nsites sites, $_g_nbare unredirected)" \
+        test "$_g_nbare" -eq 0
+done
+
 test_summary
