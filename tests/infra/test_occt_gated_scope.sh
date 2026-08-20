@@ -680,8 +680,9 @@ assert "nextest.toml: [profile.default] test-threads is a non-empty positive int
 echo ""
 echo "--- Tests 17c-17e (task 5984): host-relative derivation of the global test-threads cap ---"
 
-# Test 17c: explicit REIFY_NEXTEST_TEST_THREADS=5 wins verbatim.
-# RED against step-2: the generated config keeps the in-file literal 16.
+# Test 17c: explicit REIFY_NEXTEST_TEST_THREADS=5 wins verbatim.  Value-agnostic
+# and untouched by task 6018 — the explicit-override branch bypasses the
+# derivation entirely, so un-narrowing the default cannot move it.
 assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=5: [profile.default] test-threads resolves to 5 (explicit override wins verbatim)" \
     bash -c "
         cfg=\$(REIFY_NEXTEST_TEST_THREADS=5 bash \"${GEN_CFG}\")
@@ -693,7 +694,6 @@ assert "gen-nextest-config.sh REIFY_NEXTEST_TEST_THREADS=5: [profile.default] te
 # Test 17d: REIFY_OCCT_NPROC=8 -> 8 (nproc binds; HARD_CAP defaults to nproc, so
 # min(8, 8) = 8).  This is the assertion a bare in-file literal cannot satisfy:
 # on an 8-core host a fixed 32 would oversubscribe 4x.
-# RED against step-2: stays 16.
 assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads resolves to 8 (nproc binds, no 2x oversubscription)" \
     bash -c "
         cfg=\$(REIFY_OCCT_NPROC=8 \
@@ -708,10 +708,23 @@ assert "gen-nextest-config.sh REIFY_OCCT_NPROC=8: [profile.default] test-threads
 # by task 6018 (was `-> 16 (HARD_CAP binds)`), not retired: the property under
 # test is unchanged — what the workstation profile resolves to — only its value
 # moved.  HARD_CAP now defaults to the resolved host CPU count, so the derivation
-# applies NO ceiling below nproc and min(32, 32) = 32.  This is the
-# host-independent workstation anchor: 17d pins that nproc binds downward on a
-# small host, 17f pins that an explicit HARD_CAP still tightens, and this pins
-# that nothing narrows the pool by default.
+# applies NO ceiling below nproc and min(32, 32) = 32.
+#
+# READ 17d AND 17e TOGETHER — THIS ONE PINS NO CEILING (stated explicitly, task
+# 6018 review-amendment pass, so a future reader does not mistake it for one).
+# Before 6018 the pair was asymmetric: 17d showed nproc binding DOWNWARD on a
+# small host while 17e showed the fixed HARD_CAP of 16 binding downward on a
+# large one.  With HARD_CAP defaulting to nproc, BOTH now assert the SAME
+# property — `tt == the injected nproc` — at two host sizes, and neither
+# constrains the pool from above any more.  Test 17f is the ONLY remaining
+# ceiling assert in this block.
+#
+# Kept as two asserts rather than folded into one parameterised case: they are
+# the small-host and workstation ANCHORS respectively, 17e's 32 is the value the
+# rest of this task's artifacts quote (the in-file literal, Test 17i's ordering,
+# docs/notes/nextest-global-pool-concurrency-observation.md), and folding would
+# drop an assert from the S7 pass floor in
+# tests/infra/test_verify_nextest_absent_suites.sh for no coverage gain.
 assert "gen-nextest-config.sh REIFY_OCCT_NPROC=32 (workstation profile): [profile.default] test-threads resolves to 32 (the injected host CPU count — the derivation applies NO ceiling below nproc by default)" \
     bash -c "
         cfg=\$(REIFY_OCCT_NPROC=32 \
