@@ -3,12 +3,18 @@
 //! Provides [`accept_arg`] and the associated types (`ArgSpec`, `Acceptance`,
 //! `ArgRejection`) used by Contract A (`resolve_density_arg` in `geometry_ops`),
 //! Contract B (`body_mass_props` density ladder in `dynamics_ops`; task δ), and
-//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350 and 5623):
-//! `geometry_ops`' `eval_named_arg_length` and `resolve_length_scalar_arg`
+//! Contract C — the LENGTH-semantic args (task 5214, extended by 5350, 5623 and
+//! 5658): `geometry_ops`' `eval_named_arg_length` and `resolve_length_scalar_arg`
 //! (`edges_at_height` z/tol, `geo_equiv` tol), which share the single
 //! [`length_spec`] so both emit identical rejection text.
 //!
-//! The positions currently routed through `eval_named_arg_length`, by family:
+//! The positions currently routed through the Contract C chokepoint, by family.
+//! TWO routes reach it, both bottoming out in the same
+//! `accept_arg(&value, &length_spec())` call so their rejection wording is
+//! byte-identical by construction: the NAMED-ARG route
+//! (`eval_named_arg_length`) and, since task 5658, the VARIADIC route
+//! (`accept_variadic_length_args`, for the arity-open positional coordinate
+//! streams whose args the compiler names inertly `c0`…`cN`).
 //!
 //! | family    | builtin / position                                   | task |
 //! |-----------|------------------------------------------------------|------|
@@ -17,18 +23,23 @@
 //! | transform | `translate` `dx`/`dy`/`dz`; `rotate_around` pivot `px`/`py`/`pz` | 5623 |
 //! | sweep     | `revolve` axis origin `ox`/`oy`/`oz`                 | 5623 |
 //! | curve     | `line_segment` endpoints `x1`…`z2`; `arc` centre `cx`/`cy`/`cz` + `radius`; `helix` `radius`/`pitch`/`height` | 5623 |
+//! | curve     | `interp` + `bezier` variadic coordinate triples (EVERY position); `nurbs` pole coordinates (`2 .. 2 + 3·n_points`) — via the variadic route | 5658 |
 //!
 //! Contract C is NOT yet exhaustive, and this note stays open until the closure
 //! guard of task 5752 replaces it with a pointer. What remains un-gated, and
 //! who owns it:
 //!
-//! - Variadic curve coordinates (`interp`/`bezier`/`nurbs`), which reach f64
-//!   through `eval_all_args_to_f64` rather than a named-arg helper — task 5658.
-//! - `profile_polygon`'s 2-D vertex pairs — task 5661.
-//! - The raw-`Value` primitive/profile chokepoint (box/cylinder/sphere/… dims,
-//!   `half_space` px/py/pz, rectangle/circle/ellipse dims), plus the single
-//!   shared `DiagnosticCode` that every code-less Contract C site still needs —
-//!   task 5743.
+//! - `eval_all_args_to_f64`, now the BARE variadic reader, used by
+//!   `profile_polygon`'s 2-D vertex pairs ALONE — task 5661. Task 5658 took its
+//!   other three callers (`interp`/`bezier`/`nurbs`), so gating that one
+//!   remaining call site retires the helper's length-semantic role entirely.
+//! - `point3_components` (`geometry_ops.rs`) and the decoded value-form routes
+//!   — `decode_plane` / `decode_axis` origins, and NurbsSurface control points
+//!   (the SURFACE sibling of the curve poles 5658 gated) — task 5745.
+//! - The raw-`Value` primitive/profile kernel-boundary passthrough
+//!   (box/cylinder/sphere/… dims, `half_space` px/py/pz,
+//!   rectangle/circle/ellipse dims), plus the single shared `DiagnosticCode`
+//!   that every code-less Contract C site still needs — task 5743.
 //! - The modify + sweep MAGNITUDES, on that same raw-`Value` chokepoint once
 //!   5743 introduces it: `fillet` radius, `chamfer` distance,
 //!   `chamfer_asymmetric` `d1`/`d2`, `shell` thickness, `thicken` offset,
@@ -45,6 +56,16 @@
 //! instance COUNTS, dimensionless scale FACTORS, and every ANGLE — angles are
 //! `docs/prds/v0_6/angle-units-surface-convergence.md`'s by seam-table decree,
 //! so gating one here would be a scope violation, not an improvement.
+//!
+//! Also deliberately NOT gated, and the reason `nurbs` gates a SPAN rather than
+//! every position — its dimensionless neighbours sit on BOTH sides of the poles
+//! (task 5658), each ungated for a stated reason rather than by omission:
+//! `degree` is a polynomial degree, i.e. a count; `n_points` is a count; the
+//! weights are rational blending factors; the knots are parameter-space values.
+//! None of the four is a quantity in metres, so demanding a dimension of them
+//! would reject correct `.ri` code. The gated span is consequently
+//! ARITY-DEPENDENT — `2 .. 2 + 3·n_points`, computed from an argument — so a
+//! mechanical allowlist over it needs per-arity keys.
 //!
 //! Until the residual closes, adding a length-semantic arg anywhere means
 //! adding it to the owning task's triage list too.
