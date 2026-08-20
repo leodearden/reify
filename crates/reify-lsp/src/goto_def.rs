@@ -1205,4 +1205,64 @@ mod tests {
             "cross-file with-parsed goto-def must match the wrapper output"
         );
     }
+    // --- task #6341: cross-file goto-def for type aliases ---
+
+    /// Phase 2 must resolve an imported type-alias name to the alias's NAME token
+    /// in the target file.
+    #[test]
+    fn goto_def_cross_file_resolves_type_alias() {
+        let source = "import parts.{Speed}\nstructure S {\n    param v: Speed = 1.0\n}";
+        let target_source =
+            "pub type Speed = Length / Time\nstructure Widget {\n    param w: Length = 5mm\n}";
+        let target_uri = parts_uri();
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "parts".to_string(),
+            (target_uri.clone(), target_source.to_string()),
+        );
+        let resolver = mock_resolver(map);
+
+        // Cursor on 'Speed' in 'param v: Speed' (line 2, col 14).
+        let position = Position::new(2, 14);
+        let loc = compute_goto_definition_cross_file(source, &test_uri(), position, &resolver)
+            .expect("cross-file goto-def should resolve the imported type alias Speed");
+        assert_eq!(loc.uri, target_uri, "should point to the target file");
+        assert_eq!(loc.range.start.line, 0);
+        assert_eq!(
+            loc.range.start.character,
+            target_source.find("Speed").unwrap() as u32,
+            "should point at the alias NAME token, not the declaration start"
+        );
+    }
+
+    /// Regression pin: the SHARED helper's behaviour must stay byte-identical.
+    ///
+    /// `find_declaration_name_span` is `pub(crate)` and the rename/reference
+    /// collectors use it to decide what is renameable. Giving it a TypeAlias arm
+    /// would classify an alias as a renameable home declaration, but the use-site
+    /// collectors walk expressions, not type expressions — so a rename would move
+    /// the declaration token and silently miss every `param x : Alias` use.
+    #[test]
+    fn find_declaration_name_span_still_skips_type_alias() {
+        assert!(
+            find_declaration_name_span("type Speed = Length / Time\n", "Speed").is_none(),
+            "the shared helper must not resolve type aliases (rename safety)"
+        );
+    }
+
+    /// Same-file goto-def on a top-level declaration name does not exist for ANY
+    /// declaration kind (see goto_def_structure_name_returns_none), and aliases
+    /// must not unilaterally become the exception.
+    #[test]
+    fn goto_def_same_file_type_alias_returns_none() {
+        let source = "type Speed = Length / Time\nstructure S {\n    param v: Speed = 1.0\n}";
+        // Cursor on 'Speed' in 'param v: Speed' (line 2, col 14).
+        let position = Position::new(2, 14);
+        assert!(
+            compute_goto_definition(source, &test_uri(), position).is_none(),
+            "same-file top-level navigation stays out of scope"
+        );
+    }
+
 }
