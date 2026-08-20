@@ -28,6 +28,8 @@ mod as_printed_trampoline;
 mod fea_cold_start_heuristic_e2e;
 #[path = "harness_fea_solver_e2e/fea_face_selector_bc_e2e.rs"]
 mod fea_face_selector_bc_e2e;
+#[path = "harness_fea_solver_e2e/fea_in_the_loop_producer.rs"]
+mod fea_in_the_loop_producer;
 #[path = "harness_fea_solver_e2e/fea_loads_stdlib_smoke.rs"]
 mod fea_loads_stdlib_smoke;
 #[path = "harness_fea_solver_e2e/fea_stress_reductions_smoke.rs"]
