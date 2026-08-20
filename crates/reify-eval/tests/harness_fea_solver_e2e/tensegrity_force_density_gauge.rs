@@ -10,10 +10,13 @@
 //! below match variants EXPLICITLY and panic on the wrong one, across all three
 //! emission sites: anchored line-only, anchored surfaces, free-standing.
 //!
-//! SCOPE — gauge COVARIANCE (the last test) is line-only on purpose: surfaces
-//! convergence is judged against an ABSOLUTE tolerance on a residual not
-//! normalised by |D|, and `D` is linear in q, so it is gauge-DEPENDENT there.
-//! Solver-side defect outside #6095's scope; filed as #6119 (dup #6124).
+//! SCOPE — gauge COVARIANCE (the last test) is line-only for TWO reasons. (1) The
+//! gauge is the (q, σ) PAIR: `D = CᵀQC + Σ_T σ_T·L_T` is linear in the pair, not in
+//! q alone, so a surfaces covariance experiment must rescale every σ_T by λ too —
+//! scaling q alone shifts the q/σ balance and MOVES the free nodes, which is
+//! physics, not the defect below. (2) Even rescaled as a pair, surfaces convergence
+//! is judged on an ABSOLUTE tolerance on a residual not normalised by |D| (itself
+//! linear in q) — solver-side, outside #6095's scope, filed as #6119 (dup #6124).
 
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
@@ -43,9 +46,8 @@ const BASE_Q: [f64; 12] = [-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 
 /// The canonical triplex prism (R=1, height=1, twist=30°; top 0,1,2 at z=1,
 /// bottom 3,4,5 at z=0) — `canonical_prism_nodes()` in `tensegrity_t1b_…`.
 fn prism_nodes() -> Vec<Value> {
-    use std::f64::consts::PI;
     let ring = |i: usize, twist: f64, z: f64| {
-        let a = (120.0 * (i as f64) + twist) * PI / 180.0;
+        let a = (120.0 * (i as f64) + twist).to_radians();
         node(a.cos(), a.sin(), z)
     };
     let mut v: Vec<Value> = (0..3).map(|i| ring(i, 0.0, 1.0)).collect();
@@ -168,8 +170,7 @@ fn force_si(v: &Value) -> f64 {
         Value::Scalar { si_value, dimension } if *dimension == DimensionVector::FORCE => *si_value,
         other => panic!(
             "member_forces entries must be a FORCE-dimensioned (kg·m·s⁻²) Value::Scalar, \
-             matching the `List<Force>` declaration under the q_ref ≡ 1 N/m gauge of task \
-             #6095; got {other:?}"
+             matching `List<Force>` under the q_ref ≡ 1 N/m gauge of task #6095; got {other:?}"
         ),
     }
 }
@@ -181,7 +182,7 @@ fn bare_real(field: &str, v: &Value) -> f64 {
         other => panic!(
             "{field} entries must be a bare Value::Real (dimensionless), matching the \
              `List<Real>` declaration — the qᵢ/σ are nullity-invariant ratios per the \
-             dimension-checked-readers Leg B ruling upheld by task #6095; got {other:?}"
+             dimension-checked-readers Leg B ruling upheld by #6095; got {other:?}"
         ),
     }
 }
@@ -204,40 +205,45 @@ fn member_length(nodes: &[Value], (j, k): (usize, usize)) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
-/// Anchored line-only `member_forces` are strictly FORCE-dimensioned Scalars AND
-/// numerically equal `Nᵢ = qᵢ·Lᵢ·q_ref` on the geometry the same solve returned.
-/// An EXACT identity — the kernel evaluates `qi * len` from the very `out_nodes`
-/// it returns — so the only error is f64 round-trip + sqrt (~1e-16 relative).
-#[test]
-fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
-    let fields = solve_at(&BASE_Q);
-    let nodes = list_field(&fields, "nodes");
-    let member_forces = list_field(&fields, "member_forces");
-    let force_densities = list_field(&fields, "force_densities");
-    assert_eq!(member_forces.len(), MEMBERS.len(), "one force per member");
+/// THE BRIDGE, asserted end to end on one emission site's result: `member_forces` are
+/// strictly FORCE-dimensioned Scalars, `force_densities` strictly bare Reals, and the
+/// two pair up as `Nᵢ = qᵢ·Lᵢ·q_ref` on the geometry that same solve returned. EXACT —
+/// the kernel evaluates `qi * len` from the very `out_nodes` it emits — so the only
+/// error is f64 round-trip + sqrt (~1e-16 relative). One helper, both sites: the
+/// anchored and free builders must not be allowed to drift apart.
+fn assert_bridge_holds(fields: &PersistentMap<String, Value>, site: &str) {
+    let nodes = list_field(fields, "nodes");
+    let member_forces = list_field(fields, "member_forces");
+    let force_densities = list_field(fields, "force_densities");
+    assert_eq!(member_forces.len(), MEMBERS.len(), "{site}: one force per member");
+    assert_eq!(force_densities.len(), MEMBERS.len(), "{site}: one echoed density per member");
 
     for (i, &m) in MEMBERS.iter().enumerate() {
+        // Both extractors panic on the wrong variant / dimension.
         let q = bare_real("force_densities", &force_densities[i]);
-        let l = member_length(nodes, m);
-        let expected = q * l;
-        // `force_si` panics on a bare Real or a non-FORCE dimension.
-        let got = force_si(&member_forces[i]);
-
-        assert!(got.is_finite(), "member_forces[{i}] must be finite, got {got}");
-        assert!(l > 1e-6, "member {i} {m:?} collapsed to length {l} — degenerate fixture");
+        let n = force_si(&member_forces[i]);
+        let (l, expected) = { let l = member_length(nodes, m); (l, q * l) };
         assert!(
-            (got - expected).abs() <= 1e-12 * expected.abs(),
-            "member_forces[{i}] = {got} must equal qᵢ·Lᵢ·q_ref = {q} · {l} = {expected} \
-             to 1e-12 relative (q_ref ≡ 1 N/m, task #6095)"
+            n.is_finite() && q.is_finite() && l > 1e-6,
+            "{site}: entry {i} {m:?} must be finite and non-degenerate: N={n} q={q} L={l}"
+        );
+        assert!(
+            (n - expected).abs() <= 1e-12 * expected.abs(),
+            "{site}: member_forces[{i}] = {n} must equal qᵢ·Lᵢ·q_ref = {q} · {l} = {expected} \
+             on the nodes THIS solve returned, to 1e-12 relative (q_ref ≡ 1 N/m, task #6095)"
         );
     }
 }
 
+/// The anchored line-only emission site (`build_result`).
+#[test]
+fn member_force_is_q_times_solved_length_in_the_unit_gauge() {
+    assert_bridge_holds(&solve_at(&BASE_Q), "anchored line-only");
+}
+
 /// Both echoes are strictly bare `Value::Real`s — a dimensioned Scalar is the
 /// Leg B violation. σ is asserted on a fixture that actually CARRIES surfaces, so
-/// `bare_real` genuinely runs on it instead of skipping the line-only empty list;
-/// σ shares q's gauge (it enters `D` additively with dimensionless cotangent
-/// weights), so the same lock is the right one for both.
+/// `bare_real` genuinely runs on it instead of skipping the line-only empty list.
 #[test]
 fn force_density_and_surface_stress_echoes_are_strictly_bare_reals() {
     let line_only = solve_at(&BASE_Q);
@@ -260,36 +266,26 @@ fn force_density_and_surface_stress_echoes_are_strictly_bare_reals() {
     }
 }
 
-/// `build_result_free` obeys the same strict FORCE contract as `build_result`.
-/// It is reached only via `solve_form_find_free_trampoline`, and every other
-/// assertion on its `member_forces` is dimension-blind — so without this it could
-/// regress to bare `Value::Real` with no test failing.
+/// `build_result_free` obeys the same strict FORCE contract as `build_result` AND the
+/// same `Nᵢ = qᵢ·Lᵢ·q_ref` identity — reached only via `solve_form_find_free_trampoline`,
+/// where every other assertion on it is dimension-blind. The identity half pins the
+/// PAIRING, not just the tag: this builder takes nodes / member_forces / force_densities
+/// as three positional `&[f64]`, so a swap still arrives FORCE-tagged and finite.
 #[test]
 fn free_standing_member_forces_are_strictly_force_dimensioned() {
-    let fields = solve_free();
-
-    let member_forces = list_field(&fields, "member_forces");
-    assert_eq!(member_forces.len(), MEMBERS.len(), "one force per member");
-    for (i, mf) in member_forces.iter().enumerate() {
-        let n = force_si(mf); // panics on a bare Real or a non-FORCE dimension
-        assert!(n.is_finite(), "member_forces[{i}] must be finite, got {n}");
-    }
-    for (i, fd) in list_field(&fields, "force_densities").iter().enumerate() {
-        let q = bare_real("force_densities", fd);
-        assert!(q.is_finite(), "force_densities[{i}] must be finite, got {q}");
-    }
+    assert_bridge_holds(&solve_free(), "free-standing");
 }
 
-/// GAUGE COVARIANCE — the runtime proof of the adjudication. Rescaling every qᵢ
-/// by λ = 7 leaves the solved GEOMETRY identical and scales every member force by
-/// exactly λ: q is a gauge-free ratio (nothing moves) while `member_forces` is
-/// gauge-covariant (everything scales), which is precisely why the force scale
-/// must come from a reference factor and cannot come from q.
+/// GAUGE COVARIANCE — the runtime proof of the adjudication. Rescaling the WHOLE
+/// gauge by λ = 7 leaves the solved GEOMETRY identical and scales every member
+/// force by exactly λ: q is a gauge-free ratio (nothing moves) while
+/// `member_forces` is gauge-covariant (everything scales), which is precisely why
+/// the force scale must come from a reference factor and cannot come from q. This
+/// fixture is line-only, so σ is empty and the whole gauge IS q (see SCOPE above).
 ///
-/// λ = 7 is positive (the strut-q<0 / cable-q>0 contract holds) and not a power
-/// of two (an exact binary rescale cannot mask a real dependence). `D` is exactly
-/// linear in q, so λ cancels in `D_ff x_f = −D_fa x_a` — the LU solution is
-/// invariant to ~1e-15 relative here, ~6 orders under the 1e-9 m bound.
+/// λ = 7 is positive (strut-q<0 / cable-q>0 holds) and not a power of two (an exact
+/// binary rescale cannot mask a real dependence). `D` is exactly linear in q, so λ
+/// cancels in `D_ff x_f = −D_fa x_a`: invariant to ~1e-15, ~6 orders under 1e-9 m.
 #[test]
 fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
     const LAMBDA: f64 = 7.0;
