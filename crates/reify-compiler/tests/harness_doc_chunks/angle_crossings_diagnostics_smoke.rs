@@ -577,6 +577,42 @@ fn transcribed_parse_diagnostic_matches_the_real_parser() {
     );
 }
 
+/// `units.md`'s one VERBATIM re-quote of a canonical-copy diagnostic agrees
+/// with the canonical copy.
+///
+/// `crates/reify-mcp/src/tools/chunks/units.md` deliberately paraphrases the
+/// *shape* of these errors rather than re-quoting them, and defers to the
+/// exemplar as the canonical copy — with exactly one exception: it quotes the
+/// parse diagnostic verbatim ("The spaced form `1 rad` is
+/// `Parse error: syntax error: rad`"). That one line is the chunk's only
+/// unpinned verbatim claim, and it is collateral to this module's subject.
+///
+/// The expected text is RECONSTRUCTED from the scraped canonical-copy entry,
+/// never typed here. So the chunk is checked against the canonical copy, which
+/// `transcribed_parse_diagnostic_matches_the_real_parser` checks against the
+/// real parser: one chain, with no independent literal free to drift out from
+/// under either end.
+///
+/// The assertion is a `contains`, not a line-number pin, so unrelated edits to
+/// `units.md` do not move it.
+#[test]
+fn units_chunk_verbatim_parse_error_agrees_with_the_canonical_copy() {
+    let entry = parse_layer_entry();
+    let rendered = format!("{}: {}", entry.renderer, entry.message);
+
+    assert!(
+        UNITS_CHUNK.contains(&rendered),
+        "crates/reify-mcp/src/tools/chunks/units.md re-quotes the spaced-literal \
+         diagnostic verbatim, but it no longer contains `{rendered}` — the rendered form \
+         the CANONICAL COPY block in examples/best_practices/angle_crossings.ri \
+         transcribes. Fix the exemplar side FIRST: if the compiler wording changed, \
+         re-measure with `reify check` and update the CANONICAL COPY block, then let \
+         units.md follow. That precedence is what the exemplar itself states and what \
+         units.md defers to; updating the chunk alone would leave the two disagreeing \
+         with the canonical copy as the stale one."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Anti-vacuity guards
 //
