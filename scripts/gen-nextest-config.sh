@@ -47,8 +47,16 @@
 #              hatch for a host that genuinely needs tightening.
 #
 #              WHY NO DEFAULT NARROWING (task 6018).  This defaulted to the
-#              literal 16 to match a pytest `-n 16` on the dark-factory side.
-#              That reasoning does not transfer: under pytest-xdist every worker
+#              literal 16 to match what was then believed to be a pytest
+#              `-n 16` on the dark-factory side.  That number was ALREADY WRONG
+#              when it landed and is wronger now (re-measured first-hand in
+#              6018's review-amendment pass): dark_factory:3589 targets `-n 8`
+#              — an operator decision dated 2026-08-03, the same day this
+#              file's 16 was authored, explicitly superseding the original
+#              `-n 16` proposal — and it is still `pending`, so both
+#              dark-factory pyprojects run `-n auto` (= 32 here) today.
+#              But the number is the lesser error.  The reasoning does not
+#              transfer at all: under pytest-xdist every worker
 #              RE-COLLECTS the whole suite (a fixed ~19.4 CPU-s per worker), so
 #              cutting workers deletes a real measured overhead.  cargo-nextest
 #              executes pre-built test binaries with no per-thread collection

@@ -100,12 +100,32 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # binaries do not.
 #
 # NO SYMMETRY ARGUMENT — DO NOT REINTRODUCE ONE, IN EITHER DIRECTION.
-# This key was set to 16 to match the dark-factory half (pytest `-n auto` ->
-# `-n 16`), on the reasoning that a fleet's share of a saturated host is
-# proportional to its runnable-thread count so an asymmetric pair of caps
-# merely transfers share.  Task 6018 deleted that argument as WRONG FOR A
-# CARGO-NEXTEST POOL, and it must not survive in any form — including
-# re-parameterised to a new number, or mirrored as a counter-symmetry claim.
+# This key was set to 16 to match what was then believed to be the
+# dark-factory half's pytest `-n 16`, on the reasoning that a fleet's share of
+# a saturated host is proportional to its runnable-thread count so an
+# asymmetric pair of caps merely transfers share.  Task 6018 deleted that
+# argument as WRONG FOR A CARGO-NEXTEST POOL, and it must not survive in any
+# form — including re-parameterised to a new number, or mirrored as a
+# counter-symmetry claim.
+#
+# AND THE BORROWED NUMBER WAS NEVER EVEN THE SIBLING'S NUMBER — a second,
+# independent reason not to reason from it.  Re-measured first-hand during task
+# 6018's review-amendment pass, against the dark-factory task record and its
+# two pyprojects rather than from memory:
+#   - dark_factory:3589's target is `-n 8`, NOT `-n 16`.  Its own description
+#     records the operator decision (Leo, 2026-08-03) as "supersedes the
+#     original -n 16 proposal", on memory grounds (446 MB RSS per xdist worker)
+#     plus a measured CPU-seconds ladder.  reify's `test-threads = 16` was
+#     authored 2026-08-03 12:12:55 +0100 — i.e. the sibling's value had ALREADY
+#     been corrected away from 16 by the time this file cited it.
+#   - dark-factory is not running 16 today either: 3589 is still `pending` and
+#     both `orchestrator/pyproject.toml` and `fused-memory/pyproject.toml` still
+#     carry `-n auto`, which resolves to 32 on this 32-core host (psutil absent,
+#     so xdist falls back to os.cpu_count()).
+# So a reader must NOT come away believing dark-factory runs at 16.  It runs at
+# 32 and is targeting 8.  Do not "restore symmetry" against any of those three
+# numbers; the mechanism argument below is the whole reason, and the sibling's
+# value is not evidence about this one even when correctly quoted.
 #
 # THE ACTUAL MECHANISM the borrowed number came from: under pytest-xdist EVERY
 # worker RE-COLLECTS the whole suite before running anything — a fixed cost of
