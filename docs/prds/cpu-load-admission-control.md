@@ -5,6 +5,10 @@
 `jobserver-merge-priority-balancer.md`). **Approach: B + H** (cross-repo seam,
 load-bearing infra → contract + two-way boundary tests).
 
+**Code anchors.** Verbatim dark-factory source lines quoted below are **dated evidence
+from the 2026-06-17 substrate verification, not live breadcrumbs** — do not re-anchor
+them; grep the symbol named beside each one to find the code today.
+
 **One-line goal:** put *every* significant CPU source on the build host —
 agent ad-hoc `cargo build`/test-execution, the verify pipeline's cargo, rustc/sccache,
 the merge verify — under a single **work-conserving** governance regime, so the host
@@ -249,7 +253,7 @@ Mirrors the existing `DF_AGENT_CPU_NICE` / `_cpu_priority_prefix` mechanism exac
 | PSI `/proc/pressure/cpu` (`avg10`) | ✅ present | live read; already consumed by `psi_gate`/`compile_gate` |
 | `nproc` = 32 | ✅ | sizing reference (weights are nproc-independent %/ratios) |
 | Existing PSI/semaphore primitives to generalize | ✅ present | `verify.sh` `psi_gate`/`compile_gate`; `lib_test_semaphore.sh` |
-| dark-factory agent spawn seam (the §7 insertion point) | ✅ mapped | `cli_invoke.py` `spawn_cmd = _cpu_priority_prefix(env) + cmd`; `start_new_session=True`; **no cgroups in dark-factory today** |
+| dark-factory agent spawn seam (the §7 insertion point) | ✅ mapped | `cli_invoke.py` `_cpu_priority_prefix` (2026-06-17: `spawn_cmd = _cpu_priority_prefix(env) + cmd`); `start_new_session=True`; **no cgroups in dark-factory today** |
 
 **No novel substrate is invented** — every layer composes capabilities verified above.
 G3 verdict: PASS (the only "new" element, cgroup placement, rests on a confirmed,
