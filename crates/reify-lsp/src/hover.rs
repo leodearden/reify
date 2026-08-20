@@ -1322,4 +1322,22 @@ structure Bolt {
         );
     }
 
+    /// An alias doc comment is appended below the signature, exactly as the
+    /// fn/trait/enum arms already do.
+    #[test]
+    fn hover_on_documented_type_alias_appends_doc() {
+        let source = "/// Speed of travel.\ntype Speed = Length / Time\n";
+        let position = Position::new(1, 6); // on 'Speed'
+        let md = hover_markdown(source, position)
+            .expect("hover on a documented type-alias name must return Some");
+        assert!(
+            md.contains("type Speed = Length / Time"),
+            "signature must still render, got: {md}"
+        );
+        assert!(
+            md.contains("Speed of travel."),
+            "doc comment must be appended, got: {md}"
+        );
+    }
+
 }

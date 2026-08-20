@@ -1333,6 +1333,23 @@ mod tests {
         assert_eq!(ctx.find_entity_doc("Joint"), Some("A joint process."));
     }
 
+    /// Task #6341: `doc` lives only on the parsed `reify_ast::TypeAliasDecl` —
+    /// `CompiledTypeAlias` has no doc field — so `find_entity_doc` is the only
+    /// path by which an alias doc can reach hover.
+    #[test]
+    fn find_entity_doc_returns_doc_for_type_alias() {
+        let source = "/// Speed of travel.\ntype Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Speed"), Some("Speed of travel."));
+    }
+
+    #[test]
+    fn find_entity_doc_returns_none_for_undocumented_type_alias() {
+        let source = "type Speed = Length / Time\n";
+        let ctx = AnalysisContext::new(source, &test_uri());
+        assert_eq!(ctx.find_entity_doc("Speed"), None);
+    }
+
     #[test]
     fn find_entity_doc_returns_none_for_undocumented() {
         let source = reify_test_support::bracket_source();
