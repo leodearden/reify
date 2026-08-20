@@ -52,6 +52,11 @@ import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
 import { open, ask as pluginAsk } from '@tauri-apps/plugin-dialog';
 import * as bridgeAll from '../bridge';
+import {
+  readEventChannelInventory,
+  parseEventChannelRows,
+  classifyEventChannelRows,
+} from './eventChannelConsumerContract';
 
 const mockOpen = vi.mocked(open);
 const mockPluginAsk = vi.mocked(pluginAsk);
@@ -550,6 +555,48 @@ describe('bridge event listeners', () => {
     await onKernelStatus(callback);
 
     expect(callback).toHaveBeenCalledWith(sample);
+  });
+});
+
+/**
+ * Code↔doc pin for the deliberately consumer-less `diagnostics` channel (task 6227).
+ *
+ * NOT redundant with the task-6236 guard. `eventChannelConsumerCoverage.test.ts`
+ * check (b) (`unknownConsumers`) enforces only doc→code: a consumer NAMED in the
+ * Consumer column must be a real runtime export of bridge.ts. Nothing enforces
+ * code→doc. After 6227 the `diagnostics` row asserts an ABSENCE (`*(none)*`) and
+ * that suite's `DELIBERATELY_CONSUMERLESS['diagnostics']` entry records why — but
+ * re-adding an `onDiagnostics` subscriber to bridge.ts would silently falsify both
+ * while every existing check stayed green: an EXTRA export is never compared
+ * against the doc, `uncoveredRows` / `staleConsumerlessEntries` read only rows, and
+ * `bridgeMockCoverage`'s `notExports` looks the other way (factory key → export).
+ *
+ * The ROW itself must stay: `main.rs::TauriNotificationSink` still emits
+ * `diagnostics` for LSP `textDocument/publishDiagnostics`, so the channel is live
+ * and `scripts/check_event_inventory.sh` — which keys on column 1 only — would
+ * report an orphan channel if the row were deleted. Only its Consumer cell moved.
+ *
+ * Resolved through the harness's own parsers rather than a hardcoded fixture, so
+ * the assertion tracks the real docs/gui-event-channels.md and cannot pass against
+ * a stale copy of it.
+ */
+describe('diagnostics channel is deliberately consumer-less', () => {
+  it('the §1 doc row asserts no consumer and bridge.ts has no subscriber for it', () => {
+    const row = classifyEventChannelRows(parseEventChannelRows(readEventChannelInventory())).find(
+      (r) => r.channel === 'diagnostics',
+    );
+
+    // Non-vacuity: a find() that silently returned undefined would make the
+    // kind assertion unreachable rather than failing.
+    expect(row, 'no `diagnostics` row in docs/gui-event-channels.md §1/§2').toBeDefined();
+    expect(
+      row!.kind,
+      'docs/gui-event-channels.md `diagnostics` Consumer cell must be `*(none)*`',
+    ).toBe('explicit-none');
+    expect(
+      Object.keys(bridgeAll),
+      'bridge.ts must not re-grow a `diagnostics` subscriber while the doc row says `*(none)*`',
+    ).not.toContain('onDiagnostics');
   });
 });
 
