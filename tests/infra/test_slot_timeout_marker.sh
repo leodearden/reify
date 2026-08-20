@@ -768,13 +768,32 @@ TMPE="$(mktemp -d)"; _TMPDIRS+=("$TMPE")
 # ($(sed ...) -- the sanctioned form, E3 -- or $(grep ...)) is out of grammar
 # because the filter is where the `  | ` prefix belongs, and a variable holding
 # text captured on an earlier line is out of grammar because there is no reader
-# to key on. The STRUCTURAL fix that closes every variant at once is to have
-# assert() itself pipe $desc through the same `sed 's/^/  | /'` it already
-# applies to a failing checker's captured output (tests/infra/test_helpers.sh:
-# 44/47/54), which would demote this lint to redundant belt-and-braces; it is
-# NOT done here only because test_helpers.sh is outside task 6024's module
-# locks. Same-line only, which is what every site in-tree uses; a description
-# split across a `\`-continuation is out of the grammar.
+# to key on. Same-line only, which is what every site in-tree uses; a
+# description split across a `\`-continuation is out of the grammar.
+#
+# THE STRUCTURAL FIX HAS LANDED (task 6353). assert() itself now emits $desc
+# through _assert_emit_desc (tests/infra/test_helpers.sh), which keeps line 1
+# byte-identical and gives lines 2+ the same `  | ` prefix it already applies
+# to a failing checker's captured output. That closes every variant at once,
+# including the bare-variable shapes E1 is structurally unable to see, and
+# demotes E1 to exactly the belt-and-braces this preamble predicted it would
+# become. E1 is KEPT anyway: it catches the `$(cat …)` shape at AUTHORING time,
+# which is a reviewable static signal a behavioural pin cannot give. E4 below
+# is the behavioural half of the pair.
+#
+# OPTION (c) -- widening E1 to bare-variable dumps -- WAS MEASURED AND
+# REJECTED, recorded here so it is not re-derived. At the naive grammar (an
+# emit-wired line carrying a bare `$VAR` whose name ends _ERR/_STDERR/_OUT/
+# _STDOUT) it yields 708 candidate lines across 58 files. Narrowed to "assigned
+# from a `$(...)` containing `2>&1` and re-emitted with no reader present" it
+# still yields 271 across 32 files, 162 of them in test_run_all.sh alone.
+# Narrowing further to "the captured child is deadline-capable" is defeated by
+# tests/infra/run_all_ambient_isolation_lib.sh's own `bash "$_target" 2>&1`,
+# where the child is a PARAMETER and no path-literal predicate can see it --
+# the same second-order indirection Section F's SCOPE (2) already measured and
+# rejected for F_EXEC_RE. A repo-wide static lint for that channel is not
+# tractable at acceptable false-positive cost; the structural fix above is what
+# closes it instead. This is a MEASURED REJECTION, not deferred work.
 E_ASSERT_RE='assert "'
 E_CAT_RE='\$\((cat|tail|head|<)[^)]*\$\{?[A-Za-z_][A-Za-z0-9_]*(_ERR|_STDERR|_OUT|_STDOUT)[0-9]*'
 
@@ -868,13 +887,71 @@ echo "--- E4: assert() sanitizes a multi-line description (structural closure) -
 # Hermetic: no lock, no cargo, no host state -- this file is classified `pool`.
 
 E4_DIR="$TMPE/e4"; mkdir -p "$E4_DIR"
-# The pre-6353 emitter, rebuilt at runtime, is E4b's positive control. Path
-# declared here beside the probe inputs; its body is written below.
+# The pre-6353 emitter, rebuilt at runtime, is E4b's positive control. BUILT AT
+# RUNTIME, like E2/E3's fixtures, so this file carries no literal that E1's own
+# repo-wide scan could trip over.
 E4_RAW_EMITTER="$E4_DIR/raw_emitter.sh"
+cat > "$E4_RAW_EMITTER" <<'E4RAWEOF'
+# Reproduction of the PRE-6353 assert(): $desc echoed RAW, so lines 2+ of a
+# multi-line description land at COLUMN 0. E4b drives this and requires the
+# probe to FLAG it -- without that, E4a's zero could be a dead instrument
+# rather than a real result. Deliberately minimal: only the emitting shape
+# matters, so no tmpfile capture and no on-FAIL dump.
+PASS=0
+FAIL=0
+assert() {
+    local desc="$1"
+    shift
+    if "$@" >/dev/null 2>&1; then
+        echo "  PASS: $desc"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: $desc"
+        FAIL=$((FAIL + 1))
+    fi
+}
+E4RAWEOF
 
 # The description every probe drives: line 1 ordinary, line 2 a sentinel-shaped
 # token assembled from SP, so this file still carries no contiguous literal.
 E4_DESC="$(printf 'E4 probe desc\n%sTIMEOUT@@ reason=e4_probe slots=1 waited=1 disposition=soft lock=e4' "$SP")"
+
+# _e_desc_capture <emitter-file> -> the bytes that emitter's assert() prints for
+# E4_DESC. INTERNAL: every caller reduces this to a COUNT and no caller ever
+# prints it -- printing it would BE the leak this section guards.
+#
+# The nested `bash -c` is load-bearing twice over: it gives the probe's own
+# assert a private PASS/FAIL pair (this file's counters must not move --
+# idiom: tests/infra/test_test_helpers.sh's assert probes), and it re-sources
+# the emitter from scratch past test_helpers.sh's source guard, which is a
+# plain (non-exported) shell variable and so does not reach a child shell.
+_e_desc_capture() {  # <emitter-file>
+    bash -c '
+        source "$1"
+        assert "$2" true
+    ' _ "$1" "$E4_DESC" 2>&1 || true
+}
+
+# _e_desc_probe <emitter-file> -> count of D_ANCHOR-matching lines.
+# `grep -c`, never `grep -q`: -q exits on first match and can race the still-
+# writing producer into SIGPIPE, which this file's `pipefail` then promotes to
+# a pipeline failure -- silently dropping a real positive (the hazard measured
+# and documented at _f_deadline_capable below). `|| true` because a legal ZERO
+# is grep's exit 1.
+_e_desc_probe() {  # <emitter-file>
+    local _n
+    _n="$(_e_desc_capture "$1" | grep -cE -- "$D_ANCHOR" || true)"
+    printf '%s\n' "${_n:-0}"
+}
+
+# _e_desc_token_count <emitter-file> -> count of lines carrying the token AT
+# ALL, anchored or not. This is what makes E4a's zero mean "unanchored" rather
+# than "absent".
+_e_desc_token_count() {  # <emitter-file>
+    local _n
+    _n="$(_e_desc_capture "$1" | grep -cF -- "$SENTINEL" || true)"
+    printf '%s\n' "${_n:-0}"
+}
 
 # --- E4b/E4c FIRST: the pin's own controls. E4a asserts an ABSENCE, so a
 # typo'd anchor (E4b) or a probe that stopped emitting the token at all (E4c)
