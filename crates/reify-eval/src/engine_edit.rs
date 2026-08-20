@@ -1188,7 +1188,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &self.demand, &state.trace_map);
 
         // θ2 (task 4531) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent — making "warm output
+        // SAME unified driver order as cold/build — making "warm output
         // == cold output" structural on the edit surface — and `eval_set` IS that
         // order. `dirty::compute_eval_set` sorts through `dirty::topological_sort`,
         // which delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
@@ -1869,7 +1869,7 @@ impl Engine {
             // read them may NOT be in the original edit dirty cone. RE-DIRTY the
             // resolved autos' downstream cone and reseed the SAME unified driver
             // (`run_unified_pass_seeded`) for one additional value pass — the
-            // ordering core cold/build/concurrent use — replacing BOTH the legacy
+            // ordering core cold/build use — replacing BOTH the legacy
             // hand-rolled "second propagation wave" (`compute_eval_set`-ordered)
             // AND its cross-phase `reapply_guard_deactivations_post_wave2` cleanup.
             //
@@ -3404,7 +3404,7 @@ impl Engine {
         let eval_set = crate::dirty::compute_eval_set(&dirty_cone, &new_demand, &new_trace_map);
 
         // θ2 (task 4713) + ν (task 5045): the value re-evaluation below walks the
-        // SAME unified driver order as cold/build/concurrent, and `eval_set` IS that
+        // SAME unified driver order as cold/build, and `eval_set` IS that
         // order — `compute_eval_set` sorts through `dirty::topological_sort`, which
         // delegates to `engine_fixpoint::run_unified_pass_seeded` (the ONE
         // scheduling core, INV-EVAL-5). Note the sort above already used
