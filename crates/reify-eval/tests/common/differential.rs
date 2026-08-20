@@ -253,18 +253,29 @@ pub fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
         .satisfaction
 }
 
-/// Assert the geometry-derived value `cell` resolved to a DEFINITE (present,
-/// non-[`Value::Undef`]) value in `result` — the LOUD-failure guard for a seeded
-/// kernel's hardcoded [`GeometryHandleId`].
+/// Assert `cell` resolved to a DEFINITE (present, non-[`Value::Undef`]) value in
+/// `result` — the LOUD-failure guard against a producer that degraded SILENTLY.
 ///
-/// The seeded kernels (`seeded_physical_kernel`, `seeded_build_volume_kernel`) key
-/// their replies on concrete handle ids on the premise that handle assignment is
-/// deterministic AND identical across both schedulers. If a future handle-numbering
-/// change made a seeded reply MISS, the geometry query would silently fall back to
-/// undecided and the equivalence comparison would degrade into "two identical
-/// FAILURE modes" — a false pass. Pinning the downstream `cell` DEFINITE turns that
-/// silent rot into a hard failure. `label` (e.g. the scheduler) is surfaced in the
-/// panic. Renders via `Display` (not `Debug`) so it leans on nothing beyond what
+/// The invariant is cause-agnostic on purpose: whenever an upstream producer can
+/// fail by going quiet rather than loudly, an equivalence comparison degrades
+/// into "two identical FAILURE modes" — a false pass — and pinning the downstream
+/// `cell` DEFINITE is what turns that silent rot into a hard failure. Two
+/// producers in this harness fail exactly that way, and the panic names both:
+///
+/// - GEOMETRY-derived cells. The seeded kernels (`seeded_physical_kernel`,
+///   `seeded_build_volume_kernel`) key their replies on concrete
+///   [`GeometryHandleId`]s, on the premise that handle assignment is
+///   deterministic AND identical across both schedulers. A handle-numbering
+///   change makes a seeded reply MISS and the query falls back to undecided.
+/// - COMPUTE-derived cells. An `@optimized` dispatch whose trampoline was never
+///   registered body-inlines a never-run, all-required-params sentinel, so every
+///   downstream field read folds to `Undef` (task 5578 — see `fresh_engine`).
+///
+/// `label` is the CALLER's slot for which of those it suspects (e.g.
+/// `"seeded_physical_kernel under LegacyMultiPass"`, `"optimized form_find_free
+/// output under UnifiedDag"`); it is surfaced first in the panic, so a failure
+/// points at the right producer instead of hard-wiring one story for both.
+/// Renders via `Display` (not `Debug`) so it leans on nothing beyond what
 /// `project_value` already requires of [`Value`].
 pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &str) {
     let rendered = match result.values.get(cell) {
@@ -273,10 +284,16 @@ pub fn assert_cell_definite(result: &BuildResult, cell: &ValueCellId, label: &st
         None => "<absent>".to_string(),
     };
     panic!(
-        "{label}: geometry-derived cell `{cell}` MUST resolve to a DEFINITE value \
-         (the seeded kernel's hardcoded GeometryHandleId must reach the realized solid); \
-         got `{rendered}`. A handle-numbering change likely made the seeded reply MISS — \
-         the equivalence gate would otherwise silently compare two identical failures.",
+        "{label}: cell `{cell}` MUST resolve to a DEFINITE value; got `{rendered}`. \
+         An indefinite value here is silent rot: the equivalence gate would \
+         otherwise compare two identical FAILURE modes and pass. The `{label}` \
+         prefix carries the caller's cause hypothesis; the two producers in this \
+         harness that fail this way are (a) a seeded kernel whose hardcoded \
+         GeometryHandleId no longer reaches the realized solid after a \
+         handle-numbering change (geometry-derived cells) and (b) an @optimized \
+         compute dispatch that fell back to body-inlining its never-run sentinel \
+         because the trampoline was never registered (compute-derived cells; \
+         task 5578 — see `fresh_engine`).",
     );
 }
 

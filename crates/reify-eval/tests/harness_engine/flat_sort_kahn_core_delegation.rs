@@ -244,11 +244,25 @@ const DIVERGENT_SHAPE_P2_SRC: &str = r#"structure DriverOrder {
     let z = p * 2.0
 }"#;
 
+/// This module's local engine constructor, for the two fixtures below that are
+/// plain `.ri` modules rather than corpus cases (`DriverOrder`, `Cyc`) and so do
+/// not route through the shared harness's `build_case` / `fresh_engine`.
+///
+/// It carries `register_compute_fns` for one reason only: identical wiring
+/// (task 5578). Neither current caller compiles through the stdlib, so no
+/// `@optimized` fn is reachable from either fixture today — but the shared
+/// harness's `fresh_engine` lives in the SAME test binary and now registers, and
+/// a later test in this module reaching for a stdlib `@optimized` fn through
+/// this helper would otherwise silently reproduce exactly the defect 5578 just
+/// removed, with `PREEXISTING_STALE_UNDEF` empty and nothing left to notice it.
+/// A fresh [`Engine`] per call, so the panic-on-double-registration contract is
+/// not at risk.
 fn fresh_engine(scheduler: BuildScheduler) -> Engine {
     let mut engine = Engine::new(
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
     );
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     engine.set_build_scheduler(scheduler);
     engine
 }
@@ -355,10 +369,13 @@ fn flat_sort_reorder_leaves_no_stale_undef() {
     // out-of-order schedule would produce, so this is the sharpest available
     // correctness gate on a scheduling change.
     //
-    // The assertion is "exactly the known pre-existing set, and nothing else",
-    // not "empty" — see PREEXISTING_STALE_UNDEF for why those two entries are
-    // there and why the check is still tight. Detail strings are collected
-    // alongside so a failure names the cells rather than just a count.
+    // The expected set is currently EMPTY (task 5578 fixed the two entries that
+    // used to be here). The exact-equality shape against the named baseline is
+    // retained deliberately anyway — see PREEXISTING_STALE_UNDEF for why: it is
+    // the regression detector for this very defect, and it carries the "do NOT
+    // add it to make this pass" message that a bare `is_empty()` would discard.
+    // Detail strings are collected alongside so a failure names the cells rather
+    // than just a count.
     let mut observed: Vec<String> = Vec::new();
     let mut details: Vec<String> = Vec::new();
     for case in SEED_CORPUS.iter().chain(GOLDEN_CORPUS.iter()) {
