@@ -2887,15 +2887,35 @@ echo "--- G3/G1: every static-only roster member, over its own source ---"
 #   VERB form -- the site follows an anchored exec verb, with the same
 #   flag tolerance F_EXEC_RE already carries. `env`/`timeout` are in the set
 #   here because a real site is written `timeout 600 bash "$RUN_ALL" ...`.
-#   FIRST-WORD form -- the site IS the command word, e.g.
+#   COMMAND-WORD form -- the site IS the command word, e.g.
 #   `"$WRAPPER" bash -c true` or a bare `ambient_isolation_check_one "$TARGET"`.
 #
-# THE `^` ON THE FIRST-WORD FORM IS LOAD-BEARING, and was measured: allowing
-# any blank/`(`/`;` boundary there (i.e. F_EDGE_ANCHOR) admits `test -f
-# "$RUN_ALL"`, `[ -f "$REAL_RUN_ALL" ]` and `if [ -f "$RUN_ALL" ]; then` as
-# invocations -- in test_run_all.sh alone that is 101 site matches instead of
-# 70, and 29 of the 31 extra read as unredirected: 29 false REDs, on a file
-# whose real sites are all correctly captured.
+# THE BOUNDARY ON THE COMMAND-WORD FORM IS COMMAND-START, NOT ANY BLANK, and
+# both halves of that choice were measured.
+#
+#   WHY NOT ANY BLANK (precision). Allowing F_EDGE_ANCHOR here admits `test -f
+#   "$RUN_ALL"`, `[ -f "$REAL_RUN_ALL" ]` and `if [ -f "$RUN_ALL" ]; then` as
+#   invocations -- in test_run_all.sh alone that is 101 site matches instead of
+#   70, and 29 of the 31 extra read as unredirected: 29 false REDs on a file
+#   whose real sites are all correctly captured. G2f4 is the standing guard on
+#   that number.
+#
+#   WHY NOT LINE-INITIAL EITHER (recall). A `^`-only form sees a command word
+#   only at the start of a logical line. `cd "$d" && "$SITE" ...`, `if "$SITE"
+#   ...; then` and `export X=1; "$SITE" ...` are all real exec positions and
+#   all read as ZERO sites under it -- and a site the scan cannot see is a site
+#   G1 stays green over, the same SILENT class as the quoted-assignment hole
+#   G2f1 pins. This matters most for test_slot_event_log.sh, whose declared
+#   targets ARE bare command words; its 8 sites are all line-initial TODAY,
+#   which is a fact about the file, not a property of the check. G2f3 is the
+#   standing guard on that.
+#
+#   The middle ground is the set below: start of line, immediately after a
+#   `&&`/`||`/`;`/`|`/`&`/`(`/`{`, or at the head of an if/then/elif/else/do/
+#   while/until clause. A token after a WORD (`-f`, `case`, `grep`) is never a
+#   command word, which is exactly what the precision measurement above is
+#   about. MEASURED on the real tree: all eight per-member counts are
+#   byte-for-byte identical to the `^`-only form, so this is pure recall.
 #
 # THE KEY=VAL PREFIX TOLERANCE IS EQUALLY LOAD-BEARING, and was measured the
 # other way: test_slot_event_log.sh, test_lane_x_flock.sh and
@@ -2940,7 +2960,8 @@ G_EXEC_KV='([A-Za-z_][A-Za-z0-9_]*=[^[:blank:]]*[[:blank:]]+)*'
 # while this class needs the explicit `="[^"]*"` alternative. Do not "unify"
 # them -- the unquoted form here would re-admit the blanket hazard in (c).
 G_EXEC_VERB_RE="${F_EDGE_ANCHOR}${G_EXEC_KV}"'(env|timeout|bash|sh|source)[[:blank:]]+((([^"[:blank:]]+)|([A-Za-z_][A-Za-z0-9_]*="[^"]*"))[[:blank:]]+)*'
-G_EXEC_FIRST_RE="^[[:blank:]]*${G_EXEC_KV}"
+G_EXEC_CMDSTART='(^[[:blank:]]*|[[:blank:]]*(&&|\|\||[;|&({])[[:blank:]]*|'"${F_EDGE_ANCHOR}"'(if|then|elif|else|do|while|until)[[:blank:]]+)'
+G_EXEC_FIRST_RE="${G_EXEC_CMDSTART}${G_EXEC_KV}"
 
 echo ""
 echo "--- G2f: controls on the exec-position anchor ---"
