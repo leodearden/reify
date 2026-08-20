@@ -166,6 +166,10 @@ pub fn compute_hover_in_context(
                 }
                 return Some(make_hover_markdown(md));
             }
+            reify_ast::Declaration::TypeAlias(t) if t.name == word => {
+                let md = format!("```reify\n{}\n```", format_type_alias_signature(t));
+                return Some(make_hover_markdown(md));
+            }
             _ => {}
         }
     }
@@ -195,6 +199,20 @@ pub fn compute_hover_in_context(
     }
 
     None
+}
+
+/// Render a type-alias declaration's signature line, e.g. `type Speed = Length / Time`.
+///
+/// The right-hand side is the author's own `type_expr` surface spelling, NOT the
+/// resolved [`reify_core::Type`], whose `Display` is semantic (`Scalar[m·s^-1]`,
+/// `Enum(...)`, `Function(...) -> ...`) and would print a `type` line the user never
+/// wrote. `TypeAliasDecl.type_expr` is not an `Option`, and `impl Display for TypeExpr`
+/// matches all six `TypeExprKind` variants exhaustively, so this render cannot fail.
+///
+/// Visibility (`pub`) is deliberately not rendered, matching the sibling fn/trait/enum
+/// hover arms. Task #6341.
+fn format_type_alias_signature(t: &reify_ast::TypeAliasDecl) -> String {
+    format!("type {} = {}", t.name, t.type_expr)
 }
 
 /// Create a Hover with markdown content.
