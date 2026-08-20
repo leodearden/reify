@@ -1478,6 +1478,61 @@ mod tests {
         );
     }
 
+    // --- task #6341: user-declared type aliases in type position ---
+
+    /// An alias declared in the open document completes in type position, with a
+    /// `detail` byte-identical to the hover signature so the two surfaces agree.
+    #[test]
+    fn completion_type_position_includes_user_type_aliases() {
+        let source = "type Speed = Length / Time\nstructure Foo {\n    param x: \n}";
+        // Line 2, col 13 is after "    param x: " — in type position.
+        let items = compute_completions(source, &test_uri(), Position::new(2, 13));
+
+        let alias = items
+            .iter()
+            .find(|i| i.label == "Speed")
+            .unwrap_or_else(|| {
+                panic!(
+                    "type position should offer the user alias 'Speed', got: {:?}",
+                    items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(alias.kind, Some(CompletionItemKind::CLASS));
+        assert_eq!(alias.detail, Some("type Speed = Length / Time".to_string()));
+    }
+
+    /// The document-scoped contract: prelude-seeded aliases are filtered out of
+    /// `compiled.type_aliases`, so completion must not surface them either.
+    /// `Rate`, `HeatCapacity` and `Stress` are real stdlib prelude aliases.
+    #[test]
+    fn completion_type_position_excludes_stdlib_aliases() {
+        let source = "structure Foo {\n    param x: \n}";
+        let items = compute_completions(source, &test_uri(), Position::new(1, 13));
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        for stdlib_alias in ["Rate", "HeatCapacity", "Stress"] {
+            assert!(
+                !labels.contains(&stdlib_alias),
+                "stdlib prelude alias '{stdlib_alias}' must not be offered, got: {labels:?}"
+            );
+        }
+    }
+
+    /// Aliases appear everywhere `push_type_names` already runs, not only in
+    /// `TypePosition`.
+    #[test]
+    fn completion_structure_body_includes_user_type_aliases() {
+        let source = "type Speed = Length / Time\nstructure Foo {\n    param x: Length = 1mm\n\n}";
+        // Line 3 is the blank line inside Foo's body.
+        let items = compute_completions(source, &test_uri(), Position::new(3, 0));
+
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Speed"),
+            "structure body should also offer the user alias 'Speed', got: {labels:?}"
+        );
+    }
+
     #[test]
     fn completion_type_position_returns_types_and_structs() {
         // Cursor is in a type annotation position (after `x: `)
