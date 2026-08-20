@@ -20,9 +20,13 @@
 //!
 //! No new diagnostic codes are minted in α; no reify-core change.
 
+mod common;
+
 use reify_compiler::CompiledModule;
 use reify_core::diagnostics::DiagnosticCode;
-use reify_core::{Diagnostic, Severity, SourceSpan};
+use reify_core::{
+    BASE_UNIT_SYMBOLS, Diagnostic, DimensionVector, NAMED_DIMENSIONS, Severity, SourceSpan,
+};
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
@@ -1536,6 +1540,683 @@ fn value_floor_int_param_given_string_still_warns() {
 #[test]
 fn value_floor_dimensionless_real_param_given_string_still_warns() {
     assert_single_arg_type_mismatch_warning(SRC_FLOOR_REAL, "mag", "Real ← String");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// γ (task 5627): value floors for the PROMOTED dimensioned-`Scalar` family
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// γ promotes dimensioned `Type::Scalar` into
+// `general_leaf_param_family_is_validated`, so a dimensioned ctor field slot is
+// now judged under STRICT `DimensionVector` equality. The contract table is in
+// `docs/prds/v0_6/dimensioned-construction-strictness.md` §7.1 (invariants
+// I1-I8) and §7.4 (the named B1-B4 signals); it is deliberately NOT restated
+// here — these are its executable floors, keyed by invariant id.
+//
+// Two halves, and the split is load-bearing:
+//
+// * the REJECTION floors (I2/I3/I4, and the B1/B2 author-side shape) are RED
+//   before the promotion — the family is excluded, so every one of them is
+//   silent today;
+// * the ACCEPTANCE floors (I1/I6/I8/A3/B3) pass BEFORE and AFTER. They are the
+//   FALSE-POSITIVE floor: their whole value is that the promotion must not
+//   disturb them, which is why they are written before it rather than after.
+//
+// Every assertion is on `DiagnosticCode` IDENTITY plus `Severity::Warning`,
+// never on message prose beyond the param name (D4-8 / INV-SF-6, tasks
+// 2255/3416 precedent). There is NO exit-code assertion: γ is pre-δ, so
+// `CTOR_FIELD_CONFORMANCE_SEVERITY` is still `Warning` and γ does not touch it.
+
+/// Assert `source` emits ZERO ctor-conformance diagnostics.
+///
+/// The acceptance-floor counterpart of
+/// [`assert_single_arg_type_mismatch_warning`]. Scoped to the ctor-conformance
+/// code set only — a fixture may still emit unrelated diagnostics (an
+/// `auto`-resolution warning, an unresolved-name Error) without weakening the
+/// claim, which is exactly what makes the I6 and A3 floors expressible.
+fn assert_no_ctor_conformance_diags(source: &str, label: &str) {
+    let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "{label}: expected ZERO ctor-conformance diagnostics, got: {diags:#?}"
+    );
+}
+
+// ── REJECTION floors (RED before the promotion) ──────────────────────────────
+
+const SRC_G_I2_CROSS_DIMENSION: &str = r#"module test.g_i2_cross_dimension
+structure def W { param p : Scalar<Pressure> }
+structure def Root { let a = W(p: 200mm) }
+"#;
+
+const SRC_G_I3_BARE_REAL: &str = r#"module test.g_i3_bare_real
+structure def W { param p : Scalar<Velocity> }
+structure def Root { let a = W(p: 300.0) }
+"#;
+
+const SRC_G_I3_BARE_INT: &str = r#"module test.g_i3_bare_int
+structure def W { param p : Scalar<Velocity> }
+structure def Root { let a = W(p: 300) }
+"#;
+
+const SRC_G_I4_STRING: &str = r#"module test.g_i4_string
+structure def W { param d : Scalar<Density> }
+structure def Root { let a = W(d: "heavy") }
+"#;
+
+const SRC_G_I4_BOOL: &str = r#"module test.g_i4_bool
+structure def W { param d : Scalar<Density> }
+structure def Root { let a = W(d: true) }
+"#;
+
+/// I2 — cross-dimension: a `Length` literal at a `Scalar<Pressure>` slot is
+/// rejected. This is the strict-`DimensionVector`-equality half of the ruling:
+/// both sides are dimensioned scalars, so nothing but the dimension vectors
+/// themselves distinguishes them.
+#[test]
+fn g_i2_cross_dimension_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I2_CROSS_DIMENSION,
+        "p",
+        "I2: Scalar<Pressure> ← Length literal",
+    );
+}
+
+/// I3 — a BARE dimensionless `Real` at a dimensioned slot is rejected.
+///
+/// This is the negative pin β's `family_dimensioned_scalar_given_unit_literal_arg_is_silent`
+/// deliberately left to γ (PRD §11 γ): with that probe's fixture migrated to
+/// unit literals, nothing else asserts what a bare arg does here.
+#[test]
+fn g_i3_bare_real_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I3_BARE_REAL,
+        "p",
+        "I3: Scalar<Velocity> ← bare Real",
+    );
+}
+
+/// I3 — the `Int` spelling of the same bare arg is rejected too.
+///
+/// Also the fence on the D4-5 `ScalarParam` accept: `is_numeric_placeholder_leaf`
+/// matches `Int`, so an over-wide fence would make THIS case silent. It must
+/// keep failing-then-passing, never become silent.
+#[test]
+fn g_i3_bare_int_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I3_BARE_INT,
+        "p",
+        "I3: Scalar<Velocity> ← bare Int",
+    );
+}
+
+/// I4 — a `String` at a dimensioned slot is rejected (family-level mismatch).
+#[test]
+fn g_i4_string_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_G_I4_STRING, "d", "I4: Scalar<Density> ← String");
+}
+
+/// I4 — a `Bool` at a dimensioned slot is rejected.
+#[test]
+fn g_i4_bool_arg_at_dimensioned_slot_warns() {
+    assert_single_arg_type_mismatch_warning(SRC_G_I4_BOOL, "d", "I4: Scalar<Density> ← Bool");
+}
+
+const SRC_G_B1_B2_AUTHOR_SIDE: &str = r#"module test.g_b1_b2
+structure def Steel {
+    param youngs_modulus : Pressure
+    param density : Density
+}
+structure def Root {
+    let s = Steel(youngs_modulus: 200mm, density: "heavy")
+}
+"#;
+
+/// PRD §7.4 B1/B2 — the combined author-side shape, and the PRD's own named
+/// signal for this promotion: ONE structure whose two dimensioned params are
+/// both supplied wrongly emits TWO independent `ArgTypeMismatch` warnings, one
+/// per site, not one aggregate and not a cascade.
+///
+/// The identical file is the §6.1 before-image: it emits NOTHING today.
+#[test]
+fn g_b1_b2_two_wrong_dimensioned_args_warn_once_each() {
+    let module = compile_source_with_stdlib(SRC_G_B1_B2_AUTHOR_SIDE);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        2,
+        "B1/B2: two wrongly-supplied dimensioned params must emit exactly two \
+         ctor-conformance diagnostics, got: {diags:#?}"
+    );
+    for d in &diags {
+        assert_eq!(
+            d.severity,
+            Severity::Warning,
+            "B1/B2: γ ctor field conformance is Warning-severity, got: {d:?}"
+        );
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::ArgTypeMismatch),
+            "B1/B2: expected ArgTypeMismatch, got: {:?}",
+            d.code
+        );
+    }
+    for param in ["youngs_modulus", "density"] {
+        assert!(
+            diags.iter().any(|d| d.message.contains(param)),
+            "B1/B2: no diagnostic names param {param:?}; got: {diags:#?}"
+        );
+    }
+}
+
+// ── ACCEPTANCE floors (green BEFORE and AFTER the promotion) ─────────────────
+
+const SRC_G_I1_CLEAN_DIMENSIONED_ARGS: &str = r#"module test.g_i1_clean
+structure def Bundle {
+    param velocity : Scalar<Velocity>
+    param half_span : Length
+    param footprint : Area
+    param accel : Acceleration
+    param forwarded : Length
+}
+structure def Root {
+    param span : Length = 200mm
+    let b = Bundle(
+        velocity: 300mm/s,
+        half_span: span / 2.0,
+        footprint: 100mm * 1mm,
+        accel: 5.0 * STANDARD_GRAVITY(),
+        forwarded: span
+    )
+}
+"#;
+
+/// I1 (§6.6, the highest-risk acceptance floor) — `Scalar<Q> ← Scalar<Q>` is
+/// silent across ALL THREE arg shapes together: a unit literal, three
+/// arithmetic-DERIVED values (division by a `Real`, a `Length × Length` product
+/// promoted to `Area`, and a scaled stdlib constant), and a plain reference to a
+/// dimensioned param.
+///
+/// A failure here is an arg-side INFERENCE bug, not a corpus bug — the strict
+/// equality this task installs only holds up if the arg side actually carries
+/// the dimension it should. Keeping all four shapes in ONE fixture is
+/// deliberate: it is the shape the whole shipped corpus is written in, so a
+/// regression in any of them is a corpus-wide regression.
+#[test]
+fn g_i1_matching_dimensioned_args_are_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_I1_CLEAN_DIMENSIONED_ARGS,
+        "I1: Scalar<Q> ← Scalar<Q> across literal / derived / ref shapes",
+    );
+}
+
+const SRC_G_I6_ERROR_ARG: &str = r#"module test.g_i6_error_arg
+structure def W { param p : Scalar<Velocity> }
+structure def Root { let a = W(p: no_such_symbol_anywhere) }
+"#;
+
+/// I6 — anti-cascade: an arg whose `result_type` is `Type::Error` emits NO
+/// ctor-conformance diagnostic at a dimensioned slot, so the promotion cannot
+/// pile a spurious dimension complaint on top of an already-reported
+/// root cause. Delivered for free by `reject_if_incompatible`'s
+/// `arg_type_is_unverifiable` guard; pinned here so a later refactor cannot
+/// route around it.
+///
+/// The fixture DOES emit an unresolved-name Error; that is the root cause and
+/// is not a ctor-conformance code, so it is correctly outside this assertion.
+#[test]
+fn g_i6_error_typed_arg_at_dimensioned_slot_is_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_I6_ERROR_ARG, "I6: Scalar<Velocity> ← Type::Error");
+}
+
+const SRC_G_I8_REAL_GIVEN_INT: &str = r#"module test.g_i8_real_int
+structure def W { param mag : Real }
+structure def Root { let a = W(mag: 7) }
+"#;
+
+/// I8 — non-regression on the DIMENSIONLESS half task 5465 already promoted:
+/// `Real ← Int` stays silent.
+///
+/// `type_compatible`'s `Int`→`Scalar` widening (`type_compat.rs:232-237`) is
+/// gated on the PARAM side being dimensionless, which is simultaneously why
+/// this survives and why I3 (`Scalar<Velocity> ← Int`) rejects. The two are the
+/// same code path read from opposite sides, so they are pinned as a pair.
+#[test]
+fn g_i8_dimensionless_real_given_int_stays_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_I8_REAL_GIVEN_INT, "I8: Real ← Int");
+}
+
+const SRC_G_A3_AUTO_AND_UNDEF_DEFAULTS: &str = r#"module test.g_a3_defaults
+structure def W {
+    param strict_slot : Length = auto
+    param free_slot : Scalar<Velocity> = auto(free)
+    param undef_slot : Scalar<Density> = undef
+}
+structure def Root { sub w = W() }
+"#;
+
+const SRC_G_A3_AUTO_AND_UNDEF_ARGS: &str = r#"module test.g_a3_args
+structure def W {
+    param strict_slot : Length
+    param free_slot : Scalar<Velocity>
+    param undef_slot : Scalar<Density>
+}
+structure def Root {
+    sub w = W(strict_slot: auto, free_slot: auto(free), undef_slot: undef)
+}
+"#;
+
+/// A3 (addendum) — `auto`, `auto(free)` and `undef` at a DIMENSIONED `Scalar`
+/// slot are SILENT, at the param-DEFAULT entry into the walker.
+///
+/// Load-bearing for the corpus gate rather than merely nice to have: the PRD
+/// never states this and §6.5 item 1 records that this gate was never measured.
+/// The shipped corpus carries 96 such default sites, so if the promotion fired
+/// on any of them the gate would go red corpus-wide. (Measured green under the
+/// promotion at planning time; pinned here so a future change cannot silently
+/// break it.)
+#[test]
+fn g_a3_auto_and_undef_param_defaults_at_dimensioned_slots_are_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_A3_AUTO_AND_UNDEF_DEFAULTS,
+        "A3: auto / auto(free) / undef at dimensioned param DEFAULTS",
+    );
+}
+
+/// A3 — the same three placeholders at the ctor-ARG entry.
+#[test]
+fn g_a3_auto_and_undef_ctor_args_at_dimensioned_slots_are_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_A3_AUTO_AND_UNDEF_ARGS,
+        "A3: auto / auto(free) / undef at dimensioned ctor ARGS",
+    );
+}
+
+const SRC_G_B3_DENSITY_LITERAL: &str = r#"module test.g_b3_density
+structure def W { param d : Density }
+structure def Root { let a = W(d: 7850kg/m^3) }
+"#;
+
+/// PRD §7.4 B3 — the migrated fix form for a COMPOUND dimension: a
+/// `7850kg/m^3` literal at a `Density` slot is silent. This is also the literal
+/// γ's own migration hint offers for `Density` (step-4), so the accepted fix
+/// form and the suggested fix form are pinned to be the same thing.
+#[test]
+fn g_b3_compound_unit_literal_at_density_slot_is_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_B3_DENSITY_LITERAL, "B3: Density ← 7850kg/m^3");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// γ (task 5627): the D4-6 / I7 migration hint
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// A rejection at a DIMENSIONED `Scalar` slot carries a hint naming the expected
+// dimension and an example literal, mirroring `ArgRejection::message`'s shape in
+// `crates/reify-eval/src/arg_acceptance.rs` so the compile-time and runtime
+// diagnostics read consistently.
+//
+// Assertions are on the STABLE, semantic parts only — the fixed clause prefix
+// and the dimension's own `canonical_name()`, DERIVED by calling it rather than
+// hard-coded, so they track the `NAMED_DIMENSIONS` registry instead of pinning a
+// literal string.
+
+/// The invariant part of the migration-hint clause.
+const HINT_CLAUSE_PREFIX: &str = "pass a dimensioned ";
+
+/// Separator introducing the example literal, which is then backtick-delimited.
+const HINT_EXAMPLE_INTRO: &str = "such as `";
+
+/// The `DimensionVector` that reify's `<type_name>` annotation resolves to.
+///
+/// Looked up in `NAMED_DIMENSIONS` — the same registry both the name→dimension
+/// resolution and `canonical_name`'s dimension→name scan use — rather than via a
+/// `DimensionVector::<CONST>`, so an alias row (`Momentum` → the `Impulse`
+/// vector) resolves exactly as the compiler resolves it.
+fn dimension_named(type_name: &str) -> DimensionVector {
+    NAMED_DIMENSIONS
+        .iter()
+        .find(|(_, name)| *name == type_name)
+        .unwrap_or_else(|| panic!("no NAMED_DIMENSIONS row is named {type_name:?}"))
+        .0
+}
+
+/// The single ctor-conformance diagnostic message `source` emits.
+fn sole_ctor_conformance_message(source: &str, label: &str) -> String {
+    let module = compile_source_with_stdlib(source);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "{label}: expected exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    diags[0].message.clone()
+}
+
+/// Extract the example literal from a hint's ``such as `…` `` tail.
+///
+/// `None` when the hint carries no example — the deliberate escape hatch for a
+/// dimension whose exponents have no clean literal spelling.
+fn example_literal_from_hint(message: &str) -> Option<String> {
+    let after = message.split(HINT_EXAMPLE_INTRO).nth(1)?;
+    let end = after.find('`')?;
+    Some(after[..end].to_owned())
+}
+
+/// Whether `dim` has no clean unit-literal spelling, and so is legitimately
+/// exempt from offering an example.
+///
+/// Exactly three reasons, each independently derivable from the vector and the
+/// stdlib's own unit table — this predicate does NOT consult the compiler's
+/// derivation, so it is a real oracle rather than a restatement of it:
+///
+/// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
+///   cannot be written as a unit literal at all;
+/// * an entirely NEGATIVE exponent set (e.g. `Frequency`, s⁻¹) leaves no
+///   numerator term to anchor the literal. Measured: `param x : Frequency = 1/s`
+///   fails with `unresolved name: s` — reify reads the bare `1` as a number and
+///   `/s` as a division, not as a quantity literal;
+/// * a slot whose base-unit symbol `stdlib/units.ri` does not declare as a unit.
+///   [`BASE_UNIT_SYMBOLS`] is the DISPLAY table; being renderable is weaker than
+///   being parseable. Measured: `param x : Voltage = 1m^2*kg/s^3/A` fails with
+///   `unknown unit: A`.
+///
+/// [`SPELLABLE_BASE_UNITS`] is this test's own reading of the stdlib, kept
+/// deliberately separate from the compiler's. Drift in EITHER direction is
+/// caught: if the stdlib gains a unit the compiler still declines, the exemption
+/// assert fires; if the compiler offers a literal the stdlib cannot parse, the
+/// round-trip half fails.
+///
+/// Anything else declining to offer an example is a derivation bug, and the rot
+/// guard says so by name.
+fn has_no_clean_unit_literal(dim: &DimensionVector) -> bool {
+    dim.0.iter().enumerate().any(|(slot, r)| {
+        r.num() != 0 && (r.den() != 1 || !SPELLABLE_BASE_UNITS.contains(&BASE_UNIT_SYMBOLS[slot]))
+    }) || !dim.0.iter().any(|r| r.num() > 0)
+}
+
+/// The base-unit symbols `crates/reify-compiler/stdlib/units.ri` declares as
+/// units, and which can therefore appear in a unit literal.
+///
+/// `A`, `mol`, `cd` and `sr` are deliberately absent: they name
+/// `DimensionVector` slots but the stdlib declares no unit for them.
+const SPELLABLE_BASE_UNITS: [&str; 6] = ["m", "kg", "s", "K", "rad", "USD"];
+
+/// Assert `source`'s sole rejection carries the hint AND names the dimension
+/// `type_name` resolves to, using that dimension's own `canonical_name()`.
+fn assert_hint_names_dimension(source: &str, type_name: &str, label: &str) {
+    let message = sole_ctor_conformance_message(source, label);
+    assert!(
+        message.contains(HINT_CLAUSE_PREFIX),
+        "{label}: rejection at a dimensioned slot must carry the migration hint \
+         ({HINT_CLAUSE_PREFIX:?}); got: {message:?}"
+    );
+    let expected = dimension_named(type_name)
+        .canonical_name()
+        .unwrap_or_else(|| panic!("{label}: {type_name:?} has no canonical_name()"));
+    assert!(
+        message.contains(expected),
+        "{label}: hint must name the expected dimension {expected:?}; got: {message:?}"
+    );
+}
+
+/// Assert `source`'s sole rejection carries NO migration hint.
+fn assert_no_hint(source: &str, label: &str) {
+    let message = sole_ctor_conformance_message(source, label);
+    assert!(
+        !message.contains(HINT_CLAUSE_PREFIX),
+        "{label}: this family must keep its message byte-identical — no migration \
+         hint; got: {message:?}"
+    );
+}
+
+/// I7 — every rejection at a dimensioned slot carries the hint, and the hint
+/// names that slot's dimension.
+///
+/// One test over all five of the step-1 rejection fixtures rather than five
+/// one-liners: I7 is a property of the SLOT, not of the arg that missed it, so
+/// the arg shape (cross-dimension literal / bare Real / bare Int / String /
+/// Bool) must not change the outcome — which is only visible when they are
+/// asserted together.
+#[test]
+fn g_i7_rejections_at_dimensioned_slots_carry_the_migration_hint() {
+    for (source, type_name, label) in [
+        (SRC_G_I2_CROSS_DIMENSION, "Pressure", "I7: I2 cross-dimension"),
+        (SRC_G_I3_BARE_REAL, "Velocity", "I7: I3 bare Real"),
+        (SRC_G_I3_BARE_INT, "Velocity", "I7: I3 bare Int"),
+        (SRC_G_I4_STRING, "Density", "I7: I4 String"),
+        (SRC_G_I4_BOOL, "Density", "I7: I4 Bool"),
+    ] {
+        assert_hint_names_dimension(source, type_name, label);
+    }
+}
+
+/// Hint SCOPE fence — the four families task 5465 already promoted keep their
+/// messages byte-identical.
+///
+/// `emit_arg_type_mismatch` is shared, so an unconditional append would produce
+/// nonsense ("pass a dimensioned Bool literal") and would silently change the
+/// user-visible wording of four already-shipped diagnostics γ has no mandate to
+/// touch. This is what keeps the hint strictly ADDITIVE to the family γ
+/// promotes, and it is why the four `value_floor_*_still_warns` guards above
+/// remain meaningful as untouched regression fences.
+#[test]
+fn g_i7_hint_is_absent_for_the_already_promoted_families() {
+    assert_no_hint(SRC_FLOOR_STRING, "hint scope: String ← Int");
+    assert_no_hint(SRC_FLOOR_BOOL, "hint scope: Bool ← String");
+    assert_no_hint(SRC_FLOOR_INT, "hint scope: Int ← String");
+    assert_no_hint(SRC_FLOOR_REAL, "hint scope: dimensionless Real ← String");
+}
+
+/// ROT GUARD (D4-6) — for EVERY row of `NAMED_DIMENSIONS`, the example literal
+/// the hint offers must round-trip: parse as a reify unit literal and resolve
+/// back to exactly the dimension it was derived from.
+///
+/// This is what makes "derived from the registry so it cannot rot" STRUCTURAL
+/// rather than merely asserted. A new `NAMED_DIMENSIONS` row whose derived
+/// example does not parse fails the build; so does a derivation that composes a
+/// literal reify's compound-unit grammar does not accept.
+///
+/// The literal is read back out of the real diagnostic, and round-tripped
+/// through `common::stdlib_param_si_value` — the same oracle
+/// `compound_unit_resolution_tests.rs` uses, which drives the compiler's actual
+/// unit-resolution path. Nothing here re-implements the derivation, so the test
+/// cannot agree with a broken implementation by construction.
+///
+/// Rows with no clean literal spelling (see [`has_no_clean_unit_literal`]) are
+/// exempt BY OFFERING NO EXAMPLE. The exemption is asserted to be exercised —
+/// as an absent example, never as a broken string — so the escape hatch stays
+/// visible rather than becoming a silent catch-all.
+#[test]
+fn g_migration_hint_example_round_trips_for_every_named_dimension() {
+    let mut exempt: Vec<&str> = Vec::new();
+
+    for (index, (dim, type_name)) in NAMED_DIMENSIONS.iter().enumerate() {
+        let source = format!(
+            "module test.rot_{index}\n\
+             structure def W {{ param p : {type_name} }}\n\
+             structure def Root {{ let a = W(p: \"not a quantity\") }}\n"
+        );
+        let label = format!("rot guard: {type_name}");
+        let message = sole_ctor_conformance_message(&source, &label);
+
+        assert!(
+            message.contains(HINT_CLAUSE_PREFIX),
+            "{label}: every NAMED_DIMENSIONS row is dimensioned, so its rejection must \
+             carry the hint; got: {message:?}"
+        );
+
+        let Some(example) = example_literal_from_hint(&message) else {
+            assert!(
+                has_no_clean_unit_literal(dim),
+                "{label}: only a dimension with no clean unit-literal spelling may decline \
+                 to offer an example, but {dim} has one; got: {message:?}"
+            );
+            exempt.push(type_name);
+            continue;
+        };
+
+        let (_si_value, resolved) = common::stdlib_param_si_value(type_name, &example);
+        assert_eq!(
+            resolved, *dim,
+            "{label}: example literal `{example}` resolves to {resolved}, not to the \
+             dimension it was derived from ({dim})"
+        );
+    }
+
+    assert!(
+        !exempt.is_empty(),
+        "no NAMED_DIMENSIONS row exercised the fractional-exponent exemption — either the \
+         registry lost its fractional dimensions (then delete the escape hatch) or the \
+         derivation stopped declining them (then it is inventing literals that cannot \
+         parse)"
+    );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// γ (task 5627): the D4-5 `ScalarParam` fence
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// `Type::ScalarParam(Q)` is the UNRESOLVED-DIMENSION placeholder a dim-kinded
+// generic produces (`fn fwd<Q: Dimension>(x: Scalar<Q>)`, resolved in
+// `type_resolution.rs`; displayed `Scalar<Q>`). It is a scalar-FAMILY leaf whose
+// dimension alone is open — not an unknown type — so at a `Scalar` slot there is
+// no dimension to compare and the real conformance check belongs to
+// instantiation, not to this walker. γ's promotion makes such an arg newly
+// REJECTED, which is a false positive; D4-5 fences it back out.
+//
+// Every fixture below is the SAME shape modulo the forwarded arg's declared
+// type, so the only thing that can vary the outcome is the arg type itself.
+// That is what makes the narrowness fences bite: an over-wide fence reached for
+// via `is_numeric_placeholder_leaf` (which also matches `Int` and any concrete
+// `Scalar { .. }`) leaves the RED pair green while breaking these by name.
+
+const SRC_G_I5_DIMENSIONED_GIVEN_SCALARPARAM: &str = r#"module test.g_i5_scalarparam
+structure def W { param len : Scalar<Length> }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(len: x) }
+"#;
+
+const SRC_G_A2_REAL_GIVEN_SCALARPARAM: &str = r#"module test.g_a2_real_scalarparam
+structure def W { param mag : Real }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(mag: x) }
+"#;
+
+const SRC_G_I5_STRING_GIVEN_SCALARPARAM: &str = r#"module test.g_i5_string_scalarparam
+structure def W { param label : String }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(label: x) }
+"#;
+
+const SRC_G_I5_BOOL_GIVEN_SCALARPARAM: &str = r#"module test.g_i5_bool_scalarparam
+structure def W { param flag : Bool }
+fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(flag: x) }
+"#;
+
+const SRC_G_I5_DIMENSIONED_GIVEN_CROSS_DIMENSION: &str = r#"module test.g_i5_cross_dimension
+structure def W { param len : Scalar<Length> }
+fn fwd(m: Scalar<Mass>) -> W { W(len: m) }
+"#;
+
+const SRC_G_I5_DIMENSIONED_GIVEN_INT: &str = r#"module test.g_i5_int
+structure def W { param len : Scalar<Length> }
+fn fwd(n: Int) -> W { W(len: n) }
+"#;
+
+/// I5 / PRD §7.4 B4 — a `Type::ScalarParam(_)` arg at a DIMENSIONED `Scalar`
+/// slot is SILENT.
+///
+/// A dim-kinded generic forwarding its own `Scalar<Q>` param into a concrete
+/// `Scalar<Length>` ctor field has no dimension to compare: `Q` is bound at
+/// instantiation, and whether the binding conforms is decided there. Judging the
+/// UNINSTANTIATED body under strict `DimensionVector` equality can only ever
+/// reject, so every such site would be a false positive.
+///
+/// RED both before γ's promotion is fenced and — importantly — after step-2
+/// ALONE: the promotion is precisely what makes this newly fire, so this floor
+/// is not a pre-existing gap γ inherited but one γ itself opens and must close.
+#[test]
+fn g_i5_scalarparam_arg_at_dimensioned_slot_is_silent() {
+    assert_no_ctor_conformance_diags(
+        SRC_G_I5_DIMENSIONED_GIVEN_SCALARPARAM,
+        "I5: Scalar<Length> ← ScalarParam(Q)",
+    );
+}
+
+/// A2 — the DECLARED, INTENDED side effect on the dimensionless half.
+///
+/// Pinned here rather than discovered later. Before this fence,
+/// `param mag : Real` given a `Scalar<Q>` arg emitted
+/// `argument 'mag' has type 'Scalar<Q>' but param 'mag' requires type 'Real'` —
+/// a diagnostic belonging to task 5465's already-shipped DIMENSIONLESS family,
+/// not to the family γ promotes. Because the fence lands on the SHARED
+/// general-leaf arm, it necessarily silences that too.
+///
+/// That is a real behaviour change to a shipped diagnostic, and it is
+/// INTENDED: the argument for silence is identical in both halves — `Q` is
+/// unbound, so there is nothing to compare, and the uninstantiated body can
+/// only ever be rejected. Splitting the fence to preserve the dimensionless
+/// warning would mean asserting that `Scalar<Q>` is definitely-not-`Real`
+/// while simultaneously accepting it as maybe-`Scalar<Length>`, which is
+/// incoherent. Recording the post-state here makes it a decision on the record
+/// rather than a silent regression.
+#[test]
+fn g_a2_dimensionless_real_given_scalarparam_becomes_silent() {
+    assert_no_ctor_conformance_diags(SRC_G_A2_REAL_GIVEN_SCALARPARAM, "A2: Real ← ScalarParam(Q)");
+}
+
+/// FENCE — the accept is not a blanket: `String ← ScalarParam(Q)` STILL fires.
+///
+/// D4-5's own requirement. This half is already correct today and must survive:
+/// it is the reason the fix is a narrow PER-ARM guard rather than a widening of
+/// `arg_type_is_unverifiable`, which would silence `String ← Scalar<Q>` at every
+/// arm at once — the exact outcome that predicate's doc comment already forbids.
+#[test]
+fn g_i5_string_slot_given_scalarparam_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_STRING_GIVEN_SCALARPARAM,
+        "label",
+        "I5 fence: String ← ScalarParam(Q)",
+    );
+}
+
+/// FENCE — `Bool ← ScalarParam(Q)` STILL fires, for the same reason.
+#[test]
+fn g_i5_bool_slot_given_scalarparam_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_BOOL_GIVEN_SCALARPARAM,
+        "flag",
+        "I5 fence: Bool ← ScalarParam(Q)",
+    );
+}
+
+/// NARROWNESS FENCE vs I2 — a CONCRETE cross-dimension arg is not a
+/// placeholder, so `Scalar<Length> ← Scalar<Mass>` STILL fires.
+///
+/// Deliberately restated here, adjacent to the fence and in the fence's own
+/// fn-forwarding shape, even though `g_i2_cross_dimension_arg_at_dimensioned_slot_warns`
+/// covers the invariant: `is_numeric_placeholder_leaf` matches any concrete
+/// `Scalar { .. }`, so reaching for it as the arg-side accept would make THIS
+/// case silent. Failing by a name that says `i5` points at the fence rather than
+/// at the promotion.
+#[test]
+fn g_i5_dimensioned_slot_given_concrete_cross_dimension_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_DIMENSIONED_GIVEN_CROSS_DIMENSION,
+        "len",
+        "I5 fence: Scalar<Length> ← Scalar<Mass>",
+    );
+}
+
+/// NARROWNESS FENCE vs I3 — `Scalar<Length> ← Int` STILL fires.
+///
+/// The other half of `is_numeric_placeholder_leaf`'s membership set, and the
+/// other rejection γ exists to produce. Same restatement rationale as above.
+#[test]
+fn g_i5_dimensioned_slot_given_int_still_warns() {
+    assert_single_arg_type_mismatch_warning(
+        SRC_G_I5_DIMENSIONED_GIVEN_INT,
+        "len",
+        "I5 fence: Scalar<Length> ← Int",
+    );
 }
 
 // ===========================================================================
