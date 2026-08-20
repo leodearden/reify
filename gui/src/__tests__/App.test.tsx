@@ -136,11 +136,10 @@ vi.mock('../bridge', () => ({
   onCompileDiagnostics: vi.fn().mockResolvedValue(() => {}),
   onFeaDiagnosticsChanged: vi.fn().mockResolvedValue(() => {}),
   onFeaConvergenceChanged: vi.fn().mockResolvedValue(() => {}),
-  // Not reached by <App /> today (onDiagnostics has no caller; the two FEA-case
-  // entries are Viewport-only and ../viewport is mocked wholesale). Mocked
-  // anyway rather than allowlisted: one line each is cheaper than a premise the
-  // coverage guard cannot check, and either could become reachable silently.
-  onDiagnostics: vi.fn().mockResolvedValue(() => {}),
+  // Not reached by <App /> today — Viewport-only, and ../viewport is mocked
+  // wholesale. Mocked anyway rather than allowlisted: one line each is cheaper
+  // than a premise the coverage guard cannot check, and either could become
+  // reachable silently.
   setActiveFeaCase: vi.fn().mockResolvedValue(undefined),
   subscribeFeaCaseToStore: vi.fn().mockResolvedValue(() => {}),
   onTensegrityWiresUpdate: vi.fn().mockResolvedValue(() => {}),

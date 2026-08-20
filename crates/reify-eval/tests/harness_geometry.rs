@@ -24,6 +24,8 @@ mod geometry_handle_freshness;
 mod geometry_handle_persistent_cache_round_trip;
 #[path = "harness_geometry/geometry_handle_value_cell_e2e.rs"]
 mod geometry_handle_value_cell_e2e;
+#[path = "harness_geometry/geometry_length_args_units_e2e.rs"]
+mod geometry_length_args_units_e2e;
 #[path = "harness_geometry/geometry_let_value_cell_gamma.rs"]
 mod geometry_let_value_cell_gamma;
 #[path = "harness_geometry/geometry_query_kernel_dispatch.rs"]

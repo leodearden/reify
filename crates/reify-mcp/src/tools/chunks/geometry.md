@@ -109,7 +109,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `box_centered` | **centred at origin**, all 3 axes | op-identical alias of `box` — exists for symmetry with `cylinder_centered` so a designer doesn't have to remember box is the odd one out |
 | `sphere` | **centred at origin** | radius extends equally in all directions from `(0,0,0)` |
 | `torus` | **centred at origin**; axis is **+Z** | major/minor radii both measured from the ring centred on the origin |
-| `cylinder` | **base at z=0**, axis **+Z**, x/y **centred at origin** | top face at `z = height`; NOT centred on z — a common hand-centering workaround is `translate(cylinder(r, h), 0, 0, -h/2)` |
+| `cylinder` | **base at z=0**, axis **+Z**, x/y **centred at origin** | top face at `z = height`; NOT centred on z — a common hand-centering workaround is `translate(cylinder(r, h), 0mm, 0mm, -h/2)` — note the dimensioned zeros; `translate`'s components are length-semantic and a bare `0` is rejected |
 | `cylinder_centered` | **z-centred at origin**, axis **+Z**, x/y centred | equivalent to `cylinder` + `translate(z=-height/2)`, composed for you — prefer this over the hand-rolled workaround above |
 | `cone` | **base at z=0**, axis **+Z**, x/y centred at origin | same base-anchor convention as `cylinder`; base radius at z=0, top radius at z=height |
 | `tube` | **base at z=0**, axis **+Z**, x/y centred at origin | composed from `outer cylinder − inner cylinder`, so it inherits `cylinder`'s base-at-z0 anchor |
@@ -123,5 +123,12 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 
 **Rule of thumb:** `box`-family and `sphere`/`torus` are centred; `cylinder`-family (`cylinder`,
 `cone`, `tube`) sits base-first on the origin along +Z; `wedge` sits corner-first in the +octant.
-When in doubt, prefer the `_centered` variant over a manual `translate(primitive(...), 0, 0, -h/2)`
-workaround.
+When in doubt, prefer the `_centered` variant over a manual
+`translate(primitive(...), 0mm, 0mm, -h/2)` workaround.
+
+**Units:** every `translate` component is length-semantic, so all three must be dimensioned —
+`0mm`, not `0`. A bare number would be read as SI **metres** (1000× a plausible mm value), so it is
+rejected outright with a diagnostic. `-h/2` is fine as-is: dividing a length by a bare number
+preserves the length. The same rule applies to `rotate_around`'s pivot, `revolve`'s axis origin, and
+`line_segment` / `arc` / `helix` coordinates and radii. Direction vectors, counts and angles stay
+dimensionless.

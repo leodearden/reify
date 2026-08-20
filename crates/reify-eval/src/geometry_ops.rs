@@ -250,14 +250,23 @@ pub(crate) enum LengthArg {
 /// Look up a named LENGTH-semantic argument, evaluate it with full context,
 /// and require a finite LENGTH-dimensioned `Value::Scalar`.
 ///
-/// This is the units chokepoint for the pattern/mirror length-semantic args
-/// (spacing, mirror-plane origin, circular-pattern axis origin,
-/// arbitrary-pattern offsets). Unlike
+/// This is the units chokepoint for the length-semantic args that reach an
+/// `f64` through a NAMED-ARG read: the pattern spacings and origins, the
+/// transform components and pivot, the sweep axis origins, and the curve
+/// coordinates and radii. It is NOT the chokepoint for every length-semantic
+/// arg of a scalar-form geometry builtin — the modify + sweep MAGNITUDES
+/// (`fillet` radius, `extrude` distance, …) are placed into their `GeometryOp`
+/// field as a raw `Value` and coerced as SI metres only at the kernel boundary,
+/// so they never pass through here at all. The authoritative position table —
+/// and what stays un-gated, with the task that owns it — lives in the
+/// `arg_acceptance` module doc, and is deliberately NOT restated here: one
+/// list, one place to update when the next family is gated. Unlike
 /// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
 /// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
 /// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`
 /// (one `Severity::Warning` via `ArgRejection::message`), so a dimensionless
-/// spacing can never scatter instances 1000× too far. Same hazard and
+/// spacing can never scatter instances 1000× too far, and a bare `translate`
+/// component can never displace a part by a kilometre. Same hazard and
 /// discipline as `joints::read_length3` (the canonical "reject bare Real to
 /// avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
 /// `resolve_length_scalar_arg`; the dimension classification + diagnostic
@@ -377,25 +386,81 @@ pub(crate) fn required_length_value(
     .map(reify_ir::Value::length)
 }
 
-/// Read the `ox`/`oy`/`oz` ORIGIN triple of a scalar-form geometry builtin as
-/// LENGTHs, in that component order.
+/// Read a GROUP of length-semantic arguments of a scalar-form geometry builtin
+/// as LENGTHs, in the given name order, diagnosing EVERY failing member.
 ///
-/// An origin is a *point in space*, so every component is length-semantic and
-/// must be a finite LENGTH `Scalar`: a bare/dimensionless component would be
+/// A point in space (an origin `ox`/`oy`/`oz`, a pivot `px`/`py`/`pz`, a curve
+/// endpoint `x1`/`y1`/`z1`, an arc centre `cx`/`cy`/`cz`), a displacement
+/// (`dx`/`dy`/`dz`) and an independent length group (`helix`'s
+/// `radius`/`pitch`/`height`) are alike length-semantic in every member, so
+/// each must be a finite LENGTH `Scalar`: a bare/dimensionless member would be
 /// silently read as SI **metres** by `Value::as_f64` (the `12` vs `12mm` 1000×
 /// hazard). The co-located DIRECTION triple (`ax`/`ay`/`az`, `nx`/`ny`/`nz`) is
 /// a dimensionless unit vector and deliberately stays on the bare-accepting
-/// `eval_named_arg_f64` path — callers keep their own `f64_arg` closure for it.
+/// `eval_named_arg_f64` path — callers that have one keep their own `f64_arg`
+/// closure for it. Callers whose every argument is gated drop that closure.
+/// Which positions are routed here is enumerated ONCE, in the `arg_acceptance`
+/// module doc.
+///
+/// ALL FAILURES AT ONCE (reviewer amendment, task 5623): the member reads are
+/// deliberately NOT `?`-chained. A coordinate group is written as one gesture —
+/// `translate(g, 5, 0, 0)`, `line_segment(0, 0, 0, 10, 0, 0)` — so a bare group
+/// is usually bare in EVERY member, and short-circuiting would hand the author
+/// one arg name per rebuild: three edit-build cycles to fix one line, six for
+/// `line_segment`. Every member is therefore evaluated (each pushing its own
+/// `Severity::Warning` via [`required_length_arg`]) and only then is the FIRST
+/// error returned — so the caller-facing `Err` wording, and the
+/// `Unresolved`-beats-a-later-`Invalid` precedence it encodes, are unchanged.
+/// Grouping the WHOLE gated set of a builtin into one call (rather than several
+/// chained calls) is what makes that guarantee reach every position.
 ///
 /// BORROW ORDERING (the reason this is a free function and not a closure):
-/// each call takes `&mut diagnostics`, so the whole triple must be read BEFORE
+/// each call takes `&mut diagnostics`, so the whole group must be read BEFORE
 /// the caller declares its `f64_arg` closure — the closure captures
 /// `diagnostics` mutably for its own lifetime, and an interleaved read would
 /// overlap that borrow. Calling this helper first satisfies that ordering by
 /// construction instead of by convention at each call site.
-///
-/// Shared by `pattern_circular` (task 5350) and `pattern_mirror` (task 5214),
-/// whose origin reads were otherwise byte-identical.
+fn required_length_args<const N: usize>(
+    names: [&str; N],
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<[f64; N], String> {
+    let mut out = [0.0_f64; N];
+    let mut first_err: Option<String> = None;
+    for (slot, name) in out.iter_mut().zip(names) {
+        match required_length_arg(
+            name,
+            kind_label,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        ) {
+            Ok(si) => *slot = si,
+            Err(e) => {
+                // FIRST error wins: it is the one the pre-existing read order
+                // reported, and an `Unresolved` member must not be masked by a
+                // later `Invalid` one.
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
+}
+
+/// [`required_length_args`] specialised to the `ox`/`oy`/`oz` ORIGIN triple —
+/// the name shared by `pattern_circular` (task 5350), `pattern_mirror`
+/// (task 5214) and `sweep_revolve` (task 5623).
 fn required_length_origin3(
     kind_label: impl std::fmt::Display + Copy,
     args: &[(String, reify_ir::CompiledExpr)],
@@ -404,10 +469,15 @@ fn required_length_origin3(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
-    let ox = required_length_arg("ox", kind_label, args, values, functions, meta_map, diagnostics)?;
-    let oy = required_length_arg("oy", kind_label, args, values, functions, meta_map, diagnostics)?;
-    let oz = required_length_arg("oz", kind_label, args, values, functions, meta_map, diagnostics)?;
-    Ok([ox, oy, oz])
+    required_length_args(
+        ["ox", "oy", "oz"],
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )
 }
 
 /// Evaluate all args in a variadic curve constructor to f64 values.
@@ -2198,17 +2268,22 @@ fn transform_translate(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
-            .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
-            })
-    };
+    // Every component of a translation is length-semantic (a displacement in
+    // space), so ALL THREE are gated and no `f64_arg` closure survives here.
+    let [dx, dy, dz] = required_length_args(
+        ["dx", "dy", "dz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Translate {
         target: target_id,
-        dx: f64_arg("dx")?,
-        dy: f64_arg("dy")?,
-        dz: f64_arg("dz")?,
+        dx,
+        dy,
+        dz,
     })
 }
 
@@ -2299,6 +2374,20 @@ fn transform_rotate_around(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // The PIVOT is a point in space → gated. Read BEFORE `f64_arg` is declared
+    // (borrow ordering); this is also the existing source order, so both the
+    // read order and the diagnostic order are preserved exactly.
+    let point = required_length_args(
+        ["px", "py", "pz"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    // The axis is a dimensionless unit vector and `angle` is PRD 3's, not
+    // ours — both stay on the bare-accepting path.
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(name, kind, args, values, functions, meta_map, diagnostics)
             .ok_or_else(|| {
@@ -2307,7 +2396,7 @@ fn transform_rotate_around(
     };
     Ok(reify_ir::GeometryOp::RotateAround {
         target: target_id,
-        point: [f64_arg("px")?, f64_arg("py")?, f64_arg("pz")?],
+        point,
         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
         angle_rad: f64_arg("angle")?,
     })
@@ -2948,6 +3037,19 @@ fn sweep_revolve(
         step_handles,
         named_steps,
     )?;
+    // The axis ORIGIN is a point in space → gated. HOISTED here, above the
+    // `f64_arg` closure: the borrow-ordering contract on
+    // `required_length_origin3` makes this mandatory, not stylistic.
+    //
+    // This is a deliberate PRECEDENCE change — the origin used to be read LAST,
+    // after the degenerate-axis and degenerate-angle checks — so a revolve with
+    // both a bare origin and a degenerate axis now reports the ORIGIN. Pinned by
+    // `compile_geometry_op_revolve_bare_origin_beats_degenerate_axis`. It also
+    // matches the two pre-existing `required_length_origin3` call sites
+    // (`pattern_circular`, `pattern_mirror`), where the origin is likewise read
+    // before the direction's magnitude check.
+    let axis_origin =
+        required_length_origin3(kind, args, values, functions, meta_map, diagnostics)?;
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(
             name,
@@ -2981,7 +3083,6 @@ fn sweep_revolve(
         )));
         return Err(format!("revolve angle is degenerate: {} rad", angle_rad));
     }
-    let axis_origin = [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?];
     Ok(reify_ir::GeometryOp::Revolve {
         profile: profile_handle,
         axis_origin,
@@ -3275,27 +3376,31 @@ fn curve_line_segment(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
+    // BOTH endpoints are points in space, so all six components are gated
+    // (task 5623's R1 sweep). `line_segment` has no dimensionless neighbour —
+    // no direction vector, no count, no angle — so no `f64_arg` closure
+    // survives to contend for the `&mut diagnostics` borrow.
+    //
+    // ONE call, not one per endpoint: `required_length_args` only guarantees
+    // all-failures-at-once WITHIN a call, and a fully bare
+    // `line_segment(0, 0, 0, 10, 0, 0)` is exactly the case that would
+    // otherwise need one rebuild per component.
+    let [x1, y1, z1, x2, y2, z2] = required_length_args(
+        ["x1", "y1", "z1", "x2", "y2", "z2"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::LineSegment {
-        x1: f64_arg("x1")?,
-        y1: f64_arg("y1")?,
-        z1: f64_arg("z1")?,
-        x2: f64_arg("x2")?,
-        y2: f64_arg("y2")?,
-        z2: f64_arg("z2")?,
+        x1,
+        y1,
+        z1,
+        x2,
+        y2,
+        z2,
     })
 }
 
@@ -3307,6 +3412,26 @@ fn curve_arc(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
+    // The centre is a point in space and the radius is a length, so all four
+    // are gated (task 5623's R1 sweep) — as ONE group, so a bare centre still
+    // reports the bare radius alongside it. They are read BEFORE the `f64_arg`
+    // closure is declared — the borrow-ordering contract on
+    // `required_length_args` makes that mandatory, and it preserves the
+    // pre-existing read order exactly (centre and radius were already first).
+    //
+    // What stays BARE is a deliberate triage decision, not an omission:
+    // `start_angle`/`end_angle` are angles (PRD 3's scope — gated by #5779)
+    // and `ax`/`ay`/`az` are a dimensionless unit vector.
+    let [cx, cy, cz, radius] = required_length_args(
+        ["cx", "cy", "cz", "radius"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    let center = [cx, cy, cz];
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(
             name,
@@ -3322,8 +3447,8 @@ fn curve_arc(
         })
     };
     Ok(reify_ir::GeometryOp::Arc {
-        center: [f64_arg("cx")?, f64_arg("cy")?, f64_arg("cz")?],
-        radius: f64_arg("radius")?,
+        center,
+        radius,
         start_angle: f64_arg("start_angle")?,
         end_angle: f64_arg("end_angle")?,
         axis: [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?],
@@ -3338,24 +3463,24 @@ fn curve_helix(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    let mut f64_arg = |name: &str| -> Result<f64, String> {
-        eval_named_arg_f64(
-            name,
-            kind,
-            args,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-        )
-        .ok_or_else(|| {
-            format!("missing or non-finite argument '{}' for {}", name, kind)
-        })
-    };
+    // All three are lengths — a radius, a rise-per-turn, and a height — so all
+    // three are gated (task 5623's R1 sweep) and, as in `curve_line_segment`,
+    // no `f64_arg` closure survives. `pitch` is a LENGTH per turn, not an
+    // angle: the turn count is implied by `height / pitch`. Read as ONE group
+    // so a bare `helix(10, 2, 40)` reports all three names in a single build.
+    let [radius, pitch, height] = required_length_args(
+        ["radius", "pitch", "height"],
+        kind,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
     Ok(reify_ir::GeometryOp::Helix {
-        radius: f64_arg("radius")?,
-        pitch: f64_arg("pitch")?,
-        height: f64_arg("height")?,
+        radius,
+        pitch,
+        height,
     })
 }
 

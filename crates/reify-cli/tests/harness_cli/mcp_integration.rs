@@ -5,7 +5,8 @@ use std::time::Duration;
 
 /// Helper: spawn `reify mcp-server` with the given args, send JSON-RPC lines,
 /// close stdin, and read all stdout. Returns parsed JSON lines.
-/// Times out after 10 seconds to prevent CI deadlocks.
+/// Times out after 30 seconds (see the ceiling's own comment below) to prevent
+/// CI deadlocks. Every panic path here carries the child's stderr.
 fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reify"))
         .arg("mcp-server")
@@ -29,6 +30,40 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // Drop stdin by closing it
     drop(child.stdin.take());
 
+    // Drain stdout and stderr CONCURRENTLY with the wait loop.
+    //
+    // This is load-bearing, not tidiness. The child writes its JSON-RPC
+    // responses to a pipe whose capacity the kernel picks at creation time:
+    // 64KiB normally, but only 8KiB once this user is over
+    // `fs.pipe-user-pages-soft` -- which a parallel `cargo nextest` run
+    // routinely is. If nobody reads the pipe while the child runs, a response
+    // larger than that capacity blocks the child forever in `pipe_write`, it
+    // never exits, and the wait loop below reports the deadlock as a bogus
+    // "timeout". That mis-diagnosis has already cost one spurious ceiling
+    // raise (10s->30s, task 4503): no ceiling can fix a deadlock.
+    //
+    // Reading on separate threads keeps the pipes empty, so the child always
+    // makes progress and the ceiling measures liveness rather than pipe
+    // capacity.
+    //
+    // That is not the same as an unconditional wall-clock bound on this helper.
+    // The joins below return only once EVERY holder of a pipe's write end is
+    // gone, and killing the direct child does not close an end inherited by a
+    // grandchild it spawned -- such a grandchild would wedge the joins past the
+    // ceiling instead of surfacing as the timeout panic. `reify mcp-server`
+    // spawns no subprocess today (the CLI's only `Command::new` is the `gui`
+    // subcommand's), so the joins do terminate; bound them if that changes.
+    let mut child_stdout = child.stdout.take().expect("failed to open stdout");
+    let mut child_stderr = child.stderr.take().expect("failed to open stderr");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut child_stdout, &mut buf).map(|_| buf)
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        std::io::Read::read_to_end(&mut child_stderr, &mut buf).map(|_| buf)
+    });
+
     // Wait with timeout to prevent CI deadlocks.
     // 30s headroom: task 4503 raised the OCCT nextest max-threads cap 4->24
     // (commit 9ea8cdd4b8), so under peak concurrent load the child's stdlib
@@ -37,13 +72,26 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
     // performance, so a wider ceiling is safe.
     let timeout = Duration::from_secs(30);
     let start = std::time::Instant::now();
+    // The timeout does not panic in place: every failure this helper can report
+    // is more diagnosable with the child's stderr attached (a panic message, a
+    // backtrace, an MCP startup error), and stderr is only available once the
+    // reader threads are joined -- which is only safe after the child is gone.
+    // So the loop records the verdict, and the panic happens below the joins.
+    let mut timed_out = false;
     loop {
         match child.try_wait() {
             Ok(Some(_status)) => break,
             Ok(None) => {
                 if start.elapsed() > timeout {
                     child.kill().ok();
-                    panic!("mcp_roundtrip: child process timed out after {timeout:?}");
+                    // Reap it. SIGKILL makes the child exit, but until someone
+                    // wait()s it stays a zombie for the rest of this test
+                    // binary's life. The `Ok(Some(_))` arm above reaps via
+                    // `try_wait` on the normal path, so this is the only path
+                    // that would leak one.
+                    let _ = child.wait();
+                    timed_out = true;
+                    break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -51,18 +99,36 @@ fn mcp_roundtrip(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_jso
         }
     }
 
-    let output = child
-        .wait_with_output()
-        .expect("failed to collect output from reify mcp-server");
+    // The child is gone -- it exited on its own, or was killed AND reaped above
+    // -- so its ends of both pipes are closed and, given no surviving
+    // grandchild holds one (see the drain comment), the readers are at EOF.
+    let stdout_bytes = stdout_reader
+        .join()
+        .expect("stdout reader thread panicked")
+        .expect("failed to read stdout from reify mcp-server");
+    let stderr_bytes = stderr_reader
+        .join()
+        .expect("stderr reader thread panicked")
+        .expect("failed to read stderr from reify mcp-server");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+
+    if timed_out {
+        panic!(
+            "mcp_roundtrip: child process timed out after {timeout:?}\
+             \n--- child stderr ---\n{stderr}"
+        );
+    }
 
     // Parse each non-empty line as JSON
     stdout
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
-            serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON line: {e}\nline: {l}"))
+            serde_json::from_str(l).unwrap_or_else(|e| {
+                panic!("bad JSON line: {e}\nline: {l}\n--- child stderr ---\n{stderr}")
+            })
         })
         .collect()
 }
