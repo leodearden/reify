@@ -58,8 +58,48 @@ use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with
 /// the `set_build_scheduler` test seam. The SINGLE engine-construction site every
 /// build helper routes through, so a future change to the standard engine wiring is
 /// made in ONE place rather than five.
+///
+/// ## Why `register_compute_fns` is NOT optional here (task 5578)
+///
+/// An `@optimized` stdlib fn whose target has no registered compute trampoline
+/// does NOT error out. `engine_eval.rs`'s dispatch takes a documented
+/// else-branch: it pushes a CODELESS Error diagnostic ("@optimized target …: no
+/// registered compute trampoline (falling back to body-inlining)") and then
+/// body-inlines the fn. For the solver fns that body is a never-run sentinel — a
+/// bare struct ctor whose params are ALL required with no defaults (e.g.
+/// `form_find_free`'s `{ FormFindResult() }`, `crates/reify-compiler/stdlib/tensegrity.ri`).
+/// The result is a NON-Undef struct whose every field is Undef, so every
+/// downstream field read silently becomes Undef while its one declared read
+/// reads as RESOLVED — invisible to any "did it diverge?" differential (both
+/// sides degrade identically) and reported by the stale-Undef checker as a
+/// scheduling bug in code that is not at fault.
+///
+/// That is exactly what happened here: this fn omitted the registration, and
+/// `golden:tensegrity_t_prism`'s `TPrism.{solved,forces}` sat in
+/// `flat_sort_kahn_core_delegation.rs`'s `PREEXISTING_STALE_UNDEF` baseline
+/// misattributed to `invariants.rs`/`engine_build.rs`. Task 4458 is the same
+/// defect one layer up — `cmd_build` skipped `configured_eval_engine`, so
+/// `max_von_mises` went Undef, FEA constraints went Indeterminate, and the CLI
+/// exited `Error + exit 0`; its guard
+/// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`) asserts the ABSENCE
+/// of that same diagnostic string. Production agrees: the CLI's
+/// `configured_eval_engine` registers compute fns on BOTH its eval and build
+/// paths, as does `no_stale_undef_invariant_gate.rs`'s per-file engine wiring.
+///
+/// Registering HERE (rather than in `build_case` / `build_case_keep_engine`)
+/// keeps every build helper on identical wiring — patching only one variant
+/// would make `flat_sort_reorder_leaves_no_stale_undef` and
+/// `flat_sort_reorder_preserves_corpus_results` silently disagree about what was
+/// built. `register_compute_fns` panics on double registration, but this fn
+/// mints a brand-new [`Engine`] per call, so that contract is never at risk.
+///
+/// `register_shell_extract_compute_fns` is deliberately NOT called: it is a
+/// separate `pub fn`, no corpus case uses `shell-extract::extract`, and an
+/// unneeded registration only widens blast radius. Add it only if a corpus build
+/// actually surfaces that target's trampoline-missing diagnostic.
 fn fresh_engine(scheduler: BuildScheduler, kernel: Box<dyn GeometryKernel>) -> Engine {
     let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
     engine.set_build_scheduler(scheduler);
     engine
 }
