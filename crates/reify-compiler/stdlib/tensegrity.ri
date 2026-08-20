@@ -251,9 +251,13 @@ structure def TensegritySurface {
 //   choice q_ref = 1 N/m.
 //
 //   Consequence for authors: only RELATIVE force magnitudes across members are
-//   physically meaningful. Rescaling every qᵢ by λ rescales every member force
-//   by λ and moves no node — so to reach a specific design force level, scale
-//   the whole q vector; there is no absolute-units knob to reach for.
+//   physically meaningful. Rescaling the WHOLE gauge — every qᵢ AND every σ_T —
+//   by λ rescales every member force by λ and moves no node; on the line-only
+//   path σ is empty, so that reduces to scaling q alone. Scaling q while holding
+//   σ FIXED is not a gauge change at all: it shifts the q/σ balance in the
+//   assembly below, so the free nodes move and the forces do not merely scale.
+//   To reach a specific design force level, scale the whole gauge; there is no
+//   absolute-units knob to reach for.
 //
 //   `surface_stresses` σ shares this SAME gauge, which is why it too is
 //   `List<Real>`. σ enters the assembly ADDITIVELY with q in
